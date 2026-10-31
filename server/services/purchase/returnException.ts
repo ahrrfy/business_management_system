@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import {
   productUnits,
   purchaseReturnRequests,
@@ -211,8 +212,6 @@ export async function createExceptionReturnRequest(
       .from(suppliers)
       .where(eq(suppliers.id, input.supplierId))
       .for("update");
-    if (!supplier?.isActive || supplier.supplierKind !== "REGULAR")
-      returnConflict("المورد غير نشط أو ليس مورداً تجارياً عادياً");
     const raced = await replay(true);
     if (raced) return raced;
     const items: Array<{
@@ -232,6 +231,8 @@ export async function createExceptionReturnRequest(
       reason: string | null;
     }> = [];
     try {
+      if (!supplier?.isActive || supplier.supplierKind !== "REGULAR")
+        returnConflict("المورد غير نشط أو ليس مورداً تجارياً عادياً");
       const scope = await lockEconomicInventoryScope(
         tx,
         lines.map((l) => l.variantId),
@@ -340,7 +341,26 @@ export async function createExceptionReturnRequest(
       if (!isDupEntry(error)) throw error;
       const found = await replay(true);
       if (found) return found;
-      returnConflict("مرجع الدليل مسجل في طلب آخر؛ افتح الطلب الأصلي");
+      const [evidenceOwner] = await tx
+        .select({ id: purchaseReturnRequests.id })
+        .from(purchaseReturnRequests)
+        .where(
+          eq(purchaseReturnRequests.exceptionEvidenceKey, exceptionEvidenceKey),
+        )
+        .limit(1)
+        .for("share");
+      // Only a proven evidence collision with an absent request key permits
+      // editing the proposal. Other unique failures keep their original error.
+      if (!evidenceOwner) throw error;
+      throw new RejectedReturnProposal({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تثبيت مرتجع المورد",
+          why: "مرجع الدليل مسجل في طلب آخر؛ افتح الطلب الأصلي",
+          doThis: "راجع الطلب الأصلي أو صحح مرجع الدليل ثم أعد المحاولة",
+        }),
+        cause: error,
+      });
     }
     await tx
       .insert(purchaseReturnRequestItems)

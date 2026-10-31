@@ -9,46 +9,23 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AlertTriangle, Calendar, FileText, LayoutGrid, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X, Zap } from "lucide-react";
+import { AlertTriangle, Calendar, FileText, LayoutGrid, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { fmtAr, fmtInt, D, positiveDiff, toAccessibleMoney } from "@/lib/money";
-import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
-import { printDoc } from "@/lib/printing/print";
-import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
-import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
-import { printDeliveryDispatchSlipAsync } from "@/lib/printing/printDeliveryDispatchSlip";
-import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
-
-
-
-
+import { fmtAr, fmtInt, D, toAccessibleMoney } from "@/lib/money";
 
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-
-
-
-
-
 import { WORK_ORDER_CHANNELS, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
-
-
-
-
 import { Label } from "@/components/ui/label";
-
-import CustomerPicker from "@/components/CustomerPicker";
-
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 
-import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
+import { deriveWoDeliveryState } from "@shared/workOrderDeliveryState";
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { WorkOrderControlApprovals } from "@/components/workOrders/WorkOrderControlApprovals";
-import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
 import { EditWorkOrderDialog } from "@/components/workOrders/EditWorkOrderDialog";
 import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
@@ -56,19 +33,16 @@ import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 
 import { ErrorState, LoadingState } from "@/components/PageState";
 
-import { type WO, type Detail, type Status, type DeliverTarget, COLUMNS, PRIORITIES, colVars, dueDayDelta, workOrderCardLabel } from "@/components/workOrders/workOrderTypes";
+import { type WO, type Detail, type Status, COLUMNS, PRIORITIES, colVars, dueDayDelta, workOrderCardLabel } from "@/components/workOrders/workOrderTypes";
 import { WorkOrderKanbanCard } from "@/components/workOrders/WorkOrderKanbanCard";
 import { WorkOrderPreviewDrawer } from "@/components/workOrders/WorkOrderPreviewDrawer";
 import { WorkOrdersTable } from "@/components/workOrders/WorkOrdersTable";
 import { WorkOrderBlockedReasonDialog } from "@/components/workOrders/WorkOrderBlockedReasonDialog";
-import { WorkOrderDeliverDialog } from "@/components/workOrders/WorkOrderDeliverDialog";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 // الحالات النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter (الحالات غير النهائية).
 const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
-/** حدّ «مُسلَّم» المعروضة في العمود — الأحدث فقط؛ الإجمالي الحقيقي من workOrders.counts. */
-const DELIVERED_LIMIT = 50;
 
 // ─────────────── الصفحة ───────────────
 export default function WorkOrders() {
@@ -96,12 +70,10 @@ export default function WorkOrders() {
   // المشرف (أدمن/مالك/مدير) نطاقُه كلُّ الفرع بحكم `scopedOwnerId=null` — فالرقاقة بلا أثرٍ له.
   const isSupervisor = me.data?.role === "admin" || me.data?.role === "manager" || !!me.data?.isOwner;
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
-  // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
-  // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
+  // تُستعمَل فقط لإظهار رابط الانتقال النظيف إلى محطة الاستقبال في درج المعاينة، لا للتسليم من الكانبان.
   const legacyDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
   const canDeliver = canLifecycleOperation(me.data, "workOrders.deliver", legacyDeliver);
-  const canAutoClear = canLifecycleOperation(me.data, "workOrders.autoClearReady", legacyDeliver);
   const canRequestControl = canLifecycleOperation(me.data, "workOrders.requestControl", legacyDeliver) || isManager;
   /**
    * **طلبُ الإلغاء لفنّي المطبعة** (قرار المالك ١/٩/٢٦): مصدرُه القاموس المشترك نفسه الذي
@@ -154,15 +126,12 @@ export default function WorkOrders() {
     window.localStorage.setItem("wo-view", view);
   }, [view]);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
-  const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
-  const deliverSnapRef = useRef<WO | DeliverTarget | null>(null);
-  const autoClearSnapRef = useRef<{ single?: WO; candidates: WO[]; labelWin: Window | null } | null>(null);
 
-  // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
+  // فلاتر خادمية مشتركة بين القائمة والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const customerFilterId = Number(f.customerId);
   const serverFilters = {
     customerId: Number.isSafeInteger(customerFilterId) && customerFilterId > 0 ? customerFilterId : undefined,
@@ -179,13 +148,9 @@ export default function WorkOrders() {
     // (`workStartedAt + workSeconds`) فلا عمودَ جديد ولا كاتبَ ينجرف.
     awaitingPickupDays: f.stale === "1" ? 7 : undefined,
   };
-  // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
-  // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
-  // النشطة كاملةً (مجموعة صغيرة بطبيعتها) و«مُسلَّم» محدودة بالأحدث.
-  const activeInput = { statuses: [...ACTIVE_STATUSES], limit: 500, ...serverFilters };
-  const deliveredInput = { statuses: ["DELIVERED" as const], limit: DELIVERED_LIMIT, ...serverFilters };
+  // لوحة الكانبان التشغيلية تعرض حصراً الطلبات النشطة غير المُسلَّمة وغير المُسنَدة للتوصيل.
+  const activeInput = { statuses: [...ACTIVE_STATUSES], excludeDispatchedReady: true, limit: 500, ...serverFilters };
   const activeQ = trpc.workOrders.list.useQuery(activeInput, { enabled: canReadOrders });
-  const deliveredQ = trpc.workOrders.list.useQuery(deliveredInput, { enabled: canReadOrders });
   const countsQ = trpc.workOrders.counts.useQuery(serverFilters, { enabled: canReadCounts });
   const serverCounts = countsQ.data;
 
@@ -210,7 +175,7 @@ export default function WorkOrders() {
       void invalidateAll();
     },
   );
-  // التفاؤل على استعلام النشطة فقط — الانتقال إلى «مُسلَّم» يمرّ بحوار التسليم ثم invalidateAll.
+  // التفاؤل على استعلام النشطة فقط — تنتهي مراحل الكانبان عند «جاهز للتسليم».
   const optimisticMove = (id: number, to: Status) =>
     utils.workOrders.list.setData(activeInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));
 
@@ -230,32 +195,7 @@ export default function WorkOrders() {
     onSuccess: () => { notify.ok("جاهز للتسليم", "الأمر جاهز — أبلغ العميل."); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
-  const deliver = trpc.workOrders.deliver.useMutation({
-    onSuccess: (r, vars) => {
-      const snap = deliverSnapRef.current ?? all.find((o) => o.id === vars.workOrderId) ?? deliverOrder;
-      deliverSnapRef.current = null;
-      const saleTotal = snap?.salePrice ?? "0";
-      const paidBefore = D(snap?.deposit ?? 0);
-      const paidNow = vars.payment?.amount ? D(vars.payment.amount) : D(0);
-      const remAfter = D(saleTotal).minus(paidBefore).minus(paidNow);
-      notify.ok("تم التسليم", `صدرت فاتورة ${r.invoiceNumber} تلقائياً.`);
-      void printInvoicePaymentReceipt({
-        invoiceNumber: r.invoiceNumber,
-        customerName: snap && "customerName" in snap ? snap.customerName : null,
-        customerPhone: snap && "customerPhone" in snap ? snap.customerPhone : null,
-        invoiceTotal: saleTotal,
-        paidBefore: paidBefore.toFixed(2),
-        amountPaid: paidNow.toFixed(2),
-        remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
-        paymentMethod: paidNow.gt(0) ? (vars.payment?.method ?? "CASH") : null,
-        reference: vars.payment?.reference ?? null,
-        cashierName: me.data?.name ?? null,
-      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
-      setDeliverOrder(null);
-      invalidateAll();
-    },
-    onError: (e) => { deliverSnapRef.current = null; releaseReservedPrintWindow(); notify.err(e); invalidateAll(); },
-  });
+
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
@@ -283,147 +223,8 @@ export default function WorkOrders() {
     }
     setKanban.mutate({ workOrderId: orderId, kanbanState: next });
   };
-  const activeBranchId = canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined;
 
-  const autoClearReady = trpc.workOrders.autoClearReady.useMutation({
-    onSuccess: async (res, vars) => {
-      const snap = autoClearSnapRef.current;
-      autoClearSnapRef.current = null;
-      const closeLabel = () => { try { snap?.labelWin?.close(); } catch { /* noop */ } };
-      if (res.clearedCount > 0) {
-        if (!vars?.workOrderId) {
-          notify.ok(
-            "تم التصريف التلقائي",
-            `تم تصريف ${fmtInt(res.clearedCount)} طلب (${fmtInt(res.dispatchedCount)} إرسال للتوصيل، ${fmtInt(res.deliveredCount)} تسليم مباشر).`,
-          );
-        }
-        const target = snap?.single ?? (res.clearedCount === 1 && snap?.candidates.length === 1 ? snap.candidates[0] : undefined);
-        if (target && res.dispatchedCount === 1 && res.deliveredCount === 0) {
-          const freshRows = await utils.workOrders.list.fetch({ statuses: [...ACTIVE_STATUSES, "DELIVERED"], limit: 100, ...serverFilters }).catch(() => [] as WO[]);
-          const updated = freshRows.find((o) => o.id === target.id) ?? target;
-          const cod = positiveDiff(updated.salePrice, updated.deposit ?? 0).toFixed(2);
-          const cnNum = (updated as { consignmentNumber?: string | null }).consignmentNumber ?? updated.orderNumber;
-          const printable = {
-            orderNumber: updated.orderNumber,
-            title: updated.title,
-            quantity: Number(updated.quantity ?? 1),
-            salePrice: updated.salePrice,
-            deposit: updated.deposit ?? null,
-            customerName: updated.customerName ?? null,
-            customerPhone: updated.customerPhone ?? null,
-            deliveryAddress: updated.deliveryAddress ?? null,
-            deliveryCost: updated.deliveryCost ?? null,
-            deliveryFeeCollection: (updated as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
-          };
-          if (snap?.labelWin) {
-            void printReadyOrderLabel(printable, {
-              partyName: updated.deliveryPartyName ?? null,
-              trackingNumber: cnNum,
-              cod,
-              into: snap.labelWin,
-            }).catch(() => closeLabel());
-          }
-          void printDeliveryDispatchSlipAsync({
-            sourceType: "WORK_ORDER",
-            workOrderId: updated.id,
-            consignmentNumber: cnNum,
-            orderNumber: updated.orderNumber,
-            orderKind: "workOrder",
-            partyName: updated.deliveryPartyName ?? "مندوب التوصيل",
-            recipientName: updated.customerName ?? "",
-            recipientPhone: updated.customerPhone ?? "",
-            deliveryAddress: updated.deliveryAddress ?? "",
-            salePrice: updated.salePrice,
-            deposit: updated.deposit ?? null,
-            codAmount: cod,
-            deliveryFee: String(updated.deliveryCost ?? "0"),
-            feeCollection: (updated as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? "COURIER",
-            title: updated.title,
-          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
-        } else if (target && res.deliveredCount === 1 && res.dispatchedCount === 0) {
-          closeLabel();
-          const det = await utils.workOrders.get.fetch({ workOrderId: target.id }).catch(() => null);
-          const invNum = (det as { invoiceNumber?: string | null } | null)?.invoiceNumber ?? (det?.invoiceId ? `INV-${det.invoiceId}` : target.orderNumber);
-          void printInvoicePaymentReceipt({
-            invoiceNumber: invNum,
-            customerName: target.customerName ?? null,
-            customerPhone: target.customerPhone ?? null,
-            invoiceTotal: target.salePrice,
-            paidBefore: D(target.deposit ?? 0).toFixed(2),
-            amountPaid: "0.00",
-            remainingAfter: "0.00",
-            paymentMethod: null,
-            cashierName: me.data?.name ?? null,
-          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
-        } else {
-          closeLabel();
-          void printDoc({
-            kind: "receipt",
-            includeBrandHeader: true,
-            title: "بيان التصريف التلقائي للطلبات الجاهزة",
-            subtitle: `إجمالي المصرف: ${res.clearedCount} طلب`,
-            meta: [
-              me.data?.name ? `الموظف: ${me.data.name}` : "",
-              `مرسل للتوصيل: ${res.dispatchedCount}`,
-              `تسليم مباشر (مدفوع مسبقاً): ${res.deliveredCount}`,
-            ].filter(Boolean),
-            totals: [
-              { label: "إرسالات التوصيل", value: String(res.dispatchedCount) },
-              { label: "التسليم المباشر", value: String(res.deliveredCount) },
-              { label: "إجمالي الطلبات المصرفة", value: String(res.clearedCount) },
-            ],
-            footer: "تم التصريف التلقائي للطلبات الجاهزة المؤهلة.",
-          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
-        }
-      } else {
-        closeLabel();
-        releaseReservedPrintWindow();
-        if (!vars?.workOrderId) {
-          notify.warn(
-            "لا توجد طلبات مؤهلة للتصريف",
-            "التصريف التلقائي للتوصيل يتطلب مندوباً فردياً نشطاً؛ شركة التوصيل تُسنَد من شاشة التوصيل بعد مسح البوليصة. والاستلام المباشر يتطلب دفع كامل المبلغ مقدماً.",
-          );
-        }
-      }
-      invalidateAll();
-    },
-    onError: (e) => {
-      try { autoClearSnapRef.current?.labelWin?.close(); } catch { /* noop */ }
-      autoClearSnapRef.current = null;
-      releaseReservedPrintWindow();
-      notify.err(e);
-      invalidateAll();
-    },
-  });
-
-  const onQuickDispatch = (order: WO) => {
-    const labelWin = order.hasDelivery ? preopenShippingLabelWindow() : null;
-    reservePrintWindow();
-    autoClearSnapRef.current = { single: order, candidates: [order], labelWin };
-    autoClearReady.mutate(
-      { workOrderId: order.id, branchId: order.branchId },
-      {
-        onSuccess: (res) => {
-          if (res.dispatchedCount > 0) {
-            notify.ok("تم الإرسال للتوصيل", `تم إسناد الطلب ${order.orderNumber} لمندوب التوصيل.`);
-          } else {
-            notify.warn("تعذّر الإرسال للتوصيل", "تأكد من وجود مندوب فردي نشط للفرع، أو أرسله لشركة من شاشة التوصيل بعد مسح البوليصة.");
-          }
-        },
-      },
-    );
-  };
-
-  const onQuickDeliver = (order: WO) => {
-    deliverSnapRef.current = order;
-    reservePrintWindow();
-    deliver.mutate({
-      workOrderId: order.id,
-      clientRequestId: newClientRequestId(),
-    });
-  };
-
-  const busy = claim.isPending || release.isPending || start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
+  const busy = claim.isPending || release.isPending || start.isPending || markReady.isPending || assign.isPending;
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -438,7 +239,7 @@ export default function WorkOrders() {
     label: "تتبّع الإنشاء",
   }), []);
 
-  const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
+  const all = useMemo(() => activeQ.data ?? [], [activeQ.data]);
   // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
   // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
   /**
@@ -459,9 +260,6 @@ export default function WorkOrders() {
         if (d == null || d >= 0) return false;
       }
       if (f.unassigned === "1") {
-        // Codex #2 (الجولة ٣): الاسم يقول «طابور مشترك — أوامرُ لم تُسنَد لفنّيّ بعد»،
-        // فإدراج أوامر مُسلَّمة/ملغاة غير مُسنَدة يخالف الاسم ويلوّث التصدير. مطابقة
-        // نمط late/dueToday/blocked: النهائيات مستبعدةٌ قبل فحص الشرط.
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
         if (o.assignedTo != null) return false;
       }
@@ -471,10 +269,6 @@ export default function WorkOrders() {
         if (d !== 0) return false;
       }
       if (f.blocked === "1") {
-        // Codex #5 (الجولة ٢): مسارُ التسليم/الإلغاء لا يمسح `kanbanState` — أمرٌ وُسم
-        // BLOCKED ثمّ سُلّم يبقى محتفظاً بالقيمة، فيعيده فلترُ «معطَّل» من نافذة deliveredQ
-        // بينما `isKanbanStateApplicable` يعدّ DELIVERED نهاية ويُخفي نقطته على البطاقة.
-        // الحلّ الاتّساقيّ: نستبعد النهائيات هنا كما يفعل `late` و`dueToday`.
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
         const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
         if (ks !== "BLOCKED") return false;
@@ -499,21 +293,21 @@ export default function WorkOrders() {
     const out: WO[] = [];
     let cursor: number | undefined;
     for (let i = 0; i < 200; i++) {
-      const pageRows = await utils.workOrders.list.fetch({ limit: 200, cursor, ...serverFilters });
+      const pageRows = await utils.workOrders.list.fetch({
+        statuses: [...ACTIVE_STATUSES],
+        excludeDispatchedReady: true,
+        limit: 200,
+        cursor,
+        ...serverFilters,
+      });
       out.push(...pageRows);
       if (pageRows.length < 200) break;
       cursor = Number(pageRows[pageRows.length - 1].id);
     }
-    // نطبّق **نفس** predicate الفلترة العميليّة على النتائج — التصدير يطابق ما تعرضه
-    // اللوحة حرفياً بما فيه الفلاتر السريعة الأربعة (Codex #5). قبله: أولوية/قناة/بحث
-    // وحدها كانت تُطبَّق، فالضغط على «تصدير» بعد تفعيل «معطَّل» يصدّر أوامر لا تظهر.
     return out.filter(clientFilterPredicate);
   }
 
   // ─── الموجة ٢ (٣٠/٨/٢٦) — Group By متبدّل بنمط Odoo ──────────────────────────
-  // «حسب المرحلة» يبقى الافتراضَ (سلوكٌ ثابت + D&D يعمل). الأخرى تُشتقّ من البيانات
-  // ذاتها وتُعطّل D&D — تغييرُ الفنّيّ يحتاج mutation `assign`، الأولويّة تحتاج `update`،
-  // والقناة لا تتغيّر بعد الإنشاء ⇒ فتح كلٍّ منها في موجةٍ لاحقة يبقى أنقى من إدخالها هنا مبعثرةً.
   type GroupBy = "stage" | "technician" | "channel" | "priority";
   const groupBy = (["stage", "technician", "channel", "priority"] as const).includes(f.gb as GroupBy)
     ? (f.gb as GroupBy)
@@ -582,16 +376,6 @@ export default function WorkOrders() {
     return m;
   }, [filtered, dynColumns]);
 
-  const anyClientFilter =
-    f.pri !== "all" ||
-    f.ch !== "all" ||
-    f.dueToday === "1" ||
-    f.unassigned === "1" ||
-    f.blocked === "1" ||
-    f.late === "1" ||
-    f.deliv === "1" ||
-    (f.q?.trim() ?? "") !== "";
-
   // ── حساب إحصائيات الأعمدة (القيمة الإجمالية، المتأخر، المعطل) ذرّياً من بطاقات العمود الفعلية ──
   // يحلّ جذرياً علّة تكرار مبالغ الحالة الواحدة (RECEIVED) بين «طابور وارد» و«مسحوب»،
   // ويصمد أمام كافة الفلاتر العميلية والتجميع المتبدل (حسب الفني/القناة/الأولوية).
@@ -618,10 +402,14 @@ export default function WorkOrders() {
     return map;
   }, [dynColumns, byCol]);
 
-  // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
+  // ── الانتقال بين مراحل الإنتاج (تنتهي مراحل الكانبان عند «جاهز للتسليم») ──
   async function attemptMove(order: WO, to: Status) {
+    if (to === "DELIVERED") {
+      notify.warn("التسليم من محطة الاستقبال", "تنتهي مراحل الكانبان عند «جاهز للتسليم» — يُسلَّم الطلب أو يُسنَد للتوصيل من شاشات الاستقبال.");
+      return;
+    }
     if (WO_NEXT_STATUS[order.status as WorkOrderStatus] !== to) {
-      notify.warn("انتقال غير مسموح", "اتبع التسلسل: مُستلَم ← قيد التنفيذ ← جاهز ← مُسلَّم.");
+      notify.warn("انتقال غير مسموح", "اتبع التسلسل: مُستلَم ← قيد التنفيذ ← جاهز للتسليم.");
       return;
     }
     if (to === "IN_PROGRESS") {
@@ -633,28 +421,6 @@ export default function WorkOrders() {
       if (!canMarkReady) return;
       if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${order.title}» (${order.orderNumber}) في حالة «جاهز للتسليم». متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id });
-    }
-    else if (to === "DELIVERED") {
-      // مرآة الخادم: deliver محصور بالكاشير/المدير (أو منح workorders=FULL صريح) — لا نفتح حوار تسليم سيفشل بـ403.
-      if (!canDeliver) { notify.warn("التسليم من صلاحية الكاشير/المدير", "تقديم الأمر إلى «مُسلَّم» يُصدر فاتورة نهائية — يتولّاه الكاشير أو المدير."); return; }
-      if (order.hasDelivery) {
-        // ١٨/٨ (بلاغ المالك): كانت الرسالة واحدةً لكل الحالات والتنقّل يقذف إلى شاشةٍ **لا أثر
-        // للطلب فيها** (الطرد المُسنَد كان خارج كل تبويباتها). الآن: رسالةٌ بحالته الحقيقية،
-        // والتنقّل إلى التبويب الذي يعرضه فعلاً.
-        const st = deriveWoDeliveryState(order.consignmentStatus, order.parcelStatus);
-        if (st === "NONE") {
-          notify.warn("هذا طلب توصيل", "أنشئ الإرسالية واختر الجهة من «جاهز للإرسال» في إدارة التوصيل.");
-          navigate("/delivery");
-        } else {
-          notify.warn(
-            `الطلب ${woDeliveryStateLabel(st)}`,
-            `${order.deliveryPartyName ? `مع ${order.deliveryPartyName}. ` : ""}يُغلَق بإثبات التسليم من تبويب «قيد التوصيل».`,
-          );
-          navigate("/delivery?tab=transit");
-        }
-        return;
-      }
-      setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" });
     }
   }
 
@@ -674,7 +440,9 @@ export default function WorkOrders() {
     if (e.button !== 0) return;
     const canDragOrder = order.status === "RECEIVED"
       ? (canStart || (order.assignedTo == null ? canClaim : canReleaseOrder(order)))
-      : canLifecycleOperation(me.data, order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true);
+      : order.status === "IN_PROGRESS"
+        ? canLifecycleOperation(me.data, "workOrders.markReady", true)
+        : false;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     dragRef.current = { order, startX: e.clientX, startY: e.clientY, ox: e.clientX - rect.left, oy: e.clientY - rect.top, moved: false };
     const move = (ev: PointerEvent) => {
@@ -689,11 +457,6 @@ export default function WorkOrders() {
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
     };
-    // Codex #4 (الجولة ٣): تنظيفٌ مشترك — يزيل كلّ المستمعين ويعيد `userSelect` و`drag` و
-    // `dragRef` إلى قيمها الحياديّة. يُستدعى من pointerup **وpointercancel** معاً:
-    // المتصفّح يُطلق cancel (لا up) عند التمرير اللمسيّ العموديّ فوق البطاقة، وبدون
-    // مستمعٍ له كانت `dragRef` تبقى مأهولةً فيلتقط أوّل pointerup لاحقٍ في أيّ مكان
-    // من الشاشة بطاقةً «قديمة» ويفتح Drawer الخاطئ.
     const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -717,7 +480,7 @@ export default function WorkOrders() {
         return;
       }
       const col = COLUMNS.find((c) => c.key === overKey);
-      if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
+      if (col && col.status !== dr.order.status && col.status !== "DELIVERED") attemptMove(dr.order, col.status);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -740,8 +503,8 @@ export default function WorkOrders() {
     (f.to ? 1 : 0) +
     (f.gb && f.gb !== "stage" ? 1 : 0);
   const boardEmpty = filtered.length === 0;
-  const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
-  const boardError = activeQ.isError || deliveredQ.isError || (canReadCounts && countsQ.isError);
+  const boardLoading = activeQ.isLoading;
+  const boardError = activeQ.isError || (canReadCounts && countsQ.isError);
 
   return (
     <div className={`wob ${view === "board" ? "wob--board" : "wob--list"}`}>
@@ -784,8 +547,7 @@ export default function WorkOrders() {
           لم يحضر أصحابها
         </button>
         {/* الموجة ٣ (٣٠/٨/٢٦) — فلاتر معلَّبة (نمط Odoo): بديلٌ عن حقولٍ متفرّقة يفهمها
-            الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
-            الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
+            الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ. */}
         {(() => {
           const clientFilterActive =
             f.pri !== "all" || f.ch !== "all" ||
@@ -820,8 +582,8 @@ export default function WorkOrders() {
         <button type="button" aria-pressed={f.blocked === "1"} onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })} className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`} title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة">
           <AlertTriangle aria-hidden className="size-3.5" /> معطَّل
         </button>
-        <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
-          <Truck aria-hidden className="size-3.5" /> قيد التوصيل
+        <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="طلبات توصيل قيد الإنتاج أو بانتظار الإسناد">
+          <Truck aria-hidden className="size-3.5" /> طلبات توصيل
         </button>
         <UnifiedSearchInput barcode={false} debounceMs={0} value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)..." className="flex-1 min-w-[180px] max-w-[300px]" />
 
@@ -1023,7 +785,6 @@ export default function WorkOrders() {
           message="تعذّر تحميل جزء من أوامر الشغل أو عدّاداتها؛ لم يُفترض أن الطابور فارغ أو أن القيم صفر."
           onRetry={() => {
             void activeQ.refetch();
-            void deliveredQ.refetch();
             if (canReadCounts) void countsQ.refetch();
           }}
         />
@@ -1034,7 +795,6 @@ export default function WorkOrders() {
           isManager={isManager}
           canRequestControl={canRequestControl}
           canRequestCancel={canRequestCancel}
-          canDeliver={canDeliver}
           onOpen={setSel}
           onEdit={setEditTarget}
           onAdvance={attemptMove}
@@ -1050,15 +810,11 @@ export default function WorkOrders() {
           <div className={`wob-board wob-d-${f.d === "compact" ? "compact" : f.d === "detailed" ? "detailed" : "normal"}`}>
             {dynColumns.map((s) => {
               const list = byCol[s.key] ?? [];
-              // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
-              // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
-              const isOver = dndEnabled && !!drag && drag.overCol === s.key && (
+              const isOver = dndEnabled && !!drag && drag.overCol === s.key && s.status !== "DELIVERED" && (
                 WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status ||
                 (drag.order.status === "RECEIVED" && drag.order.assignedTo == null && s.key === "CLAIMED" && canClaim) ||
                 (s.key === "INBOX" && canReleaseOrder(drag.order))
               );
-              // إحصائيات رأس العمود مشتقة حتمياً من بطاقات العمود نفسه (Single Source of Truth)
-              // لتطابق العين الأرقام 100% وتفصل «طابور وارد» عن «مسحوب»، وتصمد أمام الفلاتر والتجميع.
               const colStats = colStatsMap[s.key] ?? { totalValue: "0", late: 0, blocked: 0 };
               const showValue = Number(colStats.totalValue) > 0;
               return (
@@ -1103,35 +859,10 @@ export default function WorkOrders() {
                           )}
                         </div>
                       )}
-                      {s.key === "READY" && canAutoClear && list.length > 0 && (
-                        <div className="mt-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const labelWin = list.length === 1 && list[0]?.hasDelivery ? preopenShippingLabelWindow() : null;
-                              reservePrintWindow();
-                              autoClearSnapRef.current = { single: list.length === 1 ? list[0] : undefined, candidates: list, labelWin };
-                              autoClearReady.mutate({ branchId: activeBranchId });
-                            }}
-                            disabled={autoClearReady.isPending}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-md bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] active:scale-95 transition-all shadow-xs cursor-pointer disabled:opacity-50"
-                            title="تصريف تلقائي للمدفوع ومندوب التوصيل الفردي؛ الشركة تتطلب مسح البوليصة من شاشة التوصيل"
-                          >
-                            <Zap aria-hidden className="size-3" />
-                            <span>تصريف تلقائي ({fmtInt(list.length)})</span>
-                          </button>
-                        </div>
-                      )}
+
                     </div>
-                    {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
-                        Codex #3 (الجولة ٣): يُستعمل عدّاد الخادم فقط حين لا فلترَ عميليّ (بما فيه
-                        الفلاتر السريعة). عند تفعيل late/dueToday/blocked تصير قائمة المُسلَّم
-                        فارغة (النهائيات مستبعدة في الـpredicate) لكنّ العدّاد كان يعرض «مُسلَّم 120»
-                        فوق عمود بلا بطاقات ⇒ تناقض. الآن يستعمل نفس `anyClientFilter`. */}
                     <span className="wob-col-count">
-                      {s.key === "DELIVERED" && serverCounts != null && !anyClientFilter
-                        ? fmtInt(serverCounts.delivered)
-                        : list.length}
+                      {list.length}
                     </span>
                   </div>
                   <div className={`wob-col-body ${isOver ? "wob-drop-on" : ""}`} ref={(el) => { colRefs.current[s.key] = el; }}>
@@ -1140,13 +871,10 @@ export default function WorkOrders() {
                         key={o.id}
                         o={o}
                         dragging={!!drag && drag.order.id === o.id}
-                        // النقر يفتح Drawer دائماً؛ السحب يعمل في «حسب المرحلة» فقط (`dndEnabled` داخل onCardPointerDown).
                         onPointerDown={(e) => onCardPointerDown(e, o)}
-                        // إسناد inline لعَمود INBOX فَقط (مَدير + بَيانات الفنّيين جاهزة) per README §5.2.
                         inboxAssign={
                           s.key === "INBOX" && canAssign && (assignableStaff.data?.length ?? 0) > 0
                             ? (orderId, staffId) => {
-                                // بلا تأكيد — العَملية رَخيصة وعَكسية (يُمكن إعادة الإسناد بَعدها).
                                 assign.mutate({ workOrderId: orderId, assignedTo: staffId });
                               }
                             : undefined
@@ -1158,20 +886,14 @@ export default function WorkOrders() {
                         claimPending={claim.isPending || release.isPending}
                         onAdvance={
                           (o.status === "RECEIVED" && canStart) ||
-                          (o.status === "IN_PROGRESS" && canMarkReady) ||
-                          (o.status === "READY" && canDeliver)
+                          (o.status === "IN_PROGRESS" && canMarkReady)
                             ? attemptMove
                             : undefined
                         }
-                        advancePending={start.isPending || markReady.isPending || deliver.isPending}
+                        advancePending={start.isPending || markReady.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
-                        // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
-                        // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
                         onCycleKanban={canSetKanban ? ((orderId, current) => onCycleKanbanState(orderId, current)) : undefined}
                         kanbanBusy={setKanban.isPending}
-                        onQuickDispatch={canAutoClear ? onQuickDispatch : undefined}
-                        onQuickDeliver={canDeliver ? onQuickDeliver : undefined}
-                        quickActionPending={autoClearReady.isPending || deliver.isPending}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
@@ -1202,7 +924,8 @@ export default function WorkOrders() {
           onClaim={canClaim ? (id) => claim.mutate({ workOrderId: id }) : undefined}
           onRelease={canRelease ? (id) => release.mutate({ workOrderId: id }) : undefined}
           onAdvance={async (id, to) => {
-            if (!canLifecycleOperation(me.data, to === "IN_PROGRESS" ? "workOrders.start" : to === "READY" ? "workOrders.markReady" : "workOrders.deliver", true)) return;
+            if (to !== "IN_PROGRESS" && to !== "READY") return;
+            if (!canLifecycleOperation(me.data, to === "IN_PROGRESS" ? "workOrders.start" : "workOrders.markReady", true)) return;
             if (to === "IN_PROGRESS") {
               if (!(await confirm({ variant: "warning", title: "بدء تنفيذ طلب الخدمة", description: "بدء التنفيذ يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟", confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
               optimisticMove(id, "IN_PROGRESS"); start.mutate({ workOrderId: id });
@@ -1212,7 +935,6 @@ export default function WorkOrders() {
               optimisticMove(id, "READY"); markReady.mutate({ workOrderId: id });
             }
           }}
-          onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice, deposit: d.deposit ?? "0" })}
           onCancel={onCancelOrder}
           onEdit={(id) => setEditTarget(id)}
           onAssign={async (id, staffId) => {
@@ -1223,23 +945,7 @@ export default function WorkOrders() {
         />
       )}
 
-      <WorkOrderDeliverDialog
-        order={deliverOrder}
-        pending={deliver.isPending}
-        onClose={() => setDeliverOrder(null)}
-        onConfirm={async (payment, extra) => {
-          if (!deliverOrder) return;
-          if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
-          deliverSnapRef.current = all.find((o) => o.id === deliverOrder.id) ?? deliverOrder;
-          reservePrintWindow();
-          deliver.mutate({
-            workOrderId: deliverOrder.id,
-            payment,
-            addToCustomerDebt: extra?.addToCustomerDebt,
-            managerApproval: extra?.managerApproval,
-          });
-        }}
-      />
+
       <EditWorkOrderDialog
         workOrderId={editTarget}
         onClose={() => setEditTarget(null)}

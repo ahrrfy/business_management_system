@@ -58,7 +58,7 @@ vi.mock("../../services/tx", () => ({
           where: () => query,
           orderBy: () => query,
           for: () => query,
-          limit: async () => rows,
+          limit: () => query,
           then: (
             resolve: (v: unknown) => unknown,
             reject?: (e: unknown) => unknown,
@@ -222,13 +222,15 @@ describe("purchase-return fresh transaction authority", () => {
     ];
     await expect(
       api.createCaller(ctx).returns.executePurchaseReturnCart(payload),
-    ).rejects.toMatchObject({
-      code: "CONFLICT",
+    ).resolves.toMatchObject({
+      mode: "INVALID_PROPOSAL",
       message: expect.stringContaining("المورد غير نشط"),
     });
     expect(state.period).not.toHaveBeenCalled();
     expect(state.domainReads).toContain("suppliers");
     expect(state.insertions).toEqual([]);
+    expect(state.updates).toEqual([]);
+    expect(state.postEntry).not.toHaveBeenCalled();
   });
   it("rejects clearing a canonical policy when the current legacy role cannot execute the action", async () => {
     state.rows = [
@@ -286,11 +288,15 @@ describe("purchase-return fresh transaction authority", () => {
           api
             .createCaller(managerCtx)
             .returns.executePurchaseReturnCart(payload),
-        ).rejects.toMatchObject({
-          code: "CONFLICT",
+        ).resolves.toMatchObject({
+          mode: "INVALID_PROPOSAL",
           message: expect.stringContaining("المورد غير نشط"),
         });
         expect(state.period).not.toHaveBeenCalled();
+        expect(state.domainReads).toContain("suppliers");
+        expect(state.insertions).toEqual([]);
+        expect(state.updates).toEqual([]);
+        expect(state.postEntry).not.toHaveBeenCalled();
       } else {
         await expect(
           api

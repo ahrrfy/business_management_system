@@ -18,3 +18,11 @@ id = "GHSA-gcqx-w48m-w2h4"
 ignoreUntil = 2026-11-28
 reason = "deepmerge is used only by @rollup/plugin-node-resolve and @expo/config build/config tooling, with no HTTP or native-runtime user payload reaching these merge calls; no patched release is available"
 
+# Assessed 2026-10-31: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides;
+# remaining 3.1.5 and 5.1.9 consumers require the legacy CJS callable export removed in v9+,
+# have no upstream backport, and never evaluate user-controlled glob patterns at runtime.
+# Exact consumers are enforced by dependencySecurityWorkflow.test.ts.
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-11-30
+reason = "all minimatch >=9 consumers are pinned to 11.0.1; remaining legacy CJS v3/v5 consumers (eslint, glob@7, readdir-glob@1, filelist@1, test-exclude@6) have no upstream backport and never evaluate untrusted user glob patterns at runtime"
