@@ -13,6 +13,7 @@ export default defineConfig({
     testTimeout: 15000,
     env: { VITEST_UNIT_SUITE: "1" },
     include: [
+      "client/src/pages/__tests__/supplierPaymentRequestOutcome.test.tsx",
       "client/src/lib/offline/outbox.test.ts",
       "client/src/components/returns/ReturnComposer.recovery.test.tsx",
       "client/src/lib/persistedFinancialIntent.test.ts",
