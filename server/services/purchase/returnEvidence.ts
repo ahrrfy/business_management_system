@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { money, toDbMoney } from "../money";
+import { money, toDbMoney, type DecimalInput } from "../money";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { z } from "zod";
 
@@ -77,6 +77,25 @@ export function returnConflict(why: string): never {
         "راجع دليل المرتجع وبياناته ثم أعد المحاولة؛ يلزم تدقيق مستقل إذا كانت التكلفة التاريخية غير موثقة",
     }),
   });
+}
+
+/** Select only from validated, saved reversal values; null means stock only. */
+export function reversalPostingProfile(
+  ownerException: boolean,
+  inventory: DecimalInput,
+  total: DecimalInput,
+  tax: DecimalInput,
+) {
+  if (ownerException && money(tax).isZero()) {
+    if (money(total).isZero()) {
+      if (money(inventory).isZero()) return null;
+      if (money(inventory).gt(0))
+        return "RETURN_PURCHASE_ZERO_AGREEMENT" as const;
+    }
+    if (money(total).gt(0) && money(inventory).isZero())
+      return "RETURN_PURCHASE_ZERO_BOOK" as const;
+  }
+  return "RETURN_PURCHASE_INVENTORY" as const;
 }
 export type ReturnValuation = {
   version: 1;

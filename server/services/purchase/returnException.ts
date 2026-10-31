@@ -212,8 +212,6 @@ export async function createExceptionReturnRequest(
       .from(suppliers)
       .where(eq(suppliers.id, input.supplierId))
       .for("update");
-    if (!supplier?.isActive || supplier.supplierKind !== "REGULAR")
-      returnConflict("المورد غير نشط أو ليس مورداً تجارياً عادياً");
     const raced = await replay(true);
     if (raced) return raced;
     const items: Array<{
@@ -233,6 +231,8 @@ export async function createExceptionReturnRequest(
       reason: string | null;
     }> = [];
     try {
+      if (!supplier?.isActive || supplier.supplierKind !== "REGULAR")
+        returnConflict("المورد غير نشط أو ليس مورداً تجارياً عادياً");
       const scope = await lockEconomicInventoryScope(
         tx,
         lines.map((l) => l.variantId),

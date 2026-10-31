@@ -26,6 +26,7 @@ import {
   type PostingSourceAmounts,
 } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
+import { reversalPostingProfile } from "../purchase/returnEvidence";
 import { CHART_ACCOUNTS } from "../accounting/chartSeed";
 
 const ALL_ENTRY_TYPES: EntryType[] = [
@@ -165,6 +166,133 @@ function fixtureFor(profile: PostingProfile): {
 }
 
 describe("posting profile registry and executable policies", () => {
+  it("selects the complete owner-exception reversal value matrix without a financial record for physical-only stock", () => {
+    for (const [inventory, total, expected] of [
+      ["0.00", "0.00", null],
+      ["100.00", "0.00", "RETURN_PURCHASE_ZERO_AGREEMENT"],
+      ["0.00", "150.00", "RETURN_PURCHASE_ZERO_BOOK"],
+      ["100.00", "150.00", "RETURN_PURCHASE_INVENTORY"],
+    ] as const) {
+      expect(reversalPostingProfile(true, inventory, total, "0.00")).toBe(
+        expected,
+      );
+      expect(reversalPostingProfile(false, inventory, total, "0.00")).toBe(
+        "RETURN_PURCHASE_INVENTORY",
+      );
+      expect(reversalPostingProfile(true, inventory, total, "1.00")).toBe(
+        "RETURN_PURCHASE_INVENTORY",
+      );
+    }
+  });
+
+  it.each([false, true])(
+    "validates zero-agreement inventory and variance without an AP amount (reverse=%s)",
+    (reverse) => {
+      const lines = reverse
+        ? [
+            debitLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+            creditLine("INVENTORY", "100.00"),
+          ]
+        : [
+            debitLine("INVENTORY", "100.00"),
+            creditLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+          ];
+      const components = reverse
+        ? {
+            roleDebits: { PURCHASE_PRICE_VARIANCE: "100.00" },
+            roleCredits: { INVENTORY: "100.00" },
+          }
+        : {
+            roleDebits: { INVENTORY: "100.00" },
+            roleCredits: { PURCHASE_PRICE_VARIANCE: "100.00" },
+          };
+      const source = {
+        ...components,
+        amount: "0.00",
+        taxAmount: "0.00",
+        cost: reverse ? "-100.00" : "100.00",
+        profit: reverse ? "-100.00" : "100.00",
+      };
+      const intent = createPostingIntent(
+        "RETURN_PURCHASE_ZERO_AGREEMENT",
+        "RETURN",
+        lines,
+        components,
+      );
+      expect(
+        validatePostingIntentPolicy(intent, "RETURN", source),
+      ).toMatchObject({ lines });
+      for (const invalid of [
+        { ...source, amount: "1.00" },
+        { ...source, taxAmount: "1.00" },
+        { ...source, cost: "0.00" },
+        { ...source, profit: "0.00" },
+        { ...source, cost: reverse ? "100.00" : "-100.00" },
+        { ...source, roleCredits: { ...source.roleCredits, AP: "1.00" } },
+      ])
+        expect(() =>
+          validatePostingIntentPolicy(
+            createPostingIntent(
+              "RETURN_PURCHASE_ZERO_AGREEMENT",
+              "RETURN",
+              lines,
+              invalid,
+            ),
+            "RETURN",
+            invalid,
+          ),
+        ).toThrow(InvalidPostingIntentError);
+      for (const invalidLines of [
+        [
+          debitLine("AP", "100.00"),
+          creditLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+        ],
+        [
+          debitLine("CASH", "100.00"),
+          creditLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+        ],
+        [debitLine("INVENTORY", "100.00"), creditLine("TAX_PAYABLE", "100.00")],
+        [debitLine("INVENTORY", "100.00"), creditLine("INVENTORY", "100.00")],
+        [
+          debitLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+          creditLine("PURCHASE_PRICE_VARIANCE", "100.00"),
+        ],
+        [
+          debitLine("INVENTORY", "100.00"),
+          creditLine("PURCHASE_PRICE_VARIANCE", "99.00"),
+        ],
+        [...lines, { role: "AP" as const, debit: "0.00", credit: "0.00" }],
+      ])
+        expect(() =>
+          validatePostingIntentPolicy(
+            createPostingIntent(
+              "RETURN_PURCHASE_ZERO_AGREEMENT",
+              "RETURN",
+              invalidLines,
+              components,
+            ),
+            "RETURN",
+            source,
+          ),
+        ).toThrow(InvalidPostingIntentError);
+      expect(() => validatePostingIntentPolicy(intent, "RETURN")).toThrow(
+        InvalidPostingIntentError,
+      );
+      expect(() =>
+        validatePostingIntentPolicy(
+          createPostingIntent(
+            "RETURN_PURCHASE_INVENTORY",
+            "RETURN",
+            lines,
+            components,
+          ),
+          "RETURN",
+          source,
+        ),
+      ).toThrow(InvalidPostingIntentError);
+    },
+  );
+
   it.each([false, true])(
     "validates zero-book purchase return and reversal without inventing inventory (reverse=%s)",
     (reverse) => {

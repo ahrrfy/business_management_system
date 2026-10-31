@@ -71,6 +71,7 @@ import {
   readValuation,
   readReversalValuation,
   returnConflict,
+  reversalPostingProfile,
   validExecutionEvidence,
   type ReturnValuation,
   type ReversalValuation,
@@ -2597,10 +2598,58 @@ async function decidePurchaseReturnReversalAuthorized(
                 .limit(1)
             )[0];
       let cash: Awaited<ReturnType<typeof cashContext>> | null = null;
+      let zeroCashPreviewIds: number[] | null = null;
+      if (
+        input.action === "APPROVE" &&
+        preview.status === "PENDING" &&
+        previewReturn?.origin === "OWNER_EXCEPTION" &&
+        requiresCashShift(
+          previewReturn.settlement,
+          previewReturn.paymentMethod as PaymentMethod,
+        )
+      ) {
+        // Immutable source discovery only; locked membership and amounts are
+        // revalidated below before effects. Never take cash locks late.
+        const proposed = await tx
+          .select({
+            requestedItemId:
+              purchaseReturnReversalRequestItems.purchaseReturnItemId,
+            itemId: purchaseReturnItems.id,
+            returnId: purchaseReturnItems.purchaseReturnId,
+            lineTotal: purchaseReturnItems.lineTotal,
+          })
+          .from(purchaseReturnReversalRequestItems)
+          .leftJoin(
+            purchaseReturnItems,
+            eq(
+              purchaseReturnItems.id,
+              purchaseReturnReversalRequestItems.purchaseReturnItemId,
+            ),
+          )
+          .where(
+            eq(purchaseReturnReversalRequestItems.requestId, input.requestId),
+          );
+        if (
+          proposed.length > 0 &&
+          new Set(proposed.map((row) => row.requestedItemId)).size ===
+            proposed.length &&
+          proposed.every(
+            (row) =>
+              row.itemId === row.requestedItemId &&
+              row.returnId === previewReturn.id &&
+              row.lineTotal != null &&
+              money(row.lineTotal).isZero(),
+          )
+        )
+          zeroCashPreviewIds = proposed.map((row) =>
+            Number(row.requestedItemId),
+          );
+      }
       if (
         input.action === "APPROVE" &&
         preview.status === "PENDING" &&
         previewReturn &&
+        zeroCashPreviewIds == null &&
         requiresCashShift(
           previewReturn.settlement,
           previewReturn.paymentMethod as PaymentMethod,
@@ -3013,6 +3062,20 @@ async function decidePurchaseReturnReversalAuthorized(
           ? round2(originalTax.times(total).dividedBy(originalTotal))
           : money(0);
       const net = round2(total.minus(tax));
+      if (
+        zeroCashPreviewIds != null &&
+        (!exception ||
+          !total.isZero() ||
+          !tax.isZero() ||
+          reqItems.length !== zeroCashPreviewIds.length ||
+          reqItems.some(
+            (row) =>
+              !zeroCashPreviewIds.includes(Number(row.purchaseReturnItemId)),
+          ))
+      )
+        returnConflict(
+          "تغيرت بنود العكس أو قيمتها؛ أعد فتح الطلب لتحديد مصدر النقد الصحيح",
+        );
       const priorCreditIqd =
         invoice?.currency === "USD" && purchaseReturn.settlement === "CREDIT"
           ? await netInvoiceCreditReturns(tx, Number(invoice.id))
@@ -3042,7 +3105,7 @@ async function decidePurchaseReturnReversalAuthorized(
           ...(variance.gt(0) ? { PURCHASE_PRICE_VARIANCE: variance } : {}),
         },
       };
-      if (purchaseReturn.settlement === "CASH") {
+      if (total.gt(0) && purchaseReturn.settlement === "CASH") {
         if (purchaseReturn.paymentMethod === "CASH") {
           if (cash?.cashBucket === "TREASURY") {
             if (!cash.treasuryApproval)
@@ -3083,7 +3146,7 @@ async function decidePurchaseReturnReversalAuthorized(
           });
         }
       }
-      if (purchaseReturn.accountingEntryId != null) {
+      if (total.gt(0) && purchaseReturn.accountingEntryId != null) {
         await unapplySupplierBookSettlementSourceTx(
           tx,
           {
@@ -3094,45 +3157,49 @@ async function decidePurchaseReturnReversalAuthorized(
           actor,
         );
       }
-      await postEntry(tx, {
-        entryType: "RETURN",
-        branchId: Number(purchaseReturn.branchId),
-        purchaseOrderId: purchaseReturn.purchaseOrderId ?? undefined,
-        supplierId: Number(purchaseReturn.supplierId),
-        purchaseLiabilityAccount: "AP",
-        cost: inventory,
-        taxAmount: tax,
-        amount: total,
-        profit: variance,
-        createdBy: actor.userId,
-        dedupeKey,
-        notes: request.reason,
-        postingIntent: createPostingIntent(
-          purchaseReturn.origin === "OWNER_EXCEPTION" &&
-            inventory.isZero() &&
-            tax.isZero() &&
-            total.gt(0)
-            ? "RETURN_PURCHASE_ZERO_BOOK"
-            : "RETURN_PURCHASE_INVENTORY",
-          "RETURN",
-          [
-            ...(inventory.gt(0) ? [debitLine("INVENTORY", inventory)] : []),
-            ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []),
-            ...(variance.lt(0)
-              ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())]
-              : []),
-            creditLine("AP", total),
-            ...(variance.gt(0)
-              ? [creditLine("PURCHASE_PRICE_VARIANCE", variance)]
-              : []),
-          ],
-          source,
-        ),
-        postingSourceComponents: source,
-      });
-      const accountingEntryId = await entryId(tx, dedupeKey);
+      const postingProfile = reversalPostingProfile(
+        exception,
+        inventory,
+        total,
+        tax,
+      );
+      let accountingEntryId: number | null = null;
+      if (postingProfile != null) {
+        await postEntry(tx, {
+          entryType: "RETURN",
+          branchId: Number(purchaseReturn.branchId),
+          purchaseOrderId: purchaseReturn.purchaseOrderId ?? undefined,
+          supplierId: Number(purchaseReturn.supplierId),
+          purchaseLiabilityAccount: "AP",
+          cost: inventory,
+          taxAmount: tax,
+          amount: total,
+          profit: variance,
+          createdBy: actor.userId,
+          dedupeKey,
+          notes: request.reason,
+          postingIntent: createPostingIntent(
+            postingProfile,
+            "RETURN",
+            [
+              ...(inventory.gt(0) ? [debitLine("INVENTORY", inventory)] : []),
+              ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []),
+              ...(variance.lt(0)
+                ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())]
+                : []),
+              ...(total.gt(0) ? [creditLine("AP", total)] : []),
+              ...(variance.gt(0)
+                ? [creditLine("PURCHASE_PRICE_VARIANCE", variance)]
+                : []),
+            ],
+            source,
+          ),
+          postingSourceComponents: source,
+        });
+        accountingEntryId = await entryId(tx, dedupeKey);
+      }
       let cashReceiptId: number | null = null;
-      if (purchaseReturn.settlement === "CASH") {
+      if (total.gt(0) && purchaseReturn.settlement === "CASH") {
         if (purchaseReturn.paymentMethod === "CASH" && !cash)
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -3274,11 +3341,12 @@ async function decidePurchaseReturnReversalAuthorized(
               ),
             );
       }
-      await adjustSupplierBalance(
-        tx,
-        Number(purchaseReturn.supplierId),
-        purchaseReturn.settlement === "CASH" ? money(0) : total,
-      );
+      if (total.gt(0))
+        await adjustSupplierBalance(
+          tx,
+          Number(purchaseReturn.supplierId),
+          purchaseReturn.settlement === "CASH" ? money(0) : total,
+        );
       if (invoice?.currency === "USD" && purchaseReturn.settlement === "CREDIT")
         await adjustSupplierBalanceUsd(
           tx,
