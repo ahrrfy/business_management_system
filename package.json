@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "node scripts/db-verify-schema.mjs && cross-env NODE_ENV=development TZ=UTC node --watch-path=./server --watch-path=./shared --watch-path=./drizzle --import tsx server/index.ts",
-    "build": "node scripts/verify-zod-security.mjs && node scripts/verify-http-parser-security.mjs && node scripts/verify-node-runtime.mjs && node scripts/build-web.mjs && esbuild server/index.ts --platform=node --target=node24 --packages=external --bundle --format=esm --sourcemap=external --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node24 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
+    "build": "node scripts/verify-zod-security.mjs && node scripts/verify-http-parser-security.mjs && node scripts/verify-node-runtime.mjs && node scripts/build-web-cli.mjs && esbuild server/index.ts --platform=node --target=node24 --packages=external --bundle --format=esm --sourcemap=external --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node24 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
     "start": "cross-env NODE_ENV=production TZ=UTC node dist/index.js",
     "runtime:verify": "node scripts/verify-node-runtime.mjs",
     "check": "node scripts/verify-node-runtime.mjs && cross-env NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
@@ -86,7 +86,7 @@
     "format": "prettier --write .",
     "test": "pnpm test:unit && cross-env TZ=UTC VITEST_EXCLUDE_UNIT=1 vitest run",
     "test:storefront:ops": "cross-env TZ=UTC vitest run --config vitest.storefront-ops.config.ts && node scripts/verify-storefront-pwa-build.test.mjs && node scripts/verify-nginx-storefront-readiness.mjs --selftest && node scripts/deploy.test.mjs",
-    "test:storefront:pwa-build": "cross-env ERP_VITE_DISABLE_DOTENV=1 node scripts/build-web.mjs",
+    "test:storefront:pwa-build": "cross-env ERP_VITE_DISABLE_DOTENV=1 node scripts/build-web-cli.mjs",
     "test:storefront:e2e": "playwright test --config playwright.storefront.config.ts",
     "test:db:init": "node scripts/init-test-db.mjs",
     "imgly:fetch": "node scripts/fetch-imgly-assets.mjs",

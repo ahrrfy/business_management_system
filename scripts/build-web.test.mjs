@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { MessageChannel } from "node:worker_threads";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { build as esbuild } from "esbuild";
 import { readWebRelease, writeWebRelease } from "./build-web.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "web-release-test-"));
@@ -46,6 +49,70 @@ try {
 } finally {
   fs.rmSync(root, { recursive: true });
 }
+
+// Match production bundling: import.meta.url and argv both become the server entry.
+// A throwing Vite stub makes the old CLI guard fail safely without any build/write.
+const bundledFixtureRoot = fs.mkdtempSync(
+  path.join(os.tmpdir(), "web-import-bundle-"),
+);
+try {
+  const bundledServer = path.join(bundledFixtureRoot, "server-fixture.mjs");
+  const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+  const bundled = await esbuild({
+    stdin: {
+      contents:
+        'import { webReleaseFingerprint } from "./scripts/build-web.mjs"; console.log("PURE_BUILD_HELPER_IMPORT", typeof webReleaseFingerprint);',
+      resolveDir: projectRoot,
+      sourcefile: "server-fixture.mjs",
+    },
+    bundle: true,
+    packages: "external",
+    platform: "node",
+    target: "node24",
+    format: "esm",
+    outfile: bundledServer,
+    metafile: true,
+    plugins: [
+      {
+        name: "forbid-build-during-runtime-import",
+        setup(builder) {
+          builder.onResolve({ filter: /^vite$/ }, () => ({
+            path: "vite",
+            namespace: "build-sentinel",
+          }));
+          builder.onLoad({ filter: /.*/, namespace: "build-sentinel" }, () => ({
+            contents:
+              'export async function build() { throw new Error("BUILD_WEB_IMPORT_SIDE_EFFECT"); }',
+            loader: "js",
+          }));
+        },
+      },
+    ],
+  });
+  assert.equal(
+    Object.keys(bundled.metafile.inputs).some((file) =>
+      file.endsWith("build-web-cli.mjs"),
+    ),
+    false,
+  );
+  const imported = spawnSync(process.execPath, [bundledServer], {
+    cwd: bundledFixtureRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.ifError(imported.error);
+  assert.equal(
+    imported.status,
+    0,
+    `Bundled helper import must not start Vite: ${imported.stderr}`,
+  );
+  assert.match(imported.stdout, /PURE_BUILD_HELPER_IMPORT function/);
+  assert.equal(imported.stderr, "");
+  assert.equal(fs.existsSync(path.join(bundledFixtureRoot, "dist")), false);
+} finally {
+  fs.rmSync(bundledFixtureRoot, { recursive: true });
+}
+console.log("bundled server helper import stays pure: passed");
 
 const workerSource = fs.readFileSync(
   new URL("../client/public/pwa-update-worker.js", import.meta.url),

@@ -39,7 +39,9 @@ export function isPublicHttpWork(req: Request): boolean {
   // a copy only: tenant slugs, IDs and handler paths must retain their case.
   const path = req.originalUrl.split("?", 1)[0].toLowerCase();
   return (
-    path.startsWith("/api/img/") ||
+    // Device/PIN/customer image routes have their own authenticators. A staff
+    // session gate here would prevent those handlers from verifying them.
+    /^\/api\/img\/(?:banner\/[^/]+\/[^/]+|product\/[^/]+|company\/[^/]+\/product\/[^/]+)\/?$/.test(path) ||
     path === "/store" ||
     path.startsWith("/store/") ||
     path.startsWith("/s/w/") ||

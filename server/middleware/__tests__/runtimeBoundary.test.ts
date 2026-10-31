@@ -35,6 +35,27 @@ async function listener(role: string, authenticated = false) {
   return `http://127.0.0.1:${address.port}`;
 }
 describe("two-sided process boundary", () => {
+  it("leaves device and stocktake image authorization to their existing handlers", async () => {
+    vi.stubEnv("WEB_RUNTIME_ROLE", "admin");
+    const app = express();
+    const verifyStaff = vi.fn(async () => false);
+    app.use(createAdminPublicHttpBoundary(verifyStaff));
+    // Stand-ins prove downstream authenticators are reached, not real credential validity.
+    app.get(["/api/img/kiosk-product/:id", "/api/img/count-product/:code/:id"], (req, res) => {
+      res.status(req.get("cookie") === "private-device=synthetic-valid" ? 204 : 401).end();
+    });
+    const server = createServer(app);
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing address");
+    for (const endpoint of ["/api/img/kiosk-product/1", "/api/img/count-product/synthetic-code/1"]) {
+      const url = `http://127.0.0.1:${address.port}${endpoint}`;
+      expect((await fetch(url, { headers: { cookie: "private-device=synthetic-valid" } })).status).toBe(204);
+      expect((await fetch(url)).status).toBe(401);
+    }
+    expect(verifyStaff).not.toHaveBeenCalled();
+  });
   it("initializes the actual bootstrap router with case-sensitive application routes", async () => {
     const source = readFileSync(new URL("../../index.ts", import.meta.url), "utf8");
     const start = source.indexOf("  const app = express();");
@@ -93,6 +114,8 @@ describe("two-sided process boundary", () => {
     const url = await listener("admin");
     for (const path of [
       "/api/img/product/1",
+      "/api/img/banner/1/main",
+      "/api/img/company/synthetic-company/product/1",
       "/store",
       "/store/product/1",
       "/sitemap.xml", "/FEEDS/google-merchant.xml", "/API/Feeds/google-merchant.xml/", "/STORE/FEEDS/google-merchant.xml", "/STORE/", "/API/IMG/product/1",

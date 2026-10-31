@@ -2,7 +2,7 @@
 
 ## Contract
 
-`node scripts/build-web.mjs` builds complete independent outputs: ERP `dist/public` and public `dist/storefront`. The public entry reuses `StorefrontBootstrap` public routes, never imports `App`, `AppLayout`, `CommandPalette`, product studio, or financial realtime startup. `/login` and `/account` keep their existing same-origin ERP entry. Other host redirects, public/mobile/legal/application routes and API paths retain the existing policy. Internal navigation from the public shell to a shared auth route opens the server-selected ERP document.
+`node scripts/build-web-cli.mjs` builds complete independent outputs: ERP `dist/public` and public `dist/storefront`. The public entry reuses `StorefrontBootstrap` public routes, never imports `App`, `AppLayout`, `CommandPalette`, product studio, or financial realtime startup. `/login` and `/account` keep their existing same-origin ERP entry. Other host redirects, public/mobile/legal/application routes and API paths retain the existing policy. Internal navigation from the public shell to a shared auth route opens the server-selected ERP document.
 
 Each output contains `release.json`: `{ schema: 1, kind, fingerprint, files: [{ file, sha256 }] }`. The fingerprint is SHA256 over JSON of sorted relative filenames and content hashes, excluding only root `release.json`. It contains no git revision or build timestamp. `readWebRelease(root, kind)` checks every byte, symlink rejection and required complete shell files. Storefront CSS scans its actual esbuild runtime source closure; ERP-only utility classes cannot change its CSS. Storefront Sentry error capture still uses its public DSN; per-commit release injection and source map uploads remain on the ERP build to keep storefront bytes independent of an administrative release identifier.
 
@@ -35,3 +35,8 @@ Restore only the affected frontend pointer to a retained complete version. Retai
 ## تصحيح المراجعة النهائي
 
 أثبت اختبار انحدار فاشل أن تبويباً قديماً انتقل إلى صفحة قانونية كان يمكن تجاهله في حارس التفعيل. جرى توسيع الاستعلام إلى كل نوافذ الأصل نفسه؛ التبويب غير المستجيب وصفحة الحساب ذات حالة غير آمنة يمنعان skipWaiting. نجح الاختبار بعد التصحيح. تجربة A/B أعلاه سبقت هذا التصحيح المحدود للعامل؛ تبقى دليلاً على فصل رسم البناء، ولا يُفترض أن بصماتها هي بصمات حزمة CI النهائية بعد التصحيح. التحقق النهائي يبني المصدر المصحح ويعيد حساب manifest.
+
+
+## Production import and private image regressions
+
+The build CLI is separate from the importable helper library. An esbuild-bundled helper-import regression executes a harmless server fixture with Vite replaced by a throwing sentinel; server import must never invoke a build. The actual server bundle was inspected with write:false: the CLI is absent and build invocation is removed. Private kiosk-device/stocktake/customer image routes retain their existing authenticators; the admin public-work gate covers only banner/product/company-product image routes. A regression preserves downstream private-image 401/204 behavior while anonymous public-image work remains blocked. Both reported regressions were reproduced before correction.

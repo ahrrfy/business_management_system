@@ -136,12 +136,3 @@ export async function buildWeb() {
     else process.env.WEB_BUILD_TARGET = previous;
   }
 }
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
-  buildWeb().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
-}
