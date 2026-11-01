@@ -11,7 +11,7 @@ import { approvePayrollAccrualTx } from "../payroll/obligations";
 import { payrollHash } from "../payroll/helpers";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
 import { approveRun as approveCommissionRun } from "../commissions/runs";
-import { disburseEmployeeLoan } from "../employeeLoanService";
+import { disburseEmployeeLoan, requestEmployeeLoan } from "../employeeLoanService";
 import { approveEmployeePenalty, cancelEmployeePenalty, listEmployeePenalties } from "../employeePenaltyService";
 import { logAuditTx } from "../auditService";
 import { withTx } from "../tx";
@@ -1844,6 +1844,162 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       vi.useRealTimers();
     }
   }, 15_000);
+
+  it.each([
+    { action: "approval", expectedStatus: "approved", hasPenalty: false },
+    { action: "payment", expectedStatus: "paid", hasPenalty: false },
+    { action: "approval", expectedStatus: "approved", hasPenalty: true },
+    { action: "payment", expectedStatus: "paid", hasPenalty: true },
+  ] as const)("rejects a loan while completed $action and its penalty snapshot are being read (penalty=$hasPenalty)", async ({ action, expectedStatus, hasPenalty }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    let runId: number;
+    if (hasPenalty) {
+      await db().insert(s.employeePenalties).values({ id: 930, employeeId: 10, branchId: 1,
+        penaltyType: "SALARY_DEDUCTION", decisionNumber: "PEN-LOCK-RACE", decisionDate: "2026-10-01",
+        reason: "اختبار تعارض قراءة العقوبة", deductionAmount: "50.00", status: "APPROVED", createdById: 1, approvedById: 2 });
+      const run = await generatePayroll(PAYROLL_LOCK_TEST_PERIOD, NON_OWNER_HR);
+      expect(requirePayrollRows(run?.items).find((item) => Number(item.employeeId) === 10)?.penaltyDeduction).toBe("50.00");
+      runId = Number(run!.id);
+    } else {
+      runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    }
+    if (action === "payment") await approveRun(runId, CHECKER);
+    const loanId = await seedApprovedLoanForPayer(`${action}-read-disburse`);
+    let signalPay!: () => void, signalEmployee!: () => void, signalRead!: () => void;
+    let releasePay!: () => void, releaseEmployee!: () => void, releaseRead!: () => void;
+    const payLocked = new Promise<void>((resolve) => { signalPay = resolve; });
+    const employeeLocked = new Promise<void>((resolve) => { signalEmployee = resolve; });
+    const readLocked = new Promise<void>((resolve) => { signalRead = resolve; });
+    const payGate = new Promise<void>((resolve) => { releasePay = resolve; });
+    const employeeGate = new Promise<void>((resolve) => { releaseEmployee = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let payPaused = false, employeePaused = false, readPaused = false, readSawRun = false;
+    const execute = MySql2PreparedQuery.prototype.execute;
+    const spy = vi.spyOn(MySql2PreparedQuery.prototype, "execute").mockImplementation(async function (this: typeof MySql2PreparedQuery.prototype, values) {
+      const query = (this as unknown as { query: { sql: string } }).query.sql;
+      const result = await execute.call(this, values);
+      if (!payPaused && query.includes("from `payrollRuns`") && query.includes("for update")) {
+        payPaused = true; signalPay(); await payGate;
+      } else if (payPaused && !employeePaused && query.includes("from `employees`") && query.includes("for update")) {
+        employeePaused = true; signalEmployee(); await employeeGate;
+      } else if (payPaused && !readPaused && query.includes("from `payrollRuns`") && query.includes("for share")) {
+        readSawRun = true;
+        if (!hasPenalty) { readPaused = true; signalRead(); await readGate; }
+      } else if (hasPenalty && readSawRun && !readPaused && query.includes("from `payrollPenaltyAllocations`") && query.includes("join `employeePenalties`") && query.includes("for share")) {
+        readPaused = true; signalRead(); await readGate;
+      }
+      return result;
+    });
+    let payment: Promise<unknown> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      payment = action === "approval" ? approveRun(runId, CHECKER) : payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-10-31" });
+      await payLocked;
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      // Attach the rejection handler before releasing either blocked transaction.
+      const captured = disbursement.then(() => null, (error: unknown) => error as { code?: string; message?: string });
+      await waitForPayrollLockWait();
+      releasePay();
+      await Promise.all([employeeLocked, readLocked]);
+      releaseEmployee();
+      const error = await captured;
+      expect(error).toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(error?.message).toContain(expectedStatus === "paid" ? "تم دفع راتب هذا الشهر" : "تم اعتماد مسيّر راتب هذا الشهر");
+      releaseRead();
+      await payment;
+      await expect(disburseEmployeeLoan(PAYER, loanId)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect((await db().select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId)))[0].status).toBe(expectedStatus);
+      expect(await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE"))).toHaveLength(0);
+    } finally {
+      releasePay(); releaseEmployee(); releaseRead();
+      await Promise.allSettled([...(payment ? [payment] : []), ...(disbursement ? [disbursement] : [])]);
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 30_000);
+
+  it.each([true, false])("retains employee lock and verifies replay after NOWAIT (matching=%s)", async (matching) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    await approveRun(runId, CHECKER);
+    const key = `capacity-replay-${matching}`;
+    let readerReady!: () => void, releaseReader!: () => void, writerReady!: () => void, releaseWriter!: () => void;
+    let fallbackReady!: () => void, releaseFallback!: () => void;
+    const readerLocked = new Promise<void>((resolve) => { readerReady = resolve; });
+    const readerGate = new Promise<void>((resolve) => { releaseReader = resolve; });
+    const writerLocked = new Promise<void>((resolve) => { writerReady = resolve; });
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const fallbackLocked = new Promise<void>((resolve) => { fallbackReady = resolve; });
+    const fallbackGate = new Promise<void>((resolve) => { releaseFallback = resolve; });
+    let insertedId = 0, sawNowait = false, paused = false;
+    const isNowait = (error: unknown) => {
+      let cause = error;
+      for (let i = 0; i < 5 && cause && typeof cause === "object"; i++) {
+        const value = cause as { code?: unknown; errno?: unknown; cause?: unknown };
+        if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572) return true;
+        cause = value.cause;
+      }
+      return false;
+    };
+    let reader: Promise<unknown> | undefined, writer: Promise<unknown> | undefined, request: Promise<unknown> | undefined;
+    let restoreSpy: (() => void) | undefined;
+    try {
+      reader = withTx(async (tx) => {
+        await tx.select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId)).for("share");
+        readerReady(); await readerGate;
+      });
+      await readerLocked;
+      writer = withTx(async (tx) => {
+        await tx.select().from(s.employees).where(eq(s.employees.id, 10)).for("update");
+        insertedId = extractInsertId(await tx.insert(s.employeeLoanRequests).values({ employeeId: 10, branchId: 1,
+          amount: "100.00", monthlyDeduction: "100.00", installmentsCount: 1, payrollPeriod: PAYROLL_LOCK_TEST_PERIOD,
+          clientRequestId: key, reason: "اختبار إعادة الطلب", status: "PENDING", createdById: MAKER.userId }));
+        writerReady(); await writerGate;
+      });
+      await writerLocked;
+      const execute = MySql2PreparedQuery.prototype.execute;
+      const spy = vi.spyOn(MySql2PreparedQuery.prototype, "execute").mockImplementation(async function (this: typeof MySql2PreparedQuery.prototype, values) {
+        const query = (this as unknown as { query: { sql: string } }).query.sql;
+        try {
+          const result = await execute.call(this, values);
+          if (!paused && query.includes("from `payrollRuns`") && query.includes("for share nowait")) {
+            paused = true; fallbackReady(); await fallbackGate;
+          }
+          return result;
+        } catch (error) {
+          if (query.includes("from `payrollRuns`") && query.includes("for update nowait") && isNowait(error)) sawNowait = true;
+          throw error;
+        }
+      });
+      restoreSpy = () => { spy.mockRestore(); };
+      request = requestEmployeeLoan(PAYER, { employeeId: 10, amount: matching ? "100.00" : "200.00",
+        reason: "اختبار إعادة الطلب", clientRequestId: key });
+      const result = request.then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+      await waitForPayrollLockWait();
+      releaseWriter(); await writer;
+      await fallbackLocked;
+      expect(sawNowait).toBe(true);
+      let probeError: unknown;
+      try {
+        await withTx(async (tx) => tx.select().from(s.employees).where(eq(s.employees.id, 10)).for("update", { noWait: true }));
+      } catch (error) { probeError = error; }
+      expect(isNowait(probeError)).toBe(true);
+      releaseFallback();
+      const replay = await result;
+      if (matching) expect(replay.value).toMatchObject({ id: insertedId, replayed: true });
+      else expect(replay.error).toMatchObject({ code: "CONFLICT", message: expect.stringContaining("بيانات مختلفة") });
+      expect(await runner.select().from(s.employeeLoanRequests).where(eq(s.employeeLoanRequests.clientRequestId, key))).toHaveLength(1);
+      expect(await runner.select().from(s.employeeAdvances).where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE"))).toHaveLength(0);
+    } finally {
+      releaseReader(); releaseWriter(); releaseFallback();
+      await Promise.allSettled([...(reader ? [reader] : []), ...(writer ? [writer] : []), ...(request ? [request] : [])]);
+      restoreSpy?.();
+      vi.useRealTimers();
+    }
+  }, 35_000);
 
   it("orders salary pay before a concurrent loan disbursement and commits only the salary payment", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });

@@ -313,6 +313,53 @@ beforeEach(async () => {
 });
 
 describe("employee advance earned-capacity contract", () => {
+  it.each(["approved", "paid"] as const)("returns a truthful finalized block under a concurrent read (%s)", async (status) => {
+    await db().insert(s.payrollRuns).values({ period: CURRENT_PERIOD, status, createdBy: ACTOR.userId });
+    let ready!: () => void, release!: () => void;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withTx(async (tx) => {
+      await tx.select().from(s.payrollRuns).where(eq(s.payrollRuns.period, CURRENT_PERIOD)).for("share");
+      ready(); await gate;
+    });
+    await locked;
+    try {
+      const result = await withTx((tx) => getEmployeeAdvanceCapacityTx(tx, {
+        employeeId: EMPLOYEE_ID, scopedBranchId: BRANCH_ID, period: CURRENT_PERIOD, asOf: TODAY, lock: true,
+      }));
+      expect(result).toMatchObject({ kind: "FINALIZED_PAYROLL", employeeId: EMPLOYEE_ID, branchId: BRANCH_ID,
+        period: CURRENT_PERIOD, asOf: TODAY, blocked: true, maxAvailable: "0.00",
+        blockers: [status === "paid" ? "تم دفع راتب هذا الشهر" : "تم اعتماد مسيّر راتب هذا الشهر"] });
+      expect(result).not.toHaveProperty("earnedCompensation");
+      expect(result).not.toHaveProperty("mandatoryDeductions");
+      const preview = await getEmployeeAdvanceCapacity({ employeeId: EMPLOYEE_ID, scopedBranchId: BRANCH_ID, period: CURRENT_PERIOD, asOf: TODAY });
+      expect(preview).toHaveProperty("earnedCompensation");
+      expect(preview.blocked).toBe(true);
+    } finally { release(); await holder; }
+  }, 20_000);
+
+  it.each([
+    { status: "draft", held: "share" },
+    { status: "approved", held: "update" },
+  ] as const)("does not bypass $held payroll lock for $status status", async ({ status, held }) => {
+    await db().insert(s.payrollRuns).values({ period: CURRENT_PERIOD, status, createdBy: ACTOR.userId });
+    let ready!: () => void, release!: () => void;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withTx(async (tx) => {
+      await tx.select().from(s.payrollRuns).where(eq(s.payrollRuns.period, CURRENT_PERIOD)).for(held);
+      ready(); await gate;
+    });
+    await locked;
+    try {
+      await expect(withTx((tx) => getEmployeeAdvanceCapacityTx(tx, {
+        employeeId: EMPLOYEE_ID, scopedBranchId: BRANCH_ID, period: CURRENT_PERIOD, asOf: TODAY, lock: true,
+      }))).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+      expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    } finally { release(); await holder; }
+  }, 20_000);
+
   it("يستهلك كامل الإجازة الأجر والمكافأة الفورية دون العمولة ويبقى ثابتاً بعد المسودة", async () => {
     const connection = db();
     await connection

@@ -48,6 +48,20 @@ export interface EmployeeAdvanceCapacity {
   excludedAttendanceDates: string[];
 }
 
+/** Internal rejection evidence; it deliberately contains no invented monetary values. */
+export interface FinalizedPayrollCapacityBlock {
+  kind: "FINALIZED_PAYROLL";
+  employeeId: number;
+  branchId: number;
+  period: string;
+  asOf: string;
+  /** A finalized payroll makes the maximum available advance zero. */
+  maxAvailable: "0.00";
+  blocked: true;
+  blockers: [string];
+}
+export type EmployeeAdvanceCapacityResult = EmployeeAdvanceCapacity | FinalizedPayrollCapacityBlock;
+
 export interface CapacityOptions {
   employeeId: number;
   scopedBranchId?: number | null;
@@ -78,19 +92,23 @@ function isNowaitConflict(error: unknown): boolean {
   return false;
 }
 
+function capacityLockConflict(): TRPCError {
+  return new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: "تعذّر تثبيت حد السلفة الآن",
+      why: "يتغيّر حالياً مصدر مالي يدخل في الأجر أو الاستقطاع",
+      doThis: "انتظر اكتمال التعديل ثم أعد احتساب السعة أو الصرف",
+    }),
+  });
+}
+
 async function currentFinancialRead<T>(read: PromiseLike<T>): Promise<T> {
   try {
     return await read;
   } catch (error) {
     if (!isNowaitConflict(error)) throw error;
-    throw new TRPCError({
-      code: "CONFLICT",
-      message: appErrorMessage({
-        what: "تعذّر تثبيت حد السلفة الآن",
-        why: "يتغيّر حالياً مصدر مالي يدخل في الأجر أو الاستقطاع",
-        doThis: "انتظر اكتمال التعديل ثم أعد احتساب السعة أو الصرف",
-      }),
-    });
+    throw capacityLockConflict();
   }
 }
 
@@ -112,10 +130,12 @@ function assertPeriod(value: string): string {
  * مصدر الحقيقة لحد السلفة الشهري. يعتمد الأجر المكتسب حتى اليوم، ويحجز الطلبات
  * المعلقة والمعتمدة، ويُعاد تشغيله تحت قفل الموظف لحظة الصرف.
  */
+export function getEmployeeAdvanceCapacityTx(tx: Tx, options: CapacityOptions & { lock: false }): Promise<EmployeeAdvanceCapacity>;
+export function getEmployeeAdvanceCapacityTx(tx: Tx, options: CapacityOptions): Promise<EmployeeAdvanceCapacityResult>;
 export async function getEmployeeAdvanceCapacityTx(
   tx: Tx,
   options: CapacityOptions,
-): Promise<EmployeeAdvanceCapacity> {
+): Promise<EmployeeAdvanceCapacityResult> {
   const asOf = options.asOf ?? baghdadToday();
   const period = assertPeriod(options.period ?? asOf.slice(0, 7));
   if (asOf.slice(0, 7) !== period) {
@@ -181,7 +201,7 @@ export async function getEmployeeAdvanceCapacityTx(
 
   await assertPeriodOpen(tx, new Date(`${period}-01T12:00:00.000Z`));
 
-  const runQuery = tx
+  const runQuery = () => tx
     .select({
       id: payrollRuns.id,
       status: payrollRuns.status,
@@ -191,11 +211,27 @@ export async function getEmployeeAdvanceCapacityTx(
     })
     .from(payrollRuns)
     .where(eq(payrollRuns.period, period));
-  const runRows = options.lock
-    ? await currentFinancialRead(
-        runQuery.for("update", { noWait: true }).limit(1),
-      )
-    : await runQuery.limit(1);
+  let runRows;
+  if (options.lock) {
+    try {
+      runRows = await runQuery().for("update", { noWait: true }).limit(1);
+    } catch (error) {
+      if (!isNowaitConflict(error)) throw error;
+      // A read-only payslip may hold SHARE after commit. A compatible current
+      // SHARE read proves finalization without waiting or touching any source.
+      // Draft/missing rows still require the original exclusive lock.
+      const shared = await currentFinancialRead(runQuery().for("share", { noWait: true }).limit(1));
+      const status = shared[0]?.status;
+      if (status === "approved" || status === "paid") {
+        return { kind: "FINALIZED_PAYROLL", employeeId: options.employeeId, branchId: Number(employee.branchId),
+          period, asOf, maxAvailable: "0.00", blocked: true,
+          blockers: [status === "paid" ? "تم دفع راتب هذا الشهر" : "تم اعتماد مسيّر راتب هذا الشهر"] };
+      }
+      throw capacityLockConflict();
+    }
+  } else {
+    runRows = await runQuery().limit(1);
+  }
   const run = runRows[0];
   const blockers: string[] = [];
   if (run && (run.status === "approved" || run.status === "paid")) {
@@ -614,8 +650,14 @@ export async function getEmployeeAdvanceCapacityTx(
 
 export function assertAdvanceWithinCapacity(
   amount: Decimal,
-  capacity: EmployeeAdvanceCapacity,
-): void {
+  capacity: EmployeeAdvanceCapacityResult,
+): asserts capacity is EmployeeAdvanceCapacity {
+  if ("kind" in capacity) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "لا يمكن تسجيل أو صرف السلفة", why: capacity.blockers.join("، "),
+      doThis: "راجع مسيّر الشهر واختر إجراءً مناسباً بعد معالجة حالته",
+    }) });
+  }
   const maximum = money(capacity.maxAvailable);
   if (capacity.blocked || amount.gt(maximum)) {
     const reason = capacity.blockers[0]
