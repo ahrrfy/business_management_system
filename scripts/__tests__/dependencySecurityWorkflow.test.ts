@@ -24,7 +24,7 @@ describe("dependency security coverage", () => {
     expect(securityWorkflow).toContain("osv-scanner scan");
   });
 
-  it("يثبت الإصدارات العابرة الآمنة ويبرر الاستثناء الوحيد غير القابل للإصلاح", () => {
+  it("يثبت الإصدارات العابرة الآمنة ويقصر الاستثناءات غير القابلة للترقية الآمنة", () => {
     const rootPackageJson = JSON.parse(read("package.json")) as {
       pnpm?: { overrides?: Record<string, string> };
     };
@@ -42,6 +42,7 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["qs@<6.16.1"]).toBe("6.16.1");
     expect(rootOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(rootOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
+    expect(rootOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
 
     const packageJson = JSON.parse(
       read("expo/customer-store-mobile/package.json"),
@@ -67,6 +68,7 @@ describe("dependency security coverage", () => {
     expect(overrides["node-forge"]).toBe("1.4.1");
     expect(overrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(overrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
+    expect(overrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
 
     const superappPackageJson = JSON.parse(
       read("expo/superapp-mobile/package.json"),
@@ -87,12 +89,20 @@ describe("dependency security coverage", () => {
     expect(superappOverrides["node-forge"]).toBe("1.4.1");
     expect(superappOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(superappOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
+    expect(superappOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
 
     const osvConfig = read("osv-scanner.toml");
-    expect(osvConfig).toContain('id = "GHSA-86w9-cpqp-85rv"');
-    expect(osvConfig).toContain('id = "GHSA-vfj7-8cjw-p6xm"');
-    expect(osvConfig).toContain('id = "GHSA-hp3w-g68c-fv3c"');
     expect(osvConfig).toContain('id = "GHSA-g3hv-75wg-m249"');
+    expect(osvConfig).toContain("ignoreUntil = 2026-11-30");
+    expect(osvConfig.match(/\[\[IgnoredVulns\]\]/g)).toHaveLength(1);
+    for (const retiredIgnore of [
+      "GHSA-86w9-cpqp-85rv",
+      "GHSA-vfj7-8cjw-p6xm",
+      "GHSA-hp3w-g68c-fv3c",
+      "GHSA-gcqx-w48m-w2h4",
+    ]) {
+      expect(osvConfig).not.toContain(`id = "${retiredIgnore}"`);
+    }
     expect(osvConfig).toContain('reason = "');
   });
 
@@ -100,27 +110,63 @@ describe("dependency security coverage", () => {
     const appRequire = createRequire(resolve(process.cwd(), "package.json"));
     const expressRequire = createRequire(appRequire.resolve("express"));
     const qs = expressRequire("qs");
-    expect(() => qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), { arrayFormat: "comma" })).not.toThrow();
-    expect(() => qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), { arrayFormat: "comma", encodeValuesOnly: true })).not.toThrow();
+    expect(() =>
+      qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), {
+        arrayFormat: "comma",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), {
+        arrayFormat: "comma",
+        encodeValuesOnly: true,
+      }),
+    ).not.toThrow();
   });
 
-  it("يقصر استثناء deepmerge على مسارات إعداد البناء المفحوصة في الأقفال الثلاثة", () => {
-    for (const [lock, expectedParent] of [
-      ["pnpm-lock.yaml", "@rollup/plugin-node-resolve@"],
-      ["expo/customer-store-mobile/pnpm-lock.yaml", "@expo/config@"],
-      ["expo/superapp-mobile/pnpm-lock.yaml", "@expo/config@"],
+  it("يستبدل deepmerge الضعيفة ببديل مصحح ومثبت في الأقفال الثلاثة", () => {
+    for (const lock of [
+      "pnpm-lock.yaml",
+      "expo/customer-store-mobile/pnpm-lock.yaml",
+      "expo/superapp-mobile/pnpm-lock.yaml",
     ]) {
-      let parent = "";
-      const consumers: string[] = [];
-      for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
-        if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
-        if (/^      deepmerge:/.test(line)) consumers.push(parent);
-      }
-      expect(consumers).toHaveLength(1);
-      expect(consumers[0]?.startsWith(expectedParent)).toBe(true);
-      const manifest = JSON.parse(read(lock.replace("pnpm-lock.yaml", "package.json")));
+      const lockSource = read(lock).replaceAll("\r\n", "\n");
+      expect(lockSource).toContain("@stackline/deepmerge@1.1.0");
+      expect(lockSource).toContain(
+        "sha512-bEQ1EpXrlu9PTTgKD9z85MWYGjDMv79fF2qn2LYdmukpuj6onkn5kZlRAu0PaZvUv9ZQerwtDVgIEn2LYtsE7w==",
+      );
+      expect(lockSource).not.toMatch(/^  deepmerge@4\.3\.1:$/m);
+      expect(lockSource).not.toMatch(/^      deepmerge: 4\.3\.1$/m);
+
+      const manifest = JSON.parse(
+        read(lock.replace("pnpm-lock.yaml", "package.json")),
+      );
       expect(manifest.dependencies?.deepmerge).toBeUndefined();
+      expect(manifest.pnpm?.overrides?.deepmerge).toBe(
+        "npm:@stackline/deepmerge@1.1.0",
+      );
     }
+  });
+
+  it("يمنع بديل deepmerge تسميم prototype في سلسلة Rollup الفعلية", () => {
+    const appRequire = createRequire(resolve(process.cwd(), "package.json"));
+    const pwaRequire = createRequire(appRequire.resolve("vite-plugin-pwa"));
+    const workboxRequire = createRequire(pwaRequire.resolve("workbox-build"));
+    const nodeResolveRequire = createRequire(
+      workboxRequire.resolve("@rollup/plugin-node-resolve"),
+    );
+    const merge = nodeResolveRequire("deepmerge") as (
+      target: Record<string, unknown>,
+      source: Record<string, unknown>,
+    ) => { session: Record<string, unknown> };
+    const payload = JSON.parse(
+      '{"session":{"__proto__":{"isAdmin":true}}}',
+    ) as Record<string, unknown>;
+    const result = merge({ session: null }, payload);
+
+    expect(Object.getPrototypeOf(result.session)).toBe(Object.prototype);
+    expect(Object.hasOwn(result.session, "isAdmin")).toBe(false);
+    expect(result.session.isAdmin).toBeUndefined();
+    expect(({} as { isAdmin?: boolean }).isAdmin).toBeUndefined();
   });
 
   it("يرقي كل مستهلكي node-forge وglob>=9 وminimatch>=9 ويقصر استثناء minimatch على مستهلكي CJS القدامى", () => {
@@ -157,8 +203,24 @@ describe("dependency security coverage", () => {
           ).toBe(true);
         }
       }
-      const manifest = JSON.parse(read(lock.replace("pnpm-lock.yaml", "package.json")));
+      const manifest = JSON.parse(
+        read(lock.replace("pnpm-lock.yaml", "package.json")),
+      );
       expect(manifest.dependencies?.minimatch).toBeUndefined();
     }
+  });
+
+  it("يفتح Dependabot تحديثات أسبوعية مستقلة للجذر وتطبيقي Expo", () => {
+    const dependabot = read(".github/dependabot.yml");
+    expect(dependabot.match(/package-ecosystem: npm/g)).toHaveLength(3);
+    for (const directory of [
+      "/",
+      "/expo/superapp-mobile",
+      "/expo/customer-store-mobile",
+    ]) {
+      expect(dependabot).toContain(`directory: "${directory}"`);
+    }
+    expect(dependabot.match(/interval: weekly/g)).toHaveLength(3);
+    expect(dependabot.match(/update-types:/g)).toHaveLength(3);
   });
 });

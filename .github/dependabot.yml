@@ -1,0 +1,44 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: "Asia/Baghdad"
+    open-pull-requests-limit: 5
+    groups:
+      safe-non-major-updates:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: "/expo/superapp-mobile"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:40"
+      timezone: "Asia/Baghdad"
+    open-pull-requests-limit: 5
+    groups:
+      safe-non-major-updates:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: "/expo/customer-store-mobile"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:50"
+      timezone: "Asia/Baghdad"
+    open-pull-requests-limit: 5
+    groups:
+      safe-non-major-updates:
+        update-types:
+          - minor
+          - patch
