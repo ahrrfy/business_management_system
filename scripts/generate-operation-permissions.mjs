@@ -1021,6 +1021,8 @@ const WORDS = {
   employees: "الموظفون",
   staff: "الموظف",
   attendance: "الحضور",
+  attest: "إقرار",
+  exemption: "الإعفاء",
   payroll: "الراتب",
   wage: "الأجر",
   salary: "الراتب",

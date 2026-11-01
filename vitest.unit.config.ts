@@ -84,6 +84,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/invoice/__tests__/wave35Payload.test.ts",
       "client/src/components/hr/__tests__/wave32Attendance.test.tsx",
       "client/src/components/hr/__tests__/wave32AttendanceCorrection.test.tsx",
+      "client/src/components/payroll/HistoricalAttendanceAttestation.test.tsx",
       "client/src/components/crm/__tests__/wave32Dossier.test.tsx",
       "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
       "server/services/__tests__/fulfillmentPosting.test.ts",

@@ -21,6 +21,7 @@ export const HISTORICAL_ATTENDANCE_CORRECTION =
 const ENTITY = "payrollAttendanceExemption";
 const VERSION = "payroll-attendance-exemption-attestation.v1";
 const RECORDER_LABEL = "External owner confirmation recorded by operator";
+type ConfirmationKind = "EXTERNAL_OWNER_CONFIRMATION" | "IN_APP_OWNER_CONFIRMATION";
 const CORRECTION_KEYS = [
   "version",
   "employeeId",
@@ -115,16 +116,22 @@ export function findAttendanceCorrection(
     if (value.period !== period) continue;
     const operation = obj(audit.operation);
     const recorder = obj(operation?.actor);
+    const validRecorder =
+      (value.evidenceKind === "EXTERNAL_OWNER_CONFIRMATION" &&
+        recorder?.source === "system" && recorder.label === RECORDER_LABEL) ||
+      (value.evidenceKind === "IN_APP_OWNER_CONFIRMATION" &&
+        recorder?.source === "user");
     if (
       found ||
-      Object.keys(value).length !== CORRECTION_KEYS.length ||
+      Object.keys(value).length !== CORRECTION_KEYS.length + (value.evidenceKind === "IN_APP_OWNER_CONFIRMATION" ? 1 : 0) ||
       CORRECTION_KEYS.some((key) => !Object.hasOwn(value, key)) ||
+      (value.evidenceKind === "IN_APP_OWNER_CONFIRMATION" &&
+        (typeof value.confirmedEmployeeName !== "string" || !value.confirmedEmployeeName.trim() || value.confirmedEmployeeName.length > 500)) ||
       !Number.isSafeInteger(audit.userId) ||
       Number(audit.userId) <= 0 ||
       operation?.version !== "operation.v2" ||
       operation.outcome !== "SUCCESS" ||
-      recorder?.source !== "system" ||
-      recorder.label !== RECORDER_LABEL ||
+      !validRecorder ||
       value.version !== VERSION ||
       value.employeeId !== employeeId ||
       value.attendanceExempt !== true ||
@@ -139,8 +146,7 @@ export function findAttendanceCorrection(
       value.evidenceReference.length > 500 ||
       typeof value.evidenceHash !== "string" ||
       !HASH.test(value.evidenceHash) ||
-      sha256(value.evidenceStatement) !== value.evidenceHash ||
-      value.evidenceKind !== "EXTERNAL_OWNER_CONFIRMATION"
+      sha256(value.evidenceStatement) !== value.evidenceHash
     )
       return fail("إقرار الإعفاء التاريخي ناقص أو مكرر أو متعارض");
     const source = audits.find(
@@ -176,6 +182,7 @@ export function findAttendanceCorrection(
       evidenceStatement: value.evidenceStatement,
       evidenceReference: value.evidenceReference,
       evidenceHash: value.evidenceHash,
+      ...(value.evidenceKind === "IN_APP_OWNER_CONFIRMATION" ? { confirmedEmployeeName: value.confirmedEmployeeName } : {}),
     };
     found = {
       auditId: Number(audit.id),
@@ -208,9 +215,14 @@ export async function recordHistoricalAttendanceCorrectionTx(
   tx: Tx,
   input: HistoricalAttendanceCorrectionInput,
   actor: Actor,
+  confirmationKind: ConfirmationKind = "EXTERNAL_OWNER_CONFIRMATION",
+  expectedEmployeeName?: string,
 ) {
   assertGovernanceGateHeld(tx);
   if (
+    (confirmationKind !== "EXTERNAL_OWNER_CONFIRMATION" && confirmationKind !== "IN_APP_OWNER_CONFIRMATION") ||
+    (confirmationKind === "IN_APP_OWNER_CONFIRMATION" &&
+      (typeof expectedEmployeeName !== "string" || !expectedEmployeeName.trim() || expectedEmployeeName.length > 500)) ||
     !Number.isSafeInteger(input.employeeId) ||
     input.employeeId <= 0 ||
     !Number.isSafeInteger(input.sourceAuditId) ||
@@ -288,10 +300,11 @@ export async function recordHistoricalAttendanceCorrectionTx(
     attendanceExempt: true,
     sourceAuditId: input.sourceAuditId,
     sourceHash: input.sourceHash,
-    evidenceKind: "EXTERNAL_OWNER_CONFIRMATION",
+    evidenceKind: confirmationKind,
     evidenceStatement: input.evidenceStatement,
     evidenceReference: input.evidenceReference,
     evidenceHash,
+    ...(confirmationKind === "IN_APP_OWNER_CONFIRMATION" ? { confirmedEmployeeName: expectedEmployeeName } : {}),
   };
   const matches = existing.filter(
     (a) => obj(a.newValue)?.period === input.period,
@@ -322,6 +335,14 @@ export async function recordHistoricalAttendanceCorrectionTx(
   if (run || runAfterEmployeeLock)
     return fail("يوجد مسير للشهر؛ لا يمكن تسجيل تصحيح أساسه بهذه الطريقة");
   await assertPeriodOpen(tx, new Date(`${input.period}-01T00:00:00Z`));
+  if (confirmationKind === "IN_APP_OWNER_CONFIRMATION") {
+    const { historicalAttendanceCandidatesTx } = await import("./payrollHistoricalAttendanceCandidates");
+    const candidates = await historicalAttendanceCandidatesTx(tx, input.period, input.employeeId);
+    if (!candidates.some((candidate) => candidate.kind === "attestable" &&
+        candidate.sourceAuditId === input.sourceAuditId && candidate.sourceHash === input.sourceHash &&
+        candidate.employeeName === expectedEmployeeName))
+      return fail("تغيّر مصدر الإقرار أو لم يعد الموظف مؤهلاً؛ أعد مراجعة المرشحين");
+  }
   const before = snapshot(source.oldValue);
   const after = snapshot(obj(source.newValue)?.wage);
   if (
@@ -343,7 +364,9 @@ export async function recordHistoricalAttendanceCorrectionTx(
       action: HISTORICAL_ATTENDANCE_CORRECTION,
       entityType: ENTITY,
       entityId: input.employeeId,
-      actor: { source: "system", label: RECORDER_LABEL },
+      actor: confirmationKind === "IN_APP_OWNER_CONFIRMATION"
+        ? { source: "user" }
+        : { source: "system", label: RECORDER_LABEL },
       newValue: payload,
     },
   );
@@ -398,6 +421,34 @@ export function recordHistoricalAttendanceCorrection(
 ) {
   return withTx(
     (tx) => recordHistoricalAttendanceCorrectionTx(tx, input, actor),
+    { gate: "GOVERNANCE", bootstrapMissingGate: false },
+  );
+}
+
+/** The owner confirms the specific historic fact; evidence is their stated source. */
+export function attestHistoricalAttendanceExemption(
+  input: Omit<HistoricalAttendanceCorrectionInput, "evidenceStatement" | "evidenceReference"> & {
+    evidenceText: string;
+    expectedEmployeeName: string;
+  },
+  actor: Actor,
+) {
+  const evidence = typeof input.evidenceText === "string" ? input.evidenceText.trim() : "";
+  if (evidence.length < 10 || evidence.length > 300)
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تسجيل إقرار الإعفاء التاريخي",
+      why: "مصدر التأكيد غير مكتمل أو طويل جداً",
+      doThis: "اذكر مصدر التأكيد في 10 إلى 300 حرف",
+    }) });
+  return withTx(
+    (tx) => recordHistoricalAttendanceCorrectionTx(tx, {
+      employeeId: input.employeeId,
+      period: input.period,
+      sourceAuditId: input.sourceAuditId,
+      sourceHash: input.sourceHash,
+      evidenceStatement: `أقر بأن الموظف #${input.employeeId} كان معفى من الحضور براتب ثابت خلال ${input.period}.`,
+      evidenceReference: evidence,
+    }, actor, "IN_APP_OWNER_CONFIRMATION", input.expectedEmployeeName),
     { gate: "GOVERNANCE", bootstrapMissingGate: false },
   );
 }
