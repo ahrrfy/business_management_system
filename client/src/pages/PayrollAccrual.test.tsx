@@ -10,6 +10,7 @@ import {
 } from "@/components/hr/PayrollAccrualOperations";
 import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
 import { printPayslip, printBatchPayslips, type PayslipData } from "@/lib/printing/printPayslip";
+import { openPrintWindow } from "@/lib/printing/brand";
 import { OBLIGATION_KIND_LABEL } from "@/lib/payrollAccrual";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -227,6 +228,15 @@ describe("PayrollAccrual UI Components & Logic", () => {
     };
 
     expect(printPayslip(draftSlip)).toBe(true);
+    const draftWindow = vi.mocked(window.open).mock.results.at(-1)?.value;
+    expect(draftWindow).toBeTruthy();
+    const draftHtml = String(vi.mocked(draftWindow!.document.write).mock.calls[0][0]);
+    expect(draftHtml).toContain('data-payslip="true"');
+    expect(draftHtml).toContain('class="page payslip-page"');
+    expect(draftHtml).toContain('class="payslip-print-pending"');
+    expect(draftHtml).toContain('data-employee-id="42"');
+    expect(draftHtml).toContain("حيدر كاظم");
+    expect(draftHtml).toContain("صافي المستحقّ");
 
     const paidSlip: PayslipData = {
       ...draftSlip,
@@ -272,5 +282,36 @@ describe("PayrollAccrual UI Components & Logic", () => {
 
     expect(printBatchPayslips([])).toBe(false);
     expect(printBatchPayslips(slips)).toBe(true);
+    const batchWindow = vi.mocked(window.open).mock.results.at(-1)?.value;
+    expect(batchWindow).toBeTruthy();
+    const batchHtml = String(vi.mocked(batchWindow!.document.write).mock.calls[0][0]);
+    expect(batchHtml).toContain('data-payslip="true"');
+    expect(batchHtml.match(/class="page payslip-page"/g)).toHaveLength(2);
+    expect(batchHtml).toContain("حيدر كاظم");
+    expect(batchHtml).toContain("أحمد علي");
+  });
+
+  it("blocks an unprepared payslip instead of printing a cropped fallback", () => {
+    const popupDoc = document.implementation.createHTMLDocument("قسيمة");
+    const print = vi.fn();
+    vi.mocked(window.open).mockReturnValueOnce({ document: popupDoc, print, focus: vi.fn(), closed: false } as unknown as Window);
+    expect(printPayslip({
+      runId: 1, period: "2026-10", statusLabel: "مدفوع", employeeName: "موظف تجريبي",
+      employeeId: 1, payTypeLabel: "راتب شهري", gross: "400000", overtime: "0",
+      commission: "0", deductions: "0", net: "400000",
+    })).toBe(true);
+    popupDoc.getElementById("doc-btn-save-pdf")!.click();
+    popupDoc.getElementById("doc-btn-print")!.click();
+    expect(print).not.toHaveBeenCalled();
+    expect(popupDoc.getElementById("payslip-print-error")?.textContent).toContain("لم يكتمل تجهيز القسيمة");
+  });
+
+  it("retains the ordinary print fallback for other documents", () => {
+    const popupDoc = document.implementation.createHTMLDocument("مستند");
+    const print = vi.fn();
+    vi.mocked(window.open).mockReturnValueOnce({ document: popupDoc, print, focus: vi.fn(), closed: false } as unknown as Window);
+    expect(openPrintWindow('<div class="doc-toolbar"><button id="doc-btn-save-pdf">حفظ</button></div>')).toBe(true);
+    popupDoc.getElementById("doc-btn-save-pdf")!.click();
+    expect(print).toHaveBeenCalledOnce();
   });
 });

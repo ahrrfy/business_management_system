@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { describe, expect, it, vi } from "vitest";
 import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2, docFooter, infoCards } from "./docHtml";
 import { isCardPaymentMethod } from "./cardBrandLogos";
 import {
@@ -59,6 +61,118 @@ describe("wrapMultiA4Doc", () => {
     expect(html).not.toContain("onclick=");
     expect(html).toContain("/vendor/doc-toolbar.js");
     expect(html).toContain('data-title="قسائم الرواتب"');
+  });
+});
+
+describe("payslip PDF export", () => {
+  function toolbarHarness(contentHeight: number, assetsHang = false, logoMissing = false) {
+    const saveButton = { innerHTML: "حفظ", disabled: false, style: { opacity: "", cursor: "" }, addEventListener: vi.fn() };
+    const notice = { hidden: true, textContent: "", style: { cssText: "" }, setAttribute: vi.fn() };
+    const imageWarning = { id: "", textContent: "", style: { cssText: "" }, setAttribute: vi.fn() };
+    const toolbar = {
+      getAttribute: (name: string) => ({ "data-title": "رواتب", "data-multi": "true", "data-payslip": "true" } as Record<string, string>)[name] ?? null,
+      insertAdjacentElement: vi.fn(), appendChild: vi.fn(),
+    };
+    const frameBox = { left: 38, right: 756, top: 38, bottom: 1081 };
+    const pages = [1, 2].map((id) => {
+      const content = {
+        style: { transform: "" }, scrollWidth: 718, scrollHeight: contentHeight,
+        getBoundingClientRect: () => {
+          const scale = Number(content.style.transform.match(/scale\(([^)]+)\)/)?.[1] ?? 1);
+          return { left: 38, right: 38 + 718 * scale, top: 38, bottom: 38 + contentHeight * scale, width: 718 * scale, height: contentHeight * scale };
+        },
+        querySelectorAll: () => [],
+      };
+      const frame = { getBoundingClientRect: () => frameBox, getAttribute: () => String(id), removeAttribute: vi.fn(), setAttribute: vi.fn() };
+      return {
+        id,
+        getBoundingClientRect: () => ({ width: 794, height: 1119 }),
+        querySelector: (selector: string) => selector === ".payslip-content" ? content : frame,
+      };
+    });
+    let pageCount = 1;
+    const pdfBlob = { type: "application/pdf" };
+    const pdf = {
+      addPage: vi.fn(() => { pageCount++; }),
+      deletePage: vi.fn(() => { pageCount--; }),
+      getNumberOfPages: () => pageCount,
+      addImage: vi.fn(), output: vi.fn(() => pdfBlob), save: vi.fn(),
+    };
+    const canvas = { width: 1588, height: 2238, toDataURL: vi.fn(() => "data:image/jpeg;base64,AA==") };
+    const from = vi.fn();
+    const html2pdf = vi.fn(() => {
+      const worker = {
+        set: () => worker,
+        from: (page: unknown) => { from(page); return worker; },
+        toCanvas: () => { canvas.width = 1588; canvas.height = 2238; return worker; },
+        toPdf: () => worker,
+        get: (key: string) => Promise.resolve(key === "canvas" ? canvas : pdf),
+      };
+      return worker;
+    });
+    const write = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const listeners: Record<string, () => void> = {};
+    const classes = new Set<string>(["payslip-print-pending"]);
+    const fakeDocument = {
+      readyState: "complete", images: logoMissing ? [{ complete: true, naturalWidth: 0 }] : [], fonts: { ready: assetsHang ? new Promise(() => {}) : Promise.resolve() },
+      body: { classList: { add: (name: string) => classes.add(name), remove: (name: string) => classes.delete(name) } },
+      querySelector: (selector: string) => selector === ".doc-toolbar" ? toolbar : null,
+      querySelectorAll: (selector: string) => selector === ".page.payslip-page" ? pages : [],
+      getElementById: (id: string) => id === "doc-btn-save-pdf" ? saveButton : id === "payslip-print-error" ? notice : null,
+      createElement: () => imageWarning,
+    };
+    const fakeWindow = {
+      html2pdf, setTimeout: assetsHang ? (callback: () => void) => { queueMicrotask(callback); return 0; } : setTimeout,
+      clearTimeout, focus: vi.fn(), print: vi.fn(),
+      showSaveFilePicker: vi.fn().mockResolvedValue({ createWritable: async () => ({ write, close }) }),
+      addEventListener: (name: string, callback: () => void) => { listeners[name] = callback; },
+      saveDocAsPdf: undefined as undefined | (() => Promise<void>),
+    };
+    const source = readFileSync("client/public/vendor/doc-toolbar.js", "utf8");
+    runInNewContext(source, { window: fakeWindow, document: fakeDocument, console: { error: vi.fn() }, setTimeout });
+    return { fakeWindow, saveButton, notice, imageWarning, pages, pdf, pdfBlob, from, write, close, classes, listeners, pageCount: () => pageCount };
+  }
+
+  it("exports each employee as one A4 page in one PDF", async () => {
+    const h = toolbarHarness(600);
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.from.mock.calls.map((call) => call[0])).toEqual(h.pages);
+    expect(h.pageCount()).toBe(2);
+    expect(h.pdf.addImage).toHaveBeenCalledTimes(2);
+    expect(h.write).toHaveBeenCalledWith(h.pdfBlob);
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.saveButton.disabled).toBe(false);
+    expect(h.classes.has("payslip-print-pending")).toBe(false);
+  });
+
+  it("refuses an unreadably dense payslip without writing a cropped PDF", async () => {
+    const h = toolbarHarness(3000);
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.from).not.toHaveBeenCalled();
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.saveButton.disabled).toBe(false);
+    expect(h.notice.textContent).toContain("للموظف #1");
+    h.listeners.beforeprint();
+    expect(h.classes.has("payslip-print-invalid")).toBe(true);
+  });
+
+  it("restores the save button and reports an asset loading timeout", async () => {
+    const h = toolbarHarness(600, true);
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.from).not.toHaveBeenCalled();
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.saveButton.disabled).toBe(false);
+    expect(h.notice.textContent).toContain("تعذّر تحميل خط القسيمة أو صورتها");
+    expect(h.classes.has("payslip-print-pending")).toBe(true);
+  });
+
+  it("warns when the logo fails while allowing PDF export", async () => {
+    const h = toolbarHarness(600, false, true);
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.imageWarning.textContent).toContain("سيصدر المستند دون شعار");
+    expect(h.write).toHaveBeenCalledWith(h.pdfBlob);
+    expect(h.saveButton.disabled).toBe(false);
   });
 });
 

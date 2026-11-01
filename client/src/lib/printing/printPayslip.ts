@@ -290,14 +290,28 @@ export function renderPayslipHtml(d: PayslipData): string {
   </div>
   <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">${zeroSettlement ? "تسوية المستحق بفرق التقريب؛ لم يقع صرف نقدي ولا يوجد إيصال صرف." : "هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف."}</div>`;
 
-  return `${pageBodyOpen()}${header}${cards}${table}${equationBox}${noteBox}${grand}${tafqit}${settlement}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
-    d.settings,
-    { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` },
-  )}`;
+  return `<div class="payslip-frame" data-employee-id="${esc(d.employeeId)}">
+    <div class="payslip-content">
+      ${pageBodyOpen()}
+      <div class="payslip-header">${header}</div>
+      <div class="payslip-cards">${cards}</div>
+      <div class="payslip-table">${table}</div>
+      <div class="payslip-equation">${equationBox}</div>
+      <div class="payslip-note">${noteBox}</div>
+      <div class="payslip-total">${grand}</div>
+      <div class="payslip-words">${tafqit}</div>
+      <div class="payslip-settlement">${settlement}</div>
+      <div class="payslip-liabilities">${employerLiabilities}</div>
+      <div class="payslip-audit">${audit}</div>
+      <div class="payslip-signatures">${signatures}</div>
+      ${pageBodyClose()}
+      ${pageFooter(d.settings, { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` })}
+    </div>
+  </div>`;
 }
 
 export function printPayslip(d: PayslipData): boolean {
-  return openPrintWindow(wrapA4Doc(`كشف راتب ${d.employeeName} — ${d.period}`, renderPayslipHtml(d)));
+  return openPrintWindow(wrapA4Doc(`كشف راتب ${d.employeeName} — ${d.period}`, renderPayslipHtml(d), { layout: "payslip" }));
 }
 
 /**
@@ -312,7 +326,8 @@ export function printBatchPayslips(
   const title = meta?.title ?? `قسائم رواتب ${period} — ${slips.length} موظف`;
   const pagesHtml = slips.map((d) => renderPayslipHtml(d));
   return openPrintWindow(wrapMultiA4Doc(title, pagesHtml, {
-    badgeLabel: `مسيّر رواتب ${period} (${slips.length} موظف)`
+    badgeLabel: `مسيّر رواتب ${period} (${slips.length} موظف)`,
+    layout: "payslip",
   }));
 }
 
