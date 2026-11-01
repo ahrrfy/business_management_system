@@ -106,6 +106,7 @@ import {
   SuperAppExpoPushConflictError,
   SuperAppExpoPushValidationError,
 } from "../services/superAppPushService";
+import { activeEmployeeSalaryPaidAtSql } from "../services/payroll/queries";
 
 export { resolveSuperAppAuthority, type SuperAppAuthorityUser } from "../services/superAppAuthority";
 
@@ -1592,13 +1593,13 @@ export const superAppRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const db = requireDb();
-      return db
+      const rows = await db
         .select({
           itemId: payrollItems.id,
           runId: payrollRuns.id,
           period: payrollRuns.period,
           status: payrollRuns.status,
-          paidAt: payrollRuns.paidAt,
+          paidAt: activeEmployeeSalaryPaidAtSql(),
           gross: payrollItems.gross,
           deductions: payrollItems.deductions,
           net: payrollItems.net,
@@ -1614,6 +1615,10 @@ export const superAppRouter = router({
         )
         .orderBy(desc(payrollRuns.period), desc(payrollItems.id))
         .limit(input?.limit ?? 24);
+      return rows.map((row) => ({
+        ...row,
+        status: row.paidAt == null ? ("approved" as const) : ("paid" as const),
+      }));
     }),
 
   /**
@@ -1631,7 +1636,7 @@ export const superAppRouter = router({
           runId: payrollRuns.id,
           period: payrollRuns.period,
           status: payrollRuns.status,
-          paidAt: payrollRuns.paidAt,
+          paidAt: activeEmployeeSalaryPaidAtSql(),
           payType: payrollItems.payType,
           hours: payrollItems.hours,
           gross: payrollItems.gross,
@@ -1663,7 +1668,10 @@ export const superAppRouter = router({
           message: "قسيمة الراتب غير متاحة لهذا الحساب",
         });
       }
-      return row;
+      return {
+        ...row,
+        status: row.paidAt == null ? ("approved" as const) : ("paid" as const),
+      };
     }),
 
   notifications: selfServiceProcedure

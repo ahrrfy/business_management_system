@@ -72,12 +72,71 @@ export type LoanRequestStatus =
 
 export interface RequestLoanInput {
   employeeId: number;
+  /** حقل توافق قديم؛ المرجع الحاكم هو فرع الموظف ويجب أن يطابقه إن أُرسل. */
+  branchId?: number | null;
   amount: string | number;
-  /** متروك لقبول العملاء الأقدم؛ السلف الجديدة شهرية دائماً ويُتجاهل التقسيط. */
-  installmentsCount?: number;
-  monthlyDeduction?: string | number;
+  /** حقول توافق قديمة مقبولة فقط إذا عبّرت صراحةً عن تسوية شهر واحد. */
+  installmentsCount?: number | null;
+  monthlyDeduction?: string | number | null;
   reason?: string | null;
   clientRequestId: string;
+}
+
+function assertSingleMonthAdvanceTerms(
+  input: RequestLoanInput,
+  amount: Decimal,
+): void {
+  if (input.installmentsCount != null && input.installmentsCount !== 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "شروط السلفة غير صالحة",
+        why: "السلفة الجديدة تُسوّى كاملةً في شهر الطلب ولا تقبل أكثر من قسط واحد",
+        doThis: "اجعل عدد الأقساط 1 أو احذف الحقل القديم",
+      }),
+    });
+  }
+  if (input.monthlyDeduction == null) return;
+
+  let monthlyDeduction: Decimal;
+  try {
+    monthlyDeduction = money(input.monthlyDeduction);
+  } catch {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "قيمة تسوية السلفة غير صالحة",
+        why: "قيمة الخصم الشهري القديمة ليست مبلغاً مالياً صالحاً",
+        doThis: "اجعل الخصم الشهري مساوياً لمبلغ السلفة أو احذف الحقل القديم",
+      }),
+    });
+  }
+  if (!monthlyDeduction.eq(amount)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "شروط السلفة غير صالحة",
+        why: "الخصم الشهري يجب أن يساوي مبلغ السلفة لأن التسوية تتم كاملةً في شهر الطلب",
+        doThis: "اجعل الخصم الشهري مساوياً لمبلغ السلفة أو احذف الحقل القديم",
+      }),
+    });
+  }
+}
+
+function assertLegacyBranchMatchesEmployee(
+  requestedBranchId: number | null | undefined,
+  employeeBranchId: number,
+): void {
+  if (requestedBranchId == null) return;
+  if (Number(requestedBranchId) === employeeBranchId) return;
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: appErrorMessage({
+      what: "فرع طلب السلفة غير صحيح",
+      why: "الفرع المرسل في الحقل القديم لا يطابق الفرع الحالي للموظف",
+      doThis: "حدّث بيانات الموظف أو أعد الطلب بفرع الموظف الصحيح",
+    }),
+  });
 }
 
 type EmployeeAdvanceSystemRequest = Extract<
@@ -114,6 +173,7 @@ function loanRequestReplay(
     });
   }
   assertRequestBranch(actor, Number(existing.branchId));
+  assertLegacyBranchMatchesEmployee(input.branchId, Number(existing.branchId));
   return {
     id: Number(existing.id),
     status: existing.status,
@@ -177,6 +237,7 @@ export async function requestEmployeeLoan(
         }),
       });
     }
+    assertSingleMonthAdvanceTerms(input, amount);
 
     const clientRequestId = input.clientRequestId.trim();
     if (!clientRequestId) {
@@ -218,6 +279,7 @@ export async function requestEmployeeLoan(
     }
     assertAdvanceWithinCapacity(amount, capacity);
     const branchId = capacity.branchId;
+    assertLegacyBranchMatchesEmployee(input.branchId, branchId);
 
     const [res] = await tx.insert(employeeLoanRequests).values({
       employeeId: input.employeeId,

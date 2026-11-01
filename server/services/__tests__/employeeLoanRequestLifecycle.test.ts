@@ -9,6 +9,7 @@ import {
   disburseEmployeeLoan,
   requestEmployeeLoan,
   reviewEmployeeLoanRequest,
+  type RequestLoanInput,
 } from "../employeeLoanService";
 import type { Actor } from "../tx";
 
@@ -49,16 +50,23 @@ function previousPeriod(period: string): string {
 function requestInput(
   clientRequestId: string,
   employeeId = EMPLOYEE_A,
-  overrides: Partial<{
-    amount: string;
-    reason: string;
-  }> = {},
-) {
+  overrides: Partial<
+    Pick<
+      RequestLoanInput,
+      | "amount"
+      | "reason"
+      | "branchId"
+      | "installmentsCount"
+      | "monthlyDeduction"
+    >
+  > = {},
+): RequestLoanInput {
   return {
     employeeId,
-    amount: overrides.amount ?? "1000.00",
-    reason: overrides.reason ?? "طلب سلفة اختباري",
+    amount: "1000.00",
+    reason: "طلب سلفة اختباري",
     clientRequestId,
+    ...overrides,
   };
 }
 
@@ -221,6 +229,70 @@ describe("دورة طلب سلفة الموظف", () => {
       .from(s.employeeLoanRequests)
       .where(eq(s.employeeLoanRequests.clientRequestId, input.clientRequestId));
     expect(rows).toHaveLength(1);
+  });
+
+  it("يفرض عقد شهر واحد ولا يتجاهل حقول التقسيط القديمة", async () => {
+    await expect(
+      requestEmployeeLoan(
+        maker,
+        requestInput("loan-invalid-installments", EMPLOYEE_A, {
+          installmentsCount: 2,
+          monthlyDeduction: "500.00",
+        }),
+        "hrEnterprise.loans.request",
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      requestEmployeeLoan(
+        maker,
+        requestInput("loan-invalid-monthly", EMPLOYEE_A, {
+          installmentsCount: 1,
+          monthlyDeduction: "999.99",
+        }),
+        "hrEnterprise.loans.request",
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+
+    const accepted = await requestEmployeeLoan(
+      maker,
+      requestInput("loan-valid-single-month", EMPLOYEE_A, {
+        installmentsCount: 1,
+        monthlyDeduction: "1000.00",
+      }),
+      "hrEnterprise.loans.request",
+    );
+    const [stored] = await db()
+      .select()
+      .from(s.employeeLoanRequests)
+      .where(eq(s.employeeLoanRequests.id, accepted.id));
+    expect(stored).toMatchObject({
+      installmentsCount: 1,
+      monthlyDeduction: "1000.00",
+      payrollPeriod: baghdadToday().slice(0, 7),
+    });
+  });
+
+  it("يتحقق من branchId القديم مقابل فرع الموظف بدلاً من تجاهله", async () => {
+    await expect(
+      requestEmployeeLoan(
+        maker,
+        requestInput("loan-wrong-legacy-branch", EMPLOYEE_A, { branchId: 2 }),
+        "hrEnterprise.loans.request",
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+
+    const accepted = await requestEmployeeLoan(
+      maker,
+      requestInput("loan-matching-legacy-branch", EMPLOYEE_A, { branchId: 1 }),
+      "hrEnterprise.loans.request",
+    );
+    const [stored] = await db()
+      .select()
+      .from(s.employeeLoanRequests)
+      .where(eq(s.employeeLoanRequests.id, accepted.id));
+    expect(Number(stored?.branchId)).toBe(1);
   });
 
   it("يفشل مغلقاً إذا سُحبت صلاحية HR من الدور المخصص قبل بدء المعاملة", async () => {

@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { printPayslip } from "@/lib/printing/printPayslip";
 import { iqd } from "@/lib/hr/ui";
 import { fmtDate } from "@/lib/date";
+import { buildPayrollPayslipBreakdown } from "@/lib/payrollPayslipBreakdown";
 import { AlertCircle, CheckCircle2, Clock, FileText, Printer } from "lucide-react";
 
 export default function HrPayslip() {
@@ -44,8 +45,21 @@ export default function HrPayslip() {
   }
 
   const { employee, item } = q.data;
+  const breakdown = buildPayrollPayslipBreakdown({
+    gross: item.gross,
+    allowances: item.allowances,
+    overtime: item.overtime,
+    commission: item.commission,
+    deductions: item.deductions,
+    advanceDeduction: item.advanceDeduction,
+    socialSecurityEmployee: item.socialSecurityEmployee,
+    incomeTax: item.incomeTax,
+    net: item.net,
+  });
+  const hasAmount = (value: string) => value !== "0.00";
+  const isPaid = item.paidAt != null;
   const statusLabel =
-    item.runStatus === "paid" ? "مدفوع" : item.runStatus === "approved" ? "معتمد" : "مسودّة";
+    isPaid ? "مدفوع" : item.runStatus === "draft" ? "مسودّة" : "معتمد";
 
   const handlePrint = () => {
     printPayslip({
@@ -63,6 +77,8 @@ export default function HrPayslip() {
       approvalSnapshotHash: item.approvalSnapshotHash,
       itemSnapshotHash: item.snapshotHash,
       payTypeLabel: item.payType === "hourly" ? "بالساعة" : "شهري",
+      baseSalary: breakdown.baseWage,
+      allowances: breakdown.allowances,
       hours: item.hours,
       gross: item.gross,
       overtime: item.overtime,
@@ -86,14 +102,14 @@ export default function HrPayslip() {
             <span>قسيمة الراتب الإلكترونية</span>
             <span
               className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                item.runStatus === "paid"
+                isPaid
                   ? "badge-status-active"
                   : item.runStatus === "approved"
                   ? "bg-primary/10 text-primary"
                   : "badge-status-pending"
               }`}
             >
-              {item.runStatus === "paid" ? (
+              {isPaid ? (
                 <CheckCircle2 className="h-3 w-3" />
               ) : (
                 <Clock className="h-3 w-3" />
@@ -161,26 +177,35 @@ export default function HrPayslip() {
           </CardHeader>
           <CardContent className="p-4 space-y-2.5 text-xs">
             <div className="flex justify-between py-1 border-b border-dashed">
-              <span className="text-muted-foreground">الراتب الأساسي / أجر الحضور</span>
-              <span className="font-medium" dir="ltr">{iqd(item.gross)}</span>
+              <span className="text-muted-foreground">الأجر الإجمالي (يشمل المخصصات)</span>
+              <span className="font-medium" dir="ltr">{iqd(breakdown.gross)}</span>
             </div>
-            {Number(item.allowances || 0) > 0 && (
+            {hasAmount(breakdown.allowances) && (
               <div className="flex justify-between py-1 border-b border-dashed">
-                <span className="text-muted-foreground">البدلات الثابتة</span>
-                <span className="font-medium" dir="ltr">{iqd(item.allowances!)}</span>
+                <span className="text-muted-foreground ps-3">منه المخصصات (معلومة ضمن الإجمالي)</span>
+                <span className="font-medium" dir="ltr">{iqd(breakdown.allowances)}</span>
               </div>
             )}
-            {Number(item.overtime || 0) > 0 && (
+            {hasAmount(breakdown.overtime) && (
               <div className="flex justify-between py-1 border-b border-dashed">
                 <span className="text-muted-foreground">الأجر الإضافي</span>
-                <span className="font-medium text-money-positive" dir="ltr">+{iqd(item.overtime)}</span>
+                <span className="font-medium text-money-positive" dir="ltr">+{iqd(breakdown.overtime)}</span>
               </div>
             )}
-            {Number(item.commission || 0) > 0 && (
+            {hasAmount(breakdown.commission) && (
               <div className="flex justify-between py-1 border-b border-dashed">
                 <span className="text-muted-foreground">العمولات والمكافآت</span>
-                <span className="font-medium text-money-positive" dir="ltr">+{iqd(item.commission)}</span>
+                <span className="font-medium text-money-positive" dir="ltr">+{iqd(breakdown.commission)}</span>
               </div>
+            )}
+            <div className="flex justify-between pt-2 border-t font-semibold">
+              <span>إجمالي الاستحقاق قبل الاستقطاع</span>
+              <span dir="ltr">{iqd(breakdown.totalEarnings)}</span>
+            </div>
+            {!breakdown.allowancesValid && (
+              <p className="rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive" role="alert">
+                تفاصيل المخصصات لا تطابق الأجر الإجمالي المحفوظ. راجع قسم الموارد البشرية.
+              </p>
             )}
           </CardContent>
         </Card>
@@ -193,36 +218,42 @@ export default function HrPayslip() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 space-y-2.5 text-xs">
-            {Number(item.advanceDeduction || 0) > 0 && (
+            {hasAmount(breakdown.advanceDeduction) && (
               <div className="flex justify-between py-1 border-b border-dashed">
                 <span className="text-muted-foreground">استقطاع السلف</span>
-                <span className="font-medium text-money-negative" dir="ltr">-{iqd(item.advanceDeduction!)}</span>
+                <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.advanceDeduction)}</span>
               </div>
             )}
-            {Number(item.deductions || 0) > 0 && (
+            {hasAmount(breakdown.otherDeductions) && (
               <div className="flex justify-between py-1 border-b border-dashed">
-                <span className="text-muted-foreground">الجزاءات والخصومات الأخرى</span>
-                <span className="font-medium text-money-negative" dir="ltr">-{iqd(item.deductions)}</span>
+                <span className="text-muted-foreground">خفض الأجر وخصومات أخرى</span>
+                <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.otherDeductions)}</span>
               </div>
             )}
-            {Number(item.socialSecurityEmployee || 0) > 0 && (
+            {hasAmount(breakdown.socialSecurityEmployee) && (
               <div className="flex justify-between py-1 border-b border-dashed">
                 <span className="text-muted-foreground">الضمان الاجتماعي (حصة الموظف 5%)</span>
-                <span className="font-medium text-money-negative" dir="ltr">-{iqd(item.socialSecurityEmployee!)}</span>
+                <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.socialSecurityEmployee)}</span>
               </div>
             )}
-            {Number(item.incomeTax || 0) > 0 && (
+            {hasAmount(breakdown.incomeTax) && (
               <div className="flex justify-between py-1 border-b border-dashed">
                 <span className="text-muted-foreground">ضريبة الدخل المستقطعة</span>
-                <span className="font-medium text-money-negative" dir="ltr">-{iqd(item.incomeTax!)}</span>
+                <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.incomeTax)}</span>
               </div>
             )}
-            {Number(item.advanceDeduction || 0) === 0 &&
-              Number(item.deductions || 0) === 0 &&
-              Number(item.socialSecurityEmployee || 0) === 0 &&
-              Number(item.incomeTax || 0) === 0 && (
+            {!hasAmount(breakdown.totalDeductions) && (
                 <div className="py-4 text-center text-muted-foreground">لا توجد استقطاعات على هذا الراتب</div>
-              )}
+            )}
+            <div className="flex justify-between pt-2 border-t font-semibold">
+              <span>إجمالي الاستقطاع</span>
+              <span className="text-money-negative" dir="ltr">-{iqd(breakdown.totalDeductions)}</span>
+            </div>
+            {!breakdown.deductionComponentsValid && (
+              <p className="rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive" role="alert">
+                مكونات الاستقطاع المسماة تتجاوز إجمالي الاستقطاع المحفوظ. راجع قسم الموارد البشرية.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -233,8 +264,19 @@ export default function HrPayslip() {
           <div>
             <span className="text-xs text-muted-foreground block mb-1">صافي الراتب المستحق للصرف</span>
             <div className="text-2xl sm:text-3xl font-bold tracking-tight text-primary tabular-nums" dir="ltr">
-              {iqd(item.net)}
+              {iqd(breakdown.net)}
             </div>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              <span className="block">الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</span>
+              <span className="block tabular-nums" dir="ltr">
+                {iqd(breakdown.gross)} + {iqd(breakdown.overtime)} + {iqd(breakdown.commission)} − {iqd(breakdown.totalDeductions)} = {iqd(breakdown.expectedNet)}
+              </span>
+            </div>
+            {!breakdown.netMatches && (
+              <p className="mt-2 text-xs text-destructive" role="alert">
+                الصافي المحفوظ لا يطابق معادلة القسيمة. راجع قسم الموارد البشرية قبل الاعتماد على الكشف.
+              </p>
+            )}
           </div>
           {item.paidAt && (
             <div className="text-xs text-muted-foreground text-start sm:text-end">

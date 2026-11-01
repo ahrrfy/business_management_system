@@ -77,6 +77,109 @@ const STATUS_TITLE: Record<string, string> = {
 /** صفُّ سلفة موظّف — مشتقٌّ من عقد `payroll.advancesList` فلا ينجرف عن الخادم. */
 type AdvanceRow = RouterOutputs["payroll"]["advancesList"][number];
 
+export interface EmployeeAdvanceSummaryInput {
+  amount: string;
+  remaining: string;
+  status: string;
+  workflowStatus: string;
+  sourceType: string;
+  financiallyDisbursed: boolean;
+}
+
+export interface EmployeeAdvanceSummaryBucket {
+  count: number;
+  amount: string;
+}
+
+export interface EmployeeAdvanceSummary {
+  requestedUndisbursed: EmployeeAdvanceSummaryBucket;
+  disbursed: EmployeeAdvanceSummaryBucket;
+  settled: EmployeeAdvanceSummaryBucket;
+  outstanding: EmployeeAdvanceSummaryBucket;
+  legacyReview: EmployeeAdvanceSummaryBucket;
+}
+
+/**
+ * يفصل حقيقة السلفة المالية عن دورة طلبها. الطلبات المرفوضة/الملغاة/المنتهية
+ * لا تُحسب صرفاً، والسلفة المصروفة ثم الملغاة مستبعدة لأن أثر صرفها عُكس.
+ * `settled` مبلغٌ مستوفى فعلياً، لذا يشمل التسوية الجزئية لسلفة ما زالت ACTIVE.
+ */
+export function summarizeEmployeeAdvances(
+  rows: readonly EmployeeAdvanceSummaryInput[],
+): EmployeeAdvanceSummary {
+  const buckets = {
+    requestedUndisbursed: { count: 0, amount: D(0) },
+    disbursed: { count: 0, amount: D(0) },
+    settled: { count: 0, amount: D(0) },
+    outstanding: { count: 0, amount: D(0) },
+    legacyReview: { count: 0, amount: D(0) },
+  };
+
+  for (const row of rows) {
+    const amount = D(row.amount);
+    const remaining = D(row.remaining);
+    const requiresLegacyReview =
+      row.status === "LEGACY_UNCLASSIFIED" ||
+      row.workflowStatus === "LEGACY_UNCLASSIFIED" ||
+      row.sourceType === "LEGACY_UNCLASSIFIED";
+
+    if (requiresLegacyReview) {
+      buckets.legacyReview.count += 1;
+      buckets.legacyReview.amount = buckets.legacyReview.amount.plus(
+        row.financiallyDisbursed ? remaining : amount,
+      );
+      continue;
+    }
+
+    if (!row.financiallyDisbursed) {
+      if (row.status === "PENDING_APPROVAL" || row.status === "APPROVED") {
+        buckets.requestedUndisbursed.count += 1;
+        buckets.requestedUndisbursed.amount =
+          buckets.requestedUndisbursed.amount.plus(amount);
+      }
+      continue;
+    }
+
+    if (row.status !== "ACTIVE" && row.status !== "SETTLED") continue;
+
+    buckets.disbursed.count += 1;
+    buckets.disbursed.amount = buckets.disbursed.amount.plus(amount);
+
+    const settled = amount.minus(remaining);
+    if (settled.gt(0)) {
+      buckets.settled.count += 1;
+      buckets.settled.amount = buckets.settled.amount.plus(settled);
+    }
+    if (remaining.gt(0)) {
+      buckets.outstanding.count += 1;
+      buckets.outstanding.amount = buckets.outstanding.amount.plus(remaining);
+    }
+  }
+
+  return {
+    requestedUndisbursed: {
+      count: buckets.requestedUndisbursed.count,
+      amount: buckets.requestedUndisbursed.amount.toFixed(2),
+    },
+    disbursed: {
+      count: buckets.disbursed.count,
+      amount: buckets.disbursed.amount.toFixed(2),
+    },
+    settled: {
+      count: buckets.settled.count,
+      amount: buckets.settled.amount.toFixed(2),
+    },
+    outstanding: {
+      count: buckets.outstanding.count,
+      amount: buckets.outstanding.amount.toFixed(2),
+    },
+    legacyReview: {
+      count: buckets.legacyReview.count,
+      amount: buckets.legacyReview.amount.toFixed(2),
+    },
+  };
+}
+
 function advanceClassificationLabel(row: AdvanceRow): string {
   if (!row.financiallyDisbursed) {
     if (
@@ -195,15 +298,10 @@ export default function EmployeeAdvances() {
     );
   }, [rows, q]);
 
-  const totals = useMemo(() => {
-    let remaining = D(0);
-    let amount = D(0);
-    for (const r of filtered) {
-      amount = amount.plus(D(r.amount));
-      if (r.status === "ACTIVE") remaining = remaining.plus(D(r.remaining));
-    }
-    return { amount: amount.toFixed(2), remaining: remaining.toFixed(2) };
-  }, [filtered]);
+  const summary = useMemo(
+    () => summarizeEmployeeAdvances(filtered),
+    [filtered],
+  );
 
   const refresh = () => utils.payroll.advancesList.invalidate();
 
@@ -565,11 +663,50 @@ export default function EmployeeAdvances() {
               سجلات تاريخية غير مصنفة من جميع الأشهر؛ تبقى منفصلة عن خصم الراتب حتى المطابقة.
             </p>
           )}
-          <div className="text-xs text-muted-foreground mt-1">
-            {listQ.isLoading
-              ? ""
-              : `إجمالي ${iqd(totals.amount)} د.ع، المتبقّي النشط ${iqd(totals.remaining)} د.ع`}
-          </div>
+          {!listQ.isLoading && (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              {[
+                {
+                  key: "requestedUndisbursed",
+                  label: "طلبات لم تُصرف",
+                  hint: "معلّقة أو معتمدة بلا أثر مالي",
+                },
+                {
+                  key: "disbursed",
+                  label: "مصروف فعلياً",
+                  hint: "غير الملغى وغير التاريخي",
+                },
+                {
+                  key: "settled",
+                  label: "مُسوّى من المصروف",
+                  hint: "يشمل السداد الجزئي",
+                },
+                {
+                  key: "outstanding",
+                  label: "رصيد قائم",
+                  hint: "المتبقّي واجب الاستيفاء",
+                },
+                {
+                  key: "legacyReview",
+                  label: "تاريخي يحتاج مراجعة",
+                  hint: "معزول عن الأرقام المؤكدة",
+                },
+              ].map((item) => {
+                const bucket = summary[item.key as keyof EmployeeAdvanceSummary];
+                return (
+                  <div key={item.key} className="rounded-md border bg-muted/20 p-3">
+                    <div className="text-xs font-medium">{item.label}</div>
+                    <div className="mt-1 text-base font-bold tabular-nums" dir="ltr">
+                      {iqd(bucket.amount)} د.ع
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      عدد السجلات: {bucket.count} — {item.hint}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="p-0">
           {/* البحث في ListToolbar أعلاه (يغذّي `filtered`) ⇒ `searchable={false}` وإلّا ظهر حقلا بحث.

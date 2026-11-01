@@ -2544,6 +2544,7 @@ export async function approveVoucherTx(
         partyType: r.partyType,
         referenceNumber: r.referenceNumber,
         createdBy: r.createdBy != null ? Number(r.createdBy) : null,
+        createdAt: r.createdAt,
       },
       systemRequest,
     );

@@ -19,6 +19,51 @@ import {
   readSalarySettlementEvidence,
 } from "./settlementEvidence";
 
+/**
+ * وقت آخر دفعة راتب فعالة لبند الموظف في مراجعة المسيّر الحالية.
+ * لا يُستعمل `payrollRuns.paidAt` هنا لأنه يثبت إغلاق المسيّر ككل، لا قبض هذا الموظف.
+ */
+export function activeEmployeeSalaryPaidAtSql() {
+  return sql<Date | null>`(
+    SELECT MAX(payment.\`occurredAt\`)
+    FROM \`payrollAccountingEvents\` payment
+    INNER JOIN \`payrollObligations\` obligation
+      ON obligation.\`id\` = payment.\`obligationId\`
+    INNER JOIN \`accountingEntries\` paymentEntry
+      ON paymentEntry.\`id\` = payment.\`accountingEntryId\`
+    INNER JOIN \`receipts\` paymentReceipt
+      ON paymentReceipt.\`id\` = payment.\`receiptId\`
+    WHERE payment.\`runId\` = ${payrollRuns.id}
+      AND payment.\`revisionNo\` = ${payrollRuns.revisionNo}
+      AND payment.\`payrollAccountingEventKind\` = 'SALARY_PAYMENT'
+      AND obligation.\`itemId\` = ${payrollItems.id}
+      AND obligation.\`employeeId\` = ${payrollItems.employeeId}
+      AND obligation.\`branchIdSnapshot\` = payment.\`branchIdSnapshot\`
+      AND obligation.\`payrollObligationKind\` = 'SALARY_NET'
+      AND obligation.\`payrollObligationStatus\` = 'SETTLED'
+      AND obligation.\`remainingAmount\` = 0
+      AND paymentReceipt.\`receiptStatus\` = 'COMPLETED'
+      AND paymentReceipt.\`receiptApprovalStatus\` = 'APPROVED'
+      AND paymentReceipt.\`direction\` = 'OUT'
+      AND paymentReceipt.\`amount\` > 0
+      AND paymentReceipt.\`branchId\` = payment.\`branchIdSnapshot\`
+      AND paymentEntry.\`entryType\` = 'PAYMENT_OUT'
+      AND paymentEntry.\`receiptId\` = paymentReceipt.\`id\`
+      AND paymentEntry.\`amount\` = paymentReceipt.\`amount\`
+      AND paymentEntry.\`branchId\` = payment.\`branchIdSnapshot\`
+      AND (
+        paymentEntry.\`postingProfile\` IS NULL
+        OR paymentEntry.\`postingProfile\` = 'PAYMENT_OUT_PAYROLL_NET'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM \`payrollAccountingEvents\` paymentReturn
+        WHERE paymentReturn.\`payrollAccountingEventKind\` = 'SALARY_PAYMENT_RETURN'
+          AND paymentReturn.\`reversalOfId\` = payment.\`id\`
+      )
+  )`;
+}
+
 export async function listRuns() {
   const db = requireDb();
   const rows = await db

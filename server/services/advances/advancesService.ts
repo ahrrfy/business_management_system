@@ -469,6 +469,7 @@ export interface GrantAdvanceInput {
   employeeId: number;
   branchId: number;
   amount: string;
+  /** حقل توافق قديم؛ إن أُرسل يجب أن يساوي المبلغ لأن السلفة تُسوّى في شهرها كاملاً. */
   monthlyDeduction?: string | null;
   note?: string | null;
   /** مُرفق سند الصرف (صورة data URL أو رابط) — اختياريّ دائماً (لا إلزام مُرفق في النظام). */
@@ -506,6 +507,8 @@ type EmployeeAdvanceReceipt = {
   partyType?: string | null;
   referenceNumber?: string | null;
   createdBy: number | null;
+  /** Required when materializing a new advance; older assertion-only callers may omit it. */
+  createdAt?: Date | null;
 };
 
 /** Validate the server-only capability against the locked source row and receipt facts. */
@@ -653,7 +656,44 @@ export async function activateAdvanceForApprovedVoucherTx(
   if (existing) return Number(existing.id);
 
   const amount = money(request.expectedAmount);
-  const period = baghdadToday().slice(0, 7);
+  if (
+    request.monthlyDeduction != null &&
+    !money(request.monthlyDeduction).eq(amount)
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "لا يمكن اعتماد طلب السلفة",
+        why: "طلب السلفة القديم يحتوي خصماً جزئياً يخالف قاعدة التسوية الكاملة في شهر الطلب",
+        doThis: "ارفض الطلب وأنشئ طلباً جديداً بقيمة تسوية مساوية لمبلغ السلفة",
+      }),
+    });
+  }
+  if (
+    !(receipt.createdAt instanceof Date) ||
+    Number.isNaN(receipt.createdAt.getTime())
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تفعيل سلفة الموظف",
+        why: "تاريخ إنشاء طلب السلفة مفقود أو غير صالح",
+        doThis: "أوقف الاعتماد وراجع سند الطلب وسجل التدقيق",
+      }),
+    });
+  }
+  const period = baghdadToday(receipt.createdAt).slice(0, 7);
+  const currentPeriod = baghdadToday().slice(0, 7);
+  if (period !== currentPeriod) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "لا يمكن اعتماد طلب السلفة",
+        why: `انتهى شهر الطلب (${period}) دون اعتماده وصرفه`,
+        doThis: "ارفض الطلب القديم وأنشئ طلباً جديداً للشهر الجاري ليعاد احتساب الاستحقاق",
+      }),
+    });
+  }
   await assertAdvanceOutstandingLimitTx(tx, request.employeeId, amount);
   const capacity = await getEmployeeAdvanceCapacityTx(tx, {
     employeeId: request.employeeId,
@@ -690,11 +730,21 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   }
   const amount = money(input.amount);
   if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ السلفة يجب أن يكون موجباً" });
-  const monthly = input.monthlyDeduction != null && String(input.monthlyDeduction).trim() !== "" ? money(input.monthlyDeduction) : null;
-  if (monthly != null) {
-    if (monthly.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الخصم الشهري يجب أن يكون موجباً (أو اتركه فارغاً = خصم أقصى الممكن)" });
-    if (monthly.gt(amount)) throw new TRPCError({ code: "BAD_REQUEST", message: "الخصم الشهري لا يتجاوز مبلغ السلفة" });
+  const requestedMonthly =
+    input.monthlyDeduction != null && input.monthlyDeduction.trim() !== ""
+      ? money(input.monthlyDeduction)
+      : null;
+  if (requestedMonthly != null && !requestedMonthly.eq(amount)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "شروط السلفة غير صالحة",
+        why: "الخصم الشهري يجب أن يساوي مبلغ السلفة لأن التسوية تتم كاملةً في شهر الطلب",
+        doThis: "اجعل الخصم الشهري مساوياً لمبلغ السلفة أو احذف الحقل القديم",
+      }),
+    });
   }
+  const monthly = amount;
 
   return withTx(async (tx) => {
     const resolvedActor = await resolveApprovalActor(tx, actor);
@@ -754,7 +804,9 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       employeeId: input.employeeId,
       branchId: input.branchId,
       expectedAmount: toDbMoney(amount),
-      monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
+      // حافظ على preimage الطلبات القديمة التي حذفت الحقل؛ null يعني ضمناً كامل المبلغ.
+      monthlyDeduction:
+        requestedMonthly == null ? null : toDbMoney(monthly),
       note: input.note?.trim() || null,
       sourceClientRequestId: input.clientRequestId.trim(),
     };
@@ -799,7 +851,7 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       branchId: input.branchId,
       amount: toDbMoney(amount),
       remaining: toDbMoney(amount),
-      monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
+      monthlyDeduction: toDbMoney(monthly),
       status: "PENDING_APPROVAL" as const,
       receiptId: voucher.receiptId,
       note: systemRequest.note,
