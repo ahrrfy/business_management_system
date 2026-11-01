@@ -14,6 +14,10 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: npm
     directory: "/expo/superapp-mobile"
@@ -24,10 +28,14 @@ updates:
       timezone: "Asia/Baghdad"
     open-pull-requests-limit: 5
     groups:
-      safe-non-major-updates:
+      safe-patch-updates:
         update-types:
-          - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: npm
     directory: "/expo/customer-store-mobile"
@@ -38,7 +46,11 @@ updates:
       timezone: "Asia/Baghdad"
     open-pull-requests-limit: 5
     groups:
-      safe-non-major-updates:
+      safe-patch-updates:
         update-types:
-          - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

@@ -210,7 +210,7 @@ describe("dependency security coverage", () => {
     }
   });
 
-  it("يفتح Dependabot تحديثات أسبوعية مستقلة للجذر وتطبيقي Expo", () => {
+  it("يفتح Dependabot تحديثات أسبوعية مستقلة ويقصر Expo على ترقيات patch", () => {
     const dependabot = read(".github/dependabot.yml");
     expect(dependabot.match(/package-ecosystem: npm/g)).toHaveLength(3);
     for (const directory of [
@@ -221,6 +221,11 @@ describe("dependency security coverage", () => {
       expect(dependabot).toContain(`directory: "${directory}"`);
     }
     expect(dependabot.match(/interval: weekly/g)).toHaveLength(3);
-    expect(dependabot.match(/update-types:/g)).toHaveLength(3);
+    expect(dependabot.match(/safe-non-major-updates:/g)).toHaveLength(1);
+    expect(dependabot.match(/safe-patch-updates:/g)).toHaveLength(2);
+    expect(dependabot.match(/- minor\s+- patch/g)).toHaveLength(1);
+    expect(dependabot.match(/dependency-name: "\*"/g)).toHaveLength(3);
+    expect(dependabot.match(/"version-update:semver-major"/g)).toHaveLength(3);
+    expect(dependabot.match(/"version-update:semver-minor"/g)).toHaveLength(2);
   });
 });
