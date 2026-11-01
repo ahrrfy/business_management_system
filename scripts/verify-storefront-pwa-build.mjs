@@ -25,7 +25,9 @@ export const FORBIDDEN_ERP_CHUNK_PREFIXES = [
 ];
 
 function normalizedUrl(value) {
-  return String(value ?? "").replace(/^\.\//, "").replace(/^\//, "");
+  return String(value ?? "")
+    .replace(/^\.\//, "")
+    .replace(/^\//, "");
 }
 
 export function precacheUrlsFromServiceWorker(swSource) {
@@ -39,7 +41,10 @@ export function precacheUrlsFromServiceWorker(swSource) {
 
 function manifestKeyForSource(manifest, source) {
   if (manifest[source]) return source;
-  return Object.entries(manifest).find(([, entry]) => entry?.src === source)?.[0] ?? null;
+  return (
+    Object.entries(manifest).find(([, entry]) => entry?.src === source)?.[0] ??
+    null
+  );
 }
 
 function staticImportClosure(manifest, roots) {
@@ -65,49 +70,80 @@ function staticImportClosure(manifest, roots) {
 }
 
 export function assertStorefrontPrecacheClosure({ manifest, swSource }) {
-  const indexKey = manifestKeyForSource(manifest, INDEX_SOURCE);
-  const storefrontKey = manifestKeyForSource(manifest, STOREFRONT_SOURCE);
+  const indexKey =
+    manifestKeyForSource(manifest, "storefront.html") ??
+    manifestKeyForSource(manifest, INDEX_SOURCE);
+  const storefrontKey =
+    manifestKeyForSource(manifest, STOREFRONT_SOURCE) ??
+    Object.entries(manifest).find(
+      ([, entry]) =>
+        entry.name === "Storefront" && entry.isDynamicEntry === true,
+    )?.[0];
   if (!indexKey) throw new Error("STOREFRONT_PRECACHE_INDEX_ENTRY_MISSING");
-  if (!storefrontKey) throw new Error("STOREFRONT_PRECACHE_STOREFRONT_ENTRY_MISSING");
+  if (!storefrontKey)
+    throw new Error("STOREFRONT_PRECACHE_STOREFRONT_ENTRY_MISSING");
 
-  const requiredFiles = staticImportClosure(manifest, [indexKey, storefrontKey]);
+  const requiredFiles = staticImportClosure(manifest, [
+    indexKey,
+    storefrontKey,
+  ]);
   const precachedUrls = precacheUrlsFromServiceWorker(swSource);
   const missing = requiredFiles.filter((file) => !precachedUrls.has(file));
   if (missing.length > 0) {
-    throw new Error(`STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING:${missing.join(",")}`);
+    throw new Error(
+      `STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING:${missing.join(",")}`,
+    );
   }
 
-  const heavyAsset = [...precachedUrls].find((url) =>
-    /(?:^|\/)ort-[^/]*\.wasm$/i.test(url) ||
-    url.includes("/imgly-assets/") ||
-    url.startsWith("imgly-assets/"),
+  const heavyAsset = [...precachedUrls].find(
+    (url) =>
+      /(?:^|\/)ort-[^/]*\.wasm$/i.test(url) ||
+      url.includes("/imgly-assets/") ||
+      url.startsWith("imgly-assets/"),
   );
   if (heavyAsset) {
     throw new Error(`STOREFRONT_PRECACHE_HEAVY_ASSET_FORBIDDEN:${heavyAsset}`);
   }
 
   const forbiddenErpChunk = [...precachedUrls].find((url) => {
-    if (!url.startsWith("assets/") || (!url.endsWith(".js") && !url.endsWith(".css"))) {
+    if (
+      !url.startsWith("assets/") ||
+      (!url.endsWith(".js") && !url.endsWith(".css"))
+    ) {
       return false;
     }
     const base = url.slice("assets/".length);
-    return FORBIDDEN_ERP_CHUNK_PREFIXES.some((prefix) => base.startsWith(prefix));
+    return FORBIDDEN_ERP_CHUNK_PREFIXES.some((prefix) =>
+      base.startsWith(prefix),
+    );
   });
   if (forbiddenErpChunk) {
-    throw new Error(`STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${forbiddenErpChunk}`);
+    throw new Error(
+      `STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${forbiddenErpChunk}`,
+    );
   }
 
   const forbiddenAdminEntry = Object.entries(manifest)
     .filter(([key, entry]) => {
       const source = entry?.src ?? key;
-      return entry?.isDynamicEntry === true &&
+      return (
+        entry?.isDynamicEntry === true &&
         /^src\/pages\//.test(source) &&
-        source !== STOREFRONT_SOURCE;
+        ![
+          STOREFRONT_SOURCE,
+          "src/pages/LegalDocument.tsx",
+          "src/pages/JobApply.tsx",
+          "src/pages/ShelfPriceLookup.tsx",
+          "src/pages/MobileTurnstile.tsx",
+        ].includes(source)
+      );
     })
     .map(([, entry]) => normalizedUrl(entry.file))
     .find((file) => precachedUrls.has(file));
   if (forbiddenAdminEntry) {
-    throw new Error(`STOREFRONT_PRECACHE_ADMIN_ENTRY_FORBIDDEN:${forbiddenAdminEntry}`);
+    throw new Error(
+      `STOREFRONT_PRECACHE_ADMIN_ENTRY_FORBIDDEN:${forbiddenAdminEntry}`,
+    );
   }
 
   return {
@@ -125,23 +161,50 @@ function routeSegmentForCache(swSource, cacheName) {
   if (!cacheMatch) throw new Error(`STOREFRONT_SW_ROUTE_MISSING:${cacheName}`);
   const cacheIndex = cacheMatch.index;
   const routeStart = swSource.lastIndexOf("registerRoute", cacheIndex);
-  const routeEnd = swSource.indexOf("registerRoute", cacheIndex + cacheName.length);
-  if (routeStart < 0) throw new Error(`STOREFRONT_SW_ROUTE_INVALID:${cacheName}`);
+  const routeEnd = swSource.indexOf(
+    "registerRoute",
+    cacheIndex + cacheName.length,
+  );
+  if (routeStart < 0)
+    throw new Error(`STOREFRONT_SW_ROUTE_INVALID:${cacheName}`);
   return {
     start: routeStart,
-    source: swSource.slice(routeStart, routeEnd < 0 ? swSource.length : routeEnd),
+    source: swSource.slice(
+      routeStart,
+      routeEnd < 0 ? swSource.length : routeEnd,
+    ),
   };
 }
 
 export function assertStorefrontImageRuntimePolicy(swSource) {
-  const privateRoute = routeSegmentForCache(swSource, "private-images-no-cache");
-  const publicRoute = routeSegmentForCache(swSource, "store-images");
-  const apiRoute = routeSegmentForCache(swSource, "api-no-cache");
+  const privateRoute = routeSegmentForCache(
+    swSource,
+    swSource.includes("storefront-private-images-no-cache")
+      ? "storefront-private-images-no-cache"
+      : "private-images-no-cache",
+  );
+  const publicRoute = routeSegmentForCache(
+    swSource,
+    swSource.includes("storefront-store-images")
+      ? "storefront-store-images"
+      : "store-images",
+  );
+  const apiRoute = routeSegmentForCache(
+    swSource,
+    swSource.includes("storefront-api-no-cache")
+      ? "storefront-api-no-cache"
+      : "api-no-cache",
+  );
 
   if (privateRoute.source.includes("CacheFirst")) {
     throw new Error("STOREFRONT_SW_PRIVATE_IMAGE_CACHE_FORBIDDEN");
   }
-  for (const marker of ["inventory-product", "count-product", "kiosk-product", "NetworkOnly"]) {
+  for (const marker of [
+    "inventory-product",
+    "count-product",
+    "kiosk-product",
+    "NetworkOnly",
+  ]) {
     if (!privateRoute.source.includes(marker)) {
       throw new Error(`STOREFRONT_SW_PRIVATE_IMAGE_POLICY_INVALID:${marker}`);
     }
@@ -152,20 +215,31 @@ export function assertStorefrontImageRuntimePolicy(swSource) {
       throw new Error(`STOREFRONT_SW_PUBLIC_IMAGE_POLICY_INVALID:${marker}`);
     }
   }
-  for (const marker of ["inventory-product", "count-product", "kiosk-product"]) {
+  for (const marker of [
+    "inventory-product",
+    "count-product",
+    "kiosk-product",
+  ]) {
     if (publicRoute.source.includes(marker)) {
       throw new Error(`STOREFRONT_SW_PRIVATE_IMAGE_IN_PUBLIC_CACHE:${marker}`);
     }
   }
 
-  if (!apiRoute.source.includes("NetworkOnly") ||
-      !(privateRoute.start < publicRoute.start && publicRoute.start < apiRoute.start)) {
+  if (
+    !apiRoute.source.includes("NetworkOnly") ||
+    !(
+      privateRoute.start < publicRoute.start &&
+      publicRoute.start < apiRoute.start
+    )
+  ) {
     throw new Error("STOREFRONT_SW_API_FALLBACK_ORDER_INVALID");
   }
 }
 
 export function assertStorefrontPrecacheNavigationPolicy(swSource) {
-  if (!/(?:directoryIndex|["']directoryIndex["'])\s*:\s*null\b/.test(swSource)) {
+  if (
+    !/(?:directoryIndex|["']directoryIndex["'])\s*:\s*null\b/.test(swSource)
+  ) {
     throw new Error("STOREFRONT_SW_DIRECTORY_INDEX_MUST_BE_NULL");
   }
 }
@@ -182,17 +256,23 @@ export function verifyStorefrontPwaBuild(buildDirectory) {
 }
 
 async function main() {
-  if (process.argv.length > 3) throw new Error("STOREFRONT_PRECACHE_ARGUMENTS_INVALID");
-  const buildDirectory = path.resolve(process.argv[2] ?? "dist/public");
+  if (process.argv.length > 3)
+    throw new Error("STOREFRONT_PRECACHE_ARGUMENTS_INVALID");
+  const buildDirectory = path.resolve(process.argv[2] ?? "dist/storefront");
   const result = verifyStorefrontPwaBuild(buildDirectory);
   console.log(
     `storefront PWA artifact: OK static=${result.requiredFiles.length} precache=${result.precacheCount}`,
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main().catch((error) => {
-    console.error(`storefront PWA artifact: FAILED: ${error?.message ?? "UNKNOWN"}`);
+    console.error(
+      `storefront PWA artifact: FAILED: ${error?.message ?? "UNKNOWN"}`,
+    );
     process.exitCode = 1;
   });
 }

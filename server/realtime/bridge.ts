@@ -12,6 +12,8 @@ import {
   isBackgroundJobRunner,
   isClustered,
   isMultiWorker,
+  webRuntimeRole,
+  runtimeWorkerCounts,
 } from "../lib/clusterRole";
 import { logger } from "../logger";
 
@@ -29,6 +31,8 @@ export interface BridgeOptions {
 
 type ReleaseFrame = {
   kind:
+    | "work-drain-request"
+    | "work-drain-ack"
     | "pwa-release-hello"
     | "pwa-release-request"
     | "pwa-release-apply"
@@ -40,6 +44,7 @@ type ReleaseFrame = {
   ok?: boolean;
   expectedWorkerCount?: number;
   expiresAt?: number;
+  capabilities?: string[];
 };
 type ReleaseHandler = (event: RealtimeEvent) => boolean | Promise<boolean>;
 
@@ -50,6 +55,9 @@ export interface BridgeStatus {
   port: number;
   host: string;
   pendingOutbound?: number;
+  workerId: string;
+  expectedWorkerCount: number | null;
+  memberIds: string[];
 }
 
 export class RealtimeBridgeManager {
@@ -70,6 +78,9 @@ export class RealtimeBridgeManager {
   private pendingOutbound: string[] = [];
   private static readonly MAX_PENDING_OUTBOUND = 500;
   private expectedWorkerCount: number | null = null;
+  private requireSharedBridge = false;
+  private drainAcks = new Map<string, { socket: net.Socket; resolve: () => void }>();
+  private drainCapableSockets = new WeakSet<net.Socket>();
   private releaseHandler: ReleaseHandler | null = null;
   private releaseRequests = new Map<
     string,
@@ -107,11 +118,18 @@ export class RealtimeBridgeManager {
     this.port = options?.port ?? REALTIME_BRIDGE_PORT;
     if (options?.workerId) {
       this.workerId = options.workerId;
+    } else {
+      this.workerId = `${webRuntimeRole()}:${process.env.NODE_APP_INSTANCE ?? "fork"}:${randomUUID()}`;
     }
+
+    this.requireSharedBridge = webRuntimeRole() !== "legacy";
+    if (this.requireSharedBridge) runtimeWorkerCounts();
 
     const forceInMemory = options?.inMemoryOnly ?? false;
     const multi = options?.isMultiWorker ?? isMultiWorker();
     const isHub = options?.isHub ?? isBackgroundJobRunner();
+    if (this.requireSharedBridge && (forceInMemory || !multi || isHub !== isBackgroundJobRunner()))
+      throw new Error("Split runtime requires the shared admin hub and process-role bridge membership");
     const expected =
       options?.expectedWorkerCount ??
       (process.env.WEB_INSTANCES
@@ -139,7 +157,7 @@ export class RealtimeBridgeManager {
   }
 
   private startHub(): Promise<BridgeMode> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const srv = net.createServer((socket) => {
         // تغير العضوية أثناء الحاجز يلغي الإثبات بدلاً من إسقاط العامل الجديد بصمت.
         for (const id of Array.from(this.releaseBarriers.keys()))
@@ -159,6 +177,7 @@ export class RealtimeBridgeManager {
               const msg = JSON.parse(trimmed) as Partial<ReleaseFrame> & {
                 originWorkerId?: string;
               };
+              if (this.handleDrainFrame(msg, socket)) continue;
               if (this.handleReleaseFrame(msg, socket, false)) continue;
               if (msg && msg.event) {
                 // بث محلي لمشتركي هذا العامل
@@ -200,6 +219,11 @@ export class RealtimeBridgeManager {
       });
 
       srv.on("error", (err: NodeJS.ErrnoException) => {
+        if (this.requireSharedBridge) {
+          this.server = null;
+          reject(new Error(`Split realtime hub unavailable: ${err.code}`));
+          return;
+        }
         logger.warn(
           { code: err.code, message: err.message },
           "realtime_bridge.hub.listen_error_fallback_to_in_memory",
@@ -267,6 +291,7 @@ export class RealtimeBridgeManager {
           kind: "pwa-release-hello",
           id: this.workerId,
           workerId: this.workerId,
+          capabilities: ["work-drain-ack-v1"],
         });
         logger.info(
           { host: this.host, port: this.port },
@@ -298,6 +323,7 @@ export class RealtimeBridgeManager {
           const msg = JSON.parse(trimmed) as Partial<ReleaseFrame> & {
             originWorkerId?: string;
           };
+          if (this.handleDrainFrame(msg, socket)) continue;
           if (this.handleReleaseFrame(msg, socket, true)) continue;
           if (msg && msg.event) {
             // لا نعيد معالجة الحدث إذا كان هو نفس العامل الذي أطلقه
@@ -343,12 +369,13 @@ export class RealtimeBridgeManager {
       return;
     const toFlush = [...this.pendingOutbound];
     this.pendingOutbound = [];
-    for (const msg of toFlush) {
+    for (let index = 0; index < toFlush.length; index++) {
+      const msg = toFlush[index];
       try {
         this.clientSocket.write(msg);
       } catch (err) {
         logger.warn({ err }, "realtime_bridge.client.flush_write_error");
-        this.queuePendingMessage(msg);
+        for (const unsent of toFlush.slice(index)) this.queuePendingMessage(unsent);
         break;
       }
     }
@@ -520,8 +547,16 @@ export class RealtimeBridgeManager {
     if (typeof frame.id !== "string" || frame.id.length > 128) return true;
     const id = frame.id;
     if (fromHub && socket !== this.clientSocket) return true;
-    if (frame.kind === "pwa-release-hello" && !fromHub) {
-      this.registerSocketWorkerId(socket, frame.workerId ?? frame.id);
+    if (frame.kind === "pwa-release-hello") {
+      if (Array.isArray(frame.capabilities) && frame.capabilities.includes("work-drain-ack-v1"))
+        this.drainCapableSockets.add(socket);
+      if (!fromHub && this.registerSocketWorkerId(socket, frame.workerId ?? frame.id))
+        this.sendReleaseFrame(socket, {
+          kind: "pwa-release-hello",
+          id: this.workerId,
+          workerId: this.workerId,
+          capabilities: ["work-drain-ack-v1"],
+        });
       return true;
     }
     if (frame.kind === "pwa-release-request" && !fromHub && frame.event) {
@@ -706,14 +741,72 @@ export class RealtimeBridgeManager {
       port: this.port,
       host: this.host,
       pendingOutbound: this.pendingOutbound.length,
+      workerId: this.workerId,
+      expectedWorkerCount: this.expectedWorkerCount,
+      memberIds: [this.workerId, ...Array.from(this.socketWorkerIds.values())],
     };
   }
 
   /**
    * إيقاف وتشغيل الإغلاق النظيف لكافة المقابس والخوادم.
    */
-  async stop(): Promise<void> {
+  private handleDrainFrame(frame: Partial<ReleaseFrame>, socket: net.Socket): boolean {
+    if (frame.kind === "work-drain-request" && typeof frame.id === "string") {
+      // TCP order means preceding events already reached this peer's listeners.
+      socket.write(JSON.stringify({ kind: "work-drain-ack", id: frame.id }) + "\n");
+      return true;
+    }
+    if (frame.kind === "work-drain-ack" && typeof frame.id === "string") {
+      const pending = this.drainAcks.get(frame.id);
+      if (pending?.socket === socket) pending.resolve();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Split always requires the connected peer's ACK. Legacy pre-ACK peers keep
+   * best-effort semantics: flush TCP and complete its close handshake, without
+   * claiming delivery confirmation. Neither policy is durable outage delivery.
+   */
+  async drain(timeoutMs = 5_000): Promise<void> {
+    if (this.mode === "in_memory") return;
+    if (this.mode === "client" && (!this.clientSocket || !this.isConnectedToHub))
+      throw new Error("Realtime bridge drain unavailable: client disconnected");
+    this.flushPendingOutbound();
+    if (this.pendingOutbound.length) throw new Error("Realtime bridge drain has unsent events");
+    const sockets = this.mode === "client" ? [this.clientSocket!] : Array.from(this.connectedSockets);
+    await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => {
+      const requireAck = this.requireSharedBridge || this.drainCapableSockets.has(socket);
+      const id = randomUUID();
+      let finished = false;
+      const finish = (error?: Error) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        socket.off("close", closed); socket.off("error", failed);
+        this.drainAcks.delete(id);
+        if (error) reject(error); else resolve();
+      };
+      const closed = (hadError: boolean) => {
+        if (!requireAck && !hadError && socket.writableFinished) finish();
+        else finish(new Error("Realtime bridge drain disconnected"));
+      };
+      const failed = () => finish(new Error("Realtime bridge drain socket error"));
+      const timer = setTimeout(() => finish(new Error("Realtime bridge drain deadline exceeded")), timeoutMs);
+      if (requireAck) this.drainAcks.set(id, { socket, resolve: () => finish() });
+      socket.once("close", closed); socket.once("error", failed);
+      if (socket.destroyed) { finish(new Error("Realtime bridge drain disconnected")); return; }
+      if (requireAck)
+        socket.write(JSON.stringify({ kind: "work-drain-request", id }) + "\n", error => { if (error) failed(); });
+      else
+        socket.end();
+    })));
+  }
+
+  async stop(options?: { drain?: boolean; timeoutMs?: number }): Promise<void> {
     this.isStopping = true;
+    if (options?.drain) await this.drain(options.timeoutMs);
     for (const id of Array.from(this.releaseBarriers.keys()))
       this.finishReleaseBarrier(id, false);
     for (const id of Array.from(this.releaseRequests.keys()))
@@ -764,5 +857,5 @@ export const setBridgeReleaseHandler = (handler: ReleaseHandler) =>
   realtimeBridge.setReleaseHandler(handler);
 export const onBridgeEvent = (listener: (event: RealtimeEvent) => void) =>
   realtimeBridge.subscribe(listener);
-export const stopRealtimeBridge = () => realtimeBridge.stop();
+export const stopRealtimeBridge = (options?: { drain?: boolean; timeoutMs?: number }) => realtimeBridge.stop(options);
 export const getBridgeStatus = () => realtimeBridge.getStatus();

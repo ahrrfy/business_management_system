@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { storeConversionDailyMetrics, storeRecommendationDailyMetrics, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { resolveStorefrontBranchId } from "../storefrontService";
+import { trackResourceTail } from "../../lib/resourceAdmission";
 
 export type StoreConversionEvent = "PRODUCT_VIEW" | "ADD_TO_CART" | "BEGIN_CHECKOUT" | "ORDER_COMPLETED";
 
@@ -24,29 +25,31 @@ export async function recordStoreConversionMetric(input: {
   event: StoreConversionEvent;
   branchId?: number;
 }): Promise<{ ok: true }> {
-  try {
-    const db = getDb();
-    if (!db) return { ok: true };
-    const branchId = await resolveStorefrontBranchId(input.branchId);
-    const metricDate = todayYmdBaghdad();
-    const productViews = input.event === "PRODUCT_VIEW" ? 1 : 0;
-    const cartAdds = input.event === "ADD_TO_CART" ? 1 : 0;
-    const checkoutStarts = input.event === "BEGIN_CHECKOUT" ? 1 : 0;
-    const completedOrders = input.event === "ORDER_COMPLETED" ? 1 : 0;
-    await db.execute(sql`
-      INSERT INTO storeConversionDailyMetrics
-        (branchId, metricDate, productViews, cartAdds, checkoutStarts, completedOrders)
-      VALUES (${branchId}, ${metricDate}, ${productViews}, ${cartAdds}, ${checkoutStarts}, ${completedOrders})
-      ON DUPLICATE KEY UPDATE
-        productViews = productViews + ${productViews},
-        cartAdds = cartAdds + ${cartAdds},
-        checkoutStarts = checkoutStarts + ${checkoutStarts},
-        completedOrders = completedOrders + ${completedOrders}
-    `);
-  } catch {
-    // القياس أفضل-جهد فقط؛ لا يكسر عملية الطلب عند خلل قاعدة البيانات/التحليلات.
-  }
-  return { ok: true };
+  return trackResourceTail(async () => {
+    try {
+      const db = getDb();
+      if (!db) return { ok: true };
+      const branchId = await resolveStorefrontBranchId(input.branchId);
+      const metricDate = todayYmdBaghdad();
+      const productViews = input.event === "PRODUCT_VIEW" ? 1 : 0;
+      const cartAdds = input.event === "ADD_TO_CART" ? 1 : 0;
+      const checkoutStarts = input.event === "BEGIN_CHECKOUT" ? 1 : 0;
+      const completedOrders = input.event === "ORDER_COMPLETED" ? 1 : 0;
+      await db.execute(sql`
+        INSERT INTO storeConversionDailyMetrics
+          (branchId, metricDate, productViews, cartAdds, checkoutStarts, completedOrders)
+        VALUES (${branchId}, ${metricDate}, ${productViews}, ${cartAdds}, ${checkoutStarts}, ${completedOrders})
+        ON DUPLICATE KEY UPDATE
+          productViews = productViews + ${productViews},
+          cartAdds = cartAdds + ${cartAdds},
+          checkoutStarts = checkoutStarts + ${checkoutStarts},
+          completedOrders = completedOrders + ${completedOrders}
+      `);
+    } catch {
+      // القياس أفضل-جهد فقط؛ لا يكسر عملية الطلب عند خلل قاعدة البيانات/التحليلات.
+    }
+    return { ok: true as const };
+  });
 }
 
 /** يسجل نقرة توصية كعداد يومي حسب المنتج المصدر والمقترح، دون IP أو جلسة أو هوية زائر. */

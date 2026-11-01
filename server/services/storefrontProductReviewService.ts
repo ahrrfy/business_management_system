@@ -7,6 +7,7 @@ import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { createAppNotification } from "./appNotificationService";
+import { mapResourceWork, trackResourceTail } from "../lib/resourceAdmission";
 
 function cleanComment(value: string) {
   const comment = value.trim().replace(/\s+/g, " ");
@@ -65,27 +66,29 @@ export async function listStorefrontProductReviews(productId: number) {
 }
 
 async function notifyManagersAboutReview(db: NonNullable<ReturnType<typeof getDb>>, reviewId: number, rating: number, reviewerDisplay: string) {
-  try {
-    const recipients = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
+  return trackResourceTail(async () => {
+    try {
+      const recipients = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
 
-    await Promise.all(recipients.map((recipient) => createAppNotification({
-      userId: Number(recipient.id),
-      kind: "APPROVAL_REQUIRED",
-      title: "مراجعة منتج جديدة بانتظار الاعتماد",
-      body: `وصل تقييم جديد (${rating} نجوم) من ${reviewerDisplay} بانتظار الاعتماد في المتجر.`,
-      route: "/store-admin?tab=reviews",
-      eventKey: `storefront-review:${reviewId}:user:${recipient.id}`,
-      entityType: "storefrontProductReview",
-      entityId: reviewId,
-      requiresAction: true,
-      push: true,
-    })));
-  } catch {
-    // Best-effort notification; do not fail the persisted review
-  }
+      await mapResourceWork(recipients, 2, (recipient) => createAppNotification({
+        userId: Number(recipient.id),
+        kind: "APPROVAL_REQUIRED",
+        title: "مراجعة منتج جديدة بانتظار الاعتماد",
+        body: `وصل تقييم جديد (${rating} نجوم) من ${reviewerDisplay} بانتظار الاعتماد في المتجر.`,
+        route: "/store-admin?tab=reviews",
+        eventKey: `storefront-review:${reviewId}:user:${recipient.id}`,
+        entityType: "storefrontProductReview",
+        entityId: reviewId,
+        requiresAction: true,
+        push: true,
+      }).catch(() => undefined));
+    } catch {
+      // Best-effort notification; do not fail the persisted review
+    }
+  });
 }
 
 /** يقبل مراجعة واحدة للمنتج في كل طلب مُسلّم من مالك جلسة الهاتف المتحققة. */

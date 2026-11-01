@@ -16,7 +16,54 @@
  * لا في: عمّال العنقود 1..N-1. هكذا تعمل كل وظيفةٍ خلفيّةٍ **مرّةً واحدةً بالضبط** على مستوى
  * الخادم مهما بلغ عدد العمّال.
  */
-export function isBackgroundJobRunner(env: NodeJS.ProcessEnv = process.env): boolean {
+export type WebRuntimeRole = "legacy" | "public" | "admin";
+
+export function webRuntimeRole(
+  env: NodeJS.ProcessEnv = process.env,
+): WebRuntimeRole {
+  const role = env.WEB_RUNTIME_ROLE || "legacy";
+  if (role !== "legacy" && role !== "public" && role !== "admin")
+    throw new Error("Invalid WEB_RUNTIME_ROLE");
+  return role;
+}
+
+export function runtimeWorkerCounts(
+  env: NodeJS.ProcessEnv = process.env,
+  context: "http" | "database" = "http",
+) {
+  const number = (name: string, fallback: number) => {
+    const value = Number(env[name] || fallback);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 32)
+      throw new Error(`Invalid ${name}`);
+    return value;
+  };
+  const split = env.WEB_RUNTIME_MODE === "split";
+  if (
+    env.WEB_RUNTIME_MODE &&
+    !["legacy", "split"].includes(env.WEB_RUNTIME_MODE)
+  )
+    throw new Error("Invalid WEB_RUNTIME_MODE");
+  const publicWorkers = split ? number("PUBLIC_WEB_INSTANCES", 1) : 0;
+  const adminWorkers = split
+    ? number("ADMIN_WEB_INSTANCES", 2)
+    : number("WEB_INSTANCES", 2);
+  const total = number("WEB_INSTANCES", split ? 3 : 2);
+  if (
+    split &&
+    (total !== publicWorkers + adminWorkers || (webRuntimeRole(env) === "legacy" && (context === "http" || !!env.WEB_RUNTIME_ROLE)))
+  )
+    throw new Error(
+      "Split runtime requires an explicit role and global WEB_INSTANCES equal to both groups",
+    );
+  if (!split && webRuntimeRole(env) !== "legacy")
+    throw new Error("Explicit runtime roles require WEB_RUNTIME_MODE=split");
+  return { split, publicWorkers, adminWorkers, total };
+}
+
+export function isBackgroundJobRunner(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (webRuntimeRole(env) === "public") return false;
   const instance = env.NODE_APP_INSTANCE;
   return instance === undefined || instance === "0";
 }
@@ -41,6 +88,7 @@ export function isClustered(env: NodeJS.ProcessEnv = process.env): boolean {
  * قيمةٌ مجهولة) تُعامَل كعنقودٍ متعدّد.
  */
 export function isMultiWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (webRuntimeRole(env) !== "legacy") return true;
   const n = env.WEB_INSTANCES;
   if (n === undefined || n === "" || n === "1") return false;
   return true;

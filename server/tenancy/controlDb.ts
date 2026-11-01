@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import * as controlSchema from "./controlSchema";
+import { controlDbPoolLimit, validateTenantConnectionBudget } from "../db";
 
 /**
  * اتصال مستقلّ لقاعدة التحكّم (erp_control) — لا علاقة له بـ`server/db.ts`/`getDb()` ولا
@@ -14,10 +15,11 @@ let _pool: mysql.Pool | null = null;
 let _db: ReturnType<typeof createControlDb> | null = null;
 
 function createControlDb(url: string) {
+  if (process.env.WEB_RUNTIME_MODE === "split") validateTenantConnectionBudget();
   _pool = mysql.createPool({
     uri: url,
     timezone: "Z",
-    connectionLimit: Number(process.env.CONTROL_DB_POOL_LIMIT ?? 5),
+    connectionLimit: controlDbPoolLimit(),
     enableKeepAlive: true,
     keepAliveInitialDelay: 10_000,
     connectTimeout: 10_000,

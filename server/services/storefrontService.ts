@@ -29,6 +29,8 @@ import { getDb } from "../db";
 import { loadStorefrontSearchMatches } from "./storefrontSearchIndex";
 import { matchesStorefrontRefinements, refineStorefrontProductIds, type StorefrontCatalogRefinements } from "./storefrontCatalogRefinements";
 import { createTtlCache } from "../lib/ttlCache";
+import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
+import { storefrontResourceAdmission } from "../lib/resourceAdmission";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 import { decodeDataUrl, productImageUrl, withPublicProductImageWidth } from "../imageRoute";
@@ -361,25 +363,33 @@ const STOREFRONT_SOLD_COUNTS_TTL_MS = 5 * 60_000;
 // واحد يجعل زاحفاً ببضع مئات مصطلحاتٍ يطرد مفاتيحَ التصفّح الساخنة باستمرار، فينهار المكسب
 // كلّه إلى المسح الكامل. الفصل يحصر أثر أيّ إغراقٍ بالبحث داخل حصّته وحدها (مراجعة ٣١/٨).
 interface CatalogRanking { ids: readonly number[]; brands: string[] }
+const pendingCatalogLimit = () => storefrontResourceAdmission().policy.mode === "enforce" ? 8 : undefined;
 const candidateOrderCache = createTtlCache<string, CatalogRanking>({
   ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
   maxEntries: 60,
+  maxInFlight: pendingCatalogLimit,
 });
 const candidateSearchCache = createTtlCache<string, CatalogRanking>({
   ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
   maxEntries: 40,
+  maxInFlight: pendingCatalogLimit,
 });
 const categoriesCache = createTtlCache<string, StorefrontCategory[]>({
   ttlMs: STOREFRONT_CATEGORIES_TTL_MS,
   maxEntries: 8,
+  maxInFlight: pendingCatalogLimit,
 });
 const soldCountsCache = createTtlCache<string, Map<number, number>>({
   ttlMs: STOREFRONT_SOLD_COUNTS_TTL_MS,
   maxEntries: 120,
+  maxInFlight: pendingCatalogLimit,
 });
+export function storefrontCacheResourceMetrics() {
+  return { candidates: candidateOrderCache.snapshot(), search: candidateSearchCache.snapshot(), categories: categoriesCache.snapshot(), sold: soldCountsCache.snapshot() };
+}
 
 /** الاختبارات تتحقّق من الكتالوج بعد كتاباتها مباشرةً — الكاش يعمى عنها. */
-const storefrontCacheDisabled = (): boolean => process.env.NODE_ENV === "test";
+const storefrontCacheDisabled = (): boolean => !storefrontReadCacheEnabled();
 
 const companyScope = (): string => String(getCurrentCompanyId() ?? 0);
 
@@ -540,7 +550,7 @@ async function attachBundleComponentImages(
   const componentProductIds = Array.from(new Set(components.map((row) => Number(row.componentProductId))));
   // استعلامان مجمّعان بدلاً من N+1 لكل مكوّن/بكج. الصورة الخاصة بالمتغيّر تتقدّم حتى لو لم
   // تكن primary (هي بالضبط صورة اللون)، ثم fallback لصورة المنتج الرئيسية.
-  const [variantImages, productPrimaryImages] = await Promise.all([
+  const imageResults = await Promise.allSettled([
     db
       .select({ id: productImages.id, variantId: productImages.variantId, url: productImages.url, sortOrder: productImages.sortOrder })
       .from(productImages)
@@ -557,6 +567,12 @@ async function attachBundleComponentImages(
       ))
       .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
   ]);
+  // Drain both actual SQL reads even when one fails; admission must not reopen
+  // capacity while its sibling is still executing.
+  if (imageResults[0].status === "rejected") throw imageResults[0].reason;
+  if (imageResults[1].status === "rejected") throw imageResults[1].reason;
+  const variantImages = imageResults[0].value;
+  const productPrimaryImages = imageResults[1].value;
 
   const firstVariantImage = new Map<number, { id: number; url: string }>();
   for (const image of variantImages) {
@@ -690,7 +706,7 @@ async function attachSoldCounts<T extends { productId: number; soldCount: number
   // دلالته اليوم. المفتاح مجموعةُ المنتجات مرتّبةً ⇒ الصفحة الأولى (الأشيع) مفتاحٌ واحد.
   const map = storefrontCacheDisabled()
     ? await loadCounts()
-    : await soldCountsCache.get(
+    : await storefrontCacheGet(soldCountsCache, "sold",
         `${companyScope()}:${[...productIds].sort((a, b) => a - b).join(",")}`,
         loadCounts,
       );
@@ -932,7 +948,9 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
-    : await (searchKey || productIdsKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache).get(
+    : await storefrontCacheGet(
+      searchKey || productIdsKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache,
+      searchKey || productIdsKey || seedKey || opts.brand?.trim() ? "search" : "candidates",
       JSON.stringify([companyScope(), branchId, opts.categoryId ?? "", availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", opts.priceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
         loadOrderedIds,
       );
@@ -1004,7 +1022,7 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
   // ولا يستعمل من ذلك التوفّر إلا مقارنةً منطقيةً واحدة. نتيجته صغيرة وثابتة نسبياً ⇒ كاشٌ
   // بدقيقة يخدم كلّ الزوّار المتزامنين بمسحٍ واحد (فحص الحمل ٣١/٨/٢٦).
   if (storefrontCacheDisabled()) return computeStorefrontCategories(db, branchId);
-  return categoriesCache.get(`${companyScope()}:${branchId}`, () =>
+  return storefrontCacheGet(categoriesCache, "categories", `${companyScope()}:${branchId}`, () =>
     computeStorefrontCategories(db, branchId),
   );
 }

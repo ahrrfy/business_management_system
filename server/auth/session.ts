@@ -496,16 +496,29 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
     return { user: null, sessionId: null, nativeClientId: null };
   }
 
-  const [rows, srows] = await Promise.all([
-    db.select().from(users).where(eq(users.id, session.uid)).limit(1),
-    hasSid
-      ? db
-          .select()
-          .from(userSessions)
-          .where(eq(userSessions.id, session.sid as number))
-          .limit(1)
-      : Promise.resolve([] as UserSession[]),
-  ]);
+  const queries = [
+    Promise.resolve(
+      db.select().from(users).where(eq(users.id, session.uid)).limit(1),
+    ),
+    Promise.resolve(
+      hasSid
+        ? db
+            .select()
+            .from(userSessions)
+            .where(eq(userSessions.id, session.sid as number))
+            .limit(1)
+        : Promise.resolve([] as UserSession[]),
+    ),
+  ] as const;
+  let rows: User[], srows: UserSession[];
+  try {
+    [rows, srows] = await Promise.all(queries);
+  } catch (error) {
+    // Context may catch authentication failures. Keep its promise pending until
+    // every launched SQL sibling settles, preserving the original first error.
+    await Promise.allSettled(queries);
+    throw error;
+  }
 
   const user = rows[0];
   if (!validateUserForSession(user, (session as any).tokenVersion))

@@ -19,6 +19,7 @@ import {
   ATOMIC_PERMISSION_DEFINITIONS,
 } from "@shared/atomicPermissions";
 import { initTRPC, TRPCError } from "@trpc/server";
+import { withStorefrontProcedureWork } from "./middleware/storefrontAdmission";
 import { canViewOperationData, hasOperationPolicy, operationRecordScope, type OperationUser } from "@shared/operationPermissions";
 import { assertOperationAuthorized, canonicalOperationAllowed } from "./operationAuthorization";
 import superjson from "superjson";
@@ -141,44 +142,46 @@ const PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS = new Set<string>([
 ]);
 
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
-  if (
-    type !== "mutation" ||
-    path.startsWith("platformAdmin.") ||
-    PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS.has(path)
-  ) {
-    return next();
-  }
+  return withStorefrontProcedureWork(ctx.req, ctx.res, path, ctx.user != null, async () => {
+    if (
+      type !== "mutation" ||
+      path.startsWith("platformAdmin.") ||
+      PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS.has(path)
+    ) {
+      return next();
+    }
 
-  // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
-  const auditInput = input === undefined ? await getRawInput() : input;
-  const refresh = await withFinancialRefreshScope(() => withMutationAuditScope(() => next()));
-  const { value: result, specializedAuditWritten } = refresh.value;
-  // Branch-bound returns cannot affect a foreign branch. Owners/admins and
-  // composite workflows (e.g. transfers) retain the company-wide fallback.
-  const scopedReturn = path.startsWith("returns.") && ctx.user != null && !canCrossBranches(ctx.user);
-  if (result.ok && isFinancialMutation(path) && (!scopedReturn || !refresh.scheduled)) {
-    scheduleFinancialRefresh(scopedReturn && ctx.user?.branchId != null
-      ? Number(ctx.user.branchId) : null);
-  }
-  const isPublicAuthEntry = PUBLIC_AUTH_ENTRY_PATHS.has(path);
-  // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
-  // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.
-  const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null && !isPublicAuthEntry;
-  if (shouldWriteAutomatic) {
-    const outcome = result.ok ? "SUCCESS" : "FAILURE";
-    const actorId = isPublicAuthEntry ? null : (ctx.user?.id ?? null);
-    const auditCtx = isPublicAuthEntry || actorId == null ? { ...ctx, user: null } : ctx;
-    await logAudit(
-      auditCtx,
-      buildAutomaticAuditData(path, auditInput, result.ok ? result.data : undefined, {
-        outcome,
-        actor: isPublicAuthEntry
-          ? automaticActorForProcedure(path, false)
-          : automaticActorForProcedure(path, ctx.user != null),
-      }),
-    );
-  }
-  return result;
+    // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
+    const auditInput = input === undefined ? await getRawInput() : input;
+    const refresh = await withFinancialRefreshScope(() => withMutationAuditScope(() => next()));
+    const { value: result, specializedAuditWritten } = refresh.value;
+    // Branch-bound returns cannot affect a foreign branch. Owners/admins and
+    // composite workflows (e.g. transfers) retain the company-wide fallback.
+    const scopedReturn = path.startsWith("returns.") && ctx.user != null && !canCrossBranches(ctx.user);
+    if (result.ok && isFinancialMutation(path) && (!scopedReturn || !refresh.scheduled)) {
+      scheduleFinancialRefresh(scopedReturn && ctx.user?.branchId != null
+        ? Number(ctx.user.branchId) : null);
+    }
+    const isPublicAuthEntry = PUBLIC_AUTH_ENTRY_PATHS.has(path);
+    // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
+    // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.
+    const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null && !isPublicAuthEntry;
+    if (shouldWriteAutomatic) {
+      const outcome = result.ok ? "SUCCESS" : "FAILURE";
+      const actorId = isPublicAuthEntry ? null : (ctx.user?.id ?? null);
+      const auditCtx = isPublicAuthEntry || actorId == null ? { ...ctx, user: null } : ctx;
+      await logAudit(
+        auditCtx,
+        buildAutomaticAuditData(path, auditInput, result.ok ? result.data : undefined, {
+          outcome,
+          actor: isPublicAuthEntry
+            ? automaticActorForProcedure(path, false)
+            : automaticActorForProcedure(path, ctx.user != null),
+        }),
+      );
+    }
+    return result;
+  });
 });
 
 const DELIVERY_PAYLOAD_OPERATION_PATHS = new Set([

@@ -7,6 +7,46 @@ let activationRequest = null;
 function activateAfterStreamRelease() {
   if (activationRequest) return activationRequest;
   const request = Promise.resolve().then(async () => {
+    // A different tab may be sending an order, or keeping a lost-response retry key.
+    // A checkout retry key survives navigation to legal/account pages. Check all
+    // same-origin windows, including non-responding legacy clients.
+    const windows = await self.clients.matchAll({
+      type: "window",
+      includeUncontrolled: true,
+    });
+    const checks = await Promise.all(
+      windows
+        .filter((client) => {
+          try {
+            return new URL(client.url).origin === self.location.origin;
+          } catch {
+            return true;
+          } // Unknown window state must veto rather than bypass.
+        })
+        .map(
+          (client) =>
+            new Promise((resolve) => {
+              const channel = new MessageChannel();
+              const finish = (safe) => {
+                clearTimeout(timer);
+                channel.port1.close();
+                resolve(safe);
+              };
+              const timer = setTimeout(() => finish(false), 2000);
+              channel.port1.onmessage = (event) =>
+                finish(event.data?.safe === true);
+              try {
+                client.postMessage({ type: "PWA_CHECK_ACTIVATION" }, [
+                  channel.port2,
+                ]);
+              } catch {
+                finish(false);
+              }
+            }),
+        ),
+    );
+    if (checks.some((safe) => !safe))
+      throw new Error("PWA_CHECKOUT_UNRESOLVED");
     // العامل القديم قد يحتجز جسماً متدفقاً عبر NetworkOnly. نحرر قناة هذا
     // الحساب عبر العمال قبل التفعيل؛ لا نمس البيانات أو التسجيل أو التخزين.
     const abort = new AbortController();
@@ -32,6 +72,9 @@ function activateAfterStreamRelease() {
     await self.skipWaiting();
   });
   activationRequest = request;
+  void request.catch(() => {
+    if (activationRequest === request) activationRequest = null;
+  });
   return request;
 }
 

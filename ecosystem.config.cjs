@@ -43,6 +43,13 @@ const provisionWorkerEnvironment = Object.freeze(
  * `undefined` قد يصل العملية نصّاً `"undefined"` فيرمي `boundedIntEnv` عند الإقلاع.
  */
 const webTunableKeys = Object.freeze([
+  "PUBLIC_DB_POOL_LIMIT", "ADMIN_DB_POOL_LIMIT", "DB_WEB_CONNECTION_BUDGET",
+  "DB_AUX_CONNECTION_BUDGET", "DB_RUNTIME_EXTRA_WORKERS", "DB_MAX_TENANT_POOLS_PER_WORKER",
+  "DB_TENANT_POOL_IDLE_MS", "CONTROL_DB_POOL_LIMIT",
+  "STOREFRONT_RESOURCE_MODE", "STOREFRONT_RESOURCE_ACTIVE_COST", "STOREFRONT_RESOURCE_PUBLIC_COST",
+  "STOREFRONT_RESOURCE_READ_COST", "STOREFRONT_RESOURCE_ORDER_COST", "STOREFRONT_RESOURCE_QUEUE",
+  "STOREFRONT_RESOURCE_QUEUE_COST", "STOREFRONT_RESOURCE_WAIT_MS", "STOREFRONT_RESOURCE_READ_QUEUE",
+  "STOREFRONT_RESOURCE_READ_QUEUE_COST",
   "DB_POOL_LIMIT",
   "MYSQL_MAX_CONNECTIONS",
   "DB_CONNECTION_RESERVE",
@@ -190,6 +197,8 @@ module.exports = {
         NODE_ENV: "production",
         // منطقة العملية UTC لتطابق جلسة القاعدة (UTC) ⇒ فلترة التواريخ حتمية مستقلّة عن منطقة المضيف.
         TZ: "UTC",
+        // Independent content-addressed frontend; missing on first rollout uses the legacy shell.
+        STOREFRONT_STATIC_ROOT: path.join(__dirname, ".runtime/storefront-current"),
         // ارفع threadpool الافتراضي (٤) كي تتحمّل عملية Node دفعات طلبات الأصول المتزامنة:
         // express.static (fs.readFile) و compression (gzip) يتشاركان نفس الـpool، فدفعة ٨٠+
         // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
@@ -260,3 +269,48 @@ module.exports = {
     },
   ],
 };
+
+// A role is a process capability boundary, independent of host headers. Both
+// groups use the same immutable artifact and GLOBAL membership count. Default
+// legacy remains unchanged; max_memory_restart is not a hard memory reservation.
+const runtimeMode = process.env.WEB_RUNTIME_MODE || "legacy";
+if (!["legacy", "split"].includes(runtimeMode)) throw new Error("Invalid WEB_RUNTIME_MODE");
+const baseWeb = module.exports.apps[0];
+baseWeb.env.WEB_RUNTIME_MODE = runtimeMode;
+baseWeb.env.WEB_RUNTIME_ROLE = "legacy";
+if (runtimeMode === "split") {
+  const positive = (key, fallback, max = 32) => {
+    const value = Number(process.env[key] || fallback);
+    if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new Error(`Invalid ${key}`);
+    return value;
+  };
+  const publicCount = positive("PUBLIC_WEB_INSTANCES", 1);
+  const adminCount = positive("ADMIN_WEB_INSTANCES", 2);
+  const total = positive("WEB_INSTANCES", 3);
+  const publicPort = positive("PUBLIC_PORT", 3001, 65535);
+  const adminPort = positive("ADMIN_PORT", 3000, 65535);
+  // Loader-only knob: publish the effective wait under the existing server key.
+  // Public has its own finite default, independent of the generic admin/legacy wait.
+  const publicResourceWaitMs = positive("PUBLIC_STOREFRONT_RESOURCE_WAIT_MS", 900, 5000);
+  if (total !== publicCount + adminCount || publicPort !== 3001 || adminPort !== 3000)
+    throw new Error("Invalid split runtime worker/port topology");
+  const group = (role, instances, port) => ({
+    ...baseWeb,
+    name: `erp-${role}`,
+    instances,
+    error_file: `logs/erp-${role}-error.log`,
+    out_file: `logs/erp-${role}-out.log`,
+    env: {
+      ...baseWeb.env,
+      WEB_RUNTIME_ROLE: role,
+      WEB_INSTANCES: String(total),
+      PUBLIC_WEB_INSTANCES: String(publicCount),
+      ADMIN_WEB_INSTANCES: String(adminCount),
+      HOST: "127.0.0.1",
+      ALLOW_PUBLIC_BIND: "0",
+      PORT: String(port),
+      ...(role === "public" ? { STOREFRONT_RESOURCE_WAIT_MS: String(publicResourceWaitMs) } : {}),
+    },
+  });
+  module.exports.apps.splice(0, 1, group("admin", adminCount, adminPort), group("public", publicCount, publicPort));
+}

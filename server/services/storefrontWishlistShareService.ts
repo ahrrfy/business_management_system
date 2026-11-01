@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { storefrontWishlistShares } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { storefrontProduct, type StorefrontProduct } from "./storefrontService";
+import { mapResourceWork } from "../lib/resourceAdmission";
 
 const WISHLIST_SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SHARED_PRODUCTS = 60;
@@ -24,10 +25,10 @@ async function publishedShareableProductIds(productIds: number[]) {
   const BATCH_SIZE = 6;
   for (let offset = 0; offset < productIds.length; offset += BATCH_SIZE) {
     const batch = productIds.slice(offset, offset + BATCH_SIZE);
-    const resolved = await Promise.all(batch.map(async (productId) => ({
+    const resolved = await mapResourceWork(batch, 2, async (productId) => ({
       productId,
       product: await storefrontProduct(productId),
-    })));
+    }));
     accepted.push(...resolved.filter((entry) => entry.product != null).map((entry) => entry.productId));
   }
   return accepted;
@@ -90,7 +91,7 @@ export async function resolveStorefrontWishlistShare(token: string): Promise<{ e
   const share = await getStorefrontWishlistShare(token);
   const items: StorefrontProduct[] = [];
   for (let offset = 0; offset < share.productIds.length; offset += 4) {
-    const batch = await Promise.all(share.productIds.slice(offset, offset + 4).map((productId) => storefrontProduct(productId)));
+    const batch = await mapResourceWork(share.productIds.slice(offset, offset + 4), 2, (productId) => storefrontProduct(productId));
     items.push(...batch.filter((item): item is StorefrontProduct => item != null));
   }
   return { expiresAt: share.expiresAt, items };

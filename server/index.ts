@@ -1,3 +1,4 @@
+import { runtimeWorkDrain, runtimeDrainBoundary } from "./lib/workDrain";
 import "dotenv/config";
 import { initSentry, Sentry } from "./sentry";
 // تهيئة Sentry قبل أي شيء (لا أثر إن لم يُضبط DSN).
@@ -11,6 +12,8 @@ if (process.env.NODE_ENV === "production") delete process.env.DB_ROOT_PW;
 if (process.env.NODE_ENV === "production") delete process.env.ERP_INVENTORY_CONTROL_DATABASE_URL;
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { createPublicImageAdmission, createStorefrontAdmission, storefrontResourceAdmission, withStorefrontContextWork } from "./middleware/storefrontAdmission";
+import { storefrontCacheResourceMetrics } from "./services/storefrontService";
 import { sql } from "drizzle-orm";
 import express, {
   type NextFunction,
@@ -60,7 +63,9 @@ import {
   isPublicStorefrontRequest,
   publicStorefrontHostBoundary,
 } from "./middleware/publicStorefrontHost";
-import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
+import { isBackgroundJobRunner, isClustered, runtimeWorkerCounts, webRuntimeRole } from "./lib/clusterRole";
+import { createAdminPublicHttpBoundary, isPublicHttpWork } from "./middleware/runtimeBoundary";
+import { getBridgeStatus } from "./realtime/bridge";
 import {
   realtimeRouter,
   initRealtimeBridge,
@@ -117,6 +122,7 @@ async function findAvailablePort(
 }
 
 async function startServer() {
+  const runtimeTopology = runtimeWorkerCounts();
   // فشل سريع: سرّ الجلسات مفقود/ضعيف ⇒ توكنات قابلة للتزوير. أوقف الإقلاع بدل العمل بثغرة.
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret || jwtSecret.length < 32) {
@@ -148,9 +154,10 @@ async function startServer() {
     host: process.env.HOST,
     allowPublicBind: process.env.ALLOW_PUBLIC_BIND,
   });
+  if (runtimeTopology.split && !isLoopbackHost(host)) throw new Error("Split runtime requires loopback listeners");
 
   // Validate the complete tenant/control connection budget before opening the HTTP port.
-  if (isMultiTenantModeActive()) validateTenantConnectionBudget();
+  if (isMultiTenantModeActive() || runtimeTopology.split) validateTenantConnectionBudget();
   await awaitInventoryActivationRelease({
     name: "erp-server",
     bundle: fileURLToPath(import.meta.url),
@@ -162,18 +169,6 @@ async function startServer() {
       return { database: row.databaseName, serverUuid: row.serverUuid };
     },
   });
-  void sweepStaleRestoreArtifacts()
-    .then(
-      (removed) =>
-        removed > 0 &&
-        logger.warn({ removed }, "restore.stale_artifacts.removed"),
-    )
-    .catch((err) =>
-      logger.warn({ err }, "restore.stale_artifacts.sweep_failed"),
-    );
-  void selfHealDivergedProductChannelLabels().catch((err) =>
-    logger.warn({ err }, "catalog.channel_labels.self_heal_failed"),
-  );
 
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
@@ -183,9 +178,21 @@ async function startServer() {
   // يجب ضبطه قبل أول app.use: Express ينشئ الراوتر الداخلي عند أول middleware
   // ويجمّد قيمة caseSensitive حينها؛ الضبط اللاحق لا يغيّر الراوتر القائم.
   app.set("case sensitive routing", true);
+  app.use(runtimeDrainBoundary());
   // alarabiya.online سطح العملاء فقط؛ لا يكفي تحويل React لأن API يظل قابلاً للوصول مباشرةً.
   // يُركَّب قبل محللات الجسم وtRPC كي يُرفض API الداخلي مبكراً وبلا عمل قاعدة بيانات.
   app.use(publicStorefrontHostBoundary);
+  // Split clients never accept public work while isolated from the admin hub.
+  app.use((req, res, next) => {
+    if (webRuntimeRole() !== "public" || req.path === "/healthz") return next();
+    const bridge = getBridgeStatus();
+    if (bridge.mode !== "client" || !bridge.isConnectedToHub) {
+      res.setHeader("Retry-After", "1");
+      res.status(503).end();
+      return;
+    }
+    next();
+  });
   const server = createServer(app);
   // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
   //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).
@@ -479,7 +486,13 @@ async function startServer() {
           memoryRssBytes: mem.rss,
           heapUsedBytes: mem.heapUsed,
           heapTotalBytes: mem.heapTotal,
+          externalBytes: mem.external,
+          cpuUsage: process.cpuUsage(),
+          runtimeRole: webRuntimeRole(),
+          realtimeBridge: getBridgeStatus(),
           uptimeSeconds: Math.floor(process.uptime()),
+          storefrontResources: storefrontResourceAdmission().snapshot(),
+          storefrontCache: storefrontCacheResourceMetrics(),
         },
       });
     } catch (e) {
@@ -756,16 +769,21 @@ async function startServer() {
   // بقية معالجة الطلب بسياقها — فيُوجَّه كل getDb() لاحق تلقائياً لقاعدتها الصحيحة بلا أي
   // تعديل في تلك الطبقات. مُشترَك (server/tenancy/expressMiddleware.ts) بين الأسطح الثلاثة
   // المصادَق عليها بنفس كوكي جلسة الشركة. بلا CONTROL_DATABASE_URL: تمريرة شفّافة تماماً.
-  const tenancy = tenancyMiddleware();
+  const tenantMiddleware = tenancyMiddleware();
+  const tenancy: ReturnType<typeof tenancyMiddleware> = (req, res, next) =>
+    runtimeWorkDrain.run(async () => { await tenantMiddleware(req, res, next); });
 
-  app.use("/api/trpc", tenancy);
+  app.use("/api/trpc", createStorefrontAdmission());
+  app.use("/api/trpc", (req, res, next) => {
+    void withStorefrontContextWork(req, async () => { await tenancy(req, res, next); }).catch(next);
+  });
   // الاستعلامات تُنقل بـPOST لتفادي حد عنوان Nginx؛ وmaxBatchSize يحدّ سطح هجوم batch إلى 20.
   // هذا يغيّر وسيلة نقل query فقط؛ نوع الإجراء وصلاحياته لا يتغيّران.
   app.use(
     "/api/trpc",
     createExpressMiddleware({
       router: appRouter,
-      createContext,
+      createContext: (opts) => withStorefrontContextWork(opts.req, () => createContext(opts)),
       allowMethodOverride: true,
       maxBatchSize: 20,
     }),
@@ -779,7 +797,9 @@ async function startServer() {
   // ⚠️ **بلا csrfGuard وبلا مصادقة عمداً:** قراءة GET محضة لصورٍ علنية أصلاً (البنرات تُعرض لكل
   // زائر عبر storefront.banners بلا كوكي) ⇒ اشتراط كوكي/Origin هنا يكسر المتجر العلني ولا يحمي
   // شيئاً. `tenancy` يبقى ليُوجَّه الطلب لقاعدة الشركة الصحيحة في وضع تعدّد الشركات.
-  app.use("/api/img", tenancy, imageRouter());
+  app.use("/api/img", createPublicImageAdmission(), (req, res, next) => {
+    void withStorefrontContextWork(req, async () => { await tenancy(req, res, next); }).catch(next);
+  }, createAdminPublicHttpBoundary(), imageRouter());
 
   // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن). في وضع تعدد
   // الشركات: backupRoutes.ts/systemRouter.ts يُقيَّدان لملفات الشركة الحالية فقط (بادئة اسم
@@ -857,6 +877,8 @@ async function startServer() {
     }
     logger.warn(`Port ${preferredPort} busy, using ${port} instead`);
   }
+  // A split runtime must establish its hub role before accepting HTTP.
+  if (runtimeTopology.split) await initRealtimeBridge();
   // Listen BEFORE attaching Vite: the API binds immediately and a slow Vite
   // startup never blocks the server from accepting requests.
   await new Promise<void>((resolve) =>
@@ -870,7 +892,7 @@ async function startServer() {
 
   // تهيئة الناقل الحلقي للعمليات اللحظية (Wave 0):
   // عامل 0 يشغّل Hub على 127.0.0.1:3009، وبقية العمال يتصلون كـ Client، مع fallback للذاكرة.
-  await initRealtimeBridge();
+  if (!runtimeTopology.split) await initRealtimeBridge();
 
   // ── طبقة العمّال: الوظائف الخلفيّة تعمل في عاملٍ واحدٍ فقط ─────────────────────────────────
   // في العنقود تعمل عدّة نسخ من الخادم على النوى؛ لو بدأت كلٌّ منها الكنّاسات والكرون لتكرّر
@@ -889,6 +911,14 @@ async function startServer() {
   let stopPurchaseIntegrityMonitor: (() => void) | null = null;
   let stopReconcileScheduler: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
+    // Run startup writers only after this process successfully owns the hub.
+    // A second admin0 during an unsafe overlapping start must fail before writes.
+    void runtimeWorkDrain.run(() => sweepStaleRestoreArtifacts())
+      .then((removed) => removed > 0 && logger.warn({ removed }, "restore.stale_artifacts.removed"))
+      .catch((err) => logger.warn({ err }, "restore.stale_artifacts.sweep_failed"));
+    void runtimeWorkDrain.run(() => selfHealDivergedProductChannelLabels()).catch((err) =>
+      logger.warn({ err }, "catalog.channel_labels.self_heal_failed"),
+    );
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
     const { startMorningPushCron } =
@@ -1025,25 +1055,35 @@ async function startServer() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info(`received ${signal} — بدء الإغلاق الرشيق…`);
+    // A bounded failure is explicit: never close bridge/pools or report success
+    // before accepted promises settle. External hard kills remain outside this guarantee.
+    const deadline = Date.now() + 10_000;
+    runtimeWorkDrain.stopAccepting();
+    storefrontResourceAdmission().stopAccepting();
+    sseManager.closeAll();
+    const listenerClosed = new Promise<void>((resolve) => server.close(() => resolve()));
     const force = setTimeout(() => {
       logger.warn("تجاوز مهلة الإغلاق (10ث) — خروج قسري.");
       process.exit(1);
     }, 10_000);
     try {
+      const cron = (await import("node-cron")).default;
+      for (const task of Array.from(cron.getTasks().values())) await task.stop();
       stopNativePushOutboxWorker?.();
       stopSuperAppExpoPushWorker?.();
-      await stopAppNotificationOutboxWorker?.();
+      const appNotificationsStopped = stopAppNotificationOutboxWorker?.();
       stopWebPushOutboxWorker?.();
-      await stopStorefrontPushCampaignWorker?.();
+      const campaignsStopped = stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
       stopProductStudioNotificationWorker?.();
       stopOnlineOrderExpirySweeper?.();
       stopPurchaseIntegrityMonitor?.();
       stopReconcileScheduler?.();
-      sseManager.closeAll();
-      await stopRealtimeBridge();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all([listenerClosed, appNotificationsStopped, campaignsStopped]);
+      await runtimeWorkDrain.wait(Math.max(1, deadline - Date.now()));
+      // Split requires peer ACK; legacy pre-ACK peers use a flushed TCP close only.
+      await stopRealtimeBridge({ drain: true, timeoutMs: Math.max(1, deadline - Date.now()) });
       await closeDb();
       await closeControlDb();
       clearTimeout(force);
@@ -1060,6 +1100,11 @@ async function startServer() {
   // Digital Asset Links لـTWA — يُسجَّل **قبل** catch-all الـSPA (setupVite/serveStatic) كي يعيد
   // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).
   registerWellKnown(app);
+  const adminPublicHttpBoundary = createAdminPublicHttpBoundary();
+  app.use((req, res, next) => {
+    if (webRuntimeRole() !== "admin" || !isPublicHttpWork(req)) return next();
+    void tenancy(req, res, () => adminPublicHttpBoundary(req, res, next)).catch(next);
+  });
   registerStorefrontWishlistFallback(app);
   app.use(sitemapRouter);
 

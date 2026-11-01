@@ -25,6 +25,7 @@ import {
 } from "./BootstrapApp";
 import { applyStoredDisplayScale } from "@/lib/displayScale";
 import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
+import { installDateTimeInputLocaleGuard } from "@/lib/dateTimeInputLocale";
 // خط Cairo مستضاف محلياً ومباشراً عبر public/fonts في index.css (بلا اعتماد على Google Fonts CDN أو مسارات خارجية) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "./index.css";
 import "./styles/animate-subset.css";
@@ -38,46 +39,6 @@ const LazyCommandPalette = lazy(() =>
     default: m.CommandPalette,
   })),
 );
-
-/**
- * حارس عام لحقول التاريخ والوقت في شاشات النظام:
- * يضمن تعيين lang="en-GB" و dir="ltr" على كل input[type=date/time/datetime-local/month]
- * لمنع محرك Chromium من عكس نص placeholder إلى «ةنس/رهش/موي» أو إظهار الأرقام الهندية.
- */
-function installDateTimeInputLocaleGuard() {
-  if (typeof document === "undefined") return;
-
-  const enforce = (node: Node) => {
-    if (node instanceof HTMLInputElement) {
-      const type = node.type;
-      if (type === "date" || type === "time" || type === "datetime-local" || type === "month") {
-        if (!node.getAttribute("lang")) node.setAttribute("lang", "en-GB");
-        if (!node.getAttribute("dir")) node.setAttribute("dir", "ltr");
-      }
-    } else if (node instanceof HTMLElement) {
-      const inputs = node.querySelectorAll<HTMLInputElement>(
-        'input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"]'
-      );
-      inputs.forEach((input) => {
-        if (!input.getAttribute("lang")) input.setAttribute("lang", "en-GB");
-        if (!input.getAttribute("dir")) input.setAttribute("dir", "ltr");
-      });
-    }
-  };
-
-  enforce(document.documentElement);
-
-  const observer = new MutationObserver((mutations) => {
-    for (let i = 0; i < mutations.length; i++) {
-      const added = mutations[i].addedNodes;
-      for (let j = 0; j < added.length; j++) {
-        enforce(added[j]);
-      }
-    }
-  });
-
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-}
 
 // قبل أول رسم: يمنع قفزة التخطيط عند وجود مقياس محفوظ على الجهاز.
 applyStoredDisplayScale();

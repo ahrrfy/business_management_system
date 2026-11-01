@@ -15,6 +15,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
 const {
+  assertLegacyWebDeployment,
   cleanupWebCandidate,
   commitWebArtifact,
   defaultWebCandidateOperations,
@@ -40,6 +41,13 @@ const {
   evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
+assert.doesNotThrow(() => assertLegacyWebDeployment({}, [{ name: "erp-server" }], {}));
+for (const [env, rows] of [
+  [{ WEB_RUNTIME_MODE: "split" }, []],
+  [{}, [{ name: "erp-public" }]],
+  [{}, [{ name: "erp-admin" }, { name: "erp-server" }]],
+  [{}, [{ name: "renamed", pm2_env: { WEB_RUNTIME_ROLE: "public" } }]],
+]) assert.throws(() => assertLegacyWebDeployment(env, rows, {}), /VERIFIED_MAINTENANCE_PLAN/);
 const {
   chunkBudgetViolation,
   EXCEL_CHUNK_NAME,
@@ -1756,3 +1764,11 @@ try {
 }
 
 console.log("deployment storefront-readiness contract test: OK");
+
+assert.throws(() => assertLegacyWebDeployment({}, [{ name: "erp-server" }], { WEB_RUNTIME_MODE: "split" }), /WEB_RUNTIME_SPLIT_DEPLOY/);
+assert.throws(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "legacy" }, [], { WEB_RUNTIME_MODE: "split" }), /WEB_RUNTIME_SPLIT_DEPLOY/);
+assert.doesNotThrow(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "split" }, [], { WEB_RUNTIME_MODE: "legacy" }));
+
+// This entrypoint runs in required CI; keep the worker migration regression gated.
+await import("./build-web.test.mjs");
+await import("./storefront-release.test.mjs");

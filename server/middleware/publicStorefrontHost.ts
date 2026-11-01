@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { webRuntimeRole } from "../lib/clusterRole";
 
 const PUBLIC_HOSTS = new Set(["alarabiya.online", "www.alarabiya.online"]);
 
@@ -84,7 +85,7 @@ export function isAllowedOnPublicStorefrontHost(method: string, path: string): b
 
 /** يحمي نطاق الناس من كل API داخلي؛ الدفعة لا تمر إلا إن كانت كل إجراءاتها مسموحة صراحةً. */
 export function publicStorefrontHostBoundary(req: Request, res: Response, next: NextFunction): void {
-  if (!isPublicStorefrontRequest(req) || !/^\/api\//i.test(req.path)) return next();
+  if ((webRuntimeRole() !== "public" && !isPublicStorefrontRequest(req)) || !/^\/api\//i.test(req.path)) return next();
   // ارفض case variants صراحةً أيضاً؛ هذا دفاع مستقل إذا تغيّر ترتيب تهيئة Express لاحقاً.
   if (!isAllowedOnPublicStorefrontHost(req.method, req.path)) {
     res.status(404).end();

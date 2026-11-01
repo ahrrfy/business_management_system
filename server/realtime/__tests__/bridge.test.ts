@@ -619,5 +619,166 @@ describe("PWA release confirmation barrier", () => {
       await close([peerA, peerB, hub]);
     }
   });
+  it("keeps one admin hub, delivers public events, and rebuilds membership after public restart", async () => {
+    const hub = makeManager(), admin = makeManager(), customer = makeManager();
+    const port = await getFreeLoopbackPort();
+    vi.stubEnv("WEB_RUNTIME_MODE", "split");
+    vi.stubEnv("WEB_INSTANCES", "3");
+    vi.stubEnv("PUBLIC_WEB_INSTANCES", "1");
+    vi.stubEnv("ADMIN_WEB_INSTANCES", "2");
+    const received = vi.fn();
+    admin.subscribe(received);
+    try {
+      vi.stubEnv("WEB_RUNTIME_ROLE", "admin");
+      vi.stubEnv("NODE_APP_INSTANCE", "0");
+      await hub.init({ port });
+      vi.stubEnv("NODE_APP_INSTANCE", "1");
+      await admin.init({ port });
+      vi.stubEnv("WEB_RUNTIME_ROLE", "public");
+      vi.stubEnv("NODE_APP_INSTANCE", "0");
+      await expect(customer.init({ port, inMemoryOnly: true })).rejects.toThrow(/shared admin hub/);
+      await customer.init({ port });
+      await vi.waitFor(() => expect(hub.getStatus().memberIds).toHaveLength(3));
+      const oldId = customer.getStatus().workerId;
+      customer.publish(createRealtimeEvent(REALTIME_EVENT_TYPES.WORK_ORDER_CREATED, { workOrderId: 987 }));
+      await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+      expect(await customer.publishConfirmed(releaseEvent(), 300)).toBe(true);
+      await customer.stop();
+      await vi.waitFor(() => expect(hub.getStatus().memberIds).toHaveLength(2));
+      expect(await admin.publishConfirmed(releaseEvent(), 100)).toBe(false);
+      expect(admin.getStatus().isConnectedToHub).toBe(true);
+      await customer.init({ port });
+      await vi.waitFor(() => expect(hub.getStatus().memberIds).toHaveLength(3));
+      expect(customer.getStatus().workerId).not.toBe(oldId);
+      expect(hub.getStatus().memberIds).not.toContain(oldId);
+      expect(await admin.publishConfirmed(releaseEvent(), 300)).toBe(true);
+    } finally {
+      await close([customer, admin, hub]);
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
+
+it("graceful public stop flushes the last event to the connected admin hub", async () => {
+  const hub = new RealtimeBridgeManager(), client = new RealtimeBridgeManager();
+  const port = await getFreeLoopbackPort();
+  try {
+    await hub.init({ port, isHub: true, isMultiWorker: true });
+    await client.init({ port, isHub: false, isMultiWorker: true });
+    await vi.waitFor(() => expect(client.getStatus().isConnectedToHub).toBe(true));
+    const seen: string[] = [];
+    hub.subscribe(event => seen.push(event.id));
+    const event = createRealtimeEvent(REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED, {});
+    client.publish(event);
+    await client.stop({ drain: true, timeoutMs: 1000 });
+    expect(seen).toContain(event.id);
+  } finally { await client.stop(); await hub.stop(); }
+});
+it("does not claim graceful drain while a disconnected client has pending events", async () => {
+  const client = new RealtimeBridgeManager();
+  try {
+    await client.init({ port: await getFreeLoopbackPort(), isHub: false, isMultiWorker: true });
+    client.publish(createRealtimeEvent(REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED, {}));
+    await expect(client.stop({ drain: true, timeoutMs: 50 })).rejects.toThrow(/drain/i);
+    expect(client.getStatus()).toMatchObject({ mode: "client", pendingOutbound: 1 });
+  } finally { await client.stop(); }
+});
+
+describe("mixed-version shutdown transport policy", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(["legacy", "split"])("%s client handles a pre-ACK hub without weakening split proof", async mode => {
+    const sockets = new Set<net.Socket>();
+    const received: Array<{ kind?: string; event?: { id: string } }> = [];
+    const oldHub = net.createServer(socket => {
+      sockets.add(socket);
+      let buffer = "";
+      socket.on("data", chunk => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
+        for (const line of lines) if (line.trim()) received.push(JSON.parse(line));
+        // Pre-change hub recognizes no work-drain frames and sends no hello.
+      });
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>(resolve => oldHub.listen(0, "127.0.0.1", resolve));
+    const address = oldHub.address();
+    if (!address || typeof address === "string") throw new Error("missing address");
+    vi.stubEnv("WEB_RUNTIME_MODE", mode);
+    vi.stubEnv("WEB_RUNTIME_ROLE", mode === "split" ? "public" : "");
+    vi.stubEnv("WEB_INSTANCES", "3");
+    vi.stubEnv("PUBLIC_WEB_INSTANCES", "1");
+    vi.stubEnv("ADMIN_WEB_INSTANCES", "2");
+    vi.stubEnv("NODE_APP_INSTANCE", "0");
+    const client = new RealtimeBridgeManager();
+    try {
+      await client.init({ port: address.port, isMultiWorker: true, isHub: false });
+      await vi.waitFor(() => expect(client.getStatus().isConnectedToHub).toBe(true));
+      const event = createRealtimeEvent(REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED, {});
+      client.publish(event);
+      if (mode === "split") {
+        await expect(client.stop({ drain: true, timeoutMs: 100 })).rejects.toThrow(/drain.*deadline/i);
+      } else {
+        await client.stop({ drain: true, timeoutMs: 500 });
+        expect(received.some(frame => frame.event?.id === event.id)).toBe(true);
+        expect(received.some(frame => frame.kind === "work-drain-request")).toBe(false);
+        expect(sockets.size).toBe(0);
+      }
+    } finally {
+      await client.stop();
+      for (const socket of Array.from(sockets)) socket.destroy();
+      await new Promise<void>(resolve => oldHub.close(() => resolve()));
+    }
+  });
+
+  it.each(["legacy", "split"])("%s hub handles a pre-ACK client without weakening split proof", async mode => {
+    vi.stubEnv("WEB_RUNTIME_MODE", mode);
+    vi.stubEnv("WEB_RUNTIME_ROLE", mode === "split" ? "admin" : "");
+    vi.stubEnv("WEB_INSTANCES", "3");
+    vi.stubEnv("PUBLIC_WEB_INSTANCES", "1");
+    vi.stubEnv("ADMIN_WEB_INSTANCES", "2");
+    vi.stubEnv("NODE_APP_INSTANCE", "0");
+    const hub = new RealtimeBridgeManager();
+    const port = await getFreeLoopbackPort();
+    await hub.init({ port, isMultiWorker: true, isHub: true });
+    const oldClient = net.createConnection({ host: "127.0.0.1", port });
+    const received: Array<{ kind?: string; event?: { id: string } }> = [];
+    let buffer = "";
+    oldClient.on("data", chunk => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) received.push(JSON.parse(line));
+      // Pre-change client ignores non-event work-drain requests.
+    });
+    try {
+      await new Promise<void>(resolve => oldClient.once("connect", resolve));
+      oldClient.write(JSON.stringify({ kind: "pwa-release-hello", id: "old-client", workerId: "old-client" }) + "\n");
+      await vi.waitFor(() => expect(hub.getStatus().memberIds).toContain("old-client"));
+      const event = createRealtimeEvent(REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED, {});
+      hub.publish(event);
+      if (mode === "split") {
+        await expect(hub.stop({ drain: true, timeoutMs: 100 })).rejects.toThrow(/drain.*deadline/i);
+      } else {
+        await hub.stop({ drain: true, timeoutMs: 500 });
+        expect(received.some(frame => frame.event?.id === event.id)).toBe(true);
+        expect(received.some(frame => frame.kind === "work-drain-request")).toBe(false);
+        expect(oldClient.destroyed).toBe(true);
+      }
+    } finally { oldClient.destroy(); await hub.stop(); }
+  });
+
+  it("does not downgrade a drain-capable legacy peer when its promised ACK never arrives", async () => {
+    const hub = new RealtimeBridgeManager();
+    const port = await getFreeLoopbackPort();
+    await hub.init({ port, isHub: true, isMultiWorker: true });
+    const peer = net.createConnection({ host: "127.0.0.1", port });
+    peer.on("data", () => {});
+    try {
+      await new Promise<void>(resolve => peer.once("connect", resolve));
+      peer.write(JSON.stringify({ kind: "pwa-release-hello", id: "capable-peer", workerId: "capable-peer", capabilities: ["work-drain-ack-v1"] }) + "\n");
+      await vi.waitFor(() => expect(hub.getStatus().memberIds).toContain("capable-peer"));
+      await expect(hub.stop({ drain: true, timeoutMs: 100 })).rejects.toThrow(/drain.*deadline/i);
+    } finally { peer.destroy(); await hub.stop(); }
+  });
+});

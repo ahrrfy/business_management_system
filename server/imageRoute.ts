@@ -19,6 +19,7 @@
  * `storefront.banners` بلا كوكي). لا csrfGuard (قراءة GET محضة لا تُغيّر حالة).
  */
 import { Router } from "express";
+import { publicResourceHandler, withStorefrontContextWork } from "./middleware/storefrontAdmission";
 import { createHash } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
@@ -610,7 +611,7 @@ function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUr
 export function imageRouter(): Router {
   const r = Router();
 
-  r.get("/banner/:id/:slot", async (req, res) => {
+  r.get("/banner/:id/:slot", publicResourceHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
     const db = getDb();
@@ -640,7 +641,7 @@ export function imageRouter(): Router {
       logger.error({ err: e, bannerId: id }, "img: banner fetch failed");
       return res.status(500).end();
     }
-  });
+  }));
 
   /**
    * صورة منتج — النقطة **علنية ومجهولة الهوية**، لذا الشرط أدناه ليس تجميلاً:
@@ -662,7 +663,7 @@ export function imageRouter(): Router {
    * وهو خلف مصادقة (مستخدم أو كوكي جهاز) بينما هذه النقطة مجهولة ⇒ جمهورٌ مختلف يستحقّ
    * نقطةً واعيةً بمصادقته، لا بوّابةً مُوسَّعة. يبقى الكشك على data URL حتى تُبنى تلك (راجع تقرير الجلسة).
    */
-  const servePublicProduct = async (req: Request, res: Response) => {
+  const servePublicProduct = publicResourceHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
     const requestedWidth = parsePublicProductImageWidth(req.query.w);
@@ -707,11 +708,14 @@ export function imageRouter(): Router {
       logger.error({ err: e, productImageId: id }, "img: product image fetch failed");
       return res.status(500).end();
     }
-  };
+  });
 
   // في تعدد الشركات يحمل الرابط العام رمز الشركة نفسه، لأن الزائر المجهول لا يملك session
   // يمكن اشتقاق المستأجر منها. الوسيط يحجز اتصال الشركة ويغلف القراءة وسلسلة R2 في ALS.
-  r.get("/company/:companyCode/product/:id", companyCodeTenancyMiddleware(), servePublicProduct);
+  const publicCompanyTenancy = companyCodeTenancyMiddleware();
+  r.get("/company/:companyCode/product/:id", (req, res, next) => {
+    void withStorefrontContextWork(req, async () => { await publicCompanyTenancy(req, res, next); }).catch(next);
+  }, servePublicProduct);
   // توافق أحادي الشركة وروابط الإرث؛ في multi-tenant يفشل getDb مغلقاً بلا سياق ولا يتسرب مستأجر آخر.
   r.get("/product/:id", servePublicProduct);
 

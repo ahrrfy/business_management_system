@@ -1,6 +1,8 @@
 @import "tailwindcss" source(none);
 @source "../index.html";
 @source "./main.tsx";
+@source "./storefront-main.tsx";
+@source "./StorefrontBootstrap.tsx";
 @source "./sentry.ts";
 @source "./BootstrapApp.tsx";
 @source "./pages/Storefront.tsx";

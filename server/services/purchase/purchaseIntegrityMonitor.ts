@@ -1,3 +1,4 @@
+import { runtimeWorkDrain } from "../../lib/workDrain";
 import { asc, eq } from "drizzle-orm";
 import cron, { type ScheduledTask } from "node-cron";
 import { branches } from "../../../drizzle/schema";
@@ -108,10 +109,10 @@ export function startPurchaseIntegrityMonitor(): void {
   task = cron.schedule(
     cronExpression,
     async () => {
-      if (running) return;
+      if (running || !runtimeWorkDrain.isAccepting) return;
       running = true;
       try {
-        const summary = await runPurchaseIntegrityMonitorOnce();
+        const summary = await runtimeWorkDrain.run(() => runPurchaseIntegrityMonitorOnce());
         const hasMaterialFinding =
           summary.severityCounts.CRITICAL > 0 ||
           summary.severityCounts.HIGH > 0;

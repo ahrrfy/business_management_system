@@ -1,13 +1,29 @@
 import { Button } from "@/components/ui/button";
 import { flushAutosaves } from "@/lib/autosave";
-import { hasUnsavedInteraction, saveInteractionDraft } from "@/lib/interactionDraft";
 import {
-  activateRegistrationUpdate, automaticStorefrontPersistenceIsSafe, clearPwaAutoAttempt,
-  decidePwaUpdateAction, PWA_FAILED_AUTO_RETRY_COOLDOWN_MS, type PwaAutoAttempt, readPwaAutoAttempt,
-  requestStorefrontPersistence, resolveWaitingWorkerVersion, shouldAutoApplyWaitingVersion,
-  shouldClearPwaAutoAttempt, shouldReloadAfterActivationTimeout, writePwaAutoAttempt,
+  hasUnsavedInteraction,
+  saveInteractionDraft,
+} from "@/lib/interactionDraft";
+import {
+  activateRegistrationUpdate,
+  automaticStorefrontPersistenceIsSafe,
+  storefrontActivationIsSafe,
+  clearPwaAutoAttempt,
+  decidePwaUpdateAction,
+  PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
+  type PwaAutoAttempt,
+  readPwaAutoAttempt,
+  requestStorefrontPersistence,
+  resolveWaitingWorkerVersion,
+  shouldAutoApplyWaitingVersion,
+  shouldClearPwaAutoAttempt,
+  shouldReloadAfterActivationTimeout,
+  writePwaAutoAttempt,
 } from "@/lib/pwaUpdateLifecycle";
-import { setPwaUpdatePending, subscribePwaUpdateOpen } from "@/lib/pwaUpdateStatus";
+import {
+  setPwaUpdatePending,
+  subscribePwaUpdateOpen,
+} from "@/lib/pwaUpdateStatus";
 import { realtimeManager } from "@/lib/realtime/realtimeManager";
 import { isPublicHost } from "@/lib/siteHosts";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
@@ -16,9 +32,16 @@ import { notify } from "@/lib/notify";
 import { useLocation } from "wouter";
 
 export {
-  automaticStorefrontPersistenceIsSafe, clearPwaAutoAttempt, PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
-  type PwaAutoAttempt, readPwaAutoAttempt, requestStorefrontPersistence, resolveWaitingWorkerVersion,
-  shouldAutoApplyWaitingVersion, shouldClearPwaAutoAttempt, shouldReloadAfterActivationTimeout,
+  automaticStorefrontPersistenceIsSafe,
+  clearPwaAutoAttempt,
+  PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
+  type PwaAutoAttempt,
+  readPwaAutoAttempt,
+  requestStorefrontPersistence,
+  resolveWaitingWorkerVersion,
+  shouldAutoApplyWaitingVersion,
+  shouldClearPwaAutoAttempt,
+  shouldReloadAfterActivationTimeout,
   writePwaAutoAttempt,
 };
 
@@ -174,6 +197,27 @@ export function PwaUpdateManager() {
    */
   const [swEnabled, setSwEnabled] = useState(false);
   useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const check = (event: MessageEvent) => {
+      if (event.data?.type !== "PWA_CHECK_ACTIVATION" || !event.ports[0])
+        return;
+      const saved = requestStorefrontPersistence();
+      const storefront = requiresStorefrontPersistence({
+        hostname: window.location.hostname,
+        pathname: pathnameRef.current,
+      });
+      event.ports[0].postMessage({
+        safe:
+          storefrontActivationIsSafe() &&
+          saved.ok &&
+          !saved.inFlight &&
+          (!storefront || automaticStorefrontPersistenceIsSafe(saved)),
+      });
+    };
+    navigator.serviceWorker.addEventListener("message", check);
+    return () => navigator.serviceWorker.removeEventListener("message", check);
+  }, []);
+  useEffect(() => {
     if (swEnabled) return;
     if (!import.meta.env.PROD) {
       setSwEnabled(true);
@@ -284,33 +328,6 @@ export function PwaUpdateManager() {
   useEffect(() => {
     if (!swEnabled) return;
     if (!import.meta.env.PROD) {
-      const resetKey = "storefront-preview-sw-reset-v2";
-      if (sessionStorage.getItem(resetKey) !== "1") {
-        sessionStorage.setItem(resetKey, "1");
-        const unregister =
-          "serviceWorker" in navigator
-            ? navigator.serviceWorker
-                .getRegistrations()
-                .then((registrations) =>
-                  Promise.all(
-                    registrations.map((registration) =>
-                      registration.unregister(),
-                    ),
-                  ),
-                )
-            : Promise.resolve([]);
-        const clearCaches =
-          "caches" in window
-            ? caches
-                .keys()
-                .then((keys) =>
-                  Promise.all(keys.map((key) => caches.delete(key))),
-                )
-            : Promise.resolve([]);
-        void Promise.all([unregister, clearCaches]).then(() =>
-          window.location.reload(),
-        );
-      }
       return;
     }
     if (!("serviceWorker" in navigator)) return;
@@ -492,6 +509,8 @@ export function PwaUpdateManager() {
   }
 
   function preserveUpdateDrafts(): boolean {
+    if (isPublicHost(window.location.hostname) && !storefrontActivationIsSafe())
+      return false;
     const interactionSaved = saveInteractionDraft();
     const autosaves = flushAutosaves();
     const storefrontSave = requestStorefrontPersistence();
@@ -744,18 +763,32 @@ export function PwaUpdateManager() {
       {applying && (
         <div
           className="fixed inset-0 z-[200] grid place-items-center bg-background/65 p-4 backdrop-blur-md supports-[backdrop-filter]:bg-background/55 motion-safe:animate-in motion-safe:fade-in-0"
-          dir="rtl" role="status" aria-live="assertive" aria-label={phaseMessage(phase)}
+          dir="rtl"
+          role="status"
+          aria-live="assertive"
+          aria-label={phaseMessage(phase)}
         >
           <div className="w-full max-w-sm rounded-2xl border bg-card/95 p-7 text-center shadow-2xl backdrop-blur motion-safe:animate-in motion-safe:zoom-in-95 motion-safe:slide-in-from-bottom-2">
             <div className="relative mx-auto grid size-20 place-items-center rounded-full bg-primary/10 text-primary">
-              <span className="absolute inset-1 rounded-full border-2 border-primary/30 motion-safe:animate-ping" aria-hidden />
-              <RefreshCw className="size-9 motion-safe:animate-spin" aria-hidden />
+              <span
+                className="absolute inset-1 rounded-full border-2 border-primary/30 motion-safe:animate-ping"
+                aria-hidden
+              />
+              <RefreshCw
+                className="size-9 motion-safe:animate-spin"
+                aria-hidden
+              />
             </div>
-            <p className="mt-5 text-lg font-bold text-foreground">{phaseMessage(phase)}</p>
+            <p className="mt-5 text-lg font-bold text-foreground">
+              {phaseMessage(phase)}
+            </p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               لن تُغلق الصفحة قبل اكتمال التفعيل والتحقق منه.
             </p>
-            <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
+            <div
+              className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted"
+              aria-hidden
+            >
               {/* شريط غير محدَّد صادق: قطعة تنزلق عرضياً = «جارٍ العمل»، لا نسبةً ثابتةً مضلِّلة. */}
               <div className="pwa-update-bar h-full w-1/3 rounded-full bg-primary" />
             </div>
@@ -772,35 +805,56 @@ export function PwaUpdateManager() {
       {!isKioskSurface && (
         <aside
           className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-xl rounded-lg border bg-background p-3 shadow-xl"
-          dir="rtl" role="status" aria-live="polite" aria-busy={applying}
+          dir="rtl"
+          role="status"
+          aria-live="polite"
+          aria-busy={applying}
         >
           <div className="flex items-start gap-3">
-            <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
+            <ShieldCheck
+              className="mt-0.5 size-5 shrink-0 text-primary"
+              aria-hidden
+            />
             <div className="min-w-0 flex-1">
               <p className="font-medium">تحديث آمن جاهز للتثبيت</p>
               {updateError ? (
-                <p className="mt-1 text-sm font-medium text-destructive" role="alert">
+                <p
+                  className="mt-1 text-sm font-medium text-destructive"
+                  role="alert"
+                >
                   {updateError}
                 </p>
               ) : (
                 <p className="mt-0.5 text-sm text-muted-foreground">
-                  سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة الجديدة.
+                  سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة
+                  الجديدة.
                 </p>
               )}
             </div>
           </div>
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button
-              type="button" variant="ghost" size="sm" disabled={applying}
-              onClick={() => { setPwaUpdatePending(false); setReady(false); }}
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={applying}
+              onClick={() => {
+                setPwaUpdatePending(false);
+                setReady(false);
+              }}
             >
               لاحقاً
             </Button>
             <Button
-              type="button" size="sm" disabled={applying}
+              type="button"
+              size="sm"
+              disabled={applying}
               onClick={() => void applyUpdate({ manual: true })}
             >
-              <RefreshCw className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`} aria-hidden />
+              <RefreshCw
+                className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`}
+                aria-hidden
+              />
               {applying
                 ? "جارٍ التحديث…"
                 : updateError

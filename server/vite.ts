@@ -3,10 +3,30 @@ import fs from "fs";
 import { type Server } from "http";
 import { nanoid } from "nanoid";
 import path from "path";
-import { createServer as createViteServer, type InlineConfig, type UserConfig, type UserConfigFn } from "vite";
+import {
+  createServer as createViteServer,
+  type InlineConfig,
+  type UserConfig,
+  type UserConfigFn,
+} from "vite";
 import viteConfig from "../vite.config";
 import { injectStorefrontSeoMeta } from "./services/storefrontSeoMetaService";
-import { createHashedStaticAssets } from "./staticAssets";
+import {
+  runtimePublicRoot,
+  createRuntimeFrontendAssets,
+} from "./middleware/runtimeStaticAssets";
+import { publicResourceHandler } from "./middleware/storefrontAdmission";
+import { isPublicStorefrontHost } from "./middleware/publicStorefrontHost";
+
+// The wildcard mount strips req.path. Match the SEO handler's original page/host.
+const isStorefrontPage = (req: express.Request) => {
+  const pathname = req.originalUrl.split("?", 1)[0];
+  return (
+    (pathname === "/" && isPublicStorefrontHost(req.get("host"))) ||
+    pathname === "/store" ||
+    pathname.startsWith("/store/")
+  );
+};
 
 /**
  * **`vite.config.ts` يُصدّر دالّةً لا كائناً** (`defineConfig(({ mode }) => …)` — صار كذلك في
@@ -25,7 +45,10 @@ import { createHashedStaticAssets } from "./staticAssets";
  */
 async function resolveViteConfig(): Promise<UserConfig> {
   return typeof viteConfig === "function"
-    ? await (viteConfig as UserConfigFn)({ command: "serve", mode: process.env.NODE_ENV ?? "development" })
+    ? await (viteConfig as UserConfigFn)({
+        command: "serve",
+        mode: process.env.NODE_ENV ?? "development",
+      })
     : (viteConfig as UserConfig);
 }
 
@@ -42,7 +65,9 @@ async function resolveViteConfig(): Promise<UserConfig> {
  * ⓘ **دمجُ #922:** أُصلح العطبُ نفسه على `main` مضمَّناً داخل `setupVite`. المنطقُ واحدٌ
  * حرفياً، وأُبقي هذا الشكلُ المُستخرَج لأنّه وحدَه يجعل الحارسَ يقرأ من المُنفَّذ.
  */
-export async function buildDevServerConfig(server?: Server): Promise<InlineConfig> {
+export async function buildDevServerConfig(
+  server?: Server,
+): Promise<InlineConfig> {
   return {
     ...(await resolveViteConfig()),
     configFile: false,
@@ -59,57 +84,101 @@ export async function setupVite(app: Express, server: Server) {
   const vite = await createViteServer(await buildDevServerConfig(server));
 
   app.use(vite.middlewares);
-  app.use("*", async (req, res, next) => {
-    const url = req.originalUrl;
-    try {
-      const clientTemplate = path.resolve(import.meta.dirname, "..", "client", "index.html");
-      let template = await fs.promises.readFile(clientTemplate, "utf-8");
-      template = template.replace(`src="/src/main.tsx"`, `src="/src/main.tsx?v=${nanoid()}"`);
-      template = await injectStorefrontSeoMeta(template, req);
-      const page = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ "Content-Type": "text/html" }).end(page);
-    } catch (e) {
-      vite.ssrFixStacktrace(e as Error);
-      next(e);
-    }
-  });
+  app.use(
+    "*",
+    publicResourceHandler(
+      async (req, res, next) => {
+        const url = req.originalUrl;
+        try {
+          const publicEntry =
+            isPublicStorefrontHost(req.get("host")) &&
+            !/^\/(?:login|account)(?:\/|$)/.test(
+              req.originalUrl.split("?", 1)[0],
+            );
+          const clientTemplate = path.resolve(
+            import.meta.dirname,
+            "..",
+            "client",
+            publicEntry ? "storefront.html" : "index.html",
+          );
+          let template = await fs.promises.readFile(clientTemplate, "utf-8");
+          template = template.replace(
+            `src="/src/main.tsx"`,
+            `src="/src/main.tsx?v=${nanoid()}"`,
+          );
+          template = await injectStorefrontSeoMeta(template, req);
+          const page = await vite.transformIndexHtml(url, template);
+          res.status(200).set({ "Content-Type": "text/html" }).end(page);
+        } catch (e) {
+          vite.ssrFixStacktrace(e as Error);
+          next(e);
+        }
+      },
+      2,
+      undefined,
+      isStorefrontPage,
+    ),
+  );
 }
 
 export function serveStatic(app: Express, distPathOverride?: string) {
   // In production the server is bundled to dist/index.js, so the client build
   // sits alongside it at dist/public.
-  const distPath = distPathOverride ?? path.resolve(import.meta.dirname, "public");
+  const distPath =
+    distPathOverride ?? path.resolve(import.meta.dirname, "public");
   if (!fs.existsSync(distPath)) {
-    console.error(`Build directory not found: ${distPath} — run "pnpm build" first.`);
+    console.error(
+      `Build directory not found: ${distPath} — run "pnpm build" first.`,
+    );
   }
 
   // الأصول المُجزّأة بالمحتوى (hash في اسم الملف) ثابتة أبداً ⇒ خبّئها سنة كاملة immutable.
   // كان express.static الافتراضي يضع Cache-Control: max-age=0 ⇒ المتصفّح يُعيد جلب كل حُزمة
   // عند كل تنقّل، فتنطلق عشرات الطلبات المتزامنة على كل صفحة وتُشبع خادم الأصول وتتعلّق
   // (السبب الجذري لتعليق «جار التحميل»). مع التخبئة: تُجلب مرّة واحدة ثم تُخدَم من المتصفّح.
-  app.use(createHashedStaticAssets(distPath));
+  app.use(createRuntimeFrontendAssets(distPath));
 
   // بقية الملفات (index.html, sw.js, manifest, الأيقونات الجذرية) — لا تُخبَّأ طويلاً:
   // index.html و sw.js يجب إعادة التحقّق منهما كي يصل التحديث فور كل نشر.
-  app.use(
-    express.static(distPath, {
+  app.use((req, res, next) =>
+    express.static(runtimePublicRoot(req, distPath), {
       // index:false — وإلا قدّم static ملف index.html الخام للجذر `/` قبل معالج حقن SEO أدناه.
       index: false,
       setHeaders: (res) => {
         res.setHeader("Cache-Control", "no-cache");
       },
-    })
+    })(req, res, next),
   );
 
-  app.use("*", async (req, res, next) => {
-    try {
-      const indexPath = path.resolve(distPath, "index.html");
-      let html = await fs.promises.readFile(indexPath, "utf-8");
-      html = await injectStorefrontSeoMeta(html, req);
-      res.setHeader("Cache-Control", "no-cache");
-      res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(html);
-    } catch (e) {
-      next(e);
-    }
-  });
+  app.use(
+    "*",
+    publicResourceHandler(
+      async (req, res, next) => {
+        try {
+          const indexPath = path.resolve(
+            runtimePublicRoot(
+              {
+                get: req.get.bind(req),
+                path: req.originalUrl.split("?", 1)[0],
+              },
+              distPath,
+            ),
+            "index.html",
+          );
+          let html = await fs.promises.readFile(indexPath, "utf-8");
+          html = await injectStorefrontSeoMeta(html, req);
+          res.setHeader("Cache-Control", "no-cache");
+          res
+            .status(200)
+            .set({ "Content-Type": "text/html; charset=utf-8" })
+            .end(html);
+        } catch (e) {
+          next(e);
+        }
+      },
+      2,
+      undefined,
+      isStorefrontPage,
+    ),
+  );
 }

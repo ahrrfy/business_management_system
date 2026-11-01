@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { storefrontCartShares } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { storefrontProduct } from "./storefrontService";
+import { mapResourceWork } from "../lib/resourceAdmission";
 
 const CART_SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SHARED_CART_LINES = 100;
@@ -72,7 +73,7 @@ export async function resolveStorefrontCartShare(token: string) {
     ? normalizeStorefrontCartShareLines(row.lines.filter((line): line is StorefrontCartShareLine => !!line && typeof line === "object"))
     : [];
   const productIds = Array.from(new Set(requested.map((line) => line.productId)));
-  const products = await Promise.all(productIds.map(async (productId) => [productId, await storefrontProduct(productId)] as const));
+  const products = await mapResourceWork(productIds, 2, async (productId) => [productId, await storefrontProduct(productId)] as const);
   const productsById = new Map(products);
   const items: Array<{
     productId: number;

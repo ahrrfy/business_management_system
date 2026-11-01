@@ -4,6 +4,7 @@ import * as schema from "../drizzle/schema";
 import { getCurrentCompanyId, getCurrentTenantDb } from "./tenancy/context";
 import { resolveCompanyById } from "./tenancy/registry";
 import { logger } from "./logger";
+import { runtimeWorkerCounts, webRuntimeRole } from "./lib/clusterRole";
 
 function boundedIntEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -23,6 +24,7 @@ export interface TenantPoolPolicy {
   mysqlMaxConnections: number;
   connectionReserve: number;
   controlPoolPerWorker: number;
+  splitBudget?: { webConnections: number; webLimit: number; auxiliary: number };
 }
 
 /**
@@ -37,17 +39,44 @@ export interface TenantPoolPolicy {
  * أيّ نشرٍ متعدّد الشركات الحقيقيّ يضبط الميزانية صراحةً بمتغيّرات البيئة أصلاً.)
  */
 export function tenantPoolPolicy(): TenantPoolPolicy {
+  // No-role CLI callers are auxiliary; HTTP bootstrap always uses strict validation.
+  const topology = runtimeWorkerCounts(process.env, "database");
+  const auxiliary = topology.split && !process.env.WEB_RUNTIME_ROLE;
+  const defaultPool = boundedIntEnv("DB_POOL_LIMIT", 10, 1, 50);
+  const controlPool = process.env.CONTROL_DATABASE_URL ? controlDbPoolLimit() : 0;
+  const maxPools = topology.split && !process.env.CONTROL_DATABASE_URL
+    ? 1 : boundedIntEnv("DB_MAX_TENANT_POOLS_PER_WORKER", 5, 1, 100);
+  let connectionLimit = defaultPool;
+  let splitBudget: TenantPoolPolicy["splitBudget"];
+  if (topology.split) {
+    for (const key of ["DB_WEB_CONNECTION_BUDGET", "DB_AUX_CONNECTION_BUDGET"])
+      if (!process.env[key]?.trim()) throw new Error(`Split runtime requires explicit ${key}`);
+    const publicLimit = boundedIntEnv("PUBLIC_DB_POOL_LIMIT", defaultPool, 1, 50);
+    const adminLimit = boundedIntEnv("ADMIN_DB_POOL_LIMIT", defaultPool, 1, 50);
+    const extraWorkers = boundedIntEnv("DB_RUNTIME_EXTRA_WORKERS", 0, 0, 32);
+    connectionLimit = auxiliary ? defaultPool : webRuntimeRole() === "public" ? publicLimit : adminLimit;
+    splitBudget = {
+      webConnections: (topology.publicWorkers * publicLimit + topology.adminWorkers * adminLimit + extraWorkers * Math.max(publicLimit, adminLimit)) * maxPools + (topology.total + extraWorkers) * controlPool,
+      webLimit: boundedIntEnv("DB_WEB_CONNECTION_BUDGET", 1, 1, 100_000),
+      auxiliary: boundedIntEnv("DB_AUX_CONNECTION_BUDGET", 0, 0, 100_000),
+    };
+  }
+  if (auxiliary && splitBudget && connectionLimit * maxPools + controlPool > splitBudget.auxiliary)
+    throw new Error("Auxiliary process pool ceiling exceeds declared auxiliary connection budget");
   return {
-    connectionLimit: boundedIntEnv("DB_POOL_LIMIT", 10, 1, 50),
-    maxPoolsPerWorker: boundedIntEnv("DB_MAX_TENANT_POOLS_PER_WORKER", 5, 1, 100),
+    connectionLimit,
+    maxPoolsPerWorker: maxPools,
     idleMs: boundedIntEnv("DB_TENANT_POOL_IDLE_MS", 15 * 60_000, 60_000, 24 * 60 * 60_000),
-    webWorkers: boundedIntEnv("WEB_INSTANCES", 2, 1, 32),
+    webWorkers: topology.total,
     mysqlMaxConnections: boundedIntEnv("MYSQL_MAX_CONNECTIONS", 151, 20, 100_000),
     connectionReserve: boundedIntEnv("DB_CONNECTION_RESERVE", 20, 5, 10_000),
-    controlPoolPerWorker: process.env.CONTROL_DATABASE_URL
-      ? boundedIntEnv("CONTROL_DB_POOL_LIMIT", 5, 1, 20)
-      : 0,
+    controlPoolPerWorker: controlPool,
+    ...(splitBudget ? { splitBudget } : {}),
   };
+}
+
+export function controlDbPoolLimit(): number {
+  return boundedIntEnv("CONTROL_DB_POOL_LIMIT", 5, 1, 20);
 }
 
 export function validateTenantConnectionBudget(policy = tenantPoolPolicy()): {
@@ -55,7 +84,9 @@ export function validateTenantConnectionBudget(policy = tenantPoolPolicy()): {
   available: number;
 } {
   const available = policy.mysqlMaxConnections - policy.connectionReserve;
-  const projected =
+  if (policy.splitBudget && policy.splitBudget.webConnections > policy.splitBudget.webLimit)
+    throw new Error(`Split web connection budget exceeded: ${policy.splitBudget.webConnections} > ${policy.splitBudget.webLimit}`);
+  const projected = policy.splitBudget ? policy.splitBudget.webConnections + policy.splitBudget.auxiliary :
     (policy.connectionLimit * policy.maxPoolsPerWorker + policy.controlPoolPerWorker) *
     policy.webWorkers;
   if (available < 1 || projected > available) {
@@ -78,6 +109,7 @@ export function validateTenantConnectionBudget(policy = tenantPoolPolicy()): {
  * - queueLimit/connectionLimit: يحدّان الضغط على القاعدة في الذروة.
  */
 function createDb(url: string) {
+  if (process.env.WEB_RUNTIME_MODE === "split") validateTenantConnectionBudget();
   const { connectionLimit } = tenantPoolPolicy();
   const pool = mysql.createPool({
     uri: url,

@@ -23,17 +23,25 @@
  * أو عدّادُ نسخةٍ يُقرأ أصلاً في نفس الطلب) — كما في `storeSettingsService`. استعمل
  * `invalidate`/`clear` للحالة المحلّية الخالصة أو للاختبارات فقط.
  */
+import { ResourceAdmissionError } from "./resourceAdmission";
+
 export interface TtlCache<K, V> {
   get(key: K, loader: () => Promise<V>): Promise<V>;
   invalidate(key: K): void;
   clear(): void;
+  snapshot(): { entries: number; inFlight: number; rejected: number };
 }
 
-export function createTtlCache<K, V>(opts: { ttlMs: number; maxEntries?: number }): TtlCache<K, V> {
+export function createTtlCache<K, V>(opts: { ttlMs: number; maxEntries?: number; maxInFlight?: number | (() => number | undefined) }): TtlCache<K, V> {
   const { ttlMs } = opts;
   const maxEntries = opts.maxEntries ?? 100;
   const values = new Map<K, { at: number; value: V }>();
   const inFlight = new Map<K, Promise<V>>();
+  // Opted-in caches retain occupancy even across invalidation. Generation maps
+  // keep new callers from receiving an invalidated pending result.
+  const validPending = new Set<Promise<V>>();
+  const unsettled = new Set<Promise<V>>();
+  let rejected = 0;
   // حقبة الإبطال (مراجعة عدائية ٣٠/٨): تحميلٌ بدأ قبل invalidate/clear يحمل لقطةً قديمة —
   // لو كُيِّشت نتيجته **بعد** الإبطال لأبطلت الإبطالَ نفسه TTL كاملة (مثال حيّ: المالك يفتح
   // المتجر فيُبطل كاش الجاهزية، وتحميلُ زائرٍ بدأ قبل الفتح يعود بـ«غير جاهز» فيظهر المتجر
@@ -52,14 +60,20 @@ export function createTtlCache<K, V>(opts: { ttlMs: number; maxEntries?: number 
         return hit.value;
       }
       const pending = inFlight.get(key);
-      if (pending) return pending;
+      if (pending && (opts.maxInFlight === undefined || validPending.has(pending))) return pending;
+      const limit = typeof opts.maxInFlight === "function" ? opts.maxInFlight() : opts.maxInFlight;
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new Error("Invalid pending cache limit");
+      if (limit !== undefined && unsettled.size >= limit) {
+        rejected++;
+        throw new ResourceAdmissionError("queue-full");
+      }
       const startEpoch = epoch;
       // إسنادٌ مؤكَّد: جسم async يحوّل حتى الرمي المتزامن إلى رفضٍ لاحق، فـfinally لا يعمل
       // قبل اكتمال الإسناد أبداً — والمقارنة بالهوية تحمي تحميلةً أحدث من محو finally القديمة.
       let load!: Promise<V>;
       load = (async () => {
         try {
-          const value = await loader();
+          const value = await (async () => loader())();
           if (epoch === startEpoch) {
             values.delete(key);
             values.set(key, { at: Date.now(), value });
@@ -71,21 +85,29 @@ export function createTtlCache<K, V>(opts: { ttlMs: number; maxEntries?: number 
           return value;
         } finally {
           // لا تمحُ تحميلةً أحدث حلّت محلّنا بعد إبطالٍ أثناء رحلتنا.
+          unsettled.delete(load);
+          validPending.delete(load);
           if (inFlight.get(key) === load) inFlight.delete(key);
         }
       })();
       inFlight.set(key, load);
+      validPending.add(load);
+      unsettled.add(load);
       return load;
     },
     invalidate(key: K): void {
       epoch += 1;
       values.delete(key);
-      inFlight.delete(key);
+      const pending = inFlight.get(key);
+      if (pending) validPending.delete(pending);
+      if (opts.maxInFlight === undefined) inFlight.delete(key);
     },
     clear(): void {
       epoch += 1;
       values.clear();
-      inFlight.clear();
+      validPending.clear();
+      if (opts.maxInFlight === undefined) inFlight.clear();
     },
+    snapshot: () => ({ entries: values.size, inFlight: unsettled.size, rejected }),
   };
 }

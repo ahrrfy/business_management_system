@@ -1860,4 +1860,21 @@ if (process.platform === "linux" && fs.existsSync("/usr/bin/flock")) {
   }
 }
 
+{
+  const fixture = createFixture();
+  try {
+    const operations = makeOperations();
+    const options = { ...fixtureOptions(fixture, operations), runtimeMode: "split" };
+    installNginxContract(options);
+    const publicText = fs.readFileSync(path.join(fixture.nginxRoot, "sites-available", "alroya-public"), "utf8");
+    const adminText = fs.readFileSync(path.join(fixture.nginxRoot, "sites-available", "alroya-erp"), "utf8");
+    assert.match(publicText, /set \$alroya_backend http:\/\/127\.0\.0\.1:3001;/);
+    assert.match(adminText, /set \$alroya_backend http:\/\/127\.0\.0\.1:3000;/);
+    verifyLiveNginxContract(options);
+    installNginxContract({ ...options, runtimeMode: "legacy" });
+    assert.match(fs.readFileSync(path.join(fixture.nginxRoot, "sites-available", "alroya-public"), "utf8"), /set \$alroya_backend http:\/\/127\.0\.0\.1:3000;/);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
 console.log("nginx atomic contract installer tests: OK");

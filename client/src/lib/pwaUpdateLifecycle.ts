@@ -387,7 +387,7 @@ export function requestStorefrontPersistence(
     },
   });
   target.dispatchEvent(event);
-  return { attempted, ok, inFlight};
+  return { attempted, ok, inFlight };
 }
 
 export function automaticStorefrontPersistenceIsSafe(result: {
@@ -414,3 +414,13 @@ export function shouldReloadAfterActivationTimeout(input: {
   return input.acknowledged || input.activeWorkerState === "activating";
 }
 
+/** An unresolved idempotent checkout survives a lost response; never activate over it. */
+export function storefrontActivationIsSafe(
+  storage: Pick<Storage, "getItem"> = localStorage,
+): boolean {
+  try {
+    return storage.getItem("alroya-store-checkout-attempt-v1") === null;
+  } catch {
+    return false;
+  }
+}
