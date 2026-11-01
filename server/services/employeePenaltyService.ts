@@ -1,18 +1,64 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
-import { employeePenalties, payrollRuns } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { auditLogs, employeePenalties, payrollPenaltyAllocations, payrollRuns } from "../../drizzle/schema";
+import { getDb, type Tx } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { money, round2, toDbMoney } from "./money";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { lockHrEmployeeTx, resolveHrActorTx } from "./hr/resourceScope";
+import { readLockedPenaltyBreakdownsTx } from "./payroll/penaltyRead";
+import { historicalPenaltyAttestationMatches } from "./payroll/historicalPenaltyAttestation";
 
 function requireDb() {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not set");
   return db;
+}
+
+function auditObject(value: unknown): Record<string, unknown> | null {
+  let parsed = value;
+  if (typeof parsed === "string") { try { parsed = JSON.parse(parsed); } catch { return null; } }
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+}
+
+function validHistoricalAttestation(
+  entry: { entityId: string | null; branchId: number | null; value: unknown; operation: unknown },
+  penalty: typeof employeePenalties.$inferSelect | undefined,
+  employeeId: number,
+): boolean {
+  const operation = auditObject(entry.operation);
+  const recorder = auditObject(operation?.actor);
+  const value = auditObject(entry.value);
+  return !!penalty && !!value && Number(penalty.employeeId) === employeeId &&
+    entry.entityId === String(employeeId) && entry.branchId != null && penalty.branchId != null &&
+    Number(entry.branchId) === Number(penalty.branchId) && historicalPenaltyAttestationMatches(value, penalty) &&
+    operation?.version === "operation.v2" && operation.outcome === "SUCCESS" &&
+    recorder?.source === "system" && recorder.label === "External owner confirmation recorded by operator";
+}
+
+/** Governance holds an exclusive company gate; writers hold its shared form.
+ * Once an attestation is recorded, neither approval nor cancellation may
+ * silently turn this historical decision into a new payroll deduction. */
+async function assertNoHistoricalAttestationTx(tx: Tx, employeeId: number, penaltyId: number) {
+  const records = await tx.select({ entityId: auditLogs.entityId, branchId: auditLogs.branchId, value: auditLogs.newValue, operation: auditLogs.operation }).from(auditLogs).where(and(
+    eq(auditLogs.action, "payroll.historicalPenalty.attest"),
+    eq(auditLogs.entityType, "payrollHistoricalPenalty"),
+    or(eq(auditLogs.entityId, String(employeeId)),
+      sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.employeeId')) = ${String(employeeId)}`,
+      sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.penaltyId')) = ${String(penaltyId)}`),
+  )).for("share");
+  const decisions = records.length ? await tx.select().from(employeePenalties).where(eq(employeePenalties.employeeId, employeeId)).for("share") : [];
+  const conflict = records.some((record) => {
+    const recordedId = Number(auditObject(record.value)?.penaltyId);
+    const decision = decisions.find((candidate) => Number(candidate.id) === recordedId);
+    return !validHistoricalAttestation(record, decision, employeeId) || recordedId === penaltyId;
+  });
+  if (conflict) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+    what: "تعذّر تغيير قرار العقوبة", why: "يوجد إقرار تاريخي لهذا القرار أو دليل متعارض يحتاج إلى مطابقة",
+    doThis: "راجع المطابقة التاريخية قبل اعتماد القرار أو إلغائه",
+  }) });
 }
 
 function isNowaitSourceConflict(error: unknown): boolean {
@@ -92,13 +138,13 @@ export async function createEmployeePenalty(
     let deductionAmount = money(input.deductionAmount ?? 0);
 
     if (input.penaltyType === "SALARY_DEDUCTION") {
-      // المادة 139 من قانون العمل العراقي رقم 37 لسنة 2015: قطع الراتب لا يتجاوز 3 أيام شهرياً
+      // الحد المطبق حالياً في النظام؛ لا يمثل تقريراً للأساس القانوني للقرار.
       if (deductionDays.gt(3)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
-            what: "مخالفة السقف القانوني للاستقطاع",
-            why: "يتجاوز استقطاع الراتب 3 أيام، بالمخالفة للمادة 139 من قانون العمل العراقي رقم 37 لسنة 2015",
+            what: "تجاوز الحد المطبق للاستقطاع",
+            why: "يتجاوز استقطاع الراتب الحد الحالي في النظام وهو 3 أيام",
             doThis: "حدّد مدة الاستقطاع بما لا يتجاوز 3 أيام كحد أقصى في الشهر الواحد",
           }),
         });
@@ -109,6 +155,16 @@ export async function createEmployeePenalty(
         const gross = money(emp.salary ?? 0).plus(money(emp.allowances ?? 0));
         const dailyRate = round2(gross.div(30));
         deductionAmount = round2(dailyRate.times(deductionDays));
+      }
+      if (deductionAmount.lte(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل الاستقطاع المالي",
+            why: "مبلغ القرار غير موجب وتعذّر اشتقاق مبلغ موثوق من أجر الموظف",
+            doThis: "أدخل مبلغ القرار المعتمد صراحةً قبل حفظه",
+          }),
+        });
       }
     } else {
       deductionDays = new Decimal(0);
@@ -157,6 +213,7 @@ export async function approveEmployeePenalty(
     }
     // نفس قفل التجميع في السلف والمسيّر: الموظف قبل رأس الشهر ثم القرار.
     await lockHrEmployeeTx(tx, currentActor, preview.employeeId, preview.branchId);
+    await assertNoHistoricalAttestationTx(tx, Number(preview.employeeId), id);
     const penaltyPeriod = String(preview.decisionDate).slice(0, 7);
     const [existingRun] = money(preview.deductionAmount).gt(0)
       ? await currentPenaltySourceLock(
@@ -224,6 +281,17 @@ export async function approveEmployeePenalty(
       });
     }
 
+    if (p.penaltyType === "SALARY_DEDUCTION" && money(p.deductionAmount).lte(0)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الاستقطاع المالي",
+          why: "مبلغ القرار صفر أو غير صالح ولا يمكن اقتطاعه من الراتب",
+          doThis: "ألغِ المسودة وسجّل قراراً بمبلغ موجب موثق",
+        }),
+      });
+    }
+
     if (p.createdById === currentActor.userId && !canCrossBranches(currentActor)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -275,6 +343,7 @@ export async function cancelEmployeePenalty(
 
     // الموظف ثم رأس المسيّر ثم المصدر؛ NOWAIT يمنع الانتظار العكسي أمام التوليد.
     await lockHrEmployeeTx(tx, currentActor, preview.employeeId, preview.branchId);
+    await assertNoHistoricalAttestationTx(tx, Number(preview.employeeId), id);
     if (money(preview.deductionAmount).gt(0) || preview.payrollRunId != null) {
       const runPredicate =
         preview.payrollRunId != null
@@ -321,14 +390,18 @@ export async function cancelEmployeePenalty(
         }),
       });
     }
-    if (p.status === "APPLIED" || p.payrollRunId != null) {
+    const [allocation] = await tx.select({ id: payrollPenaltyAllocations.id })
+      .from(payrollPenaltyAllocations)
+      .where(eq(payrollPenaltyAllocations.penaltyId, id))
+      .for("share").limit(1);
+    if (p.status === "APPLIED" || p.payrollRunId != null || allocation) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "لا يمكن إلغاء العقوبة",
-          why: "تم تطبيق استقطاع هذه العقوبة بالفعل ضمن مسيّر رواتب معتمد",
+          why: "للقرار تخصيص محفوظ ضمن مسيّر رواتب أو استقطاع سابق",
           doThis:
-            "إذا كان هناك خطأ، يلزم إصدار مكافأة تعويضية أو تسوية مالية لاحقة",
+            "إذا كان مسودة جديدة فاحذفها أولاً، وإلا راجع مسار التصحيح المالي الموثق",
         }),
       });
     }
@@ -355,41 +428,82 @@ export async function listEmployeePenalties(
   if (scopedBranchId != null) {
     conds.push(eq(employeePenalties.branchId, scopedBranchId));
   }
-  return db
-    .select()
-    .from(employeePenalties)
-    .where(and(...conds))
-    .orderBy(desc(employeePenalties.decisionDate));
-}
-
-/** استعلام العقوبات المعتمدة غير المطبقة في الرواتب لموظف. */
-export async function getUnappliedPenalties(employeeId: number, conn?: any) {
-  const db = conn ?? requireDb();
-  return db
-    .select()
-    .from(employeePenalties)
-    .where(
-      and(
-        eq(employeePenalties.employeeId, employeeId),
-        eq(employeePenalties.status, "APPROVED"),
-        isNull(employeePenalties.payrollRunId),
-        sql`${employeePenalties.deductionAmount} > 0`,
-      ),
-    );
-}
-
-/** ربط العقوبات بمسيّر الرواتب المولد وتحديث حالتها إلى APPLIED. */
-export async function applyPenaltiesToPayrollRunTx(
-  tx: any,
-  payrollRunId: number,
-  penaltyIds: number[],
-) {
-  if (!penaltyIds.length) return;
-  await tx
-    .update(employeePenalties)
-    .set({
-      payrollRunId,
-      status: "APPLIED",
-    })
-    .where(inArray(employeePenalties.id, penaltyIds));
+  // Preview only identifies which run heads to lock; every returned value is re-read afterwards.
+  const previewPenalties = await db.select({ id: employeePenalties.id }).from(employeePenalties).where(and(...conds));
+  if (!previewPenalties.length) return [];
+  const previewAllocations = await db.select({ runId: payrollPenaltyAllocations.runId }).from(payrollPenaltyAllocations)
+    .where(inArray(payrollPenaltyAllocations.penaltyId, previewPenalties.map((p) => Number(p.id))));
+  const runIds = Array.from(new Set(previewAllocations.map((row) => Number(row.runId)))).sort((a, b) => a - b);
+  return db.transaction(async (tx) => {
+    const runs = runIds.length ? await tx.select().from(payrollRuns).where(inArray(payrollRuns.id, runIds)).orderBy(payrollRuns.id).for("share") : [];
+    if (runs.length !== runIds.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر عرض تخصيصات العقوبة", why: "تغيّرت مسيّرات الرواتب المرتبطة أثناء القراءة",
+      doThis: "حدّث بطاقة الموظف وراجع تخصيصات القرار من جديد",
+    }) });
+    const penalties = await tx
+      .select()
+      .from(employeePenalties)
+      .where(and(...conds))
+      .orderBy(desc(employeePenalties.decisionDate)).for("share");
+    if (!penalties.length) return [];
+    const allocations = await tx.select({
+      penaltyId: payrollPenaltyAllocations.penaltyId,
+      runId: payrollPenaltyAllocations.runId,
+      itemId: payrollPenaltyAllocations.itemId,
+      amount: payrollPenaltyAllocations.amount,
+    }).from(payrollPenaltyAllocations)
+      .where(inArray(payrollPenaltyAllocations.penaltyId, penalties.map((p) => Number(p.id))))
+      .orderBy(payrollPenaltyAllocations.id).for("share");
+    const currentRunIds = Array.from(new Set(allocations.map((row) => Number(row.runId)))).sort((a, b) => a - b);
+    if (currentRunIds.length !== runIds.length || currentRunIds.some((id, index) => id !== runIds[index])) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر عرض تخصيصات العقوبة", why: "تغيّرت مسيّرات التخصيص أثناء قراءة القرار",
+        doThis: "حدّث بطاقة الموظف وراجع فترات الاستقطاع من جديد",
+      }) });
+    }
+    await readLockedPenaltyBreakdownsTx(tx, runs, allocations.map((row) => Number(row.itemId)));
+    const runById = new Map(runs.map((run) => [Number(run.id), run]));
+    const allDecisions = scopedBranchId == null ? penalties : await tx.select().from(employeePenalties)
+      .where(eq(employeePenalties.employeeId, employeeId)).for("share");
+    const attestations = await tx.select({ entityId: auditLogs.entityId, branchId: auditLogs.branchId, value: auditLogs.newValue, operation: auditLogs.operation })
+      .from(auditLogs).where(and(eq(auditLogs.action, "payroll.historicalPenalty.attest"),
+        eq(auditLogs.entityType, "payrollHistoricalPenalty"), or(
+          eq(auditLogs.entityId, String(employeeId)),
+          sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.employeeId')) = ${String(employeeId)}`,
+          inArray(sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.penaltyId'))`, allDecisions.map((decision) => String(decision.id))),
+        )));
+    // Validate every employee attestation before trusting its penaltyId for filtering.
+    // A corrupted id must never hide evidence of an already-deducted decision.
+    for (const entry of attestations) {
+      const value = auditObject(entry.value);
+      const decision = allDecisions.find((candidate) => Number(candidate.id) === Number(value?.penaltyId));
+      if (!validHistoricalAttestation(entry, decision, employeeId)) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر عرض إقرار القرار التاريخي", why: "دليل الإقرار المحفوظ متعارض أو لا يطابق القرار", doThis: "راجع سجل التدقيق قبل متابعة المعالجة",
+      }) });
+    }
+    return penalties.map((penalty) => {
+      const matches = allocations.filter((row) => Number(row.penaltyId) === Number(penalty.id));
+      const related = attestations.filter((entry) => {
+        const value = auditObject(entry.value);
+        return value && entry.branchId != null && penalty.branchId != null && Number(value.penaltyId) === Number(penalty.id) && Number(entry.branchId) === Number(penalty.branchId);
+      });
+      if (related.length > 1) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر عرض إقرار القرار التاريخي", why: "وجد أكثر من إقرار للقرار نفسه", doThis: "راجع سجل التدقيق قبل متابعة المعالجة",
+      }) });
+      let historicalAttestation: { status: "NEEDS_RECONCILIATION"; period: string } | null = null;
+      if (related.length) {
+        const value = auditObject(related[0].value)!;
+        if (typeof value.period !== "string") {
+          throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+            what: "تعذّر عرض إقرار القرار التاريخي", why: "دليل الإقرار المحفوظ غير مكتمل أو لا يطابق القرار", doThis: "راجع سجل التدقيق قبل متابعة المعالجة",
+          }) });
+        }
+        historicalAttestation = { status: "NEEDS_RECONCILIATION", period: value.period };
+      }
+      return { ...penalty, payrollAllocations: matches.length ? matches.map((row) => ({
+        runId: Number(row.runId), period: runById.get(Number(row.runId))!.period,
+        runStatus: runById.get(Number(row.runId))!.status, amount: toDbMoney(row.amount),
+      })) : null, historicalAttestation };
+    });
+  });
 }

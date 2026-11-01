@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import mysql from "mysql2/promise";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
@@ -8,6 +8,7 @@ import { createSale } from "../../services/saleService";
 import { recordStaffDeliveryConfirmation } from "../../services/delivery/companyStatement";
 import { reconcileCustomerBalances } from "../../services/reconcileService";
 import { returnRouter } from "../returnRouter";
+import { saleRouter } from "../saleRouter";
 import { router } from "../../trpc";
 import { assertIsolatedActivationTestTarget } from "../../services/__tests__/activationTestTarget";
 
@@ -57,7 +58,225 @@ async function cart(invoiceNumber: string, quantity: number, amount: string, key
   };
 }
 
+async function simulateSameHistoricalNumber(invoiceId: number, removeBinding: boolean) {
+  const sharedNumber = "SR-202610-7777";
+  const entries = await db().select().from(s.accountingEntries).where(and(
+    eq(s.accountingEntries.invoiceId, invoiceId), eq(s.accountingEntries.entryType, "RETURN"),
+  ));
+  const audits = await db().select().from(s.auditLogs).where(and(
+    eq(s.auditLogs.action, "sale.return_cart"), eq(s.auditLogs.entityId, String(invoiceId)),
+  ));
+  expect(entries).toHaveLength(2);
+  expect(audits).toHaveLength(2);
+  for (const row of entries) {
+    await db().update(s.accountingEntries).set({
+      notes: row.notes!.replace(/\[SR-[^\]]+\]/g, `[${sharedNumber}]`),
+    }).where(eq(s.accountingEntries.id, row.id));
+  }
+  for (const row of audits) {
+    const value: Record<string, unknown> = { ...(row.newValue as Record<string, unknown>), returnNumber: sharedNumber };
+    if (removeBinding) delete value.returnEntryId;
+    await db().update(s.auditLogs).set({ newValue: value }).where(eq(s.auditLogs.id, row.id));
+  }
+  for (const entry of entries) {
+    const [result] = await db().select().from(s.auditLogs).where(and(
+      eq(s.auditLogs.action, "sale.return_cart.result"), eq(s.auditLogs.entityId, String(entry.id)),
+    ));
+    if (removeBinding) await db().delete(s.auditLogs).where(eq(s.auditLogs.id, result.id));
+    else await db().update(s.auditLogs).set({
+      newValue: { ...(result.newValue as Record<string, unknown>), returnNumber: sharedNumber },
+    }).where(eq(s.auditLogs.id, result.id));
+  }
+  return sharedNumber;
+}
+
+function ownerSalesCaller() {
+  return saleRouter.createCaller({
+    req: { headers: {} }, res: {},
+    user: { id: 1, role: "admin", branchId: 1, isActive: true, isOwner: true, name: "مالك" },
+  } as TrpcContext);
+}
+
 describe("sales return portal — no cash, no invented customer account", () => {
+  it("keeps each partial return distinct and replays only its own result even when randomness collides", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.1234);
+    try {
+      const sale = await unpaid();
+      const first = await cart(sale.invoiceNumber, 1, "1000", "collision-first");
+      const firstResult = await caller().executeSalesReturnCart(first);
+      const secondResult = await caller().executeSalesReturnCart(
+        await cart(sale.invoiceNumber, 2, "2000", "collision-second"),
+      );
+      const beforeReplay = {
+        invoice: await invoice(sale.invoiceId),
+        stock: await db().select().from(s.branchStock),
+        entries: await db().select().from(s.accountingEntries),
+        movements: await db().select().from(s.inventoryMovements),
+        receipts: await db().select().from(s.receipts),
+        results: await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.return_cart.result")),
+      };
+      expect(await caller().executeSalesReturnCart(first)).toMatchObject({
+        idempotentReplay: true, returnNumber: firstResult.returnNumber,
+        payoutAmount: "0.00", debtOffsetAmount: "1000.00",
+      });
+      expect(secondResult.returnNumber).not.toBe(firstResult.returnNumber);
+      expect({
+        invoice: await invoice(sale.invoiceId),
+        stock: await db().select().from(s.branchStock),
+        entries: await db().select().from(s.accountingEntries),
+        movements: await db().select().from(s.inventoryMovements),
+        receipts: await db().select().from(s.receipts),
+        results: await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.return_cart.result")),
+      }).toEqual(beforeReplay);
+      const inspected = await caller().inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+      const detailed = await ownerSalesCaller().get({ invoiceId: sale.invoiceId });
+      for (const history of [inspected!.previousReturns, detailed!.returns]) {
+        expect(history.find((row) => row.returnNumber === firstResult.returnNumber)?.items[0]?.quantity).toBe(1);
+        expect(history.find((row) => row.returnNumber === secondResult.returnNumber)?.items[0]?.quantity).toBe(2);
+      }
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it.each([false, true])("binds colliding historical-looking records safely (legacy=%s)", async (legacy) => {
+    const sale = await unpaid();
+    const first = await cart(sale.invoiceNumber, 1, "1000", `bound-first-${legacy}`);
+    await caller().executeSalesReturnCart(first);
+    await caller().executeSalesReturnCart(await cart(sale.invoiceNumber, 2, "2000", `bound-second-${legacy}`));
+    const sharedNumber = await simulateSameHistoricalNumber(sale.invoiceId, legacy);
+    const before = {
+      invoice: await invoice(sale.invoiceId),
+      entries: await db().select().from(s.accountingEntries),
+      stock: await db().select().from(s.branchStock),
+      movements: await db().select().from(s.inventoryMovements),
+      receipts: await db().select().from(s.receipts),
+      results: await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.return_cart.result")),
+    };
+    if (legacy) {
+      await expect(caller().executeSalesReturnCart(first)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    } else {
+      await expect(caller().executeSalesReturnCart(first)).resolves.toMatchObject({
+        idempotentReplay: true, returnNumber: sharedNumber, payoutAmount: "0.00", debtOffsetAmount: "1000.00",
+      });
+    }
+    const inspected = await caller().inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+    const detailed = await ownerSalesCaller().get({ invoiceId: sale.invoiceId });
+    for (const history of [inspected!.previousReturns, detailed!.returns]) {
+      const quantities = history.map((row) => row.items[0]?.quantity).sort();
+      expect(quantities).toEqual(legacy ? [undefined, undefined] : [1, 2]);
+    }
+    expect({
+      invoice: await invoice(sale.invoiceId),
+      entries: await db().select().from(s.accountingEntries),
+      stock: await db().select().from(s.branchStock),
+      movements: await db().select().from(s.inventoryMovements),
+      receipts: await db().select().from(s.receipts),
+      results: await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.return_cart.result")),
+    }).toEqual(before);
+  });
+
+  it("replays a unique legacy audit without changing its original financial result", async () => {
+    const sale = await unpaid();
+    const request = await cart(sale.invoiceNumber, 1, "1000", "legacy-single-return", {
+      reason: "ملاحظة [SR-202601-9999] راجعت الأصناف",
+    });
+    const result = await caller().executeSalesReturnCart(request);
+    const [audit] = await db().select().from(s.auditLogs).where(and(
+      eq(s.auditLogs.action, "sale.return_cart"), eq(s.auditLogs.entityId, String(sale.invoiceId)),
+    ));
+    const value = { ...(audit.newValue as Record<string, unknown>) };
+    delete value.returnEntryId;
+    await db().update(s.auditLogs).set({ newValue: value }).where(eq(s.auditLogs.id, audit.id));
+    await db().delete(s.auditLogs).where(and(
+      eq(s.auditLogs.action, "sale.return_cart.result"),
+      eq(s.auditLogs.entityId, String((audit.newValue as Record<string, unknown>).returnEntryId)),
+    ));
+    await expect(caller().executeSalesReturnCart(request)).resolves.toMatchObject({
+      idempotentReplay: true, returnNumber: result.returnNumber, debtOffsetAmount: "1000.00", payoutAmount: "0.00",
+    });
+  });
+
+  it("refuses a legacy replay when the source number and audit are missing", async () => {
+    const sale = await unpaid();
+    const request = await cart(sale.invoiceNumber, 1, "1000", "legacy-missing-evidence");
+    await caller().executeSalesReturnCart(request);
+    const [entry] = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, sale.invoiceId), eq(s.accountingEntries.entryType, "RETURN"),
+    ));
+    await db().update(s.accountingEntries).set({ notes: entry.notes!.replace(/\[SR-[^\]]+\]/g, "") })
+      .where(eq(s.accountingEntries.id, entry.id));
+    await db().delete(s.auditLogs).where(and(eq(s.auditLogs.action, "sale.return_cart"),
+      eq(s.auditLogs.entityId, String(sale.invoiceId))));
+    await db().delete(s.auditLogs).where(and(eq(s.auditLogs.action, "sale.return_cart.result"),
+      eq(s.auditLogs.entityId, String(entry.id))));
+    await expect(caller().executeSalesReturnCart(request)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("keeps replay linked when an unusually large cart audit is truncated", async () => {
+    const sale = await unpaid("8");
+    const request = await cart(sale.invoiceNumber, 8, "8000", "large-return-audit");
+    const item = request.items[0];
+    request.items = Array.from({ length: 8 }, () => ({ ...item, quantity: 1, productName: "ع".repeat(1024) }));
+    const first = await caller().executeSalesReturnCart(request);
+    const [fullAudit] = await db().select().from(s.auditLogs).where(and(
+      eq(s.auditLogs.action, "sale.return_cart"), eq(s.auditLogs.entityId, String(sale.invoiceId)),
+    ));
+    expect(fullAudit.newValue).toMatchObject({ _truncated: true });
+    await expect(caller().executeSalesReturnCart(request)).resolves.toMatchObject({
+      idempotentReplay: true, returnNumber: first.returnNumber, debtOffsetAmount: "8000.00", payoutAmount: "0.00",
+    });
+    const inspected = await caller().inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+    const detailed = await ownerSalesCaller().get({ invoiceId: sale.invoiceId });
+    for (const history of [inspected!.previousReturns, detailed!.returns]) {
+      expect(history.find((row) => row.returnNumber === first.returnNumber)).toMatchObject({
+        method: "CREDIT_OFFSET", items: [],
+      });
+    }
+  });
+
+  it("serializes concurrent retries without creating a second return or consuming a second number", async () => {
+    const sale = await unpaid();
+    const request = await cart(sale.invoiceNumber, 1, "1000", "concurrent-same-return");
+    const results = await Promise.all([
+      caller().executeSalesReturnCart(request),
+      caller().executeSalesReturnCart(request),
+    ]);
+    expect(results[0].returnNumber).toBe(results[1].returnNumber);
+    expect(results.filter((row) => "idempotentReplay" in row && row.idempotentReplay === true)).toHaveLength(1);
+    expect(await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, sale.invoiceId), eq(s.accountingEntries.entryType, "RETURN"),
+    ))).toHaveLength(1);
+    const counters = await db().select().from(s.documentCounters).where(sql`${s.documentCounters.counterKey} LIKE 'sales_return_cart_%'`);
+    expect(counters).toHaveLength(1);
+    expect(Number(counters[0].lastValue)).toBe(1);
+  });
+
+  it("allows the current admin to replay a cross-branch core return without widening cashier access", async () => {
+    await db().insert(s.branchStock).values({ branchId: 2, variantId: 1, quantity: 100 });
+    const sale = await createSale({ branchId: 2, sourceType: "ORDER", codDispatchPending: true, paymentMode: "COD",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+    }, owner);
+    const admin = returnRouter.createCaller({ req: { headers: {} }, res: {},
+      user: { id: 1, role: "admin", branchId: 1, isActive: true, isOwner: true, name: "مالك" },
+    } as TrpcContext);
+    const inspected = await admin.inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+    const item = inspected!.items[0];
+    const request = {
+      invoiceNumber: inspected!.invoiceNumber, disposition: "RESTOCK" as const,
+      items: [{ invoiceItemId: item.invoiceItemId, variantId: item.variantId, productUnitId: item.productUnitId,
+        productName: item.productName, quantity: 1, unitPrice: item.effectiveUnitPrice }],
+      settlement: { method: "CREDIT_OFFSET" as const, totalAmount: "1000" }, clientRequestId: "cross-branch-return",
+    };
+    const first = await admin.executeSalesReturnCart(request);
+    await expect(admin.executeSalesReturnCart(request)).resolves.toMatchObject({
+      idempotentReplay: true, returnNumber: first.returnNumber, debtOffsetAmount: "1000.00",
+    });
+    await expect(caller().executeSalesReturnCart(request)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ role: "cashier", isOwner: false }).where(eq(s.users.id, 1));
+    await expect(admin.executeSalesReturnCart(request)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it.each(["no-receipt", "purchase"] as const)("%s stock writer waits for the exclusive financial gate", async route => {
     const raw = process.env.DATABASE_URL!;
     assertIsolatedActivationTestTarget(raw);
@@ -200,6 +419,25 @@ describe("sales return portal — no cash, no invented customer account", () => 
     expect((await invoice(sale.invoiceId)).returnedTotal).toBe("0.00");
   });
 
+  it("separates return total from actual cash paid on both history screens", async () => {
+    await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 2, status: "OPEN", openingBalance: "0", shiftType: "RETAIL" });
+    const sale = await createSale({ branchId: 1, shiftId: 1, sourceType: "ORDER", codDispatchPending: true, paymentMode: "COD",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }], payment: { amount: "1000", method: "CASH" },
+    }, cashier);
+    const request = await cart(sale.invoiceNumber, 3, "3000", "portal-mixed-cash", {
+      settlement: { method: "CASH", totalAmount: "3000", shiftId: 1 },
+    });
+    const result = await caller().executeSalesReturnCart(request);
+    expect(result).toMatchObject({ totalAmount: "3000", payoutAmount: "1000.00", debtOffsetAmount: "2000.00" });
+    const inspected = await caller().inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+    const detailed = await ownerSalesCaller().get({ invoiceId: sale.invoiceId });
+    for (const history of [inspected!.previousReturns, detailed!.returns]) {
+      expect(history.find((row) => row.returnNumber === result.returnNumber)).toMatchObject({
+        amount: "3000.00", amountSource: "RETURN_TOTAL", payoutAmount: "1000.00", debtOffsetAmount: "2000.00", receiptId: result.receiptId,
+      });
+    }
+  });
+
   it.each(["DELIVERY_FEE", "ROUNDING"] as const)("full completion reverses authoritative %s residue through the core engine", async (kind) => {
     await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 2, status: "OPEN", openingBalance: "0", shiftType: "RETAIL" });
     if (kind === "ROUNDING") await db().update(s.productPrices).set({ price: "1300" });
@@ -211,6 +449,7 @@ describe("sales return portal — no cash, no invented customer account", () => 
     const doc = await invoice(sale.invoiceId);
     const request = await cart(sale.invoiceNumber, 1, doc.total, `portal-full-${kind}`, {
       settlement: { method: "CASH", totalAmount: doc.total, shiftId: 1 },
+      reason: "وصف تالف [SR-202601-9999] لكن أُعيد للرف",
     });
     const result = await caller().executeSalesReturnCart(request);
     expect(result).toMatchObject({ totalAmount: doc.total, payoutAmount: doc.total, debtOffsetAmount: "0.00" });
@@ -218,6 +457,14 @@ describe("sales return portal — no cash, no invented customer account", () => 
     const outs = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(outs).toHaveLength(1);
     expect(outs[0].amount).toBe(doc.total);
+    expect(result.receiptId).toBe(Number(outs[0].id));
+    const inspected = await caller().inspectInvoiceForReturn({ invoiceNumber: sale.invoiceNumber });
+    const detailed = await ownerSalesCaller().get({ invoiceId: sale.invoiceId });
+    for (const history of [inspected!.previousReturns, detailed!.returns]) {
+      expect(history.find((row) => row.returnNumber === result.returnNumber)).toMatchObject({
+        receiptId: Number(outs[0].id), disposition: "RESTOCK",
+      });
+    }
     expect((await db().select().from(s.branchStock))[0].quantity).toBe(100);
     const [sum] = await db().select({ amount: sql<string>`SUM(${s.accountingEntries.amount})` }).from(s.accountingEntries)
       .where(and(eq(s.accountingEntries.invoiceId, sale.invoiceId), sql`${s.accountingEntries.entryType} IN ('SALE','RETURN','ADJUST')`));

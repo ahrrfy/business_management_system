@@ -685,6 +685,8 @@ export function serviceRoleReviewNeeded(path) {
 }
 const FIXED_HANDLER_AUTHORITY = new Set([
   "payroll.obligations",
+  "payroll.historicalPenaltyPreview",
+  "payroll.attestHistoricalPenalty",
   "commissions.plans.create",
   "commissions.plans.update",
   "commissions.plans.setActive",
@@ -1690,6 +1692,7 @@ Object.assign(WORDS, {
   trends: "الاتجاهات",
   context: "السياق",
   historical: "التاريخي",
+  penalty: "العقوبة",
   other: "الأخرى",
   aggregate: "التجميع",
   resubmit: "إعادة إرسال",

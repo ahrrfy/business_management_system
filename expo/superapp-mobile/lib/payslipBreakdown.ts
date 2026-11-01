@@ -6,6 +6,7 @@ export interface PayslipBreakdownInput {
   commission: string;
   deductions: string;
   advanceDeduction?: string | null;
+  penaltyDeduction?: string | null;
   socialSecurityEmployee?: string | null;
   incomeTax?: string | null;
   net: string;
@@ -19,6 +20,7 @@ export interface PayslipBreakdown {
   commission: string;
   totalEarnings: string;
   advanceDeduction: string;
+  penaltyDeduction: string | null;
   socialSecurityEmployee: string;
   incomeTax: string;
   otherDeductions: string;
@@ -70,12 +72,13 @@ export function buildPayslipBreakdown(input: PayslipBreakdownInput): PayslipBrea
   const totalEarnings = gross + overtime + commission;
 
   const advanceDeduction = toCents(input.advanceDeduction);
+  const penaltyDeduction = input.penaltyDeduction == null ? null : toCents(input.penaltyDeduction);
   const socialSecurityEmployee = toCents(input.socialSecurityEmployee);
   const incomeTax = toCents(input.incomeTax);
   const totalDeductions = toCents(input.deductions);
-  const namedDeductions = advanceDeduction + socialSecurityEmployee + incomeTax;
+  const namedDeductions = advanceDeduction + (penaltyDeduction ?? 0n) + socialSecurityEmployee + incomeTax;
   const deductionClassificationGap = totalDeductions - namedDeductions;
-  const deductionComponentsValid = deductionClassificationGap >= 0n;
+  const deductionComponentsValid = deductionClassificationGap >= 0n && (penaltyDeduction === null || penaltyDeduction >= 0n);
   const otherDeductions = deductionComponentsValid ? deductionClassificationGap : 0n;
 
   const expectedNet = totalEarnings - totalDeductions;
@@ -90,6 +93,7 @@ export function buildPayslipBreakdown(input: PayslipBreakdownInput): PayslipBrea
     commission: fromCents(commission),
     totalEarnings: fromCents(totalEarnings),
     advanceDeduction: fromCents(advanceDeduction),
+    penaltyDeduction: penaltyDeduction === null ? null : fromCents(penaltyDeduction),
     socialSecurityEmployee: fromCents(socialSecurityEmployee),
     incomeTax: fromCents(incomeTax),
     otherDeductions: fromCents(otherDeductions),

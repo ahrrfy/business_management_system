@@ -14,6 +14,7 @@ import {
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { money, toDateStr } from "../money";
+import { readLockedPenaltyBreakdownsTx } from "./penaltyRead";
 import {
   assertSalaryReceiptEvidence,
   readSalarySettlementEvidence,
@@ -128,125 +129,133 @@ export async function listRuns() {
 
 export async function getRun(id: number) {
   const db = requireDb();
-  const [run] = await db
-    .select()
-    .from(payrollRuns)
-    .where(eq(payrollRuns.id, id))
-    .limit(1);
-  if (!run) return null;
-  const items = await db
-    .select({
-      ...getTableColumns(payrollItems),
-      firstName: employees.firstName,
-      fatherName: employees.fatherName,
-      grandfatherName: employees.grandfatherName,
-      lastName: employees.lastName,
-      position: employees.position,
-      department: employees.department,
-      colorTag: employees.colorTag,
-      photoUrl: employees.photoUrl,
-      employmentStatus: employees.employmentStatus,
-      baseSalary: employees.salary,
-    })
-    .from(payrollItems)
-    .leftJoin(employees, eq(payrollItems.employeeId, employees.id))
-    .where(eq(payrollItems.runId, id))
-    .orderBy(payrollItems.id);
-  const obligations = await db
-    .select()
-    .from(payrollObligations)
-    .where(eq(payrollObligations.runId, id))
-    .orderBy(payrollObligations.revisionNo, payrollObligations.id);
-  const accountingEvents = await db
-    .select()
-    .from(payrollAccountingEvents)
-    .where(eq(payrollAccountingEvents.runId, id))
-    .orderBy(payrollAccountingEvents.revisionNo, payrollAccountingEvents.id);
-  const salaryPayments = await db
-    .select({
-      event: payrollAccountingEvents,
-      obligation: payrollObligations,
-      receipt: receipts,
-      settlementEvidence: payrollAccountingEvents.settlementEvidence,
-      sourceHash: payrollAccountingEvents.sourceHash,
-      occurredAt: payrollAccountingEvents.occurredAt,
-      employeeId: payrollObligations.employeeId,
-      obligationId: payrollAccountingEvents.obligationId,
-      eventId: payrollAccountingEvents.id,
-      revisionNo: payrollAccountingEvents.revisionNo,
-      receiptId: payrollAccountingEvents.receiptId,
-      amount: receipts.amount,
-      paymentDate: receipts.voucherDate,
-      paymentMethod: receipts.paymentMethod,
-      referenceNumber: receipts.referenceNumber,
-      receiptStatus: receipts.status,
-    })
-    .from(payrollAccountingEvents)
-    .innerJoin(
-      payrollObligations,
-      eq(payrollAccountingEvents.obligationId, payrollObligations.id),
-    )
-    .leftJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
-    .where(
-      and(
-        eq(payrollAccountingEvents.runId, id),
-        eq(payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
-      ),
-    )
-    .orderBy(payrollAccountingEvents.revisionNo, payrollAccountingEvents.id);
-  const reversedPaymentIds = new Set(
-    accountingEvents
-      .filter(
-        (event) =>
-          event.eventKind === "SALARY_PAYMENT_RETURN" &&
-          event.reversalOfId != null,
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .select()
+      .from(payrollRuns)
+      .where(eq(payrollRuns.id, id))
+      .for("share").limit(1);
+    if (!run) return null;
+    const items = await tx
+      .select({
+        ...getTableColumns(payrollItems),
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
+        position: employees.position,
+        department: employees.department,
+        colorTag: employees.colorTag,
+        photoUrl: employees.photoUrl,
+        employmentStatus: employees.employmentStatus,
+        baseSalary: employees.salary,
+      })
+      .from(payrollItems)
+      .leftJoin(employees, eq(payrollItems.employeeId, employees.id))
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.id);
+    const obligations = await tx
+      .select()
+      .from(payrollObligations)
+      .where(eq(payrollObligations.runId, id))
+      .orderBy(payrollObligations.revisionNo, payrollObligations.id);
+    const accountingEvents = await tx
+      .select()
+      .from(payrollAccountingEvents)
+      .where(eq(payrollAccountingEvents.runId, id))
+      .orderBy(payrollAccountingEvents.revisionNo, payrollAccountingEvents.id);
+    const salaryPayments = await tx
+      .select({
+        event: payrollAccountingEvents,
+        obligation: payrollObligations,
+        receipt: receipts,
+        settlementEvidence: payrollAccountingEvents.settlementEvidence,
+        sourceHash: payrollAccountingEvents.sourceHash,
+        occurredAt: payrollAccountingEvents.occurredAt,
+        employeeId: payrollObligations.employeeId,
+        obligationId: payrollAccountingEvents.obligationId,
+        eventId: payrollAccountingEvents.id,
+        revisionNo: payrollAccountingEvents.revisionNo,
+        receiptId: payrollAccountingEvents.receiptId,
+        amount: receipts.amount,
+        paymentDate: receipts.voucherDate,
+        paymentMethod: receipts.paymentMethod,
+        referenceNumber: receipts.referenceNumber,
+        receiptStatus: receipts.status,
+      })
+      .from(payrollAccountingEvents)
+      .innerJoin(
+        payrollObligations,
+        eq(payrollAccountingEvents.obligationId, payrollObligations.id),
       )
-      .map((event) => Number(event.reversalOfId)),
-  );
-  return {
-    ...run,
-    items: items.map((it) => ({ ...it, employeeName: fullEmployeeName(it) })),
-    obligations,
-    accountingEvents,
-    employeePaymentSnapshots: salaryPayments.map((payment) => {
-      const evidence = readSalarySettlementEvidence(
-        payment.settlementEvidence,
-        payment.sourceHash,
-      );
-      assertSalaryReceiptEvidence(evidence, {
-        event: payment.event,
-        receipt: payment.receipt,
-        obligation: payment.obligation,
-        reversed: reversedPaymentIds.has(payment.eventId),
-      });
-      if (!payment.receiptId && !evidence)
-        throw new Error("دليل تسوية الراتب بلا إيصال مفقود");
-      return {
-        employeeId:
-          payment.employeeId == null ? null : Number(payment.employeeId),
-        obligationId: Number(payment.obligationId),
-        eventId: Number(payment.eventId),
-        revisionNo: Number(payment.revisionNo),
-        active:
-          (payment.receiptStatus === "COMPLETED" ||
-            (!payment.receiptId && evidence != null)) &&
-          !reversedPaymentIds.has(Number(payment.eventId)),
-        amount: evidence?.actualPayout ?? payment.amount!,
-        entitlementSettled: evidence?.entitlementSettled ?? null,
-        signedDifference: evidence?.signedDifference ?? null,
-        classification: evidence?.classification ?? "LEGACY_UNCLASSIFIED",
-        evidenceVersion: evidence?.version ?? null,
-        paymentDate: evidence
-          ? new Date(`${evidence.paymentYmd}T00:00:00.000Z`)
-          : (payment.paymentDate ?? payment.occurredAt),
-        paymentMethod: evidence?.method ?? payment.paymentMethod!,
-        referenceNumber: evidence
-          ? evidence.referenceNumber
-          : payment.referenceNumber,
-        receiptId: payment.receiptId == null ? null : Number(payment.receiptId),
-      };
-    }),
-  };
+      .leftJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+      .where(
+        and(
+          eq(payrollAccountingEvents.runId, id),
+          eq(payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+        ),
+      )
+      .orderBy(payrollAccountingEvents.revisionNo, payrollAccountingEvents.id);
+    const reversedPaymentIds = new Set(
+      accountingEvents
+        .filter(
+          (event) =>
+            event.eventKind === "SALARY_PAYMENT_RETURN" &&
+            event.reversalOfId != null,
+        )
+        .map((event) => Number(event.reversalOfId)),
+    );
+    const penaltyBreakdowns = await readLockedPenaltyBreakdownsTx(tx, [run], items.map((item) => Number(item.id)));
+    return {
+      ...run,
+      items: items.map((it) => {
+        const penalty = penaltyBreakdowns.get(Number(it.id));
+        return { ...it, employeeName: fullEmployeeName(it),
+          penaltyDeduction: penalty?.penaltyDeduction ?? (it.penaltySnapshotComplete ? "0.00" : null),
+          penaltyLines: penalty?.penaltyLines ?? [] };
+      }),
+      obligations,
+      accountingEvents,
+      employeePaymentSnapshots: salaryPayments.map((payment) => {
+        const evidence = readSalarySettlementEvidence(
+          payment.settlementEvidence,
+          payment.sourceHash,
+        );
+        assertSalaryReceiptEvidence(evidence, {
+          event: payment.event,
+          receipt: payment.receipt,
+          obligation: payment.obligation,
+          reversed: reversedPaymentIds.has(payment.eventId),
+        });
+        if (!payment.receiptId && !evidence)
+          throw new Error("دليل تسوية الراتب بلا إيصال مفقود");
+        return {
+          employeeId:
+            payment.employeeId == null ? null : Number(payment.employeeId),
+          obligationId: Number(payment.obligationId),
+          eventId: Number(payment.eventId),
+          revisionNo: Number(payment.revisionNo),
+          active:
+            (payment.receiptStatus === "COMPLETED" ||
+              (!payment.receiptId && evidence != null)) &&
+            !reversedPaymentIds.has(Number(payment.eventId)),
+          amount: evidence?.actualPayout ?? payment.amount!,
+          entitlementSettled: evidence?.entitlementSettled ?? null,
+          signedDifference: evidence?.signedDifference ?? null,
+          classification: evidence?.classification ?? "LEGACY_UNCLASSIFIED",
+          evidenceVersion: evidence?.version ?? null,
+          paymentDate: evidence
+            ? new Date(`${evidence.paymentYmd}T00:00:00.000Z`)
+            : (payment.paymentDate ?? payment.occurredAt),
+          paymentMethod: evidence?.method ?? payment.paymentMethod!,
+          referenceNumber: evidence
+            ? evidence.referenceNumber
+            : payment.referenceNumber,
+          receiptId: payment.receiptId == null ? null : Number(payment.receiptId),
+        };
+      }),
+    };
+  });
 }
 
 const FINANCIAL_MOVEMENT_KINDS = [

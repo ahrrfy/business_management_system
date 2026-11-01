@@ -11033,6 +11033,10 @@ export const payrollItems = mysqlTable(
     wageReduction: decimal("wageReduction", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    /** False for older items whose penalty breakdown was not captured. */
+    penaltySnapshotComplete: boolean("penaltySnapshotComplete")
+      .default(false)
+      .notNull(),
     // بند 12ج (٧/٧): جزء الاستقطاع الآتي من سلف الموظف (مُتضمَّن في deductions لا إضافة عليها) —
     // يُملأ تلقائياً عند التوليد من employeeAdvances النشطة، وعند صرف التشغيلة يُنقص أرصدتها. هجرة 0056.
     advanceDeduction: decimal("advanceDeduction", { precision: 15, scale: 2 })
@@ -12422,6 +12426,35 @@ export const employeePenalties = mysqlTable(
 );
 export type EmployeePenalty = typeof employeePenalties.$inferSelect;
 export type InsertEmployeePenalty = typeof employeePenalties.$inferInsert;
+
+/** Captured penalty amount for one payroll item, including a considered zero. */
+export const payrollPenaltyAllocations = mysqlTable(
+  "payrollPenaltyAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    penaltyId: bigint("penaltyId", { mode: "number" })
+      .notNull()
+      .references(() => employeePenalties.id),
+    runId: bigint("runId", { mode: "number" })
+      .notNull()
+      .references(() => payrollRuns.id),
+    itemId: bigint("itemId", { mode: "number" })
+      .notNull()
+      .references(() => payrollItems.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    decisionNumberSnapshot: varchar("decisionNumberSnapshot", { length: 100 }).notNull(),
+    decisionDateSnapshot: date("decisionDateSnapshot", { mode: "string" }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    penaltyRunUq: unique("uq_paypenalty_penalty_run").on(t.penaltyId, t.runId),
+    runIdx: index("idx_paypenalty_run").on(t.runId),
+    itemIdx: index("idx_paypenalty_item").on(t.itemId),
+    amountNonnegative: check("chk_paypenalty_amount_nonnegative", sql`${t.amount} >= 0`),
+  }),
+);
+export type PayrollPenaltyAllocation = typeof payrollPenaltyAllocations.$inferSelect;
+export type InsertPayrollPenaltyAllocation = typeof payrollPenaltyAllocations.$inferInsert;
 
 /** عقود العمل وفترة التجربة ومواعيد تجديد العقود. */
 export const employeeContracts = mysqlTable(

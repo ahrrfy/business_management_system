@@ -32,6 +32,7 @@ import { D, round2 } from "@/lib/money";
 import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
 import { printPayslip, printBatchPayslips, type PayslipData } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
+import type { PayrollPenaltyProjection } from "@/lib/payrollPayslipBreakdown";
 import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, ShieldCheck, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
@@ -87,6 +88,7 @@ function paymentYmd(value: Date | string | null | undefined): string | null {
 }
 
 type RunItem = NonNullable<ReturnType<typeof useRunQuery>["data"]>["items"][number];
+const penaltyProjection = (item: RunItem): RunItem & PayrollPenaltyProjection => item;
 
 function useRunQuery(id: number | null, enabled: boolean) {
   return trpc.payroll.get.useQuery({ id: id ?? 0 }, { enabled: enabled && id != null && Number.isFinite(id) });
@@ -329,6 +331,8 @@ export default function Payroll() {
         { key: "wageReduction", header: "تخفيض الأجر المصنف", money: true, map: (p) => toExcelMoney(p.wageReduction) },
         { key: "deductions", header: "إجمالي الاستقطاع", money: true, map: (p) => toExcelMoney(p.deductions) },
         { key: "advanceDeduction", header: "منه سلفة", money: true, map: (p) => toExcelMoney(p.advanceDeduction) },
+        { key: "penaltyDeduction", header: "منه عقوبات انضباطية", money: true, map: (p) => penaltyProjection(p).penaltyDeduction == null ? null : toExcelMoney(penaltyProjection(p).penaltyDeduction!) },
+        { key: "penaltySnapshotStatus", header: "حالة تفصيل العقوبات", map: (p) => penaltyProjection(p).penaltyDeduction == null ? "غير موثّق" : "موثّق" },
         { key: "incomeTax", header: "منه ضريبة دخل", money: true, map: (p) => toExcelMoney(p.incomeTax) },
         { key: "socialSecurityEmployee", header: "ضمان الموظف", money: true, map: (p) => toExcelMoney(p.socialSecurityEmployee) },
         { key: "socialSecurityEmployer", header: "ضمان رب العمل", money: true, map: (p) => toExcelMoney(p.socialSecurityEmployer) },
@@ -374,6 +378,7 @@ export default function Payroll() {
       commission: item.commission,
       deductions: item.deductions,
       advanceDeduction: item.advanceDeduction,
+      penaltyDeduction: penaltyProjection(item).penaltyDeduction,
       socialSecurityEmployee: item.socialSecurityEmployee,
       incomeTax: item.incomeTax,
       socialSecurityEmployer: item.socialSecurityEmployer,
@@ -552,6 +557,12 @@ export default function Payroll() {
           {D(row.original.advanceDeduction || 0).gt(0) && (
             <span className="block text-[11px] text-muted-foreground">منه سلفة: {iqd(row.original.advanceDeduction)}</span>
           )}
+          {D(penaltyProjection(row.original).penaltyDeduction ?? 0).gt(0) && (
+            <span className="block text-[11px] text-muted-foreground">منه عقوبات: {iqd(penaltyProjection(row.original).penaltyDeduction!)}</span>
+          )}
+          {penaltyProjection(row.original).penaltyDeduction == null && (
+            <span className="block text-[11px] text-muted-foreground">تفصيل العقوبات غير موثّق</span>
+          )}
         </span>
       ),
     },
@@ -657,7 +668,7 @@ export default function Payroll() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <StatCard label="الأجر الأساس والمخصصات" value={iqd(totals.gross)} sub="قبل الإضافي والعمولة" icon={<Banknote className="size-4" />} />
         <StatCard label="العمل الإضافي" value={iqd(totals.overtime)} sub="د.ع" accent="var(--status-done, #059669)" icon={<AlarmClock className="size-4" />} />
-        <StatCard label="الاستقطاعات" value={iqd(totals.deductions)} sub="سلف وغياب" accent="var(--money-negative, #dc2626)" icon={<Minus className="size-4" />} />
+        <StatCard label="الاستقطاعات" value={iqd(totals.deductions)} sub="سلف وغياب وعقوبات" accent="var(--money-negative, #dc2626)" icon={<Minus className="size-4" />} />
         <StatCard label="الصافي المستحق" value={iqd(totals.net)} sub={run ? `د.ع — مسيّر ${run.period}` : "د.ع"} accent="var(--status-active, #2563eb)" icon={<Wallet className="size-4" />} />
       </div>
 
@@ -906,9 +917,18 @@ export default function Payroll() {
                 {D(slip.commission).gt(0) && (
                   <div className="flex justify-between"><span className="text-muted-foreground">عمولة المبيعات (تشغيلة {run?.period})</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.commission)}</span></div>
                 )}
-                <div className="flex justify-between"><span className="text-muted-foreground">الاستقطاعات (سلف/غياب)</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.deductions)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الاستقطاعات</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.deductions)}</span></div>
                 {D(slip.advanceDeduction || 0).gt(0) && (
                   <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها استقطاع سلفة</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.advanceDeduction)}</span></div>
+                )}
+                {D(penaltyProjection(slip).penaltyDeduction ?? 0).gt(0) && (
+                  <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها عقوبات انضباطية</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(penaltyProjection(slip).penaltyDeduction!)}</span></div>
+                )}
+                {penaltyProjection(slip).penaltyDeduction != null && penaltyProjection(slip).penaltyLines?.map((line) => (
+                  <div key={line.penaltyId} className="flex justify-between text-xs"><span className="text-muted-foreground ps-6">منها قرار {line.decisionNumber}</span><span className="tabular-nums" dir="ltr">{iqd(line.amount)}</span></div>
+                ))}
+                {penaltyProjection(slip).penaltyDeduction == null && (
+                  <p className="text-xs text-muted-foreground">تفصيل العقوبات لهذا المسير غير موثّق.</p>
                 )}
                 {/* المكوّنات القانونية (البند ④) — حصّتا الموظف (ضمان/ضريبة) ضمن الاستقطاع، تظهران عند التفعيل. */}
                 {D(slip.socialSecurityEmployee || 0).gt(0) && (

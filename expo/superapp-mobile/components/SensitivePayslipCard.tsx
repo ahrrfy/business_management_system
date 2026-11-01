@@ -170,6 +170,7 @@ export function SensitivePayslipCard({
     commission: payslip.commission,
     deductions: payslip.deductions,
     advanceDeduction: payslip.advanceDeduction,
+    penaltyDeduction: payslip.penaltyDeduction,
     socialSecurityEmployee: payslip.socialSecurityEmployee,
     incomeTax: payslip.incomeTax,
     net: payslip.net,
@@ -193,6 +194,9 @@ export function SensitivePayslipCard({
         {hasAmount(breakdown.advanceDeduction) && (
           <PayslipLine label="استقطاع السلف" value={breakdown.advanceDeduction} />
         )}
+        {breakdown.penaltyDeduction !== null && hasAmount(breakdown.penaltyDeduction) && (
+          <PayslipLine label="جزاءات انضباطية" value={breakdown.penaltyDeduction} />
+        )}
         {hasAmount(breakdown.otherDeductions) && (
           <PayslipLine label="خفض الأجر وخصومات أخرى" value={breakdown.otherDeductions} />
         )}
@@ -202,12 +206,17 @@ export function SensitivePayslipCard({
         {hasAmount(breakdown.incomeTax) && <PayslipLine label="ضريبة الدخل" value={breakdown.incomeTax} />}
         <PayslipLine label="إجمالي الاستقطاع" value={breakdown.totalDeductions} />
       </View>
+      {breakdown.penaltyDeduction === null && (
+        <Text style={styles.hint}>تفصيل الجزاءات لهذا المسير غير موثّق.</Text>
+      )}
       <View style={styles.equation}>
         <Text style={styles.equationTitle}>معادلة الصافي</Text>
         <Text style={styles.equationText}>الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</Text>
-        <Text style={styles.equationNumbers}>
-          {amount(breakdown.gross)} + {amount(breakdown.overtime)} + {amount(breakdown.commission)} − {amount(breakdown.totalDeductions)} = {amount(breakdown.expectedNet)}
-        </Text>
+        <View style={styles.equationNumbers}>
+          {[breakdown.gross, "+", breakdown.overtime, "+", breakdown.commission, "−", breakdown.totalDeductions, "=", breakdown.expectedNet].map((part, index) => (
+            <Text key={index} style={styles.equationNumber}>{index % 2 === 0 ? amount(part) : part}</Text>
+          ))}
+        </View>
         {(!breakdown.allowancesValid || !breakdown.deductionComponentsValid || !breakdown.netMatches) && (
           <Text style={styles.warning}>توجد مكونات غير متطابقة في لقطة القسيمة. راجع قسم الموارد البشرية.</Text>
         )}
@@ -258,7 +267,8 @@ const styles = StyleSheet.create({
   equation: { backgroundColor: colors.surfaceMuted, borderRadius: radius.field, marginTop: space.md, padding: space.md },
   equationTitle: { color: colors.ink, fontFamily: "Cairo_700Bold", fontSize: 12, textAlign: "right" },
   equationText: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 11, lineHeight: 19, marginTop: space.xxs, textAlign: "right" },
-  equationNumbers: { color: colors.ink, fontFamily: "Cairo_600SemiBold", fontSize: 11, marginTop: space.xxs, textAlign: "left" },
+  equationNumbers: { direction: "ltr", flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: space.xxs },
+  equationNumber: { color: colors.ink, fontFamily: "Cairo_600SemiBold", fontSize: 11, textAlign: "left", writingDirection: "ltr" },
   warning: { color: colors.danger, fontFamily: "Cairo_600SemiBold", fontSize: 11, lineHeight: 19, marginTop: space.sm, textAlign: "right" },
   export: { alignItems: "center", borderColor: colors.brand, borderRadius: radius.field, borderWidth: 1, justifyContent: "center", marginTop: space.md, minHeight: 48, paddingHorizontal: space.md },
   exportText: { color: colors.brand, fontFamily: "Cairo_700Bold", fontSize: 13, textAlign: "center" },

@@ -1238,12 +1238,13 @@ describe("employee advance earned-capacity contract", () => {
       gross: "1000.00",
       deductions: "100.00",
       wageReduction: "100.00",
+      penaltySnapshotComplete: true,
       net: "900.00",
     });
-    await connection
-      .update(s.employeePenalties)
-      .set({ status: "APPLIED", payrollRunId: 1 })
-      .where(eq(s.employeePenalties.id, penalty.insertId));
+    await connection.insert(s.payrollPenaltyAllocations).values({
+      penaltyId: penalty.insertId, runId: 1, itemId: 1, amount: "100.00",
+      decisionNumberSnapshot: "CAP-PENALTY-ARTICLE-57", decisionDateSnapshot: "2030-06-06",
+    });
 
     const afterDraft = await getEmployeeAdvanceCapacity(input);
     expect(afterDraft).toMatchObject({
@@ -1251,17 +1252,11 @@ describe("employee advance earned-capacity contract", () => {
       maxAvailable: beforeDraft.maxAvailable,
     });
 
-    // بعد APPLIED تكون لقطة المسودة هي الحقيقة: لا تعاد إضافة العقوبة الاسمية،
-    // ويضيّق/يوسّع تعديل المالك السعة بقدر صافي المسودة الفعلي.
-    await updateItem(1, { deductions: "0.00" }, ACTOR);
+    // لا يسمح بحذف الجزاء المثبت من المسودة أو إضافته إلى السعة مرتين.
+    await expect(updateItem(1, { deductions: "0.00" }, ACTOR)).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
-      mandatoryDeductions: "0.00",
-      maxAvailable: "1000.00",
-    });
-    await updateItem(1, { deductions: "200.00" }, ACTOR);
-    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
-      mandatoryDeductions: "200.00",
-      maxAvailable: "800.00",
+      mandatoryDeductions: "100.00",
+      maxAvailable: "900.00",
     });
   });
 
@@ -1311,6 +1306,25 @@ describe("employee advance earned-capacity contract", () => {
       mandatoryDeductions: "50.00",
       maxAvailable: "950.00",
     });
+  });
+
+  it("يحسب المتبقي بعد مسير سابق ولا يكرر حجز العقوبة في المسودة الحالية", async () => {
+    const connection = db();
+    await connection.update(s.payrollLegalSettings).set({ socialSecurityEnabled: false, incomeTaxEnabled: false }).where(eq(s.payrollLegalSettings.id, 1));
+    await seedAttendance({ date: "2030-06-05", amount: "1000.00", currentHourlyRate: "125.00" });
+    const [penalty] = await connection.insert(s.employeePenalties).values({ employeeId: EMPLOYEE_ID, branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION", decisionNumber: "CAP-SPLIT", decisionDate: "2030-05-01",
+      reason: "اختبار متبقي القرار بعد تخصيص سابق", deductionAmount: "250.00", status: "APPROVED", createdById: ACTOR.userId });
+    await connection.insert(s.payrollRuns).values({ id: 11, period: "2030-05", status: "paid", createdBy: ACTOR.userId });
+    await connection.insert(s.payrollItems).values({ id: 11, runId: 11, employeeId: EMPLOYEE_ID, payType: "hourly", gross: "1000.00", deductions: "100.00", wageReduction: "100.00", net: "900.00", penaltySnapshotComplete: true });
+    await connection.insert(s.payrollPenaltyAllocations).values({ penaltyId: penalty.insertId, runId: 11, itemId: 11, amount: "100.00", decisionNumberSnapshot: "CAP-SPLIT", decisionDateSnapshot: "2030-05-01" });
+    const input = { employeeId: EMPLOYEE_ID, scopedBranchId: BRANCH_ID, period: FIXED_PERIOD, asOf: FIXED_AS_OF };
+    const before = await getEmployeeAdvanceCapacity(input);
+    expect(before).toMatchObject({ mandatoryDeductions: "100.00", maxAvailable: "900.00" });
+    await connection.insert(s.payrollRuns).values({ id: 12, period: FIXED_PERIOD, status: "draft", createdBy: ACTOR.userId });
+    await connection.insert(s.payrollItems).values({ id: 12, runId: 12, employeeId: EMPLOYEE_ID, payType: "hourly", gross: "1000.00", deductions: "100.00", wageReduction: "100.00", net: "900.00", penaltySnapshotComplete: true });
+    await connection.insert(s.payrollPenaltyAllocations).values({ penaltyId: penalty.insertId, runId: 12, itemId: 12, amount: "100.00", decisionNumberSnapshot: "CAP-SPLIT", decisionDateSnapshot: "2030-05-01" });
+    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({ mandatoryDeductions: "100.00", maxAvailable: "900.00" });
   });
 
   it("يحسب سقف العقوبة بعد الإجازة والقانوني مع المكافأة والعمولة", async () => {

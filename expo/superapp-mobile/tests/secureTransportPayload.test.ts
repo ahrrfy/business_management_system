@@ -177,6 +177,7 @@ describe("native transport payload boundary", () => {
       period: "2026-09",
       hours: "176.00",
       net: "1010000.00",
+      penaltyDeduction: null,
     }));
     expect(JSON.stringify(result)).not.toMatch(/payrollItemId|branchId|note|Employer/);
     expect(() => parseMobilePayslip(JSON.stringify({
@@ -200,6 +201,23 @@ describe("native transport payload boundary", () => {
         },
       },
     }))).toThrow("وصلت استجابة غير مكتملة");
+  });
+
+  it("accepts a documented penalty without exposing other payroll data", () => {
+    const payslip = {
+      period: "2026-10", status: "paid", paidAt: null, payType: "monthly", hours: null,
+      gross: "1000.00", allowances: "0.00", overtime: "0.00", commission: "0.00",
+      deductions: "200.00", advanceDeduction: "100.00", penaltyDeduction: "50.00",
+      socialSecurityEmployee: "0.00", incomeTax: "0.00", net: "800.00",
+      penaltyLines: [{ decisionNumber: "private", reason: "private" }],
+    };
+    const parse = (value: unknown) => parseMobilePayslip(JSON.stringify({ personal: { state: "READY", payslip: { ...payslip, penaltyDeduction: value } } }));
+    expect(parse("50.00").personal.payslip?.penaltyDeduction).toBe("50.00");
+    expect(parse("0.00").personal.payslip?.penaltyDeduction).toBe("0.00");
+    expect(parse(null).personal.payslip?.penaltyDeduction).toBeNull();
+    expect(JSON.stringify(parse("50.00"))).not.toMatch(/penaltyLines|decisionNumber|private/);
+    expect(() => parse("-1.00")).toThrow("وصلت استجابة غير مكتملة");
+    expect(() => parse("invalid")).toThrow("وصلت استجابة غير مكتملة");
   });
 
   it("keeps native leave results free of target identifiers and rejects malformed ranges", () => {

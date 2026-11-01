@@ -240,6 +240,73 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
   // Tier 1: Feature Coverage (F1 to F10)
   // ═════════════════════════════════════════════════════════════════════════════
   describe.sequential("Tier 1: Feature Coverage (F1 - F10 Happy Path & Primary Invariants)", () => {
+    it("recovers the correct legacy number when the customer name contains a fake return number", async () => {
+      const shiftId = await openShift();
+      const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 3, unitPrice: "5.00" }]);
+      const caller = returnRouter.createCaller(cashierContext());
+      const request = {
+        invoiceNumber: sale.invoiceNumber, customer: { name: "عميل [SR-202601-9999]" },
+        disposition: "RESTOCK" as const,
+        items: [{ variantId: 1, productName: "دفتر مذكرات", quantity: 1, unitPrice: "5.00" }],
+        settlement: { method: "CASH" as const, totalAmount: "5.00", shiftId }, clientRequestId: "legacy-name-spoof",
+      };
+      const first = await caller.executeSalesReturnCart(request);
+      const [audit] = await db().select().from(s.auditLogs).where(and(
+        eq(s.auditLogs.action, "sale.return_cart"), eq(s.auditLogs.entityId, String(sale.invoiceId)),
+      ));
+      const value = { ...(audit.newValue as Record<string, unknown>) };
+      delete value.returnEntryId;
+      await db().update(s.auditLogs).set({ newValue: value }).where(eq(s.auditLogs.id, audit.id));
+      await db().delete(s.auditLogs).where(and(eq(s.auditLogs.action, "sale.return_cart.result"),
+        eq(s.auditLogs.entityId, String((audit.newValue as Record<string, unknown>).returnEntryId))));
+      await expect(caller.executeSalesReturnCart(request)).resolves.toMatchObject({
+        idempotentReplay: true, returnNumber: first.returnNumber, receiptId: first.receiptId, payoutAmount: "5.00",
+      });
+    });
+
+    it("replays the original cash receipt and payout after a second partial return", async () => {
+      const shiftId = await openShift();
+      const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 3, unitPrice: "5.00" }]);
+      const caller = returnRouter.createCaller(cashierContext());
+      const first = {
+        invoiceNumber: sale.invoiceNumber,
+        disposition: "RESTOCK" as const,
+        items: [{ variantId: 1, productName: "دفتر مذكرات", quantity: 1, unitPrice: "5.00" }],
+        settlement: { method: "CASH" as const, totalAmount: "5.00", shiftId },
+        clientRequestId: "cash-replay-first",
+      };
+      const firstResult = await caller.executeSalesReturnCart(first);
+      const second = await caller.executeSalesReturnCart({
+        ...first, items: [{ ...first.items[0], quantity: 2 }],
+        settlement: { ...first.settlement, totalAmount: "10.00" }, clientRequestId: "cash-replay-second",
+      });
+      expect(firstResult.receiptId).not.toBe(second.receiptId);
+      // Simulate a historical number collision while preserving each audit's source entry id.
+      const sharedNumber = "SR-202610-7777";
+      const returnEntries = await db().select().from(s.accountingEntries).where(and(
+        eq(s.accountingEntries.invoiceId, sale.invoiceId), eq(s.accountingEntries.entryType, "RETURN"),
+      ));
+      expect(returnEntries).toHaveLength(2);
+      for (const entry of returnEntries) await db().update(s.accountingEntries).set({
+        notes: entry.notes!.replace(/\[SR-[^\]]+\]/g, `[${sharedNumber}]`),
+      }).where(eq(s.accountingEntries.id, entry.id));
+      const audits = await db().select().from(s.auditLogs);
+      for (const audit of audits) {
+        const value = audit.newValue as Record<string, unknown> | null;
+        if ((audit.action === "sale.return_cart" || audit.action === "sale.return_cart.result") &&
+          (value?.returnNumber === firstResult.returnNumber || value?.returnNumber === second.returnNumber)) {
+          await db().update(s.auditLogs).set({ newValue: { ...value, returnNumber: sharedNumber } })
+            .where(eq(s.auditLogs.id, audit.id));
+        }
+      }
+      const before = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+      await expect(caller.executeSalesReturnCart(first)).resolves.toMatchObject({
+        idempotentReplay: true, receiptId: firstResult.receiptId, returnNumber: sharedNumber,
+        payoutAmount: "5.00", debtOffsetAmount: "0.00",
+      });
+      expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toEqual(before);
+    });
+
     it("⭐ T1-F1: Backend Idempotency — التنفيذ الأول يسجل المرتجع وتكرار نفس clientRequestId لا يكرر حركات الصرف المالي", async () => {
       const shiftId = await openShift();
       const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 3, unitPrice: "5.00" }]);

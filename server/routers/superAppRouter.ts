@@ -107,6 +107,7 @@ import {
   SuperAppExpoPushValidationError,
 } from "../services/superAppPushService";
 import { activeEmployeeSalaryPaidAtSql } from "../services/payroll/queries";
+import { readLockedPenaltyBreakdownsTx } from "../services/payroll/penaltyRead";
 
 export { resolveSuperAppAuthority, type SuperAppAuthorityUser } from "../services/superAppAuthority";
 
@@ -1630,48 +1631,67 @@ export const superAppRouter = router({
     .input(z.object({ payrollItemId: z.number().int().positive() }).strict())
     .query(async ({ ctx, input }) => {
       const db = requireDb();
-      const [row] = await db
-        .select({
-          itemId: payrollItems.id,
-          runId: payrollRuns.id,
-          period: payrollRuns.period,
-          status: payrollRuns.status,
-          paidAt: activeEmployeeSalaryPaidAtSql(),
-          payType: payrollItems.payType,
-          hours: payrollItems.hours,
-          gross: payrollItems.gross,
-          allowances: payrollItems.allowances,
-          overtime: payrollItems.overtime,
-          commission: payrollItems.commission,
-          deductions: payrollItems.deductions,
-          advanceDeduction: payrollItems.advanceDeduction,
-          socialSecurityEmployee: payrollItems.socialSecurityEmployee,
-          incomeTax: payrollItems.incomeTax,
-          net: payrollItems.net,
-          note: payrollItems.note,
-          createdAt: payrollItems.createdAt,
-        })
-        .from(payrollItems)
-        .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+      const [preview] = await db.select({ runId: payrollItems.runId }).from(payrollItems)
         .innerJoin(employees, eq(payrollItems.employeeId, employees.id))
-        .where(
-          and(
-            eq(payrollItems.id, input.payrollItemId),
-            eq(employees.userId, ctx.user.id),
-            inArray(payrollRuns.status, ["approved", "paid"]),
-          ),
-        )
-        .limit(1);
-      if (!row) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "قسيمة الراتب غير متاحة لهذا الحساب",
-        });
-      }
-      return {
-        ...row,
-        status: row.paidAt == null ? ("approved" as const) : ("paid" as const),
-      };
+        .where(and(eq(payrollItems.id, input.payrollItemId), eq(employees.userId, ctx.user.id))).limit(1);
+      if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+        what: "تعذّر عرض قسيمة الراتب", why: "لم يُعثر على قسيمة متاحة لهذا الحساب",
+        doThis: "راجع الموارد البشرية للتحقق من ربط الحساب وفترة الراتب",
+      }) });
+      return db.transaction(async (tx) => {
+        const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, Number(preview.runId))).for("share").limit(1);
+        if (!run) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+          what: "تعذّر عرض قسيمة الراتب", why: "لم يعد مسيّر الفترة متاحاً للحساب",
+          doThis: "راجع الموارد البشرية لتحديد قسيمة الفترة الصحيحة",
+        }) });
+        const [row] = await tx
+          .select({
+            itemId: payrollItems.id,
+            runId: payrollRuns.id,
+            period: payrollRuns.period,
+            status: payrollRuns.status,
+            paidAt: activeEmployeeSalaryPaidAtSql(),
+            payType: payrollItems.payType,
+            hours: payrollItems.hours,
+            gross: payrollItems.gross,
+            allowances: payrollItems.allowances,
+            overtime: payrollItems.overtime,
+            commission: payrollItems.commission,
+            deductions: payrollItems.deductions,
+            penaltySnapshotComplete: payrollItems.penaltySnapshotComplete,
+            advanceDeduction: payrollItems.advanceDeduction,
+            socialSecurityEmployee: payrollItems.socialSecurityEmployee,
+            incomeTax: payrollItems.incomeTax,
+            net: payrollItems.net,
+            note: payrollItems.note,
+            createdAt: payrollItems.createdAt,
+          })
+          .from(payrollItems)
+          .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+          .innerJoin(employees, eq(payrollItems.employeeId, employees.id))
+          .where(
+            and(
+              eq(payrollItems.id, input.payrollItemId),
+              eq(employees.userId, ctx.user.id),
+              inArray(payrollRuns.status, ["approved", "paid"]),
+            ),
+          )
+          .limit(1);
+        if (!row || Number(row.runId) !== Number(run.id)) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "قسيمة الراتب غير متاحة لهذا الحساب",
+          });
+        }
+        const penalty = (await readLockedPenaltyBreakdownsTx(tx, [run], [Number(row.itemId)])).get(Number(row.itemId));
+        return {
+          ...row,
+          penaltyDeduction: penalty?.penaltyDeduction ?? (row.penaltySnapshotComplete ? "0.00" : null),
+          penaltyLines: penalty?.penaltyLines ?? [],
+          status: row.paidAt == null ? ("approved" as const) : ("paid" as const),
+        };
+
+      });
     }),
 
   notifications: selfServiceProcedure

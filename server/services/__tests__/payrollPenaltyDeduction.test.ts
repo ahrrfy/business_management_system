@@ -1,7 +1,6 @@
 /**
  * اختبارات تسقيف الجزاءات الانضباطية ومطابقة مسيّر الرواتب (GAP-01):
- * المادة (57) من قانون العمل العراقي رقم 37 لسنة 2015:
- *  - استقطاع الجزاءات التأديبية لا يتجاوز 10% من صافي الأجر الشهري.
+ *  - حد الحساب الحالي للاستقطاع هو 10% من الأجر المتاح؛ لا يمثل رأياً قانونياً.
  *  - صافي الراتب بعد التسقيف >= 0 دائماً.
  *  - توحيد معادلة classifiedDeductions مع deductions المخزنة (عبر wageReduction المدمج)،
  *    مما يحل تعارض الاعتماد التلقائي للمالك (PRECONDITION_FAILED).
@@ -29,6 +28,7 @@ import {
 import { withTx } from "../tx";
 
 const TABLES = [
+  "payrollPenaltyAllocations",
   "accountingEntries",
   "receipts",
   "payrollObligations",
@@ -137,8 +137,8 @@ async function seedBaseData() {
   ]);
 }
 
-describe("Article 57 Iraqi Labor Law — Unit Tests", () => {
-  it("defines exact 10% statutory penalty cap ratio", () => {
+describe("Current payroll penalty cap — Unit Tests", () => {
+  it("defines the current 10% penalty cap ratio", () => {
     expect(IRAQI_LABOR_LAW_ARTICLE_57_PENALTY_CAP_RATIO.toString()).toBe("0.1");
   });
 
@@ -286,6 +286,15 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
   beforeEach(async () => {
     await resetDb();
     await seedBaseData();
+  });
+
+  it("does not silently accept a zero-valued hourly wage penalty", async () => {
+    const employee = await createEmployee({ firstName: "موظف", lastName: "ساعي", payType: "hourly", salary: "0", allowances: "0", branchId: 1 });
+    await expect(createEmployeePenalty({ userId: 1, role: "admin", branchId: 1 }, {
+      employeeId: employee!.id, penaltyType: "SALARY_DEDUCTION", decisionNumber: "HOURLY-ZERO",
+      decisionDate: "2026-06-01", reason: "قرار يستلزم قيمة مثبتة", deductionDays: 1,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.employeePenalties)).toHaveLength(0);
   });
 
   it.each(["draft", "approved", "paid"] as const)(
@@ -550,14 +559,16 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     expect(Number(item.wageReduction)).toBe(50000); // Penalty recorded in wageReduction
     expect(Number(item.net)).toBe(950000);
 
-    // التحقق من تحديث حالة العقوبة إلى APPLIED وربطها برقم المسير
+    // التخصيص مثبت في البند؛ لا يُعد القرار مطبقاً قبل صرف صافي الراتب.
     const [penaltyRow] = await db()
       .select()
       .from(s.employeePenalties)
       .where(eq(s.employeePenalties.employeeId, emp!.id));
 
-    expect(penaltyRow.status).toBe("APPLIED");
-    expect(Number(penaltyRow.payrollRunId)).toBe(Number(run!.id));
+    expect(penaltyRow.status).toBe("APPROVED");
+    expect(penaltyRow.payrollRunId).toBeNull();
+    expect(item.penaltyDeduction).toBe("50000.00");
+    expect(item.penaltyLines).toMatchObject([{ penaltyId: penaltyRow.id, decisionNumber: "PEN-2026-001", amount: "50000.00" }]);
 
     // التحقق من إنشاء الالتزام المحاسبي للصافي
     const obligations = await db()
@@ -570,7 +581,7 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     expect(Number(netObligation!.originalAmount)).toBe(950000);
   });
 
-  it("caps penalties exceeding 10% of salary according to Article 57 and approves without conflict", async () => {
+  it("caps penalties using the current 10% policy and preserves the unpaid remainder", async () => {
     const emp = await createEmployee({
       firstName: "حيدر",
       lastName: "الكرخي",
@@ -613,14 +624,16 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     expect(Number(item.wageReduction)).toBe(100000);
     expect(Number(item.net)).toBe(900000);
 
-    // سجل العقوبة تم اعتماده وربطه بالمسير
+    // يبقى الجزء المتبقي محفوظاً وغير مطبق.
     const [penaltyRow] = await db()
       .select()
       .from(s.employeePenalties)
       .where(eq(s.employeePenalties.employeeId, emp!.id));
     expect(penaltyRow).toBeDefined();
-    expect(penaltyRow.status).toBe("APPLIED");
-    expect(Number(penaltyRow.payrollRunId)).toBe(Number(run!.id));
+    expect(penaltyRow.status).toBe("APPROVED");
+    expect(penaltyRow.payrollRunId).toBeNull();
+    expect(item.penaltyDeduction).toBe("100000.00");
+    expect(item.penaltyLines).toMatchObject([{ penaltyId: penaltyRow.id, amount: "100000.00" }]);
   });
 
   it("guarantees net salary is never negative even when raw penalty exceeds total salary", async () => {
@@ -723,15 +736,15 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     expect(Number(item.wageReduction)).toBe(80000);
     expect(Number(item.net)).toBe(720000);
 
-    // كِلا العقوبتين أصبحت APPLIED ومربوطة بالمسير
+    // التخصيص حسب ترتيب القرار، دون إغلاق الرصيد غير المستقطع.
     const penalties = await db()
       .select()
       .from(s.employeePenalties)
       .where(eq(s.employeePenalties.employeeId, emp!.id));
 
     expect(penalties.length).toBe(2);
-    expect(penalties.every((p) => p.status === "APPLIED")).toBe(true);
-    expect(penalties.every((p) => Number(p.payrollRunId) === Number(run!.id))).toBe(true);
+    expect(penalties.every((p) => p.status === "APPROVED" && p.payrollRunId == null)).toBe(true);
+    expect(item.penaltyLines).toMatchObject([{ penaltyId: penalties[0].id, amount: "50000.00" }, { penaltyId: penalties[1].id, amount: "30000.00" }]);
   });
 
   it("integrates penalties with unpaid leave deductions and advances without collision", async () => {
@@ -756,7 +769,7 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     });
 
     // الأجر المتاح للاستيعاب = 1,200,000 − 120,000 = 1,080,000 د.ع
-    // سقف الجزاءات القانوني = 10% من 1,080,000 = 108,000 د.ع
+    // حد النظام الحالي = 10% من 1,080,000 = 108,000 د.ع
 
     // 2. عقوبة بقيمة 200,000 د.ع -> تُسقَّف إلى 108,000 د.ع
     await db().insert(s.employeePenalties).values({

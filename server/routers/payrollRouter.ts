@@ -6,7 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
-import { employees, payrollItems, payrollRuns } from "../../drizzle/schema";
+import { employeePenalties, employees, payrollItems, payrollRuns } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { createAppNotification } from "../services/appNotificationService";
 import { actorSuffix } from "@shared/notificationActorLabel";
@@ -25,8 +25,10 @@ import * as loanSvc from "../services/employeeLoanService";
 import { getEmployeeAdvanceCapacity } from "../services/employeeAdvanceCapacityService";
 import { baghdadToday } from "../services/businessDay";
 import { activeEmployeeSalaryPaidAtSql } from "../services/payroll/queries";
+import { readLockedPenaltyBreakdownsTx } from "../services/payroll/penaltyRead";
 import { listHistoricalAttendanceCandidates } from "../services/hr/payrollHistoricalAttendanceCandidates";
 import { attestHistoricalAttendanceExemption } from "../services/hr/payrollHistoricalAttendanceCorrection";
+import { attestHistoricalPenalty, previewHistoricalPenaltyAttestation } from "../services/payroll/historicalPenaltyAttestation";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -122,83 +124,95 @@ export const payrollRouter = router({
     .input(z.object({ runId: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
       const db = requireDb();
-      const [emp] = await db
-        .select({
-          id: employees.id,
-          firstName: employees.firstName,
-          lastName: employees.lastName,
-          position: employees.position,
-          department: employees.department,
-          branchId: employees.branchId,
-        })
-        .from(employees)
-        .where(eq(employees.userId, ctx.user.id))
-        .limit(1);
+      return db.transaction(async (tx) => {
+        const [emp] = await tx
+          .select({
+            id: employees.id,
+            firstName: employees.firstName,
+            lastName: employees.lastName,
+            position: employees.position,
+            department: employees.department,
+            branchId: employees.branchId,
+          })
+          .from(employees)
+          .where(eq(employees.userId, ctx.user.id))
+          .for("share")
+          .limit(1);
 
-      if (!emp) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: "تعذّر الوصول إلى قسيمة الراتب",
-            why: "حساب المستخدم الحالي غير مربوط بملف موظف في النظام",
-            doThis: "يرجى مراجعة مسؤول الموارد البشرية لربط حسابك بسجلك الوظيفي",
-          }),
-        });
-      }
+        if (!emp) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر الوصول إلى قسيمة الراتب",
+              why: "حساب المستخدم الحالي غير مربوط بملف موظف في النظام",
+              doThis: "يرجى مراجعة مسؤول الموارد البشرية لربط حسابك بسجلك الوظيفي",
+            }),
+          });
+        }
 
-      const [row] = await db
-        .select({
-          id: payrollItems.id,
-          runId: payrollRuns.id,
-          period: payrollRuns.period,
-          runStatus: payrollRuns.status,
-          accrualDate: payrollRuns.accrualDate,
-          paidAt: activeEmployeeSalaryPaidAtSql(),
-          revisionNo: payrollRuns.revisionNo,
-          legalPolicyHash: payrollRuns.legalPolicyHash,
-          approvalSnapshotHash: payrollRuns.approvalSnapshotHash,
-          snapshotHash: payrollItems.snapshotHash,
-          payType: payrollItems.payType,
-          hours: payrollItems.hours,
-          gross: payrollItems.gross,
-          allowances: payrollItems.allowances,
-          overtime: payrollItems.overtime,
-          commission: payrollItems.commission,
-          deductions: payrollItems.deductions,
-          advanceDeduction: payrollItems.advanceDeduction,
-          socialSecurityEmployee: payrollItems.socialSecurityEmployee,
-          socialSecurityEmployer: payrollItems.socialSecurityEmployer,
-          endOfServiceAccrual: payrollItems.endOfServiceAccrual,
-          incomeTax: payrollItems.incomeTax,
-          net: payrollItems.net,
-          note: payrollItems.note,
-          branchIdSnapshot: payrollItems.branchIdSnapshot,
-        })
-        .from(payrollItems)
-        .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
-        .where(
-          and(
-            eq(payrollItems.runId, input.runId),
-            eq(payrollItems.employeeId, emp.id),
-          ),
-        )
-        .limit(1);
+        const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, input.runId)).for("share").limit(1);
+        if (!run) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+          what: "تعذّر عرض قسيمة الراتب", why: "لم يعد مسيّر الفترة المطلوب متاحاً",
+          doThis: "تحقّق من الفترة أو راجع الموارد البشرية لتحديد المسيّر الصحيح",
+        }) });
 
-      if (!row) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: "قسيمة الراتب غير متوفرة",
-            why: "لم يُعثر على بند راتب يخصك ضمن مسيّر الرواتب المحدد",
-            doThis: "تأكد من اختيار مسيّر الفترة المعتمدة أو راجع قسم الموارد البشرية",
-          }),
-        });
-      }
+        const [row] = await tx
+          .select({
+            id: payrollItems.id,
+            runId: payrollRuns.id,
+            period: payrollRuns.period,
+            runStatus: payrollRuns.status,
+            accrualDate: payrollRuns.accrualDate,
+            paidAt: activeEmployeeSalaryPaidAtSql(),
+            revisionNo: payrollRuns.revisionNo,
+            legalPolicyHash: payrollRuns.legalPolicyHash,
+            approvalSnapshotHash: payrollRuns.approvalSnapshotHash,
+            snapshotHash: payrollItems.snapshotHash,
+            payType: payrollItems.payType,
+            hours: payrollItems.hours,
+            gross: payrollItems.gross,
+            allowances: payrollItems.allowances,
+            overtime: payrollItems.overtime,
+            commission: payrollItems.commission,
+            deductions: payrollItems.deductions,
+            penaltySnapshotComplete: payrollItems.penaltySnapshotComplete,
+            advanceDeduction: payrollItems.advanceDeduction,
+            socialSecurityEmployee: payrollItems.socialSecurityEmployee,
+            socialSecurityEmployer: payrollItems.socialSecurityEmployer,
+            endOfServiceAccrual: payrollItems.endOfServiceAccrual,
+            incomeTax: payrollItems.incomeTax,
+            net: payrollItems.net,
+            note: payrollItems.note,
+            branchIdSnapshot: payrollItems.branchIdSnapshot,
+          })
+          .from(payrollItems)
+          .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+          .where(
+            and(
+              eq(payrollItems.runId, input.runId),
+              eq(payrollItems.employeeId, emp.id),
+            ),
+          )
+          .limit(1);
 
-      return {
-        employee: emp,
-        item: row,
-      };
+        if (!row) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "قسيمة الراتب غير متوفرة",
+              why: "لم يُعثر على بند راتب يخصك ضمن مسيّر الرواتب المحدد",
+              doThis: "تأكد من اختيار مسيّر الفترة المعتمدة أو راجع قسم الموارد البشرية",
+            }),
+          });
+        }
+
+        const penalty = (await readLockedPenaltyBreakdownsTx(tx, [run], [Number(row.id)])).get(Number(row.id));
+        return {
+          employee: emp,
+          item: { ...row, penaltyDeduction: penalty?.penaltyDeduction ?? (row.penaltySnapshotComplete ? "0.00" : null), penaltyLines: penalty?.penaltyLines ?? [] },
+        };
+
+      });
     }),
 
   list: ownerHrRead.query(() => svc.listRuns()),
@@ -280,6 +294,46 @@ export const payrollRouter = router({
       confirmFixedExemption: z.literal(true),
     }))
     .mutation(({ input, ctx }) => attestHistoricalAttendanceExemption(input, {
+      userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role,
+    })),
+
+  historicalPenaltyPreview: ownerHrRead
+    .input(z.object({ penaltyId: z.number().int().positive(), itemId: z.number().int().positive().optional() }).strict())
+    .query(async ({ input, ctx }) => {
+      let itemId = input.itemId;
+      if (itemId == null) {
+        const db = requireDb();
+        const [penalty] = await db.select({ employeeId: employeePenalties.employeeId, decisionDate: employeePenalties.decisionDate })
+          .from(employeePenalties).where(eq(employeePenalties.id, input.penaltyId)).limit(1);
+        if (!penalty) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+          what: "تعذّر مراجعة القرار التاريخي", why: "قرار العقوبة غير موجود", doThis: "حدّث سجل الموظف وأعد المحاولة",
+        }) });
+        const candidates = await db.select({ id: payrollItems.id }).from(payrollItems)
+          .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+          .where(and(eq(payrollItems.employeeId, Number(penalty.employeeId)), eq(payrollRuns.period, String(penalty.decisionDate).slice(0, 7))))
+          .limit(2);
+        if (candidates.length !== 1) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذّر تحديد بند الراتب التاريخي", why: "لا يوجد بند مطابق فريد للموظف وشهر القرار",
+          doThis: "راجع مسيّر الشهر وسجل الموظف يدوياً قبل تسجيل الإقرار",
+        }) });
+        itemId = Number(candidates[0].id);
+      }
+      return previewHistoricalPenaltyAttestation({ penaltyId: input.penaltyId, itemId }, {
+        userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role,
+      });
+    }),
+
+  attestHistoricalPenalty: ownerHrWrite
+    .input(z.object({
+      penaltyId: z.number().int().positive(), itemId: z.number().int().positive(),
+      sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+      requestKey: z.string().regex(/^[A-Za-z0-9._:-]{8,100}$/),
+      reportedActualPayout: nonNegMoneyString,
+      reportedCashSource: z.literal("TREASURY"),
+      evidenceStatement: z.string().trim().min(10).max(500),
+      evidenceReference: z.string().trim().min(5).max(300),
+    }).strict())
+    .mutation(({ input, ctx }) => attestHistoricalPenalty(input, {
       userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role,
     })),
 

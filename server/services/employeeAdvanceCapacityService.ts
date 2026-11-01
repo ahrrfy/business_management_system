@@ -7,7 +7,6 @@ import {
   commissionRuns,
   employeeAdvances,
   employeeLoanRequests,
-  employeePenalties,
   employees,
   employeeSpotBonuses,
   payrollItems,
@@ -29,6 +28,7 @@ import {
 } from "./payroll/helpers";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx } from "./tx";
+import { readPenaltySourcesTx } from "./payroll/penaltyAllocations";
 
 export interface EmployeeAdvanceCapacity {
   employeeId: number;
@@ -361,23 +361,11 @@ export async function getEmployeeAdvanceCapacityTx(
     approvedSpotBonuses.plus(approvedCommissions),
   );
 
-  const penaltyQuery = tx
-    .select({ amount: employeePenalties.deductionAmount })
-    .from(employeePenalties)
-    .where(
-      and(
-        eq(employeePenalties.employeeId, options.employeeId),
-        eq(employeePenalties.status, "APPROVED"),
-        isNull(employeePenalties.payrollRunId),
-        // نفس أهلية التوليد والاعتماد: استرداد العقوبة القديمة دون تعجيل المستقبلية.
-        sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${period}`,
-      ),
-    );
-  const penaltyRows = options.lock
-    ? await currentFinancialRead(penaltyQuery.for("share", { noWait: true }))
-    : await penaltyQuery;
+  const penaltyRows = await readPenaltySourcesTx(tx, [options.employeeId], period, options.lock === true, run ? Number(run.id) : undefined);
   const rawPenalties = round2(
-    penaltyRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
+    penaltyRows
+      .filter((row) => run?.status !== "draft" || !row.capturedRunIds.includes(Number(run.id)))
+      .reduce((sum, row) => sum.plus(row.remaining), ZERO),
   );
   const legalSettings = options.lock
     ? await currentFinancialRead(getPayrollLegalSettingsForUpdate(tx))
@@ -465,8 +453,7 @@ export async function getEmployeeAdvanceCapacityTx(
         ),
       )
     : ZERO;
-  // خصومات المسودة قد تحتوي القانوني والعقوبات التي رُبطت بها وصارت APPLIED، لذلك لا
-  // يعيدها الاستعلام أعلاه. العقوبة APPROVED غير المربوطة تُضاف فوق الأكبر من المسودة/القانوني.
+  // العقوبات الملتقطة في المسودة مضمنة في draftNonAdvance، فلا تُحسب مرة ثانية.
   const mandatoryDeductions = round2(
     Decimal.max(requiredBeforeDraft, draftNonAdvance).plus(
       unappliedPenaltyDeduction,
