@@ -13,3 +13,4 @@
 export * from "./advancesService";
 export * from "./employeeAdvanceCancellation";
 export * from "./historicalAdvanceRecovery";
+export * from "./legacyAdvanceClassification";

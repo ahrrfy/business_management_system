@@ -2654,6 +2654,13 @@
 			"when": 1788148880000,
 			"tag": "0422_employee_advance_historical_recovery_20261031",
 			"breakpoints": true
+		},
+		{
+			"idx": 423,
+			"version": "5",
+			"when": 1788148881000,
+			"tag": "0423_employee_advance_period_classification_20261101",
+			"breakpoints": true
 		}
 	]
 }

@@ -15737,6 +15737,93 @@ export type EmployeeAdvanceHistoricalRecovery =
   typeof employeeAdvanceHistoricalRecoveries.$inferSelect;
 
 /**
+ * دليلٌ append-only لإعادة تصنيف سلفة قديمة مثبتة المصدر إلى شهر راتب محدد.
+ * التصنيف لا يغيّر المبلغ/الرصيد ولا ينشئ قبضاً أو قيداً أو مسيراً؛ وهو منفصل عن
+ * employeeAdvanceHistoricalRecoveries الذي يصفّر رصيداً استُرد فعلياً في الماضي.
+ */
+export const employeeAdvancePeriodClassifications = mysqlTable(
+  "employeeAdvancePeriodClassifications",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    advanceId: bigint("advanceId", { mode: "number" }).notNull(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    remaining: decimal("remaining", { precision: 15, scale: 2 }).notNull(),
+    direction: mysqlEnum("advancePeriodClassificationDirection", [
+      "APPLY",
+      "REVERSE",
+    ]).notNull(),
+    reversalOfId: bigint("reversalOfId", { mode: "number" }),
+    payrollPeriod: varchar("payrollPeriod", { length: 7 }).notNull(),
+    sourceKey: varchar("sourceKey", { length: 191 }).notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    evidenceKind: mysqlEnum("advancePeriodClassificationEvidenceKind", [
+      "OWNER_ATTESTATION",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    sourceUq: unique("uq_advperiod_source").on(t.sourceKey),
+    reversalUq: unique("uq_advperiod_reverse").on(t.reversalOfId),
+    advanceDirectionIdx: index("idx_advperiod_advance_direction_id").on(
+      t.advanceId,
+      t.direction,
+      t.id,
+    ),
+    periodDirectionIdx: index("idx_advperiod_period_direction_id").on(
+      t.payrollPeriod,
+      t.direction,
+      t.id,
+    ),
+    advanceFk: foreignKey({
+      columns: [t.advanceId],
+      foreignColumns: [employeeAdvances.id],
+      name: "fk_advperiod_advance",
+    }).onDelete("no action"),
+    employeeFk: foreignKey({
+      columns: [t.employeeId],
+      foreignColumns: [employees.id],
+      name: "fk_advperiod_employee",
+    }).onDelete("no action"),
+    branchFk: foreignKey({
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_advperiod_branch",
+    }).onDelete("no action"),
+    reversalFk: foreignKey({
+      columns: [t.reversalOfId],
+      foreignColumns: [t.id],
+      name: "fk_advperiod_reverse",
+    }).onDelete("no action"),
+    actorFk: foreignKey({
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+      name: "fk_advperiod_actor",
+    }).onDelete("no action"),
+    positiveAmount: check("chk_advperiod_positive", sql`${t.amount} > 0`),
+    remainingRange: check(
+      "chk_advperiod_remaining",
+      sql`${t.remaining} > 0 AND ${t.remaining} <= ${t.amount}`,
+    ),
+    reversalShape: check(
+      "chk_advperiod_reversal_shape",
+      sql`(${t.direction} = 'APPLY' AND ${t.reversalOfId} IS NULL) OR (${t.direction} = 'REVERSE' AND ${t.reversalOfId} IS NOT NULL)`,
+    ),
+    periodShape: check(
+      "chk_advperiod_period",
+      sql`${t.payrollPeriod} REGEXP '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+  }),
+);
+
+export type EmployeeAdvancePeriodClassification =
+  typeof employeeAdvancePeriodClassifications.$inferSelect;
+
+/**
  * تسويات السلف المرتبطة بمسيّر الرواتب (تدقيق ١٧/٧) — لمنع الخصم المضاعف. تُكتب صفٌّ لكل سلفة
  * تُسوّى عند دفع المسيّر (settleAdvancesOnPayTx)؛ وتُستعاد أرصدتها عند **حذف** المسيّر (لا عكسه).
  */
