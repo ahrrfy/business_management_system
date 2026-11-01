@@ -41,6 +41,7 @@ import { encodeTerminationWageCoverage } from "./terminationCoverage";
 import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { approveRun } from "./lifecycle";
+import { logAuditTx } from "../auditService";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
@@ -61,6 +62,7 @@ export async function generatePayroll(period: string, actor: Actor) {
   const db = requireDb();
   const [year, month] = p.split("-").map(Number);
   const periodEndYmd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  let preflightCorrections: Map<number, string> | undefined;
   const [preExists] = await db
     .select({ id: payrollRuns.id })
     .from(payrollRuns)
@@ -88,6 +90,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         sql`(${employees.employmentStatus} <> 'terminated' OR ${employees.terminationDate} IS NOT NULL)`,
       ))).filter((row) => !coveredIds.has(Number(row.id)));
       const projected = await projectPayrollWageBasisTx(tx, wageRows, periodEndYmd);
+      preflightCorrections = new Map(projected.filter((row) => row.payrollAttendanceCorrection).map((row) => [row.id, JSON.stringify(row.payrollAttendanceCorrection)]));
       return new Map(projected.map((row) => [row.id, row]));
     });
     // طيّ كافة البصمات المعلقة وتصحيح وطيّ سجلات الشهر قبل توليد المسيّر:
@@ -284,6 +287,15 @@ export async function generatePayroll(period: string, actor: Actor) {
     }
 
     const projected = await projectPayrollWageBasisTx(tx, emps.filter((employee) => !zeroGrossIds.has(Number(employee.id))), periodEndYmd);
+    const currentCorrections = new Map(projected.filter((row) => row.payrollAttendanceCorrection).map((row) => [row.id, JSON.stringify(row.payrollAttendanceCorrection)]));
+    if (preflightCorrections && (preflightCorrections.size !== currentCorrections.size ||
+        Array.from(preflightCorrections.entries()).some(([id, evidence]) => currentCorrections.get(id) !== evidence)))
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر توليد مسير الرواتب",
+        why: "تغيّر إقرار الإعفاء التاريخي أثناء التجهيز",
+        doThis: "راجع بيانات الموظف ثم أعد توليد المسير",
+      }) });
+    const correctionByEmployee = new Map(projected.filter((row) => row.payrollAttendanceCorrection).map((row) => [row.id, row.payrollAttendanceCorrection!]));
     const projectedWages = new Map(projected.map((employee) => [employee.id, employee]));
     const effectiveEmployees = emps.map((employee) => projectedWages.get(employee.id) ?? employee);
     emps.splice(0, emps.length, ...effectiveEmployees);
@@ -699,16 +711,17 @@ export async function generatePayroll(period: string, actor: Actor) {
       const advanceDeduction = round2(Decimal.min(suggestedAdvance, remainingForAdvance));
       const deductions = round2(advanceDeduction.plus(leaveDeduction).plus(statutoryDeduction).plus(penaltyDeduction));
       const net = Decimal.max(0, computeNet(gross, overtime, commission, deductions));
-      await tx.insert(payrollItems).values({
+      const itemResult = await tx.insert(payrollItems).values({
         runId,
         // شفافية الأجر بالحضور: الموظف يرى لماذا نقص أجرُه بالضبط (ساعات/أيام لا مبلغاً غامضاً).
         note: (() => {
           const bonusNote = spotBonusTotal.gt(0)
             ? `مكافأة فورية: ${toDbMoney(spotBonusTotal)} د.ع`
             : null;
+          const correctionNote = correctionByEmployee.has(e.id) ? "إعفاء حضور تاريخي موثق" : null;
           const ap = attendancePayByEmp.get(Number(e.id));
           if (!ap) {
-            const parts = [leaveNote, bonusNote].filter(Boolean);
+            const parts = [correctionNote, leaveNote, bonusNote].filter(Boolean);
             return parts.length > 0 ? parts.join(" — ").slice(0, 255) : null;
           }
           const parts = [
@@ -756,6 +769,14 @@ export async function generatePayroll(period: string, actor: Actor) {
         socialSecurityEmployer: toDbMoney(legal.socialSecurityEmployer),
         endOfServiceAccrual: toDbMoney(legal.endOfServiceAccrual),
         net: toDbMoney(net),
+      });
+      const correction = correctionByEmployee.get(e.id);
+      if (correction) await logAuditTx(tx, { userId: actor.userId, branchId: e.branchId }, {
+        action: "payroll.attendanceExemption.applied", entityType: "payrollItem",
+        entityId: extractInsertId(itemResult),
+        newValue: { runId, employeeId: e.id, period: p, attestationAuditId: correction.auditId,
+          sourceAuditId: correction.sourceAuditId, sourceHash: correction.sourceHash,
+          evidenceHash: correction.evidenceHash, correctionHash: correction.correctionHash },
       });
     }
 

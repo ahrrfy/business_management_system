@@ -17,6 +17,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { PayrollAccrualOperations, PayrollRemittanceRequestPanel } from "@/components/hr/PayrollAccrualOperations";
 import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
 import { BiometricReadinessBanner } from "@/components/payroll/BiometricReadinessBanner";
+import { HistoricalAttendanceAttestation } from "@/components/payroll/HistoricalAttendanceAttestation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -843,7 +844,7 @@ export default function Payroll() {
 
       {/* حوار توليد مسيّر */}
       <Dialog open={genOpen} onOpenChange={(o) => !o && setGenOpen(false)}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader><DialogTitle>توليد مسيّر رواتب</DialogTitle></DialogHeader>
           <div className="space-y-3 py-1">
             <div>
@@ -851,6 +852,7 @@ export default function Payroll() {
               <Input id="gen-period" type="month" value={genPeriod} onChange={(e) => setGenPeriod(e.target.value)} dir="ltr" className="tabular-nums" />
             </div>
             <BiometricReadinessBanner period={genPeriod} />
+            <HistoricalAttendanceAttestation period={genPeriod} enabled={genOpen && ownerAccess} />
             <p className="text-xs text-muted-foreground">
               يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + البدلات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.

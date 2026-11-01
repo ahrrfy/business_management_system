@@ -24,6 +24,7 @@ export function requireDb(): DB {
 export type TransactionGate = "FINANCIAL_WRITER" | "GOVERNANCE" | "NONE";
 
 const financialWriterGateTransactions = new WeakSet<Tx>();
+const governanceGateTransactions = new WeakSet<Tx>();
 
 /** دليل بوابة حقيقية عند دخول المعاملة، وليس استنتاجاً من نوع المستخدم. */
 export function assertFinancialWriterGateHeld(tx: Tx): void {
@@ -31,6 +32,16 @@ export function assertFinancialWriterGateHeld(tx: Tx): void {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "يلزم تنفيذ تعديل المخزون داخل معاملة محروسة بالبوابة المالية",
+    });
+  }
+}
+
+/** Require the exclusive company gate, not the ordinary shared writer gate. */
+export function assertGovernanceGateHeld(tx: Tx): void {
+  if (!governanceGateTransactions.has(tx)) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "يلزم تنفيذ العملية داخل معاملة حوكمة حصرية",
     });
   }
 }
@@ -109,11 +120,13 @@ export async function withTx<T>(
     if (gate === "GOVERNANCE") await lockCompanyMonthCloseGate(tx);
     else if (gate === "FINANCIAL_WRITER") await lockFinancialPostingGate(tx);
     if (gate !== "NONE") financialWriterGateTransactions.add(tx);
+    if (gate === "GOVERNANCE") governanceGateTransactions.add(tx);
     try {
       await assertExecutionAuthoritiesTx(tx);
       return await fn(tx);
     } finally {
       financialWriterGateTransactions.delete(tx);
+      governanceGateTransactions.delete(tx);
     }
   });
 

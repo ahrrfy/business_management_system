@@ -25,6 +25,8 @@ import * as loanSvc from "../services/employeeLoanService";
 import { getEmployeeAdvanceCapacity } from "../services/employeeAdvanceCapacityService";
 import { baghdadToday } from "../services/businessDay";
 import { activeEmployeeSalaryPaidAtSql } from "../services/payroll/queries";
+import { listHistoricalAttendanceCandidates } from "../services/hr/payrollHistoricalAttendanceCandidates";
+import { attestHistoricalAttendanceExemption } from "../services/hr/payrollHistoricalAttendanceCorrection";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -260,6 +262,26 @@ export const payrollRouter = router({
         isOwner: ctx.user.isOwner,
       }),
     ),
+
+  historicalAttendanceCandidates: ownerHrRead
+    .input(z.object({ period }))
+    .query(({ input, ctx }) => listHistoricalAttendanceCandidates(input.period, {
+      userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role,
+    })),
+
+  attestHistoricalAttendanceExemption: ownerHrWrite
+    .input(z.object({
+      period,
+      employeeId: z.number().int().positive(),
+      sourceAuditId: z.number().int().positive(),
+      sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+      expectedEmployeeName: z.string().trim().min(1).max(500),
+      evidenceText: z.string().trim().min(10).max(300),
+      confirmFixedExemption: z.literal(true),
+    }))
+    .mutation(({ input, ctx }) => attestHistoricalAttendanceExemption(input, {
+      userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role,
+    })),
 
   generate: ownerHrWrite
     .input(z.object({ period }))
