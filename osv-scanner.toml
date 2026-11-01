@@ -1,28 +1,10 @@
-[[IgnoredVulns]]
-id = "GHSA-86w9-cpqp-85rv"
-reason = "node-forge is pulled only by Expo CLI tooling, is not bundled in the native app runtime, and has no patched release yet"
-
-[[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"
-reason = "braces is pulled only by Tailwind, Metro, and Jest build/test tooling, does not process user-controlled patterns in the native runtime, and has no patched release yet"
-
-[[IgnoredVulns]]
-id = "GHSA-hp3w-g68c-fv3c"
-reason = "sprintf-js is pulled only through js-yaml in Expo development tooling, does not evaluate untrusted format strings in the native app runtime, and has no patched release yet"
-
-# Assessed 2026-10-28: node-resolve merges its fixed defaults; Expo Config.js
-# modifyConfigAsync merges repository-owned local app/plugin configuration.
-# The resolved consumers are checked by dependencySecurityWorkflow.test.ts.
-[[IgnoredVulns]]
-id = "GHSA-gcqx-w48m-w2h4"
-ignoreUntil = 2026-11-28
-reason = "deepmerge is used only by @rollup/plugin-node-resolve and @expo/config build/config tooling, with no HTTP or native-runtime user payload reaching these merge calls; no patched release is available"
-
-# Assessed 2026-10-31: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides;
-# remaining 3.1.5 and 5.1.9 consumers require the legacy CJS callable export removed in v9+,
-# have no upstream backport, and never evaluate user-controlled glob patterns at runtime.
+# Assessed 2026-11-01: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides.
+# The advisory mechanism (firstPhasePreProcess with optimizationLevel >=2) is absent from the
+# remaining v3/v5 CJS implementations. Their exact build/lint consumers are allowlisted below,
+# accept repository-owned patterns only, and cannot be major-overridden without breaking the
+# callable CommonJS API. Reassess on expiry or when upstream consumers leave these legacy majors.
 # Exact consumers are enforced by dependencySecurityWorkflow.test.ts.
 [[IgnoredVulns]]
 id = "GHSA-g3hv-75wg-m249"
 ignoreUntil = 2026-11-30
-reason = "all minimatch >=9 consumers are pinned to 11.0.1; remaining legacy CJS v3/v5 consumers (eslint, glob@7, readdir-glob@1, filelist@1, test-exclude@6) have no upstream backport and never evaluate untrusted user glob patterns at runtime"
+reason = "the reported globparts amplification code is absent from the remaining legacy CJS v3/v5 build-tool consumers; all modern consumers are pinned to 11.0.1 and no runtime path accepts untrusted glob patterns"
