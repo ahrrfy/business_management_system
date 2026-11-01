@@ -52,6 +52,7 @@ export interface PayslipData {
   commission: string;
   deductions: string;
   advanceDeduction?: string | null;
+  penaltyDeduction?: string | null;
   socialSecurityEmployee?: string | null;
   incomeTax?: string | null;
   socialSecurityEmployer?: string | null;
@@ -97,6 +98,7 @@ export function renderPayslipHtml(d: PayslipData): string {
     commission: d.commission,
     deductions: d.deductions,
     advanceDeduction: d.advanceDeduction,
+    penaltyDeduction: d.penaltyDeduction,
     socialSecurityEmployee: d.socialSecurityEmployee,
     incomeTax: d.incomeTax,
     net: d.net,
@@ -160,6 +162,7 @@ export function renderPayslipHtml(d: PayslipData): string {
 
   const deducts = [
     line("استقطاع سلفة", breakdown.advanceDeduction, "deduct"),
+    line("استقطاع العقوبات", breakdown.penaltyDeduction, "deduct"),
     line("ضمان اجتماعي (حصة الموظف)", breakdown.socialSecurityEmployee, "deduct"),
     line("ضريبة الدخل", breakdown.incomeTax, "deduct"),
     line("خفض الأجر وخصومات أخرى", breakdown.otherDeductions, "deduct"),
@@ -201,6 +204,7 @@ export function renderPayslipHtml(d: PayslipData): string {
     <div style="margin-top:3px;font-size:10px;color:#475569">الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</div>
     <div dir="ltr" style="margin-top:3px;font-size:10.5px;font-weight:700;text-align:left">${fmt(breakdown.gross)} + ${fmt(breakdown.overtime)} + ${fmt(breakdown.commission)} − ${fmt(breakdown.totalDeductions)} = ${fmt(breakdown.expectedNet)} د.ع</div>
     ${!breakdown.deductionComponentsValid ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: مكونات الاستقطاع المسماة تتجاوز إجمالي الاستقطاع المحفوظ.</div>` : ""}
+    ${d.penaltyDeduction == null ? `<div style="margin-top:4px;color:#475569;font-size:9.75px">تفصيل العقوبات لهذا المسير غير موثّق.</div>` : ""}
     ${!breakdown.allowancesValid ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: المخصصات لا تطابق الأجر الإجمالي المحفوظ.</div>` : ""}
     ${!breakdown.netMatches ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: الصافي المحفوظ (${fmt(breakdown.net)}) لا يطابق المعادلة.</div>` : ""}
   </div>`;

@@ -53,11 +53,11 @@ export function payrollHash(value: unknown): string {
     .digest("hex");
 }
 
-/** نسبة سقف الجزاءات الانضباطية بموجب المادة 57 من قانون العمل العراقي رقم 37 لسنة 2015 (10% من صافي الأجر) */
+/** سقف الجزاءات المطبق حالياً في النظام؛ لا يثبت بمفرده أساساً قانونياً للقرار. */
 export const IRAQI_LABOR_LAW_ARTICLE_57_PENALTY_CAP_RATIO = new Decimal("0.10");
 
 /**
- * احتساب سقف العقوبة الشهرية بموجب المادة (57) من قانون العمل العراقي (10% من صافي الراتب قبل العقوبة).
+ * احتساب سقف العقوبة الشهري وفق إعداد الحساب الحالي في النظام.
  * إذا كان الأجر المتاح سالباً أو صفراً، فإن السقف صفر.
  */
 export function computeArticle57PenaltyCap(netSalaryBeforePenalty: Decimal): Decimal {

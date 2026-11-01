@@ -1,11 +1,13 @@
 // تحرير بند مسيّر رواتب — يعمل فقط أثناء الحالة draft؛ يعيد حساب صافي البند ومجاميع المسيّر.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { payrollItems, payrollRuns } from "../../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { employeePenalties, payrollItems, payrollPenaltyAllocations, payrollRuns } from "../../../drizzle/schema";
 import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
-import { computeNet, recomputeRunTotals } from "./helpers";
+import { capPenaltyDeduction, computeNet, recomputeRunTotals } from "./helpers";
 import { getRun } from "./queries";
+import { assertRunPenaltyAllocationsTx, readPenaltySourcesTx } from "./penaltyAllocations";
 import type { UpdateItemInput } from "./types";
 
 export async function updateItem(itemId: number, input: UpdateItemInput, actor?: Actor) {
@@ -41,6 +43,20 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل البنود إلا والمسيّر مسودة" });
     }
 
+    const allocations = await tx.select({ amount: payrollPenaltyAllocations.amount })
+      .from(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.itemId, itemId)).for("share");
+    const penaltyPart = round2(allocations.reduce((sum, row) => sum.plus(money(row.amount)), money(0)));
+    await assertRunPenaltyAllocationsTx(tx, Number(run.id));
+    if (!item.penaltySnapshotComplete && (input.overtime != null || input.deductions != null)) {
+      const [legacy] = await tx.select({ id: employeePenalties.id }).from(employeePenalties)
+        .where(and(eq(employeePenalties.payrollRunId, Number(run.id)), eq(employeePenalties.employeeId, Number(item.employeeId))))
+        .for("share").limit(1);
+      if (legacy) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذّر تعديل بند الراتب", why: `العقوبة #${legacy.id} مرتبطة بالمسودة دون مقدار تخصيص مثبت`,
+        doThis: "احذف المسودة غير المعتمدة وأعد توليدها قبل تعديل المبالغ",
+      }) });
+    }
+
     const overtime = input.overtime != null ? money(input.overtime) : money(item.overtime);
     const deductions = input.deductions != null ? money(input.deductions) : money(item.deductions);
     if (overtime.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمل الإضافي لا يكون سالباً" });
@@ -52,8 +68,12 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
     // المكوّنات القانونية (البند ④): حصّتا الموظف (ضمان+ضريبة) استقطاعاتٌ إلزاميّة لا تُزال يدوياً —
     // تُضاف إلى أرضية السلفة. **معطَّلة ⇒ صفر ⇒ الأرضية = جزء السلفة كما كانت (صفر انحدار، ونفس الرسالة).**
     const statutoryPart = round2(money(item.socialSecurityEmployee).plus(money(item.incomeTax)));
-    const floor = round2(advancePart.plus(statutoryPart));
+    const floor = round2(advancePart.plus(statutoryPart).plus(penaltyPart));
     if (deductions.lt(floor)) {
+      if (penaltyPart.gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "لا يمكن تخفيض الاستقطاع دون المبلغ المثبت", why: `يتضمن البند عقوبات مخصصة بمبلغ ${toDbMoney(penaltyPart)} إضافةً للسلفة والاستقطاعات القانونية`,
+        doThis: "راجع العقوبة وأعد توليد المسودة قبل تغييرها",
+      }) });
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: statutoryPart.gt(0)
@@ -61,7 +81,26 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
           : `الاستقطاع لا يقلّ عن استقطاع السلفة المولَّد (${toDbMoney(advancePart)}) — لتغييره ألغِ المسودة وعدِّل السلفة ثم أعد التوليد`,
       });
     }
-    const wageReduction = round2(deductions.minus(floor));
+    const wageReduction = round2(deductions.minus(advancePart).minus(statutoryPart));
+    const nonPenaltyReduction = round2(wageReduction.minus(penaltyPart));
+    const capBase = money(item.gross).plus(overtime).plus(money(item.commission)).minus(statutoryPart).minus(nonPenaltyReduction);
+    if (capPenaltyDeduction(capBase, penaltyPart).lt(penaltyPart)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "لا يمكن حفظ تغيير الأجر", why: "يصبح استقطاع العقوبة المثبت أعلى من الحد المطبق في النظام",
+        doThis: "أعد توليد المسودة بعد تصحيح الأجر والقرار",
+      }) });
+    }
+    if (item.penaltySnapshotComplete && (input.overtime != null || input.deductions != null)) {
+      const sources = await readPenaltySourcesTx(tx, [Number(item.employeeId)], run.period, true, Number(run.id));
+      const stillDue = sources.reduce((sum, source) => sum.plus(source.remaining).plus(source.futureReserved), money(0));
+      const expected = capPenaltyDeduction(capBase, round2(stillDue.plus(penaltyPart)));
+      if (!expected.eq(penaltyPart)) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذّر تعديل بند الراتب", why: "سيغيّر الأجر أو الاستقطاع مقدار العقوبة الواجب التقاطها لهذه الفترة",
+          doThis: "احذف المسودة وأعد توليد المسيّر بعد تصحيح مصادر الأجر والعقوبات",
+        }) });
+      }
+    }
     // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.
     const net = computeNet(money(item.gross), overtime, money(item.commission), deductions);
     if (net.isNegative()) {

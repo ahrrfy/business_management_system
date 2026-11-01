@@ -11,7 +11,6 @@ import {
   attendance,
   commissionRunLines,
   commissionRuns,
-  employeePenalties,
   employees,
   employeeSpotBonuses,
   employeeTerminations,
@@ -21,7 +20,7 @@ import {
   payrollItems,
   payrollRuns,
 } from "../../../drizzle/schema";
-import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
+import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
@@ -42,6 +41,7 @@ import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { approveRun } from "./lifecycle";
 import { logAuditTx } from "../auditService";
+import { allocatePenaltyCap, readPenaltySourcesTx, savePenaltyAllocationsTx } from "./penaltyAllocations";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
@@ -426,37 +426,9 @@ export async function generatePayroll(period: string, actor: Actor) {
       p,
     );
 
-    // استقطاعات العقوبات والإنذارات الانضباطية المعتمدة غير المطبقة:
-    const empIds = emps.map((e) => Number(e.id));
-    const approvedPenalties =
-      empIds.length > 0
-        ? await tx
-            .select({
-              id: employeePenalties.id,
-              employeeId: employeePenalties.employeeId,
-              deductionAmount: employeePenalties.deductionAmount,
-            })
-            .from(employeePenalties)
-            .where(
-              and(
-                inArray(employeePenalties.employeeId, empIds),
-                eq(employeePenalties.status, "APPROVED"),
-                isNull(employeePenalties.payrollRunId),
-                sql`${employeePenalties.deductionAmount} > 0`,
-                // عقوبة مالية قديمة معتمدة لم يلتقطها شهر القرار تبقى مستحقة لأول
-                // مسيّر تالٍ، بينما قرار شهر مستقبلي لا يُعجّل استقطاعه.
-                sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${p}`,
-              ),
-            )
-        : [];
-    const penaltiesByEmp = new Map<number, { total: Decimal; ids: number[] }>();
-    for (const pen of approvedPenalties) {
-      const empId = Number(pen.employeeId);
-      const curr = penaltiesByEmp.get(empId) ?? { total: new Decimal(0), ids: [] };
-      curr.total = curr.total.plus(money(pen.deductionAmount));
-      curr.ids.push(Number(pen.id));
-      penaltiesByEmp.set(empId, curr);
-    }
+    // Reserve exact portions, including a zero marker when this month's cap is exhausted.
+    // Previously applied legacy records are deliberately not reconstructed.
+    const penaltySources = await readPenaltySourcesTx(tx, emps.map((e) => Number(e.id)), p);
 
     // المكوّنات القانونية العراقية (البند ④): إعدادات مفردة تُقرأ مرّة واحدة داخل المعاملة (لقطة).
     // **كل مكوّن معطَّل افتراضياً** ⇒ computeLegalComponents تُعيد صفراً ⇒ صفر أثر على deductions/net
@@ -703,9 +675,10 @@ export async function generatePayroll(period: string, actor: Actor) {
       // خسارة على الشركة. القصّ يضمن net ≥ 0 ⇒ المُسوّى = المُقتطَع فعلاً، وتُستكمَل البقيّة لاحقاً.
       // (حين المكوّنات القانونية معطَّلة statutoryDeduction=0 ⇒ الصيغة مطابقة لما كانت — صفر انحدار.)
       const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction).minus(statutoryDeduction)));
-      const empPenalties = penaltiesByEmp.get(Number(e.id));
-      const rawPenalty = empPenalties ? empPenalties.total : new Decimal(0);
+      const empPenalties = penaltySources.filter((source) => source.employeeId === Number(e.id));
+      const rawPenalty = round2(empPenalties.reduce((sum, source) => sum.plus(source.remaining), new Decimal(0)));
       const penaltyDeduction = capPenaltyDeduction(absorbableWage, rawPenalty);
+      const penaltyPlan = allocatePenaltyCap(empPenalties, penaltyDeduction);
       const remainingForAdvance = Decimal.max(0, absorbableWage.minus(penaltyDeduction));
       const suggestedAdvance = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
       const advanceDeduction = round2(Decimal.min(suggestedAdvance, remainingForAdvance));
@@ -761,6 +734,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
         wageReduction: toDbMoney(round2(leaveDeduction.plus(penaltyDeduction))),
+        penaltySnapshotComplete: true,
         advanceDeduction: toDbMoney(advanceDeduction),
         // المكوّنات القانونية (البند ④، لقطة): حصّتا الموظف (ضمان+ضريبة) مُتضمَّنتان في deductions أعلاه؛
         // حصّة رب العمل واستحقاق نهاية الخدمة عرضٌ/التزامٌ فقط (خارج deductions/net). كلها صفر عند التعطيل.
@@ -770,6 +744,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         endOfServiceAccrual: toDbMoney(legal.endOfServiceAccrual),
         net: toDbMoney(net),
       });
+      await savePenaltyAllocationsTx(tx, runId, extractInsertId(itemResult), penaltyPlan);
       const correction = correctionByEmployee.get(e.id);
       if (correction) await logAuditTx(tx, { userId: actor.userId, branchId: e.branchId }, {
         action: "payroll.attendanceExemption.applied", entityType: "payrollItem",
@@ -803,31 +778,6 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ربط الالتقاط داخل نفس المعاملة — أثر تدقيقي ثنائي الاتجاه (التشغيلة تعرف مسيّرها).
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
-    }
-
-    // ربط العقوبات المستقطعة برقم المسيّر وتحديث حالتها إلى APPLIED
-    const allAppliedPenaltyIds = Array.from(penaltiesByEmp.values()).flatMap((p) => p.ids);
-    if (allAppliedPenaltyIds.length > 0) {
-      const appliedPenalties = await tx
-        .update(employeePenalties)
-        .set({ payrollRunId: runId, status: "APPLIED" })
-        .where(
-          and(
-            inArray(employeePenalties.id, allAppliedPenaltyIds),
-            eq(employeePenalties.status, "APPROVED"),
-            isNull(employeePenalties.payrollRunId),
-          ),
-        );
-      if (extractAffectedRows(appliedPenalties) !== allAppliedPenaltyIds.length) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: appErrorMessage({
-            what: "لم يكتمل توليد مسيّر الرواتب",
-            why: "تغيّرت عقوبة مالية ملتقطة أثناء التوليد",
-            doThis: "حدّث بيانات العقوبات ثم أعد توليد المسيّر",
-          }),
-        });
-      }
     }
 
     // GAP-03: ربط المكافآت الفورية المستحقة برقم المسيّر

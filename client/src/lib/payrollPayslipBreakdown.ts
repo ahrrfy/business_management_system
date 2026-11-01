@@ -1,5 +1,11 @@
 import { D, round2 } from "@/lib/money";
 
+/** لقطات الجزاءات المثبتة في بند المسير؛ غيابها لا يعني أن الجزاء التاريخي صفر. */
+export interface PayrollPenaltyProjection {
+  penaltyDeduction?: string | null;
+  penaltyLines?: Array<{ penaltyId: number; decisionNumber: string; amount: string }> | null;
+}
+
 export interface PayrollPayslipBreakdownInput {
   gross: string;
   allowances?: string | null;
@@ -8,6 +14,7 @@ export interface PayrollPayslipBreakdownInput {
   commission: string;
   deductions: string;
   advanceDeduction?: string | null;
+  penaltyDeduction?: string | null;
   socialSecurityEmployee?: string | null;
   incomeTax?: string | null;
   net: string;
@@ -21,6 +28,8 @@ export interface PayrollPayslipBreakdown {
   commission: string;
   totalEarnings: string;
   advanceDeduction: string;
+  penaltyDeduction: string;
+  penaltyDeductionKnown: boolean;
   socialSecurityEmployee: string;
   incomeTax: string;
   otherDeductions: string;
@@ -60,11 +69,12 @@ export function buildPayrollPayslipBreakdown(
   const totalEarnings = round2(gross.plus(overtime).plus(commission));
 
   const advanceDeduction = money(input.advanceDeduction);
+  const penaltyDeduction = money(input.penaltyDeduction);
   const socialSecurityEmployee = money(input.socialSecurityEmployee);
   const incomeTax = money(input.incomeTax);
   const totalDeductions = money(input.deductions);
   const namedDeductions = round2(
-    advanceDeduction.plus(socialSecurityEmployee).plus(incomeTax),
+    advanceDeduction.plus(penaltyDeduction).plus(socialSecurityEmployee).plus(incomeTax),
   );
   const deductionClassificationGap = round2(
     totalDeductions.minus(namedDeductions),
@@ -87,6 +97,8 @@ export function buildPayrollPayslipBreakdown(
     commission: commission.toFixed(2),
     totalEarnings: totalEarnings.toFixed(2),
     advanceDeduction: advanceDeduction.toFixed(2),
+    penaltyDeduction: penaltyDeduction.toFixed(2),
+    penaltyDeductionKnown: input.penaltyDeduction != null,
     socialSecurityEmployee: socialSecurityEmployee.toFixed(2),
     incomeTax: incomeTax.toFixed(2),
     otherDeductions: otherDeductions.toFixed(2),

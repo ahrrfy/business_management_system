@@ -243,6 +243,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_payroll_accounting_event_entry: { msg: "هذا القيد مرتبط بحدث رواتب آخر." },
   uq_payroll_allocation_source: { msg: "تخصيص الرواتب لهذا المصدر مسجّل مسبقاً." },
   uq_payroll_allocation_event: { msg: "حدث تخصيص الرواتب مسجّل مسبقاً." },
+  uq_paypenalty_penalty_run: { msg: "هذا القرار مرتبط بمسيّر الرواتب نفسه مسبقاً؛ راجع التخصيص قبل إعادة المحاولة." },
   uq_advsettle_source: { msg: "تسوية السلفة لهذا المصدر مسجّلة مسبقاً." },
   uq_payroll_event_reversal_once: { msg: "حدث الرواتب معكوس مسبقاً." },
   uq_payroll_allocation_reversal_once: { msg: "تخصيص الرواتب معكوس مسبقاً." },

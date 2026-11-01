@@ -93,6 +93,7 @@ export type MobilePayslip = Readonly<{
       commission: string;
       deductions: string;
       advanceDeduction: string;
+      penaltyDeduction: string | null;
       socialSecurityEmployee: string;
       incomeTax: string;
       net: string;
@@ -370,6 +371,13 @@ export function parseMobilePayslip(payload: string): MobilePayslip {
     throw new Error("وصلت استجابة غير مكتملة من الخادم. أعد المحاولة لاحقاً.");
   }
   const hours = payslip.hours === null ? null : payrollHoursText(payslip.hours);
+  // Older server versions omit this field; absence is unknown, not a zero deduction.
+  const penaltyDeduction = payslip.penaltyDeduction == null
+    ? null
+    : moneyText(payslip.penaltyDeduction);
+  if (penaltyDeduction?.startsWith("-")) {
+    throw new Error("وصلت استجابة غير مكتملة من الخادم. أعد المحاولة لاحقاً.");
+  }
   return {
     personal: {
       state: "READY",
@@ -385,6 +393,7 @@ export function parseMobilePayslip(payload: string): MobilePayslip {
         commission: moneyText(payslip.commission),
         deductions: moneyText(payslip.deductions),
         advanceDeduction: moneyText(payslip.advanceDeduction),
+        penaltyDeduction,
         socialSecurityEmployee: moneyText(payslip.socialSecurityEmployee),
         incomeTax: moneyText(payslip.incomeTax),
         net: moneyText(payslip.net),
