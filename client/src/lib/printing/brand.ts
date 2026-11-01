@@ -285,13 +285,28 @@ export function openPrintWindow(
       try {
         const doc = w.document;
         if (!doc) return;
+        const showUnreadyPayslip = () => {
+          const toolbar = doc.querySelector('.doc-toolbar[data-payslip="true"]');
+          if (!toolbar) return false;
+          let notice = doc.getElementById("payslip-print-error");
+          if (!notice) {
+            notice = doc.createElement("div");
+            notice.id = "payslip-print-error";
+            notice.setAttribute("role", "alert");
+            notice.style.cssText = `background:${BRAND.alertBg};color:${BRAND.alert};padding:8px 12px;font-size:12px;font-weight:700`;
+            toolbar.insertAdjacentElement("afterend", notice);
+          }
+          notice.hidden = false;
+          notice.textContent = "لم يكتمل تجهيز القسيمة للطباعة. انتظر قليلاً أو أعد فتح المعاينة.";
+          return true;
+        };
         const printBtn = doc.getElementById("doc-btn-print");
         if (printBtn && !(printBtn as any).__bound) {
           (printBtn as any).__bound = true;
           printBtn.addEventListener("click", () => {
             if (typeof (w as any).printDoc === "function") {
               (w as any).printDoc();
-            } else {
+            } else if (!showUnreadyPayslip()) {
               w.focus();
               w.print();
             }
@@ -303,7 +318,7 @@ export function openPrintWindow(
           saveBtn.addEventListener("click", () => {
             if (typeof (w as any).saveDocAsPdf === "function") {
               (w as any).saveDocAsPdf();
-            } else {
+            } else if (!showUnreadyPayslip()) {
               w.print();
             }
           });

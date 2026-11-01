@@ -22,6 +22,51 @@ export const PAGE_H = 1123;
 /** هامش أمان لإطار الزخرفة الداخلي (24px من كل جانب) — لا تُقلَّص وإلا ضاع النص في منطقة الطباعة الميتة. */
 export const SAFETY_INSET = 24;
 
+/** Compact payslip-only layout; content stays inside a 10 mm print-safe inset. */
+const PAYSLIP_PAGE_STYLES = `
+  #payslip-print-error{background:${B.alertBg};color:${B.alert};padding:8px 12px;font-size:12px;font-weight:700}
+  .payslip-page{width:210mm !important;height:296mm !important;min-height:0 !important;display:block !important}
+  .payslip-page .page-inset{inset:8mm !important}
+  .payslip-frame{position:absolute;top:10mm;right:10mm;width:190mm;height:276mm}
+  .payslip-frame[data-fitted="true"]{overflow:clip}
+  .payslip-content{width:100%;transform-origin:top center;overflow-wrap:anywhere}
+  .payslip-content,.payslip-content *{letter-spacing:normal !important}
+  .payslip-page .page-body{padding:0;flex:initial}
+  .payslip-page .page-footer{margin-top:8px;padding:4px 0 0}
+  .payslip-page .page-footer > div:first-child{margin-bottom:4px !important}
+  .payslip-header > div:first-child{gap:8px !important}
+  .payslip-header > div:first-child > div:first-child{gap:8px !important}
+  .payslip-header img{width:64px !important;height:64px !important;padding:4px !important}
+  .payslip-header > div:first-child > div:last-child{min-width:310px !important}
+  .payslip-header > div:first-child > div:last-child > div:nth-child(3){display:grid !important;grid-template-columns:1fr 1fr;gap:2px 10px !important;margin-top:5px !important}
+  .payslip-header > div:first-child > div:last-child > div:nth-child(3) > div{gap:5px;min-width:0}
+  .payslip-header > div:first-child > div:last-child > div:nth-child(4){margin-top:4px !important;padding:1px 9px !important}
+  .payslip-header > div:last-child{margin-top:6px !important}
+  .payslip-cards > div,.payslip-settlement > div{gap:8px !important;margin-top:6px !important}
+  .payslip-cards > div > div,.payslip-settlement > div > div{padding:5px 8px !important}
+  .payslip-cards > div > div > div:first-child,.payslip-settlement > div > div > div:first-child{margin-bottom:3px !important}
+  .payslip-cards > div > div > div:nth-child(2),.payslip-settlement > div > div > div:nth-child(2){gap:1px !important}
+  .payslip-settlement > div > div > div:nth-child(2){display:grid !important;grid-template-columns:1fr 1fr;column-gap:12px !important}
+  .payslip-cards > div > div > div:nth-child(2) > div,.payslip-settlement > div > div > div:nth-child(2) > div{gap:6px;min-width:0;padding-bottom:1px !important;align-items:flex-start !important}
+  .payslip-cards span,.payslip-settlement span{min-width:0;overflow-wrap:anywhere;white-space:normal !important}
+  .payslip-cards > div > div > div:nth-child(2) > div > span:first-child,.payslip-settlement > div > div > div:nth-child(2) > div > span:first-child{flex:0 0 auto;white-space:nowrap !important}
+  .payslip-cards > div > div > div:nth-child(2) > div > span:last-child,.payslip-settlement > div > div > div:nth-child(2) > div > span:last-child{flex:1 1 auto;text-align:left}
+  .payslip-table table{width:100%;table-layout:fixed}
+  .payslip-table th,.payslip-table td{padding:2px 5px !important;line-height:1.25;font-size:11px !important;overflow-wrap:anywhere}
+  .payslip-equation > div,.payslip-note > div,.payslip-liabilities > div{margin-top:5px !important;padding:4px 8px !important}
+  .payslip-total > div{margin-top:6px !important;padding:6px 10px !important}
+  .payslip-words > div{margin-top:4px !important;padding:4px 8px !important}
+  .payslip-audit > div{margin-top:5px !important;padding:4px 8px !important}
+  .payslip-signatures > div:first-child{margin-top:8px !important;gap:16px !important}
+  .payslip-signatures > div:first-child > div > div:first-child{height:22px !important}
+  .payslip-signatures > div:last-child{margin-top:5px !important}
+  @media print{
+    body.payslip-print-pending .page,body.payslip-print-invalid .page{display:none !important}
+    body.payslip-print-pending #payslip-print-error,body.payslip-print-invalid #payslip-print-error{display:block !important;margin:10mm;padding:5mm !important}
+  }
+`;
+const PAYSLIP_PENDING_MESSAGE = '<div id="payslip-print-error" role="alert" hidden>لم يكتمل تجهيز القسيمة للطباعة. انتظر قليلاً أو أعد فتح المعاينة.</div>';
+
 // ─── مغلّفات صفحة كاملة ──────────────────────────────────────────────────────
 
 /**
@@ -31,9 +76,10 @@ export const SAFETY_INSET = 24;
 export function wrapA4Doc(
   title: string,
   bodyContent: string,
-  options: { orientation?: "portrait" | "landscape"; autoPrint?: boolean } = {},
+  options: { orientation?: "portrait" | "landscape"; autoPrint?: boolean; layout?: "payslip" } = {},
 ): string {
   const landscape = options.orientation === "landscape";
+  const payslip = options.layout === "payslip";
   const pageWidth = landscape ? PAGE_H : PAGE_W;
   const pageHeight = landscape ? PAGE_W : PAGE_H;
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
@@ -139,16 +185,18 @@ ${CAIRO_FONT}
   body.doc-exporting-pdf { background: #fff !important; }
   body.doc-exporting-pdf .doc-toolbar { display: none !important; }
   body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
+  ${payslip ? PAYSLIP_PAGE_STYLES : ""}
 </style>
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
-<body>
+<body${payslip ? ' class="payslip-print-pending"' : ""}>
 <div class="doc-toolbar" dir="rtl"
   data-title="${esc(title)}"
   data-page-width="${pageWidth}"
   data-page-height="${pageHeight}"
   data-landscape="${landscape ? "true" : "false"}"
-  data-auto-print="${options.autoPrint !== false ? "true" : "false"}">
+  data-auto-print="${options.autoPrint !== false ? "true" : "false"}"
+  ${payslip ? 'data-payslip="true"' : ""}>
   <div class="doc-toolbar-info">
     <span class="doc-toolbar-title">${esc(title)}</span>
     <span class="doc-toolbar-badge">معاينة المستند الرسمي A4</span>
@@ -167,7 +215,8 @@ ${CAIRO_FONT}
     </button>
   </div>
 </div>
-<div class="page">
+${payslip ? PAYSLIP_PENDING_MESSAGE : ""}
+<div class="page${payslip ? " payslip-page" : ""}">
   <div class="page-inset"></div>
   ${bodyContent}
 </div>
@@ -186,9 +235,11 @@ export function wrapMultiA4Doc(
     orientation?: "portrait" | "landscape";
     badgeLabel?: string;
     autoPrint?: boolean;
+    layout?: "payslip";
   } = {},
 ): string {
   const landscape = options.orientation === "landscape";
+  const payslip = options.layout === "payslip";
   const pageWidth = landscape ? PAGE_H : PAGE_W;
   const pageHeight = landscape ? PAGE_W : PAGE_H;
   const badge =
@@ -198,7 +249,7 @@ export function wrapMultiA4Doc(
   const pagesHtml = pagesContent
     .map(
       (body, idx) => `
-<div class="page" data-page-index="${idx + 1}">
+<div class="page${payslip ? " payslip-page" : ""}" data-page-index="${idx + 1}">
   <div class="page-inset"></div>
   ${body}
 </div>`,
@@ -310,17 +361,18 @@ ${CAIRO_FONT}
   body.doc-exporting-pdf { background: #fff !important; }
   body.doc-exporting-pdf .doc-toolbar { display: none !important; }
   body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
+  ${payslip ? PAYSLIP_PAGE_STYLES : ""}
 </style>
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
-<body>
+<body${payslip ? ' class="payslip-print-pending"' : ""}>
 <div class="doc-toolbar" dir="rtl"
   data-title="${esc(title)}"
   data-page-width="${pageWidth}"
   data-page-height="${pageHeight}"
   data-landscape="${landscape ? "true" : "false"}"
   data-auto-print="${options.autoPrint !== false ? "true" : "false"}"
-  data-multi="true">
+  data-multi="true" ${payslip ? 'data-payslip="true"' : ""}>
   <div class="doc-toolbar-info">
     <span class="doc-toolbar-title">${esc(title)}</span>
     <span class="doc-toolbar-badge">${esc(badge)}</span>
@@ -339,6 +391,7 @@ ${CAIRO_FONT}
     </button>
   </div>
 </div>
+${payslip ? PAYSLIP_PENDING_MESSAGE : ""}
 <div id="doc-pages-container">
 ${pagesHtml}
 </div>
