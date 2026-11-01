@@ -511,8 +511,8 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     const requestRes = await requestEmployeeLoan(cashierActor, {
       employeeId: 10,
       amount: "240000.00",
-      installmentsCount: 4,
-      monthlyDeduction: "60000.00",
+      installmentsCount: 1,
+      monthlyDeduction: "240000.00",
       reason: "شراء قرطاسية ومستلزمات دراسية",
       clientRequestId: "employee-loan-lifecycle-1",
     });

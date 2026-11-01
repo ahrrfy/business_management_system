@@ -253,6 +253,7 @@ export const hrEnterpriseRouter = router({
       .input(
         z.object({
           employeeId: z.number().int().positive(),
+          branchId: z.number().int().positive().optional(),
           amount: positiveMoneyString,
           installmentsCount: z.number().int().min(1).max(60).optional(),
           monthlyDeduction: positiveMoneyString.optional(),

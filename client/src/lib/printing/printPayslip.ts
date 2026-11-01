@@ -25,6 +25,7 @@ import {
 import { esc, fmt, openPrintWindow } from "./brand";
 import { formatArabicMoneyWords } from "./tafqit";
 import { D, round2 } from "@/lib/money";
+import { buildPayrollPayslipBreakdown } from "@/lib/payrollPayslipBreakdown";
 
 export interface PayslipData {
   runId: number;
@@ -42,6 +43,8 @@ export interface PayslipData {
   itemSnapshotHash?: string | null;
   payTypeLabel: string;
   baseSalary?: string | null;
+  /** معلومة داخل gross وليست استحقاقاً إضافياً. */
+  allowances?: string | null;
   /** ساعات مستحقّة (الساعيّ دائماً، والشهريّ عند تفعيل الأجر بالحضور). */
   hours?: string | null;
   gross: string;
@@ -86,6 +89,18 @@ function line(label: string, value: string | null | undefined, kind: "earn" | "d
  * يولّد محتوى صفحة HTML لقسيمة راتب الموظف الواحدة، متضمناً الرأس والبطاقات والجدول والتواقيع.
  */
 export function renderPayslipHtml(d: PayslipData): string {
+  const breakdown = buildPayrollPayslipBreakdown({
+    gross: d.gross,
+    allowances: d.allowances,
+    baseSalary: d.baseSalary,
+    overtime: d.overtime,
+    commission: d.commission,
+    deductions: d.deductions,
+    advanceDeduction: d.advanceDeduction,
+    socialSecurityEmployee: d.socialSecurityEmployee,
+    incomeTax: d.incomeTax,
+    net: d.net,
+  });
   const zeroSettlement = d.paidAmount != null && D(d.paidAmount).isZero() && d.settlementEvidenceVersion === 2;
   const header = pageHeader(
     {
@@ -124,8 +139,11 @@ export function renderPayslipHtml(d: PayslipData): string {
       variant: "gray",
       fields: [
         { label: "طريقة الأجر", value: d.payTypeLabel },
-        ...(d.baseSalary != null && D(d.baseSalary).gt(0)
-          ? [{ label: "الراتب الأساس", value: `${fmt(d.baseSalary)} د.ع` }]
+        ...(D(breakdown.baseWage).gt(0)
+          ? [{ label: "الأجر الأساس / أجر الحضور", value: `${fmt(breakdown.baseWage)} د.ع` }]
+          : []),
+        ...(D(breakdown.allowances).gt(0)
+          ? [{ label: "منه المخصصات (ضمن الإجمالي)", value: `${fmt(breakdown.allowances)} د.ع` }]
           : []),
         ...(d.hours != null && D(d.hours).gt(0) ? [{ label: "الساعات المستحقّة", value: `${fmt(d.hours)} ساعة` }] : []),
         ...(d.paymentMethod ? [{ label: "طريقة الصرف", value: d.paymentMethod }] : []),
@@ -135,26 +153,30 @@ export function renderPayslipHtml(d: PayslipData): string {
   ]);
 
   const earnings = [
-    line("الأجر الأساس والمخصّصات", d.gross, "earn"),
-    line("عمل إضافي", d.overtime, "earn"),
-    line("عمولة مبيعات", d.commission, "earn"),
+    line("الأجر الإجمالي (يشمل المخصصات)", breakdown.gross, "earn"),
+    line("عمل إضافي", breakdown.overtime, "earn"),
+    line("عمولة مبيعات", breakdown.commission, "earn"),
   ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: string }>;
 
   const deducts = [
-    line("استقطاع سلفة", d.advanceDeduction, "deduct"),
-    line("ضمان اجتماعي (حصة الموظف)", d.socialSecurityEmployee, "deduct"),
-    line("ضريبة الدخل", d.incomeTax, "deduct"),
+    line("استقطاع سلفة", breakdown.advanceDeduction, "deduct"),
+    line("ضمان اجتماعي (حصة الموظف)", breakdown.socialSecurityEmployee, "deduct"),
+    line("ضريبة الدخل", breakdown.incomeTax, "deduct"),
+    line("خفض الأجر وخصومات أخرى", breakdown.otherDeductions, "deduct"),
   ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: string }>;
 
-  // الفارق بين إجمالي الاستقطاع والبنود المسمّاة = خصومات أخرى (إجازة بلا راتب…)
-  const namedDeduct = deducts.reduce((sum, item) => sum.plus(D(item._n)), D(0));
-  const otherDeduct = round2(D(d.deductions ?? 0).minus(namedDeduct));
-  if (otherDeduct.gt(0)) {
-    const amount = otherDeduct.toFixed(2);
-    deducts.push({ bandLabel: "خصومات أخرى (إجازة/غياب)", amount: fmt(amount), _n: amount });
+  const earningRows = earnings.map((earning) => ({
+    band: earning.bandLabel,
+    earn: earning.amount,
+    deduct: "—",
+  }));
+  if (D(breakdown.allowances).gt(0)) {
+    earningRows.splice(1, 0, {
+      band: "منه المخصصات (معلومة ضمن الإجمالي)",
+      earn: fmt(breakdown.allowances),
+      deduct: "—",
+    });
   }
-
-  const totalEarn = round2(earnings.reduce((sum, item) => sum.plus(D(item._n)), D(0))).toFixed(2);
 
   const table = docTableV2(
     [
@@ -163,16 +185,25 @@ export function renderPayslipHtml(d: PayslipData): string {
       { key: "deduct", label: "استقطاع", width: 130, color: "#B42318" },
     ],
     [
-      ...earnings.map((e) => ({ band: e.bandLabel, earn: e.amount, deduct: "—" })),
+      ...earningRows,
       ...deducts.map((x) => ({ band: x.bandLabel, earn: "—", deduct: `−${x.amount}` })),
       {
         band: "المجموع",
-        earn: fmt(String(totalEarn)),
-        deduct: D(d.deductions).gt(0) ? `−${fmt(d.deductions)}` : "—",
+        earn: fmt(breakdown.totalEarnings),
+        deduct: D(breakdown.totalDeductions).gt(0) ? `−${fmt(breakdown.totalDeductions)}` : "—",
       },
     ],
     { hideIndex: true },
   );
+
+  const equationBox = `<div style="margin-top:8px;padding:8px 14px;border:1px solid #CBD5E1;border-radius:4px;background:#F8FAFC">
+    <div style="font-size:10.5px;font-weight:800;color:#334155">معادلة الصافي</div>
+    <div style="margin-top:3px;font-size:10px;color:#475569">الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</div>
+    <div dir="ltr" style="margin-top:3px;font-size:10.5px;font-weight:700;text-align:left">${fmt(breakdown.gross)} + ${fmt(breakdown.overtime)} + ${fmt(breakdown.commission)} − ${fmt(breakdown.totalDeductions)} = ${fmt(breakdown.expectedNet)} د.ع</div>
+    ${!breakdown.deductionComponentsValid ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: مكونات الاستقطاع المسماة تتجاوز إجمالي الاستقطاع المحفوظ.</div>` : ""}
+    ${!breakdown.allowancesValid ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: المخصصات لا تطابق الأجر الإجمالي المحفوظ.</div>` : ""}
+    ${!breakdown.netMatches ? `<div style="margin-top:4px;color:#B42318;font-size:9.75px">تنبيه: الصافي المحفوظ (${fmt(breakdown.net)}) لا يطابق المعادلة.</div>` : ""}
+  </div>`;
 
   // ملاحظة الاحتساب — مصدرها بند المسيّر نفسه (تفصيل الأجر بالحضور/الإجازة).
   const noteBox = d.note
@@ -182,8 +213,8 @@ export function renderPayslipHtml(d: PayslipData): string {
       </div>`
     : "";
 
-  const grand = grandTotalBar("صافي المستحقّ", fmt(d.net), { big: true });
-  const tafqit = tafqitLine(formatArabicMoneyWords(d.net));
+  const grand = grandTotalBar("صافي المستحقّ", fmt(breakdown.net), { big: true });
+  const tafqit = tafqitLine(formatArabicMoneyWords(breakdown.net));
 
   const settlement =
     d.paidAmount != null
@@ -259,7 +290,7 @@ export function renderPayslipHtml(d: PayslipData): string {
   </div>
   <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">${zeroSettlement ? "تسوية المستحق بفرق التقريب؛ لم يقع صرف نقدي ولا يوجد إيصال صرف." : "هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف."}</div>`;
 
-  return `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${settlement}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
+  return `${pageBodyOpen()}${header}${cards}${table}${equationBox}${noteBox}${grand}${tafqit}${settlement}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
     d.settings,
     { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` },
   )}`;

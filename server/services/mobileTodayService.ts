@@ -10,6 +10,7 @@ import {
 import type { DB } from "../db";
 import { resolveSuperAppAuthority } from "./superAppAuthority";
 import { requireDb } from "./tx";
+import { activeEmployeeSalaryPaidAtSql } from "./payroll/queries";
 
 /**
  * A deliberately small, role-safe contract for the first mobile screen.
@@ -212,6 +213,7 @@ export async function getMobileToday(input: {
       .select({
         period: payrollRuns.period,
         status: payrollRuns.status,
+        paidAt: activeEmployeeSalaryPaidAtSql(),
       })
       .from(payrollItems)
       .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
@@ -263,7 +265,7 @@ export async function getMobileToday(input: {
       payroll: payroll
         ? {
             period: payroll.period,
-            status: payroll.status as "approved" | "paid",
+            status: payroll.paidAt == null ? "approved" : "paid",
             action: { destination: "SELF_PAYROLL", requiresStepUp: true },
           }
         : null,
@@ -354,7 +356,7 @@ export async function getMobilePayslip(input: {
     .select({
       period: payrollRuns.period,
       status: payrollRuns.status,
-      paidAt: payrollRuns.paidAt,
+      paidAt: activeEmployeeSalaryPaidAtSql(),
       payType: payrollItems.payType,
       hours: payrollItems.hours,
       gross: payrollItems.gross,
@@ -384,7 +386,7 @@ export async function getMobilePayslip(input: {
       payslip: row
         ? {
             period: row.period,
-            status: row.status as "approved" | "paid",
+            status: row.paidAt == null ? "approved" : "paid",
             paidAt: row.paidAt,
             payType: row.payType,
             hours: row.hours == null ? null : String(row.hours),
