@@ -14,7 +14,9 @@ interface BiometricReadinessBannerProps {
   period: string;
 }
 
-export function BiometricReadinessBanner({ period }: BiometricReadinessBannerProps) {
+export function BiometricReadinessBanner({
+  period,
+}: BiometricReadinessBannerProps) {
   const readiness = trpc.payroll.biometricReadiness.useQuery(
     { period },
     { enabled: Boolean(period && /^\d{4}-\d{2}$/.test(period)) },
@@ -69,10 +71,11 @@ export function BiometricReadinessBanner({ period }: BiometricReadinessBannerPro
 
   if (data.ready) {
     return (
-      <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5 text-xs text-emerald-800 dark:text-emerald-300">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5 text-xs text-emerald-800 dark:text-emerald-300">
         <span className="flex items-center gap-1.5">
           <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
-          البصمات مطابقة وجاهزة للتوليد (لا توجد بصمات معلقة أو مجهولة).
+          حضور الشهر جاهز للمراجعة النهائية عند التوليد (لا توجد بصمات معلقة أو
+          مجهولة أو أيام مفتوحة).
         </span>
         <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
           {data.connectedDevicesCount > 0 ? (
@@ -92,8 +95,11 @@ export function BiometricReadinessBanner({ period }: BiometricReadinessBannerPro
   }
 
   return (
-    <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-900 dark:text-amber-200">
-      <div className="flex items-center justify-between gap-2">
+    <div
+      aria-live="polite"
+      className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-900 dark:text-amber-200"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 font-medium">
           <AlertTriangle className="size-4 shrink-0 text-amber-600" />
           تنبيه جاهزية البصمات لشهر {period}:
@@ -106,7 +112,9 @@ export function BiometricReadinessBanner({ period }: BiometricReadinessBannerPro
           onClick={() => processFolds.mutate()}
           disabled={processFolds.isPending}
         >
-          <RefreshCcw className={`size-3 ${processFolds.isPending ? "animate-spin" : ""}`} />
+          <RefreshCcw
+            className={`size-3 ${processFolds.isPending ? "animate-spin" : ""}`}
+          />
           {processFolds.isPending ? "جارٍ المعالجة…" : "مزامنة البصمات الآن"}
         </Button>
       </div>
@@ -114,20 +122,59 @@ export function BiometricReadinessBanner({ period }: BiometricReadinessBannerPro
       <ul className="space-y-1 pr-5 list-disc text-[11px] text-amber-800 dark:text-amber-300">
         {data.pendingPunchesCount > 0 && (
           <li>
-            يوجد <b>{data.pendingPunchesCount}</b> بصمة معلّقة بانتظار الطيّ إلى سجل الحضور.
+            يوجد <b>{data.pendingPunchesCount}</b> بصمة من هذا الشهر بانتظار
+            المزامنة إلى سجل الحضور.
           </li>
         )}
         {data.unmappedPunchesCount > 0 && (
           <li>
-            يوجد <b>{data.unmappedPunchesCount}</b> بصمة واردة في هذا الشهر لمستخدمين غير مربوطين بموظفين.
+            يوجد <b>{data.unmappedPunchesCount}</b> بصمة واردة في هذا الشهر
+            لمستخدمين غير مربوطين بموظفين.{" "}
+            <a className="underline underline-offset-2" href="/hr?tab=devices">
+              مراجعة ربط مستخدمي الأجهزة
+            </a>
           </li>
         )}
         {data.openDaysCount > 0 && (
           <li>
-            يوجد <b>{data.openDaysCount}</b> يوم عمل مفتوح (دخول بلا انصراف) لموظفين خلال الشهر.
+            يوجد <b>{data.openDaysCount}</b> يوم عمل مفتوح لدى{" "}
+            <b>{data.openEmployeesCount}</b> موظف.
           </li>
         )}
       </ul>
+      {data.openDays.length > 0 && (
+        <div className="space-y-2">
+          <ul
+            aria-label="الموظفون وأيام الحضور المفتوحة"
+            className="max-h-48 space-y-2 overflow-y-auto rounded border border-current/20 p-2"
+          >
+            {data.openDays.map((day) => (
+              <li key={day.attendanceId} className="space-y-1">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                  <b>{day.employeeName}</b>
+                  <time dateTime={day.date} dir="ltr" className="tabular-nums">
+                    {day.date}
+                  </time>
+                </div>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                  <span>{day.reason}</span>
+                  <a
+                    className="underline underline-offset-2"
+                    href={`/hr?tab=attendance&employeeId=${day.employeeId}&period=${encodeURIComponent(period)}&range=month`}
+                    aria-label={`مراجعة حضور ${day.employeeName} بتاريخ ${day.date}`}
+                  >
+                    مراجعة الحضور
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px]">
+            صحّح أوقات الانصراف من سجل الحضور، ثم أعد التوليد. يُعاد فحص الشهر
+            بعد مزامنة البصمات.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

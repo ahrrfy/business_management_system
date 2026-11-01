@@ -266,6 +266,12 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_advrep_alloc_reversal: { msg: "تخصيص سداد السلفة معكوس مسبقاً." },
   uq_advhist_source: { msg: "إثبات التسوية التاريخية للسلفة لهذا المصدر مسجّل مسبقاً." },
   uq_advhist_reverse: { msg: "إثبات التسوية التاريخية للسلفة معكوس مسبقاً." },
+  uq_advperiod_source: {
+    msg: "تصنيف شهر السلفة بهذه البصمة مسجّل مسبقاً — حدّث السجل ولا تُنشئ تصنيفاً مكرراً.",
+  },
+  uq_advperiod_reverse: {
+    msg: "تصنيف شهر السلفة هذا معكوس مسبقاً — راجع سجل العكس القائم ولا تعكسه مرة ثانية.",
+  },
   uq_asset_client_req: { msg: "طلب إنشاء الأصل مسجّل مسبقاً." },
   uq_maint_client_req: { msg: "طلب صيانة الأصل مسجّل مسبقاً." },
   uq_accrual_obligation_source: { msg: "التزام الاستحقاق لهذا المصدر مسجّل مسبقاً." },
