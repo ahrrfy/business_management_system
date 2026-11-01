@@ -24,6 +24,7 @@ import { requireDb } from "../services/tx";
 import * as loanSvc from "../services/employeeLoanService";
 import { getEmployeeAdvanceCapacity } from "../services/employeeAdvanceCapacityService";
 import { baghdadToday } from "../services/businessDay";
+import { activeEmployeeSalaryPaidAtSql } from "../services/payroll/queries";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -150,7 +151,7 @@ export const payrollRouter = router({
           period: payrollRuns.period,
           runStatus: payrollRuns.status,
           accrualDate: payrollRuns.accrualDate,
-          paidAt: payrollRuns.paidAt,
+          paidAt: activeEmployeeSalaryPaidAtSql(),
           revisionNo: payrollRuns.revisionNo,
           legalPolicyHash: payrollRuns.legalPolicyHash,
           approvalSnapshotHash: payrollRuns.approvalSnapshotHash,
@@ -727,6 +728,7 @@ export const payrollRouter = router({
         employeeId: z.number().int().positive(),
         branchId: z.number().int().positive(),
         amount: moneyStr,
+        installmentsCount: z.number().int().min(1).max(60).nullish(),
         monthlyDeduction: moneyStr.nullish(),
         note: z.string().trim().max(255).nullish(),
         // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — اختياريّ، نفس سقف voucherRouter.
@@ -745,7 +747,10 @@ export const payrollRouter = router({
         },
         {
           employeeId: input.employeeId,
+          branchId: input.branchId,
           amount: input.amount,
+          installmentsCount: input.installmentsCount,
+          monthlyDeduction: input.monthlyDeduction,
           reason: input.note,
           clientRequestId: input.clientRequestId,
         },

@@ -195,7 +195,7 @@ describe("superApp personal payroll isolation", () => {
     expect(today.personal.payroll).toEqual(
       expect.objectContaining({
         period: "2026-07",
-        status: "paid",
+        status: "approved",
         action: { destination: "SELF_PAYROLL", requiresStepUp: true },
       }),
     );

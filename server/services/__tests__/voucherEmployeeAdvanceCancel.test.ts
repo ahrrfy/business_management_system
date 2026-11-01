@@ -24,7 +24,7 @@ async function requestAndApproveAdvance(clientRequestId: string) {
       employeeId: 1,
       branchId: 1,
       amount: "100000.00",
-      monthlyDeduction: "25000.00",
+      monthlyDeduction: "100000.00",
       note: "اختبار إلغاء ذري",
       clientRequestId,
     },

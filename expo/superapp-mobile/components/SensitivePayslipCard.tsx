@@ -6,6 +6,7 @@ import { colors, radius, space } from "@/constants/theme";
 import { exportPersonalPayslipPdf } from "@/lib/payslipExport";
 import { formatIqd } from "@/lib/format";
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
+import { buildPayslipBreakdown } from "@/lib/payslipBreakdown";
 import {
   revealNativeMobilePayslip,
   type MobileToday,
@@ -20,19 +21,6 @@ function statusText(status: "approved" | "paid"): string {
 
 function amount(value: string): string {
   return formatIqd(value);
-}
-
-function addDecimalStrings(left: string, right: string): string {
-  const parse = (value: string) => {
-    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(value);
-    if (!match) throw new Error("قيمة المبلغ غير صالحة للعرض.");
-    const scale = 4;
-    return BigInt(match[1]) * 10_000n + BigInt((match[2] ?? "").padEnd(scale, "0"));
-  };
-  const total = parse(left) + parse(right);
-  const whole = total / 10_000n;
-  const fraction = (total % 10_000n).toString().padStart(4, "0").replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole.toString();
 }
 
 /**
@@ -175,18 +163,54 @@ export function SensitivePayslipCard({
     );
   }
 
+  const breakdown = buildPayslipBreakdown({
+    gross: payslip.gross,
+    allowances: payslip.allowances,
+    overtime: payslip.overtime,
+    commission: payslip.commission,
+    deductions: payslip.deductions,
+    advanceDeduction: payslip.advanceDeduction,
+    socialSecurityEmployee: payslip.socialSecurityEmployee,
+    incomeTax: payslip.incomeTax,
+    net: payslip.net,
+  });
+  const hasAmount = (value: string) => value !== "0.00";
+
   return (
     <Card>
       <Text style={styles.title}>قسيمة {payslip.period} · {statusText(payslip.status)}</Text>
       <View style={styles.amountBlock}>
         <Text style={styles.amountLabel}>صافي الراتب</Text>
-        <Text style={styles.amount}>{amount(payslip.net)}</Text>
+        <Text style={styles.amount}>{amount(breakdown.net)}</Text>
       </View>
       <View style={styles.lines}>
-        <PayslipLine label="الأجر الإجمالي" value={payslip.gross} />
-        <PayslipLine label="البدلات" value={payslip.allowances} />
-        <PayslipLine label="الإضافي والعمولات" value={addDecimalStrings(payslip.overtime, payslip.commission)} />
-        <PayslipLine label="الاستقطاعات" value={payslip.deductions} />
+        <PayslipLine label="الأجر الإجمالي (يشمل المخصصات)" value={breakdown.gross} />
+        {hasAmount(breakdown.allowances) && (
+          <PayslipLine label="منه المخصصات (ضمن الإجمالي)" value={breakdown.allowances} />
+        )}
+        {hasAmount(breakdown.overtime) && <PayslipLine label="الأجر الإضافي" value={breakdown.overtime} />}
+        {hasAmount(breakdown.commission) && <PayslipLine label="العمولات" value={breakdown.commission} />}
+        {hasAmount(breakdown.advanceDeduction) && (
+          <PayslipLine label="استقطاع السلف" value={breakdown.advanceDeduction} />
+        )}
+        {hasAmount(breakdown.otherDeductions) && (
+          <PayslipLine label="خفض الأجر وخصومات أخرى" value={breakdown.otherDeductions} />
+        )}
+        {hasAmount(breakdown.socialSecurityEmployee) && (
+          <PayslipLine label="ضمان الموظف" value={breakdown.socialSecurityEmployee} />
+        )}
+        {hasAmount(breakdown.incomeTax) && <PayslipLine label="ضريبة الدخل" value={breakdown.incomeTax} />}
+        <PayslipLine label="إجمالي الاستقطاع" value={breakdown.totalDeductions} />
+      </View>
+      <View style={styles.equation}>
+        <Text style={styles.equationTitle}>معادلة الصافي</Text>
+        <Text style={styles.equationText}>الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</Text>
+        <Text style={styles.equationNumbers}>
+          {amount(breakdown.gross)} + {amount(breakdown.overtime)} + {amount(breakdown.commission)} − {amount(breakdown.totalDeductions)} = {amount(breakdown.expectedNet)}
+        </Text>
+        {(!breakdown.allowancesValid || !breakdown.deductionComponentsValid || !breakdown.netMatches) && (
+          <Text style={styles.warning}>توجد مكونات غير متطابقة في لقطة القسيمة. راجع قسم الموارد البشرية.</Text>
+        )}
       </View>
       <Pressable
         accessibilityLabel="تصدير قسيمة الراتب الشخصية PDF"
@@ -231,6 +255,11 @@ const styles = StyleSheet.create({
   line: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between" },
   lineLabel: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 13 },
   lineValue: { color: colors.ink, fontFamily: "Cairo_600SemiBold", fontSize: 13 },
+  equation: { backgroundColor: colors.surfaceMuted, borderRadius: radius.field, marginTop: space.md, padding: space.md },
+  equationTitle: { color: colors.ink, fontFamily: "Cairo_700Bold", fontSize: 12, textAlign: "right" },
+  equationText: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 11, lineHeight: 19, marginTop: space.xxs, textAlign: "right" },
+  equationNumbers: { color: colors.ink, fontFamily: "Cairo_600SemiBold", fontSize: 11, marginTop: space.xxs, textAlign: "left" },
+  warning: { color: colors.danger, fontFamily: "Cairo_600SemiBold", fontSize: 11, lineHeight: 19, marginTop: space.sm, textAlign: "right" },
   export: { alignItems: "center", borderColor: colors.brand, borderRadius: radius.field, borderWidth: 1, justifyContent: "center", marginTop: space.md, minHeight: 48, paddingHorizontal: space.md },
   exportText: { color: colors.brand, fontFamily: "Cairo_700Bold", fontSize: 13, textAlign: "center" },
   hint: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 11, lineHeight: 19, marginTop: space.sm, textAlign: "right" },

@@ -159,7 +159,7 @@ async function returnPaidSalary(runId: number) {
 describe("advancesService — المنح", () => {
   it("منح سلفة يُصدر سند صرف OUT حقيقياً (خزينة) بقيد PAYMENT_OUT وسلفة ACTIVE بكامل الرصيد", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", note: "زواج", attachmentUrl: "https://files.example/receipt-1.jpg" }, ACTOR);
+    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "300000", note: "زواج", attachmentUrl: "https://files.example/receipt-1.jpg" }, ACTOR);
 
     expect(adv.status).toBe("ACTIVE");
     expect(Number(adv.amount)).toBe(300000);
@@ -223,6 +223,44 @@ describe("advancesService — المنح", () => {
     expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"))).length).toBe(1);
   });
 
+  it("يرفض اعتماد سند سلفة بعد انتهاء شهر إنشائه ولا ينسبه إلى الشهر الجاري", async () => {
+    const emp = await seedEmployee();
+    const pending = await grantAdvanceService(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "150000",
+        clientRequestId: "expired-voucher-request-month",
+      },
+      ACTOR,
+    );
+    const requestCreatedAt = new Date(
+      Date.UTC(TEST_YEAR, TEST_MONTH - 2, 15, 9, 0, 0),
+    );
+    await db()
+      .update(s.receipts)
+      .set({ createdAt: requestCreatedAt })
+      .where(eq(s.receipts.id, Number(pending.receiptId)));
+
+    await expect(
+      approveVoucher(Number(pending.receiptId), APPROVER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, Number(pending.receiptId)));
+    expect(receipt.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(receipt.status).toBe("PENDING");
+    expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")),
+    ).toHaveLength(0);
+  });
+
   it("لا مُرفق إلزامي: سلفة بمبلغ كبير بلا مُرفق تُمنَح (٣١/٧ — أُلغيت عتبة المُرفق)", async () => {
     const emp = await seedEmployee();
     const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "250000" }, ACTOR);
@@ -230,20 +268,20 @@ describe("advancesService — المنح", () => {
     expect((await db().select().from(s.employeeAdvances)).length).toBe(1);
   });
 
-  it("لا سلفة لموظف منتهي الخدمة، والخصم الشهري لا يتجاوز المبلغ", async () => {
+  it("لا سلفة لموظف منتهي الخدمة، والخصم الشهري يجب أن يساوي المبلغ", async () => {
     const emp = await seedEmployee();
     await db().update(s.employees).set({ employmentStatus: "terminated" }).where(eq(s.employees.id, emp.id));
     await expect(grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR)).rejects.toThrow();
 
     const emp2 = await createEmployee({ firstName: "زينب", lastName: "الموسوي", payType: "monthly", salary: "800000", allowances: "0", branchId: 1 });
-    await expect(grantAdvance({ employeeId: emp2!.id, branchId: 1, amount: "100000", monthlyDeduction: "150000" }, ACTOR)).rejects.toThrow(/لا يتجاوز/);
+    await expect(grantAdvance({ employeeId: emp2!.id, branchId: 1, amount: "100000", monthlyDeduction: "150000" }, ACTOR)).rejects.toThrow(/يساوي/);
   });
 });
 
 describe("advancesService — دمج الرواتب (توليد → دفع → تسوية)", () => {
   it("التوليد يملأ advanceDeduction ضمن deductions وnet ينقص", async () => {
     const emp = await seedEmployee("1000000");
-    await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
+    await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "300000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
 
     const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
     const item = run!.items[0];
@@ -261,7 +299,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
         employeeId: emp.id,
         branchId: 1,
         amount: "200000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "200000",
       },
       ACTOR,
     );
@@ -278,7 +316,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
 
   it("سقف الخصم = remaining (الشهر الأخير يخصم البقية فقط)", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "150000", monthlyDeduction: "100000" }, ACTOR);
+    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "150000", monthlyDeduction: "150000" }, ACTOR);
 
     await db()
       .update(s.employeeAdvances)
@@ -305,6 +343,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     expect(Number(paid!.items[0].net)).toBe(750000);
     const [row] = await db().select().from(s.employeeAdvances);
     expect(row.status).toBe("SETTLED");
+    expect(row.monthlyDeduction).toBe("250000.00");
   });
 
   it("قيد الدفع PAYMENT_OUT بصافي البند بعد خصم السلفة (النقد الخارج فعلاً)", async () => {
@@ -314,7 +353,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
         employeeId: emp.id,
         branchId: 1,
         amount: "300000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "300000",
         attachmentUrl: "https://files.example/receipt.jpg",
       },
       ACTOR,
@@ -337,7 +376,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
         employeeId: emp.id,
         branchId: 1,
         amount: "300000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "300000",
         attachmentUrl: "https://files.example/receipt.jpg",
       },
       ACTOR,
@@ -390,7 +429,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
         employeeId: emp.id,
         branchId: 1,
         amount: "300000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "300000",
         attachmentUrl: "https://files.example/receipt.jpg",
       },
       ACTOR,
@@ -434,7 +473,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
         employeeId: emp.id,
         branchId: 1,
         amount: "300000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "300000",
         attachmentUrl: "https://files.example/receipt.jpg",
       },
       ACTOR,
@@ -526,7 +565,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
         employeeId: emp.id,
         branchId: 1,
         amount: "200000",
-        monthlyDeduction: "100000",
+        monthlyDeduction: "200000",
       },
       ACTOR,
     );
@@ -705,7 +744,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
         employeeId: emp.id,
         branchId: 1,
         amount: "200000",
-        monthlyDeduction: "50000",
+        monthlyDeduction: "200000",
       },
       ACTOR,
     );

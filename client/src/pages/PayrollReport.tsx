@@ -70,6 +70,16 @@ export default function PayrollReport() {
   const me = trpc.auth.me.useQuery();
   const ownerAccess = me.data?.isOwner === true;
   const runsQ = trpc.payroll.list.useQuery(undefined, { enabled: ownerAccess });
+  // استعلامٌ إضافيّ additive: يبقي عقد payroll.list كما هو ويجلب تجميع بنود السلف
+  // من payrollItems دون N+1. الاختيارية تحفظ توافق اختبارات/مستهلكين قدامى يحقنون mock جزئياً.
+  const advanceSummaryQ = (
+    trpc.payroll.summaryReport as
+      | typeof trpc.payroll.summaryReport
+      | undefined
+  )?.useQuery(
+    { period: period || undefined },
+    { enabled: ownerAccess },
+  );
   const obligationsQ = trpc.payroll.obligations.useQuery(undefined, { enabled: ownerAccess });
   const ledgerQ = trpc.payroll.financialLedger.useQuery(period ? { period } : undefined, { enabled: ownerAccess });
   const rows = useMemo(
@@ -92,6 +102,16 @@ export default function PayrollReport() {
   const outstanding = summarizeObligations(obligations.filter((row) => row.status === "OPEN" || row.status === "PARTIAL"));
   const accruedRows = rows.filter((row) => row.status === "approved" || row.status === "paid");
   const netPaidByRun = useMemo(() => new Map(rows.map((run) => [Number(run.id), run.totalActualSalaryPaid])), [rows]);
+  const advanceDeductionByRun = useMemo(
+    () =>
+      new Map(
+        (advanceSummaryQ?.data?.rows ?? []).map((run) => [
+          Number(run.id),
+          run.totalAdvanceDeduction,
+        ]),
+      ),
+    [advanceSummaryQ?.data?.rows],
+  );
   const netPaid = round2(rows.reduce(
     (total, row) => total.plus(D(netPaidByRun.get(Number(row.id)) ?? 0)),
     D(0),
@@ -108,6 +128,8 @@ export default function PayrollReport() {
     ssEmployee: sum(accruedRows, (row) => row.totalSocialSecurityEmployee),
     ssEmployer: sum(accruedRows, (row) => row.totalSocialSecurityEmployer),
     eos: sum(accruedRows, (row) => row.totalEndOfServiceAccrual),
+    advanceDeduction:
+      advanceSummaryQ?.data?.totals.totalAdvanceDeduction ?? "0.00",
   };
   const legalOutstanding = outstanding
     .filter((row) => row.kind !== "SALARY_NET")
@@ -116,6 +138,7 @@ export default function PayrollReport() {
   const kpis: KpiItem[] = [
     { label: "المسيّرات", value: totals.runs, hint: `${totals.accruedRuns} معتمد/مدفوع` },
     { label: "الأساسي والمخصصات", value: fmtAr(totals.gross), tone: "info" },
+    { label: "استقطاع السلف في المعروض", value: fmtAr(totals.advanceDeduction), tone: "warning" },
     { label: "صافي مدفوع فعلاً", value: fmtAr(totals.netPaid), tone: "positive", hint: `${runsWithPayment} مسيّر` },
     { label: "التزامات قانونية مفتوحة", value: fmtAr(legalOutstanding.toFixed(2)), tone: legalOutstanding.gt(0) ? "warning" : "default" },
   ];
@@ -127,13 +150,14 @@ export default function PayrollReport() {
     { id: "employees", header: "الموظفون", accessorFn: (row) => Number(row.employeeCount), cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtInt(row.original.employeeCount)}</span> },
     { id: "gross", header: "الأساسي والمخصصات", accessorFn: (row) => row.totalGross, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.totalGross)}</span> },
     { id: "deductions", header: "الاستقطاعات", accessorFn: (row) => row.totalDeductions, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums text-money-negative">{fmtAr(row.original.totalDeductions)}</span> },
+    { id: "advanceDeduction", header: "منها سلف", accessorFn: (row) => advanceDeductionByRun.get(Number(row.id)) ?? "0.00", sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums text-money-negative">{fmtAr(advanceDeductionByRun.get(Number(row.original.id)) ?? "0.00")}</span> },
     { id: "net", header: "صافي الموظفين", accessorFn: (row) => row.totalNet, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums font-medium">{fmtAr(row.original.totalNet)}</span> },
     { id: "netPaid", header: "المدفوع فعلاً", accessorFn: (row) => netPaidByRun.get(Number(row.id)) ?? "0", sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums text-money-positive">{fmtAr(netPaidByRun.get(Number(row.original.id)) ?? "0")}</span> },
     { id: "tax", header: "ضريبة", accessorFn: (row) => row.totalIncomeTax, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.totalIncomeTax)}</span> },
     { id: "ss", header: "ضمان الشركة", accessorFn: (row) => row.totalSocialSecurityEmployer, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.totalSocialSecurityEmployer)}</span> },
     { id: "eos", header: "نهاية الخدمة", accessorFn: (row) => row.totalEndOfServiceAccrual, sortingFn: decimalSort, cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.totalEndOfServiceAccrual)}</span> },
     { header: "تاريخ الاستحقاق", accessorKey: "accrualDate", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.accrualDate ?? "—"}</span> },
-  ], [netPaidByRun]);
+  ], [advanceDeductionByRun, netPaidByRun]);
 
   const ledgerCols = useMemo<ColumnDef<LedgerRow>[]>(() => [
     { header: "الحركة", accessorKey: "movementType", cell: ({ row }) => <span>{MOVEMENT_LABEL[row.original.movementType]}</span> },
@@ -185,6 +209,7 @@ export default function PayrollReport() {
       overtime: toExcelMoney(row.totalOvertime),
       commission: toExcelMoney(row.totalCommission),
       deductions: toExcelMoney(row.totalDeductions),
+      advanceDeduction: toExcelMoney(advanceDeductionByRun.get(Number(row.id))),
       net: toExcelMoney(row.totalNet),
       netPaid: toExcelMoney(netPaidByRun.get(Number(row.id))),
       tax: toExcelMoney(row.totalIncomeTax),
@@ -219,7 +244,8 @@ export default function PayrollReport() {
           { key: "revisionNo", header: "المراجعة" }, { key: "accrualDate", header: "تاريخ الاستحقاق" },
           { key: "employeeCount", header: "عدد الموظفين" }, { key: "gross", header: "الأساسي والمخصصات", money: true },
           { key: "overtime", header: "العمل الإضافي", money: true }, { key: "commission", header: "العمولة", money: true },
-          { key: "deductions", header: "الاستقطاعات", money: true }, { key: "net", header: "صافي الموظفين", money: true },
+          { key: "deductions", header: "الاستقطاعات", money: true }, { key: "advanceDeduction", header: "منها استقطاع سلف", money: true },
+          { key: "net", header: "صافي الموظفين", money: true },
           { key: "netPaid", header: "المدفوع فعلاً", money: true }, { key: "tax", header: "ضريبة الدخل", money: true },
           { key: "ssEmployee", header: "ضمان الموظف", money: true }, { key: "ssEmployer", header: "ضمان رب العمل", money: true },
           { key: "eos", header: "استحقاق نهاية الخدمة", money: true }, { key: "legalPolicyHash", header: "بصمة السياسة" },
@@ -250,7 +276,8 @@ export default function PayrollReport() {
       columns: [
         { key: "period", label: "الشهر" }, { key: "status", label: "الحالة" },
         { key: "revision", label: "المراجعة" }, { key: "employees", label: "الموظفون", align: "left" },
-        { key: "gross", label: "الأساسي والمخصصات", align: "left" }, { key: "net", label: "الصافي", align: "left" },
+        { key: "gross", label: "الأساسي والمخصصات", align: "left" }, { key: "advanceDeduction", label: "استقطاع السلف", align: "left" },
+        { key: "net", label: "الصافي", align: "left" },
         { key: "netPaid", label: "المدفوع فعلاً", align: "left" },
         { key: "tax", label: "الضريبة", align: "left" }, { key: "ss", label: "ضمان الشركة", align: "left" },
         { key: "eos", label: "نهاية الخدمة", align: "left" }, { key: "accrual", label: "الاستحقاق" },
@@ -258,12 +285,14 @@ export default function PayrollReport() {
       rows: rows.map((row) => ({
         period: row.period, status: payrollStatusLabel(row.status), revision: `R${row.revisionNo}`,
         employees: String(row.employeeCount), gross: fmtAr(row.totalGross), net: fmtAr(row.totalNet),
+        advanceDeduction: fmtAr(advanceDeductionByRun.get(Number(row.id)) ?? "0.00"),
         netPaid: fmtAr(netPaidByRun.get(Number(row.id)) ?? "0"),
         tax: fmtAr(row.totalIncomeTax), ss: fmtAr(row.totalSocialSecurityEmployer), eos: fmtAr(row.totalEndOfServiceAccrual), accrual: row.accrualDate ?? "—",
       })),
       summary: [
         { label: "عدد المسيّرات", value: String(totals.runs) },
         { label: "إجمالي صافي الموظفين", value: fmtAr(totals.net) },
+        { label: "إجمالي استقطاع السلف في المعروض", value: fmtAr(totals.advanceDeduction) },
         { label: "صافي مدفوع فعلاً", value: fmtAr(totals.netPaid), large: true, bold: true },
         { label: "التزامات قانونية مفتوحة", value: fmtAr(legalOutstanding.toFixed(2)) },
       ],
@@ -321,7 +350,7 @@ export default function PayrollReport() {
     exportDisabled={!rows.length && !ledger.length} printDisabled={!rows.length}
     filters={<div className="flex flex-wrap items-end gap-3"><div className="flex flex-col gap-1"><label className="text-[11px] text-muted-foreground">الشهر</label><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} className={inputCls} /></div>{period && <button type="button" onClick={() => setPeriod("")} className="h-9 rounded-md px-3 text-xs text-muted-foreground hover:bg-accent">عرض الكل</button>}</div>}
   >
-    {(runsQ.isError || obligationsQ.isError || ledgerQ.isError) ? <ErrorState message="تعذّر تحميل تقرير الرواتب." onRetry={() => { void runsQ.refetch(); void obligationsQ.refetch(); void ledgerQ.refetch(); }} /> : <div className="space-y-4">
+    {(runsQ.isError || obligationsQ.isError || ledgerQ.isError || advanceSummaryQ?.isError) ? <ErrorState message="تعذّر تحميل تقرير الرواتب." onRetry={() => { void runsQ.refetch(); void obligationsQ.refetch(); void ledgerQ.refetch(); void advanceSummaryQ?.refetch(); }} /> : <div className="space-y-4">
       <DataTable columns={cols} data={rows} loading={runsQ.isLoading} emptyText="لا مسيّرات رواتب في هذا النطاق." pageSize={Infinity} />
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {outstanding.map((row) => <div key={row.kind} className="rounded-md border p-3 text-xs"><div className="text-muted-foreground">{OBLIGATION_KIND_LABEL[row.kind]} — متبقٍ</div><div className="mt-1 text-base font-bold tabular-nums" dir="ltr">{fmtAr(row.remaining)} د.ع</div><div className="mt-1 text-muted-foreground">{row.openCount} التزام مفتوح</div></div>)}

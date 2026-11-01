@@ -27,12 +27,22 @@ export interface PayrollSummaryRow {
   employees: number;
   gross: string;
   net: string;
+  /** مجموع استقطاع السلف في بنود هذا المسيّر (ضمن deductions، لا فوقها). */
+  totalAdvanceDeduction: string;
 }
 
 export interface PayrollSummaryResult {
   rows: PayrollSummaryRow[];
   /** `net`/`gross` = كل المسيّرات المعروضة؛ و`*Paid` = المدفوعة فعلاً (ما خرج من الخزينة). */
-  totals: { runs: number; gross: string; net: string; paidRuns: number; grossPaid: string; netPaid: string };
+  totals: {
+    runs: number;
+    gross: string;
+    net: string;
+    paidRuns: number;
+    grossPaid: string;
+    netPaid: string;
+    totalAdvanceDeduction: string;
+  };
 }
 
 /**
@@ -41,7 +51,18 @@ export interface PayrollSummaryResult {
  */
 export async function getPayrollSummary(opts: { period?: string } = {}): Promise<PayrollSummaryResult> {
   const db = getDb();
-  const empty: PayrollSummaryResult = { rows: [], totals: { runs: 0, gross: "0", net: "0", paidRuns: 0, grossPaid: "0", netPaid: "0" } };
+  const empty: PayrollSummaryResult = {
+    rows: [],
+    totals: {
+      runs: 0,
+      gross: "0",
+      net: "0",
+      paidRuns: 0,
+      grossPaid: "0",
+      netPaid: "0",
+      totalAdvanceDeduction: "0",
+    },
+  };
   if (!db) return empty;
 
   const periodCond = opts.period ? sql`WHERE pr.period = ${opts.period}` : sql``;
@@ -56,7 +77,13 @@ export async function getPayrollSummary(opts: { period?: string } = {}): Promise
         CAST(pr.totalGross AS CHAR) AS gross,
         CAST(pr.totalOvertime AS CHAR) AS overtime,
         CAST(pr.totalDeductions AS CHAR) AS deductions,
-        CAST(pr.totalNet AS CHAR) AS net
+        CAST(pr.totalNet AS CHAR) AS net,
+        CAST(COALESCE((
+          SELECT SUM(pi.advanceDeduction)
+          FROM payrollItems pi
+          WHERE pi.runId = pr.id
+            AND pi.revisionNo = pr.revisionNo
+        ), 0) AS CHAR) AS totalAdvanceDeduction
       FROM payrollRuns pr
       ${periodCond}
       ORDER BY pr.period DESC, pr.id DESC
@@ -70,10 +97,12 @@ export async function getPayrollSummary(opts: { period?: string } = {}): Promise
     employees: Number(r.employees ?? 0),
     gross: toDbMoney(money(r.gross ?? 0)),
     net: toDbMoney(money(r.net ?? 0)),
+    totalAdvanceDeduction: toDbMoney(money(r.totalAdvanceDeduction ?? 0)),
   }));
 
   let gross = money(0);
   let net = money(0);
+  let totalAdvanceDeduction = money(0);
   // «المدفوع» يعني ما خرج من الخزينة فعلاً: المسيّرات بحالة paid وحدها. جمعُ المسودّات
   // وغير المدفوعة تحت هذه التسمية كان يُضاعف الرقم تقريباً في أوّل الشهر (مسيّرٌ مدفوع
   // + مسيّرٌ وُلّد لتوّه) فيُطبَع على ورقة الشركة رقمٌ لم يُصرَف نصفُه.
@@ -83,6 +112,9 @@ export async function getPayrollSummary(opts: { period?: string } = {}): Promise
   for (const r of raw) {
     gross = gross.add(money(r.gross ?? 0));
     net = net.add(money(r.net ?? 0));
+    totalAdvanceDeduction = totalAdvanceDeduction.add(
+      money(r.totalAdvanceDeduction ?? 0),
+    );
     if (String(r.status) === "paid") {
       grossPaid = grossPaid.add(money(r.gross ?? 0));
       netPaid = netPaid.add(money(r.net ?? 0));
@@ -99,6 +131,7 @@ export async function getPayrollSummary(opts: { period?: string } = {}): Promise
       paidRuns,
       grossPaid: toDbMoney(grossPaid),
       netPaid: toDbMoney(netPaid),
+      totalAdvanceDeduction: toDbMoney(totalAdvanceDeduction),
     },
   };
 }
