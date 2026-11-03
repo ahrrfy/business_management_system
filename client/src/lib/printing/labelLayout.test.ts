@@ -1,6 +1,4 @@
-// حراسة حلّال ملاءمة الملصق (٢١/٧). القاعدة القاطعة: **لا تختفي أيّ معلومة أساسية** —
-// الاسم الكامل + الباركود + اللون + الوحدة + السعر تظهر دائماً؛ الوحيدان القابلان للإخفاء على
-// المقاس الصغير جداً هما رقم الباركود المقروء والرمز (SKU) — ما لم يطلبه المالك.
+// الملصق الصغير للباركود وحده (٣/١١). المقاسات الأكبر تحفظ المعلومات الأساسية (٢١/٧).
 import { describe, expect, it } from "vitest";
 import {
   solveLabelLayout,
@@ -25,23 +23,29 @@ function content(over: Partial<LabelContent> = {}): LabelContent {
 }
 
 describe("solveLabelLayout — المجموعة الإلزامية لا تختفي أبداً (قاعدة المالك)", () => {
-  it("30×10مم يضغط الاسم والسعر ويُبقي باركوداً بارتفاع 5مم قابلاً للمسح", () => {
+  it("30×10مم يخصص 9مم للقضبان ويزيل جميع النصوص حتى مع تفعيلها", () => {
     const L = solveLabelLayout(
       { widthMm: 30, heightMm: 10 },
-      content({ hasTier: false }),
+      content({ hasAttrs: true, hasBasePrice: true }),
+      { name: true, price: true },
     );
 
-    expect(L.padYMm).toBe(0.3);
-    expect(L.gapMm).toBe(0.15);
-    expect(L.name.show).toBe(true);
-    expect(L.name.lines).toBe(1);
-    expect(L.bottom.showPrice).toBe(true);
-    expect(L.barcode.heightMm).toBeGreaterThanOrEqual(BAR_FLOOR_MM);
+    expect(L.barcodeOnly).toBe(true);
+    expect(L.padYMm).toBe(0.5);
+    expect(L.gapMm).toBe(0);
+    expect(L.name.show).toBe(false);
+    expect(L.attrs.show).toBe(false);
+    expect(L.digits.show).toBe(false);
+    expect(L.bottom.show).toBe(false);
+    expect(L.bottom.showPrice).toBe(false);
+    expect(L.bottom.showSku).toBe(false);
+    expect(L.bottom.showTier).toBe(false);
+    expect(L.barcode.heightMm).toBe(9);
     expect(L.barcode.scannable).toBe(true);
     expect(L.overflow).toBe(false);
   });
 
-  it("30×10مم يُنبّه بصدق إذا كان الاسم أطول من سطره المضغوط", () => {
+  it("الاسم الطويل لا يزاحم الباركود ولا يظهر إنذار قص على ليبل 30×10مم", () => {
     const L = solveLabelLayout(
       { widthMm: 30, heightMm: 10 },
       content({
@@ -50,9 +54,9 @@ describe("solveLabelLayout — المجموعة الإلزامية لا تختف
       }),
     );
 
-    expect(L.name.lines).toBe(1);
+    expect(L.name.show).toBe(false);
     expect(L.barcode.scannable).toBe(true);
-    expect(L.overflow).toBe(true);
+    expect(L.overflow).toBe(false);
   });
 
   it("كل الارتفاعات الجديدة 10→أقل من 15مم تستخدم التخطيط المضغوط وتُبقي الباركود قابلاً للمسح", () => {
@@ -62,9 +66,10 @@ describe("solveLabelLayout — المجموعة الإلزامية لا تختف
         content({ name: "قلم جاف", hasTier: false }),
       );
 
-      expect(L.padYMm).toBe(0.3);
-      expect(L.gapMm).toBe(0.15);
-      expect(L.barcode.heightMm).toBeGreaterThanOrEqual(BAR_FLOOR_MM);
+      expect(L.barcodeOnly).toBe(true);
+      expect(L.padYMm).toBe(0.5);
+      expect(L.gapMm).toBe(0);
+      expect(L.barcode.heightMm).toBe(heightMm - 1);
       expect(L.barcode.scannable).toBe(true);
       expect(L.overflow).toBe(false);
     }
@@ -77,6 +82,7 @@ describe("solveLabelLayout — المجموعة الإلزامية لا تختف
         content({ name: "دفتر مدرسي مسطر ٢٠٠ ورقة غلاف مقوّى" }),
       );
       expect(L.name.show).toBe(true); // الاسم لا يختفي
+      expect(L.barcodeOnly).toBe(false);
       expect(L.bottom.showPrice).toBe(true); // **السعر لا يختفي** (كان يُسقَط — الإصلاح)
       expect(L.barcode.show).toBe(true); // الباركود لا يختفي
       expect(L.barcode.scannable).toBe(true); // ويبقى قابلاً للمسح (≥٥مم)

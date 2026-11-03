@@ -15,7 +15,12 @@ import { CAIRO_FONT, esc, fmtC } from "./brand";
 import { productBarcodeSvg } from "./barcode";
 import { attrsLineText } from "./labelItem";
 import { type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
-import { PRINT_DPMM, type LabelSize } from "./labelSize";
+import { type LabelSize } from "./labelSize";
+import {
+  labelHorizontalPaddingMm,
+  snappedBarcodeWidthMm,
+} from "@shared/barcodeLabelPolicy";
+export { snappedBarcodeWidthMm } from "@shared/barcodeLabelPolicy";
 import {
   labelContentOf,
   labelVerticalSpacing,
@@ -27,25 +32,6 @@ function safeHex(hex?: string | null): string | null {
   return hex && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
 }
 
-/** الهامش الأفقيّ للملصق (مم) — يطابق padding قاعدة `.lbl` أدناه. */
-const PAD_X_MM = 1.5;
-
-/**
- * عرض الباركود الفيزيائيّ (مم) **مثبَّتاً على شبكة نقاط الطابعة**: أكبر عرض وحدةٍ بنقاط 203dpi
- * كاملة (مضاعفات 0.125مم) يتّسع في العرض المتاح. التمديد الكسريّ السابق (fitToBox على كامل
- * العرض) كان يجعل الوحدة ~1.7 نقطة ⇒ يقرّبها تعريف الطابعة قضباناً متفاوتة (1 أو 2 نقطة لنفس
- * العرض الاسميّ) فيختلّ ميزان نسب Code128 — سبب «مرّة تُمسح ومرّة لا» على المقاسات الصغيرة.
- * يعيد 0 إن لم تتّسع ولا وحدة نقطةٍ واحدة (يتكفّل المستدعي بالتمدّد الكامل كملاذ أخير).
- */
-export function snappedBarcodeWidthMm(
-  unitCount: number,
-  labelWidthMm: number,
-): number {
-  const usableMm = labelWidthMm - 2 * PAD_X_MM;
-  const dotsPerModule = Math.floor((usableMm * PRINT_DPMM) / unitCount);
-  return dotsPerModule >= 1 ? (unitCount * dotsPerModule) / PRINT_DPMM : 0;
-}
-
 /**
  * كتلة الباركود المتّجهة: EAN أصليّ للأرقام الصالحة (أكثف ⇒ قضبان أثخن) وإلا Code128، داخل
  * حاويةٍ بعرضٍ فيزيائيٍّ مثبَّتٍ على شبكة النقاط ومتوسّطة أفقياً. فارغة إن تعذّر الترميز.
@@ -53,6 +39,7 @@ export function snappedBarcodeWidthMm(
 function barcodeBoxHtml(
   barcode: string,
   labelWidthMm: number,
+  labelHeightMm: number,
   heightMm: number,
 ): string {
   try {
@@ -68,7 +55,7 @@ function barcodeBoxHtml(
       showText: false,
       fitToBox: true,
     }).svg;
-    const wMm = snappedBarcodeWidthMm(units, labelWidthMm);
+    const wMm = snappedBarcodeWidthMm(units, labelWidthMm, labelHeightMm);
     const sized =
       wMm > 0
         ? `<div class="lbl-bcs" style="width:${wMm}mm">${svg}</div>`
@@ -118,7 +105,7 @@ function labelInnerHtml(
   }
 
   const bcHtml = L.barcode.show
-    ? barcodeBoxHtml(item.barcode, size.widthMm, L.barcode.heightMm)
+    ? barcodeBoxHtml(item.barcode, size.widthMm, size.heightMm, L.barcode.heightMm)
     : "";
   const bnHtml = L.digits.show
     ? `<div class="lbl-bn" style="font-size:${L.digits.fsPt}pt">${esc(item.barcode)}</div>`
@@ -169,8 +156,9 @@ function labelInnerHtml(
 function labelCss(size: LabelSize): string {
   const { widthMm, heightMm } = size;
   const { padYMm, gapMm } = labelVerticalSpacing(heightMm);
+  const padXMm = labelHorizontalPaddingMm(heightMm);
   return `
-    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${padYMm}mm ${PAD_X_MM}mm;
+    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${padYMm}mm ${padXMm}mm;
       display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:${gapMm}mm;
       overflow:hidden;font-family:'Cairo',sans-serif;color:#000;background:#fff;direction:rtl}
     .lbl *{box-sizing:border-box;margin:0;padding:0}

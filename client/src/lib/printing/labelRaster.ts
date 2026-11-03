@@ -15,6 +15,7 @@ import { fmtC } from "./brand";
 import { attrsLineText, ellipsize, wrapTwoLines } from "./labelItem";
 import { labelContentOf, PT_MM, solveLabelLayout } from "./labelLayout";
 import { labelHeightDots, labelWidthDots, PRINT_DPMM, type LabelSize } from "./labelSize";
+import { labelHorizontalPaddingMm } from "@shared/barcodeLabelPolicy";
 
 export interface LabelRenderItem {
   /** اسم العرض الكامل — يشمل اللون/القياس/الوحدة مدموجةً (انظر `labelName`). */
@@ -103,7 +104,7 @@ export async function labelToCanvas(
 
   const MM = PRINT_DPMM; // 8 نقطة/مم
   const pt2px = (pt: number) => Math.max(1, Math.round(pt * PT_MM * MM)); // نقطة→بكسل @203dpi
-  const PADX = Math.round(1.5 * MM); // هامش أفقيّ 1.5مم (يطابق المتّجه)
+  const PADX = Math.round(labelHorizontalPaddingMm(size.heightMm) * MM);
 
   // ارتفاعات الكتل (نقاط) من قرار الحلّال نفسه ⇒ تطابقٌ مع المعاينة المتّجهة.
   const nameH = L.name.show ? Math.round(L.name.heightMm * MM) : 0;

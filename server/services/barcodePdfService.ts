@@ -23,6 +23,12 @@ import {
   buildBatchBarcodePdfFilename,
 } from "@shared/barcodeEncoding";
 import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
+import {
+  BARCODE_ONLY_HEIGHT_THRESHOLD_MM,
+  BARCODE_ONLY_PAD_Y_MM,
+  labelHorizontalPaddingMm,
+  snappedBarcodeWidthMm,
+} from "@shared/barcodeLabelPolicy";
 
 export type BarcodePdfPreset = "50x30" | "50x25" | "60x40" | "artwork" | "a4";
 
@@ -72,7 +78,6 @@ export interface GenerateBarcodeBatchPdfResult {
 
 // ── تحويل المليمتر لنقاط PDF (1 mm = 72 / 25.4 pt) ──
 const MM_TO_PT = 72 / 25.4;
-const COMPACT_LABEL_HEIGHT_THRESHOLD_MM = 15;
 
 const BLACK = rgb(0, 0, 0);
 const WHITE = rgb(1, 1, 1);
@@ -161,10 +166,9 @@ function drawArCentered(
   drawAr(pg, font, text, centerX + width / 2, yy, size, color, bold);
 }
 
-/** تخطيط الارتفاعات 10→أقل من 15مم: اسم بسطر واحد، قضبان ≥5مم، وسعر/رمز في الأسفل. */
+/** الملصق الصغير للقضبان وحدها؛ نفس الهوامش وعرض الوحدة في المتصفح والمسار الحراري. */
 function renderCompactLabel(
   pg: PDFPage,
-  ctx: DrawContext,
   input: GenerateBarcodePdfInput,
   ox: number,
   oy: number,
@@ -172,68 +176,25 @@ function renderCompactLabel(
   h: number,
 ) {
   const barcodeData = calculateBarcodeBars(input.barcode);
-  const centerX = ox + w / 2;
-  const name = (input.productName || "").trim();
-  let titleSize = 5;
-  while (titleSize > 4 && ctx.cairo.widthOfTextAtSize(name, titleSize) > w - 8)
-    titleSize -= 0.25;
-  if (name)
-    drawArCentered(
-      pg,
-      ctx.cairo,
-      name,
-      centerX,
-      oy + h - 6.2,
-      titleSize,
-      BLACK,
-      true,
-    );
-
-  const moduleWidth = (w - 8) / barcodeData.totalWidth;
-  const barcodeStartX = ox + 4;
-  const barY = oy + 7;
-  const barHeight = Math.max(8, h - 14);
+  const widthMm = w / MM_TO_PT;
+  const heightMm = h / MM_TO_PT;
+  const barcodeWidthMm = snappedBarcodeWidthMm(
+    barcodeData.totalWidth,
+    widthMm,
+    heightMm,
+  ) || widthMm - 2 * labelHorizontalPaddingMm(heightMm);
+  const actualWidth = barcodeWidthMm * MM_TO_PT;
+  const moduleWidth = actualWidth / barcodeData.totalWidth;
+  const barcodeStartX = ox + (w - actualWidth) / 2;
+  const padY = BARCODE_ONLY_PAD_Y_MM * MM_TO_PT;
   for (const bar of barcodeData.bars) {
     pg.drawRectangle({
       x: barcodeStartX + bar.x * moduleWidth,
-      y: barY,
-      width: Math.max(0.4, bar.width * moduleWidth),
-      height: barHeight,
+      y: oy + padY,
+      width: bar.width * moduleWidth,
+      height: h - 2 * padY,
       color: BLACK,
     });
-  }
-
-  const priceVal = input.retailPrice ? String(input.retailPrice).trim() : "";
-  if (priceVal && priceVal !== "0") {
-    const numPrice = Number(priceVal.replace(/[^0-9.]/g, ""));
-    const formattedPrice =
-      !isNaN(numPrice) && numPrice > 0
-        ? `${numPrice.toLocaleString("en-US")} د.ع`
-        : `${priceVal} د.ع`;
-    drawAr(
-      pg,
-      ctx.cairo,
-      formattedPrice,
-      ox + w - 4,
-      oy + 1.2,
-      4.2,
-      GRAY_DARK,
-      true,
-    );
-  }
-  const sku = (input.sku || "").trim();
-  if (sku) {
-    const skuSize = 4.2;
-    drawAr(
-      pg,
-      ctx.cairo,
-      sku,
-      ox + 4 + ctx.cairo.widthOfTextAtSize(sku, skuSize),
-      oy + 1.2,
-      skuSize,
-      GRAY_DARK,
-      true,
-    );
   }
 }
 
@@ -261,8 +222,8 @@ function renderSingleLabel(
     borderWidth: showBorder ? 0.5 : 0,
   });
 
-  if (h < COMPACT_LABEL_HEIGHT_THRESHOLD_MM * MM_TO_PT) {
-    renderCompactLabel(pg, ctx, input, ox, oy, w, h);
+  if (h < BARCODE_ONLY_HEIGHT_THRESHOLD_MM * MM_TO_PT) {
+    renderCompactLabel(pg, input, ox, oy, w, h);
     return;
   }
 

@@ -48,12 +48,22 @@ describe("labelDocHtml — كتلة الباركود المثبَّتة", () => 
     expect(html).toContain('class="lbl-bcs" style="width:19.25mm"');
   });
 
-  it("30×10مم يخرج صفحة فعلية بنفس القياس وتباعداً رأسياً مضغوطاً", () => {
-    const html = labelDocHtml([item], { widthMm: 30, heightMm: 10 });
+  it("30×10مم يطبع القضبان وحدها بارتفاع 9مم ووحدة بعرض نقطتين دون النصوص", () => {
+    const html = labelDocHtml([{
+      ...item,
+      basePrice: "1000",
+      tierLabel: "جملة",
+      attrs: { baseName: item.name, tags: ["أزرق"], colorHex: "#0000ff" },
+    }], { widthMm: 30, heightMm: 10 }, { showName: true, showPrice: true });
 
     expect(html).toContain("@page{size:30mm 10mm;margin:0}");
-    expect(html).toContain("padding:0.3mm 1.5mm");
-    expect(html).toContain("gap:0.15mm");
-    expect(html).toMatch(/class="lbl-bc" style="height:5(?:\.\d+)?mm"/);
+    expect(html).toContain("padding:0.5mm 0.5mm");
+    expect(html).toContain('class="lbl-bc" style="height:9mm"');
+    expect(html).toContain('class="lbl-bcs" style="width:28.25mm"');
+    const body = html.slice(html.indexOf("<body"));
+    expect(body).not.toMatch(/class="lbl-(?:nm|at|bn|bt|sk|pr|tr|ob)"/);
+    expect(body).not.toContain("<text");
+    expect(body).not.toContain(item.name);
+    expect(body).not.toContain(item.sku);
   });
 });
