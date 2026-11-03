@@ -22,7 +22,12 @@ describe("snappedBarcodeWidthMm", () => {
 });
 
 describe("labelDocHtml — كتلة الباركود المثبَّتة", () => {
-  const item = { name: "قلم حبر أزرق", barcode: "4006381333931", price: "250", sku: "PN-1" };
+  const item = {
+    name: "قلم حبر أزرق",
+    barcode: "4006381333931",
+    price: "250",
+    sku: "PN-1",
+  };
 
   it("يلفّ قضبان EAN-13 بحاويةٍ بعرضٍ فيزيائيٍّ مثبَّت على ملصق 35×15", () => {
     const html = labelDocHtml([item], { widthMm: 35, heightMm: 15 });
@@ -35,8 +40,20 @@ describe("labelDocHtml — كتلة الباركود المثبَّتة", () => 
   });
 
   it("الرمز الداخليّ ALR يُرمَّز Code128 بعرضٍ مثبَّتٍ أيضاً", () => {
-    const html = labelDocHtml([{ ...item, barcode: "ALR0000042" }], { widthMm: 35, heightMm: 15 });
+    const html = labelDocHtml([{ ...item, barcode: "ALR0000042" }], {
+      widthMm: 35,
+      heightMm: 15,
+    });
     // ALR0000042 = 11 رمزاً ⇒ 134 وحدة + هدوء 20 = 154 ⇒ نقطة/وحدة على 35مم = 19.25مم.
     expect(html).toContain('class="lbl-bcs" style="width:19.25mm"');
+  });
+
+  it("30×10مم يخرج صفحة فعلية بنفس القياس وتباعداً رأسياً مضغوطاً", () => {
+    const html = labelDocHtml([item], { widthMm: 30, heightMm: 10 });
+
+    expect(html).toContain("@page{size:30mm 10mm;margin:0}");
+    expect(html).toContain("padding:0.3mm 1.5mm");
+    expect(html).toContain("gap:0.15mm");
+    expect(html).toMatch(/class="lbl-bc" style="height:5(?:\.\d+)?mm"/);
   });
 });

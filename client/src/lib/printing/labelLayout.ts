@@ -29,6 +29,11 @@ export const BAR_FLOOR_MM = 5;
 export const PAD_Y_MM = 0.8;
 /** الفراغ بين الكتل الرأسية (مم). */
 export const GAP_MM = 0.4;
+/** كل ارتفاعٍ جديد دون الحدّ القديم 15مم يحتاج التخطيط المضغوط ليبقى الباركود ≥5مم. */
+export const COMPACT_LABEL_HEIGHT_THRESHOLD_MM = 15;
+export const COMPACT_PAD_Y_MM = 0.3;
+export const COMPACT_GAP_MM = 0.15;
+export const COMPACT_HARD_FLOOR_PT = 5;
 /** الحجم الأساس لخطّ السعر (نقطة) قبل القياس بالعرض — كبيرٌ عمداً ليلاحظه كبار السنّ. */
 const PRICE_PT = 15;
 
@@ -47,7 +52,10 @@ export function widthScale(widthMm: number): number {
 export function nameFontPt(name: string, widthMm: number): number {
   const n = name.trim().length;
   const base = n <= 18 ? 12 : n <= 28 ? 10 : n <= 40 ? 8.5 : 7.5;
-  return Math.max(SOFT_FLOOR_PT, Math.round(base * widthScale(widthMm) * 10) / 10);
+  return Math.max(
+    SOFT_FLOOR_PT,
+    Math.round(base * widthScale(widthMm) * 10) / 10,
+  );
 }
 
 /** حجم خطٍّ ثانويّ (خصائص/أرقام/رمز/سعر) مقيّساً بعرض الملصق وبحدٍّ أدنى مريح. */
@@ -56,15 +64,33 @@ export function scaledPt(pt: number, widthMm: number, floor = 7): number {
 }
 
 /** يقيّد حجم خطٍّ بسقفٍ (عند الضغط) وبالأرضية الصلبة — `cap=Infinity` ⇒ الحجم المريح كما هو. */
-function capFont(preferredPt: number, capPt: number): number {
-  return Math.max(HARD_FLOOR_PT, Math.min(preferredPt, capPt));
+function capFont(
+  preferredPt: number,
+  capPt: number,
+  floorPt = HARD_FLOOR_PT,
+): number {
+  return Math.max(floorPt, Math.min(preferredPt, capPt));
+}
+
+/** التباعد الرأسي الفعلي؛ تشترك فيه المعاينة والمتصفح والمسار الحراري. */
+export function labelVerticalSpacing(heightMm: number): {
+  padYMm: number;
+  gapMm: number;
+} {
+  return heightMm < COMPACT_LABEL_HEIGHT_THRESHOLD_MM
+    ? { padYMm: COMPACT_PAD_Y_MM, gapMm: COMPACT_GAP_MM }
+    : { padYMm: PAD_Y_MM, gapMm: GAP_MM };
 }
 
 /**
  * تقدير عدد أسطر الاسم (١ أو ٢) بطوله مقابل سعة السطر — منحازٌ احترازياً للسطرين لمنع التداخل.
  * حتميّ (بلا Canvas) كي يتطابق حجزُ المسار المتّجه والحراري على العدد نفسه (§٥).
  */
-export function estNameLines(name: string, widthMm: number, fsPt: number): 1 | 2 {
+export function estNameLines(
+  name: string,
+  widthMm: number,
+  fsPt: number,
+): 1 | 2 {
   const usableW = Math.max(10, widthMm - 3); // ناقص هامشي 1.5مم
   const capChars = usableW / (fsPt * PT_MM * 0.5); // ~0.5مم عرض الحرف لكلّ نقطة (تقدير عربي محافظ)
   return name.trim().length > capChars * 0.9 ? 2 : 1;
@@ -98,10 +124,21 @@ export interface LabelLayout {
   /** الفراغ بين الكتل (مم). */
   gapMm: number;
   /** الاسم — `structured=true` ⇒ يُرسَم الاسم الأساس (بارزاً) + سطر الخصائص؛ وإلّا الاسم المدموج. */
-  name: { show: boolean; fsPt: number; lines: 1 | 2; heightMm: number; structured: boolean };
+  name: {
+    show: boolean;
+    fsPt: number;
+    lines: 1 | 2;
+    heightMm: number;
+    structured: boolean;
+  };
   /** سطر الخصائص المنظّم «اللون · القياس · الوحدة» + رمز لون — يظهر فقط في التخطيط المنظّم. */
   attrs: { show: boolean; fsPt: number; heightMm: number };
-  barcode: { show: boolean; heightMm: number; scannable: boolean; compact: boolean };
+  barcode: {
+    show: boolean;
+    heightMm: number;
+    scannable: boolean;
+    compact: boolean;
+  };
   digits: { show: boolean; fsPt: number; heightMm: number };
   bottom: {
     show: boolean;
@@ -134,10 +171,17 @@ export interface LabelLayout {
  * يحسب تخطيط الملصق الحتميّ لمقاسٍ ومحتوىً وخيارات عرض. مصدرٌ واحد يستهلكه المسار المتّجه
  * (`labelDesign`) والنقطيّ (`labelRaster`) والواجهة (`BarcodeLabels`) ⇒ تطابقٌ تامّ.
  */
-export function solveLabelLayout(size: LabelSize, content: LabelContent, show: LabelShow = {}): LabelLayout {
+export function solveLabelLayout(
+  size: LabelSize,
+  content: LabelContent,
+  show: LabelShow = {},
+): LabelLayout {
   const w = size.widthMm;
   const H = size.heightMm;
-  const usableH = H - 2 * PAD_Y_MM;
+  const compact = H < COMPACT_LABEL_HEIGHT_THRESHOLD_MM;
+  const { padYMm, gapMm } = labelVerticalSpacing(H);
+  const hardFloorPt = compact ? COMPACT_HARD_FLOOR_PT : HARD_FLOOR_PT;
+  const usableH = H - 2 * padYMm;
   const mergedName = (content.name ?? "").trim();
   const baseName = (content.baseName ?? mergedName).trim();
   const barcode = content.hasBarcode;
@@ -162,37 +206,66 @@ export function solveLabelLayout(size: LabelSize, content: LabelContent, show: L
   }
 
   /** يحسب ميزانية رأسية لحالةٍ مُرشَّحة (الاسم دائماً بأسطره الطبيعية — لا يُقصّ). */
-  function budget(s: State) {
+  function budget(s: State, compactName = compact) {
     const useStructured = s.structured && canStructure;
     const nameStr = useStructured ? baseName : mergedName;
-    const nameFs = wantName ? capFont(nameFontPt(nameStr, w), s.cap) : 0;
-    const priceFs = wantPrice ? capFont(pricePrefPt, s.cap) : 0;
-    const secFs = capFont(secPrefPt, s.cap); // ثانويّ (خصائص/رقم/رمز/شارة/مشطوب)
+    const nameFs = wantName
+      ? capFont(nameFontPt(nameStr, w), s.cap, hardFloorPt)
+      : 0;
+    const priceFs = wantPrice ? capFont(pricePrefPt, s.cap, hardFloorPt) : 0;
+    const secFs = capFont(secPrefPt, s.cap, hardFloorPt); // ثانويّ (خصائص/رقم/رمز/شارة/مشطوب)
     const showDigits = barcode && !s.hideDigits;
     const showSku = wantSku && !s.hideSku;
     const showTier = wantTier && !s.hideTier;
     const skuTierFs = showSku || showTier ? secFs : 0;
     const bottomFs = Math.max(priceFs, skuTierFs);
-    const nameLines = wantName ? estNameLines(nameStr, w, nameFs) : 0;
+    // 30×10مم لا يحتمل سطرين مع باركود 5مم؛ نثبت الاسم في سطر واحد ونُظهر تحذيراً إن طال.
+    const nameLines = wantName
+      ? compactName
+        ? 1
+        : estNameLines(nameStr, w, nameFs)
+      : 0;
 
     const nameMm = wantName ? nameLines * nameFs * PT_MM * 1.18 : 0;
     const attrsMm = useStructured ? secFs * PT_MM * 1.15 : 0;
     const digitsMm = showDigits ? secFs * PT_MM * 1.1 : 0;
     const bottomMm = bottomFs > 0 ? bottomFs * PT_MM * 1.12 : 0;
-    const blocks = [wantName, useStructured, barcode, showDigits, bottomFs > 0].filter(Boolean).length;
-    const gaps = Math.max(0, blocks - 1) * GAP_MM;
+    const blocks = [
+      wantName,
+      useStructured,
+      barcode,
+      showDigits,
+      bottomFs > 0,
+    ].filter(Boolean).length;
+    const gaps = Math.max(0, blocks - 1) * gapMm;
     const nonBar = nameMm + attrsMm + digitsMm + bottomMm + gaps;
     const barMax = Math.round(H * 0.6 * 10) / 10;
-    const barMm = barcode ? Math.min(barMax, Math.max(0, Math.round((usableH - nonBar) * 10) / 10)) : 0;
+    const barMm = barcode
+      ? Math.min(barMax, Math.max(0, Math.round((usableH - nonBar) * 10) / 10))
+      : 0;
     return {
-      useStructured, nameFs, priceFs, secFs, bottomFs, nameLines, nameMm, attrsMm, digitsMm, bottomMm, barMm,
-      showDigits, showSku, showTier,
+      useStructured,
+      nameFs,
+      priceFs,
+      secFs,
+      bottomFs,
+      nameLines,
+      nameMm,
+      attrsMm,
+      digitsMm,
+      bottomMm,
+      barMm,
+      showDigits,
+      showSku,
+      showTier,
     };
   }
 
   // قائمة الحالات من **الأفضل إلى الأضعف**: منظّم قبل مدموج، خطّ مريح قبل الصغير، إظهار الثانويّات
   // قبل إخفائها، باركود مريح قبل المتقلّص. أوّل حالةٍ يتّسع فيها الباركود ≥ أرضيتها = المختارة.
-  const CAPS = [Infinity, SOFT_FLOOR_PT, 7, 6.5, HARD_FLOOR_PT];
+  const CAPS = compact
+    ? [Infinity, SOFT_FLOOR_PT, 7, 6.5, HARD_FLOOR_PT, COMPACT_HARD_FLOOR_PT]
+    : [Infinity, SOFT_FLOOR_PT, 7, 6.5, HARD_FLOOR_PT];
   const HIDES: Array<Pick<State, "hideDigits" | "hideSku" | "hideTier">> = [
     { hideDigits: false, hideSku: false, hideTier: false },
     { hideDigits: true, hideSku: false, hideTier: false },
@@ -229,22 +302,53 @@ export function solveLabelLayout(size: LabelSize, content: LabelContent, show: L
   }
 
   // أصغر ارتفاع يُظهر كلّ شيء بحجمٍ مريح (خطّ مريح، منظّم إن أمكن، بلا إخفاء، باركود مريح).
-  const comfort = budget({ structured: canStructure, cap: Infinity, hideDigits: false, hideSku: false, hideTier: false, barFloor: BAR_COMFORT_MM });
+  const comfort = budget(
+    {
+      structured: canStructure,
+      cap: Infinity,
+      hideDigits: false,
+      hideSku: false,
+      hideTier: false,
+      barFloor: BAR_COMFORT_MM,
+    },
+    false,
+  );
   const comfortNonBar =
-    comfort.nameMm + comfort.attrsMm + comfort.digitsMm + comfort.bottomMm +
-    Math.max(0, [wantName, comfort.useStructured, barcode, comfort.showDigits, comfort.bottomFs > 0].filter(Boolean).length - 1) * GAP_MM;
-  const minHeightMmForAll = Math.ceil(comfortNonBar + (barcode ? BAR_COMFORT_MM : 0) + 2 * PAD_Y_MM);
+    comfort.nameMm +
+    comfort.attrsMm +
+    comfort.digitsMm +
+    comfort.bottomMm +
+    Math.max(
+      0,
+      [
+        wantName,
+        comfort.useStructured,
+        barcode,
+        comfort.showDigits,
+        comfort.bottomFs > 0,
+      ].filter(Boolean).length - 1,
+    ) *
+      GAP_MM;
+  const minHeightMmForAll = Math.ceil(
+    comfortNonBar + (barcode ? BAR_COMFORT_MM : 0) + 2 * PAD_Y_MM,
+  );
 
   const dropped: LabelPart[] = [];
   if (barcode && !b.showDigits) dropped.push("digits");
   if (wantSku && !b.showSku) dropped.push("sku");
   if (wantTier && !b.showTier) dropped.push("tier");
 
-  const compressed = chosen.cap < Infinity || (canStructure && !b.useStructured) || b.barMm < BAR_COMFORT_MM;
+  const compressed =
+    chosen.cap < Infinity ||
+    (canStructure && !b.useStructured) ||
+    b.barMm < BAR_COMFORT_MM;
+  const chosenName = b.useStructured ? baseName : mergedName;
+  const compactNameOverflow =
+    compact && wantName && estNameLines(chosenName, w, b.nameFs) > 1;
 
   return {
-    padYMm: PAD_Y_MM,
-    gapMm: GAP_MM,
+    padYMm,
+    gapMm,
     name: {
       show: wantName,
       fsPt: b.nameFs,
@@ -271,9 +375,9 @@ export function solveLabelLayout(size: LabelSize, content: LabelContent, show: L
     },
     dropped,
     compressed,
-    tiny: chosen.cap <= HARD_FLOOR_PT,
+    tiny: chosen.cap <= hardFloorPt,
     minHeightMmForAll,
-    overflow: barcode ? b.barMm < BAR_FLOOR_MM : false,
+    overflow: compactNameOverflow || (barcode ? b.barMm < BAR_FLOOR_MM : false),
   };
 }
 
@@ -285,7 +389,12 @@ export function labelContentOf(item: {
   basePrice?: string | number | null;
   tierLabel?: string;
   barcode: string;
-  attrs?: { baseName: string; tags: string[]; colorHex?: string | null; unitName?: string | null };
+  attrs?: {
+    baseName: string;
+    tags: string[];
+    colorHex?: string | null;
+    unitName?: string | null;
+  };
 }): LabelContent {
   const has = (v: unknown) => v != null && v !== "";
   const a = item.attrs;

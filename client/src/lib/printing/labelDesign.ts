@@ -16,7 +16,11 @@ import { productBarcodeSvg } from "./barcode";
 import { attrsLineText } from "./labelItem";
 import { type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
 import { PRINT_DPMM, type LabelSize } from "./labelSize";
-import { GAP_MM, PAD_Y_MM, labelContentOf, solveLabelLayout } from "./labelLayout";
+import {
+  labelContentOf,
+  labelVerticalSpacing,
+  solveLabelLayout,
+} from "./labelLayout";
 
 /** يتحقّق من لون HEX «#RRGGBB» فقط (يمنع حقن CSS عبر قيمة colorHex) — وإلّا لا لون. */
 function safeHex(hex?: string | null): string | null {
@@ -33,7 +37,10 @@ const PAD_X_MM = 1.5;
  * العرض الاسميّ) فيختلّ ميزان نسب Code128 — سبب «مرّة تُمسح ومرّة لا» على المقاسات الصغيرة.
  * يعيد 0 إن لم تتّسع ولا وحدة نقطةٍ واحدة (يتكفّل المستدعي بالتمدّد الكامل كملاذ أخير).
  */
-export function snappedBarcodeWidthMm(unitCount: number, labelWidthMm: number): number {
+export function snappedBarcodeWidthMm(
+  unitCount: number,
+  labelWidthMm: number,
+): number {
   const usableMm = labelWidthMm - 2 * PAD_X_MM;
   const dotsPerModule = Math.floor((usableMm * PRINT_DPMM) / unitCount);
   return dotsPerModule >= 1 ? (unitCount * dotsPerModule) / PRINT_DPMM : 0;
@@ -43,13 +50,29 @@ export function snappedBarcodeWidthMm(unitCount: number, labelWidthMm: number): 
  * كتلة الباركود المتّجهة: EAN أصليّ للأرقام الصالحة (أكثف ⇒ قضبان أثخن) وإلا Code128، داخل
  * حاويةٍ بعرضٍ فيزيائيٍّ مثبَّتٍ على شبكة النقاط ومتوسّطة أفقياً. فارغة إن تعذّر الترميز.
  */
-function barcodeBoxHtml(barcode: string, labelWidthMm: number, heightMm: number): string {
+function barcodeBoxHtml(
+  barcode: string,
+  labelWidthMm: number,
+  heightMm: number,
+): string {
   try {
     // moduleWidth/height للـviewBox فقط؛ widthPx بوحدة mw=1 = عدد وحدات الرمز (قضبان + هدوء).
-    const units = productBarcodeSvg(barcode, { moduleWidth: 1, height: 80, showText: false }).widthPx;
-    const svg = productBarcodeSvg(barcode, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    const units = productBarcodeSvg(barcode, {
+      moduleWidth: 1,
+      height: 80,
+      showText: false,
+    }).widthPx;
+    const svg = productBarcodeSvg(barcode, {
+      moduleWidth: 2,
+      height: 80,
+      showText: false,
+      fitToBox: true,
+    }).svg;
     const wMm = snappedBarcodeWidthMm(units, labelWidthMm);
-    const sized = wMm > 0 ? `<div class="lbl-bcs" style="width:${wMm}mm">${svg}</div>` : svg;
+    const sized =
+      wMm > 0
+        ? `<div class="lbl-bcs" style="width:${wMm}mm">${svg}</div>`
+        : svg;
     return `<div class="lbl-bc" style="height:${heightMm}mm">${sized}</div>`;
   } catch {
     return ""; // قيمة غير قابلة للترميز ⇒ ملصق بلا قضبان (يبقى الاسم/الرمز/السعر)
@@ -61,8 +84,15 @@ function barcodeBoxHtml(barcode: string, labelWidthMm: number, heightMm: number)
  * سطريّاً لأنّها تُحسَب لكلّ منتج حسب طول اسمه ومقاس الملصق). التخطيط: [اسم اختياريّ] ← [قضبان
  * Code128 بارتفاعٍ محسوب] ← [أرقام الباركود اختيارية] ← [صفّ سفليّ: الرمز/الشارة | السعر].
  */
-function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRenderOpts = {}): string {
-  const L = solveLabelLayout(size, labelContentOf(item), { name: opts.showName, price: opts.showPrice });
+function labelInnerHtml(
+  item: LabelRenderItem,
+  size: LabelSize,
+  opts: LabelRenderOpts = {},
+): string {
+  const L = solveLabelLayout(size, labelContentOf(item), {
+    name: opts.showName,
+    price: opts.showPrice,
+  });
 
   // الاسم: تخطيطٌ **منظّم** (اسمٌ أساس بارز + سطر «اللون · القياس · الوحدة» + رمز لون) حين يتّسع
   // المقاس، وإلّا الاسم **المدموج** (اللون/القياس فيه ⇒ بلا فقد). `-webkit-line-clamp` مقيَّد بعدد
@@ -76,7 +106,9 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
         const hex = safeHex(a.colorHex);
         // رمز اللون: دائرة بحدٍّ أسود مملوءة بلون بنك الألوان — تظهر ملوّنة في المعاينة/الطابعة
         // الملوّنة، وتُطبع دائرةً محدَّدة (علامة) على الحراريّ الأحادي.
-        const swatch = hex ? `<span class="lbl-sw" style="background:${hex}"></span>` : "";
+        const swatch = hex
+          ? `<span class="lbl-sw" style="background:${hex}"></span>`
+          : "";
         const line = attrsLineText(a);
         nameHtml += `<div class="lbl-at" style="font-size:${L.attrs.fsPt}pt">${swatch}${line ? `<span>${esc(line)}</span>` : ""}</div>`;
       }
@@ -85,21 +117,41 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
     }
   }
 
-  const bcHtml = L.barcode.show ? barcodeBoxHtml(item.barcode, size.widthMm, L.barcode.heightMm) : "";
-  const bnHtml = L.digits.show ? `<div class="lbl-bn" style="font-size:${L.digits.fsPt}pt">${esc(item.barcode)}</div>` : "";
+  const bcHtml = L.barcode.show
+    ? barcodeBoxHtml(item.barcode, size.widthMm, L.barcode.heightMm)
+    : "";
+  const bnHtml = L.digits.show
+    ? `<div class="lbl-bn" style="font-size:${L.digits.fsPt}pt">${esc(item.barcode)}</div>`
+    : "";
 
   // الصفّ السفليّ = مجموعتان: [الرمز + شارة الفئة] يميناً | [السعر القديم مشطوباً + السعر] يساراً.
   const b = L.bottom;
-  const skuHtml = b.showSku && item.sku ? `<span class="lbl-sk" style="font-size:${b.secFsPt}pt">${esc(item.sku)}</span>` : "";
+  const skuHtml =
+    b.showSku && item.sku
+      ? `<span class="lbl-sk" style="font-size:${b.secFsPt}pt">${esc(item.sku)}</span>`
+      : "";
   const tierHtml =
-    b.showTier && item.tierLabel ? `<span class="lbl-tr" style="font-size:${b.secFsPt}pt">${esc(item.tierLabel)}</span>` : "";
-  const startHtml = skuHtml || tierHtml ? `<span class="lbl-gp">${skuHtml}${tierHtml}</span>` : "";
+    b.showTier && item.tierLabel
+      ? `<span class="lbl-tr" style="font-size:${b.secFsPt}pt">${esc(item.tierLabel)}</span>`
+      : "";
+  const startHtml =
+    skuHtml || tierHtml
+      ? `<span class="lbl-gp">${skuHtml}${tierHtml}</span>`
+      : "";
 
   // السعر القديم يُطبع مشطوباً **فقط** مع سعرٍ فعّال أصغر منه (عرض سارٍ) — يرى الزبون قيمة الخصم.
-  const showBase = b.showPrice && item.basePrice != null && item.basePrice !== "";
-  const baseHtml = showBase ? `<span class="lbl-ob" style="font-size:${b.secFsPt}pt">${esc(fmtC(item.basePrice))}</span>` : "";
-  const priceHtml = b.showPrice ? `<span class="lbl-pr" style="font-size:${b.priceFsPt}pt">${esc(fmtC(item.price))}</span>` : "";
-  const endHtml = baseHtml || priceHtml ? `<span class="lbl-gp">${baseHtml}${priceHtml}</span>` : "";
+  const showBase =
+    b.showPrice && item.basePrice != null && item.basePrice !== "";
+  const baseHtml = showBase
+    ? `<span class="lbl-ob" style="font-size:${b.secFsPt}pt">${esc(fmtC(item.basePrice))}</span>`
+    : "";
+  const priceHtml = b.showPrice
+    ? `<span class="lbl-pr" style="font-size:${b.priceFsPt}pt">${esc(fmtC(item.price))}</span>`
+    : "";
+  const endHtml =
+    baseHtml || priceHtml
+      ? `<span class="lbl-gp">${baseHtml}${priceHtml}</span>`
+      : "";
 
   const bottomHtml =
     startHtml || endHtml
@@ -116,9 +168,10 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
  */
 function labelCss(size: LabelSize): string {
   const { widthMm, heightMm } = size;
+  const { padYMm, gapMm } = labelVerticalSpacing(heightMm);
   return `
-    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${PAD_Y_MM}mm ${PAD_X_MM}mm;
-      display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:${GAP_MM}mm;
+    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${padYMm}mm ${PAD_X_MM}mm;
+      display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:${gapMm}mm;
       overflow:hidden;font-family:'Cairo',sans-serif;color:#000;background:#fff;direction:rtl}
     .lbl *{box-sizing:border-box;margin:0;padding:0}
     .lbl-nm{font-weight:800;text-align:center;line-height:1.12;word-break:break-word;
@@ -161,8 +214,12 @@ export function labelDocHtml(
   autoPrint = false,
 ): string {
   const { widthMm, heightMm } = size;
-  const labels = items.map((it) => `<div class="lbl">${labelInnerHtml(it, size, opts)}</div>`).join("");
-  const onload = autoPrint ? ` onload="window.print();setTimeout(function(){window.close()},500)"` : "";
+  const labels = items
+    .map((it) => `<div class="lbl">${labelInnerHtml(it, size, opts)}</div>`)
+    .join("");
+  const onload = autoPrint
+    ? ` onload="window.print();setTimeout(function(){window.close()},500)"`
+    : "";
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصقات الباركود</title>
   ${CAIRO_FONT}
   <style>

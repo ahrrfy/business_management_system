@@ -2,7 +2,13 @@
 // الاسم الكامل + الباركود + اللون + الوحدة + السعر تظهر دائماً؛ الوحيدان القابلان للإخفاء على
 // المقاس الصغير جداً هما رقم الباركود المقروء والرمز (SKU) — ما لم يطلبه المالك.
 import { describe, expect, it } from "vitest";
-import { solveLabelLayout, labelContentOf, BAR_FLOOR_MM, type LabelContent, type LabelPart } from "./labelLayout";
+import {
+  solveLabelLayout,
+  labelContentOf,
+  BAR_FLOOR_MM,
+  type LabelContent,
+  type LabelPart,
+} from "./labelLayout";
 
 /** محتوى صفٍّ نموذجيّ (اسم + سعر + رمز + شارة + باركود). التخطيط المنظّم مُطفأ افتراضياً. */
 function content(over: Partial<LabelContent> = {}): LabelContent {
@@ -19,6 +25,51 @@ function content(over: Partial<LabelContent> = {}): LabelContent {
 }
 
 describe("solveLabelLayout — المجموعة الإلزامية لا تختفي أبداً (قاعدة المالك)", () => {
+  it("30×10مم يضغط الاسم والسعر ويُبقي باركوداً بارتفاع 5مم قابلاً للمسح", () => {
+    const L = solveLabelLayout(
+      { widthMm: 30, heightMm: 10 },
+      content({ hasTier: false }),
+    );
+
+    expect(L.padYMm).toBe(0.3);
+    expect(L.gapMm).toBe(0.15);
+    expect(L.name.show).toBe(true);
+    expect(L.name.lines).toBe(1);
+    expect(L.bottom.showPrice).toBe(true);
+    expect(L.barcode.heightMm).toBeGreaterThanOrEqual(BAR_FLOOR_MM);
+    expect(L.barcode.scannable).toBe(true);
+    expect(L.overflow).toBe(false);
+  });
+
+  it("30×10مم يُنبّه بصدق إذا كان الاسم أطول من سطره المضغوط", () => {
+    const L = solveLabelLayout(
+      { widthMm: 30, heightMm: 10 },
+      content({
+        name: "دفتر مدرسي مسطر مئتا ورقة بغلاف مقوى فاخر جداً",
+        hasTier: false,
+      }),
+    );
+
+    expect(L.name.lines).toBe(1);
+    expect(L.barcode.scannable).toBe(true);
+    expect(L.overflow).toBe(true);
+  });
+
+  it("كل الارتفاعات الجديدة 10→أقل من 15مم تستخدم التخطيط المضغوط وتُبقي الباركود قابلاً للمسح", () => {
+    for (const heightMm of [10, 11, 12, 13, 14, 14.9]) {
+      const L = solveLabelLayout(
+        { widthMm: 30, heightMm },
+        content({ name: "قلم جاف", hasTier: false }),
+      );
+
+      expect(L.padYMm).toBe(0.3);
+      expect(L.gapMm).toBe(0.15);
+      expect(L.barcode.heightMm).toBeGreaterThanOrEqual(BAR_FLOOR_MM);
+      expect(L.barcode.scannable).toBe(true);
+      expect(L.overflow).toBe(false);
+    }
+  });
+
   it("الاسم + السعر + الباركود ظاهرة على كلّ الارتفاعات المسموحة (١٥→٤٠مم)", () => {
     for (let h = 15; h <= 40; h++) {
       const L = solveLabelLayout(
@@ -46,7 +97,9 @@ describe("solveLabelLayout — المجموعة الإلزامية لا تختف
   });
 
   it("خيار «بلا سعر» صريحٌ من المستخدم ⇒ لا يُعرَض (ليس إخفاءً قسرياً)", () => {
-    const L = solveLabelLayout({ widthMm: 38, heightMm: 15 }, content(), { price: false });
+    const L = solveLabelLayout({ widthMm: 38, heightMm: 15 }, content(), {
+      price: false,
+    });
     expect(L.bottom.showPrice).toBe(false);
   });
 });
@@ -71,7 +124,10 @@ describe("solveLabelLayout — إخفاء الثانويّات فقط، بالت
 
   it("الإخفاء يتّبع الترتيب المعلَن (رقم الباركود ← الرمز ← الشارة)", () => {
     for (const heightMm of [15, 16, 18, 20, 22, 25]) {
-      const L = solveLabelLayout({ widthMm: 38, heightMm }, content({ name: "منتج طويل الاسم نسبياً هنا" }));
+      const L = solveLabelLayout(
+        { widthMm: 38, heightMm },
+        content({ name: "منتج طويل الاسم نسبياً هنا" }),
+      );
       const idx = L.dropped.map((p) => ORDER.indexOf(p));
       expect(idx).toEqual([...idx].sort((a, b) => a - b));
     }
@@ -80,7 +136,10 @@ describe("solveLabelLayout — إخفاء الثانويّات فقط، بالت
   it("الباركود ديناميكيّ: يُبقي السعر مع الاسم الطويل حين يتّسع المقاس قليلاً (18مم، باركود متقلّص)", () => {
     const L = solveLabelLayout(
       { widthMm: 38, heightMm: 18 },
-      content({ name: "دفتر مدرسي مسطر ٢٠٠ ورقة غلاف مقوّى فاخر", hasTier: false }),
+      content({
+        name: "دفتر مدرسي مسطر ٢٠٠ ورقة غلاف مقوّى فاخر",
+        hasTier: false,
+      }),
     );
     expect(L.name.show).toBe(true);
     expect(L.bottom.showPrice).toBe(true);
@@ -88,7 +147,10 @@ describe("solveLabelLayout — إخفاء الثانويّات فقط، بالت
   });
 
   it("صنفٌ بلا رمزٍ ولا شارة ⇒ لا يظهران ولا يُعدّان مُخفيَّين", () => {
-    const L = solveLabelLayout({ widthMm: 38, heightMm: 15 }, content({ name: "قلم", hasSku: false, hasTier: false }));
+    const L = solveLabelLayout(
+      { widthMm: 38, heightMm: 15 },
+      content({ name: "قلم", hasSku: false, hasTier: false }),
+    );
     expect(L.bottom.showSku).toBe(false);
     expect(L.bottom.showTier).toBe(false);
     expect(L.dropped).not.toContain("sku");
@@ -96,7 +158,9 @@ describe("solveLabelLayout — إخفاء الثانويّات فقط، بالت
   });
 
   it("خيار «بلا اسم» ⇒ لا يُحجَز له ارتفاع", () => {
-    const L = solveLabelLayout({ widthMm: 50, heightMm: 25 }, content(), { name: false });
+    const L = solveLabelLayout({ widthMm: 50, heightMm: 25 }, content(), {
+      name: false,
+    });
     expect(L.name.show).toBe(false);
     expect(L.name.heightMm).toBe(0);
   });
@@ -106,7 +170,11 @@ describe("solveLabelLayout — التخطيط الاحترافي المنظّم 
   it("مقاس مريح + خصائص ⇒ تخطيط منظّم يظهر", () => {
     const L = solveLabelLayout(
       { widthMm: 50, heightMm: 30 },
-      content({ name: "قلم جاف أزرق L — درزن", baseName: "قلم جاف", hasAttrs: true }),
+      content({
+        name: "قلم جاف أزرق L — درزن",
+        baseName: "قلم جاف",
+        hasAttrs: true,
+      }),
     );
     expect(L.name.structured).toBe(true);
     expect(L.attrs.show).toBe(true);
@@ -127,10 +195,17 @@ describe("solveLabelLayout — التخطيط الاحترافي المنظّم 
 
   it("minHeightMmForAll يقترح ارتفاعاً مريحاً؛ والحلّ عنده بلا إخفاء ولا ضغط", () => {
     const size = { widthMm: 38, heightMm: 15 };
-    const c = content({ name: "دفتر مدرسي مسطر ٢٠٠ ورقة", baseName: "دفتر مدرسي", hasAttrs: true });
+    const c = content({
+      name: "دفتر مدرسي مسطر ٢٠٠ ورقة",
+      baseName: "دفتر مدرسي",
+      hasAttrs: true,
+    });
     const L = solveLabelLayout(size, c);
     expect(L.minHeightMmForAll).toBeGreaterThan(size.heightMm);
-    const bigger = solveLabelLayout({ widthMm: 38, heightMm: L.minHeightMmForAll }, c);
+    const bigger = solveLabelLayout(
+      { widthMm: 38, heightMm: L.minHeightMmForAll },
+      c,
+    );
     expect(bigger.dropped).toEqual([]);
     expect(bigger.tiny).toBe(false);
   });
@@ -139,7 +214,20 @@ describe("solveLabelLayout — التخطيط الاحترافي المنظّم 
 describe("labelContentOf — اشتقاق التوفّر من عنصر الملصق", () => {
   it("يلتقط توفّر كلّ جزء بدقّة + hasAttrs/baseName", () => {
     expect(
-      labelContentOf({ name: "قلم", sku: "PEN", price: "1000", basePrice: "1200", tierLabel: "جملة", barcode: "ALR1", attrs: { baseName: "قلم", tags: ["أزرق"], colorHex: "#1D4ED8", unitName: "درزن" } }),
+      labelContentOf({
+        name: "قلم",
+        sku: "PEN",
+        price: "1000",
+        basePrice: "1200",
+        tierLabel: "جملة",
+        barcode: "ALR1",
+        attrs: {
+          baseName: "قلم",
+          tags: ["أزرق"],
+          colorHex: "#1D4ED8",
+          unitName: "درزن",
+        },
+      }),
     ).toEqual({
       name: "قلم",
       baseName: "قلم",
@@ -153,12 +241,20 @@ describe("labelContentOf — اشتقاق التوفّر من عنصر المل�
   });
 
   it("hasAttrs=false لصنفٍ بلا لون/قياس وبلا لونٍ معرَّف (سلعة بسيطة)", () => {
-    const c = labelContentOf({ barcode: "ALR1", attrs: { baseName: "دفتر", tags: [], colorHex: null, unitName: "قطعة" } });
+    const c = labelContentOf({
+      barcode: "ALR1",
+      attrs: { baseName: "دفتر", tags: [], colorHex: null, unitName: "قطعة" },
+    });
     expect(c.hasAttrs).toBe(false);
   });
 
   it("القيم الفارغة/الغائبة ⇒ غير متوفّرة", () => {
-    const c = labelContentOf({ price: "", basePrice: null, tierLabel: "", barcode: "ALR2" });
+    const c = labelContentOf({
+      price: "",
+      basePrice: null,
+      tierLabel: "",
+      barcode: "ALR2",
+    });
     expect(c.hasPrice).toBe(false);
     expect(c.hasTier).toBe(false);
     expect(c.hasSku).toBe(false);

@@ -100,9 +100,9 @@ describe("server/services/barcodePdfService", () => {
     });
 
     it("يرمي خطأ صريحاً عند تمرير باركود فارغ", async () => {
-      await expect(
-        generateBarcodePdf({ barcode: "" })
-      ).rejects.toThrow("لا يوجد باركود لتوليد ملف PDF");
+      await expect(generateBarcodePdf({ barcode: "" })).rejects.toThrow(
+        "لا يوجد باركود لتوليد ملف PDF",
+      );
     });
 
     it("يدعم المقاسات المخصصة بالأبعاد المليمترية widthMm و heightMm", async () => {
@@ -120,6 +120,36 @@ describe("server/services/barcodePdfService", () => {
       // 40mm ≈ 113.38pt, 25mm ≈ 70.86pt
       expect(Math.round(width)).toBe(113);
       expect(Math.round(height)).toBe(71);
+    });
+
+    it("يولّد ليبل 30×10مم بصفحة PDF مطابقة دون رفع الارتفاع إلى 15مم", async () => {
+      const result = await generateBarcodePdf({
+        barcode: "2001234567893",
+        productName: "قلم جاف أزرق",
+        retailPrice: "500",
+        widthMm: 30,
+        heightMm: 10,
+      });
+
+      const doc = await PDFDocument.load(result.pdfBytes);
+      const page = doc.getPage(0);
+      expect(Math.round(page.getWidth())).toBe(85);
+      expect(Math.round(page.getHeight())).toBe(28);
+    });
+
+    it("يولّد ليبل 30×10مم عندما يحتوي SKU على محارف عربية", async () => {
+      const result = await generateBarcodePdf({
+        barcode: "2001234567893",
+        productName: "قلم جاف أزرق",
+        sku: "رمز-١٢٣",
+        retailPrice: "500",
+        widthMm: 30,
+        heightMm: 10,
+      });
+
+      const doc = await PDFDocument.load(result.pdfBytes);
+      expect(doc.getPageCount()).toBe(1);
+      expect(Math.round(doc.getPage(0).getHeight())).toBe(28);
     });
   });
 
@@ -140,11 +170,27 @@ describe("server/services/barcodePdfService", () => {
       expect(doc.getPageCount()).toBe(5);
     });
 
-    it("يولّد ملف PDF لدفعة ملصقات بنمط شبكة A4", async () => {
+    it("يحافظ على 30×10مم في كل صفحات دفعة الرول", async () => {
       const result = await generateBarcodeBatchPdf({
         items: [
-          { barcode: "2001112223334", productName: "منتج أ", count: 25 },
+          { barcode: "2001112223334", productName: "منتج صغير", count: 2 },
         ],
+        layout: "individual_pages",
+        widthMm: 30,
+        heightMm: 10,
+      });
+
+      const doc = await PDFDocument.load(result.pdfBytes);
+      expect(doc.getPageCount()).toBe(2);
+      for (const page of doc.getPages()) {
+        expect(Math.round(page.getWidth())).toBe(85);
+        expect(Math.round(page.getHeight())).toBe(28);
+      }
+    });
+
+    it("يولّد ملف PDF لدفعة ملصقات بنمط شبكة A4", async () => {
+      const result = await generateBarcodeBatchPdf({
+        items: [{ barcode: "2001112223334", productName: "منتج أ", count: 25 }],
         layout: "a4_grid",
       });
 
@@ -158,10 +204,9 @@ describe("server/services/barcodePdfService", () => {
     });
 
     it("يرمي خطأ صريحاً عند تمرير عناصر فارغة", async () => {
-      await expect(
-        generateBarcodeBatchPdf({ items: [] })
-      ).rejects.toThrow("لا توجد عناصر بباركود صالح لتوليد دفعة الملصقات");
+      await expect(generateBarcodeBatchPdf({ items: [] })).rejects.toThrow(
+        "لا توجد عناصر بباركود صالح لتوليد دفعة الملصقات",
+      );
     });
   });
 });
-

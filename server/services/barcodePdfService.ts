@@ -17,7 +17,11 @@ import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, PDFFont, PDFPage, rgb, StandardFonts } from "pdf-lib";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { calculateBarcodeBars, buildBarcodePdfFilename, buildBatchBarcodePdfFilename } from "@shared/barcodeEncoding";
+import {
+  calculateBarcodeBars,
+  buildBarcodePdfFilename,
+  buildBatchBarcodePdfFilename,
+} from "@shared/barcodeEncoding";
 import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
 
 export type BarcodePdfPreset = "50x30" | "50x25" | "60x40" | "artwork" | "a4";
@@ -66,9 +70,9 @@ export interface GenerateBarcodeBatchPdfResult {
   totalLabels: number;
 }
 
-
 // ── تحويل المليمتر لنقاط PDF (1 mm = 72 / 25.4 pt) ──
 const MM_TO_PT = 72 / 25.4;
+const COMPACT_LABEL_HEIGHT_THRESHOLD_MM = 15;
 
 const BLACK = rgb(0, 0, 0);
 const WHITE = rgb(1, 1, 1);
@@ -97,7 +101,9 @@ async function getCairoBytes(): Promise<Uint8Array> {
       lastError = err;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(`تعذّر تحميل خط Cairo: ${filename}`);
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`تعذّر تحميل خط Cairo: ${filename}`);
 }
 
 export { buildBarcodePdfFilename, buildBatchBarcodePdfFilename };
@@ -119,7 +125,7 @@ function drawAr(
   yy: number,
   size: number,
   color = BLACK,
-  bold = false
+  bold = false,
 ) {
   const put = (t: string, x: number) => {
     pg.drawText(t, { x, y: yy, font, size, color });
@@ -149,10 +155,86 @@ function drawArCentered(
   yy: number,
   size: number,
   color = BLACK,
-  bold = false
+  bold = false,
 ) {
   const width = font.widthOfTextAtSize(text, size);
   drawAr(pg, font, text, centerX + width / 2, yy, size, color, bold);
+}
+
+/** تخطيط الارتفاعات 10→أقل من 15مم: اسم بسطر واحد، قضبان ≥5مم، وسعر/رمز في الأسفل. */
+function renderCompactLabel(
+  pg: PDFPage,
+  ctx: DrawContext,
+  input: GenerateBarcodePdfInput,
+  ox: number,
+  oy: number,
+  w: number,
+  h: number,
+) {
+  const barcodeData = calculateBarcodeBars(input.barcode);
+  const centerX = ox + w / 2;
+  const name = (input.productName || "").trim();
+  let titleSize = 5;
+  while (titleSize > 4 && ctx.cairo.widthOfTextAtSize(name, titleSize) > w - 8)
+    titleSize -= 0.25;
+  if (name)
+    drawArCentered(
+      pg,
+      ctx.cairo,
+      name,
+      centerX,
+      oy + h - 6.2,
+      titleSize,
+      BLACK,
+      true,
+    );
+
+  const moduleWidth = (w - 8) / barcodeData.totalWidth;
+  const barcodeStartX = ox + 4;
+  const barY = oy + 7;
+  const barHeight = Math.max(8, h - 14);
+  for (const bar of barcodeData.bars) {
+    pg.drawRectangle({
+      x: barcodeStartX + bar.x * moduleWidth,
+      y: barY,
+      width: Math.max(0.4, bar.width * moduleWidth),
+      height: barHeight,
+      color: BLACK,
+    });
+  }
+
+  const priceVal = input.retailPrice ? String(input.retailPrice).trim() : "";
+  if (priceVal && priceVal !== "0") {
+    const numPrice = Number(priceVal.replace(/[^0-9.]/g, ""));
+    const formattedPrice =
+      !isNaN(numPrice) && numPrice > 0
+        ? `${numPrice.toLocaleString("en-US")} د.ع`
+        : `${priceVal} د.ع`;
+    drawAr(
+      pg,
+      ctx.cairo,
+      formattedPrice,
+      ox + w - 4,
+      oy + 1.2,
+      4.2,
+      GRAY_DARK,
+      true,
+    );
+  }
+  const sku = (input.sku || "").trim();
+  if (sku) {
+    const skuSize = 4.2;
+    drawAr(
+      pg,
+      ctx.cairo,
+      sku,
+      ox + 4 + ctx.cairo.widthOfTextAtSize(sku, skuSize),
+      oy + 1.2,
+      skuSize,
+      GRAY_DARK,
+      true,
+    );
+  }
 }
 
 /**
@@ -166,7 +248,7 @@ function renderSingleLabel(
   oy: number,
   w: number,
   h: number,
-  showBorder = false
+  showBorder = false,
 ) {
   // خلفية بيضاء نقية
   pg.drawRectangle({
@@ -179,6 +261,11 @@ function renderSingleLabel(
     borderWidth: showBorder ? 0.5 : 0,
   });
 
+  if (h < COMPACT_LABEL_HEIGHT_THRESHOLD_MM * MM_TO_PT) {
+    renderCompactLabel(pg, ctx, input, ox, oy, w, h);
+    return;
+  }
+
   const barcodeData = calculateBarcodeBars(input.barcode);
   const centerX = ox + w / 2;
 
@@ -188,23 +275,47 @@ function renderSingleLabel(
 
   let titleFontSize = h >= 100 ? 10 : h >= 80 ? 8.5 : 7.5;
   if (name) {
-    while (titleFontSize > 6 && ctx.cairo.widthOfTextAtSize(name, titleFontSize) > maxTitleWidth) {
+    while (
+      titleFontSize > 6 &&
+      ctx.cairo.widthOfTextAtSize(name, titleFontSize) > maxTitleWidth
+    ) {
       titleFontSize -= 0.5;
     }
     const titleY = oy + h - titleFontSize - (h >= 100 ? 7 : 5);
-    drawArCentered(pg, ctx.cairo, name, centerX, titleY, titleFontSize, BLACK, true);
+    drawArCentered(
+      pg,
+      ctx.cairo,
+      name,
+      centerX,
+      titleY,
+      titleFontSize,
+      BLACK,
+      true,
+    );
   }
 
   // سطر إضافي للمواصفة/الوحدة إن اتسعت المساحة
   const unit = (input.unitName || "").trim();
   const brand = (input.brand || "").trim();
-  const extraLine = [unit && unit !== "قطعة" ? `الوحدة: ${unit}` : null, brand ? `الماركة: ${brand}` : null]
+  const extraLine = [
+    unit && unit !== "قطعة" ? `الوحدة: ${unit}` : null,
+    brand ? `الماركة: ${brand}` : null,
+  ]
     .filter(Boolean)
     .join("  ·  ");
 
   let subY = oy + h - titleFontSize - (h >= 100 ? 19 : 14);
   if (extraLine && h >= 80) {
-    drawArCentered(pg, ctx.cairo, extraLine, centerX, subY, 6, GRAY_MUTED, false);
+    drawArCentered(
+      pg,
+      ctx.cairo,
+      extraLine,
+      centerX,
+      subY,
+      6,
+      GRAY_MUTED,
+      false,
+    );
   }
 
   // 2. وسط الملصق: الباركود المتجهي
@@ -247,9 +358,10 @@ function renderSingleLabel(
   if (priceVal && priceVal !== "0") {
     // تنسيق السعر بالأرقام اللاتينية مع د.ع
     const numPrice = Number(priceVal.replace(/[^0-9.]/g, ""));
-    const formattedPrice = !isNaN(numPrice) && numPrice > 0
-      ? `${numPrice.toLocaleString("en-US")} د.ع`
-      : `${priceVal} د.ع`;
+    const formattedPrice =
+      !isNaN(numPrice) && numPrice > 0
+        ? `${numPrice.toLocaleString("en-US")} د.ع`
+        : `${priceVal} د.ع`;
     const priceText = `السعر: ${formattedPrice}`;
     // يمين
     drawAr(pg, ctx.cairo, priceText, ox + w - 6, footerY, 6.5, GRAY_DARK, true);
@@ -257,7 +369,16 @@ function renderSingleLabel(
 
   // يسار أسفل: هوية المؤسسة
   const companyLabel = CO.sub || "الرؤية العربية";
-  drawAr(pg, ctx.cairo, companyLabel, ox + ctx.cairo.widthOfTextAtSize(companyLabel, 5.8) + 6, footerY, 5.8, GRAY_MUTED, false);
+  drawAr(
+    pg,
+    ctx.cairo,
+    companyLabel,
+    ox + ctx.cairo.widthOfTextAtSize(companyLabel, 5.8) + 6,
+    footerY,
+    5.8,
+    GRAY_MUTED,
+    false,
+  );
 }
 
 /**
@@ -268,7 +389,7 @@ function renderArtwork(
   ctx: DrawContext,
   input: GenerateBarcodePdfInput,
   pageW: number,
-  pageH: number
+  pageH: number,
 ) {
   const barcodeData = calculateBarcodeBars(input.barcode);
   const moduleWidth = 1.15; // عرض معياري ممتاز للطباعة المتجهية
@@ -304,7 +425,16 @@ function renderArtwork(
   // اسم المنتج أعلى الباركود إن وُجد
   const name = (input.productName || "").trim();
   if (name) {
-    drawArCentered(pg, ctx.cairo, name, pageW / 2, barY + barHeight + 8, 9, BLACK, true);
+    drawArCentered(
+      pg,
+      ctx.cairo,
+      name,
+      pageW / 2,
+      barY + barHeight + 8,
+      9,
+      BLACK,
+      true,
+    );
   }
 }
 
@@ -314,7 +444,7 @@ function renderArtwork(
 function renderA4Sheet(
   pg: PDFPage,
   ctx: DrawContext,
-  input: GenerateBarcodePdfInput
+  input: GenerateBarcodePdfInput,
 ) {
   // A4: 210mm × 297mm = 595.28 pt × 841.89 pt
   const cols = 3;
@@ -342,7 +472,7 @@ function renderA4Sheet(
  * التوليد الخادمي الرئيسي لوثيقة PDF عالية الدقة.
  */
 export async function generateBarcodePdf(
-  input: GenerateBarcodePdfInput
+  input: GenerateBarcodePdfInput,
 ): Promise<GenerateBarcodePdfResult> {
   const code = (input.barcode || "").trim();
   if (!code) throw new Error("لا يوجد باركود لتوليد ملف PDF");
@@ -413,10 +543,10 @@ export async function generateBarcodePdf(
  * 2. نمط a4_grid: شبكة ملصقات منظمة في صفحات A4 (24 ملصق لكل ورقة في شبكة 3×8).
  */
 export async function generateBarcodeBatchPdf(
-  input: GenerateBarcodeBatchPdfInput
+  input: GenerateBarcodeBatchPdfInput,
 ): Promise<GenerateBarcodeBatchPdfResult> {
   const validItems = (input.items || []).filter(
-    (item) => item && (item.barcode || "").trim().length > 0 && item.count > 0
+    (item) => item && (item.barcode || "").trim().length > 0 && item.count > 0,
   );
   if (!validItems.length) {
     throw new Error("لا توجد عناصر بباركود صالح لتوليد دفعة الملصقات");
@@ -470,12 +600,23 @@ export async function generateBarcodeBatchPdf(
       const ox = marginX + c * labelWPt;
       const oy = a4H - marginY - (r + 1) * labelHPt;
 
-      renderSingleLabel(currentPage!, ctx, expanded[i], ox, oy, labelWPt, labelHPt, true);
+      renderSingleLabel(
+        currentPage!,
+        ctx,
+        expanded[i],
+        ox,
+        oy,
+        labelWPt,
+        labelHPt,
+        true,
+      );
     }
   } else {
     // رول ملصقات: صفحة منفصلة لكل ملصق
-    const pageW = (input.widthMm && input.widthMm >= 10 ? input.widthMm : 50) * MM_TO_PT;
-    const pageH = (input.heightMm && input.heightMm >= 10 ? input.heightMm : 30) * MM_TO_PT;
+    const pageW =
+      (input.widthMm && input.widthMm >= 10 ? input.widthMm : 50) * MM_TO_PT;
+    const pageH =
+      (input.heightMm && input.heightMm >= 10 ? input.heightMm : 30) * MM_TO_PT;
 
     for (const item of expanded) {
       const page = pdf.addPage([pageW, pageH]);
@@ -492,4 +633,3 @@ export async function generateBarcodeBatchPdf(
 
   return { pdfBytes, base64, filename, totalLabels: expanded.length };
 }
-
