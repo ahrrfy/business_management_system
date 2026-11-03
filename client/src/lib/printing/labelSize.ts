@@ -12,6 +12,10 @@ export interface LabelSize {
 
 /** عرض الوسائط الأقصى للطابعة (مم). */
 export const MAX_LABEL_WIDTH_MM = 58;
+/** أصغر عرض مدعوم لمقاس الملصق المخصّص (مم). */
+export const MIN_LABEL_WIDTH_MM = 20;
+/** أصغر ارتفاع مدعوم — يشمل رول 30×10مم الصغير. */
+export const MIN_LABEL_HEIGHT_MM = 10;
 /** كثافة الطباعة: 203dpi ≈ 8 نقاط/مم. */
 export const PRINT_DPMM = 8;
 /** عرض الطباعة الفعّال لطابعة 58مم بالنقاط (قياسيّ). */
@@ -19,7 +23,12 @@ export const MAX_PRINT_WIDTH_DOTS = 384;
 
 /** مقاسات جاهزة تقع ضمن حدود الطابعة (≤58مم). الأكثر استعمالاً أولاً: 50×25مم (2×1 إنش). */
 export const LABEL_PRESETS: { id: string; label: string; size: LabelSize }[] = [
-  { id: "50x25", label: "50 × 25 مم (2×1 إنش)", size: { widthMm: 50, heightMm: 25 } },
+  { id: "30x10", label: "30 × 10 مم", size: { widthMm: 30, heightMm: 10 } },
+  {
+    id: "50x25",
+    label: "50 × 25 مم (2×1 إنش)",
+    size: { widthMm: 50, heightMm: 25 },
+  },
   { id: "50x30", label: "50 × 30 مم", size: { widthMm: 50, heightMm: 30 } },
   { id: "40x30", label: "40 × 30 مم", size: { widthMm: 40, heightMm: 30 } },
   { id: "40x25", label: "40 × 25 مم", size: { widthMm: 40, heightMm: 25 } },
@@ -33,18 +42,26 @@ const LS_KEY = "labelSize";
 
 /** يحصُر المقاس ضمن حدود معقولة (وضمن عرض الطابعة). */
 export function clampLabelSize(s: LabelSize): LabelSize {
-  const widthMm = Math.min(Math.max(Math.round(s.widthMm), 20), MAX_LABEL_WIDTH_MM);
-  const heightMm = Math.min(Math.max(Math.round(s.heightMm), 15), 120);
+  const widthMm = Math.min(
+    Math.max(Math.round(s.widthMm), MIN_LABEL_WIDTH_MM),
+    MAX_LABEL_WIDTH_MM,
+  );
+  const heightMm = Math.min(
+    Math.max(Math.round(s.heightMm), MIN_LABEL_HEIGHT_MM),
+    120,
+  );
   return { widthMm, heightMm };
 }
 
 /** المقاس المحفوظ (أو الافتراضي). يُستعمل افتراضياً في كل مسارات الطباعة. */
 export function getLabelSize(): LabelSize {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(LS_KEY) : null;
+    const raw =
+      typeof localStorage !== "undefined" ? localStorage.getItem(LS_KEY) : null;
     if (raw) {
       const p = JSON.parse(raw);
-      if (typeof p?.widthMm === "number" && typeof p?.heightMm === "number") return clampLabelSize(p);
+      if (typeof p?.widthMm === "number" && typeof p?.heightMm === "number")
+        return clampLabelSize(p);
     }
   } catch {
     /* localStorage غير متاح ⇒ الافتراضي */
@@ -56,7 +73,8 @@ export function getLabelSize(): LabelSize {
 export function setLabelSize(s: LabelSize): LabelSize {
   const c = clampLabelSize(s);
   try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(LS_KEY, JSON.stringify(c));
+    if (typeof localStorage !== "undefined")
+      localStorage.setItem(LS_KEY, JSON.stringify(c));
   } catch {
     /* تجاهل */
   }
@@ -65,7 +83,9 @@ export function setLabelSize(s: LabelSize): LabelSize {
 
 /** هل المقاس يطابق أحد المقاسات الجاهزة؟ (يعيد معرّفه أو "custom"). */
 export function presetIdFor(s: LabelSize): string {
-  const hit = LABEL_PRESETS.find((p) => p.size.widthMm === s.widthMm && p.size.heightMm === s.heightMm);
+  const hit = LABEL_PRESETS.find(
+    (p) => p.size.widthMm === s.widthMm && p.size.heightMm === s.heightMm,
+  );
   return hit ? hit.id : "custom";
 }
 

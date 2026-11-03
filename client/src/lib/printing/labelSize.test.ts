@@ -6,6 +6,8 @@ import {
   LABEL_PRESETS,
   labelHeightDots,
   labelWidthDots,
+  MIN_LABEL_HEIGHT_MM,
+  MIN_LABEL_WIDTH_MM,
   MAX_LABEL_WIDTH_MM,
   MAX_PRINT_WIDTH_DOTS,
   presetIdFor,
@@ -31,13 +33,27 @@ describe("labelSize — مقاس ملصق الباركود (HPRT LPQ58)", () => 
     expect(labelHeightDots(40)).toBe(320);
   });
 
-  it("clampLabelSize يحصُر العرض ضمن [20, 58] والارتفاع ضمن [15, 120]", () => {
-    expect(clampLabelSize({ widthMm: 5, heightMm: 5 })).toEqual({ widthMm: 20, heightMm: 15 });
-    expect(clampLabelSize({ widthMm: 999, heightMm: 999 })).toEqual({ widthMm: MAX_LABEL_WIDTH_MM, heightMm: 120 });
-    expect(clampLabelSize({ widthMm: 50.4, heightMm: 30.6 })).toEqual({ widthMm: 50, heightMm: 31 });
+  it("clampLabelSize يحصُر العرض ضمن [20, 58] والارتفاع ضمن [10, 120]", () => {
+    expect(clampLabelSize({ widthMm: 5, heightMm: 5 })).toEqual({
+      widthMm: MIN_LABEL_WIDTH_MM,
+      heightMm: MIN_LABEL_HEIGHT_MM,
+    });
+    expect(clampLabelSize({ widthMm: 30, heightMm: 10 })).toEqual({
+      widthMm: 30,
+      heightMm: 10,
+    });
+    expect(clampLabelSize({ widthMm: 999, heightMm: 999 })).toEqual({
+      widthMm: MAX_LABEL_WIDTH_MM,
+      heightMm: 120,
+    });
+    expect(clampLabelSize({ widthMm: 50.4, heightMm: 30.6 })).toEqual({
+      widthMm: 50,
+      heightMm: 31,
+    });
   });
 
   it("presetIdFor يميّز المقاسات الجاهزة عن المخصّصة", () => {
+    expect(presetIdFor({ widthMm: 30, heightMm: 10 })).toBe("30x10");
     expect(presetIdFor({ widthMm: 50, heightMm: 30 })).toBe("50x30");
     expect(presetIdFor({ widthMm: 40, heightMm: 30 })).toBe("40x30");
     expect(presetIdFor({ widthMm: 37, heightMm: 22 })).toBe("custom");
@@ -54,6 +70,9 @@ describe("labelSize — مقاس ملصق الباركود (HPRT LPQ58)", () => 
     // في بيئة الاختبار (node) لا يوجد localStorage ⇒ getLabelSize يعيد الافتراضي بلا رمي.
     expect(getLabelSize()).toEqual(DEFAULT_LABEL_SIZE);
     // setLabelSize يحصُر ويعيد القيمة (الحفظ يُتجاهَل بهدوء بلا localStorage).
-    expect(setLabelSize({ widthMm: 1000, heightMm: 1 })).toEqual({ widthMm: MAX_LABEL_WIDTH_MM, heightMm: 15 });
+    expect(setLabelSize({ widthMm: 1000, heightMm: 1 })).toEqual({
+      widthMm: MAX_LABEL_WIDTH_MM,
+      heightMm: MIN_LABEL_HEIGHT_MM,
+    });
   });
 });
