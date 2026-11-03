@@ -29,8 +29,8 @@ export const BAR_FLOOR_MM = 5;
 export const PAD_Y_MM = 0.8;
 /** الفراغ بين الكتل الرأسية (مم). */
 export const GAP_MM = 0.4;
-/** عند 10مم نضغط الهوامش والتباعد فقط، ونُبقي قضبان الباركود عند أرضية 5مم. */
-export const COMPACT_LABEL_MAX_HEIGHT_MM = 10;
+/** كل ارتفاعٍ جديد دون الحدّ القديم 15مم يحتاج التخطيط المضغوط ليبقى الباركود ≥5مم. */
+export const COMPACT_LABEL_HEIGHT_THRESHOLD_MM = 15;
 export const COMPACT_PAD_Y_MM = 0.3;
 export const COMPACT_GAP_MM = 0.15;
 export const COMPACT_HARD_FLOOR_PT = 5;
@@ -77,7 +77,7 @@ export function labelVerticalSpacing(heightMm: number): {
   padYMm: number;
   gapMm: number;
 } {
-  return heightMm <= COMPACT_LABEL_MAX_HEIGHT_MM
+  return heightMm < COMPACT_LABEL_HEIGHT_THRESHOLD_MM
     ? { padYMm: COMPACT_PAD_Y_MM, gapMm: COMPACT_GAP_MM }
     : { padYMm: PAD_Y_MM, gapMm: GAP_MM };
 }
@@ -178,7 +178,7 @@ export function solveLabelLayout(
 ): LabelLayout {
   const w = size.widthMm;
   const H = size.heightMm;
-  const compact = H <= COMPACT_LABEL_MAX_HEIGHT_MM;
+  const compact = H < COMPACT_LABEL_HEIGHT_THRESHOLD_MM;
   const { padYMm, gapMm } = labelVerticalSpacing(H);
   const hardFloorPt = compact ? COMPACT_HARD_FLOOR_PT : HARD_FLOOR_PT;
   const usableH = H - 2 * padYMm;

@@ -55,6 +55,21 @@ describe("solveLabelLayout — المجموعة الإلزامية لا تختف
     expect(L.overflow).toBe(true);
   });
 
+  it("كل الارتفاعات الجديدة 10→أقل من 15مم تستخدم التخطيط المضغوط وتُبقي الباركود قابلاً للمسح", () => {
+    for (const heightMm of [10, 11, 12, 13, 14, 14.9]) {
+      const L = solveLabelLayout(
+        { widthMm: 30, heightMm },
+        content({ name: "قلم جاف", hasTier: false }),
+      );
+
+      expect(L.padYMm).toBe(0.3);
+      expect(L.gapMm).toBe(0.15);
+      expect(L.barcode.heightMm).toBeGreaterThanOrEqual(BAR_FLOOR_MM);
+      expect(L.barcode.scannable).toBe(true);
+      expect(L.overflow).toBe(false);
+    }
+  });
+
   it("الاسم + السعر + الباركود ظاهرة على كلّ الارتفاعات المسموحة (١٥→٤٠مم)", () => {
     for (let h = 15; h <= 40; h++) {
       const L = solveLabelLayout(

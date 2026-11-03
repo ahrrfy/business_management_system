@@ -136,6 +136,21 @@ describe("server/services/barcodePdfService", () => {
       expect(Math.round(page.getWidth())).toBe(85);
       expect(Math.round(page.getHeight())).toBe(28);
     });
+
+    it("يولّد ليبل 30×10مم عندما يحتوي SKU على محارف عربية", async () => {
+      const result = await generateBarcodePdf({
+        barcode: "2001234567893",
+        productName: "قلم جاف أزرق",
+        sku: "رمز-١٢٣",
+        retailPrice: "500",
+        widthMm: 30,
+        heightMm: 10,
+      });
+
+      const doc = await PDFDocument.load(result.pdfBytes);
+      expect(doc.getPageCount()).toBe(1);
+      expect(Math.round(doc.getPage(0).getHeight())).toBe(28);
+    });
   });
 
   describe("generateBarcodeBatchPdf", () => {

@@ -72,6 +72,7 @@ export interface GenerateBarcodeBatchPdfResult {
 
 // ── تحويل المليمتر لنقاط PDF (1 mm = 72 / 25.4 pt) ──
 const MM_TO_PT = 72 / 25.4;
+const COMPACT_LABEL_HEIGHT_THRESHOLD_MM = 15;
 
 const BLACK = rgb(0, 0, 0);
 const WHITE = rgb(1, 1, 1);
@@ -160,7 +161,7 @@ function drawArCentered(
   drawAr(pg, font, text, centerX + width / 2, yy, size, color, bold);
 }
 
-/** تخطيط 30×10مم المضغوط: اسم بسطر واحد، قضبان ≥5مم، وسعر/رمز في السطر السفلي. */
+/** تخطيط الارتفاعات 10→أقل من 15مم: اسم بسطر واحد، قضبان ≥5مم، وسعر/رمز في الأسفل. */
 function renderCompactLabel(
   pg: PDFPage,
   ctx: DrawContext,
@@ -221,14 +222,19 @@ function renderCompactLabel(
     );
   }
   const sku = (input.sku || "").trim();
-  if (sku)
-    pg.drawText(sku, {
-      x: ox + 4,
-      y: oy + 1.2,
-      font: ctx.helvBold,
-      size: 4.2,
-      color: GRAY_DARK,
-    });
+  if (sku) {
+    const skuSize = 4.2;
+    drawAr(
+      pg,
+      ctx.cairo,
+      sku,
+      ox + 4 + ctx.cairo.widthOfTextAtSize(sku, skuSize),
+      oy + 1.2,
+      skuSize,
+      GRAY_DARK,
+      true,
+    );
+  }
 }
 
 /**
@@ -255,7 +261,7 @@ function renderSingleLabel(
     borderWidth: showBorder ? 0.5 : 0,
   });
 
-  if (h <= 10 * MM_TO_PT + 0.01) {
+  if (h < COMPACT_LABEL_HEIGHT_THRESHOLD_MM * MM_TO_PT) {
     renderCompactLabel(pg, ctx, input, ox, oy, w, h);
     return;
   }
