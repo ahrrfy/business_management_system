@@ -726,7 +726,7 @@ export default function BarcodeLabels() {
             </div>
 
             {/* فئة السعر المطبوع — تُعيد تسعير قائمة الطباعة كاملةً فوراً */}
-            <div className="space-y-1.5 border-t pt-2.5">
+            {!previewFit.barcodeOnly && <div className="space-y-1.5 border-t pt-2.5">
               <Label className="text-xs">فئة السعر المطبوع</Label>
               <div className="flex flex-wrap gap-1.5">
                 {(["RETAIL", "WHOLESALE", "GOVERNMENT"] as const).map((t) => (
@@ -744,13 +744,13 @@ export default function BarcodeLabels() {
               <p className="text-[11px] text-muted-foreground">
                 يُطبع سعر هذه الفئة لكلّ وحدة. تبديلها يُعيد تسعير القائمة كاملةً، وتُوسَم ملصقات الجملة/الحكومي بشارة الفئة كي لا تُخلَط بملصق الرفّ.
               </p>
-            </div>
+            </div>}
 
-            {/* خيارات محتوى الملصق (تتفاعل مع المعاينة) */}
-            <div className="flex flex-wrap gap-4 border-t pt-2.5 text-xs">
+            {/* خيارات التفاصيل تخصّ المقاسات التي تتّسع لها. */}
+            {!previewFit.barcodeOnly && <div className="flex flex-wrap gap-4 border-t pt-2.5 text-xs">
               <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم المنتج</label>
               <label className="flex items-center gap-1"><input type="checkbox" checked={showPrice} onChange={(e) => setShowPrice(e.target.checked)} /> السعر</label>
-            </div>
+            </div>}
 
             {/* طابعة الملصقات */}
             <div className="border-t pt-2.5 space-y-1.5">
@@ -806,15 +806,23 @@ export default function BarcodeLabels() {
               </div>
               <div className="text-xs text-muted-foreground space-y-1 min-w-[12rem] flex-1">
                 <p className="font-medium text-foreground">معاينة فعلية بمقاس الملصق (مكبّرة ×{PREVIEW_ZOOM})</p>
-                <p>التصميم نفسه الذي يُطبع تماماً: اسمٌ يتكيّف مع طوله، قضبان تملأ العرض، وخطوط ثقيلة واضحة بلا خطوط رفيعة.</p>
-                <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس أو خياري الاسم/السعر لتُحدَّث المعاينة فوراً.</p>
+                {previewFit.barcodeOnly ? (
+                  <p>باركود فقط: خطوط سوداء على خلفية بيضاء، بأكبر ارتفاع متاح وهوامش بيضاء محفوظة. لا يُطبع اسم أو سعر أو رمز أو أرقام أسفل القضبان.</p>
+                ) : (
+                  <p>التصميم نفسه الذي يُطبع تماماً: اسمٌ يتكيّف مع طوله، قضبان تملأ العرض، وخطوط ثقيلة واضحة بلا خطوط رفيعة.</p>
+                )}
+                <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس لتُحدَّث المعاينة فوراً.</p>
               </div>
             </div>
 
             {/* المجموعة الإلزامية (الاسم/اللون/الوحدة/السعر/الباركود) لا تختفي أبداً — نطمئن المستخدم
                 بذلك، ونُبلّغه بلطف بما يُخفى (رقم الباركود/الرمز فقط) وبأصغر ارتفاعٍ مريح. إنذارٌ كهرمانيّ
                 فقط في الحالة القصوى النادرة (مقاسٌ ضئيلٌ جداً قد يقتطع طرف الاسم). */}
-            {previewFit.overflow ? (
+            {previewFit.barcodeOnly ? (
+              <p role="status" className="mt-2.5 border-t pt-2.5 text-xs text-muted-foreground">
+                الملصقات بارتفاع أقل من 15 مم مخصّصة للباركود فقط لزيادة مساحة الترميز ووضوحه. للرموز الطويلة اختر ملصقاً أعرض للحصول على خطوط أثخن.
+              </p>
+            ) : previewFit.overflow ? (
               <div
                 role="alert"
                 className="mt-2.5 flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-xs text-[var(--sem-warn)]"

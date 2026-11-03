@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { describe, expect, it, vi } from "vitest";
+import { PDFDocument, PDFPage } from "pdf-lib";
+import { calculateBarcodeBars } from "@shared/barcodeEncoding";
 import {
   buildBarcodePdfFilename,
   generateBarcodePdf,
@@ -137,6 +138,46 @@ describe("server/services/barcodePdfService", () => {
       expect(Math.round(page.getHeight())).toBe(28);
     });
 
+    it("كل الارتفاعات الصغيرة تطبع قضباناً فقط وبنسب ثابتة دون نصوص أو تضخيم انتقائي", async () => {
+      const text = vi.spyOn(PDFPage.prototype, "drawText");
+      const rect = vi.spyOn(PDFPage.prototype, "drawRectangle");
+      const mmToPt = 72 / 25.4;
+      try {
+        for (const barcode of ["4006381333931", "ALR0000042"]) {
+          for (const heightMm of [10, 11, 12, 13, 14, 14.9]) {
+            text.mockClear();
+            rect.mockClear();
+            await generateBarcodePdf({
+              barcode,
+              productName: "قلم جاف أزرق",
+              unitName: "درزن",
+              brand: "علامة",
+              sku: "رمز-١٢٣",
+              retailPrice: "500",
+              widthMm: 30,
+              heightMm,
+            });
+            expect(text).not.toHaveBeenCalled();
+            const bars = rect.mock.calls.slice(1).map(([r]) => r!);
+            const encoded = calculateBarcodeBars(barcode);
+            expect(bars).toHaveLength(encoded.bars.length);
+            const modulePt = (barcode === "4006381333931" ? 0.25 : 0.125) * mmToPt;
+            for (let i = 0; i < bars.length; i++) {
+              expect(bars[i].height).toBeCloseTo((heightMm - 1) * mmToPt, 8);
+              expect(bars[i].y).toBeCloseTo(0.5 * mmToPt, 8);
+              expect(bars[i].width).toBeCloseTo(encoded.bars[i].width * modulePt, 8);
+            }
+            expect(bars[0].x).toBeGreaterThan(encoded.quietZoneLeft * modulePt);
+            const last = bars[bars.length - 1];
+            expect(30 * mmToPt - last.x! - last.width!).toBeGreaterThan(encoded.quietZoneRight * modulePt);
+          }
+        }
+      } finally {
+        text.mockRestore();
+        rect.mockRestore();
+      }
+    });
+
     it("يولّد ليبل 30×10مم عندما يحتوي SKU على محارف عربية", async () => {
       const result = await generateBarcodePdf({
         barcode: "2001234567893",
@@ -171,6 +212,8 @@ describe("server/services/barcodePdfService", () => {
     });
 
     it("يحافظ على 30×10مم في كل صفحات دفعة الرول", async () => {
+      const text = vi.spyOn(PDFPage.prototype, "drawText");
+      try {
       const result = await generateBarcodeBatchPdf({
         items: [
           { barcode: "2001112223334", productName: "منتج صغير", count: 2 },
@@ -185,6 +228,10 @@ describe("server/services/barcodePdfService", () => {
       for (const page of doc.getPages()) {
         expect(Math.round(page.getWidth())).toBe(85);
         expect(Math.round(page.getHeight())).toBe(28);
+      }
+      expect(text).not.toHaveBeenCalled();
+      } finally {
+        text.mockRestore();
       }
     });
 
