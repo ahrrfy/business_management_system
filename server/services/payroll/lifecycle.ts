@@ -10,18 +10,21 @@ import {
   payrollAccountingEvents,
   payrollItems,
   payrollObligations,
+  payrollPenaltyAllocations,
   payrollRuns,
 } from "../../../drizzle/schema";
 import { type Actor, withTx } from "../tx";
 import {
   approvePayrollAccrualTx,
   reopenPayrollAccrualTx,
+  verifyApprovalSnapshotIfPresentTx,
 } from "./obligations";
 import { money } from "../money";
 import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
+import { assertPenaltyCapAtApprovalTx, assertRunPenaltyAllocationsTx, assertZeroNetEvidenceIfPaymentExistsTx, assertZeroNetPenaltySettlementTx, readPenaltySourcesTx, refreshPenaltyStatesTx } from "./penaltyAllocations";
 import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 import {
   assertNoLegacyUnclassifiedAdvanceTx,
@@ -108,7 +111,12 @@ export async function approveRun(id: number, actor: Actor) {
         message: "تغيّر المسيّر أثناء التحقق من الاعتماد — أعد المحاولة.",
       });
     }
-    if (run.status === "paid") return true;
+    if (run.status === "paid") {
+      await verifyApprovalSnapshotIfPresentTx(tx, run);
+      await assertRunPenaltyAllocationsTx(tx, id);
+      await assertZeroNetPenaltySettlementTx(tx, run);
+      return true;
+    }
     if (run.status !== "draft") {
       if (run.status !== "approved") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "يُعتمد المسيّر من حالة المسودة فقط." });
@@ -118,7 +126,12 @@ export async function approveRun(id: number, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
     }
     await assertCommissionArtifactReadyForPayrollTx(tx, run.period);
-    if (run.status === "approved") return true;
+    if (run.status === "approved") {
+      await verifyApprovalSnapshotIfPresentTx(tx, run);
+      await assertRunPenaltyAllocationsTx(tx, id);
+      await assertZeroNetEvidenceIfPaymentExistsTx(tx, run);
+      return true;
+    }
     await assertNoLegacyUnclassifiedAdvanceTx(
       tx,
       lockedEmployees,
@@ -176,25 +189,23 @@ export async function approveRun(id: number, actor: Actor) {
         .for("update", { noWait: true })
         .limit(1),
     );
-    const [uncapturedPenalty] = await currentPayrollSourceRead(
-      tx
-        .select({ id: employeePenalties.id })
-        .from(employeePenalties)
-        .where(
-          and(
-            inArray(employeePenalties.employeeId, sourceEmployeeIds),
-            eq(employeePenalties.status, "APPROVED"),
-            isNull(employeePenalties.payrollRunId),
-            sql`${employeePenalties.deductionAmount} > 0`,
-            // نفس أهلية التوليد: عقوبة قديمة غير ملتقطة تمنع اعتماد مسودة ناقصة،
-            // أما قرار شهر مستقبلي فلا يخص الفترة الحالية.
-            sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${run.period}`,
-          ),
-        )
-        .orderBy(employeePenalties.id)
-        .for("update", { noWait: true })
-        .limit(1),
-    );
+    const penaltySources = await readPenaltySourcesTx(tx, sourceEmployeeIds, run.period, true, id);
+    const uncapturedPenalty = penaltySources.find((source) => source.remaining.gt(0) && !source.capturedRunIds.includes(id));
+    const [unprovenLegacyPenalty] = await tx.select({ id: employeePenalties.id })
+      .from(employeePenalties)
+      .leftJoin(payrollPenaltyAllocations, and(
+        eq(payrollPenaltyAllocations.penaltyId, employeePenalties.id),
+        eq(payrollPenaltyAllocations.runId, id),
+      ))
+      .where(and(eq(employeePenalties.payrollRunId, id), isNull(payrollPenaltyAllocations.id)))
+      .limit(1);
+    if (unprovenLegacyPenalty) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذّر اعتماد عقوبة تاريخية ضمن المسودة",
+        why: `العقوبة #${unprovenLegacyPenalty.id} مرتبطة بالمسيّر دون تخصيص مبلغ مثبت`,
+        doThis: "احذف المسودة غير المعتمدة ثم أعد توليدها لتثبيت تخصيص العقوبة",
+      }) });
+    }
     if (uncapturedBonus || uncapturedPenalty) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -213,6 +224,8 @@ export async function approveRun(id: number, actor: Actor) {
     }
     // آخر بوابة قبل تجميد اللقطة: التقط كل سلف الشهر وأزل أي خصم أُلغي من المسودة.
     await syncAllAdvancesForDraftRunTx(tx, id);
+    await assertRunPenaltyAllocationsTx(tx, id);
+    await assertPenaltyCapAtApprovalTx(tx, id, run.period);
     // قراءة حالية بعد القفل والمزامنة؛ لقطة preview قد تسبق تعديلاً متزامناً للبنود.
     const [runToApprove] = await tx
       .select()
@@ -497,6 +510,22 @@ export async function cancelRun(
           message: "هذه مسودة معادة من اعتماد سابق؛ تبقى محفوظة للأثر التدقيقي ولا تُحذف.",
         });
       }
+      const penaltyAllocations = await tx.select({ penaltyId: payrollPenaltyAllocations.penaltyId })
+        .from(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.runId, id)).for("update");
+      const penaltyIds = penaltyAllocations.map((row) => Number(row.penaltyId));
+      if (penaltyIds.length) {
+        const [later] = await tx.select({ period: payrollRuns.period, penaltyId: payrollPenaltyAllocations.penaltyId })
+          .from(payrollPenaltyAllocations)
+          .innerJoin(payrollRuns, eq(payrollPenaltyAllocations.runId, payrollRuns.id))
+          .where(and(inArray(payrollPenaltyAllocations.penaltyId, penaltyIds), sql`${payrollRuns.period} > ${run.period}`))
+          .for("share").limit(1);
+        if (later) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذّر حذف مسودة الرواتب",
+          why: `للعقوبة #${later.penaltyId} تخصيص في مسيّر لاحق (${later.period})`,
+          doThis: "راجع المسيّر اللاحق واحذف مسودته أولاً إن كان ذلك مسموحاً",
+        }) });
+      }
+      await tx.delete(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.runId, id));
       await tx
         .update(employeePenalties)
         .set({ payrollRunId: null, status: "APPROVED" })
@@ -505,15 +534,23 @@ export async function cancelRun(
         .update(employeeSpotBonuses)
         .set({ payrollRunId: null })
         .where(eq(employeeSpotBonuses.payrollRunId, id));
+      await refreshPenaltyStatesTx(tx, penaltyAllocations.map((row) => Number(row.penaltyId)));
       await tx.delete(payrollItems).where(eq(payrollItems.runId, id));
       await tx.delete(payrollRuns).where(eq(payrollRuns.id, id));
       return { id, deleted: true, status: "deleted" as const };
     }
+    // The next revision clears the approval hashes. Verify the old revision's
+    // zero-net closure first so missing proof cannot silently release a penalty.
+    await assertRunPenaltyAllocationsTx(tx, id);
+    await assertZeroNetEvidenceIfPaymentExistsTx(tx, run);
     await reopenPayrollAccrualTx(tx, {
       run,
       actorUserId: actor.userId,
       occurredAt: new Date(),
     });
+    const reopenedPenalties = await tx.select({ penaltyId: payrollPenaltyAllocations.penaltyId })
+      .from(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.runId, id)).for("share");
+    await refreshPenaltyStatesTx(tx, reopenedPenalties.map((row) => Number(row.penaltyId)));
     // إعادة الفتح لا تعيد توليد البنود؛ إبقاء المصادر مربوطة يمنع التقاط المكافأة/العقوبة
     // مرة ثانية في مسيّر لاحق، ويجعل إعادة الاعتماد/الدفع تسوّي المصدر نفسه.
     await tx

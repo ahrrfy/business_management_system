@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPayslipBreakdown } from "./payslipBreakdown";
+import { buildPayslipBreakdown } from "../lib/payslipBreakdown";
 
 describe("buildPayslipBreakdown", () => {
   it("does not add allowances or classified deductions twice", () => {
@@ -11,6 +11,7 @@ describe("buildPayslipBreakdown", () => {
       commission: "20000.00",
       deductions: "200000.00",
       advanceDeduction: "100000.00",
+      penaltyDeduction: "30000.00",
       socialSecurityEmployee: "30000.00",
       incomeTax: "20000.00",
       net: "870000.00",
@@ -19,11 +20,23 @@ describe("buildPayslipBreakdown", () => {
     expect(result).toMatchObject({
       baseWage: "900000.00",
       totalEarnings: "1070000.00",
-      otherDeductions: "50000.00",
+      penaltyDeduction: "30000.00",
+      otherDeductions: "20000.00",
       totalDeductions: "200000.00",
       expectedNet: "870000.00",
       netMatches: true,
     });
+  });
+
+  it("keeps an unknown historical penalty unknown and a captured zero distinct", () => {
+    const input = { gross: "1000", overtime: "0", commission: "0", deductions: "100", net: "900" };
+    expect(buildPayslipBreakdown(input)).toMatchObject({ penaltyDeduction: null, otherDeductions: "100.00", expectedNet: "900.00" });
+    expect(buildPayslipBreakdown({ ...input, penaltyDeduction: "0.00" })).toMatchObject({ penaltyDeduction: "0.00", otherDeductions: "100.00", expectedNet: "900.00" });
+  });
+
+  it("flags penalty components that exceed total deductions", () => {
+    const result = buildPayslipBreakdown({ gross: "1000", overtime: "0", commission: "0", deductions: "100", penaltyDeduction: "101", net: "900" });
+    expect(result).toMatchObject({ penaltyDeduction: "101.00", deductionClassificationGap: "-1.00", deductionComponentsValid: false, expectedNet: "900.00" });
   });
 
   it("rounds money HALF_UP at the display boundary without floating point", () => {

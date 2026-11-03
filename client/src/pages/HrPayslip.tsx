@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { printPayslip } from "@/lib/printing/printPayslip";
 import { iqd } from "@/lib/hr/ui";
 import { fmtDate } from "@/lib/date";
-import { buildPayrollPayslipBreakdown } from "@/lib/payrollPayslipBreakdown";
+import { buildPayrollPayslipBreakdown, type PayrollPenaltyProjection } from "@/lib/payrollPayslipBreakdown";
 import { AlertCircle, CheckCircle2, Clock, FileText, Printer } from "lucide-react";
 
 export default function HrPayslip() {
@@ -45,6 +45,7 @@ export default function HrPayslip() {
   }
 
   const { employee, item } = q.data;
+  const penalty = item as typeof item & PayrollPenaltyProjection;
   const breakdown = buildPayrollPayslipBreakdown({
     gross: item.gross,
     allowances: item.allowances,
@@ -52,6 +53,7 @@ export default function HrPayslip() {
     commission: item.commission,
     deductions: item.deductions,
     advanceDeduction: item.advanceDeduction,
+    penaltyDeduction: penalty.penaltyDeduction,
     socialSecurityEmployee: item.socialSecurityEmployee,
     incomeTax: item.incomeTax,
     net: item.net,
@@ -85,6 +87,7 @@ export default function HrPayslip() {
       commission: item.commission,
       deductions: item.deductions,
       advanceDeduction: item.advanceDeduction,
+      penaltyDeduction: penalty.penaltyDeduction,
       socialSecurityEmployee: item.socialSecurityEmployee,
       incomeTax: item.incomeTax,
       socialSecurityEmployer: item.socialSecurityEmployer,
@@ -223,6 +226,20 @@ export default function HrPayslip() {
                 <span className="text-muted-foreground">استقطاع السلف</span>
                 <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.advanceDeduction)}</span>
               </div>
+            )}
+            {hasAmount(breakdown.penaltyDeduction) && (
+              <div className="flex justify-between py-1 border-b border-dashed">
+                <span className="text-muted-foreground">العقوبات الانضباطية</span>
+                <span className="font-medium text-money-negative" dir="ltr">-{iqd(breakdown.penaltyDeduction)}</span>
+              </div>
+            )}
+            {penalty.penaltyDeduction != null && penalty.penaltyLines?.map((line) => (
+              <div key={line.penaltyId} className="flex justify-between py-1 text-muted-foreground">
+                <span>منها قرار {line.decisionNumber}</span><span dir="ltr">{iqd(line.amount)}</span>
+              </div>
+            ))}
+            {penalty.penaltyDeduction == null && (
+              <p className="text-muted-foreground">تفصيل العقوبات لهذا المسير غير موثّق.</p>
             )}
             {hasAmount(breakdown.otherDeductions) && (
               <div className="flex justify-between py-1 border-b border-dashed">

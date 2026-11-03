@@ -314,7 +314,7 @@ describe("superApp personal payroll isolation", () => {
     });
     expect(revealed.personal).toEqual(expect.objectContaining({
       state: "READY",
-      payslip: expect.objectContaining({ period: "2026-07", net: "1000.00" }),
+      payslip: expect.objectContaining({ period: "2026-07", net: "1000.00", penaltyDeduction: null }),
     }));
     expect(JSON.stringify(revealed)).not.toMatch(/itemId|runId|employeeId|branchId|note|Employer/);
 
@@ -427,9 +427,23 @@ describe("superApp personal payroll isolation", () => {
 
     expect(own.period).toBe("2026-07");
     expect(own.allowances).toBe("50.00");
+    expect(own.penaltyDeduction).toBeNull();
     await expect(
       caller(2).superApp.payslipDetail({ payrollItemId: 300 }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("preserves unknown historical penalty detail and employee isolation in personal payslips", async () => {
+    await expect(caller(2).payroll.myPayslip({ runId: 100 })).resolves.toMatchObject({ item: { penaltyDeduction: null, penaltyLines: [] } });
+    await expect(caller(3).payroll.myPayslip({ runId: 100 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("reserves historical-penalty evidence preview and attestation to the owner", async () => {
+    await expect(caller(2).payroll.historicalPenaltyPreview({ penaltyId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller(2).payroll.attestHistoricalPenalty({ penaltyId: 1, itemId: 1,
+      sourceHash: "a".repeat(64), requestKey: "audit-test-001", reportedActualPayout: "1.00", reportedCashSource: "TREASURY",
+      evidenceStatement: "تصريح تاريخي لغرض الاختبار", evidenceReference: "مرجع اختبار موثق",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("rejects caller-supplied employeeId instead of silently accepting it", async () => {

@@ -10,6 +10,7 @@ import {
   payrollAccountingEvents,
   payrollItems,
   payrollObligations,
+  payrollPenaltyAllocations,
   payrollRuns,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -19,6 +20,7 @@ import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { payrollAccrualPosting, postPayrollAccountingEvent } from "./accounting";
 import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
+import { readPenaltySnapshotsTx } from "./penaltyAllocations";
 import {
   payrollBreakdown,
   payrollHash,
@@ -41,8 +43,9 @@ function canonicalItem(
   branchId: number,
   revisionNo: number,
   breakdown: PayrollBreakdown,
+  penaltyAllocations: Awaited<ReturnType<typeof readPenaltySnapshotsTx>> extends Map<number, infer T> ? T : never,
 ) {
-  return {
+  const canonical = {
     version: 1,
     runId: Number(item.runId),
     itemId: Number(item.id),
@@ -64,6 +67,9 @@ function canonicalItem(
     net: breakdown.net.toFixed(2),
     expenseTotal: breakdown.expenseTotal.toFixed(2),
   } as const;
+  return item.penaltySnapshotComplete
+    ? { ...canonical, version: 2 as const, penaltyAllocations }
+    : canonical;
 }
 
 function canonicalApproval(input: {
@@ -277,6 +283,7 @@ export async function approvePayrollAccrualTx(
   const legalPolicySnapshot = input.run.legalPolicySnapshot;
   const legalPolicyHash = input.run.legalPolicyHash;
 
+  const penaltySnapshots = await readPenaltySnapshotsTx(tx, input.items.map((row) => Number(row.id)));
   const frozen: PayrollApprovalItem[] = input.items.map((row) => {
     const branchId = row.branchIdSnapshot ?? row.currentBranchId ?? input.run.branchId;
     if (branchId == null || Number(branchId) <= 0) {
@@ -286,7 +293,7 @@ export async function approvePayrollAccrualTx(
       });
     }
     const breakdown = payrollBreakdown(row);
-    const snapshot = canonicalItem(row, Number(branchId), revisionNo, breakdown);
+    const snapshot = canonicalItem(row, Number(branchId), revisionNo, breakdown, penaltySnapshots.get(Number(row.id)) ?? []);
     return {
       row,
       branchId: Number(branchId),
@@ -441,9 +448,10 @@ export async function approvePayrollAccrualTx(
   return { approvalSnapshotHash, accrualDate };
 }
 
-async function verifyApprovalSnapshotTx(
+export async function verifyApprovalSnapshotTx(
   tx: Tx,
   run: PayrollRunRow,
+  options?: { readOnly?: boolean },
 ): Promise<PayrollApprovalItem[]> {
   if (!run.accrualDate || !run.legalPolicyHash || !run.approvalSnapshotHash) {
     throw new TRPCError({
@@ -460,12 +468,13 @@ async function verifyApprovalSnapshotTx(
       message: "تغيّرت لقطة السياسة القانونية بعد الاعتماد؛ العكس موقوف.",
     });
   }
-  const items = await tx
+  const itemQuery = tx
     .select()
     .from(payrollItems)
     .where(eq(payrollItems.runId, Number(run.id)))
-    .orderBy(asc(payrollItems.id))
-    .for("update");
+    .orderBy(asc(payrollItems.id));
+  const items = options?.readOnly ? await itemQuery.for("share") : await itemQuery.for("update");
+  const penaltySnapshots = await readPenaltySnapshotsTx(tx, items.map((row) => Number(row.id)));
   const frozen = items.map((row) => {
     if (row.branchIdSnapshot == null) {
       throw new TRPCError({
@@ -475,7 +484,7 @@ async function verifyApprovalSnapshotTx(
     }
     const breakdown = payrollBreakdown(row);
     const snapshotHash = payrollHash(
-      canonicalItem(row, Number(row.branchIdSnapshot), Number(run.revisionNo), breakdown),
+      canonicalItem(row, Number(row.branchIdSnapshot), Number(run.revisionNo), breakdown, penaltySnapshots.get(Number(row.id)) ?? []),
     );
     if (snapshotHash !== row.snapshotHash) {
       throw new TRPCError({
@@ -506,6 +515,25 @@ async function verifyApprovalSnapshotTx(
     });
   }
   return frozen;
+}
+
+/** v1 with no approval hash remains legacy-unclassified; new claimed snapshots cannot use that fallback. */
+export async function verifyApprovalSnapshotIfPresentTx(tx: Tx, run: PayrollRunRow, options?: { readOnly?: boolean }): Promise<boolean> {
+  if (run.approvalSnapshotHash) {
+    await verifyApprovalSnapshotTx(tx, run, options);
+    return true;
+  }
+  const [claimedItem] = await tx.select({ id: payrollItems.id }).from(payrollItems)
+    .where(and(eq(payrollItems.runId, Number(run.id)), eq(payrollItems.penaltySnapshotComplete, true))).for("share").limit(1);
+  const [claimedAllocation] = await tx.select({ id: payrollPenaltyAllocations.id }).from(payrollPenaltyAllocations)
+    .innerJoin(payrollItems, eq(payrollPenaltyAllocations.itemId, payrollItems.id))
+    .where(or(eq(payrollPenaltyAllocations.runId, Number(run.id)), eq(payrollItems.runId, Number(run.id))))
+    .for("share").limit(1);
+  if (claimedItem || claimedAllocation) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+    what: "تعذّر التحقق من لقطة الرواتب", why: "يوجد تخصيص عقوبة دون بصمة اعتماد مكتملة",
+    doThis: "راجع مصدر الاعتماد والتخصيصات قبل المتابعة",
+  }) });
+  return false;
 }
 
 async function reverseAdvanceSettlementsTx(

@@ -24,8 +24,6 @@ import {
   approveEmployeePenalty,
   cancelEmployeePenalty,
   listEmployeePenalties,
-  getUnappliedPenalties,
-  applyPenaltiesToPayrollRunTx,
 } from "../employeePenaltyService";
 import {
   createSpotBonus,
@@ -611,46 +609,6 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       await expect(cancelEmployeePenalty(admin, res.id, "طلب إلغاء متأخر")).rejects.toThrow();
     });
 
-    it("payroll_integration:getUnappliedPenalties retrieves only unapplied approved deduction penalties", async () => {
-      await seedEmp({ employeeId: 9202 });
-      const admin = { userId: 1, role: "admin", branchId: 101 } as any;
-
-      const p1 = await createEmployeePenalty(admin, {
-        employeeId: 9202,
-        penaltyType: "SALARY_DEDUCTION",
-        decisionNumber: "PEN-UNAPPLIED-1",
-        decisionDate: "2026-06-01",
-        reason: "خصم معتمد للمسير القادم",
-        deductionDays: 1,
-      });
-      await approveEmployeePenalty(admin, p1.id);
-
-      const unapplied = await getUnappliedPenalties(9202);
-      expect(unapplied.some((x: any) => x.id === p1.id)).toBe(true);
-    });
-
-    it("payroll_integration:applyPenaltiesToPayrollRunTx atomically links penalties and sets APPLIED", async () => {
-      const { db } = await seedEmp({ employeeId: 9202 });
-      const admin = { userId: 1, role: "admin", branchId: 101 } as any;
-
-      const p1 = await createEmployeePenalty(admin, {
-        employeeId: 9202,
-        penaltyType: "SALARY_DEDUCTION",
-        decisionNumber: "PEN-LINK-TX",
-        decisionDate: "2026-06-01",
-        reason: "خصم سيُربط بالمسير 777",
-        deductionDays: 1,
-      });
-      await approveEmployeePenalty(admin, p1.id);
-
-      await withTx(async (tx) => {
-        await applyPenaltiesToPayrollRunTx(tx, 777, [p1.id]);
-      });
-
-      const [p] = await db.select().from(s.employeePenalties).where(eq(s.employeePenalties.id, p1.id));
-      expect(p.status).toBe("APPLIED");
-      expect(Number(p.payrollRunId)).toBe(777);
-    });
   });
 
   // =========================================================================

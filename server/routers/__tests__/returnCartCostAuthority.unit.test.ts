@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getTableName } from "drizzle-orm";
+import { getTableName, type SQL } from "drizzle-orm";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
 import type { Tx } from "../../db";
 import type { TrpcContext } from "../../context";
 const state = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const state = vi.hoisted(() => ({
   adjustCustomerBalance: vi.fn(async () => undefined),
   adjustSupplierBalance: vi.fn(async () => undefined),
   updates: [] as Record<string, unknown>[],
+  counterValue: 0,
 }));
 vi.mock("../../services/tx", () => ({
   withTx: async (run: (tx: unknown) => Promise<unknown>) => {
@@ -66,9 +68,14 @@ vi.mock("../../services/tx", () => ({
         };
         return query;
       },
-      // No receipt, deposit application, remittance, or custody in these fixtures.
-      // Actual source-paid/custody behavior is covered by the DB router suites.
-      execute: async () => [[]],
+      // Model the dedicated transaction counter without consuming the ordered
+      // business-read fixtures. Its concurrency is covered by the MySQL suite.
+      execute: async (query: SQL) => {
+        const text = new MySqlDialect().sqlToQuery(query).sql;
+        if (/INSERT\s+INTO\s+documentCounters/i.test(text)) state.counterValue++;
+        if (/SELECT\s+LAST_INSERT_ID\(\)\s+AS\s+v/i.test(text)) return [[{ v: state.counterValue }]];
+        return [[]];
+      },
       insert: (table: Parameters<typeof getTableName>[0]) => {
         state.insertions.push(getTableName(table));
         const ins = {
@@ -169,6 +176,7 @@ beforeEach(() => {
   state.updates = [];
   state.domainReads = [];
   state.insertions = [];
+  state.counterValue = 0;
 });
 describe("purchase-return fresh transaction authority", () => {
   it.each([
@@ -201,6 +209,7 @@ describe("purchase-return fresh transaction authority", () => {
       expect(state.insertions).toEqual([]);
       expect(state.updates).toEqual([]);
       expect(state.postEntry).not.toHaveBeenCalled();
+      expect(state.counterValue).toBe(0);
     },
   );
   it("reaches the supplier check only while both persisted permissions remain allowed", async () => {
@@ -585,6 +594,7 @@ describe("purchase-return fresh transaction authority", () => {
         },
       });
     expect(result.ok).toBe(true);
+    expect(state.counterValue).toBe(1);
     expect(state.postEntry).toHaveBeenCalledOnce();
     const [, postedPayload] = state.postEntry.mock.calls[0] as unknown as [
       unknown,

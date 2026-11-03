@@ -224,6 +224,20 @@ describe("main return portal unpaid invoices", () => {
       }),
     );
   });
+  it("labels historical non-cash return settlements in Arabic", async () => {
+    state.invoices["INV-11"].previousReturns = [
+      { id: 1, returnNumber: "SR-1", createdAt: new Date(), performedByName: "كاشير", method: "CREDIT_OFFSET", amount: "500", payoutAmount: "0", items: [] },
+      { id: 2, returnNumber: "SR-2", createdAt: new Date(), performedByName: "كاشير", method: "STORE_CREDIT", amount: "500", payoutAmount: "125", items: [] },
+    ];
+    await render();
+    expect(host.textContent).toContain("تسوية الذمة");
+    expect(host.textContent).toContain("رصيد المتجر");
+    expect(host.textContent).toContain("قيمة المرتجع");
+    expect(host.textContent).toContain("المصروف للزبون");
+    expect(host.textContent).toContain("125");
+    expect(host.textContent).not.toContain("CREDIT_OFFSET");
+    expect(host.textContent).not.toContain("STORE_CREDIT");
+  });
   it("keeps the full-invoice cart editable while a decimal price is incomplete", async () => {
     await render();
     const input = host.querySelector<HTMLInputElement>(

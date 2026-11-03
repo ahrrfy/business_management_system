@@ -6,6 +6,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { D, fmt, formatQuantity } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { returnMethodLabel } from "@/lib/returnMethodLabel";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
@@ -61,28 +62,34 @@ export const invoiceReturnColumns: ColumnDef<InvoiceReturnRow, unknown>[] = [
   {
     id: "method",
     header: "طريقة الاسترداد",
-    accessorFn: (r) => ((r as any).method ? paymentMethodLabel((r as any).method) : "—"),
+    accessorFn: (r) => returnMethodLabel(r.method),
     cell: ({ row }) => {
       const m = (row.original as any).method;
       return (
         <span className="inline-flex items-center gap-1.5 text-xs">
           {m === "CARD" && <CardBrandLogos size="xs" />}
-          <span>{m ? paymentMethodLabel(m) : "—"}</span>
+          <span>{returnMethodLabel(m)}</span>
         </span>
       );
     },
   },
   {
     id: "amount",
-    header: "المبلغ المسترد",
+    header: "قيمة المرتجع",
     accessorFn: (r) => fmt(D(r.amount).abs().toString()),
     meta: { kind: "money" },
     sortingFn: (a, b) => D(a.original.amount).abs().cmp(D(b.original.amount).abs()),
     cell: ({ row }) => (
       <span className="font-bold text-destructive font-mono">
-        {fmt(D(row.original.amount).abs().toString())} د.ع
+        {row.original.amountSource === "LEDGER_ONLY" ? "قيمة القيد: " : ""}{fmt(D(row.original.amount).abs().toString())} د.ع
       </span>
     ),
+  },
+  {
+    id: "payoutAmount",
+    header: "المصروف للزبون",
+    accessorFn: (r) => r.payoutAmount == null ? "—" : fmt(r.payoutAmount),
+    cell: ({ row }) => row.original.payoutAmount == null ? "—" : `${fmt(row.original.payoutAmount)} د.ع`,
   },
   {
     id: "items",

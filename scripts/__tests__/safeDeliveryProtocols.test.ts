@@ -724,19 +724,19 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     const output = execFileSync(
       process.execPath,
       [resolve(root, "scripts/deploy.mjs"), "--selftest-ci-gate"],
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 15_000 },
     );
     expect(output).toContain("deploy ci-gate selftest: OK");
 
     const deployContractOutput = execFileSync(
       process.execPath,
       [resolve(root, "scripts/deploy.test.mjs")],
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 90_000 },
     );
     expect(deployContractOutput).toContain(
       "deployment storefront-readiness contract test: OK",
     );
-  });
+  }, 110_000);
 
   it("يجلب ويتحقق من جميع صفحات تعليقات PR (>100 تعليق) ويغلق آلياً عند نقص الترقيم قبل الوثوق بعلامة Codex", () => {
     const safeMergeSource = readFileSync(

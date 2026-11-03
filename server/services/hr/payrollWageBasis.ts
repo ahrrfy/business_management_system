@@ -15,6 +15,7 @@ import {
   wageProfileOf,
   type WageProfile,
 } from "./wageProfile";
+import { findAttendanceCorrection, HISTORICAL_ATTENDANCE_CORRECTION, type AttendanceCorrectionEvidence } from "./payrollHistoricalAttendanceCorrection";
 
 export type PayrollWageRow = Pick<
   typeof employees.$inferSelect,
@@ -106,7 +107,7 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
   tx: Tx,
   rows: T[],
   asOf: string,
-): Promise<T[]> {
+): Promise<Array<T & { payrollAttendanceCorrection?: AttendanceCorrectionEvidence }>> {
   if (!rows.length) return rows;
   const ids = rows.map((row) => row.id);
   const contracts = await tx
@@ -131,6 +132,11 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
         and(
           eq(auditLogs.action, "employee.update"),
           eq(auditLogs.entityType, "employee"),
+          inArray(auditLogs.entityId, ids.map(String)),
+        ),
+        and(
+          eq(auditLogs.action, HISTORICAL_ATTENDANCE_CORRECTION),
+          eq(auditLogs.entityType, "payrollAttendanceExemption"),
           inArray(auditLogs.entityId, ids.map(String)),
         ),
         ...(contractIds.length
@@ -179,6 +185,7 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
   }
 
   return rows.map((row) => {
+    const correction = findAttendanceCorrection(audits, row.id, asOf.slice(0, 7));
     const events: Event[] = [];
     for (const c of contracts.filter(
       (c) =>
@@ -272,7 +279,10 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
       const pending = events.some(
         (event) => event.pending && Object.hasOwn(event.values, field),
       );
-      if (!future.length && !pending) continue;
+      if (!future.length && !pending) {
+        if (field === "attendanceExempt" && correction) missing(row.id, asOf, field);
+        continue;
+      }
       const anchors = latest(
         events.filter(
           (event) =>
@@ -285,10 +295,23 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
         row.id,
         asOf,
       );
-      if (!anchors.length) missing(row.id, asOf, field);
-      const basis = anchors.at(-1)!.values[field];
+      const firstFuture = future[0];
+      const attestedCorrectionBridgesFirstFuture =
+        anchors.length === 0 &&
+        field === "attendanceExempt" &&
+        correction != null &&
+        firstFuture?.source === "admin" &&
+        firstFuture.id === correction.sourceAuditId &&
+        firstFuture.before != null &&
+        Object.hasOwn(firstFuture.before, field) &&
+        future.every((event) => event.source !== "promotion");
+      if (!anchors.length && !attestedCorrectionBridgesFirstFuture)
+        missing(row.id, asOf, field);
+      const basis = anchors.length
+        ? anchors.at(-1)!.values[field]
+        : firstFuture!.before![field];
       let expected = basis;
-      if (anchors.at(-1)!.pending && future.length) {
+      if (anchors.at(-1)?.pending && future.length) {
         const before = future[0].before;
         if (!before || !Object.hasOwn(before, field))
           missing(row.id, asOf, field);
@@ -306,8 +329,12 @@ export async function projectPayrollWageBasisTx<T extends PayrollWageRow>(
       }
       if (future.length && !same(expected, current[field]))
         missing(row.id, asOf, field);
-      patch[field] = basis;
+      if (field === "attendanceExempt" && correction) {
+        if ((patch.payType ?? current.payType) !== "monthly" || anchors.length || firstFuture?.source !== "admin" || firstFuture.id !== correction.sourceAuditId)
+          missing(row.id, asOf, field);
+        patch[field] = true;
+      } else patch[field] = basis;
     }
-    return { ...row, ...patch } as T;
+    return { ...row, ...patch, ...(correction ? { payrollAttendanceCorrection: correction } : {}) } as T & { payrollAttendanceCorrection?: AttendanceCorrectionEvidence };
   });
 }

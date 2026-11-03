@@ -33,6 +33,7 @@ export function buildPersonalPayslipPdfHtml(input: PayslipPdfInput): string {
     commission: input.payslip.commission,
     deductions: input.payslip.deductions,
     advanceDeduction: input.payslip.advanceDeduction,
+    penaltyDeduction: input.payslip.penaltyDeduction,
     socialSecurityEmployee: input.payslip.socialSecurityEmployee,
     incomeTax: input.payslip.incomeTax,
     net: input.payslip.net,
@@ -43,6 +44,7 @@ export function buildPersonalPayslipPdfHtml(input: PayslipPdfInput): string {
     ["الأجر الإضافي", amount(breakdown.overtime), breakdown.overtime !== "0.00"],
     ["العمولات", amount(breakdown.commission), breakdown.commission !== "0.00"],
     ["استقطاع السلف", amount(breakdown.advanceDeduction), breakdown.advanceDeduction !== "0.00"],
+    ["جزاءات انضباطية", amount(breakdown.penaltyDeduction ?? "0"), breakdown.penaltyDeduction !== null && breakdown.penaltyDeduction !== "0.00"],
     ["خفض الأجر وخصومات أخرى", amount(breakdown.otherDeductions), breakdown.otherDeductions !== "0.00"],
     ["ضمان الموظف", amount(breakdown.socialSecurityEmployee), breakdown.socialSecurityEmployee !== "0.00"],
     ["ضريبة الدخل", amount(breakdown.incomeTax), breakdown.incomeTax !== "0.00"],
@@ -66,7 +68,8 @@ export function buildPersonalPayslipPdfHtml(input: PayslipPdfInput): string {
   .net th, .net td { background: #eaf4ef; color: #124f41; font-size: 14px; font-weight: 700; }
   .equation { background: #f5f8f6; border: 1px solid #ccd8d2; margin-top: 12px; padding: 9px; }
   .equation strong { display: block; margin-bottom: 3px; }
-  .equation .numbers { direction: ltr; font-weight: 700; text-align: left; }
+  .equation .numbers { direction: ltr; display: flex; flex-wrap: wrap; gap: 4px; font-weight: 700; text-align: left; }
+  .equation .numbers span { unicode-bidi: isolate; }
   .warning { color: #b42318; font-weight: 700; margin-top: 6px; }
   .notice { color: #5d6b65; font-size: 10px; margin-top: 18px; }
 </style></head><body>
@@ -76,9 +79,10 @@ export function buildPersonalPayslipPdfHtml(input: PayslipPdfInput): string {
   <table><tbody>${rows}
     <tr class="net"><th>صافي الراتب</th><td dir="ltr">${escapeHtml(amount(breakdown.net))}</td></tr>
   </tbody></table>
+  ${breakdown.penaltyDeduction === null ? '<p class="notice">تفصيل الجزاءات لهذا المسير غير موثّق.</p>' : ""}
   <div class="equation"><strong>معادلة الصافي</strong>
     <div>الأجر الإجمالي + الإضافي + العمولة − إجمالي الاستقطاع = الصافي</div>
-    <div class="numbers">${escapeHtml(amount(breakdown.gross))} + ${escapeHtml(amount(breakdown.overtime))} + ${escapeHtml(amount(breakdown.commission))} − ${escapeHtml(amount(breakdown.totalDeductions))} = ${escapeHtml(amount(breakdown.expectedNet))}</div>
+    <div class="numbers"><span dir="ltr">${escapeHtml(amount(breakdown.gross))}</span><span>+</span><span dir="ltr">${escapeHtml(amount(breakdown.overtime))}</span><span>+</span><span dir="ltr">${escapeHtml(amount(breakdown.commission))}</span><span>−</span><span dir="ltr">${escapeHtml(amount(breakdown.totalDeductions))}</span><span>=</span><span dir="ltr">${escapeHtml(amount(breakdown.expectedNet))}</span></div>
     ${mismatch ? '<div class="warning">توجد مكونات غير متطابقة في لقطة القسيمة. راجع قسم الموارد البشرية.</div>' : ""}
   </div>
   <p class="notice">هذا كشف شخصي يُنشأ بعد تحقق ثنائي جديد ويُشارك فقط بطلبك من تطبيق سوبر العربية.</p>

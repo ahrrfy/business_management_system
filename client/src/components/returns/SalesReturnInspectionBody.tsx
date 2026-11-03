@@ -4,7 +4,7 @@ import { CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fmt, formatQuantity } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
-import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { returnMethodLabel } from "@/lib/returnMethodLabel";
 import type { SalesReturnPortalModel } from "./useSalesReturnPortal";
 
 type Props = Omit<
@@ -221,7 +221,7 @@ export function SalesReturnInspectionBody({
                 {inspectedInvoice.previousReturns.length})
               </span>
             </div>
-            <div className="border rounded-lg overflow-hidden bg-background">
+            <div className="border rounded-lg overflow-x-auto bg-background">
               <table className="w-full text-xs text-right">
                 <thead className="bg-muted/70 text-muted-foreground font-semibold border-b">
                   <tr>
@@ -229,7 +229,8 @@ export function SalesReturnInspectionBody({
                     <th className="p-2">التاريخ والوقت</th>
                     <th className="p-2">الكاشير</th>
                     <th className="p-2">طريقة الرد</th>
-                    <th className="p-2 text-left">المبلغ</th>
+                    <th className="p-2 text-left">قيمة المرتجع</th>
+                    <th className="p-2 text-left">المصروف للزبون</th>
                     <th className="p-2">الأصناف المسترجعة</th>
                   </tr>
                 </thead>
@@ -245,11 +246,14 @@ export function SalesReturnInspectionBody({
                       <td className="p-2">{ret.performedByName}</td>
                       <td className="p-2">
                         <Badge variant="outline" className="text-[10px]">
-                          {paymentMethodLabel(ret.method)}
+                          {returnMethodLabel(ret.method)}
                         </Badge>
                       </td>
                       <td className="p-2 text-left font-mono font-bold">
-                        {fmt(ret.amount)} د.ع
+                        {ret.amountSource === "LEDGER_ONLY" ? "قيمة القيد: " : ""}{fmt(ret.amount)} د.ع
+                      </td>
+                      <td className="p-2 text-left font-mono">
+                        {ret.payoutAmount == null ? "—" : `${fmt(ret.payoutAmount)} د.ع`}
                       </td>
                       <td className="p-2">
                         {ret.items && ret.items.length > 0 ? (

@@ -2661,6 +2661,13 @@
 			"when": 1788148881000,
 			"tag": "0423_employee_advance_period_classification_20261101",
 			"breakpoints": true
+		},
+		{
+			"idx": 424,
+			"version": "5",
+			"when": 1788148882000,
+			"tag": "0424_payroll_penalty_allocations",
+			"breakpoints": true
 		}
 	]
 }

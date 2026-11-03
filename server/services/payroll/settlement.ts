@@ -8,6 +8,7 @@ import {
   payrollAccountingEvents,
   payrollObligationAllocations,
   payrollObligations,
+  payrollPenaltyAllocations,
   payrollRuns,
   receipts,
   shifts,
@@ -29,6 +30,8 @@ import {
   postPayrollAccountingEvent,
 } from "./accounting";
 import { getRun } from "./queries";
+import { assertRunPenaltyAllocationsTx, assertZeroNetEvidenceIfPaymentExistsTx, assertZeroNetPenaltySettlementTx, recordZeroNetPenaltySettlementTx, refreshPenaltyStatesTx } from "./penaltyAllocations";
+import { verifyApprovalSnapshotIfPresentTx } from "./obligations";
 import { payrollHash } from "./helpers";
 import {
   assertSalaryReceiptEvidence,
@@ -457,6 +460,9 @@ export async function payRun(
         .for("update")
         .limit(1);
       if (locked?.status === "paid") {
+        await verifyApprovalSnapshotIfPresentTx(tx, locked);
+        await assertRunPenaltyAllocationsTx(tx, id);
+        await assertZeroNetPenaltySettlementTx(tx, locked);
         await assertSalaryRetry(
           tx,
           locked,
@@ -684,6 +690,9 @@ export async function payRun(
       money(obligation.remainingAmount).gt(0),
     );
     if (run.status === "paid" && payable.length === 0) {
+      await verifyApprovalSnapshotIfPresentTx(tx, run);
+      await assertRunPenaltyAllocationsTx(tx, id);
+      await assertZeroNetPenaltySettlementTx(tx, run);
       await assertSalaryRetry(
         tx,
         run,
@@ -694,6 +703,9 @@ export async function payRun(
       );
       return true;
     }
+    await verifyApprovalSnapshotIfPresentTx(tx, run);
+    await assertRunPenaltyAllocationsTx(tx, id);
+    await assertZeroNetEvidenceIfPaymentExistsTx(tx, run);
     await assertNoLegacyUnclassifiedAdvanceTx(
       tx,
       lockedEmployees,
@@ -906,6 +918,10 @@ export async function payRun(
       .update(payrollRuns)
       .set({ status: "paid", paidAt: new Date(), paidBy: actor.userId })
       .where(eq(payrollRuns.id, id));
+    await recordZeroNetPenaltySettlementTx(tx, run, actor.userId);
+    const paidPenaltyRows = await tx.select({ penaltyId: payrollPenaltyAllocations.penaltyId })
+      .from(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.runId, id)).for("share");
+    await refreshPenaltyStatesTx(tx, paidPenaltyRows.map((row) => Number(row.penaltyId)));
 
     // GAP-03: تحديث حالة المكافآت الفورية المرتبطة بالمسير إلى PAID
     await tx
@@ -995,6 +1011,9 @@ export async function returnSalaryPayment(
       [original.event.createdBy],
       "إعادة راتب مدفوع",
     );
+    await verifyApprovalSnapshotIfPresentTx(tx, original.run);
+    await assertRunPenaltyAllocationsTx(tx, Number(original.run.id));
+    await assertZeroNetPenaltySettlementTx(tx, original.run);
     const savedEvidence = readSalarySettlementEvidence(
       original.event.settlementEvidence,
       original.event.sourceHash,
@@ -1351,6 +1370,9 @@ export async function returnSalaryPayment(
       .update(payrollRuns)
       .set({ status: "approved", paidAt: null, paidBy: null })
       .where(eq(payrollRuns.id, Number(original.run.id)));
+    const returnedPenaltyRows = await tx.select({ penaltyId: payrollPenaltyAllocations.penaltyId })
+      .from(payrollPenaltyAllocations).where(eq(payrollPenaltyAllocations.runId, Number(original.run.id))).for("share");
+    await refreshPenaltyStatesTx(tx, returnedPenaltyRows.map((row) => Number(row.penaltyId)));
     return {
       replayed: false,
       eventId: event.eventId,

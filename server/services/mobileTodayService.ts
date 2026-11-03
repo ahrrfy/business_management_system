@@ -1,3 +1,5 @@
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
 
 import {
@@ -11,6 +13,7 @@ import type { DB } from "../db";
 import { resolveSuperAppAuthority } from "./superAppAuthority";
 import { requireDb } from "./tx";
 import { activeEmployeeSalaryPaidAtSql } from "./payroll/queries";
+import { readLockedPenaltyBreakdownsTx } from "./payroll/penaltyRead";
 
 /**
  * A deliberately small, role-safe contract for the first mobile screen.
@@ -131,6 +134,7 @@ export type MobilePayslip = {
       overtime: string;
       commission: string;
       deductions: string;
+      penaltyDeduction: string | null;
       advanceDeduction: string;
       socialSecurityEmployee: string;
       incomeTax: string;
@@ -352,8 +356,11 @@ export async function getMobilePayslip(input: {
     return { personal: { state: "NOT_LINKED", payslip: null } };
   }
 
-  const [row] = await db
+  const [preview] = await db
     .select({
+      itemId: payrollItems.id,
+      runId: payrollRuns.id,
+      penaltySnapshotComplete: payrollItems.penaltySnapshotComplete,
       period: payrollRuns.period,
       status: payrollRuns.status,
       paidAt: activeEmployeeSalaryPaidAtSql(),
@@ -379,28 +386,77 @@ export async function getMobilePayslip(input: {
     )
     .orderBy(desc(payrollRuns.period), desc(payrollRuns.id), desc(payrollItems.id))
     .limit(1);
+  if (!preview) return { personal: { state: "READY", payslip: null } };
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, Number(preview.runId))).for("share").limit(1);
+    if (!run) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر عرض قسيمة الراتب", why: "تغيّر المسيّر أثناء جلب القسيمة",
+      doThis: "حدّث صفحة الرواتب وراجع الموارد البشرية إذا استمرت المشكلة",
+    }) });
+    const [row] = await tx
+      .select({
+        itemId: payrollItems.id,
+        runId: payrollRuns.id,
+        penaltySnapshotComplete: payrollItems.penaltySnapshotComplete,
+        period: payrollRuns.period,
+        status: payrollRuns.status,
+        paidAt: activeEmployeeSalaryPaidAtSql(),
+        payType: payrollItems.payType,
+        hours: payrollItems.hours,
+        gross: payrollItems.gross,
+        allowances: payrollItems.allowances,
+        overtime: payrollItems.overtime,
+        commission: payrollItems.commission,
+        deductions: payrollItems.deductions,
+        advanceDeduction: payrollItems.advanceDeduction,
+        socialSecurityEmployee: payrollItems.socialSecurityEmployee,
+        incomeTax: payrollItems.incomeTax,
+        net: payrollItems.net,
+      })
+      .from(payrollItems)
+      .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+      .innerJoin(employees, eq(payrollItems.employeeId, employees.id))
+      .where(
+        and(
+          eq(payrollItems.employeeId, employee.id),
+          eq(employees.userId, input.actor.userId),
+          eq(payrollItems.id, Number(preview.itemId)),
+          eq(payrollRuns.id, Number(run.id)),
+          inArray(payrollRuns.status, ["approved", "paid"]),
+        ),
+      )
+      .orderBy(desc(payrollRuns.period), desc(payrollRuns.id), desc(payrollItems.id))
+      .limit(1);
+    if (!row) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر عرض قسيمة الراتب", why: "تغيّر ارتباط القسيمة أو حالة المسيّر أثناء القراءة",
+      doThis: "حدّث صفحة الرواتب وراجع الموارد البشرية إذا استمرت المشكلة",
+    }) });
 
-  return {
-    personal: {
-      state: "READY",
-      payslip: row
-        ? {
-            period: row.period,
-            status: row.paidAt == null ? "approved" : "paid",
-            paidAt: row.paidAt,
-            payType: row.payType,
-            hours: row.hours == null ? null : String(row.hours),
-            gross: String(row.gross),
-            allowances: String(row.allowances),
-            overtime: String(row.overtime),
-            commission: String(row.commission),
-            deductions: String(row.deductions),
-            advanceDeduction: String(row.advanceDeduction),
-            socialSecurityEmployee: String(row.socialSecurityEmployee),
-            incomeTax: String(row.incomeTax),
-            net: String(row.net),
-          }
-        : null,
-    },
-  };
+    const penalty = (await readLockedPenaltyBreakdownsTx(tx, [run], [Number(row.itemId)])).get(Number(row.itemId));
+
+    return {
+      personal: {
+        state: "READY",
+        payslip: row
+          ? {
+              period: row.period,
+              status: row.paidAt == null ? "approved" : "paid",
+              paidAt: row.paidAt,
+              payType: row.payType,
+              hours: row.hours == null ? null : String(row.hours),
+              gross: String(row.gross),
+              allowances: String(row.allowances),
+              overtime: String(row.overtime),
+              commission: String(row.commission),
+              deductions: String(row.deductions),
+              penaltyDeduction: penalty?.penaltyDeduction ?? (row.penaltySnapshotComplete ? "0.00" : null),
+              advanceDeduction: String(row.advanceDeduction),
+              socialSecurityEmployee: String(row.socialSecurityEmployee),
+              incomeTax: String(row.incomeTax),
+              net: String(row.net),
+            }
+          : null,
+      },
+    };
+  });
 }

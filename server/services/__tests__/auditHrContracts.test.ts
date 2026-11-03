@@ -17,7 +17,11 @@ import { employeeRouter } from "../../routers/employeeRouter";
 import { generatePayroll } from "../payrollService";
 import { WEEK_DAYS } from "@shared/hr";
 import { wageProfileOf } from "../hr/wageProfile";
+import { projectPayrollWageBasisTx } from "../hr/payrollWageBasis";
+import { attendanceCorrectionSourceHash, recordHistoricalAttendanceCorrection, recordHistoricalAttendanceCorrectionTx } from "../hr/payrollHistoricalAttendanceCorrection";
+import { withTx } from "../tx";
 import { healAndRefoldMonthAttendance } from "../attendanceService";
+import * as attendanceService from "../attendanceService";
 import {
   balances,
   calculateLeaveEncashment,
@@ -74,6 +78,24 @@ async function snapshot(employeeId = 101) {
   return (
     await db().select().from(s.employees).where(eq(s.employees.id, employeeId))
   )[0];
+}
+async function historicalAttendanceFixture() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-01T09:00:00Z"));
+  const before = wageProfileOf(await snapshot());
+  const after = wageProfileOf({ ...before, attendanceExempt: true });
+  const [inserted] = await db().insert(s.auditLogs).values({
+    action: "employee.update", entityType: "employee", entityId: "101", userId: 10, branchId: 1,
+    oldValue: before, newValue: { wageFields: ["attendanceExempt"], wage: after },
+    createdAt: new Date("2026-11-01T09:00:00Z"),
+  });
+  await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 101));
+  await db().insert(s.monthCloseSequence).values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+    .onDuplicateKeyUpdate({ set: { id: 1 } });
+  const [source] = await db().select().from(s.auditLogs).where(eq(s.auditLogs.id, inserted.insertId));
+  return { employeeId: 101, period: "2026-10", sourceAuditId: Number(source.id),
+    sourceHash: attendanceCorrectionSourceHash(source),
+    evidenceStatement: "نعم، كان معفى وراتبه ثابت", evidenceReference: "owner-confirmation:test:101:2026-10" };
 }
 beforeEach(async () => {
   await db()
@@ -462,6 +484,307 @@ describe("audit26 contract renewal approval and effectivity", () => {
     const [attendance] = await db().select().from(s.attendance);
     expect(attendance.hourlyRate).toBe("1000.00");
     expect(attendance.amount).toBe("2000.00");
+  });
+  it("does not infer an earlier exemption from a later administrative change alone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T09:00:00Z"));
+    const before = wageProfileOf(await snapshot());
+    const after = wageProfileOf({ ...before, attendanceExempt: true });
+    await db().insert(s.auditLogs).values({
+      action: "employee.update",
+      entityType: "employee",
+      entityId: "101",
+      userId: admin.userId,
+      branchId: 1,
+      oldValue: before,
+      newValue: {
+        wageFields: ["attendanceExempt"],
+        wage: after,
+      },
+      createdAt: new Date("2026-11-01T09:00:00Z"),
+    });
+    await db()
+      .update(s.employees)
+      .set({ attendanceExempt: true })
+      .where(eq(s.employees.id, 101));
+    const employee = await snapshot();
+    await expect(db().transaction((tx) => projectPayrollWageBasisTx(tx, [employee], "2026-10-31")))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await snapshot()).attendanceExempt).toBe(true);
+  });
+  it("fails closed when the first later admin before-snapshot is incomplete", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T09:00:00Z"));
+    const after = wageProfileOf({
+      ...(await snapshot()),
+      attendanceExempt: true,
+    });
+    await db().insert(s.auditLogs).values({
+      action: "employee.update",
+      entityType: "employee",
+      entityId: "101",
+      userId: admin.userId,
+      branchId: 1,
+      oldValue: { attendanceExempt: false },
+      newValue: {
+        wageFields: ["attendanceExempt"],
+        wage: after,
+      },
+      createdAt: new Date("2026-11-01T09:00:00Z"),
+    });
+    await db()
+      .update(s.employees)
+      .set({ attendanceExempt: true })
+      .where(eq(s.employees.id, 101));
+
+    await expect(generatePayroll("2026-10", checker)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(await db().select().from(s.payrollRuns)).toHaveLength(0);
+  });
+  it("applies a separately attested historical exemption only to the specified month", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T09:00:00Z"));
+    const before = wageProfileOf(await snapshot());
+    const after = wageProfileOf({ ...before, attendanceExempt: true });
+    const [inserted] = await db().insert(s.auditLogs).values({
+      action: "employee.update", entityType: "employee", entityId: "101",
+      userId: admin.userId, branchId: 1, oldValue: before,
+      newValue: { wageFields: ["attendanceExempt"], wage: after },
+      createdAt: new Date("2026-11-01T09:00:00Z"),
+    });
+    await db().update(s.employees).set({ attendanceExempt: true });
+    await db().insert(s.hrAttendanceSettings).values({
+      id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-08-01",
+    });
+    await db().insert(s.monthCloseSequence).values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+      .onDuplicateKeyUpdate({ set: { id: 1 } });
+    const [source] = await db().select().from(s.auditLogs).where(eq(s.auditLogs.id, inserted.insertId));
+    const input = { employeeId: 101, period: "2026-10", sourceAuditId: Number(source.id),
+      sourceHash: attendanceCorrectionSourceHash(source),
+      evidenceStatement: "نعم، كان معفى وراتبه ثابت", evidenceReference: "owner-confirmation:test:101:2026-10" };
+    const first = await recordHistoricalAttendanceCorrection(input, admin);
+    const replay = await recordHistoricalAttendanceCorrection(input, admin);
+    expect(first.mode).toBe("APPLIED");
+    expect(replay).toMatchObject({ mode: "REPLAY_VERIFIED", auditId: first.auditId });
+    const employee = await snapshot();
+    const october = await db().transaction((tx) => projectPayrollWageBasisTx(tx, [employee], "2026-10-31"));
+    expect(october[0].attendanceExempt).toBe(true);
+    expect(october[0].payrollAttendanceCorrection?.auditId).toBe(first.auditId);
+    await expect(db().transaction((tx) => projectPayrollWageBasisTx(tx, [employee], "2026-09-30")))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const payroll = await generatePayroll("2026-10", checker);
+    expect(payrollEmployee(payroll).gross).toBe("500000.00");
+    expect(payrollEmployee(payroll).hours).toBeNull();
+    expect(payrollEmployee(payroll).note).toContain("إعفاء حضور تاريخي موثق");
+    expect((await snapshot()).attendanceExempt).toBe(true);
+    const links = await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.applied"));
+    expect(links).toHaveLength(1);
+    expect(links[0].entityId).toBe(String(payrollEmployee(payroll).id));
+    expect(links[0].newValue).toMatchObject({ attestationAuditId: first.auditId, employeeId: 101, period: "2026-10" });
+    await expect(recordHistoricalAttendanceCorrection(input, admin)).resolves.toMatchObject({ mode: "REPLAY_VERIFIED", auditId: first.auditId });
+  });
+  it("rejects unauthorized, changed and rolled-back historical attestations", async () => {
+    const input = await historicalAttendanceFixture();
+    await expect(recordHistoricalAttendanceCorrection(input, checker)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(recordHistoricalAttendanceCorrection({ ...input, sourceHash: "0".repeat(64) }, admin))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(withTx((tx) => recordHistoricalAttendanceCorrectionTx(tx, input, admin)))
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+    await expect(withTx(async (tx) => {
+      await recordHistoricalAttendanceCorrectionTx(tx, input, admin);
+      throw new Error("force rollback");
+    }, { gate: "GOVERNANCE" })).rejects.toThrow("force rollback");
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.attest"))).toHaveLength(0);
+    await recordHistoricalAttendanceCorrection(input, admin);
+    await expect(recordHistoricalAttendanceCorrection({ ...input, evidenceReference: "different-confirmation" }, admin))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.attest"))).toHaveLength(1);
+  });
+  it("serializes concurrent conflicting attestations at the exclusive gate", async () => {
+    const input = await historicalAttendanceFixture();
+    let releaseFirst!: () => void;
+    let firstInserted!: () => void;
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstReady = new Promise<void>((resolve) => { firstInserted = resolve; });
+    const first = withTx(async (tx) => {
+      const result = await recordHistoricalAttendanceCorrectionTx(tx, input, admin);
+      firstInserted();
+      await holdFirst;
+      return result;
+    }, { gate: "GOVERNANCE" });
+    await firstReady;
+    let secondEntered = false;
+    const second = withTx(async (tx) => {
+      secondEntered = true;
+      return recordHistoricalAttendanceCorrectionTx(tx, { ...input, evidenceReference: "conflicting-confirmation" }, admin);
+    }, { gate: "GOVERNANCE" }).then((result) => ({ result }), (error: unknown) => ({ error }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(secondEntered).toBe(false);
+    releaseFirst();
+    expect((await first).mode).toBe("APPLIED");
+    expect(await second).toMatchObject({ error: { code: "PRECONDITION_FAILED" } });
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.attest"))).toHaveLength(1);
+  });
+  it("keeps payroll and a concurrent attestation consistent after a retry", async () => {
+    const input = await historicalAttendanceFixture();
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 102));
+    await db().insert(s.hrAttendanceSettings).values({ id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-08-01" });
+    let release!: () => void;
+    let ready!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const inserted = new Promise<void>((resolve) => { ready = resolve; });
+    const writer = withTx(async (tx) => {
+      const result = await recordHistoricalAttendanceCorrectionTx(tx, input, admin);
+      ready();
+      await hold;
+      return result;
+    }, { gate: "GOVERNANCE" });
+    await inserted;
+    const concurrent = generatePayroll("2026-10", checker)
+      .then((result) => ({ result }), (error: unknown) => ({ error }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    release();
+    const recorded = await writer;
+    const outcome = await concurrent;
+    if ("error" in outcome) {
+      const error = outcome.error as { code?: string; cause?: { code?: string } };
+      expect(["CONFLICT", "PRECONDITION_FAILED", "ER_LOCK_DEADLOCK"]).toContain(error.code ?? error.cause?.code);
+      expect(await db().select().from(s.payrollRuns)).toHaveLength(0);
+    }
+    const payroll = "result" in outcome ? outcome.result : await generatePayroll("2026-10", checker);
+    expect(payrollEmployee(payroll).gross).toBe("500000.00");
+    expect(await db().select().from(s.payrollRuns)).toHaveLength(1);
+    const links = await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.applied"));
+    expect(links).toHaveLength(1);
+    expect(links[0].newValue).toMatchObject({ attestationAuditId: recorded.auditId, period: "2026-10" });
+  }, 20000);
+  it("does not wait on a locked future promotion while generating payroll", async () => {
+    const input = await historicalAttendanceFixture();
+    await recordHistoricalAttendanceCorrection(input, admin);
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 102));
+    await db().insert(s.hrAttendanceSettings).values({ id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-08-01" });
+    const [promotion] = await db().insert(s.employeePromotions).values({ employeeId: 101, toTitle: "Future",
+      effectiveDate: "2026-12-01", status: "approved", approvedBy: admin.userId });
+    let release!: () => void;
+    let locked!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { locked = resolve; });
+    let holder: Promise<void> | undefined;
+    const spy = vi.spyOn(attendanceService, "healAndRefoldMonthAttendance").mockImplementationOnce(async () => {
+      holder = withTx(async (tx) => {
+        await tx.select().from(s.employeePromotions).where(eq(s.employeePromotions.id, promotion.insertId)).for("update");
+        locked();
+        await hold;
+      });
+      await ready;
+      return { period: "2026-10", refoldedDays: 0, cleanedGhostDays: 0, updatedRates: 0, healedSchedules: 0 };
+    });
+    const generation = generatePayroll("2026-10", checker)
+      .then((payroll) => ({ payroll }), (error: unknown) => ({ error }));
+    try {
+      const outcome = await Promise.race([generation, new Promise<{ timeout: true }>((resolve) =>
+        setTimeout(() => resolve({ timeout: true }), 8000))]);
+      release();
+      await holder;
+      expect(outcome).toHaveProperty("payroll");
+      if ("payroll" in outcome) expect(payrollEmployee(outcome.payroll).gross).toBe("500000.00");
+      await generation;
+    } finally {
+      release();
+      if (holder) await holder;
+      spy.mockRestore();
+    }
+  }, 20000);
+  it("does not block unrelated employee audit writes while reading the wage basis", async () => {
+    const input = await historicalAttendanceFixture();
+    await recordHistoricalAttendanceCorrection(input, admin);
+    const employee = await snapshot();
+    let release!: () => void;
+    let ready!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const reader = db().transaction(async (tx) => {
+      await projectPayrollWageBasisTx(tx, [employee], "2026-10-31");
+      ready();
+      await hold;
+    });
+    await started;
+    const insertion = db().insert(s.auditLogs).values({ action: "employee.update", entityType: "employee",
+      entityId: "102", userId: admin.userId, branchId: 2, newValue: { name: "Unrelated" } })
+      .then(() => "inserted" as const);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([insertion, new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), 8000);
+      })]);
+      release();
+      await reader;
+      await insertion;
+      expect(result).toBe("inserted");
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await reader;
+    }
+  }, 20000);
+  it("does not add an attestation to a closed financial period", async () => {
+    const input = await historicalAttendanceFixture();
+    await db().insert(s.financialPeriods).values({ cutoffDate: "2026-10-31", status: "LOCKED", lockedBy: admin.userId });
+    await expect(recordHistoricalAttendanceCorrection(input, admin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.attest"))).toHaveLength(0);
+  });
+  it("does not add an attestation after a payroll exists", async () => {
+    const input = await historicalAttendanceFixture();
+    await db().insert(s.payrollRuns).values({ period: "2026-10", status: "draft" });
+    await expect(recordHistoricalAttendanceCorrection(input, admin)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "payroll.attendanceExemption.attest"))).toHaveLength(0);
+  });
+  it("rejects a changed attestation or original source before using it", async () => {
+    const input = await historicalAttendanceFixture();
+    const saved = await recordHistoricalAttendanceCorrection(input, admin);
+    const [attestation] = await db().select().from(s.auditLogs).where(eq(s.auditLogs.id, saved.auditId));
+    const original = attestation.newValue as Record<string, unknown>;
+    await db().update(s.auditLogs).set({ newValue: { ...original, evidenceStatement: "changed" } })
+      .where(eq(s.auditLogs.id, saved.auditId));
+    const employee = await snapshot();
+    await expect(db().transaction((tx) => projectPayrollWageBasisTx(tx, [employee], "2026-10-31")))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await db().update(s.auditLogs).set({ newValue: original }).where(eq(s.auditLogs.id, saved.auditId));
+    await db().update(s.auditLogs).set({ oldValue: { attendanceExempt: false } }).where(eq(s.auditLogs.id, input.sourceAuditId));
+    await expect(db().transaction((tx) => projectPayrollWageBasisTx(tx, [employee], "2026-10-31")))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+  it("rejects changed attestation evidence between preflight and payroll generation", async () => {
+    const input = await historicalAttendanceFixture();
+    const saved = await recordHistoricalAttendanceCorrection(input, admin);
+    const [attestation] = await db().select().from(s.auditLogs).where(eq(s.auditLogs.id, saved.auditId));
+    const spy = vi.spyOn(attendanceService, "healAndRefoldMonthAttendance").mockImplementationOnce(async () => {
+      await db().update(s.auditLogs).set({ newValue: { ...(attestation.newValue as Record<string, unknown>), evidenceReference: "changed-reference" } })
+        .where(eq(s.auditLogs.id, saved.auditId));
+      return { period: "2026-10", refoldedDays: 0, cleanedGhostDays: 0, updatedRates: 0, healedSchedules: 0 };
+    });
+    try {
+      await expect(generatePayroll("2026-10", checker)).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await db().select().from(s.payrollRuns)).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("applies an approved due promotion without blocking an attested exemption", async () => {
+    const input = await historicalAttendanceFixture();
+    await recordHistoricalAttendanceCorrection(input, admin);
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 102));
+    await db().insert(s.hrAttendanceSettings).values({ id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-08-01" });
+    const [promotion] = await db().insert(s.employeePromotions).values({
+      employeeId: 101, toTitle: "Promoted", toSalary: "600000.00", effectiveDate: "2026-10-01",
+      status: "approved", createdBy: maker.userId, approvedBy: checker.userId,
+    });
+    const payroll = await generatePayroll("2026-10", checker);
+    expect(payrollEmployee(payroll).gross).toBe("600000.00");
+    const [applied] = await db().select().from(s.employeePromotions).where(eq(s.employeePromotions.id, promotion.insertId));
+    expect(applied.appliedAt).not.toBeNull();
   });
   it("finishes historical healing preflight with the supplied wage map", async () => {
     const rates = (amount: number) =>

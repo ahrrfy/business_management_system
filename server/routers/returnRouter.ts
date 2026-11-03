@@ -138,6 +138,8 @@ import { escLike } from "../lib/sqlLike";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { randomUUID } from "node:crypto";
 import { todayUtcDate } from "../services/businessDay";
+import { nextCounterValue } from "../services/numbering";
+import { combineReturnAudits, matchReturnAudit, returnNumberFromText, returnReceiptId, SALES_RETURN_CART_RESULT_ACTION } from "../services/returns/cartAuditIdentity";
 import { loadCurrentOperationalAuthorityTx } from "../services/authorization/currentOperationalAuthority";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -267,6 +269,8 @@ async function replaySalesReturnCartResult(
     };
   },
   actorBranchId: number,
+  actorUserId: number,
+  actorRole: string,
 ): Promise<{
   ok: true;
   returnNumber: string;
@@ -300,11 +304,13 @@ async function replaySalesReturnCartResult(
       invoiceId: accountingEntries.invoiceId,
       customerId: accountingEntries.customerId,
       receiptId: accountingEntries.receiptId,
+      amount: accountingEntries.amount,
       notes: accountingEntries.notes,
       createdAt: accountingEntries.createdAt,
     })
     .from(accountingEntries)
     .where(eq(accountingEntries.id, refId))
+    .for("share")
     .limit(1);
 
   if (!entry) {
@@ -320,35 +326,86 @@ async function replaySalesReturnCartResult(
 
   // التحقق الصارم من عزل الفرع
   if (Number(entry.branchId) !== actorBranchId) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "تعذر إعادة عرض المرتجع",
-        why: "مفتاح هذا الطلب مسجل لعملية نُفذت في فرع تشغيلي آخر",
-        doThis: "سجل الدخول إلى الفرع الذي نُفذت فيه العملية لمراجعتها",
-      }),
-    });
+    const current = await loadOperationUserTx(tx, actorUserId);
+    if (current.role !== actorRole || Number(current.branchId) !== actorBranchId || !canCrossBranches(current)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر إعادة عرض المرتجع",
+          why: "مفتاح هذا الطلب مسجل لعملية نُفذت في فرع تشغيلي آخر",
+          doThis: "سجل الدخول إلى الفرع الذي نُفذت فيه العملية لمراجعتها",
+        }),
+      });
+    }
   }
 
-  // استخراج رقم المرتجع التاريخي من الملاحظات
-  const match = entry.notes?.match(/\[(SR-[^\]]+)\]/);
-  const returnNumber = match ? match[1] : `SR-REPLAY-${refId}`;
+  const scope = and(
+    eq(auditLogs.action, "sale.return_cart"),
+    eq(auditLogs.entityType, "sale"),
+    entry.invoiceId == null ? isNull(auditLogs.entityId) : eq(auditLogs.entityId, String(entry.invoiceId)),
+  );
+  const identityError = () => new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: "تعذر استرجاع تفاصيل المرتجع بأمان",
+      why: "بينة تفاصيل المرتجع السابق مفقودة أو مشتركة مع مرتجع آخر",
+      doThis: "لا تنفذ المرتجع مرة أخرى؛ راجع قيده وسنداته مع المدير",
+    }),
+  });
+  // The compact result is keyed by ledger id and cannot be truncated by the audit size limit.
+  // Use current reads after the idempotency lock, including under REPEATABLE READ.
+  let linked = await tx.select({ newValue: auditLogs.newValue }).from(auditLogs)
+    .where(and(eq(auditLogs.action, SALES_RETURN_CART_RESULT_ACTION), eq(auditLogs.entityType, "accountingEntry"),
+      eq(auditLogs.entityId, String(refId)))).for("share").limit(2);
+  if (!linked.length) linked = await tx.select({ newValue: auditLogs.newValue }).from(auditLogs)
+    .where(and(scope, sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.returnEntryId')) = ${String(refId)}`))
+    .for("share").limit(2);
+  if (linked.length > 1) throw identityError();
+  const linkedValue = linked[0]?.newValue as { returnEntryId?: unknown; returnNumber?: unknown; method?: unknown; totalAmount?: unknown; payoutAmount?: unknown; debtOffsetAmount?: unknown } | undefined;
+  if (linked.length && (Number(linkedValue?.returnEntryId) !== refId || typeof linkedValue?.returnNumber !== "string" ||
+    !linkedValue.returnNumber || (linkedValue.method != null && linkedValue.method !== input.settlement.method) ||
+    typeof linkedValue.payoutAmount !== "string" || typeof linkedValue.debtOffsetAmount !== "string")) throw identityError();
+  if (typeof linkedValue?.totalAmount === "string" && !money(linkedValue.totalAmount).eq(money(input.settlement.totalAmount))) throw identityError();
+  const numberFromEntry = returnNumberFromText(entry.notes);
+  const returnNumber = typeof linkedValue?.returnNumber === "string"
+    ? linkedValue.returnNumber
+    : numberFromEntry;
+  if (!returnNumber) throw identityError();
   const recordDate = entry.createdAt;
-  const [cartAudit] = await tx.select({ value: auditLogs.newValue }).from(auditLogs)
-    .where(and(eq(auditLogs.action, "sale.return_cart"), eq(auditLogs.entityType, "sale"),
-      eq(auditLogs.entityId, String(entry.invoiceId)),
-      sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.returnNumber')) = ${returnNumber}`))
-    .orderBy(desc(auditLogs.id)).limit(1);
-  const recordedResult = cartAudit?.value as { receiptId?: unknown; payoutAmount?: string; debtOffsetAmount?: string } | null;
+  let cartAudit: { newValue: unknown } | undefined = linked[0];
+  if (!cartAudit && numberFromEntry) {
+    const legacyAudits = await tx.select({ newValue: auditLogs.newValue }).from(auditLogs)
+      .where(and(scope, sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.returnNumber')) = ${returnNumber}`))
+      .for("share").limit(2);
+    if (legacyAudits.length) {
+      const relatedEntries = await tx.select({ id: accountingEntries.id, receiptId: accountingEntries.receiptId, notes: accountingEntries.notes })
+        .from(accountingEntries)
+        .where(and(
+          eq(accountingEntries.branchId, Number(entry.branchId)),
+          entry.invoiceId == null ? isNull(accountingEntries.invoiceId) : eq(accountingEntries.invoiceId, entry.invoiceId),
+          eq(accountingEntries.entryType, "RETURN"),
+          sql`LOCATE(${`[${returnNumber}]`}, ${accountingEntries.notes}) > 0`,
+        )).for("share").limit(2);
+      cartAudit = matchReturnAudit(entry, relatedEntries, legacyAudits);
+      if (!cartAudit) throw identityError();
+    }
+  }
+  const recordedResult = cartAudit?.newValue as { receiptId?: unknown; payoutAmount?: string; debtOffsetAmount?: string } | null;
   const recordedReceiptId = recordedResult?.receiptId;
   const receiptId = recordedReceiptId == null ? entry.receiptId : Number(recordedReceiptId);
+  if (receiptId != null && (!Number.isSafeInteger(receiptId) || receiptId <= 0)) throw identityError();
+  if (entry.receiptId != null && receiptId !== Number(entry.receiptId)) throw identityError();
   const cashOrCard = input.settlement.method === "CASH" || input.settlement.method === "CARD";
   // Older cart audits lack the split. Recover physical payout from its original
   // receipt, never from the invoice's current paid amount or refund caps.
   const [originalReceipt] = cashOrCard && recordedResult?.payoutAmount == null && receiptId != null
     ? await tx.select({ amount: receipts.amount }).from(receipts)
-      .where(and(eq(receipts.id, Number(receiptId)), eq(receipts.direction, "OUT"))).limit(1)
+      .where(and(eq(receipts.id, Number(receiptId)), eq(receipts.direction, "OUT"))).for("share").limit(1)
     : [];
+  if (!recordedResult && !money(entry.amount ?? "0").abs().eq(money(input.settlement.totalAmount))) throw identityError();
+  if (!recordedResult && (input.settlement.method === "STORE_CREDIT" || (cashOrCard && !originalReceipt))) throw identityError();
+  if (recordedResult && input.settlement.method === "STORE_CREDIT" && recordedResult.debtOffsetAmount == null) throw identityError();
+  if (recordedResult && cashOrCard && recordedResult.payoutAmount == null && !originalReceipt) throw identityError();
   const payoutAmount = money(recordedResult?.payoutAmount ?? originalReceipt?.amount ?? "0").toFixed(2);
   const debtOffsetAmount = money(recordedResult?.debtOffsetAmount ?? (
     input.settlement.method === "CREDIT_OFFSET" ? input.settlement.totalAmount
@@ -1752,7 +1809,7 @@ export const returnRouter = router({
           receiptAmount: receipts.amount,
         })
         .from(accountingEntries)
-        .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
+        .leftJoin(receipts, and(eq(accountingEntries.receiptId, receipts.id), eq(receipts.invoiceId, accountingEntries.invoiceId)))
         .where(
           and(
             eq(accountingEntries.invoiceId, inv.id),
@@ -1781,31 +1838,46 @@ export const returnRouter = router({
         )
         .orderBy(desc(auditLogs.id));
 
-      const previousReturns = previousReturnEntries.map((entry) => {
-        const notesNumberMatch = entry.notes?.match(/\[(SR-[^\]]+)\]/);
-        const receiptNumberMatch = entry.receiptDescription?.match(/\[(SR-[^\]]+)\]/);
-        const auditMatch = returnAudits.find(
-          (a) => (a.newValue as any)?.returnNumber && (a.newValue as any)?.receiptId === entry.receiptId,
-        );
+      const resultAudits = previousReturnEntries.length
+        ? await db.select({ id: auditLogs.id, action: auditLogs.action, entityId: auditLogs.entityId, newValue: auditLogs.newValue, createdAt: auditLogs.createdAt })
+          .from(auditLogs).where(and(eq(auditLogs.action, SALES_RETURN_CART_RESULT_ACTION),
+            eq(auditLogs.entityType, "accountingEntry"),
+            inArray(auditLogs.entityId, previousReturnEntries.map((row) => String(row.id)))))
+        : [];
+
+      const historyContexts = previousReturnEntries.map((entry) => {
+        const auditMatch = combineReturnAudits(matchReturnAudit(entry, previousReturnEntries, returnAudits),
+          matchReturnAudit(entry, previousReturnEntries, resultAudits));
+        return { entry, auditMatch, receiptId: returnReceiptId(entry, auditMatch) };
+      });
+      const historyReceiptIds = Array.from(new Set(historyContexts.flatMap((row) => row.receiptId == null ? [] : [row.receiptId])));
+      const historyReceipts = historyReceiptIds.length ? await db.select({ id: receipts.id, amount: receipts.amount,
+        paymentMethod: receipts.paymentMethod, referenceNumber: receipts.referenceNumber }).from(receipts)
+        .where(and(inArray(receipts.id, historyReceiptIds), eq(receipts.invoiceId, inv.id), eq(receipts.direction, "OUT"))) : [];
+      const receiptById = new Map(historyReceipts.map((row) => [Number(row.id), row]));
+
+      const previousReturns = historyContexts.map(({ entry, auditMatch, receiptId }) => {
+        const receipt = receiptId == null ? undefined : receiptById.get(receiptId);
+        const auditValue = auditMatch?.newValue as { totalAmount?: string; payoutAmount?: string; debtOffsetAmount?: string } | undefined;
         const returnNumber =
-          notesNumberMatch?.[1] ||
-          receiptNumberMatch?.[1] ||
           (auditMatch?.newValue as any)?.returnNumber ||
+          returnNumberFromText(entry.notes) ||
+          returnNumberFromText(entry.receiptDescription) ||
           `SR-${entry.id}`;
 
-        let method = entry.receiptPaymentMethod || (auditMatch?.newValue as any)?.method;
+        let method = receipt?.paymentMethod || (auditMatch?.newValue as any)?.method;
         if (!method) {
           if (entry.notes?.includes("رصيد متجر")) method = "STORE_CREDIT";
+          else if (entry.notes?.includes("معادلة ذمة")) method = "CREDIT_OFFSET";
           else if (entry.notes?.includes("بطاقة")) method = "CARD";
           else if (entry.notes?.includes("نقدي")) method = "CASH";
-          else method = inv.paymentMethod && inv.paymentMethod !== "MIXED" ? inv.paymentMethod : "CASH";
         }
 
-        let disposition: "RESTOCK" | "DAMAGED" = "RESTOCK";
+        let disposition: "RESTOCK" | "DAMAGED" | null = null;
         const auditDisposition = (auditMatch?.newValue as any)?.disposition;
-        if (auditDisposition === "DAMAGED" || entry.notes?.includes("إتلاف") || entry.notes?.includes("تالف")) {
-          disposition = "DAMAGED";
-        }
+        if (auditDisposition === "DAMAGED" || auditDisposition === "RESTOCK") disposition = auditDisposition;
+        else if (entry.notes?.includes("إتلاف") || entry.notes?.includes("تالف")) disposition = "DAMAGED";
+        else if (entry.notes?.includes("إعادة للرف")) disposition = "RESTOCK";
 
         const auditItems = (auditMatch?.newValue as any)?.items;
         let returnItems: Array<{
@@ -1821,19 +1893,12 @@ export const returnRouter = router({
             unitPrice: String(ai.unitPrice || "0"),
             barcode: ai.barcode ?? null,
           }));
-        } else {
-          returnItems = items
-            .filter((i) => i.returnedBaseQuantity > 0)
-            .map((i) => ({
-              name: i.productName,
-              quantity: i.returnedBaseQuantity,
-              unitPrice: i.unitPrice,
-              barcode: i.barcode,
-            }));
         }
 
-        const rawAmount = entry.receiptAmount ?? entry.amount;
-        const absAmount = Math.abs(Number(rawAmount ?? 0)).toFixed(2);
+        const hasDocumentTotal = typeof auditValue?.totalAmount === "string" && auditValue.totalAmount.length > 0;
+        const absAmount = money(hasDocumentTotal ? auditValue!.totalAmount : entry.amount ?? "0").abs().toFixed(2);
+        const payoutAmount = auditValue?.payoutAmount != null ? money(auditValue.payoutAmount).toFixed(2) :
+          receipt ? money(receipt.amount).toFixed(2) : null;
 
         return {
           id: Number(entry.id),
@@ -1841,11 +1906,14 @@ export const returnRouter = router({
           createdAt: entry.createdAt,
           performedByName: entry.performedByName || "كاشير",
           amount: absAmount,
-          method: String(method),
-          referenceNumber: entry.receiptReference ?? null,
+          amountSource: hasDocumentTotal ? "RETURN_TOTAL" as const : "LEDGER_ONLY" as const,
+          payoutAmount,
+          debtOffsetAmount: auditValue?.debtOffsetAmount != null ? money(auditValue.debtOffsetAmount).toFixed(2) : null,
+          method: method ? String(method) : null,
+          referenceNumber: receipt?.referenceNumber ?? null,
           disposition,
           reason: (auditMatch?.newValue as any)?.reason ?? null,
-          receiptId: entry.receiptId ? Number(entry.receiptId) : null,
+          receiptId: receipt ? Number(receipt.id) : null,
           items: returnItems,
         };
       });
@@ -2503,6 +2571,8 @@ export const returnRouter = router({
                   existingRefId,
                   input,
                   actorBranchId,
+                  ctx.user.id,
+                  ctx.user.role,
                 );
               }
             }
@@ -2574,8 +2644,6 @@ export const returnRouter = router({
             await assertPeriodOpen(tx, new Date());
 
           const now = new Date();
-          const randSuffix = Math.floor(1000 + Math.random() * 9000);
-          const returnNumber = `SR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
 
           const customerName = input.customer?.name?.trim() || "زبون عابر";
           const customerPhone = input.customer?.phone?.trim() || null;
@@ -3065,6 +3133,8 @@ export const returnRouter = router({
                   existingAfterLock,
                   input,
                   actorBranchId,
+                  ctx.user.id,
+                  ctx.user.role,
                 );
               }
             }
@@ -3568,6 +3638,12 @@ export const returnRouter = router({
               (input.settlement.method === "CREDIT_OFFSET" && matchedInvoice.customerId == null);
           }
 
+          // Dedicated transactional counter: its format cannot collide with the old SR-YYYYMM-#### format.
+          // Reserve only after the post-lock idempotency check so a replay consumes no number.
+          const returnDay = todayUtcDate().replace(/-/g, "");
+          const returnSequence = await nextCounterValue(tx, `sales_return_cart_${actorBranchId}_${returnDay}`);
+          const returnNumber = `SR-${actorBranchId}-${returnDay}-${String(returnSequence).padStart(5, "0")}`;
+
           if (useInvoiceReturnCore && matchedInvoice) {
             const coreReason = `${returnReason.slice(0, 430)} [${returnNumber}]`;
             const cashOrCard = input.settlement.method === "CASH" || input.settlement.method === "CARD";
@@ -3575,7 +3651,7 @@ export const returnRouter = router({
               amount: matchedActualPayout.toFixed(2), method: input.settlement.method as "CASH" | "CARD",
               shiftId: input.settlement.shiftId ?? null, reference: input.settlement.reference ?? null,
             } : undefined;
-            await returnSaleInTx(tx, {
+            const coreResult = await returnSaleInTx(tx, {
               invoiceId: Number(matchedInvoice.id), lines: coreLines, restock: input.disposition === "RESTOCK",
               operatorReason: coreReason,
               ...(matchedInvoice.customerId == null ? { resolution: {
@@ -3587,7 +3663,8 @@ export const returnRouter = router({
             }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
             { requireUnpaidSource: directLimitsApply && matchedSourcePaid.isZero() });
             const [entry] = await tx.select({ id: accountingEntries.id }).from(accountingEntries)
-              .where(and(eq(accountingEntries.invoiceId, matchedInvoice.id), eq(accountingEntries.entryType, "RETURN")))
+              .where(and(eq(accountingEntries.invoiceId, matchedInvoice.id), eq(accountingEntries.entryType, "RETURN"),
+                sql`LOCATE(${`[${returnNumber}]`}, ${accountingEntries.notes}) > 0`))
               .orderBy(desc(accountingEntries.id)).limit(1);
             if (!entry) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: appErrorMessage({
               what: "تعذر إتمام المرتجع", why: "لم يكتب المرتجع قيده المرجعي",
@@ -3595,10 +3672,13 @@ export const returnRouter = router({
             }) });
             returnLedgerEntryId = Number(entry.id);
             if (matchedActualPayout.gt(0)) {
-              const [out] = await tx.select({ id: receipts.id }).from(receipts)
-                .where(and(eq(receipts.invoiceId, matchedInvoice.id), eq(receipts.direction, "OUT")))
-                .orderBy(desc(receipts.id)).limit(1);
-              generatedReceiptId = out ? Number(out.id) : null;
+              if (!("refundReceiptId" in coreResult) || coreResult.refundReceiptId == null) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: appErrorMessage({
+                  what: "تعذر إتمام المرتجع", why: "لم يحدد المرتجع سند الاسترداد الخاص به",
+                  doThis: "حدّث الفاتورة وأعد العملية؛ تراجعت جميع آثار هذه المحاولة",
+                }) });
+              }
+              generatedReceiptId = Number(coreResult.refundReceiptId);
             }
           } else {
           // Keep the existing paid/independent-cart posting path; invoice core
@@ -4640,6 +4720,23 @@ export const returnRouter = router({
           const debtOffsetAmount = matchedInvoice
             ? Decimal.min(returnTotalDec, matchedDebtAndCustodyCap).toFixed(2) : "0.00";
 
+          if (!Number.isSafeInteger(returnLedgerEntryId) || returnLedgerEntryId <= 0) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: appErrorMessage({
+              what: "تعذر إتمام المرتجع", why: "لم يحدد المرتجع قيده المرجعي",
+              doThis: "حدّث الفاتورة وأعد العملية؛ تراجعت جميع آثار هذه المحاولة",
+            }) });
+          }
+
+          // Keep the replay authority separate from the potentially large item audit:
+          // logAuditTx truncates entire payloads above 8 KiB.
+          await logAuditTx(tx, ctx, {
+            action: SALES_RETURN_CART_RESULT_ACTION,
+            entityType: "accountingEntry",
+            entityId: returnLedgerEntryId,
+            newValue: { returnEntryId: returnLedgerEntryId, returnNumber, receiptId: generatedReceiptId, totalAmount: input.settlement.totalAmount,
+              payoutAmount, debtOffsetAmount, method: input.settlement.method, disposition: input.disposition },
+          });
+
           // تسجيل مفتاح الـ Idempotency ذرياً داخل المعاملة نفسها
           if (clientRequestId) {
             await recordIdempotencyKey(
@@ -4658,6 +4755,7 @@ export const returnRouter = router({
             entityId: matchedInvoice?.id ?? null,
             newValue: {
               returnNumber,
+              returnEntryId: returnLedgerEntryId,
               customerName,
               customerPhone,
               originalInvoiceNumber: input.invoiceNumber,

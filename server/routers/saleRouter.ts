@@ -81,6 +81,7 @@ import { loadRefundCaps } from "../services/returns/refundCaps";
 import { loadCustomerReceiptInvoicePayments } from "../services/customerReceiptProjection";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
+import { combineReturnAudits, matchReturnAudit, returnNumberFromText, returnReceiptId, SALES_RETURN_CART_RESULT_ACTION } from "../services/returns/cartAuditIdentity";
 import { randomUUID } from "node:crypto";
 import {
   canSeeCostForUser,
@@ -2501,7 +2502,7 @@ export const saleRouter = router({
           receiptDescription: receipts.description,
         })
         .from(accountingEntries)
-        .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
+        .leftJoin(receipts, and(eq(accountingEntries.receiptId, receipts.id), eq(receipts.invoiceId, accountingEntries.invoiceId)))
         .where(
           and(
             eq(accountingEntries.invoiceId, input.invoiceId),
@@ -2533,36 +2534,47 @@ export const saleRouter = router({
           ),
         );
 
-      const returns = returnEntries.map((entry) => {
-        const match = entry.notes?.match(/\[(SR-[^\]]+)\]/);
-        const audit = returnAuditLogs.find(
-          (a) =>
-            ((a.newValue as any)?.returnNumber &&
-              (a.newValue as any)?.returnNumber === match?.[1]) ||
-            ((a.newValue as any)?.receiptId &&
-              (a.newValue as any)?.receiptId === entry.receiptId),
-        );
+      const resultAudits = returnEntries.length
+        ? await db.select({ action: auditLogs.action, entityId: auditLogs.entityId, newValue: auditLogs.newValue }).from(auditLogs)
+          .where(and(eq(auditLogs.action, SALES_RETURN_CART_RESULT_ACTION), eq(auditLogs.entityType, "accountingEntry"),
+            inArray(auditLogs.entityId, returnEntries.map((row) => String(row.id)))))
+        : [];
+
+      const historyContexts = returnEntries.map((entry) => {
+        const audit = combineReturnAudits(matchReturnAudit(entry, returnEntries, returnAuditLogs),
+          matchReturnAudit(entry, returnEntries, resultAudits));
+        return { entry, audit, receiptId: returnReceiptId(entry, audit) };
+      });
+      const historyReceiptIds = Array.from(new Set(historyContexts.flatMap((row) => row.receiptId == null ? [] : [row.receiptId])));
+      const historyReceipts = historyReceiptIds.length ? await db.select({ id: receipts.id, amount: receipts.amount, paymentMethod: receipts.paymentMethod,
+        referenceNumber: receipts.referenceNumber }).from(receipts)
+        .where(and(inArray(receipts.id, historyReceiptIds), eq(receipts.invoiceId, input.invoiceId), eq(receipts.direction, "OUT"))) : [];
+      const receiptById = new Map(historyReceipts.map((row) => [Number(row.id), row]));
+
+      const returns = historyContexts.map(({ entry, audit, receiptId }) => {
+        const receipt = receiptId == null ? undefined : receiptById.get(receiptId);
+        const auditValue = audit?.newValue as { totalAmount?: string; payoutAmount?: string; debtOffsetAmount?: string } | undefined;
+        const hasDocumentTotal = typeof auditValue?.totalAmount === "string" && auditValue.totalAmount.length > 0;
         const returnNumber =
-          match?.[1] ||
           (audit?.newValue as any)?.returnNumber ||
+          returnNumberFromText(entry.notes) ||
+          returnNumberFromText(entry.receiptDescription) ||
           `SR-${entry.id}`;
 
         let method =
-          entry.receiptPaymentMethod || (audit?.newValue as any)?.method;
+          receipt?.paymentMethod || (audit?.newValue as any)?.method;
         if (!method) {
           if (entry.notes?.includes("رصيد متجر")) method = "STORE_CREDIT";
+          else if (entry.notes?.includes("معادلة ذمة")) method = "CREDIT_OFFSET";
           else if (entry.notes?.includes("بطاقة")) method = "CARD";
           else if (entry.notes?.includes("نقدي")) method = "CASH";
-          else method = "CASH";
         }
 
-        let disposition: "RESTOCK" | "DAMAGED" = "RESTOCK";
-        if (
-          (audit?.newValue as any)?.disposition === "DAMAGED" ||
-          entry.notes?.includes("تالف")
-        ) {
-          disposition = "DAMAGED";
-        }
+        let disposition: "RESTOCK" | "DAMAGED" | null = null;
+        const auditDisposition = (audit?.newValue as any)?.disposition;
+        if (auditDisposition === "DAMAGED" || auditDisposition === "RESTOCK") disposition = auditDisposition;
+        else if (entry.notes?.includes("تالف")) disposition = "DAMAGED";
+        else if (entry.notes?.includes("إعادة للرف")) disposition = "RESTOCK";
 
         const auditItems = (audit?.newValue as any)?.items;
         let returnedLineItems: Array<{
@@ -2576,27 +2588,23 @@ export const saleRouter = router({
             quantity: Number(ai.quantity || 1),
             unitPrice: String(ai.unitPrice || "0"),
           }));
-        } else {
-          returnedLineItems = items
-            .filter((i) => Number(i.returnedBaseQuantity ?? 0) > 0)
-            .map((i) => ({
-              name: i.productName ?? "صنف",
-              quantity: Number(i.returnedBaseQuantity ?? 0),
-              unitPrice: String(i.unitPrice),
-            }));
         }
 
         return {
           id: entry.id,
           returnNumber,
-          amount: Math.abs(Number(entry.amount)).toFixed(2),
-          method: String(method),
+          amount: money(hasDocumentTotal ? auditValue!.totalAmount : entry.amount).abs().toFixed(2),
+          amountSource: hasDocumentTotal ? "RETURN_TOTAL" as const : "LEDGER_ONLY" as const,
+          payoutAmount: auditValue?.payoutAmount != null ? money(auditValue.payoutAmount).toFixed(2) :
+            receipt ? money(receipt.amount).toFixed(2) : null,
+          debtOffsetAmount: auditValue?.debtOffsetAmount != null ? money(auditValue.debtOffsetAmount).toFixed(2) : null,
+          method: method ? String(method) : null,
           disposition,
           performedBy: entry.performedBy,
           performedByName: entry.performedByName,
           createdAt: entry.createdAt,
-          receiptId: entry.receiptId ? Number(entry.receiptId) : null,
-          referenceNumber: entry.receiptReference ?? null,
+          receiptId: receipt ? Number(receipt.id) : null,
+          referenceNumber: receipt?.referenceNumber ?? null,
           notes: entry.notes,
           items: returnedLineItems,
         };
