@@ -9,7 +9,7 @@
  *     في المخرَج (حجبٌ في الخدمة لا في العرض).
  *
  * معيار خروج ش١١: «الأرقام تتطابق مع استعلامات تحقق مستقلة» — لذلك كل رقمٍ هنا
- * مشتقٌّ من `digitalSaleDetails` (اللقطة المثبَّتة) لا من حسابٍ موازٍ.
+ * مشتقٌّ من لقطة البيع وأحداث المرتجع المؤرّخة، مع إظهار المتبقّي التاريخي من الدفتر.
  */
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
@@ -19,7 +19,6 @@ import {
   digitalOfferings,
   digitalPriceVersions,
   digitalProviders,
-  digitalSaleDetails,
   digitalSaleIntents,
   digitalWalletReconciliations,
   digitalWallets,
@@ -42,61 +41,119 @@ export interface Scope extends Period {
   includeCost: boolean;
 }
 
-/** حدود الفترة كطوابع زمنية — النهاية حصرية دائماً. */
-function bounds(p: Period): { start: Date; endExclusive: Date } {
-  return { start: new Date(`${p.from}T00:00:00.000Z`), endExclusive: new Date(`${p.to}T00:00:00.000Z`) };
+/**
+ * Immutable sales and completed financial returns, scoped by each movement date.
+ * Old RETURN entries have no trustworthy line allocation. Their invoice/date residual
+ * is reported separately after subtracting dated allocations already represented here.
+ * No current fulfillment status or historical timestamp is inferred.
+ */
+function movementEvents(scope: Scope) {
+  const branch =
+    scope.branchId == null ? sql`TRUE` : sql`i.branchId = ${scope.branchId}`;
+  return sql`WITH completed_refunds AS (
+    SELECT d.invoiceId, d.offeringId, d.providerId, d.settlementModeSnapshot AS settlementMode,
+      r.occurredAt, r.revenue, r.cost
+    FROM digitalRefundItems r
+    INNER JOIN digitalSaleDetails d ON d.id = r.detailId
+    INNER JOIN invoices i ON i.id = d.invoiceId
+    WHERE r.occurredAt >= ${scope.from} AND r.occurredAt < ${scope.to} AND ${branch}
+  ), ledger_returns AS (
+    SELECT e.invoiceId, e.entryDate, SUM(e.revenue) AS revenue, SUM(e.cost) AS cost
+    FROM accountingEntries e
+    INNER JOIN invoices i ON i.id = e.invoiceId
+    WHERE e.entryType = 'RETURN' AND e.dedupeKey LIKE 'DIGITAL:REV:%'
+      AND e.entryDate >= ${scope.from} AND e.entryDate < ${scope.to} AND ${branch}
+    GROUP BY e.invoiceId, e.entryDate
+  ), movements AS (
+    SELECT d.invoiceId, d.offeringId, d.providerId, d.settlementModeSnapshot AS settlementMode,
+      'SALE' AS kind, 1 AS cards, d.sellPriceSnapshot AS revenue, d.providerShareSnapshot AS cost
+    FROM digitalSaleDetails d
+    INNER JOIN invoices i ON i.id = d.invoiceId
+    WHERE i.createdAt >= ${scope.from} AND i.createdAt < ${scope.to} AND ${branch}
+    UNION ALL
+    SELECT invoiceId, offeringId, providerId, settlementMode, 'REFUND', -1, revenue, cost
+    FROM completed_refunds
+    UNION ALL
+    SELECT l.invoiceId, NULL, NULL, NULL, 'LEGACY', 0,
+      l.revenue - COALESCE(r.revenue, 0), l.cost - COALESCE(r.cost, 0)
+    FROM ledger_returns l
+    LEFT JOIN (
+      SELECT invoiceId, DATE(occurredAt) AS eventDate, SUM(revenue) AS revenue, SUM(cost) AS cost
+      FROM completed_refunds GROUP BY invoiceId, DATE(occurredAt)
+    ) r ON r.invoiceId = l.invoiceId AND r.eventDate = l.entryDate
+    WHERE l.revenue <> COALESCE(r.revenue, 0) OR l.cost <> COALESCE(r.cost, 0)
+  )`;
 }
 
-/** شرط الفترة + الفرع على الفاتورة المرتبطة بالتفاصيل. */
-function saleConds(scope: Scope) {
-  const { start, endExclusive } = bounds(scope);
-  const conds = [gte(invoices.createdAt, start), lt(invoices.createdAt, endExclusive)];
-  if (scope.branchId != null) conds.push(eq(invoices.branchId, scope.branchId));
-  return conds;
+interface MovementAggregate {
+  cards: number;
+  grossCards: number;
+  refundedCards: number;
+  invoicesCount: number;
+  grossSales: string;
+  refunds: string;
+  sales: string;
+  providerShare: string;
+  profit: string;
+}
+
+const movementTotals = sql`
+  COALESCE(SUM(cards), 0) AS cards,
+  COALESCE(SUM(kind = 'SALE'), 0) AS grossCards,
+  COALESCE(SUM(kind = 'REFUND'), 0) AS refundedCards,
+  COUNT(DISTINCT CASE WHEN kind = 'SALE' THEN invoiceId END) AS invoicesCount,
+  COALESCE(SUM(CASE WHEN kind = 'SALE' THEN revenue ELSE 0 END), 0) AS grossSales,
+  COALESCE(SUM(CASE WHEN kind <> 'SALE' THEN revenue ELSE 0 END), 0) AS refunds,
+  COALESCE(SUM(revenue), 0) AS sales,
+  COALESCE(SUM(cost), 0) AS providerShare,
+  COALESCE(SUM(revenue - cost), 0) AS profit`;
+
+function amounts(
+  row: Partial<MovementAggregate> | undefined,
+  includeCost: boolean,
+) {
+  return {
+    cards: Number(row?.cards ?? 0),
+    grossCards: Number(row?.grossCards ?? 0),
+    refundedCards: Number(row?.refundedCards ?? 0),
+    grossSales: toDbMoney(row?.grossSales ?? 0),
+    refunds: toDbMoney(row?.refunds ?? 0),
+    sales: toDbMoney(row?.sales ?? 0),
+    providerShare: includeCost ? toDbMoney(row?.providerShare ?? 0) : null,
+    profit: includeCost ? toDbMoney(row?.profit ?? 0) : null,
+  };
 }
 
 /* ────────── ١) الملخّص ────────── */
 
 export async function summary(db: DB, scope: Scope) {
-  const [row] = await db
-    .select({
-      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
-      invoicesCount: sql<number>`COUNT(DISTINCT CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.invoiceId} ELSE NULL END)`,
-      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
-      providerShare: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} <> 'REVERSED' THEN ${digitalSaleDetails.providerShareSnapshot} ELSE 0 END), 0)`,
-      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
-    })
-    .from(digitalSaleDetails)
-    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
-    .where(and(...saleConds(scope)));
-
-  const byMode = await db
-    .select({
-      settlementMode: digitalSaleDetails.settlementModeSnapshot,
-      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
-      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
-      providerShare: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} <> 'REVERSED' THEN ${digitalSaleDetails.providerShareSnapshot} ELSE 0 END), 0)`,
-      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
-    })
-    .from(digitalSaleDetails)
-    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
-    .where(and(...saleConds(scope)))
-    .groupBy(digitalSaleDetails.settlementModeSnapshot);
-
-  const hide = !scope.includeCost;
+  const result = await db.execute(sql`${movementEvents(scope)}
+    SELECT settlementMode, GROUPING(settlementMode) AS isTotal, ${movementTotals}
+    FROM movements GROUP BY settlementMode WITH ROLLUP`);
+  const rows = result[0] as unknown as (MovementAggregate & {
+    settlementMode: "PREPAID" | "POSTPAID" | null;
+    isTotal: number;
+  })[];
+  const total = rows.find((row) => Number(row.isTotal) === 1);
+  const legacy = rows.find(
+    (row) => row.settlementMode == null && Number(row.isTotal) === 0,
+  );
   return {
-    cards: Number(row?.cards ?? 0),
-    invoices: Number(row?.invoicesCount ?? 0),
-    sales: toDbMoney(row?.sales ?? 0),
-    providerShare: hide ? null : toDbMoney(row?.providerShare ?? 0),
-    profit: hide ? null : toDbMoney(row?.profit ?? 0),
-    byMode: byMode.map((m) => ({
-      settlementMode: m.settlementMode,
-      cards: Number(m.cards),
-      sales: toDbMoney(m.sales),
-      providerShare: hide ? null : toDbMoney(m.providerShare),
-      profit: hide ? null : toDbMoney(m.profit),
-    })),
+    ...amounts(total, scope.includeCost),
+    // Counts cover allocated events only; legacy ledger rows cannot prove card counts.
+    countsComplete: legacy == null,
+    invoices: Number(total?.invoicesCount ?? 0),
+    byMode: rows
+      .filter((row) => row.settlementMode != null)
+      .map((row) => ({
+        settlementMode: row.settlementMode!,
+        ...amounts(row, scope.includeCost),
+      })),
+    // This bucket is included in totals, but cannot be assigned to a mode/offering.
+    legacyAdjustment: {
+      allocation: "UNALLOCATED_LEGACY" as const,
+      ...amounts(legacy, scope.includeCost),
+    },
   };
 }
 
@@ -348,34 +405,26 @@ export async function pendingExecutions(db: DB, branchId: number | null) {
 /* ────────── ٦) أكثر البطاقات مبيعاً ────────── */
 
 export async function topOfferings(db: DB, scope: Scope, limit = 10) {
-  const hide = !scope.includeCost;
-  const rows = await db
-    .select({
-      offeringId: digitalSaleDetails.offeringId,
-      offeringName: products.name,
-      providerName: suppliers.name,
-      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
-      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
-      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
-    })
-    .from(digitalSaleDetails)
-    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
-    .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
-    .innerJoin(products, eq(digitalOfferings.productId, products.id))
-    .innerJoin(digitalProviders, eq(digitalSaleDetails.providerId, digitalProviders.id))
-    .innerJoin(suppliers, eq(digitalProviders.supplierId, suppliers.id))
-    .where(and(...saleConds(scope)))
-    .groupBy(digitalSaleDetails.offeringId, products.name, suppliers.name)
-    .orderBy(desc(sql`COUNT(*)`))
-    .limit(Math.min(limit, 50));
-
-  return rows.map((r) => ({
-    offeringId: Number(r.offeringId),
-    offeringName: r.offeringName,
-    providerName: r.providerName,
-    cards: Number(r.cards),
-    sales: toDbMoney(r.sales),
-    profit: hide ? null : toDbMoney(r.profit),
+  const result = await db.execute(sql`${movementEvents(scope)}
+    SELECT m.offeringId, p.name AS offeringName, s.name AS providerName, ${movementTotals}
+    FROM movements m
+    INNER JOIN digitalOfferings o ON o.id = m.offeringId
+    INNER JOIN products p ON p.id = o.productId
+    INNER JOIN digitalProviders dp ON dp.id = m.providerId
+    INNER JOIN suppliers s ON s.id = dp.supplierId
+    GROUP BY m.offeringId, p.name, s.name
+    ORDER BY grossCards DESC, m.offeringId ASC
+    LIMIT ${Math.max(0, Math.min(Math.trunc(limit), 50))}`);
+  const rows = result[0] as unknown as (MovementAggregate & {
+    offeringId: number;
+    offeringName: string;
+    providerName: string;
+  })[];
+  return rows.map((row) => ({
+    offeringId: Number(row.offeringId),
+    offeringName: row.offeringName,
+    providerName: row.providerName,
+    ...amounts(row, scope.includeCost),
   }));
 }
 
