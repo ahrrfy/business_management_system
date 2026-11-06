@@ -113,6 +113,8 @@ export function StaffConfirmDialog({
           </button>
           <button
             type="button"
+            hidden={(row.shipmentInvoiceCount ?? 1) > 1}
+            disabled={(row.shipmentInvoiceCount ?? 1) > 1}
             onClick={() => setMode("different")}
             className={cn(
               "rounded-md px-3 py-2 text-sm font-bold transition",

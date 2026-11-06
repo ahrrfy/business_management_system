@@ -701,6 +701,8 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_consignment_party_tracking_ref: { msg: "رقم بوليصة شركة التوصيل مستخدم مسبقاً لدى الجهة نفسها — صحّح الرقم أو افتح الإرسالية السابقة." },
   uq_delivery_remittance_line: { msg: "هذه الإرسالية مدرجة مسبقاً في سند التوريد نفسه — عدّل السطر الموجود." },
   uq_remittance_party_statement: { msg: "كشف الشركة بهذا الرقم مُسجَّلٌ سلفاً لهذه الجهة — راجع سند التوريد الصادر عنه بدل إدخاله مرّةً ثانية." },
+  uq_delivery_company_statement_party_number: { msg: "كشف الشركة بهذا الرقم مسجّل مسبقاً لهذه الجهة — افتح الكشف لإضافة دفعة إليه." },
+  uq_delivery_statement_batch_remittance: { msg: "سند التوريد مرتبط بكشف شركة مسبقاً — راجع الدفعة المسجّلة." },
   uq_delivery_ledger_event: { msg: "قيد حركة التوصيل لهذه العملية مسجّل مسبقاً (حماية من الازدواج)." },
   uq_delivery_event_key: { msg: "حدث التوصيل لهذه العملية مسجّل مسبقاً (حماية من الازدواج)." },
   uq_dci_source_line: { msg: "سطر عهدة التوصيل لهذا المصدر مسجّل مسبقاً — افتح العهدة القائمة." },

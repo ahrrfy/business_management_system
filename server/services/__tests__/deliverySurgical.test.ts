@@ -170,7 +170,7 @@ async function simulateCounterPayment(invoiceId: number, customerId: number, amo
 }
 
 /** يحاكي عهدةً معترفاً بها على الجهة (نمط تجهيزة deliveryFlow): قيد DISPATCH + رصيد. */
-async function simulateCustody(partyId: number, amount: string, note: string, collectedLedger = true) {
+async function simulateCustody(partyId: number, amount: string, note: string, collectedLedger = true, consignmentId?: number) {
   await db().insert(s.accountingEntries).values({
     entryType: "DELIVERY_DISPATCH", branchId: 1, deliveryPartyId: partyId,
     amount, entryDate: sql`CURDATE()` as unknown as Date,
@@ -187,7 +187,7 @@ async function simulateCustody(partyId: number, amount: string, note: string, co
   if (collectedLedger) {
     await db().insert(s.deliveryLedgerEntries).values({
       eventKey: `SIM-CUSTODY-COD_COLLECTED:${partyId}:${note}`,
-      partyId, branchId: 1, entryType: "COD_COLLECTED", amount, occurredAt: new Date(),
+      partyId, branchId: 1, consignmentId: consignmentId ?? null, entryType: "COD_COLLECTED", amount, occurredAt: new Date(),
     });
   }
 }
@@ -303,7 +303,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await allReconcileClean();
 
     // الجهة حصّلت المتبقّي 3000 لاحقاً (المطابقة المالية تعترف بالعهدة) ثم ورّدته.
-    await simulateCustody(partyId, "3000.00", "اعتراف عهدة المتبقّي (تجهيزة اختبار)");
+    await simulateCustody(partyId, "3000.00", "اعتراف عهدة المتبقّي (تجهيزة اختبار)", true, disp.consignmentId);
     await recordDeliveryRemittance(
       { branchId: 1, partyId, countedCash: "3000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "3000" }] },
       CASHIER,

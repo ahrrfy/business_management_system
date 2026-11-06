@@ -2670,6 +2670,13 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 425,
+			"version": "5",
+			"when": 1788148883000,
+			"tag": "0425_delivery_company_statement_batches",
+			"breakpoints": true
+		},
+		{
 			"idx": 426,
 			"version": "5",
 			"when": 1788148884000,

@@ -15,6 +15,7 @@ import { applyMovement } from "../inventoryService";
 import { withTx } from "../tx";
 import { openShift } from "../shiftService";
 import { payPartyDeliveryFees } from "../delivery/fees";
+import { confirmConsignmentDelivery } from "../delivery/courier";
 import { todayUtcDate } from "../businessDay";
 import {
   createWorkOrder,
@@ -596,6 +597,35 @@ describe("aftercare real document, stock, custody and fee integration", () => {
       .from(s.deliveryLedgerEntries)
       .where(eq(s.deliveryLedgerEntries.entryType, "FEE_EARNED"));
     expect(Number(fee.n)).toBe(1);
+  });
+  it("checks the displayed aftercare claim after replay without changing staff authorization", async () => {
+    await db().insert(s.users).values({ id: 4, openId: "ac-claim-driver", role: "courier", branchId: 1 });
+    await db().update(s.deliveryParties).set({ userId: 4 }).where(eq(s.deliveryParties.id, 1));
+    const data = await approved();
+    const execution = await prepareAftercareExecution(preparation(data), CHECKER);
+    const sent = await dispatchAftercareExecution({ id: execution.id, expectedVersion: 1, clientRequestId: key(),
+      partyId: 1, assignedUserId: 4 }, CHECKER);
+    expect(sent.consignmentId).toBeTruthy();
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 2 })
+      .where(eq(s.deliveryConsignments.id, sent.consignmentId!));
+    const input = { consignmentId: sent.consignmentId!, expectedClaimVersion: 2, expectedClaimAmount: "0.00",
+      expectedConsignmentIds: [sent.consignmentId!], expectedConsignmentClaims: [{ consignmentId: sent.consignmentId!, amount: "0.00" }],
+      clientRequestId: "aftercare-claim-confirm" };
+    await expect(confirmConsignmentDelivery({ ...input, expectedClaimVersion: 1 }, { userId: 4 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(confirmConsignmentDelivery({ consignmentId: input.consignmentId, clientRequestId: "aftercare-legacy-confirm" }, { userId: 4 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(confirmConsignmentDelivery({ consignmentId: input.consignmentId, expectedClaimVersion: 2,
+      clientRequestId: "aftercare-no-amount" }, { userId: 4 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, input.consignmentId)))[0].parcelStatus)
+      .not.toBe("DELIVERED");
+    await confirmConsignmentDelivery(input, { userId: 4 });
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 3 }).where(eq(s.deliveryConsignments.id, input.consignmentId));
+    expect(await confirmConsignmentDelivery(input, { userId: 4 })).toMatchObject({ alreadyDelivered: true });
+    await expect(confirmConsignmentDelivery({ ...input, expectedClaimVersion: 3 }, { userId: 4 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(confirmConsignmentDelivery({ ...input, expectedClaimAmount: "1.00" }, { userId: 4 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
   });
   it("reads per-bundle historical components, subtracts returns, and serializes concurrent allocations", async () => {
     const preview = await previewAftercareSource({ invoiceId: 1 }, MAKER);

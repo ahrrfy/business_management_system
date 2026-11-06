@@ -101,6 +101,14 @@ describe("حوكمة مصدر نقد التوصيل", () => {
     await db().delete(s.invoices);
     // SHOP: al-maktaba tatahammal al-ujra ⇒ tunqas min al-tawrid ⇒ hares "akbar min al-naqd" hayy.
     await seedConsignment({ fee: "150.00", feeCollection: "SHOP" });
+    await expect(recordDeliveryRemittance({
+      branchId: 1, partyId: 1, countedCash: "100.00", lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
+    }, actor)).rejects.toThrow(/لم يثبت تحصيله/);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: "FIH:CN:1:PROVEN_COLLECTION", partyId: 1, branchId: 1, consignmentId: 1,
+      entryType: "COD_COLLECTED", amount: "100.00", createdBy: 1,
+    });
     const remittance = await recordDeliveryRemittance({
       branchId: 1, partyId: 1, countedCash: "100.00", lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
     }, actor);

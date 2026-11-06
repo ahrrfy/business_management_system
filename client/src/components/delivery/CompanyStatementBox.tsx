@@ -92,7 +92,7 @@ export function CompanyStatementBox({
             onChange={(e) => onStatementDateChange(e.target.value)} className="h-9" />
         </div>
         <div className="space-y-1">
-          <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
+          <Label htmlFor="stmt-deduct" className="text-xs">أجور الشحنات المحددة بهذه الدفعة</Label>
           <MoneyInput id="stmt-deduct" value={String(deductions || "")}
             disabled={disabled}
             onChange={(v) => onDeductionsChange(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />

@@ -1,5 +1,5 @@
 import { asc, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments } from "../../../../drizzle/schema";
+import { deliveryConsignments, deliveryShipmentMembers } from "../../../../drizzle/schema";
 import {
   hasOperationPolicy,
   operationDecision,
@@ -19,7 +19,7 @@ import { money } from "../../money";
 import { withTx, type Actor } from "../../tx";
 import { appendDeliveryEvent } from "../lifecycle";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "../custody";
-import { loadShipmentMembersTx } from "../shipments";
+import { loadShipmentMembersTx, operationalShipmentMembers } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import {
   PHYSICAL_RETURN_RECEIVED,
@@ -161,6 +161,7 @@ export function receiveWorkflowReturn(
         .where(inArray(deliveryConsignments.id, ids))
         .orderBy(asc(deliveryConsignments.id))
         .for("update");
+      const removedReceiptEventIds: number[] = [];
       for (const row of selected) {
         if (row.branchId !== preview.source.branchId)
           throw fulfillmentError(
@@ -243,7 +244,7 @@ export function receiveWorkflowReturn(
           .update(deliveryConsignments)
           .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })
           .where(eq(deliveryConsignments.id, row.id));
-        await appendDeliveryEvent(tx, {
+        const receiptEventId = await appendDeliveryEvent(tx, {
           eventKey: documentEventKey,
           consignmentId: row.id,
           eventType: PHYSICAL_RETURN_RECEIVED,
@@ -268,6 +269,7 @@ export function receiveWorkflowReturn(
             availableStockAdded: false,
           },
         });
+        if (operationalShipmentMembers([row]).length) removedReceiptEventIds.push(receiptEventId);
         documentSnapshotIds.push(
           await createRecordedShipmentDocumentTx(tx, {
             consignmentId: leaderId,
@@ -289,6 +291,39 @@ export function receiveWorkflowReturn(
             availableStockAdded: false,
           },
         });
+      }
+      // Removing one or more parcels changes the claim presented to the driver.
+      // Advance once per physical receipt transaction, not once per parcel.
+      if (members.length > 1 && removedReceiptEventIds.length) {
+        const [leader] = await tx.select().from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, leaderId)).for("update").limit(1);
+        const [leaderMembership] = await tx.select().from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, leaderId)).for("share").limit(1);
+        const currentMembers = await loadShipmentMembersTx(tx, leaderId, { currentRead: true });
+        const remaining = operationalShipmentMembers(currentMembers);
+        if (!leader || Number(leaderMembership?.leaderConsignmentId) !== Number(leaderId) ||
+            currentMembers.length !== members.length ||
+            currentMembers.some((row) => !members.some((original) => original.id === row.id)))
+          throw fulfillmentError("تغيرت روابط الشحنة أثناء إثبات المرتجع؛ حدّث المعاينة وأعد المحاولة", "CONFLICT");
+        if (remaining.length) {
+          const receipt = leader.parcelStatus === "RETURNED"
+            ? await physicalReturnReceiptTx(tx, leader, { currentRead: true }) : null;
+          const claimVersion = Number(leader.codClaimVersion) + 1;
+          await tx.update(deliveryConsignments).set({ codClaimVersion: claimVersion })
+            .where(eq(deliveryConsignments.id, leaderId));
+          await appendDeliveryEvent(tx, {
+            eventKey: `CN:${leaderId}:CLAIM_CHANGED:PHYSICAL_RETURN:${input.clientRequestId}`,
+            consignmentId: leaderId,
+            eventType: "COD_CLAIM_CHANGED",
+            actorUserId: auth.actor.userId,
+            payload: {
+              source: "PHYSICAL_RETURN", claimVersion, removedReceiptEventIds,
+              ...(receipt ? { physicalReturnReceiptEventId: Number(receipt.id) } : {}),
+              ackRequired: remaining.some((row) => money(row.codAmount)
+                .gt(money(row.collectedAmount ?? "0").plus(money(row.counterSettledAmount ?? "0")))),
+            },
+          });
+        }
       }
       await recordFulfillmentMutationTx(tx, context, leaderId);
       return result(false);

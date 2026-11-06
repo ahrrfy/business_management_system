@@ -13789,6 +13789,41 @@ export const deliveryRemittances = mysqlTable(
 export type DeliveryRemittance = typeof deliveryRemittances.$inferSelect;
 export type InsertDeliveryRemittance = typeof deliveryRemittances.$inferInsert;
 
+/** Original company document; one statement may have several atomic shipment batches. */
+export const deliveryCompanyStatements = mysqlTable("deliveryCompanyStatements", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  partyId: bigint("partyId", { mode: "number" }).notNull().references(() => deliveryParties.id),
+  branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+  statementNumber: varchar("statementNumber", { length: 64 }).notNull(),
+  statementDate: date("statementDate"),
+  attachmentUrl: text("attachmentUrl"),
+  createdBy: int("createdBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  partyNumberUq: unique("uq_delivery_company_statement_party_number").on(table.partyId, table.statementNumber),
+}));
+
+/** Immutable association; a remittance belongs to at most one original statement. */
+export const deliveryCompanyStatementBatches = mysqlTable("deliveryCompanyStatementBatches", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  statementId: bigint("statementId", { mode: "number" }).notNull(),
+  remittanceId: bigint("remittanceId", { mode: "number" }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  remittanceUq: unique("uq_delivery_statement_batch_remittance").on(table.remittanceId),
+  statementIdx: index("idx_delivery_statement_batch_statement").on(table.statementId),
+  statementFk: foreignKey({
+    name: "fk_delivery_statement_batch_header",
+    columns: [table.statementId],
+    foreignColumns: [deliveryCompanyStatements.id],
+  }),
+  remittanceFk: foreignKey({
+    name: "fk_delivery_statement_batch_remit",
+    columns: [table.remittanceId],
+    foreignColumns: [deliveryRemittances.id],
+  }),
+}));
+
 /** إرسالية: طردٌ خرج مع جهة التوصيل بمبلغ COD. سطر العهدة الذي يربط الفاتورة↔الجهة↔الترحيل. */
 export const deliveryConsignments = mysqlTable(
   "deliveryConsignments",

@@ -3,10 +3,10 @@ import { appErrorMessage } from "@shared/errors";
 // المستحقّ يُشتقّ من دفتر التوصيل حصراً (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET)
 // لا من عمود deliveryFee: الدفترُ يعرف ما صُرف من أيّ مسارٍ كان، والعمود لا يعرف.
 import { TRPCError } from "@trpc/server";
-import { shipmentFeeDeliveryProvenExpr, shipmentFeeDeliveryProvenTx } from "./shipments";
+import { loadShipmentMembersTx, shipmentFeeDeliveryProvenExpr, shipmentFeeDeliveryProvenTx } from "./shipments";
 import Decimal from "decimal.js";
-import { and, eq, or, sql } from "drizzle-orm";
-import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { accountingEntries, courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -17,9 +17,10 @@ import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAva
 import { withTx } from "../tx";
 import { appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
-import { createCommissionPreviewer } from "./commissionRules";
+import { commissionPreviewerFromRows, createCommissionPreviewer } from "./commissionRules";
 import type { DeliveryTxActor } from "./types";
-import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
+import { effectiveDeliveryLedgerEntrySql, verifiedConsignmentLedgerRows } from "./legacyLedger";
+import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import { syncAftercareFeePaymentTx } from "../fulfillment/aftercareDelivery";
 
 /** Indexed per-consignment fee balance; canonical ledger filter also excludes legacy duplicates. */
@@ -39,6 +40,32 @@ export async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decim
     paid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
   }).from(deliveryLedgerEntries).where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql())).for("share"))[0];
   return round2(money(sums?.earned ?? "0").minus(money(sums?.paid ?? "0")));
+}
+
+/** Validate and total locked fee evidence without counting an exact legacy snapshot twice. */
+export function verifiedFeeBalance(
+  cn: { id: number | string; partyId: number | string; branchId: number | string },
+  rows: Array<typeof deliveryLedgerEntries.$inferSelect>,
+): { due: Decimal; active: boolean } {
+  const effective = verifiedConsignmentLedgerRows(cn, rows, "تعذر مطابقة قيود الأجرة للشحنة");
+  const due = round2(effective.reduce((sum, row) => row.entryType === "FEE_EARNED"
+    ? sum.plus(money(row.amount)) : sum.minus(money(row.amount)), money(0)));
+  if (due.lt(0)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر مطابقة قيود أجرة الشحنة", why: "قيود الأجرة أو الجهة أو الفرع غير متسقة أو ملتبسة",
+      doThis: "راجع مستندات الأجرة قبل التوريد",
+    }) });
+  }
+  return { due, active: effective.length > 0 };
+}
+
+/** The caller holds the party lock shared with fee payments. */
+export async function verifiedLedgerFeeDue(tx: Tx, cn: { id: number; partyId: number; branchId: number }): Promise<Decimal> {
+  const rows = await tx.select().from(deliveryLedgerEntries).where(and(
+    eq(deliveryLedgerEntries.consignmentId, cn.id),
+    inArray(deliveryLedgerEntries.entryType, ["FEE_EARNED", "FEE_REFUNDED", "FEE_PAID", "FEE_OFFSET"]),
+  )).for("share");
+  return verifiedFeeBalance(cn, rows).due;
 }
 
 /**
@@ -150,7 +177,22 @@ async function lockFeeSourceTx(tx: Tx, cn: { sourceType: string; invoiceId: numb
 
 /** Cash to retain against an existing SHOP payable; reused by preview and posting. */
 export async function createFeeWithholdingQuote(tx: Pick<Tx, "select">, partyId: number, useCommission: boolean) {
-  const preview = useCommission ? await createCommissionPreviewer(tx, partyId) : null;
+  return (await createFeeWithholdingPolicy(tx, partyId, useCommission)).quoteFee;
+}
+
+/** Read one consistent rule set for both ordinary and detached shipment fees. */
+export async function createFeeWithholdingPolicy(tx: Pick<Tx, "select">, partyId: number, useCommission: boolean, currentRead = false) {
+  const query = tx.select().from(courierCommissionRules)
+    .where(or(eq(courierCommissionRules.partyId, partyId), isNull(courierCommissionRules.partyId)));
+  const rules = useCommission ? await (currentRead ? query.for("share") : query) : [];
+  return {
+    quoteFee: feeWithholdingQuoteFromPreview(useCommission ? commissionPreviewerFromRows(rules) : null),
+    hasOrderBasedCommission: rules.find((rule) => rule.isActive)?.ruleType === "PERCENT_OF_ORDER",
+  };
+}
+
+/** Use the identical withholding calculation for a preloaded rule set. */
+export function feeWithholdingQuoteFromPreview(preview: Awaited<ReturnType<typeof createCommissionPreviewer>> | null) {
   return (due: Decimal, orderTotal: Decimal): Decimal => {
     if (!preview || due.lte(0)) return due;
     const quote = preview(Number(due.toFixed(2)), Number(orderTotal.toFixed(2)));
@@ -206,11 +248,11 @@ export async function payDeliveryFee(
       throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء دفع الأجرة؛ أعد المحاولة" });
     }
     await lockFeeSourceTx(tx, cn);
-    if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? (await ledgerFeeDue(tx, Number(cn.id))).gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
+    const due = await verifiedLedgerFeeDue(tx, { id: Number(cn.id), partyId: Number(cn.partyId), branchId: Number(cn.branchId) });
+    if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? due.gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
     if (actor.role !== "admin" && (actor.branchId == null || Number(cn.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخص فرعاً آخر" });
     }
-    const due = await ledgerFeeDue(tx, input.consignmentId);
     const amount = round2(money(input.amount ?? due));
     if (amount.lte(0) || amount.gt(due)) throw new TRPCError({ code: "BAD_REQUEST", message: `المبلغ يجب أن يكون ضمن المستحق ${due.toFixed(2)}` });
 
@@ -351,7 +393,8 @@ export async function payPartyDeliveryFees(
     const items: FeeItem[] = [];
     let total = round2(money("0"));
     let cashOutTotal = round2(money("0"));
-    const quoteFee = await createFeeWithholdingQuote(tx, Number(input.partyId), party.useCommissionForSettlement === true);
+    const feePolicy = await createFeeWithholdingPolicy(tx, Number(input.partyId), party.useCommissionForSettlement === true, true);
+    const { quoteFee } = feePolicy;
     for (const candidate of candidates) {
       const cn = (
         await tx.select().from(deliveryConsignments)
@@ -361,11 +404,27 @@ export async function payPartyDeliveryFees(
       if (
         Number(cn.partyId) !== Number(input.partyId)
         || Number(cn.branchId) !== Number(input.branchId)
-        || !(cn.sourceType === "AFTERCARE_EXECUTION" ? (await ledgerFeeDue(tx, Number(cn.id))).gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))
       ) continue; // تغيّر بين الترشيح والقفل — يسقط من هذا السند بلا خطأ.
+      const due = await verifiedLedgerFeeDue(tx, { id: Number(cn.id), partyId: Number(cn.partyId), branchId: Number(cn.branchId) });
+      if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? due.gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) continue;
       const invoice = await lockFeeSourceTx(tx, cn);
-      const due = await ledgerFeeDue(tx, Number(cn.id));
       if (due.lte(0)) continue;
+      if (feePolicy.hasOrderBasedCommission && cn.sourceType === "ONLINE_ORDER" && cn.feeCollection === "SHOP" &&
+          (await loadShipmentMembersTx(tx, Number(cn.id), { currentRead: true })).length > 1) {
+        const shortfall = await shortfallAssignedForConsignmentTx(tx, Number(cn.id), {
+          partyId: Number(cn.partyId), branchId: Number(cn.branchId),
+        });
+        const remaining = money(cn.codAmount).minus(money(cn.collectedAmount ?? "0"))
+          .minus(money(cn.counterSettledAmount ?? "0")).minus(shortfall);
+        const closedFeeOwner = ["RETURNED", "CANCELLED", "WRITTEN_OFF"].includes(cn.status) ||
+          ["RETURNED", "CANCELLED"].includes(cn.parcelStatus) || remaining.lte(0);
+        if (closedFeeOwner) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذر صرف عمولة الشحنة", why: "أجرة الشحنة على فاتورة مغلقة أو قيودها ملتبسة وقاعدة العمولة تعتمد على قيمة الطلب",
+            doThis: "راجع أساس العمولة لفواتير الشحنة قبل صرف الأجرة",
+          }) });
+        }
+      }
       // H2 (٢٩/٨/٢٦): إن كان العلَم مفعّلاً + قاعدةٌ فعّالة + الأجرة NOT COUNTER (الأمانة تُبرَّأ حرفياً
       // بمقبوضها). العمولة تُقصَر إلى due أعلى (لا هامشَ سالب). null ⇒ سلوكٌ سابق (كامل الأجرة).
       let commission: Decimal | null = null;

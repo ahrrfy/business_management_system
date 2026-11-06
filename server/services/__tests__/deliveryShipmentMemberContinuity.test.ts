@@ -84,6 +84,24 @@ async function confirmAndRemit(consignmentId: number, collectedAmount = "10000")
 }
 
 describe("shipment continuity after independent invoice changes", () => {
+  it("previews and confirms only the delivery claim when a credit invoice is not assigned for collection", async () => {
+    const sales: Awaited<ReturnType<typeof createSale>>[] = [];
+    for (const [index, paymentMode] of [[0, "COD"], [1, "CREDIT"]] as const) {
+      sales.push(await createSale({ branchId: 1, sourceType: "POS", customerId: 1, paymentMode,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "10" }], clientRequestId: `mixed-credit-sale-${index}` }, actor));
+    }
+    const group = await dispatchInvoiceShipment({ invoiceId: sales[0].invoiceId, invoiceIds: sales.map(sale => sale.invoiceId),
+      partyId: 1, deliveryFee: "0", feeCollection: "SHOP", collectCreditOnDelivery: false, externalTrackingRef: "MIXED-CREDIT",
+      recipientPhone: "07701234567", clientRequestId: "mixed-credit-dispatch" }, actor);
+    const preview = await getShipmentDetails(group.leaderConsignmentId, actor);
+    expect(preview.remainingAmount).toBe("20000.00");
+    expect(preview.collectibleAmount).toBe("10000.00");
+    await confirmShipmentDelivery({ consignmentId: group.leaderConsignmentId, collectedAmount: preview.collectibleAmount,
+      evidence: "اتصال الشركة", clientRequestId: "mixed-credit-confirm" }, actor);
+    const invoices = await db().select().from(s.invoices);
+    expect(invoices.find(invoice => invoice.id === sales[0].invoiceId)?.paidAmount).toBe("10000.00");
+    expect(invoices.find(invoice => invoice.id === sales[1].invoiceId)?.paidAmount).toBe("0.00");
+  });
   it.each((["SHOP", "COUNTER", "COURIER"] as const).flatMap(mode => [0, 1].map(index => ({ mode, index }))))
   ("$mode: cancels member $index while the other still confirms, remits and keeps one fee", async ({ mode, index }) => {
     const group = await shipment(mode);
@@ -299,7 +317,9 @@ describe("shipment continuity after independent invoice changes", () => {
     const listed = await listMyDeliveries(2);
     expect(listed.toDeliver).toMatchObject([{ id: group.leaderConsignmentId, externalTrackingRef: "CONTINUITY-TRACK", courierFee: "1500.00", codDue: "10000.00" }]);
     for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) await transitionConsignmentParcel({ consignmentId: group.leaderConsignmentId, toStatus, clientRequestId: `continuity-${toStatus}` }, { userId: 2 });
-    const input = { consignmentId: group.leaderConsignmentId, clientRequestId: "continuity-portal" };
+    const row = listed.toDeliver[0];
+    const input = { consignmentId: group.leaderConsignmentId, expectedClaimAmount: row.codDue,
+      expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims, clientRequestId: "continuity-portal" };
     expect(await confirmConsignmentDelivery(input, { userId: 2 })).toMatchObject({ consignmentId: group.leaderConsignmentId });
     expect(await confirmConsignmentDelivery(input, { userId: 2 })).toMatchObject({ alreadyDelivered: true });
     expect((await getShipmentDetails(group.leaderConsignmentId, actor))!.members[0].parcelStatus).toBe("CANCELLED");

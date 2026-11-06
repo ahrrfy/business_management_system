@@ -30,6 +30,11 @@ export const courierRouter = router({
       z.object({
         consignmentId: z.number().int().positive(),
         expectedClaimVersion: z.number().int().positive(),
+        expectedConsignmentIds: z.array(z.number().int().positive()).min(1).max(30).optional(),
+        expectedClaimAmount: nonNegMoneyString.optional(),
+        expectedConsignmentClaims: z.array(z.object({
+          consignmentId: z.number().int().positive(), amount: nonNegMoneyString,
+        })).min(1).max(30).optional(),
         clientRequestId: z.string().trim().min(8).max(80),
       }),
     )
@@ -102,6 +107,12 @@ export const courierRouter = router({
       z.object({
         consignmentId: z.number().int().positive(),
         clientRequestId: z.string().trim().min(8).max(100),
+        expectedClaimVersion: z.number().int().positive().optional(),
+        expectedConsignmentIds: z.array(z.number().int().positive()).min(1).max(30).optional(),
+        expectedClaimAmount: nonNegMoneyString.optional(),
+        expectedConsignmentClaims: z.array(z.object({
+          consignmentId: z.number().int().positive(), amount: nonNegMoneyString,
+        })).min(1).max(30).optional(),
         collectedAmount: nonNegMoneyString.optional(),
         collectionEvidence: z.string().trim().min(5).max(2000).optional(),
         shortfallReason: z
@@ -126,6 +137,10 @@ export const courierRouter = router({
           deliveredAt: res.deliveredAt,
           alreadyDelivered: res.alreadyDelivered ?? false,
           collectedAmount: input.collectedAmount ?? null,
+          expectedClaimVersion: input.expectedClaimVersion ?? null,
+          expectedConsignmentIds: input.expectedConsignmentIds ?? null,
+          expectedClaimAmount: input.expectedClaimAmount ?? null,
+          expectedConsignmentClaims: input.expectedConsignmentClaims ?? null,
           shortfallReason: input.shortfallReason ?? null,
         },
       });

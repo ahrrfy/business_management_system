@@ -60,6 +60,8 @@ export const DELIVERY_EVENT_TYPES = [
   "COUNTER_SETTLED",
   /** `courier.ts` — تحصيلٌ لاحقٌ ظهر في كشف الشركة بعد تسليمٍ سابق. */
   "SUPPLEMENTARY_COLLECTION",
+  /** `companyStatement.ts` — توثيق مبلغ الكشف والفرق لكل فاتورة. */
+  "STATEMENT_DIFFERENCE",
   /** `remittance.ts` — توريدُ نقدٍ لا يُغلق الطرد (بقي متبقٍّ). */
   "MONEY_PARTIAL",
   /** `remittance.ts` — توريدٌ أغلق مال الطرد. */
@@ -96,6 +98,7 @@ export const DELIVERY_EVENT_LABEL: Readonly<Record<DeliveryEventType, string>> =
   RETURNED: "استلم المرتجع",
   COUNTER_SETTLED: "سدده الزبون بالكاونتر",
   SUPPLEMENTARY_COLLECTION: "تحصيل لاحق بالكشف",
+  STATEMENT_DIFFERENCE: "توثيق فرق كشف الشركة",
   MONEY_PARTIAL: "توريد جزئي للنقد",
   MONEY_SETTLED: "توريد كامل للنقد",
   MONEY_WRITTEN_OFF: "شطب عجزه",
@@ -113,6 +116,26 @@ export function isDeliveryEventType(v: unknown): v is DeliveryEventType {
 export function deliveryEventLabel(eventType: string | null | undefined): string {
   if (!eventType) return "—";
   return isDeliveryEventType(eventType) ? DELIVERY_EVENT_LABEL[eventType] : eventType;
+}
+
+/** Reject incomplete or malformed event payloads instead of displaying invented zero amounts. */
+export function statementDifferenceEventDetails(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>;
+  const fields = ["dueBefore", "provenBefore", "remitted", "custodyRemaining", "customerRemaining", "partyShortfall"] as const;
+  if (typeof value.statementNumber !== "string" || !value.statementNumber.trim() ||
+      fields.some((field) => typeof value[field] !== "string" || !/^\d{1,13}(?:\.\d{1,2})?$/.test(value[field] as string))) return null;
+  return {
+    statementNumber: value.statementNumber,
+    remittanceId: typeof value.remittanceId === "number" && Number.isSafeInteger(value.remittanceId) ? value.remittanceId : null,
+    dueBefore: value.dueBefore as string,
+    provenBefore: value.provenBefore as string,
+    remitted: value.remitted as string,
+    custodyRemaining: value.custodyRemaining as string,
+    customerRemaining: value.customerRemaining as string,
+    partyShortfall: value.partyShortfall as string,
+    shortfallReason: typeof value.shortfallReason === "string" ? value.shortfallReason : null,
+  };
 }
 
 /* ══════════════════════ ٢) سلطة الحدث ══════════════════════ */

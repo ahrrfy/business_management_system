@@ -20,12 +20,14 @@ import {
   createFulfillmentCharge,
   approveFulfillmentCharge,
 } from "../fulfillment/charges";
+import { loadAssignedChargeClaimsTx } from "../fulfillment/chargeDelivery";
 import { confirmWorkflowDelivery } from "../delivery/workflow/collection";
 import { previewWorkflowScan } from "../delivery/workflow/preview";
 import { mutateWorkflowAssignment } from "../delivery/workflow/assignment";
 import {
   createFulfillmentRequest,
   releaseFulfillmentRequest,
+  releaseFulfillmentRequestInTx,
 } from "../fulfillment/requests";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { recordDeliveryRemittance } from "../delivery/remittance";
@@ -171,6 +173,60 @@ async function useSparseNativeRole(grants: Record<string, boolean>) {
     .where(eq(s.users.id, 1));
 }
 describe("atomic barcode batch dispatch", () => {
+  it("assigns a newly approved charge and generates shipment documents after an older transaction snapshot", async () => {
+    const request = await createFulfillmentRequest({
+      branchId: 1, customerId: 1, recipientName: "عميل الشحنة", recipientPhone: "07701234567",
+      deliveryAddress: "بغداد المنصور قرب المكتبة", partyId: 1, deliveryFee: "0",
+      feeCollection: "COURIER", sources: [{ invoiceId: 1 }, { invoiceId: 2 }],
+      clientRequestId: "stale-charge-request",
+    }, actor);
+    let resume!: () => void;
+    let announce!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { announce = resolve; });
+    let approvedChargeId = 0;
+    const pending = withTx(async (tx) => {
+      // Establish a REPEATABLE READ snapshot before the other transaction creates the charge.
+      expect(await tx.select().from(fulfillmentCharges)).toHaveLength(0);
+      announce();
+      await gate;
+      expect(await tx.select().from(fulfillmentCharges).where(eq(fulfillmentCharges.id, approvedChargeId))).toHaveLength(0);
+      const released = await releaseFulfillmentRequestInTx(tx, {
+        id: request.id, expectedVersion: request.version, assignedUserId: 2,
+        externalTrackingRef: "SNAPSHOT-CHARGE", clientRequestId: "stale-charge-release",
+      }, actor);
+      // The old placement in the writer would see its newly inserted assignment
+      // but not the charge outside this snapshot, and would abort dispatch.
+      await expect(loadAssignedChargeClaimsTx(tx, released.consignmentId, { lock: false }))
+        .rejects.toThrow(/مطالبات أجر الإرسالية مفقودة/);
+      return released;
+    });
+    await ready;
+    try {
+      const charge = await createFulfillmentCharge({
+        branchId: 1, requestId: request.id, customerId: 1, category: "SERVICE",
+        description: "أجر تجهيز أُضيف قبل إسناد الشحنة", amount: "1000", externalCost: "0",
+        clientRequestId: "stale-charge-create",
+      }, actor);
+      await approveFulfillmentCharge({ id: charge.id, expectedVersion: charge.version,
+        clientRequestId: "stale-charge-approve" }, actor);
+      approvedChargeId = charge.id;
+    } finally {
+      resume();
+    }
+    const result = await pending;
+    const [assignment] = await db().select().from(s.deliveryEvents)
+      .where(eq(s.deliveryEvents.eventKey, `FULFILLMENT_CHARGES_ASSIGNED:${request.id}`));
+    expect(assignment).toMatchObject({ consignmentId: result.consignmentId, payload: { chargeIds: [approvedChargeId] } });
+    const [leader] = await db().select().from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, result.consignmentId));
+    expect(leader.codAmount).toBe("1000.00");
+    const documents = await db().select().from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+    expect(documents).toHaveLength(3);
+    for (const document of documents.filter((row) => row.documentType !== "DELIVERY_MANIFEST"))
+      expect(document.payload).toMatchObject({ money: { codAmount: "1000.00" }, invoiceIds: [1, 2] });
+  });
   it.each([
     { channel: "workflow", legacy: false, degraded: false },
     { channel: "workflow", legacy: true, degraded: false },
@@ -680,7 +736,7 @@ describe("atomic barcode batch dispatch", () => {
       ).toEqual(snapshots);
     },
   );
-  it("requires a classified reason for barcode partial collection and replays collection and remittance without duplicate AR or custody", async () => {
+  it("rejects partial barcode collection and replays full collection and remittance without duplicate AR or custody", async () => {
     await db()
       .update(s.invoices)
       .set({ paidAmount: "0", status: "PENDING", paymentMode: "COD" });
@@ -713,13 +769,15 @@ describe("atomic barcode batch dispatch", () => {
     };
     const beforeRejected = await collectionEffects();
     await expect(confirmWorkflowDelivery(baseProof, actor)).rejects.toThrow(
-      /سبب العجز/,
+      /كامل مطالبة الشحنة/,
     );
+    expect(await collectionEffects()).toEqual(beforeRejected);
+    await expect(confirmWorkflowDelivery({ ...baseProof, shortfallReason: "PARTIAL_REFUSAL" }, actor)).rejects.toThrow(/كامل مطالبة الشحنة/);
     expect(await collectionEffects()).toEqual(beforeRejected);
 
     const proof = {
       ...baseProof,
-      shortfallReason: "PARTIAL_REFUSAL",
+      collectedAmount: "20000",
     };
     expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
       consignmentId: dispatched.consignmentId,
@@ -736,12 +794,12 @@ describe("atomic barcode batch dispatch", () => {
       afterCollection.ledger
         .filter((row) => row.entryType === "COD_COLLECTED")
         .reduce((sum, row) => sum + Number(row.amount), 0),
-    ).toBe(15000);
+    ).toBe(20000);
     expect(
       afterCollection.ledger
         .filter((row) => row.entryType === "SHORTFALL_ASSIGNED")
         .reduce((sum, row) => sum + Number(row.amount), 0),
-    ).toBe(5000);
+    ).toBe(0);
     expect(afterCollection.receipts).toHaveLength(0);
     expect(afterCollection.remittances).toHaveLength(0);
     expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
@@ -761,7 +819,7 @@ describe("atomic barcode batch dispatch", () => {
       shiftType: "RETAIL" as const,
       targetShiftId: 1,
       lines: cashLines,
-      countedCash: "15000",
+      countedCash: "20000",
       clientRequestId: "workflow-partial-remittance",
     };
     expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
@@ -769,7 +827,7 @@ describe("atomic barcode batch dispatch", () => {
     });
     const afterRemittance = await collectionEffects();
     expect(afterRemittance.customers[0]?.currentBalance).toBe("0.00");
-    expect(afterRemittance.parties[0]?.currentBalance).toBe("5000.00");
+    expect(afterRemittance.parties[0]?.currentBalance).toBe("0.00");
     expect(afterRemittance.remittances).toHaveLength(1);
     expect(afterRemittance.receipts).toHaveLength(1);
     expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({

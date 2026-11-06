@@ -3,7 +3,7 @@
  * تحصيل وذمم المناديب والشركات ومطابقة الكشوفات ومسح باركود الإرسالية
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RouterOutputs } from "@/lib/trpc";
+import type { RouterInputs, RouterOutputs } from "@/lib/trpc";
 import {
   BarChart3,
   Building2,
@@ -22,7 +22,6 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -45,6 +44,13 @@ import {
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
 import {
   statementQueueRemaining,
+  shipmentStatementCandidates,
+  statementClaimSnapshot,
+  statementDraftLines,
+  statementLineSummary,
+  statementShipmentFees,
+  parseStatementAmount,
+  type StatementDecision,
   type CompanyStatementQueueCandidate,
 } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
@@ -55,6 +61,8 @@ import {
 import {
   filterOperationalRows,
   mergeDisplayedSelection,
+  selectedShipmentRemittance,
+  type SelectedCourierShipment,
 } from "@/lib/deliveryOperations";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
@@ -62,7 +70,6 @@ import { docBarcode } from "@shared/documentNumber";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { deliverySourceView } from "@shared/deliverySource";
 import {
-  SHORTFALL_REASONS,
   SHORTFALL_REASON_LABEL_AR,
   type ShortfallReason,
 } from "@shared/shortfallReason";
@@ -105,22 +112,6 @@ function BarcodeCustomerCollection({
   onCancel: () => void;
 }) {
   const due = D(preview.money.codAmount);
-  const [mode, setMode] = useState<"full" | "different">("full");
-  const [amount, setAmount] = useState(due.toFixed(2));
-  const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">(
-    "",
-  );
-  const amountValid = /^(?:\d+|\d*\.\d{1,2})$/.test(amount.trim());
-  const entered = amountValid ? D(amount) : D(0);
-  const effective = mode === "full" ? due : entered;
-  const shortfall = round2(due.minus(effective));
-  const isShort = shortfall.gt(0);
-  const isOver = effective.gt(due);
-  const canConfirm =
-    !pending &&
-    (mode === "full" || amountValid) &&
-    !isOver &&
-    (!isShort || shortfallReason !== "");
 
   return (
     <div className="space-y-3 rounded-md border bg-muted/20 p-3">
@@ -131,70 +122,7 @@ function BarcodeCustomerCollection({
           {partyName ?? "جهة التوصيل"}؛ توريد الجهة للدرج إجراء مستقل لاحقاً.
         </p>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant={mode === "full" ? "default" : "outline"}
-          disabled={pending}
-          onClick={() => {
-            setMode("full");
-            setAmount(due.toFixed(2));
-            setShortfallReason("");
-          }}
-        >
-          تحصيل المطلوب بالكامل
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={mode === "different" ? "secondary" : "outline"}
-          disabled={pending}
-          onClick={() => setMode("different")}
-        >
-          مبلغ مختلف
-        </Button>
-      </div>
-      {mode === "different" && (
-        <div className="space-y-2">
-          <Label htmlFor="workflow-customer-collected-amount">
-            المقبوض فعلياً من العميل
-          </Label>
-          <MoneyInput
-            id="workflow-customer-collected-amount"
-            ariaLabel="المبلغ المقبوض فعلياً من العميل"
-            value={amount}
-            onChange={setAmount}
-          />
-          {isOver && (
-            <p className="text-xs font-medium text-destructive">
-              المبلغ أكبر من المطالبة الحالية؛ سجّل الفائض من مساره المستقل.
-            </p>
-          )}
-          {isShort && (
-            <>
-              <p className="text-xs font-medium text-[var(--sem-warn)]">
-                العجز {fmt(shortfall.toFixed(2))} د.ع سيُقيّد على جهة التوصيل،
-                لا على العميل.
-              </p>
-              <AppSelect
-                aria-label="سبب عجز تحصيل العميل"
-                value={shortfallReason}
-                onValueChange={(value) =>
-                  setShortfallReason(value as ShortfallReason | "")
-                }
-              >
-                <option value="">— اختر سبب العجز (إلزامي) —</option>
-                {SHORTFALL_REASONS.map((reason) => (
-                  <option key={reason} value={reason}>
-                    {SHORTFALL_REASON_LABEL_AR[reason]}
-                  </option>
-                ))}
-              </AppSelect>
-            </>
-          )}
-        </div>
-      )}
+      <p className="text-sm font-bold">المطلوب كاملاً: {fmt(due.toFixed(2))} د.ع</p>
       <div className="flex flex-wrap justify-end gap-2">
         <Button
           type="button"
@@ -208,13 +136,8 @@ function BarcodeCustomerCollection({
         <Button
           type="button"
           size="sm"
-          disabled={!canConfirm}
-          onClick={() =>
-            onConfirm({
-              collectedAmount: effective.toFixed(2),
-              ...(isShort && shortfallReason ? { shortfallReason } : {}),
-            })
-          }
+          disabled={pending}
+          onClick={() => onConfirm({ collectedAmount: due.toFixed(2) })}
         >
           {pending ? "جارٍ الإثبات…" : "إثبات التسليم وتحصيل العميل"}
         </Button>
@@ -252,6 +175,7 @@ export function ReceptionCollectSection({
     "courier",
   );
   const [statementNumber, setStatementNumber] = useState("");
+  const [appendToStatement, setAppendToStatement] = useState(false);
   const [statementDeductions, setStatementDeductions] = useState("");
   const [statementNotes, setStatementNotes] = useState("");
   const [selectedStatementLines, setSelectedStatementLines] = useState<
@@ -260,8 +184,13 @@ export function ReceptionCollectSection({
   const [statementAmounts, setStatementAmounts] = useState<
     Record<number, string>
   >({});
+  const [claimSnapshots, setClaimSnapshots] = useState<Record<number, string>>({});
+  const [statementDecisions, setStatementDecisions] = useState<Record<number, StatementDecision>>({});
+  const [pendingCompanySelection, setPendingCompanySelection] = useState<{ partyId: number; ids: number[]; groupKey: string } | null>(null);
   const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
-  const [countedCash, setCountedCash] = useState("");
+  const [selectedCourierShipments, setSelectedCourierShipments] = useState<SelectedCourierShipment[]>([]);
+  const [pendingRemittance, setPendingRemittance] = useState<RouterInputs["delivery"]["recordRemittance"] | null>(null);
+  const [pendingStatement, setPendingStatement] = useState<RouterInputs["delivery"]["recordCompanyStatement"] | null>(null);
   const [collectBarcodeInput, setCollectBarcodeInput] = useState("");
   const [parcelFilter, setParcelFilter] = useState("");
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
@@ -311,6 +240,7 @@ export function ReceptionCollectSection({
     acceptedGroups.current.clear();
     setScanContext(null);
     setPendingCustomerCollection(null);
+    setSelectedCourierShipments([]);
     setReturnedCustodyOnly(false);
     return () => {
       scanSequence.current++;
@@ -332,12 +262,16 @@ export function ReceptionCollectSection({
         acceptedGroups.current.clear();
         setSelectedPartyId(reset.partyId);
         setStatementNumber(reset.statementNumber);
+        setAppendToStatement(false);
         setStatementDeductions(reset.statementDeductions);
         setStatementNotes(reset.statementNotes);
         setSelectedStatementLines(reset.selections);
         setStatementAmounts(reset.amounts);
+        setClaimSnapshots({});
+        setStatementDecisions({});
+        setPendingCompanySelection(null);
         setStatementQueueIds(reset.queueIds);
-        setCountedCash(reset.countedCash);
+        setSelectedCourierShipments([]);
       }
       setReturnedCustodyOnly(false);
       setSettleMode(nextPartyType === "COMPANY" ? "company" : "courier");
@@ -405,6 +339,24 @@ export function ReceptionCollectSection({
     openConsQ.hasNextPage ||
     openConsQ.isFetchingNextPage ||
     openConsQ.isError;
+  useEffect(() => {
+    if (!pendingCompanySelection || selectedPartyId !== pendingCompanySelection.partyId || openConsStillLoading) return;
+    const available = (openConsQ.data?.pages ?? []).flatMap((page) => page.rows)
+      .filter((row) => pendingCompanySelection.ids.includes(row.id) && row.sourceType !== "AFTERCARE_EXECUTION" &&
+        ((row.parcelStatus === "DELIVERED" && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL")) ||
+          (row.status === "DISPATCHED" && row.parcelStatus !== "CANCELLED" && row.parcelStatus !== "RETURNED" &&
+            (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL" || row.moneyStatus === "NOT_APPLICABLE"))));
+    if (!available.length) {
+      acceptedGroups.current.delete(pendingCompanySelection.groupKey);
+      notify.err("لم تظهر فواتير الشحنة المفتوحة؛ حدّث قائمة الشركة وأعد المسح");
+    } else {
+      setSelectedStatementLines((current) => ({ ...current, ...Object.fromEntries(available.map((row) => [row.id, true])) }));
+      setStatementAmounts((current) => ({ ...current, ...Object.fromEntries(available.filter((row) => !selectedStatementLines[row.id]).map((row) => [row.id, statementQueueRemaining(row).toFixed(2)])) }));
+      setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(available.filter((row) => !selectedStatementLines[row.id]).map((row) => [row.id, statementClaimSnapshot(row)])) }));
+      setStatementQueueIds((current) => Array.from(new Set([...current, ...available.map((row) => row.id)])));
+    }
+    setPendingCompanySelection(null);
+  }, [pendingCompanySelection, selectedPartyId, openConsStillLoading, openConsQ.data, selectedStatementLines]);
   const statementRows = openRows
     .filter((row) => row.sourceType !== "AFTERCARE_EXECUTION")
     .filter(
@@ -422,6 +374,9 @@ export function ReceptionCollectSection({
     statementRows,
     parcelFilter,
   );
+  const displayedStatementGroups = Array.from(new Map(displayedStatementRows
+    .flatMap((row) => shipmentStatementCandidates(statementRows, row.id))
+    .map((row) => [row.id, row])).values());
   const displayedOpenRows = filterOperationalRows(openRows, parcelFilter);
 
   const remittableRows = openRows.filter(
@@ -441,26 +396,20 @@ export function ReceptionCollectSection({
   const statementSelectedRows = statementRows.filter(
     (r) => selectedStatementLines[r.id],
   );
+  const statementFeePreview = statementShipmentFees(statementSelectedRows, statementAmounts);
+  const statementFeeBlocked = statementSelectedRows.some((row) => row.feeWithholdingBlocked) || statementFeePreview.insufficient;
   const statementExpectedTotal = statementSelectedRows.reduce(
     (sum, row) =>
       sum.plus(statementQueueRemaining(row as CompanyStatementQueueCandidate)),
     D(0),
   );
-  const statementSelectedCodTotal = statementSelectedRows.reduce(
-    (sum, row) =>
-      sum.plus(
-        moneyInput(
-          statementAmounts[row.id] ??
-            statementQueueRemaining(
-              row as CompanyStatementQueueCandidate,
-            ).toFixed(2),
-        ),
-      ),
-    D(0),
-  );
+  const statementSelectedCodTotal = statementSelectedRows.reduce((sum, row) => sum.plus(parseStatementAmount(statementAmounts[row.id]) ?? D(0)), D(0));
   const statementDeductionsNum = moneyInput(statementDeductions);
+  const statementAutomaticFees = statementFeePreview.total;
+  const statementFeeNeedsExplicit = statementFeePreview.needsExplicit && statementDeductionsNum.isZero();
+  const statementFeeMismatch = !statementFeePreview.needsExplicit && statementDeductionsNum.gt(0) && !statementDeductionsNum.eq(statementAutomaticFees);
   const statementNetRaw = statementSelectedCodTotal.minus(
-    statementDeductionsNum,
+    statementDeductionsNum.gt(0) ? statementDeductionsNum : statementAutomaticFees,
   );
   const statementNetExpected = statementNetRaw.isNegative()
     ? D(0)
@@ -590,7 +539,9 @@ export function ReceptionCollectSection({
         context?.window ?? null,
         r.idempotentReplay,
       );
-      setCountedCash("");
+      setSelectedCourierShipments([]);
+      setPendingRemittance(null);
+      acceptedGroups.current.clear();
       remittanceRetry.current = null;
       void obligationsQ.refetch();
       void openConsQ.refetch();
@@ -604,7 +555,9 @@ export function ReceptionCollectSection({
       } catch {
         /* No print is sent on an unconfirmed transaction. */
       }
-      notify.err(e, "تعذّر توريد جهة التوصيل");
+      const status = e.data?.httpStatus;
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setPendingRemittance(null);
+      notify.err(e, "تحقق من النتيجة؛ عند انقطاع الاتصال أعد إرسال الطلب المحفوظ نفسه");
     },
   });
 
@@ -690,12 +643,16 @@ export function ReceptionCollectSection({
         r.idempotentReplay === true,
       );
       setStatementNumber("");
+      setAppendToStatement(false);
       setStatementDeductions("");
       setStatementNotes("");
-      setCountedCash("");
       setSelectedStatementLines({});
       setStatementAmounts({});
+      setClaimSnapshots({});
+      setStatementDecisions({});
+      setPendingCompanySelection(null);
       setStatementQueueIds([]);
+      setPendingStatement(null);
       statementRetry.current = null;
       void obligationsQ.refetch();
       void openConsQ.refetch();
@@ -709,11 +666,17 @@ export function ReceptionCollectSection({
       } catch {
         /* Never print an unconfirmed statement. */
       }
-      notify.err(e, "تعذّر تسجيل كشف شركة التوصيل");
+      const status = e.data?.httpStatus;
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setPendingStatement(null);
+      notify.err(e, "تحقق من نتيجة الكشف؛ عند انقطاع الاتصال أعد إرسال الطلب المحفوظ نفسه");
     },
   });
 
   async function handleConfirmDelivery(row: (typeof openRows)[number]) {
+    if (row.shipmentLeaderConsignmentId != null && row.shipmentInvoiceCount > 1) {
+      await handleCollectBarcode(docBarcode("CN", row.consignmentNumber));
+      return;
+    }
     const generation = scanSequence.current;
     if (row.sourceType === "AFTERCARE_EXECUTION") {
       onNavigateToAftercare?.({
@@ -768,50 +731,41 @@ export function ReceptionCollectSection({
 
   async function handleCollect() {
     const generation = scanSequence.current;
-    if (!selectedPartyId || !countedCash || !shift || remitMut.isPending)
-      return;
-    const amount = D(countedCash);
-    if (amount.lte(0)) {
-      notify.err("أدخل مبلغاً صحيحاً");
+    if (pendingRemittance && !remitMut.isPending) {
+      remitMut.mutate(pendingRemittance);
       return;
     }
-
-    if (remittableRows.length === 0) {
-      notify.err(
-        "لا توجد طرود مسلّمة جاهزة للتوريد — تأكد من تأكيد تسليم الطرود أولاً",
-      );
+    if (!selectedPartyId || !shift || remitMut.isPending || openConsStillLoading)
+      return;
+    const selection = selectedShipmentRemittance(remittableRows, selectedCourierShipments);
+    if (!selection.ok) {
+      notify.err("امسح الشحنة المراد توريدها، أو حدّث بياناتها إذا تغير النقد المثبت أو لم تكتمل القائمة");
       return;
     }
-
-    // بناء lines تلقائياً: توزيع المبلغ بالترتيب الزمني على الإرساليات المُسلّمة فقط (DELIVERED)
-    let remaining = amount;
-    const lines: { consignmentId: number; collectedAmount: string }[] = [];
-    for (const row of remittableRows) {
-      if (remaining.lte(0)) break;
-      const due = row.physicalReturnReceived
-        ? D(row.cashInCourierCustody)
-        : statementQueueRemaining(row);
-      if (due.lte(0)) continue;
-      const take = round2(remaining.gte(due) ? due : remaining);
-      lines.push({ consignmentId: row.id, collectedAmount: take.toFixed(2) });
-      remaining = round2(remaining.minus(take));
-    }
-
-    if (lines.length === 0) {
-      notify.err("لا مبالغ مستحقة للتوريد");
+    const amount = D(selection.total);
+    const lines = selection.lines;
+    if (lines.some((line) => remittableRows.find((row) => row.id === line.consignmentId)?.feeWithholdingBlocked)) {
+      notify.err("راجع قيود أجرة الشحنة وجهتها وفرعها وقاعدة العمولة قبل توريدها");
       return;
     }
+    const fees = lines.reduce((sum, line) => {
+      const row = remittableRows.find((item) => item.id === line.consignmentId);
+      return sum.plus(D(row?.feeWithholdingCash ?? "0").clamp(0, D(line.collectedAmount)));
+    }, D(0));
+    const net = round2(amount.minus(fees));
 
     const ok = await confirm({
       title: "تأكيد توريد جهة التوصيل للدرج",
       description: [
         `الجهة: ${selectedParty?.name ?? ""}`,
-        `المبلغ المستلَم: ${fmt(amount.toFixed(2))} د.ع`,
-        `الذمة المسلّمة الجاهزة للتوريد: ${fmt(String(remittableTotal))} د.ع`,
-        `عدد الإرساليات المُسوَّاة: ${lines.length}`,
-        amount.lt(D(String(remittableTotal)))
-          ? `تسوية جزئية — يبقى ${fmt(round2(D(String(remittableTotal)).minus(amount)).toFixed(2))} د.ع نقد بعهدة الجهة`
-          : "تسوية كاملة للطرود المسلّمة — الأجرة معزولة تلقائياً",
+        `إجمالي مبالغ الفواتير: ${fmt(amount.toFixed(2))} د.ع`,
+        ...(fees.gt(0) ? [`أجور المتجر المستحقة: ${fmt(fees.toFixed(2))} د.ع`] : []),
+        `النقد المستلَم: ${fmt(net.toFixed(2))} د.ع`,
+        ...lines.map((line) => {
+          const row = remittableRows.find((item) => item.id === line.consignmentId);
+          return `${row ? deliverySourceView(row).reference || row.consignmentNumber : line.consignmentId}: ${fmt(line.collectedAmount)} د.ع`;
+        }),
+        "تُسوّى الفواتير المعروضة فقط؛ تبقى الشحنات الأخرى بعهدة الجهة.",
       ].join("\n"),
       confirmText: "تسجيل توريد الجهة",
     });
@@ -821,7 +775,7 @@ export function ReceptionCollectSection({
       branchId,
       targetShiftId: shift.id,
       lines,
-      countedCash: amount.toFixed(2),
+      countedCash: net.toFixed(2),
     };
     // Reserve after the explicit cash confirmation, before the network mutation.
     // A blocked popup is retained as null; the saved result always has a direct reprint button.
@@ -831,14 +785,20 @@ export function ReceptionCollectSection({
       shiftId: shift.id,
       window: preopenDocumentWindow("width=380,height=700"),
     };
-    remitMut.mutate({
+    const submitted = {
       ...payload,
       clientRequestId: financialRetryKey(remittanceRetry, payload),
-    });
+    };
+    setPendingRemittance(submitted);
+    remitMut.mutate(submitted);
   }
 
   async function handleCompanyStatementCollect() {
     const generation = scanSequence.current;
+    if (pendingStatement && !companyStatementMut.isPending) {
+      companyStatementMut.mutate(pendingStatement);
+      return;
+    }
     if (
       !selectedPartyId ||
       !shift ||
@@ -850,25 +810,28 @@ export function ReceptionCollectSection({
       notify.err("يرجى إدخال رقم كشف الشركة");
       return;
     }
-    const lines = statementSelectedRows.map((row) => {
-      const entered = round2(
-        moneyInput(
-          statementAmounts[row.id] ??
-            statementQueueRemaining(
-              row as CompanyStatementQueueCandidate,
-            ).toFixed(2),
-        ),
-      );
-      return {
-        consignmentId: row.id,
-        collectedAmount: entered.isNegative() ? "0.00" : entered.toFixed(2),
-      };
-    });
-    if (lines.length === 0) {
+    if (statementFeeBlocked) {
+      notify.err("راجع أجرة الشحنة ونقدها وجهتها وفرعها وقاعدة العمولة قبل التوريد؛ لا تُحسم من شحنة أخرى");
+      return;
+    }
+    if (statementFeeNeedsExplicit || statementFeeMismatch || statementDeductionsNum.gt(statementSelectedCodTotal)) {
+      notify.err(statementFeeNeedsExplicit ? "أدخل استقطاع الأجرة المثبت في كشف الشركة قبل حساب الصافي" : "استقطاع الأجرة لا يطابق نقد وأجور الشحنات المحددة");
+      return;
+    }
+    if (Object.values(selectedStatementLines).filter(Boolean).length !== statementSelectedRows.length) {
+      notify.err("تغيرت قائمة الفواتير المحددة؛ حدّث البيانات وأعد اختيار الشحنة قبل الحفظ");
+      return;
+    }
+    if (statementSelectedRows.length === 0) {
       notify.err("يرجى تحديد طرد واحد على الأقل تم تسليمه في الكشف");
       return;
     }
-    const cash = moneyInput(countedCash || statementNetExpected.toFixed(2));
+    const lines = statementDraftLines(statementSelectedRows, statementAmounts, claimSnapshots, statementDecisions);
+    if (!lines) {
+      notify.err("راجع مبالغ الكشف ومسؤولية الفروق أو بيانات الفاتورة المتغيرة قبل الحفظ");
+      return;
+    }
+    const cash = statementNetExpected;
     if (cash.lte(0) && statementNetExpected.gt(0)) {
       notify.err("أدخل المبلغ الصافي المستلم");
       return;
@@ -878,9 +841,11 @@ export function ReceptionCollectSection({
       description: [
         `الشركة: ${partyInfo?.name ?? ""}`,
         `رقم الكشف: ${statementNumber}`,
+        appendToStatement ? "إكمال الكشف السابق بدفعة جديدة للشحنات المحددة فقط" : "تسجيل أول دفعة لهذا الكشف",
         `عدد الطرود المسلّمة بالكشف: ${lines.length}`,
         `المطلوب حسب النظام: ${fmt(statementExpectedTotal.toFixed(2))} د.ع`,
         `المثبت في كشف الشركة: ${fmt(statementSelectedCodTotal.toFixed(2))} د.ع`,
+        ...lines.map((line) => statementLineSummary(statementSelectedRows.find((row) => row.id === line.consignmentId)!, line.collectedAmount, statementDecisions[line.consignmentId])),
         statementDeductionsNum.gt(0)
           ? `استقطاعات أجور الشركة: - ${fmt(statementDeductionsNum.toFixed(2))} د.ع`
           : "",
@@ -901,7 +866,8 @@ export function ReceptionCollectSection({
       shiftType: "RECEPTION" as const,
       targetShiftId: shift.id,
       statementNumber: statementNumber.trim(),
-      statementDate: new Date().toISOString().slice(0, 10),
+      appendToStatement,
+      statementDate: appendToStatement ? undefined : new Date().toISOString().slice(0, 10),
       deductionsTotal: statementDeductionsNum.gt(0)
         ? statementDeductionsNum.toFixed(2)
         : undefined,
@@ -917,15 +883,19 @@ export function ReceptionCollectSection({
       statementConsignmentCount: lines.length,
       window: preopenDocumentWindow("width=380,height=700"),
     };
-    companyStatementMut.mutate({
+    const submitted = {
       ...payload,
       clientRequestId: financialRetryKey(statementRetry, payload),
-    });
+    };
+    setPendingStatement(submitted);
+    companyStatementMut.mutate(submitted);
   }
 
   draftBusyRef.current =
     companyStatementMut.isPending ||
     remitMut.isPending ||
+    pendingRemittance != null ||
+    pendingStatement != null ||
     staffConfirmMut.isPending ||
     workflowConfirmMut.isPending;
 
@@ -998,37 +968,19 @@ export function ReceptionCollectSection({
         if (returnedCash) {
           setSettleMode("courier");
           setReturnedCustodyOnly(true);
-          setCountedCash(returnedAmount.toFixed(2));
+          setSelectedCourierShipments((current) => [...current, {
+            key: groupKey, memberIds: Array.from(heldIds), expectedCash: returnedAmount.toFixed(2),
+          }]);
           notify.ok(
             `الطرود مستلمة فعلياً — النقد المثبت بعهدة الناقل ${fmt(returnedAmount.toFixed(2))} د.ع؛ توريده لا يعيد قبض العميل`,
           );
         } else if (heldIds.size > 0) {
-          setCountedCash("");
+          acceptedGroups.current.delete(groupKey);
           notify.info(
             "الطرود مستلمة ولا تحمل نقداً مثبتاً بعهدة الناقل؛ راجع الأجرة أو المرتجع التجاري من المصدر دون قبض عميل جديد",
           );
         } else if (pInfo?.partyType === "COMPANY") {
-          setSelectedStatementLines((current) => ({
-            ...current,
-            ...Object.fromEntries(groupMembers.map((row) => [row.id, true])),
-          }));
-          setStatementAmounts((current) => ({
-            ...current,
-            ...Object.fromEntries(
-              groupMembers.map((row) => [
-                row.id,
-                statementQueueRemaining(row).toFixed(2),
-              ]),
-            ),
-          }));
-          setStatementQueueIds((current) =>
-            Array.from(
-              new Set([...current, ...groupMembers.map((row) => row.id)]),
-            ),
-          );
-          notify.ok(
-            `تم تحديد الشحنة ${timeline.shipment.consignmentNumber} مرة واحدة بكل مصادرها`,
-          );
+          setPendingCompanySelection({ partyId, ids: groupMembers.map((row) => row.id), groupKey });
         } else if (
           groupMembers.some((row) => row.parcelStatus !== "DELIVERED")
         ) {
@@ -1042,7 +994,14 @@ export function ReceptionCollectSection({
             "راجع تحصيل العميل ثم اضغط التأكيد؛ توريد الجهة يبقى إجراءً مستقلاً.",
           );
         } else {
-          setCountedCash(preview.money.cashInCourierCustody);
+          if (D(preview.money.cashInCourierCustody).gt(0)) {
+            setSelectedCourierShipments((current) => [...current, {
+              key: groupKey, memberIds: groupMembers.map((row) => row.id),
+              expectedCash: preview.money.cashInCourierCustody,
+            }]);
+          } else {
+            acceptedGroups.current.delete(groupKey);
+          }
           notify.ok(
             `الشحنة مسلمة — النقد المثبت بعهدة الناقل ${fmt(preview.money.cashInCourierCustody)} د.ع`,
           );
@@ -1160,7 +1119,7 @@ export function ReceptionCollectSection({
           </span>
         </div>
         <PredictiveConsignmentSearchInput
-          disabled={companyStatementMut.isPending || remitMut.isPending}
+          disabled={companyStatementMut.isPending || remitMut.isPending || pendingStatement != null || pendingRemittance != null}
           onSelect={handleSelectPredictiveParcel}
           onBarcodeEnter={(raw) => void handleCollectBarcode(raw)}
           partyId={selectedPartyId}
@@ -1245,7 +1204,17 @@ export function ReceptionCollectSection({
                     },
                     {
                       onSuccess: () => {
-                        setCountedCash(collectedAmount);
+                        const ids = pvw.group?.consignmentIds ??
+                          (pvw.relations.consignmentId == null ? [] : [pvw.relations.consignmentId]);
+                        if (D(collectedAmount).gt(0) && ids.length) {
+                          setSelectedCourierShipments((current) => [...current, {
+                            key: pendingCustomerCollection.groupKey,
+                            memberIds: ids,
+                            expectedCash: collectedAmount,
+                          }]);
+                        } else {
+                          acceptedGroups.current.delete(pendingCustomerCollection.groupKey);
+                        }
                         setPendingCustomerCollection(null);
                       },
                     },
@@ -1301,7 +1270,7 @@ export function ReceptionCollectSection({
           التوصيل
         </h2>
         <AppSelect
-          disabled={companyStatementMut.isPending || remitMut.isPending}
+          disabled={companyStatementMut.isPending || remitMut.isPending || pendingStatement != null || pendingRemittance != null}
           value={selectedPartyId ? String(selectedPartyId) : ""}
           onValueChange={(v) => {
             const nextId = v ? Number(v) : null;
@@ -1491,7 +1460,7 @@ export function ReceptionCollectSection({
                         </label>
                         <Input
                           value={statementNumber}
-                          disabled={companyStatementMut.isPending}
+                          disabled={companyStatementMut.isPending || pendingStatement != null}
                           onChange={(e) => {
                             setStatementNumber(e.target.value);
                           }}
@@ -1502,11 +1471,11 @@ export function ReceptionCollectSection({
                       </div>
                       <div>
                         <label className="mb-1 block text-xs font-bold">
-                          استقطاعات أجور الشركة (د.ع)
+                          أجور الشحنات المحددة بهذه الدفعة (د.ع)
                         </label>
                         <MoneyInput
                           value={statementDeductions}
-                          disabled={companyStatementMut.isPending}
+                          disabled={companyStatementMut.isPending || pendingStatement != null}
                           onChange={setStatementDeductions}
                           placeholder="0"
                           className="h-10 bg-background"
@@ -1516,18 +1485,26 @@ export function ReceptionCollectSection({
                     </div>
                   </div>
 
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" checked={appendToStatement} disabled={companyStatementMut.isPending || pendingStatement != null}
+                      onChange={(event) => setAppendToStatement(event.target.checked)} />
+                    <span>إكمال كشف مسجّل سابقاً: أضف الشحنات المحددة إلى الكشف الأصلي كدفعة مستقلة.</span>
+                  </label>
                   <CompanyStatementScanQueue
                     candidates={
                       statementRows as CompanyStatementQueueCandidate[]
                     }
                     queuedIds={statementQueueIds}
                     collectedById={statementAmounts}
+                    claimSnapshots={claimSnapshots}
+                    decisionsById={statementDecisions}
                     disabled={
                       statementNumber.trim().length < 2 ||
                       openConsStillLoading ||
-                      companyStatementMut.isPending
+                      companyStatementMut.isPending || pendingStatement != null
                     }
                     onQueue={(candidate, collected) => {
+                      setClaimSnapshots((current) => ({ ...current, [candidate.id]: statementClaimSnapshot(candidate) }));
                       setStatementQueueIds((ids) =>
                         ids.includes(candidate.id)
                           ? ids
@@ -1543,6 +1520,7 @@ export function ReceptionCollectSection({
                       }));
                     }}
                     onRemove={(consignmentId) => {
+                      setStatementDecisions((current) => { const next = { ...current }; delete next[consignmentId]; return next; });
                       setStatementQueueIds((ids) =>
                         ids.filter((id) => id !== consignmentId),
                       );
@@ -1561,7 +1539,9 @@ export function ReceptionCollectSection({
                         ...current,
                         [consignmentId]: collected,
                       }));
+                      setStatementDecisions((current) => ({ ...current, [consignmentId]: {} }));
                     }}
+                    onDecisionChange={(consignmentId, decision) => setStatementDecisions((current) => ({ ...current, [consignmentId]: decision }))}
                   />
 
                   <CompanyStatementImport
@@ -1574,9 +1554,13 @@ export function ReceptionCollectSection({
                     disabled={
                       statementNumber.trim().length < 2 ||
                       openConsStillLoading ||
-                      companyStatementMut.isPending
+                      companyStatementMut.isPending || pendingStatement != null
                     }
                     onApply={(lines) => {
+                      setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(lines.flatMap((line) => {
+                        const candidate = statementRows.find((row) => row.id === line.consignmentId);
+                        return candidate ? [[candidate.id, statementClaimSnapshot(candidate)]] : [];
+                      })) }));
                       setSelectedStatementLines((current) => ({
                         ...current,
                         ...Object.fromEntries(
@@ -1616,21 +1600,24 @@ export function ReceptionCollectSection({
                           className="text-xs h-7 font-bold"
                           disabled={
                             openConsStillLoading ||
-                            companyStatementMut.isPending ||
+                            companyStatementMut.isPending || pendingStatement != null ||
                             displayedStatementRows.length === 0
                           }
                           onClick={() => {
+                            setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(displayedStatementGroups
+                              .filter((row) => !selectedStatementLines[row.id])
+                              .map((row) => [row.id, statementClaimSnapshot(row)])) }));
                             setSelectedStatementLines((current) =>
                               mergeDisplayedSelection(
                                 current,
-                                displayedStatementRows,
+                                displayedStatementGroups,
                                 () => true,
                               ),
                             );
                             setStatementAmounts((current) =>
                               mergeDisplayedSelection(
                                 current,
-                                displayedStatementRows,
+                                displayedStatementGroups,
                                 (id) =>
                                   current[id] ??
                                   statementQueueRemaining(
@@ -1644,7 +1631,7 @@ export function ReceptionCollectSection({
                               Array.from(
                                 new Set([
                                   ...current,
-                                  ...displayedStatementRows.map(
+                                  ...displayedStatementGroups.map(
                                     (row) => row.id,
                                   ),
                                 ]),
@@ -1659,15 +1646,16 @@ export function ReceptionCollectSection({
                           variant="ghost"
                           size="sm"
                           className="text-xs h-7 font-bold text-muted-foreground"
-                          disabled={companyStatementMut.isPending}
+                          disabled={companyStatementMut.isPending || pendingStatement != null}
                           onClick={() => {
                             const visible = new Set(
-                              displayedStatementRows.map((row) => row.id),
+                              displayedStatementGroups.map((row) => row.id),
                             );
+                            setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !visible.has(Number(id)))));
                             setSelectedStatementLines((current) =>
                               mergeDisplayedSelection(
                                 current,
-                                displayedStatementRows,
+                                displayedStatementGroups,
                                 () => false,
                               ),
                             );
@@ -1725,27 +1713,33 @@ export function ReceptionCollectSection({
                             <div
                               key={row.id}
                               onClick={() => {
-                                if (companyStatementMut.isPending) return;
+                                if (companyStatementMut.isPending || pendingStatement != null) return;
+                                const members = shipmentStatementCandidates(statementRows, row.id);
+                                const memberIds = new Set(members.map((member) => member.id));
                                 if (isSelected) {
+                                  setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !memberIds.has(Number(id)))));
                                   setSelectedStatementLines((current) => ({
                                     ...current,
-                                    [row.id]: false,
+                                    ...Object.fromEntries(members.map((member) => [member.id, false])),
                                   }));
                                   setStatementQueueIds((ids) =>
-                                    ids.filter((id) => id !== row.id),
+                                    ids.filter((id) => !memberIds.has(id)),
                                   );
                                   return;
                                 }
+                                setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(members
+                                  .filter((member) => !selectedStatementLines[member.id])
+                                  .map((member) => [member.id, statementClaimSnapshot(member)])) }));
                                 setSelectedStatementLines((current) => ({
                                   ...current,
-                                  [row.id]: true,
+                                  ...Object.fromEntries(members.map((member) => [member.id, true])),
                                 }));
                                 setStatementAmounts((current) => ({
                                   ...current,
-                                  [row.id]: cod.toFixed(2),
+                                  ...Object.fromEntries(members.filter((member) => !selectedStatementLines[member.id]).map((member) => [member.id, statementQueueRemaining(member).toFixed(2)])),
                                 }));
                                 setStatementQueueIds((ids) =>
-                                  ids.includes(row.id) ? ids : [...ids, row.id],
+                                  Array.from(new Set([...ids, ...Array.from(memberIds)])),
                                 );
                               }}
                               className={cn(
@@ -1830,11 +1824,12 @@ export function ReceptionCollectSection({
                   </div>
 
                   {/* حسابات التوريد والتأكيد */}
-                  {shift && statementSelectedRows.length > 0 && (
+                  {shift && (statementSelectedRows.length > 0 || pendingStatement) && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
                         مطابقة كشف الجهة وتوريد الصافي للدرج
                       </p>
+                      {pendingStatement && <p role="alert" className="text-sm font-bold">نتيجة الكشف غير مؤكدة؛ أعد إرسال الطلب المحفوظ نفسه للتحقق من تسجيله.</p>}
                       <div className="grid grid-cols-3 gap-2 text-xs border-b border-[var(--sem-pos)]/20 pb-3">
                         <div>
                           <span className="text-muted-foreground block">
@@ -1857,7 +1852,7 @@ export function ReceptionCollectSection({
                             صافي النقد المتوقع
                           </span>
                           <span className="font-extrabold text-sm text-[var(--sem-pos)]">
-                            {fmt(statementNetExpected.toFixed(2))} د.ع
+                            {statementFeeNeedsExplicit ? "يتطلب مطابقة الاستقطاع" : `${fmt(statementNetExpected.toFixed(2))} د.ع`}
                           </span>
                         </div>
                       </div>
@@ -1872,25 +1867,13 @@ export function ReceptionCollectSection({
                       )}
 
                       <div className="flex gap-2 pt-1">
-                        <MoneyInput
-                          value={countedCash}
-                          disabled={
-                            companyStatementMut.isPending || remitMut.isPending
-                          }
-                          onChange={setCountedCash}
-                          placeholder={
-                            "المبلغ الصافي المستلم (المتوقع: " +
-                            fmt(statementNetExpected.toFixed(2)) +
-                            ")"
-                          }
-                          className="flex-1 h-11 text-base font-bold bg-background"
-                          ariaLabel="المبلغ الصافي المستلم"
-                        />
+                        <p className="flex-1 text-sm font-bold">المبلغ المستلم: {statementFeeNeedsExplicit ? "يتطلب مطابقة الاستقطاع" : `${fmt(statementNetExpected.toFixed(2))} د.ع`}</p>
                         <Button
                           className="bg-[var(--sem-pos)] hover:bg-[var(--sem-pos)]/90 text-background px-6 font-bold"
                           disabled={
                             companyStatementMut.isPending ||
-                            !statementNumber.trim()
+                            ((statementFeeBlocked || statementFeeNeedsExplicit || statementFeeMismatch || statementDeductionsNum.gt(statementSelectedCodTotal)) && !pendingStatement) ||
+                            (!statementNumber.trim() && !pendingStatement)
                           }
                           onClick={() => void handleCompanyStatementCollect()}
                         >
@@ -1899,6 +1882,9 @@ export function ReceptionCollectSection({
                             : "تسوية الكشف وتوريد النقد"}
                         </Button>
                       </div>
+                      {statementFeeBlocked && <p role="alert" className="text-sm font-bold text-destructive">راجع قيود أجرة الشحنة وجهتها وفرعها وقاعدة العمولة قبل التوريد.</p>}
+                      {statementFeeNeedsExplicit && <p role="alert" className="text-sm font-bold text-destructive">تعذرت مطابقة مصدر أجرة الشحنة تلقائياً؛ أدخل استقطاع الأجرة المثبت في كشف الشركة.</p>}
+                      {statementFeeMismatch && <p role="alert" className="text-sm font-bold text-destructive">الاستقطاع لا يطابق أجور الشحنات المحددة؛ راجع الكشف.</p>}
                       <p className="text-[11px] leading-5 text-muted-foreground">
                         هذا المسار نقدي إلى درج الوردية فقط. إذا كان السداد
                         تحويلاً بنكياً فلا تسجله كنقد؛ أوقف العملية وسلّم مرجع
@@ -2023,12 +2009,14 @@ export function ReceptionCollectSection({
                                       </span>
                                     </span>
                                   )}
+                                  {row.orderTotal != null && <span>قيمة الفاتورة: <strong className="tabular-nums">{fmt(String(row.orderTotal))} د.ع</strong></span>}
                                   <span>
-                                    المطلوب (COD):{" "}
+                                    المتبقي للتوريد: {" "}
                                     <strong className="text-foreground tabular-nums">
                                       {fmt(cod.toFixed(2))} د.ع
                                     </strong>
                                   </span>
+                                  {D(row.collectedAmount).gt(0) && <span>سبق توريده: <strong className="tabular-nums">{fmt(String(row.collectedAmount))} د.ع</strong></span>}
                                 </div>
                               </div>
                               <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
@@ -2058,33 +2046,39 @@ export function ReceptionCollectSection({
                   </div>
 
                   {/* قسم القبض والتوريد للدرج للمندوب */}
-                  {shift && remittableTotal > 0 && (
+                  {shift && (remittableTotal > 0 || selectedCourierShipments.length > 0 || pendingRemittance) && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
                         توريد جهة التوصيل للدرج
                       </p>
+                      {pendingRemittance && <p role="alert" className="text-sm font-bold">نتيجة التوريد غير مؤكدة؛ أعد إرسال الطلب المحفوظ نفسه للتحقق من تسجيله.</p>}
                       <p className="text-xs text-muted-foreground">
                         نقل النقد الذي سبق تحصيله من العملاء من عهدة الجهة إلى
                         الوردية الحالية — الأجرة معزولة
                       </p>
+                      {selectedCourierShipments.length === 0 ? (
+                        <p className="text-sm">امسح باركود الشحنة المراد توريدها لتحديد فواتيرها ومبالغها.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedCourierShipments.map((shipment) => (
+                            <div key={shipment.key} className="rounded border p-2 text-sm">
+                              {shipment.memberIds.map((id) => {
+                                const row = remittableRows.find((item) => item.id === id);
+                                return row ? <p key={id}>{deliverySourceView(row).reference || row.consignmentNumber}: {fmt(String(row.cashInCourierCustody))} د.ع</p> : null;
+                              })}
+                              <p className="font-bold">إجمالي الشحنة: {fmt(shipment.expectedCash)} د.ع</p>
+                              <Button type="button" variant="ghost" size="sm" disabled={remitMut.isPending || pendingRemittance != null} onClick={() => {
+                                acceptedGroups.current.delete(shipment.key);
+                                setSelectedCourierShipments((current) => current.filter((item) => item.key !== shipment.key));
+                              }}>إزالة الشحنة</Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex gap-2">
-                        <MoneyInput
-                          value={countedCash}
-                          disabled={
-                            companyStatementMut.isPending || remitMut.isPending
-                          }
-                          onChange={setCountedCash}
-                          placeholder={
-                            "المبلغ المستلَم (الكامل: " +
-                            fmt(String(remittableTotal)) +
-                            ")"
-                          }
-                          className="flex-1 h-11 text-base font-bold bg-background"
-                          ariaLabel="المبلغ المستلَم"
-                        />
                         <Button
                           className="bg-[var(--sem-pos)] hover:bg-[var(--sem-pos)]/90 text-background px-6 font-bold"
-                          disabled={!countedCash || remitMut.isPending}
+                          disabled={(!pendingRemittance && (!selectedCourierShipments.length || openConsStillLoading)) || remitMut.isPending}
                           onClick={() => void handleCollect()}
                         >
                           {remitMut.isPending ? "…" : "تسجيل التوريد"}
@@ -2095,21 +2089,6 @@ export function ReceptionCollectSection({
                         تحويلاً بنكياً فلا تسجله كنقد؛ أوقف العملية وسلّم مرجع
                         التحويل للمحاسب لإثباته قبل التسوية.
                       </p>
-                      {countedCash &&
-                        D(String(remittableTotal)).gt(0) &&
-                        D(countedCash).lt(D(String(remittableTotal))) && (
-                          <p className="text-xs text-[var(--sem-warn)] font-bold">
-                            تسوية جزئية — يبقى{" "}
-                            {fmt(
-                              round2(
-                                D(String(remittableTotal)).minus(
-                                  D(countedCash),
-                                ),
-                              ).toFixed(2),
-                            )}{" "}
-                            د.ع بعهدة الجهة
-                          </p>
-                        )}
                     </div>
                   )}
 

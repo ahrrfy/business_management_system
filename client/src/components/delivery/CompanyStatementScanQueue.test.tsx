@@ -3,11 +3,8 @@ import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyStatementScanQueue } from "./CompanyStatementScanQueue";
-vi.mock("@/components/form/MoneyInput", () => ({
-  MoneyInput: ({ value, ariaLabel, disabled }: { value: string; ariaLabel?: string; disabled?: boolean }) => (
-    <input readOnly disabled={disabled} value={value} aria-label={ariaLabel} />
-  ),
-}));
+import { statementClaimSnapshot } from "./companyStatementQueue";
+import { notify } from "@/lib/notify";
 vi.mock("@/lib/notify", () => ({
   notify: { err: vi.fn(), warn: vi.fn(), ok: vi.fn() },
 }));
@@ -47,6 +44,7 @@ describe("CompanyStatementScanQueue", () => {
   let root: Root;
 
   beforeEach(() => {
+    Object.assign(globalThis, { React });
     vi.useFakeTimers();
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -163,8 +161,101 @@ describe("CompanyStatementScanQueue", () => {
   it("locks queued amounts and removal while the statement draft is disabled", () => {
     showQueue(true, [1]);
     expect((host.querySelector('[aria-label="إزالة من طابور الكشف"]') as HTMLButtonElement).disabled).toBe(true);
-    const amount = host.querySelector<HTMLInputElement>('[aria-label^="مبلغ الكشف"]');
-    expect(amount?.disabled).toBe(true);
+    expect((host.querySelector('input[aria-label^="مبلغ الكشف"]') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("adds and removes every invoice in the scanned shipment", () => {
+    const onQueueGroup = vi.fn();
+    const onRemoveGroup = vi.fn();
+    const shipment = [
+      { ...candidates[0], shipmentLeaderConsignmentId: 1, shipmentInvoiceCount: 2, remainingDue: "7.50" },
+      { ...candidates[1], externalTrackingRef: "0001", shipmentLeaderConsignmentId: 1, shipmentInvoiceCount: 2, remainingDue: "12.25" },
+    ];
+    const render = (queuedIds: number[]) => act(() => root.render(
+      <CompanyStatementScanQueue
+        candidates={shipment}
+        queuedIds={queuedIds}
+        collectedById={{ 1: "1.00", 2: "1.00" }}
+        onQueue={onQueueGroup}
+        onRemove={onRemoveGroup}
+        onCollectedChange={() => {}}
+      />,
+    ));
+    render([]);
+    scan("0001");
+    expect(onQueueGroup.mock.calls).toEqual([[shipment[0], "7.50"], [shipment[1], "12.25"]]);
+    render([1, 2]);
+    const remove = host.querySelector<HTMLButtonElement>('[aria-label="إزالة من طابور الكشف"]')!;
+    act(() => remove.click());
+    expect(onRemoveGroup.mock.calls).toEqual([[1], [2]]);
+  });
+
+  it("keeps the entered amount when the live claim changes and permits editing it", () => {
+    const onCollectedChange = vi.fn();
+    const render = (remainingDue: string) => act(() => root.render(
+      <CompanyStatementScanQueue
+        candidates={[{ ...candidates[0], remainingDue }]}
+        queuedIds={[1]}
+        collectedById={{ 1: "1.00" }}
+        onQueue={() => {}}
+        onRemove={() => {}}
+        onCollectedChange={onCollectedChange}
+      />,
+    ));
+    render("7.50");
+    let input = host.querySelector<HTMLInputElement>('input[aria-label^="مبلغ الكشف"]')!;
+    expect(input.value).toBe("1");
+    expect(host.textContent).toContain("7.5");
+    changeInput(input, "3");
+    expect(onCollectedChange).toHaveBeenCalledWith(1, "3");
+    render("12.25");
+    input = host.querySelector<HTMLInputElement>('input[aria-label^="مبلغ الكشف"]')!;
+    expect(input.value).toBe("1");
+    expect(host.textContent).toContain("12.25");
+  });
+
+  it("shows the proven custody and unproven parts separately and warns on a changed claim", () => {
+    const original = { ...candidates[0], remainingDue: "100", cashInCourierCustody: "70", parcelStatus: "DELIVERED" };
+    const render = (remainingDue: string) => act(() => root.render(
+      <CompanyStatementScanQueue candidates={[{ ...original, remainingDue }]} queuedIds={[1]}
+        collectedById={{ 1: "40" }} claimSnapshots={{ 1: statementClaimSnapshot(original) }}
+        onQueue={() => {}} onRemove={() => {}} onCollectedChange={() => {}} />,
+    ));
+    render("100");
+    expect(host.textContent).toContain("نقد مقبوض مثبت باقٍ بعهدة جهة التوصيل: 30");
+    expect(host.textContent).toContain("فرق غير مثبت قبضه: 30");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    render("90");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("تغيرت بيانات الفاتورة");
+    expect(host.querySelector<HTMLInputElement>('input[aria-label^="مبلغ الكشف"]')?.value).toBe("40");
+  });
+
+  it("warns but queues the available members when the recorded count is larger", () => {
+    const onQueueGroup = vi.fn();
+    vi.mocked(notify.warn).mockClear();
+    const member = {
+      ...candidates[1],
+      externalTrackingRef: null,
+      shipmentTrackingRef: "0001",
+      shipmentLeaderConsignmentId: 1,
+      shipmentInvoiceCount: 2,
+    };
+    act(() => root.render(
+      <CompanyStatementScanQueue
+        candidates={[member]}
+        queuedIds={[]}
+        collectedById={{}}
+        onQueue={onQueueGroup}
+        onRemove={() => {}}
+        onCollectedChange={() => {}}
+      />,
+    ));
+    scan("0001");
+    expect(onQueueGroup).toHaveBeenCalledWith(member, "0.10");
+    expect(notify.warn).toHaveBeenCalledWith(
+      "تحقق من فواتير الشحنة",
+      expect.stringContaining("سيتحقق النظام"),
+    );
   });
 });
 

@@ -2,9 +2,7 @@
  * التسوية اليوميّة بتأكيدٍ واحد — المنطق النقيّ (برنامج v2 م١ PR-C، ٥/٩/٢٦).
  *
  * الخادم يحسب المعاينة سلفاً (`delivery.settlementPreview`): المتوقَّع · المرتجعات المُعلَنة · الأجرة ·
- * الصافي · الأسطر. الشاشة تعرضها وتسأل سؤالاً واحداً: «كم عُدّ فعلاً؟» (مُملأٌ بالصافي).
- *   طابق ⇒ زرّ «إقفال» واحد · نقص ⇒ سبب العجز إلزاميّ من `shared/shortfallReason` (يُقيَّد ذمّةً على
- *   الجهة خادمياً) · زاد ⇒ يُرسَل كما هو ورسالة الخادم تُعرض كما هي (لا حكمَ محلّيّ على الزيادة).
+ * الصافي · الأسطر. يجب مطابقة النقد المستلم مع الصافي كاملاً قبل الإقفال.
  *
  * الأنواع من العقد المشترك `shared/deliveryBoard.ts` (م١-خادم PR-2) حرفياً — تُعاد هنا لمستهلكي المكوّنات.
  */
@@ -56,17 +54,16 @@ export function previewSignature(preview: Pick<SettlementPreview, "net" | "expec
   return `${money2(toNum(preview.net))}|${money2(toNum(preview.expectedCash))}|${lines.join(",")}`;
 }
 
-/** هل يُقبل «إقفال» الآن؟ العجز يلزمه سبب؛ الزيادة تُرسَل والخادم يجيب. */
-export function canSettle(verdict: SettlementVerdict, reason: ShortfallReason | null): boolean {
-  if (verdict.kind === "BALANCED" || verdict.kind === "OVER") return true;
-  if (verdict.kind === "SHORT") return reason != null;
-  return false;
+/** لا يُقبل التوريد إلا بعد تطابق النقد والصافي كاملاً. */
+export function canSettle(verdict: SettlementVerdict, _reason: ShortfallReason | null): boolean {
+  return verdict.kind === "BALANCED";
 }
 
 export interface SettleDailyPayload {
   partyId: number;
   branchId: number;
   countedCash: string;
+  expectedLines: Array<{ consignmentId: number; remaining: string }>;
   shortfallReason?: ShortfallReason;
   /** ملاحظةٌ اختياريّة مع العجز (مرجع المكالمة/المحضر) — تُحفظ على قيد الذمّة خادمياً. */
   shortfallNotes?: string;
@@ -75,7 +72,7 @@ export interface SettleDailyPayload {
 }
 
 export function buildSettleDailyPayload(
-  preview: Pick<SettlementPreview, "partyId" | "branchId" | "net">,
+  preview: Pick<SettlementPreview, "partyId" | "branchId" | "net" | "lines">,
   verdict: SettlementVerdict,
   reason: ShortfallReason | null,
   shiftType: "RETAIL" | "RECEPTION",
@@ -88,6 +85,7 @@ export function buildSettleDailyPayload(
     partyId: preview.partyId,
     branchId: preview.branchId,
     countedCash: verdict.counted,
+    expectedLines: preview.lines.map((line) => ({ consignmentId: line.consignmentId, remaining: line.remaining })),
     ...(verdict.kind === "SHORT" && reason ? { shortfallReason: reason, ...(notes ? { shortfallNotes: notes } : {}) } : {}),
     shiftType,
     clientRequestId,

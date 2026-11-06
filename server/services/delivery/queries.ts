@@ -1,8 +1,9 @@
 import { consignmentCreditCollectionSql } from "./creditCollectionTerms";
-import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { consignmentFeeDueSql, createFeeWithholdingPolicy } from "./fees";
 import { physicalReturnReceiptExistsSql } from "./workflow/returnReceipt";
 import { remittanceCashReceivedSql } from "./remittanceCash";
 import { shipmentFeeDeliveryProvenExpr } from "./shipments";
+import { planDetachedShipmentFees } from "./detachedShipmentFees";
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 //
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
@@ -325,12 +326,17 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
   const party = (await db.select({ useCommission: deliveryParties.useCommissionForSettlement }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
-  const quoteFee = await createFeeWithholdingQuote(db, partyId, party?.useCommission === true);
+  const feePolicy = await createFeeWithholdingPolicy(db, partyId, party?.useCommission === true);
+  const { quoteFee } = feePolicy;
+  const detached = await planDetachedShipmentFees(db, { partyId, branchId,
+    consignmentIds: rows.map((row) => Number(row.id)), useCommission: party?.useCommission === true,
+    includePending: true, allowBlockedPreview: true, feePolicy });
   const enriched = rows.map((r) => {
     const potentialDue = r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
       ? money(r.parcelStatus === "DELIVERED" ? r.feeDue : r.feeSettledAt ? "0" : r.deliveryFee) : money(0);
     const cash = quoteFee(potentialDue, money(r.orderTotal ?? "0"));
-    return { ...r, id: Number(r.id), feeWithholdingCash: cash.toFixed(2) };
+    return { ...r, id: Number(r.id), feeWithholdingCash: cash.plus(detached.allocations.get(Number(r.id)) ?? 0).toFixed(2),
+      feeWithholdingBlocked: detached.blockedIds.has(Number(r.id)) || detached.uncoveredIds.has(Number(r.id)) };
   });
   return buildPageResult(await withShipmentSummaries(enriched), effLimit);
 }
@@ -648,9 +654,16 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
       shiftId: deliveryRemittances.shiftId,
       receiptInId: deliveryRemittances.receiptInId,
       receiptOutId: deliveryRemittances.receiptOutId,
-      companyStatementNumber: deliveryRemittances.companyStatementNumber,
-      statementDate: deliveryRemittances.statementDate,
-      statementAttachmentUrl: deliveryRemittances.statementAttachmentUrl,
+      companyStatementNumber: sql<string | null>`COALESCE(${deliveryRemittances.companyStatementNumber},
+        (SELECT originalStatement.statementNumber FROM deliveryCompanyStatementBatches statementBatch
+         JOIN deliveryCompanyStatements originalStatement ON originalStatement.id = statementBatch.statementId
+         WHERE statementBatch.remittanceId = ${deliveryRemittances.id} LIMIT 1))`,
+      statementDate: sql<Date | null>`COALESCE((SELECT originalStatement.statementDate FROM deliveryCompanyStatementBatches statementBatch
+         JOIN deliveryCompanyStatements originalStatement ON originalStatement.id = statementBatch.statementId
+         WHERE statementBatch.remittanceId = ${deliveryRemittances.id} LIMIT 1), ${deliveryRemittances.statementDate})`,
+      statementAttachmentUrl: sql<string | null>`COALESCE((SELECT originalStatement.attachmentUrl FROM deliveryCompanyStatementBatches statementBatch
+         JOIN deliveryCompanyStatements originalStatement ON originalStatement.id = statementBatch.statementId
+         WHERE statementBatch.remittanceId = ${deliveryRemittances.id} LIMIT 1), ${deliveryRemittances.statementAttachmentUrl})`,
       cashReceived: remittanceCashReceivedSql(),
     })
     .from(deliveryRemittances)

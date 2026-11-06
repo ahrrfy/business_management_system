@@ -15,7 +15,7 @@ import { DeliveryRemittanceHistoryCard } from "@/components/delivery/DeliveryRem
 import { DeliverySettleSummaryCard } from "@/components/delivery/DeliverySettleSummaryCard";
 import { DeliveryConsignmentsTable } from "@/components/delivery/DeliveryConsignmentsTable";
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
-import { shipmentStatementCandidates, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
+import { shipmentStatementCandidates, statementClaimSnapshot, statementDraftLines, statementLineSummary, statementShipmentFees, parseStatementAmount, type StatementDecision, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
@@ -31,7 +31,7 @@ import {
 } from "@/lib/deliveryOperations";
 import { statementQueueRemaining } from "@/components/delivery/companyStatementQueue";
 import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { useRealtimeEvent } from "@/lib/realtime";
@@ -106,12 +106,17 @@ export function DeliverySettleTab() {
 
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }>>({});
+  const [claimSnapshots, setClaimSnapshots] = useState<Record<number, string>>({});
+  const [statementDecisions, setStatementDecisions] = useState<Record<number, StatementDecision>>({});
   const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
+  const [pendingStatement, setPendingStatement] = useState<RouterInputs["delivery"]["recordCompanyStatement"] | null>(null);
+  const [pendingRemittance, setPendingRemittance] = useState<RouterInputs["delivery"]["recordRemittance"] | null>(null);
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [statementNumber, setStatementNumber] = useState("");
+  const [appendToStatement, setAppendToStatement] = useState(false);
   const [parcelFilter, setParcelFilter] = useState("");
   const [statementDate, setStatementDate] = useState("");
   const [statementDeductions, setStatementDeductions] = useState(0);
@@ -126,10 +131,13 @@ export function DeliverySettleTab() {
     setPartyId(reset.partyId);
     setParcelFilter("");
     setRows(reset.selections);
+    setClaimSnapshots({});
+    setStatementDecisions({});
     setStatementQueueIds(reset.queueIds);
     setCountedBreakdown(reset.countedBreakdown);
     setCountedCash(reset.countedCash);
     setStatementNumber(reset.statementNumber);
+    setAppendToStatement(false);
     setStatementDate(reset.statementDate);
     setStatementDeductions(reset.statementDeductions);
     setStatementNotes(reset.statementNotes);
@@ -143,11 +151,16 @@ export function DeliverySettleTab() {
   }, [settleSearch]);
 
   const resetAfterSettle = () => {
+    setPendingStatement(null);
+    setPendingRemittance(null);
     setRows({});
+    setClaimSnapshots({});
+    setStatementDecisions({});
     setStatementQueueIds([]);
     setCountedBreakdown({});
     setCountedCash(0);
     setStatementNumber("");
+    setAppendToStatement(false);
     setStatementDate("");
     setStatementDeductions(0);
     setStatementNotes("");
@@ -190,7 +203,9 @@ export function DeliverySettleTab() {
     onError: (e) => {
       try { stmtWinRef.current?.win?.close(); } catch { /* noop */ }
       stmtWinRef.current = null;
-      notify.err(e);
+      const status = e.data?.httpStatus;
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setPendingStatement(null);
+      notify.err(e, "إذا انقطع الاتصال فاستخدم استعادة نتيجة الكشف بالطلب المحفوظ");
     },
   });
 
@@ -212,7 +227,9 @@ export function DeliverySettleTab() {
     onError: (e) => {
       try { remitWinRef.current?.close(); } catch { /* noop */ }
       remitWinRef.current = null;
-      notify.err(e);
+      const status = e.data?.httpStatus;
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setPendingRemittance(null);
+      notify.err(e, "إذا انقطع الاتصال فاستخدم استعادة نتيجة التوريد بالطلب المحفوظ");
     },
   });
 
@@ -284,6 +301,8 @@ export function DeliverySettleTab() {
   draftBusyRef.current =
     companyStatement.isPending ||
     remit.isPending ||
+    pendingStatement != null ||
+    pendingRemittance != null ||
     ret.isPending ||
     payPartyFees.isPending;
 
@@ -309,10 +328,12 @@ export function DeliverySettleTab() {
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL" || c.moneyStatus === "NOT_APPLICABLE");
   const isSettleable = (c: OpenConsignment) => isRemittable(c) || (statementMode && isStatementConfirmable(c));
 
-  const get = (c: OpenConsignment) => rows[c.id] ?? (statementMode
-    ? { outcome: "NONE" as const, collected: "0" }
-    : (isSettleable(c) ? { outcome: "COLLECTED" as const, collected: remainingOf(c).toFixed(2) ,
-          } : { outcome: "NONE" as const, collected: "0" }));
+  const get = (c: OpenConsignment) => rows[c.id] ?? { outcome: "NONE" as const, collected: "0" };
+  const feePreview = statementShipmentFees(list.filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED"),
+    Object.fromEntries(Object.entries(rows).map(([id, row]) => [Number(id), row.collected])));
+  const statementDeduction = moneyInput(statementDeductions);
+  const feeNeedsExplicit = statementMode && feePreview.needsExplicit && statementDeduction.isZero();
+  const feeMismatch = statementMode && !feePreview.needsExplicit && statementDeduction.gt(0) && !statementDeduction.eq(feePreview.total);
 
   const totals = useMemo(() => {
     let fees = D(0);
@@ -324,13 +345,14 @@ export function DeliverySettleTab() {
       if (st.outcome === "COLLECTED" ) {
         selectedCount += 1;
         expected = expected.plus(remaining);
-        collected = collected.plus(moneyInput(st.collected) );
-        fees = fees.plus(Decimal.min(moneyInput(st.collected), D(c.feeWithholdingCash ?? "0")));
+        const amount = statementMode ? (parseStatementAmount(st.collected) ?? D(0)) : remaining;
+        collected = collected.plus(amount);
+        if (!statementMode) fees = fees.plus(Decimal.min(amount, D(c.feeWithholdingCash ?? "0")));
       } else if (remaining .gt(0) ) leftInTransit += 1;
       }
     const declaredDeduction = statementMode ? moneyInput(statementDeductions) : D(0);
-    if (declaredDeduction.gt(0)) fees = Decimal.min(fees, declaredDeduction);
-    const deductions = Decimal.max(0, declaredDeduction.minus(fees));
+    if (statementMode) fees = declaredDeduction.gt(0) ? declaredDeduction : feePreview.total;
+    const deductions = D(0);
     const rawNet = collected.minus(fees).minus(deductions);
     const net = rawNet.isNegative() ? D(0): rawNet;
     // Existing summary/cash-counter presentation contract is numeric; calculations stay Decimal.
@@ -338,6 +360,8 @@ export function DeliverySettleTab() {
   }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
+    if (pendingStatement && !companyStatement.isPending) { companyStatement.mutate(pendingStatement); return; }
+    if (pendingRemittance && !remit.isPending) { remit.mutate(pendingRemittance); return; }
     if (!(statementMode ? canRecordStatement : canRemit)) { notify.err("صلاحية تسجيل الكشف أو التوريد غير ممنوحة لحسابك"); return; }
     if (listStillLoading) {
       notify.err("لا يمكن التسوية قبل اكتمال تحميل قائمة الإرساليات");
@@ -351,63 +375,80 @@ export function DeliverySettleTab() {
       .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED",
     )
       ;
-    if (
-      selected.some(
-        (c) =>
-          !/^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/.test(get(c).collected) ||
-          D(get(c).collected).gt(remainingOf(c)),
-      )
-    ) {
-      notify.err(
-        "راجع مبالغ الطرود المحددة",
-        "يلزم مبلغ صحيح غير سالب لا يتجاوز المتبقي لكل إرسالية.",
-      );
+    if (Object.values(rows).filter((row) => row.outcome === "COLLECTED").length !== selected.length) {
+      notify.err("تغيرت قائمة الفواتير المحددة؛ حدّث البيانات وأعد اختيار الشحنة قبل الحفظ");
       return;
     }
-    const lines = selected.map((c) => ({ consignmentId: c.id, collectedAmount: D(get(c).collected) .toFixed(2) }));
-    const validLines = statementMode ? lines : lines.filter((line) => D(line.collectedAmount) .gt(0));
+    if (selected.some((row) => row.feeWithholdingBlocked)) {
+      notify.err("راجع قيود أجرة الشحنة وجهتها وفرعها وقاعدة العمولة قبل التوريد");
+      return;
+    }
+    if (statementMode && (feePreview.insufficient || feeNeedsExplicit || feeMismatch || statementDeduction.gt(D(totals.collected)))) {
+      notify.err(feePreview.insufficient ? "نقد إحدى الشحنات لا يكفي لأجرتها؛ راجع الشحنة أو سوّ الأجرة مستقلاً" :
+        feeNeedsExplicit ? "أدخل استقطاع الأجرة المثبت في كشف الشركة قبل حساب الصافي" : "الاستقطاع لا يطابق أجور الشحنات المحددة؛ راجع الكشف");
+      return;
+    }
+    const amounts = Object.fromEntries(Object.entries(rows).map(([id, row]) => [Number(id), row.collected]));
+    const statementLines = statementMode ? statementDraftLines(selected, amounts, claimSnapshots, statementDecisions) : null;
+    if (statementMode && !statementLines) {
+      notify.err("راجع مبالغ الكشف ومسؤولية الفروق أو بيانات الفاتورة المتغيرة قبل الحفظ");
+      return;
+    }
+    const lines = selected.map((c) => ({ consignmentId: c.id, collectedAmount: remainingOf(c).toFixed(2) }));
+    const validLines = statementMode ? statementLines! : lines.filter((line) => D(line.collectedAmount) .gt(0));
     if (validLines.length === 0) {
       notify.err("لا أسطر للتسوية — حدّد ما حُصِّل فعلاً");
       return;
     }
-    if (D(countedCash ).minus(D(totals.net) ).abs().gt("0.01")) {
+    if (!D(countedCash).eq(D(totals.net))) {
       notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
       return;
     }
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
-      description: `عدد الإرساليات المحددة: ${validLines.length}. المُحصَّل والمورّد للمكتبة ${fmt(String(totals.net))} د.ع.${statementMode && validLines.filter((l) => D(l.collectedAmount).isZero()).length > 0 ? ` سيُثبَت تسليم ${validLines.filter((l) => D(l.collectedAmount) .isZero()).length} طرداً بلا نقد.` : ""}${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
+      description: [statementMode ? (appendToStatement ? `إكمال الكشف ${statementNumber} بدفعة جديدة` : `تسجيل أول دفعة للكشف ${statementNumber}`) : "توريد الشحنات المحددة",
+        `عدد الفواتير المحددة: ${validLines.length}. النقد المورّد ${fmt(String(totals.net))} د.ع.`,
+        ...validLines.map((line) => statementLineSummary(selected.find((c) => c.id === line.consignmentId)!, line.collectedAmount, statementDecisions[line.consignmentId])),
+        "تبقى الشحنات غير المحددة خارج هذا التوريد."].join("\n"),
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
     if (statementMode) {
       stmtWinRef.current = { win: preopenDocumentWindow(), count: validLines.length };
-      companyStatement.mutate({
+      const submitted = {
         partyId: Number(partyId),
         statementNumber: statementNumber.trim(),
-        statementDate: statementDate || null,
+        appendToStatement,
+        statementDate: appendToStatement ? null : statementDate || null,
         deductionsTotal: statementDeductions ? String(statementDeductions) : null,
         notes: statementNotes.trim() || null,
         lines: validLines,
         countedCash: countedCash.toFixed(2),
         clientRequestId: remitReqId,
-      });
+      };
+      setPendingStatement(submitted);
+      companyStatement.mutate(submitted);
       return;
     }
     remitWinRef.current = preopenDocumentWindow();
-    remit.mutate({
+    const submitted = {
       partyId: Number(partyId),
       lines: validLines,
       countedCash: countedCash.toFixed(2),
       clientRequestId: remitReqId,
-    });
+    };
+    setPendingRemittance(submitted);
+    remit.mutate(submitted);
   };
 
   const displayedEligible = Array.from(new Map(displayedStatementRows.filter(isSettleable)
-    .flatMap((row) => statementMode ? shipmentStatementCandidates(list.filter(isSettleable), row.id) : [row])
+    .flatMap((row) => shipmentStatementCandidates(list.filter(isSettleable), row.id))
     .map((row) => [row.id, row])).values());
   const selectAll = () => {
+    setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(displayedEligible
+      .filter((c) => rows[c.id]?.outcome !== "COLLECTED")
+      .map((c) => [c.id, statementClaimSnapshot(c)])) }));
     setRows((current) =>
       mergeDisplayedSelection(current, displayedEligible, (id) =>
         current[id]?.outcome === "COLLECTED"
@@ -426,6 +467,7 @@ export function DeliverySettleTab() {
       mergeDisplayedSelection(current, displayedEligible, () => ({ outcome: "NONE" as const, collected: "0",
       })) );
     setStatementQueueIds((current) => current.filter((id) => !visible.has(id)));
+    setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !visible.has(Number(id)))));
   };
 
   return (
@@ -439,6 +481,10 @@ export function DeliverySettleTab() {
       />
 
       {/* ─── تسوية الجهة المختارة ─── */}
+      {(pendingStatement || pendingRemittance) && <div role="alert" className="rounded border p-3 text-sm space-y-2">
+        <p>نتيجة العملية غير مؤكدة. استعدها بإعادة إرسال الطلب الأصلي نفسه قبل إجراء تسوية أخرى.</p>
+        <Button type="button" disabled={companyStatement.isPending || remit.isPending} onClick={() => void submit()}>استعادة نتيجة التوريد</Button>
+      </div>}
       <div className="rounded-xl border bg-card p-4">
         <label htmlFor="delivery-settle-party" className="mb-1.5 block text-sm font-bold">اختر جهة التوصيل</label>
         <div className="flex flex-wrap items-center gap-2">
@@ -534,9 +580,11 @@ export function DeliverySettleTab() {
             statementMode={statementMode}
             canReturn={canReturn}
             onOutcomeToggle={(id, current) => {
-              if (companyStatement.isPending || remit.isPending) return;
-              const members = statementMode ? shipmentStatementCandidates(list, id) : list.filter((row) => row.id === id);
+              if (draftBusyRef.current) return;
+              const members = shipmentStatementCandidates(list.filter(isSettleable), id);
               const memberIds = members.map((row) => row.id);
+              if (current !== "COLLECTED") setClaimSnapshots((snapshots) => ({ ...snapshots, ...Object.fromEntries(members.filter((member) => rows[member.id]?.outcome !== "COLLECTED").map((member) => [member.id, statementClaimSnapshot(member)])) }));
+              else setStatementDecisions((decisions) => Object.fromEntries(Object.entries(decisions).filter(([key]) => !memberIds.includes(Number(key)))));
               if (statementMode) {
                 setStatementQueueIds((ids) => current === "COLLECTED"
                   ? ids.filter((queuedId) => !memberIds.includes(queuedId))
@@ -544,14 +592,14 @@ export function DeliverySettleTab() {
               }
               setRows((r) => ({
                 ...r,
-                ...Object.fromEntries(members.map((member) => [member.id, {
+                ...Object.fromEntries(members.filter((member) => current === "COLLECTED" || r[member.id]?.outcome !== "COLLECTED").map((member) => [member.id, {
                   outcome: current === "COLLECTED" ? "NONE" : "COLLECTED",
                   collected: current === "COLLECTED" ? "0" : remainingOf(member).toFixed(2),
                 }] as const)),
               }));
             }}
             onCollectedChange={(id, value) => {
-              if (companyStatement.isPending || remit.isPending) return;
+              if (draftBusyRef.current) return;
               setRows((r) => ({ ...r, [id]: { outcome: "COLLECTED", collected: value } }));
             }}
             onReturn={setReturnTarget}
@@ -560,28 +608,39 @@ export function DeliverySettleTab() {
 
           <CompanyStatementBox
             required={partyRow?.partyType === "COMPANY"}
-            disabled={companyStatement.isPending || remit.isPending}
-            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); setStatementQueueIds([]); }}
+            disabled={companyStatement.isPending || remit.isPending || pendingStatement != null || pendingRemittance != null}
+            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); setClaimSnapshots({}); setStatementDecisions({}); setStatementQueueIds([]); }}
             statementDate={statementDate} onStatementDateChange={setStatementDate}
             deductions={statementDeductions} onDeductionsChange={setStatementDeductions}
             notes={statementNotes} onNotesChange={setStatementNotes}
             onSelectAll={selectAll}
             onClearSelection={clearDisplayed}
             displayedCount={ displayedEligible.length}
-            selectionDisabled={listStillLoading || companyStatement.isPending || remit.isPending
+            selectionDisabled={listStillLoading || companyStatement.isPending || remit.isPending || pendingStatement != null || pendingRemittance != null
             }
-            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: remainingOf(c).toFixed(2), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
+            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: remainingOf(c).toFixed(2), selected: get(c).outcome === "COLLECTED", collected: get(c).outcome === "COLLECTED" ? (parseStatementAmount(get(c).collected)?.toFixed(2) ?? "0") : "0" }))}
           />
+
+          {partyRow?.partyType === "COMPANY" && (
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={appendToStatement} disabled={companyStatement.isPending || remit.isPending || pendingStatement != null || pendingRemittance != null}
+                onChange={(event) => setAppendToStatement(event.target.checked)} />
+              <span>إكمال كشف مسجّل سابقاً: أضف الشحنات المحددة إلى الكشف الأصلي كدفعة مستقلة.</span>
+            </label>
+          )}
 
           {partyRow?.partyType === "COMPANY" && (
             <CompanyStatementScanQueue
               candidates={list.filter((candidate) => isSettleable(candidate)) as CompanyStatementQueueCandidate[]}
               queuedIds={statementQueueIds}
               collectedById={Object.fromEntries(Object.entries(rows).map(([id, row]) => [Number(id), row.collected]))}
+              claimSnapshots={claimSnapshots}
+              decisionsById={statementDecisions}
               disabled={statementNumber.trim().length < 2 || listStillLoading||
-                companyStatement.isPending
+                companyStatement.isPending || pendingStatement != null || pendingRemittance != null
               }
               onQueue={(candidate, collected) => {
+                setClaimSnapshots((current) => ({ ...current, [candidate.id]: statementClaimSnapshot(candidate) }));
                 setStatementQueueIds((ids) => ids.includes(candidate.id) ? ids : [...ids, candidate.id]);
                 setRows((current) => ({ ...current, [candidate.id]: { outcome: "COLLECTED", collected } }));
               }}
@@ -589,10 +648,13 @@ export function DeliverySettleTab() {
                 const memberIds = shipmentStatementCandidates(list, consignmentId).map((row) => row.id);
                 setStatementQueueIds((ids) => ids.filter((id) => !memberIds.includes(id)));
                 setRows((current) => ({ ...current, ...Object.fromEntries(memberIds.map((id) => [id, { outcome: "NONE" as const, collected: "0" }])) }));
+                setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !memberIds.includes(Number(key)))));
               }}
               onCollectedChange={(consignmentId, collected) => {
                 setRows((current) => ({ ...current, [consignmentId]: { outcome: "COLLECTED", collected } }));
+                setStatementDecisions((current) => ({ ...current, [consignmentId]: {} }));
               }}
+              onDecisionChange={(consignmentId, decision) => setStatementDecisions((current) => ({ ...current, [consignmentId]: decision }))}
             />
           )}
 
@@ -607,12 +669,14 @@ export function DeliverySettleTab() {
               disabled={
                 statementNumber.trim().length < 2 ||
                 listStillLoading ||
-                companyStatement.isPending
+                companyStatement.isPending || pendingStatement != null || pendingRemittance != null
               }
               onApply={(lines) => {
-                const imported = new Map(lines.map((line) => [line.consignmentId, line]));
-                const expanded = Array.from(new Map(lines.flatMap((line) => shipmentStatementCandidates(list.filter(isSettleable), line.consignmentId)
-                  .map((member) => [member.id, imported.get(member.id) ?? { consignmentId: member.id, collectedAmount: "0" }] as const))).values());
+                const expanded = lines;
+                setClaimSnapshots((current) => ({ ...current, ...Object.fromEntries(lines.flatMap((line) => {
+                  const candidate = list.find((row) => row.id === line.consignmentId);
+                  return candidate ? [[candidate.id, statementClaimSnapshot(candidate)]] : [];
+                })) }));
                 setRows((current) => ({
                   ...current,
                   ...Object.fromEntries(
@@ -631,18 +695,21 @@ export function DeliverySettleTab() {
             />
           )}
 
-          <DeliverySettleSummaryCard
+          {(feeNeedsExplicit && !pendingStatement) ? <p role="alert" className="text-sm font-bold text-destructive">تعذرت مطابقة مصدر أجرة الشحنة تلقائياً؛ أدخل استقطاع الأجرة المثبت في كشف الشركة قبل حساب الصافي.</p> : <DeliverySettleSummaryCard
             totals={totals}
             countedCash={countedCash}
             countedBreakdown={countedBreakdown}
-            onCountedChange={(c, total) => { if (companyStatement.isPending || remit.isPending) return; setCountedBreakdown(c); setCountedCash(Number(total)); }}
-            canRemit={statementMode ? canRecordStatement : canRemit}
-            isPending={remit.isPending || companyStatement.isPending}
+            onCountedChange={(c, total) => { if (draftBusyRef.current) return; setCountedBreakdown(c); setCountedCash(Number(total)); }}
+            canRemit={statementMode ? canRecordStatement && !feePreview.insufficient && !feeMismatch && !statementDeduction.gt(D(totals.collected)) : canRemit}
+            isPending={remit.isPending || companyStatement.isPending || pendingStatement != null || pendingRemittance != null}
             listStillLoading={listStillLoading}
             statementMode={statementMode}
             statementNumber={statementNumber}
             onSubmit={submit}
-          />
+          />}
+          {statementMode && feePreview.insufficient && <p role="alert" className="text-sm font-bold text-destructive">نقد إحدى الشحنات لا يكفي لأجرتها؛ لا تُحسم من شحنة أخرى.</p>}
+          {feeMismatch && <p role="alert" className="text-sm font-bold text-destructive">الاستقطاع لا يطابق أجور الشحنات المحددة؛ راجع الكشف.</p>}
+          {statementMode && statementDeduction.gt(D(totals.collected)) && <p role="alert" className="text-sm font-bold text-destructive">الاستقطاع يتجاوز نقد الكشف المحدد.</p>}
 
           <DeliveryRemittanceHistoryCard
             partyName={partyName}

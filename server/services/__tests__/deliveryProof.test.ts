@@ -31,7 +31,8 @@ import { checkoutReception } from "../receptionCheckoutService";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
-  "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
+  "deliveryCompanyStatementBatches", "deliveryCompanyStatements", "deliveryRemittances",
+  "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
@@ -136,7 +137,7 @@ describe("أسطر الصفر في كشف الشركة — إثبات تسليم
 
     const res = await recordCompanyStatement({
       branchId: 1, partyId: 1, statementNumber: "ZERO-001",
-      lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00" }],
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00", shortfallResponsibility: "CUSTOMER", expectedDue: "20000.00", expectedProven: "0.00", zeroDeliveryConfirmed: true }],
       countedCash: "0.00", clientRequestId: "stmt-zero-1",
     }, CASHIER);
 
@@ -173,7 +174,7 @@ describe("أسطر الصفر في كشف الشركة — إثبات تسليم
     const res = await recordCompanyStatement({
       branchId: 1, partyId: 1, statementNumber: "MIX-001",
       lines: [
-        { consignmentId: zero.consignmentId, collectedAmount: "0.00" },
+        { consignmentId: zero.consignmentId, collectedAmount: "0.00", shortfallResponsibility: "CUSTOMER", expectedDue: "20000.00", expectedProven: "0.00", zeroDeliveryConfirmed: true },
         { consignmentId: paid.consignmentId, collectedAmount: "15000.00" },
       ],
       countedCash: "15000.00", clientRequestId: "stmt-mix-1",

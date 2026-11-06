@@ -10,10 +10,12 @@
  */
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type Decimal from "decimal.js";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { deliveryConsignments, deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
-import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
+import { effectiveDeliveryLedgerEntrySql, verifiedConsignmentLedgerRows } from "./legacyLedger";
 
 /**
  * م١ (PR-2) — **عجزُ التسليم المُقيَّد على الطرد** (`SHORTFALL_ASSIGNED` بمرجع الطرد، Slice DFP1):
@@ -43,7 +45,23 @@ export const consignmentOpenCodDueSql = sql<string>`CASE
   ELSE 0 END`;
 
 /** نفس المعنى لطردٍ واحدٍ داخل معاملة (حلقة التوريد تقرأ الطرود واحداً واحداً تحت القفل). */
-export async function shortfallAssignedForConsignmentTx(tx: Tx, consignmentId: number): Promise<Decimal> {
+export async function shortfallAssignedForConsignmentTx(
+  tx: Pick<Tx, "select">, consignmentId: number, identity?: { partyId: number; branchId: number },
+): Promise<Decimal> {
+  if (identity) {
+    const rows = await tx.select().from(deliveryLedgerEntries).where(and(
+      eq(deliveryLedgerEntries.consignmentId, consignmentId),
+      inArray(deliveryLedgerEntries.entryType, ["SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED"]),
+    )).for("share");
+    const effective = verifiedConsignmentLedgerRows({ id: consignmentId, ...identity }, rows, "تعذر مطابقة عجز الشحنة");
+    const amount = round2(effective.reduce((sum, row) => row.entryType === "SHORTFALL_ASSIGNED"
+      ? sum.plus(money(row.amount)) : sum.minus(money(row.amount)), money(0)));
+    if (amount.lt(0)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر مطابقة عجز الشحنة", why: "تسوية العجز تتجاوز العجز المسجل",
+      doThis: "راجع قيود العجز قبل التوريد",
+    }) });
+    return amount;
+  }
   const row = (
     await tx
       .select({ v: sql<string>`COALESCE(SUM(CASE
