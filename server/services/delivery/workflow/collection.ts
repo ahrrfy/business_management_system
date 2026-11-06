@@ -23,7 +23,6 @@ import {
   operationalShipmentMembers,
 } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
-import { isShortfallReason } from "../../../../shared/shortfallReason";
 import { idempotencyHash } from "../../idempotency";
 import { appendDeliveryEvent } from "../lifecycle";
 import {
@@ -40,7 +39,7 @@ export function confirmWorkflowDelivery(
     evidence: string;
     /** Absent preserves the fast path: collect the full current customer claim. */
     collectedAmount?: string;
-    /** Required when the explicit amount is below the current customer claim. */
+    /** Historical request field; normal workflow requires the full current claim. */
     shortfallReason?: string;
     clientRequestId: string;
   },
@@ -149,12 +148,9 @@ export function confirmWorkflowDelivery(
           `المقبوض ${collected.toFixed(2)} خارج مطالبة العميل الحالية ${totalDue.toFixed(2)}`,
         );
       const hasShortfall = collected.lt(totalDue);
-      if (
-        hasShortfall &&
-        (!input.shortfallReason || !isShortfallReason(input.shortfallReason))
-      )
+      if (hasShortfall)
         throw fulfillmentError(
-          "اختر سبب العجز المعتمد قبل إثبات مبلغ تحصيل أقل من مطالبة العميل",
+          `يجب تحصيل كامل مطالبة الشحنة ${totalDue.toFixed(2)}؛ راجع الفرق قبل إثبات التحصيل`,
         );
       const allocations = allocateProportionally(
         collected,

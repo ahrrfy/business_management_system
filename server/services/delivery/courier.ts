@@ -399,7 +399,9 @@ export async function listMyDeliveries(
       address: r.deliveryAddress ?? null,
       latitude: r.latitude ?? null,
       longitude: r.longitude ?? null,
-      orderTotal: String(r.invTotal ?? toDbMoney(due)),
+      orderTotal: r.invTotal == null ? toDbMoney(due) : toDbMoney(Decimal.max(
+        money(r.invTotal).minus(money(r.invReturned ?? "0")), 0,
+      )),
       codDue: toDbMoney(due),
       // COURIER = يقبض أجرته من الزبون بنفسه فوق COD؛ COUNTER/SHOP لا يقبض من الزبون شيئاً فوقه.
       courierFee: toDbMoney(
@@ -509,6 +511,8 @@ export async function listMyDeliveries(
         standalone.push({
           ...leader,
           id: leaderId,
+          codClaimVersion: source?.codClaimVersion ?? leader.codClaimVersion,
+          courierAckClaimVersion: source?.courierAckClaimVersion ?? leader.courierAckClaimVersion,
           orderNumber: source?.consignmentNumber ?? leader.orderNumber,
           externalTrackingRef:
             source?.externalTrackingRef ?? leader.externalTrackingRef,
@@ -892,8 +896,25 @@ export async function acknowledgeConsignmentClaim(
       .limit(1);
     if (!cn) throw fulfillmentError("الإرسالية غير موجودة", "NOT_FOUND");
     await loadOperationUserTx(tx, actor.userId);
-    await assertAftercareCourierTx(tx, cn, actor.userId);
-    assertMemberCanUseConsignment(membership, cn);
+    const [shipmentMembership] = await tx.select().from(deliveryShipmentMembers)
+      .where(eq(deliveryShipmentMembers.consignmentId, Number(cn.id))).for("share").limit(1);
+    if (shipmentMembership) {
+      const members = await loadShipmentMembersTx(tx, Number(cn.id), { currentRead: true });
+      const activeMembers = operationalShipmentMembers(members);
+      if (!members.some((member) => Number(member.id) === Number(shipmentMembership.leaderConsignmentId)) ||
+          !activeMembers.length || Number(cn.partyId) !== membership.partyId ||
+          members.some((member) => Number(member.branchId) !== Number(cn.branchId)) ||
+          shipmentCurrentPartyMembers(members).some((member) => Number(member.partyId) !== membership.partyId)) {
+        throw fulfillmentError("روابط جهة الشحنة أو فرعها غير متسقة؛ راجع أعضاء الشحنة قبل إقرار المطالبة", "FORBIDDEN");
+      }
+      for (const member of activeMembers) {
+        await assertAftercareCourierTx(tx, member, actor.userId);
+        assertMemberCanUseConsignment(membership, member);
+      }
+    } else {
+      await assertAftercareCourierTx(tx, cn, actor.userId);
+      assertMemberCanUseConsignment(membership, cn);
+    }
     const hash = idempotencyHash({ ...input, actorId: actor.userId });
     const replay = await checkIdempotency(
       tx,
@@ -1104,7 +1125,7 @@ export async function confirmConsignmentDelivery(
   },
   actor: { userId: number },
   existingTx?: Tx,
-  options: { shipmentMember?: boolean } = {},
+  options: { shipmentMember?: boolean; requireFullCollection?: boolean } = {},
 ): Promise<ConfirmConsignmentResult> {
   const membership = input.statementWitness
     ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
@@ -1230,11 +1251,13 @@ export async function confirmConsignmentDelivery(
           invoiceRows.map((invoice) => [Number(invoice.id), invoice]),
         );
         const chargeRemainingByCn = new Map<number, Decimal>();
+        const creditChoiceByCn = new Map<number, boolean>();
         for (const member of members)
           chargeRemainingByCn.set(
             Number(member.id),
             (await loadAssignedChargeClaimsTx(tx, Number(member.id))).remaining,
           );
+        for (const member of members) creditChoiceByCn.set(Number(member.id), await creditCollectionChoiceTx(tx, Number(member.id)));
         const weights = members.map((member) => {
           const invoice = invoiceById.get(Number(member.invoiceId));
           if (!invoice)
@@ -1246,21 +1269,11 @@ export async function confirmConsignmentDelivery(
                 doThis: "أبلغ الاستقبال برقم الشحنة لتصحيح الارتباط",
               }),
             });
-          return Decimal.min(
-            Decimal.max(
-              money(invoice.total)
-                .minus(money(invoice.returnedTotal ?? "0"))
-                .minus(money(invoice.paidAmount))
-                .plus(chargeRemainingByCn.get(Number(member.id)) ?? 0),
-              0,
-            ),
-            Decimal.max(
-              money(member.codAmount)
-                .minus(money(member.collectedAmount))
-                .minus(money(member.counterSettledAmount)),
-              0,
-            ),
-          );
+          const invoiceDue = round2(assignedGoodsCodDue(invoice, creditChoiceByCn.get(Number(member.id)) ?? false)
+            .plus(chargeRemainingByCn.get(Number(member.id)) ?? 0));
+          const deliveryDue = round2(money(member.codAmount).minus(money(member.collectedAmount)).minus(money(member.counterSettledAmount)));
+          if (!invoiceDue.eq(deliveryDue)) throw fulfillmentError("مبلغ الفاتورة الحالي لا يطابق مطالبة التوصيل؛ راجع الشحنة قبل التحصيل", "CONFLICT");
+          return invoiceDue;
         });
         const totalDue = round2(
           weights.reduce((sum, value) => sum.plus(value), money(0)),
@@ -1269,8 +1282,10 @@ export async function confirmConsignmentDelivery(
           input.collectedAmount == null
             ? totalDue
             : round2(money(input.collectedAmount));
+        // A single total cannot identify which invoice had a shortfall.
+        if (!amount.eq(totalDue)) throw fulfillmentError("يجب تحديد المبلغ لكل فاتورة في كشف الشركة؛ لا يمكن توزيع مبلغ جزئي على فواتير الشحنة تلقائياً");
         if (
-          input.collectedAmount == null &&
+          totalDue.gt(0) &&
           leader.codClaimVersion > 1 &&
           leader.courierAckClaimVersion !== leader.codClaimVersion
         )
@@ -1494,8 +1509,10 @@ export async function confirmConsignmentDelivery(
         "القبض الفعلي يتجاوز المطالبة الحالية؛ أرفق بيان إثبات القبض القديم كي يسجل الفائض أمانة قابلة للرد",
       );
     if (
-      !input.statementWitness &&
-      input.collectedAmount == null &&
+      !input.statementWitness && !options.shipmentMember &&
+      (options.requireFullCollection || (input.collectionEvidence?.trim().length ?? 0) < 5) &&
+      round2(money(cn.codAmount).minus(money(cn.collectedAmount ?? "0"))
+        .minus(money(cn.counterSettledAmount ?? "0"))).gt(0) &&
       cn.codClaimVersion > 1 &&
       cn.courierAckClaimVersion !== cn.codClaimVersion
     )
@@ -1506,14 +1523,15 @@ export async function confirmConsignmentDelivery(
     let recordedShortfallReason: string | null = null;
     let recordedShortageAmount: string | null = null;
     const codRemaining = round2(
-      money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
+      money(cn.codAmount).minus(money(cn.collectedAmount ?? "0"))
+        .minus(money(cn.counterSettledAmount ?? "0")),
     );
     if (codRemaining.lt(0))
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
-          why: `المُحصَّل المسجَّل عليها ${round2(money(cn.collectedAmount ?? "0")).toFixed(2)} يتجاوز مبلغ التحصيل الأصليّ ${round2(money(cn.codAmount)).toFixed(2)} بفارق ${codRemaining.abs().toFixed(2)}`,
+          why: `التوريد والمبالغ المستبعدة من مطالبتها تتجاوز مبلغ التحصيل الأصليّ ${round2(money(cn.codAmount)).toFixed(2)} بفارق ${codRemaining.abs().toFixed(2)}`,
           doThis:
             "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصحّح التحصيل المسجَّل قبل الختم",
         }),
@@ -1537,6 +1555,19 @@ export async function confirmConsignmentDelivery(
         : classified
           ? classifiedDue
           : codRemaining;
+    if (!input.statementWitness && classified && !codRemaining.eq(classifiedDue))
+      throw fulfillmentError("مبلغ الفاتورة الحالي لا يطابق مطالبة التوصيل؛ راجع الإرسالية قبل التحصيل", "CONFLICT");
+    if (options.requireFullCollection && classified && !cod.eq(classifiedDue))
+      throw fulfillmentError("يجب تحصيل كامل مطالبة الفاتورة والأجور قبل تأكيد التسليم");
+    if (round2(money(cn.codAmount)).isZero()) {
+      const invoice = classified || cn.invoiceId == null ? undefined : (await tx.select().from(invoices)
+        .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
+      if (!classified && !invoice) throw fulfillmentError("فاتورة الإرسالية غير موجودة؛ راجع ارتباطها قبل التسليم");
+      const invoiceDue = classified ? classifiedDue : round2(
+        assignedGoodsCodDue(invoice, await creditCollectionChoiceTx(tx, cn.id)).plus(classifiedClaims.remaining),
+      );
+      if (invoiceDue.gt(0)) throw fulfillmentError("مبلغ الإرسالية الصفري لا يطابق متبقي الفاتورة؛ راجع المطالبة قبل التسليم");
+    }
     if (cod.gt(codRemaining) && !classified) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1670,6 +1701,12 @@ export async function confirmConsignmentDelivery(
           .minus(money(inv.returnedTotal ?? "0"))
           .minus(money(inv.paidAmount)),
       );
+      const invoiceDue = round2(assignedGoodsCodDue(inv, await creditCollectionChoiceTx(tx, cn.id)).plus(classifiedClaims.remaining));
+      if (!input.statementWitness && !codRemaining.eq(invoiceDue))
+        throw fulfillmentError("مبلغ الفاتورة الحالي لا يطابق مطالبة التوصيل؛ راجع الإرسالية قبل التحصيل", "CONFLICT");
+      if (options.requireFullCollection) {
+        if (!cod.eq(invoiceDue)) throw fulfillmentError("يجب تحصيل كامل مطالبة الفاتورة قبل تأكيد التسليم");
+      }
       // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
       // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً** — سقفٌ لا تطابق. لا يجوز بحال تجاوزُ متبقّي الفاتورة.
       const collectionMismatch =
@@ -1693,6 +1730,17 @@ export async function confirmConsignmentDelivery(
                   "لا تقبض من الزبون غير ما على الفاتورة، واطلب من كاشير الاستقبال تصحيح دفعات الفاتورة أو مبلغ الطرد ثمّ أعِد الختم",
               }),
         });
+      }
+      // A counter payment or a return may have exhausted an originally
+      // positive COD before delivery. Close only when the live invoice and
+      // claim are both zero and no delivery custody was ever recognized.
+      if (cod.isZero() && codRemaining.isZero() && invoiceRemaining.isZero() && cn.custodyRecognizedAt == null) {
+        assertConsignmentStatusTransition(cn.status, "DELIVERED");
+        await tx.update(deliveryConsignments).set({ status: "DELIVERED", moneyStatus: "SETTLED", settledAt: deliveredAt })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
+        await appendDeliveryEvent(tx, { eventKey: `CN:${cn.id}:MONEY:ZERO_REMAINING`, consignmentId: Number(cn.id),
+          eventType: "MONEY_SETTLED", fromMoneyStatus: cn.moneyStatus, toMoneyStatus: "SETTLED",
+          actorUserId: actor.userId, payload: { source: "ZERO_LIVE_INVOICE_BALANCE", cashExpected: "0.00" } });
       }
       /**
        * Slice DFP1 (٣٠/٨/٢٦) — عجزُ التحصيل ذمّةٌ فوريّة على المندوب (قرار المالك ٣٠/٨):

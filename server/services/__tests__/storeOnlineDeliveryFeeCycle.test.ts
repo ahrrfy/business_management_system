@@ -514,9 +514,9 @@ it("retains the configured commission into treasury and clears the whole fee pay
   ).toBe("500.00");
 });
 
-it("only the excess of a declared deduction is a new expense", async () => {
+it("rejects a deduction greater than the selected shipment's proven fee", async () => {
   const d = await onlineDelivery();
-  await recordCompanyStatement(
+  await expect(recordCompanyStatement(
     {
       partyId: 1,
       branchId: 1,
@@ -527,23 +527,10 @@ it("only the excess of a declared deduction is a new expense", async () => {
       clientRequestId: "extra-deduction",
     },
     CASHIER,
-  );
-  expect((await db().select().from(s.deliveryRemittances))[0]).toMatchObject({
-    feesTotal: "1500.00",
-    deductionsTotal: "500.00",
-    netRemitted: "18000.00",
-  });
-  expect(
-    sum(
-      (await db().select().from(s.accountingEntries)).filter((r) =>
-        r.dedupeKey?.startsWith("DLV-STMT-DEDUCTION:"),
-      ),
-    ),
-  ).toBe("500.00");
-  expect(
-    (await db().select().from(s.deliveryRemittanceLines))[0].cashReceived,
-  ).toBe("18000.00");
-  expect((await db().select().from(s.invoices))[0].paidAmount).toBe("20000.00");
+  )).rejects.toThrow(/استقطاع/);
+  expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+  expect(await db().select().from(s.deliveryRemittanceLines)).toHaveLength(0);
+  expect((await db().select().from(s.invoices))[0].paidAmount).toBe("0.00");
 });
 
 it("retained fees and classified remittance shortfall remain different liabilities", async () => {

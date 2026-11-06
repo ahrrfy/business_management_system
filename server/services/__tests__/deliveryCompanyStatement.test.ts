@@ -17,14 +17,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchToDelivery } from "../delivery/dispatch";
-import { recordCompanyStatement } from "../delivery/companyStatement";
+import { recordCompanyStatement, recordDeliveryProof } from "../delivery/companyStatement";
+import { recordDeliveryRemittance } from "../delivery/remittance";
 import { money, round2 } from "../money";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
-  "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
+  "deliveryCompanyStatementBatches", "deliveryCompanyStatements", "deliveryRemittances",
+  "deliveryShipmentMembers", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
@@ -103,6 +105,10 @@ async function companyStatementStateSnapshot(consignmentId: number, invoiceId: n
     customerBalance: await balanceOf(1),
     partyBalance: await partyBalance(),
     remittances: await db().select().from(s.deliveryRemittances).orderBy(s.deliveryRemittances.id),
+    remittanceLines: await db().select().from(s.deliveryRemittanceLines).orderBy(s.deliveryRemittanceLines.id),
+    statementHeaders: await db().select().from(s.deliveryCompanyStatements).orderBy(s.deliveryCompanyStatements.id),
+    statementBatches: await db().select().from(s.deliveryCompanyStatementBatches).orderBy(s.deliveryCompanyStatementBatches.id),
+    receipts: await db().select().from(s.receipts).orderBy(s.receipts.id),
     ledger: await db().select().from(s.deliveryLedgerEntries).orderBy(s.deliveryLedgerEntries.id),
     events: await db().select().from(s.deliveryEvents).orderBy(s.deliveryEvents.id),
     idempotency: await db().select().from(s.idempotencyKeys).orderBy(s.idempotencyKeys.id),
@@ -116,6 +122,146 @@ beforeEach(async () => {
 });
 
 describe("كشف شركة التوصيل — الدليل البديل عن بوّابة المندوب", () => {
+  it.each(["CUSTOMER", "DELIVERY_PARTY"] as const)(
+    "keeps proven cash in custody and assigns only the unproven remainder to %s",
+    async (responsibility) => {
+      const a = await dispatchedOrder(`mixed-${responsibility}`, "100.00");
+      await recordDeliveryProof({ branchId: 1, partyId: 1, statementNumber: `PROOF-${responsibility}`,
+        lines: [{ consignmentId: a.consignmentId, collectedAmount: "70.00" }],
+        clientRequestId: `proof-mixed-${responsibility}` }, CASHIER);
+      const input = { branchId: 1, partyId: 1, statementNumber: `REMIT-${responsibility}`,
+        lines: [{ consignmentId: a.consignmentId, collectedAmount: "40.00", expectedDue: "100.00",
+          expectedProven: "70.00", shortfallResponsibility: responsibility,
+          ...(responsibility === "DELIVERY_PARTY" ? { shortfallReason: "OTHER" } : {}) }],
+        countedCash: "40.00", clientRequestId: `mixed-remit-${responsibility}` };
+      const result = await recordCompanyStatement(input, CASHIER);
+      expect(result.collectedTotal).toBe("40.00");
+      expect((await invoiceOf(a.invoiceId)).paidAmount).toBe(responsibility === "CUSTOMER" ? "70.00" : "100.00");
+      expect(await balanceOf(1)).toBe(responsibility === "CUSTOMER" ? 30 : 0);
+      expect(await partyBalance()).toBe(responsibility === "CUSTOMER" ? 30 : 60);
+      const ledger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId));
+      expect(ledger.filter((row) => row.entryType === "COD_COLLECTED").map((row) => row.amount)).toEqual(["70.00"]);
+      expect(ledger.filter((row) => row.entryType === "COD_REMITTED").map((row) => row.amount)).toEqual(["40.00"]);
+      expect(ledger.filter((row) => row.entryType === "SHORTFALL_ASSIGNED").map((row) => row.amount))
+        .toEqual(responsibility === "CUSTOMER" ? [] : ["30.00"]);
+      const event = (await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.consignmentId, a.consignmentId)))
+        .find((row) => row.eventType === "STATEMENT_DIFFERENCE");
+      expect(event?.payload).toMatchObject({ dueBefore: "100.00", provenBefore: "70.00", remitted: "40.00",
+        custodyRemaining: "30.00", customerRemaining: responsibility === "CUSTOMER" ? "30.00" : "0.00",
+        partyShortfall: responsibility === "DELIVERY_PARTY" ? "30.00" : "0.00", shortfallResponsibility: responsibility });
+      const after = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+      expect(await recordCompanyStatement(input, CASHIER)).toMatchObject({ remittanceId: result.remittanceId, idempotentReplay: true });
+      await expect(recordCompanyStatement({ ...input, lines: [{ ...input.lines[0],
+        shortfallResponsibility: responsibility === "CUSTOMER" ? "DELIVERY_PARTY" : "CUSTOMER",
+        shortfallReason: responsibility === "CUSTOMER" ? "OTHER" : undefined }] }, CASHIER)).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(after);
+    },
+  );
+
+  it("rejects stale or incomplete preview snapshots without leaving a statement or financial effects", async () => {
+    const a = await dispatchedOrder("stale-statement-snapshot", "100.00");
+    await recordDeliveryProof({ branchId: 1, partyId: 1, statementNumber: "STALE-PROOF",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "70.00" }], clientRequestId: "stale-proof-01" }, CASHIER);
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    const base = { branchId: 1, partyId: 1, statementNumber: "STALE-STMT", countedCash: "40.00",
+      clientRequestId: "stale-statement-01" };
+    for (const snapshot of [{ expectedDue: "99.00", expectedProven: "70.00" },
+      { expectedDue: "100.00", expectedProven: "69.00" }, { expectedDue: "100.00" }]) {
+      await expect(recordCompanyStatement({ ...base, lines: [{ consignmentId: a.consignmentId, collectedAmount: "40.00",
+        shortfallResponsibility: "CUSTOMER", ...snapshot }] }, CASHIER)).rejects.toThrow();
+      expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+    }
+  });
+
+  it("rejects a partial or zero line without an explicit responsibility and both preview values", async () => {
+    const a = await dispatchedOrder("missing-statement-evidence", "100.00");
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    for (const line of [
+      { collectedAmount: "40.00", expectedDue: "100.00", expectedProven: "0.00" },
+      { collectedAmount: "40.00", shortfallResponsibility: "CUSTOMER" as const },
+      { collectedAmount: "0.00", expectedDue: "100.00", expectedProven: "0.00", zeroDeliveryConfirmed: true },
+      { collectedAmount: "0.00", shortfallResponsibility: "CUSTOMER" as const, zeroDeliveryConfirmed: true },
+    ]) {
+      await expect(recordCompanyStatement({ branchId: 1, partyId: 1, statementNumber: "MISSING-EVIDENCE",
+        lines: [{ consignmentId: a.consignmentId, ...line }], countedCash: line.collectedAmount,
+        clientRequestId: "missing-statement-evidence" }, CASHIER)).rejects.toThrow(/مسؤولية|لقطة/);
+      expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+    }
+  });
+
+  it("does not create new custody for a historical parcel when an unmatched opening may cover it", async () => {
+    const a = await dispatchedOrder("unmatched-opening-statement", "100.00");
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: "BACKFILL:PARTY:1:CASH_CUSTODY", partyId: 1, branchId: 1, entryType: "COD_COLLECTED",
+      amount: "100.00", createdAt: new Date(Date.now() + 60_000),
+    });
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    await expect(recordCompanyStatement({ branchId: 1, partyId: 1, statementNumber: "OPENING-AMBIGUOUS",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "100.00" }], countedCash: "100.00",
+      clientRequestId: "unmatched-opening-statement" }, CASHIER)).rejects.toThrow(/افتتاحية/);
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+  });
+
+  it("blocks supplementary collection against an unmatched opening even after a prior delivery collection", async () => {
+    const a = await dispatchedOrder("unmatched-opening-delivered", "100.00");
+    await recordDeliveryProof({ branchId: 1, partyId: 1, statementNumber: "OPENING-PROOF",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "70.00" }], clientRequestId: "opening-proof" }, CASHIER);
+    await db().insert(s.deliveryLedgerEntries).values({ eventKey: "BACKFILL:PARTY:1:CASH_CUSTODY",
+      partyId: 1, branchId: 1, entryType: "COD_COLLECTED", amount: "100.00", createdAt: new Date(Date.now() + 60_000) });
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    await expect(recordCompanyStatement({ branchId: 1, partyId: 1, statementNumber: "OPENING-SUPPLEMENT",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "100.00" }], countedCash: "100.00",
+      clientRequestId: "opening-supplement" }, CASHIER)).rejects.toThrow(/افتتاحية/);
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+  });
+
+  it("does not reuse a proof request id for money, but permits completion under a new id", async () => {
+    const a = await dispatchedOrder("proof-then-money", "100.00");
+    const proof = { branchId: 1, partyId: 1, statementNumber: "PROOF-THEN-MONEY", countedCash: "0.00",
+      statementDate: "2026-11-05", attachmentUrl: "/statement-proof.pdf", notes: "إثبات التسليم",
+      shiftType: "RECEPTION" as const, targetShiftId: a.shiftId,
+      clientRequestId: "same-proof-request", lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00",
+        shortfallResponsibility: "CUSTOMER" as const, expectedDue: "100.00", expectedProven: "0.00", zeroDeliveryConfirmed: true }] };
+    await recordCompanyStatement(proof, CASHIER);
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    expect(await recordCompanyStatement(proof, CASHIER)).toMatchObject({ idempotentReplay: true });
+    expect(before.events.find((event) => event.eventType === "STATEMENT_DIFFERENCE")?.payload)
+      .toMatchObject({ source: "COMPANY_STATEMENT", cashSourceUsed: false, statementDate: proof.statementDate,
+        attachmentUrl: proof.attachmentUrl, notes: proof.notes, requestedTargetShiftId: a.shiftId });
+    for (const changed of [{ notes: "تعديل الملاحظة" }, { statementDate: "2026-11-04" },
+      { attachmentUrl: "/other.pdf" }, { shiftType: "RETAIL" as const }, { targetShiftId: a.shiftId + 1 },
+      { appendToStatement: true }]) {
+      await expect(recordCompanyStatement({ ...proof, ...changed }, CASHIER)).rejects.toThrow();
+      expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+    }
+    const completion = { ...proof, lines: [{ consignmentId: a.consignmentId, collectedAmount: "100.00" }], countedCash: "100.00" };
+    await expect(recordCompanyStatement(completion, CASHIER)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+    await expect(recordCompanyStatement({ ...completion, clientRequestId: "new-money-request" }, CASHIER))
+      .resolves.toMatchObject({ collectedTotal: "100.00" });
+  });
+
+  it("does not reuse a completed money request id for proof", async () => {
+    const a = await dispatchedOrder("money-then-proof", "100.00");
+    const input = { branchId: 1, partyId: 1, statementNumber: "MONEY-THEN-PROOF", countedCash: "100.00",
+      clientRequestId: "same-money-request", lines: [{ consignmentId: a.consignmentId, collectedAmount: "100.00" }] };
+    await recordCompanyStatement(input, CASHIER);
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    await expect(recordCompanyStatement({ ...input, countedCash: "0.00",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00" }] }, CASHIER)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+  });
+  it("يرفض إغلاق مطالبة صفرية لا تطابق فاتورة ما زالت مستحقة حتى في كشف الإثبات", async () => {
+    const a = await dispatchedOrder("stmt-zero-claim-mismatch", "20000.00");
+    await db().update(s.deliveryConsignments).set({ codAmount: "0.00" })
+      .where(eq(s.deliveryConsignments.id, a.consignmentId));
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    await expect(recordCompanyStatement({ branchId: 1, partyId: 1, statementNumber: "ZERO-MISMATCH",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00", zeroDeliveryConfirmed: true }], countedCash: "0.00",
+      clientRequestId: "stmt-zero-claim-mismatch" }, CASHIER)).rejects.toThrow(/الفاتورة|مطالبة/);
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
+  });
+
   it("⭐ شركةٌ بلا حساب بوّابة: الكشف يثبت التسليم ويحصّل ويورّد في عمليةٍ واحدة", async () => {
     const a = await dispatchedOrder("st-1", "20000.00");
     expect(await balanceOf(1)).toBe(20000); // الذمّة على العميل حتى إثبات التحصيل
@@ -255,7 +401,7 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
     await expect(recordCompanyStatement({
       branchId: 1, partyId: 1, statementNumber: "DUP-001",
       lines: line, countedCash: "15000.00", clientRequestId: "stmt-req-2b",
-    }, CASHIER)).rejects.toThrowError(/مُسجَّلٌ سلفاً|مسجل سلفا/);
+    }, CASHIER)).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(await db().select().from(s.deliveryRemittances)).toHaveLength(1);
   });
@@ -263,10 +409,16 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
   it("تحصيلٌ جزئيّ: كشفٌ ثانٍ بـ8,000 يُكمل 12,000 إلى 20,000 بأثرٍ ماليّ مترابط", async () => {
     const a = await dispatchedOrder("st-3", "20000.00");
 
-    await recordCompanyStatement({
+    // Historical partial remittance fixture retained to verify supplementary collection compatibility.
+    await recordDeliveryProof({
       branchId: 1, partyId: 1, statementNumber: "PART-001",
       lines: [{ consignmentId: a.consignmentId, collectedAmount: "12000.00" }],
+      clientRequestId: "stmt-proof-3",
+    }, CASHIER);
+    await recordDeliveryRemittance({ branchId: 1, partyId: 1,
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "12000.00" }],
       countedCash: "12000.00", clientRequestId: "stmt-req-3",
+      companyStatement: { statementNumber: "PART-001" },
     }, CASHIER);
 
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, a.consignmentId)))[0];
@@ -322,13 +474,17 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
   it("ذرّية التحصيل المتمِّم: فشل نقد الكشف الثاني يعيد كلّ أثرٍ إلى لقطة 12,000", async () => {
     const a = await dispatchedOrder("st-supp-atomic", "20000.00");
 
-    await recordCompanyStatement({
+    await recordDeliveryProof({
       branchId: 1,
       partyId: 1,
       statementNumber: "SUPP-ATOMIC-001",
       lines: [{ consignmentId: a.consignmentId, collectedAmount: "12000.00" }],
-      countedCash: "12000.00",
-      clientRequestId: "stmt-supp-atomic-1",
+      clientRequestId: "stmt-supp-proof-1",
+    }, CASHIER);
+    await recordDeliveryRemittance({ branchId: 1, partyId: 1,
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "12000.00" }],
+      countedCash: "12000.00", clientRequestId: "stmt-supp-atomic-1",
+      companyStatement: { statementNumber: "SUPP-ATOMIC-001" },
     }, CASHIER);
 
     const snapshotState = async () => ({
@@ -362,39 +518,16 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
     expect(await snapshotState()).toEqual(beforeFailure);
   });
 
-  it("⭐ الاستقطاع نقدٌ لم يدخل الدرج: يُطرح من الصافي ويُقيَّد مصروفاً — بلا مسّ ذمّة العميل", async () => {
-    // ٢٠/٨ (تصويب مراجعة Codex): كان هذا الاختبار يُسلّم **كامل** الحصيلة نقداً ويُعلن
-    // استقطاعاً ١٥٠٠ في الوقت نفسه — تناقضٌ يُسجّل نقداً لم يدخل الدرج ويترك الاستقطاع
-    // خارج الدفتر. والهجرةُ نفسها تعرّفه «أجور التوصيل التي تحسمها الشركة **من الحصيلة**»
-    // ⇒ المُسلَّم نقداً هو **الصافي**. والثابتُ الذي يحرسه اسمُ الاختبار باقٍ: ذمّةُ العميل
-    // لا تُمَسّ — الاستقطاع مصروفُ شركةٍ لا تخفيضُ مطالبة.
+  it("يرفض استقطاعاً لا تقابله أجرة مثبتة على الشحنات دون أثر مالي", async () => {
     const a = await dispatchedOrder("st-4", "10000.00");
-
-    await recordCompanyStatement({
+    const before = await companyStatementStateSnapshot(a.consignmentId, a.invoiceId);
+    await expect(recordCompanyStatement({
       branchId: 1, partyId: 1, statementNumber: "DEDUCT-001",
       deductionsTotal: "1500.00", notes: "أجور توصيل حسمتها الشركة",
       lines: [{ consignmentId: a.consignmentId, collectedAmount: "10000.00" }],
       countedCash: "8500.00", clientRequestId: "stmt-req-4",
-    }, CASHIER);
-
-    const rm = (await db().select().from(s.deliveryRemittances))[0];
-    expect(rm.deductionsTotal).toBe("1500.00");
-    expect(rm.notes).toBe("أجور توصيل حسمتها الشركة");
-    expect(round2(money(rm.netRemitted)).toFixed(2)).toBe("8500.00");
-
-    // الزبون دفع كامل COD ⇒ ذمّته صفر، والفاتورة مدفوعة — الاستقطاع لا يمسّها.
-    expect(await balanceOf(1)).toBe(0);
-    expect((await invoiceOf(a.invoiceId)).status).toBe("PAID");
-
-    // ولا يضيع بصمت (§٥): إيصالُ OUT بقيمته + قيدُ مصروفٍ مصنَّف.
-    const dedOut = (await db().select().from(s.receipts))
-      .filter((r) => r.direction === "OUT" && (r.description ?? "").includes("استقطاع"));
-    expect(dedOut).toHaveLength(1);
-    expect(round2(money(dedOut[0].amount)).toFixed(2)).toBe("1500.00");
-    const expenseEntry = (await db().select().from(s.accountingEntries))
-      .filter((e) => (e.dedupeKey ?? "").startsWith("DLV-STMT-DEDUCTION:"));
-    expect(expenseEntry).toHaveLength(1);
-    expect(round2(money(expenseEntry[0].amount)).toFixed(2)).toBe("1500.00");
+    }, CASHIER)).rejects.toThrow(/استقطاع/);
+    expect(await companyStatementStateSnapshot(a.consignmentId, a.invoiceId)).toEqual(before);
   });
 
   it("استقطاعٌ يتجاوز المُحصَّل يُرفض قبل أيّ كتابة", async () => {

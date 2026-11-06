@@ -39,6 +39,9 @@ import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
 import { declareConsignmentReturn } from "./declaredReturn";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
+import { assignedGoodsCodDue, loadAssignedChargeClaimsTx } from "../fulfillment/chargeDelivery";
+import { creditCollectionChoiceTx } from "./creditCollectionTerms";
+import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 
 type Member = typeof deliveryConsignments.$inferSelect;
 export interface ShipmentOperationInput {
@@ -294,31 +297,29 @@ export async function confirmShipmentDelivery(
       const invoiceById = new Map(
         invoiceRows.map((invoice) => [Number(invoice.id), invoice]),
       );
-      const weights = rows.map((row) => {
-        const invoice = invoiceById.get(Number(row.invoiceId));
-        if (!invoice) reject("إحدى فواتير الشحنة غير موجودة");
-        const liveRemaining = Decimal.max(
-          round2(
-            money(invoice.total)
-              .minus(money(invoice.returnedTotal ?? "0"))
-              .minus(money(invoice.paidAmount)),
-          ),
-          0,
-        );
+      const weights = [];
+      for (const row of rows) {
+        const invoice = row.invoiceId == null ? undefined : invoiceById.get(Number(row.invoiceId));
+        if (!invoice && row.fulfillmentRequestId == null) reject("إحدى فواتير الشحنة غير موجودة");
+        const charges = await loadAssignedChargeClaimsTx(tx, Number(row.id));
+        const liveRemaining = round2(assignedGoodsCodDue(invoice, await creditCollectionChoiceTx(tx, Number(row.id))).plus(charges.remaining));
         const codRemaining = round2(
-          money(row.codAmount).minus(money(row.collectedAmount ?? "0")),
+          money(row.codAmount).minus(money(row.collectedAmount ?? "0"))
+            .minus(money(row.counterSettledAmount ?? "0"))
+            .minus(await shortfallAssignedForConsignmentTx(tx, Number(row.id), { partyId, branchId: Number(row.branchId) })),
         );
         if (codRemaining.lt(0))
           reject("تحصيل إحدى فواتير الشحنة يتجاوز مبلغها الأصلي");
-        return Decimal.min(liveRemaining, codRemaining);
-      });
+        if (!liveRemaining.eq(codRemaining)) reject("مبلغ الفاتورة الحالي لا يطابق مطالبة التوصيل", "راجع الفاتورة ومطالبة الإرسالية قبل تأكيد الشحنة");
+        weights.push(liveRemaining);
+      }
       const due = round2(
         weights.reduce((sum, value) => sum.plus(value), money(0)),
       );
-      if (collected.gt(due))
+      if (!collected.eq(due))
         reject(
-          `المقبوض ${collected.toFixed(2)} يتجاوز المتبقي ${due.toFixed(2)} بفارق ${collected.minus(due).toFixed(2)}`,
-          "أدخل المقبوض ضمن المبلغ المتبقي الظاهر في تفاصيل الشحنة",
+          `المقبوض ${collected.toFixed(2)} لا يطابق كامل مطالبة الشحنة ${due.toFixed(2)}`,
+          "طابق المبلغ مع جميع فواتير الشحنة قبل تأكيد التسليم",
         );
       const allocations = allocateProportionally(collected, weights);
       for (let index = 0; index < rows.length; index += 1) {

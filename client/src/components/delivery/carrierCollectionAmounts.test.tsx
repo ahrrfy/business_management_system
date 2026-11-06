@@ -40,6 +40,12 @@ describe("carrier collection amounts", () => {
     expect(onConfirm).toHaveBeenCalledWith("4000.00", note, undefined);
   });
 
+  it("shows the entered statement amount rather than replacing it with the current claim", async () => {
+    const row = { ...carrier, parcelStatus: "DELIVERED", remainingDue: "2500.00" } as unknown as OpenRow;
+    await act(async () => root.render(<DeliveryConsignmentsTable list={[row]} rows={{ 1: { outcome: "COLLECTED", collected: "1000" } }} statementMode={true} canReturn={false} onOutcomeToggle={vi.fn()} onCollectedChange={vi.fn()} onReturn={vi.fn()} onOpenTimeline={vi.fn()} />));
+    expect(host.querySelector("output")?.textContent).toBe("1,000");
+  });
+
   it("prefills manual proof with the current server amount", async () => {
     await act(async () => root.render(<ManualProofDialog row={{ ...carrier, codDue: "2500.00" } as unknown as InTransitRow} pending={false} onCancel={vi.fn()} onConfirm={vi.fn()} />));
     expect(host.querySelector<HTMLInputElement>("#proof-amount")?.value).toBe("2,500");
@@ -52,9 +58,9 @@ describe("carrier collection amounts", () => {
   ])("uses the same remaining amount for table display and selection: $expected", async ({ extra, expected }) => {
     const onOutcomeToggle = vi.fn();
     const row = { ...carrier, parcelStatus: "DELIVERED", ...extra } as unknown as OpenRow;
-    await act(async () => root.render(<DeliveryConsignmentsTable list={[row]} rows={{}} statementMode={false} canReturn={false} onOutcomeToggle={onOutcomeToggle} onCollectedChange={vi.fn()} onReturn={vi.fn()} onOpenTimeline={vi.fn()} />));
-    const amount = host.querySelector<HTMLInputElement>("input")?.value;
-    expect(amount).toBe(String(expected));
+    await act(async () => root.render(<DeliveryConsignmentsTable list={[row]} rows={{ 1: { outcome: "COLLECTED", collected: "1" } }} statementMode={false} canReturn={false} onOutcomeToggle={onOutcomeToggle} onCollectedChange={vi.fn()} onReturn={vi.fn()} onOpenTimeline={vi.fn()} />));
+    expect(host.querySelector("output")?.textContent?.replace(/,/g, "")).toBe(String(expected));
+    expect(host.querySelector("input")).toBeNull();
     await act(async () => button("حصل").click());
     expect(onOutcomeToggle).toHaveBeenCalledWith(1, "COLLECTED", expected);
   });

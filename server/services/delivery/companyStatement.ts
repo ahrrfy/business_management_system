@@ -14,30 +14,30 @@
  * الكشفُ كلُّه وحدةُ عملٍ واحدة: إثبات التسليم، تحصيل الفاتورة، نقل ذمّة العميل إلى عهدة
  * شركة التوصيل، ثمّ التوريد إلى الدرج والقيود المحاسبيّة وسجلّ التدقيق. كلُّ الخدمات الماليّة
  * تُستدعى بجسمها الداخليّ على **نفس معاملة قاعدة البيانات**؛ أيّ رفضٍ في آخر خطوة يعيد كلّ
- * ما سبقها، فلا توجد فاتورةٌ مختومة أو ذمّةٌ متغيّرة بلا سند توريدٍ مقابل.
+ * ما سبقها؛ أسطر الإثبات التي لا تتضمن نقداً لا تنشئ سند توريد.
  *
  * ═══ أسطر الصفر = إثبات تسليمٍ بلا نقد (٢١/٨) ═══
  * الكشف الواقعيّ يحمل نوعَي سطر: **سطرُ مالٍ** (`collectedAmount > 0`) يمرّ بالمرحلتين، و**سطرُ
  * إثباتٍ** (`= 0`) يمرّ بالمرحلة ① وحدها — طردٌ سلّمته الشركةُ بلا تحصيل (COD=0 مدفوعٌ سلفاً،
  * أو زبونٌ لم يدفع). تمريرُه للمرحلة ② كان يُفجّرها: الطرد الصفريّ يُغلَق `status=DELIVERED`
  * عند الختم فيرفضه حارسُ «غير قابلة للتسوية» ويُسقط الكشفَ المختلط كلَّه.
- * ⚠️ مقصودٌ بقرار المالك: سطرُ إثباتٍ لطردٍ COD>0 (الشركةُ سلّمته والزبون لم يدفع شيئاً)
- * يختم `parcelStatus=DELIVERED` **ويُبقي المتبقّي ذمّةَ عميلٍ حيّة** تُقبض كاونترياً لاحقاً
- * (تُدوَّن عندها في `counterSettledAmount`) — «المتبقّي يبقى على العميل» لا يُمحى ولا يُنسى.
+ * سطر إثبات لطرد ذي مطالبة موجبة يحتاج قرار المسؤولية ولقطة المبالغ الصريحة؛ يبقى النقد
+ * المثبت عهدةً على الجهة، وتُحدد مسؤولية الجزء غير المثبت للعميل أو لجهة التوصيل.
  *
- * ═══ عدم التكرار ═══
- * طبقتان: `clientRequestId` (تقنيّة، تمتصّ النقر المزدوج) + **رقم الكشف الفريد لكل جهة**
- * (قيدٌ في القاعدة — هجرة 0230) الذي يمنع إدخال الكشف نفسه مرّتين ولو من جهازٍ وجلسةٍ أخرى.
- * ⚠️ القيدُ على **سندات التوريد**: كشفُ إثباتٍ محض (`proofOnly`) لا يُنشئ سنداً فلا يحجز
- * رقمَه — مقصود، فقد يُعاد إدخال الكشف نفسه لاحقاً كاملاً لتوريد نقده.
+ * ═══ عدم التكرار والدفعات ═══
+ * مفتاح الطلب يمتصّ الإعادة، والكشف الأصلي فريد للجهة. إضافته كدفعة لاحقة تتطلب اختياراً
+ * صريحاً، وترتبط بسند مستقل ولا تعيد إرسالية من سند سابق. يحتفظ السند الأول بالرقم القديم
+ * وفهرسه الفريد؛ الدفعات التالية تصل إلى الرقم عبر رأس الكشف. الإثبات المحض لا ينشئ سنداً.
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, deliveryRemittances } from "../../../drizzle/schema";
+import { deliveryCompanyStatementBatches, deliveryCompanyStatements, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
-import { money, round2 } from "../money";
+import { isShortfallReason } from "@shared/shortfallReason";
+import Decimal from "decimal.js";
+import { money, round2, toDbMoney } from "../money";
 import { confirmConsignmentDelivery, recordSupplementaryStatementCollection, type ConfirmConsignmentResult } from "./courier";
 import {
   findDeliveryRemittanceReplayInTx,
@@ -50,24 +50,37 @@ import type { DeliveryTxActor } from "./types";
 import { withTx } from "../tx";
 import { loadShipmentMembersTx, operationalShipmentMembers } from "./shipments";
 import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
+import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
+import { assignedGoodsCodDue, collectAssignedConsignmentClaimsTx, loadAssignedChargeClaimsTx } from "../fulfillment/chargeDelivery";
+import { creditCollectionChoiceTx } from "./creditCollectionTerms";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
+import { extractInsertId } from "../../lib/insertId";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { deliveryCustomerCollectionIntent, deliveryDispatchMemoIntent } from "./posting";
+
+export type StatementShortfallResponsibility = "CUSTOMER" | "DELIVERY_PARTY" | "COURIER_CUSTODY";
 
 export interface CompanyStatementLineInput {
   consignmentId: number;
-  /** ما حصّلته الشركة على هذا الطرد في هذا الكشف وحده (delta، وقد يقلّ عن المتبقّي). */
+  /** المبلغ المورد على هذه الإرسالية في هذه الدفعة، وقد يكون صفراً. */
   collectedAmount: string;
-  /**
-   * م١ (PR-4) — **اختياريّ على مستوى السطر**: سببُ العجز من `shared/shortfallReason.ts` حين تقرّ
-   * الشركةُ بأنّ الفرق عليها (قبضته ولم تُعلنه، ضاع بيد مندوبها…). بوجوده يُقيَّد
-   * `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة كمسارَي الكاشير؛ وبغيابه يبقى قرارُ المالك (٢١/٨):
-   * المتبقّي ذمّةُ عميلٍ حيّة تُقبض كاونترياً. لا يُطبَّق على الأسطر المختومة سلفاً (التحصيل المتمِّم).
-   */
+  /** سبب مصنف مطلوب حين يُسند الجزء غير المثبت إلى الجهة، بما فيه الطرد المختوم سابقاً. */
   shortfallReason?: string | null;
+  shortfallResponsibility?: StatementShortfallResponsibility | null;
+  /** Preview pair; both must match current values under the transaction locks. */
+  expectedDue?: string | null;
+  expectedProven?: string | null;
+  zeroDeliveryConfirmed?: boolean;
 }
 
 export interface CompanyStatementInput {
   branchId: number;
   partyId: number;
   statementNumber: string;
+  /** Deliberate continuation of a previously saved original document. */
+  appendToStatement?: boolean;
   statementDate?: string | null;
   attachmentUrl?: string | null;
   /** استقطاعات الشركة (أجور توصيل حسمتها من الحصيلة) — إفصاحٌ على المستند. */
@@ -88,7 +101,7 @@ export interface CompanyStatementInput {
 }
 
 export interface CompanyStatementResult {
-  /** `null` = كشفُ إثباتٍ محض (كل أسطره صفرية) — لا سند توريد أُنشئ ولا نقد دخل. */
+  /** `null` = كل أسطر الكشف صفرية؛ قد يثبت عجز على الجهة لكن لا يوجد سند توريد أو نقد. */
   remittanceId: number | null;
   remittanceNumber: string | null;
   statementNumber: string;
@@ -132,22 +145,88 @@ async function assertStatementNotUsed(
 ) {
   const db = existingTx ?? getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-  const existing = (
-    await db
-      .select({ id: deliveryRemittances.id, number: deliveryRemittances.remittanceNumber })
-      .from(deliveryRemittances)
-      .where(and(
-        eq(deliveryRemittances.partyId, partyId),
-        eq(deliveryRemittances.companyStatementNumber, statementNumber),
-      ))
-      .limit(1)
-  )[0];
+  const query = db.select({ id: deliveryRemittances.id, number: deliveryRemittances.remittanceNumber })
+    .from(deliveryRemittances).where(and(
+      eq(deliveryRemittances.partyId, partyId), eq(deliveryRemittances.companyStatementNumber, statementNumber),
+    ));
+  const existing = (await (existingTx ? query.for("share") : query).limit(1))[0];
   if (existing) {
     throw new TRPCError({
       code: "CONFLICT",
       message: `كشف الشركة «${statementNumber}» مُسجَّلٌ سلفاً على سند التوريد ${existing.number} — لا يُدخَل مرّتين`,
     });
   }
+}
+
+/** Party is locked by the caller. Existing receipts are linked, never rewritten. */
+async function prepareStatementBatchTx(tx: Tx, input: CompanyStatementInput, statementNumber: string, actor: DeliveryTxActor) {
+  let header = (await tx.select().from(deliveryCompanyStatements).where(and(
+    eq(deliveryCompanyStatements.partyId, input.partyId), eq(deliveryCompanyStatements.statementNumber, statementNumber),
+  )).for("update").limit(1))[0];
+  const legacy = (await tx.select().from(deliveryRemittances).where(and(
+    eq(deliveryRemittances.partyId, input.partyId), eq(deliveryRemittances.companyStatementNumber, statementNumber),
+  )).for("share").limit(1))[0];
+  const exists = !!header || !!legacy;
+  if (exists && !input.appendToStatement) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "كشف الشركة مسجّل سلفاً", why: `الكشف ${statementNumber} مرتبط بتوريد سابق`, doThis: "راجع سندات الكشف واختر إكمال الكشف السابق صراحةً لإضافة شحنة أخرى" }) });
+  }
+  if (!exists && input.appendToStatement) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر إكمال كشف الشركة", why: `لا يوجد كشف سابق بالرقم ${statementNumber} لهذه الجهة`, doThis: "تحقق من الرقم أو سجل الكشف لأول مرة دون خيار الإكمال" }) });
+  }
+  if ((header && Number(header.branchId) !== input.branchId) || (legacy && Number(legacy.branchId) !== input.branchId)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر إكمال كشف الشركة", why: "الكشف الأصلي يخص فرعاً آخر", doThis: "افتح الكشف من الفرع الذي استلم دفعته الأولى" }) });
+  }
+  if (!header) {
+    const id = extractInsertId(await tx.insert(deliveryCompanyStatements).values({
+      partyId: input.partyId, branchId: input.branchId, statementNumber,
+      statementDate: legacy?.statementDate ?? (input.statementDate ? new Date(input.statementDate) : null),
+      attachmentUrl: legacy?.statementAttachmentUrl ?? input.attachmentUrl ?? null,
+      createdBy: actor.userId,
+    }));
+    header = (await tx.select().from(deliveryCompanyStatements).where(eq(deliveryCompanyStatements.id, id)).limit(1))[0];
+    if (legacy) await tx.insert(deliveryCompanyStatementBatches).values({ statementId: id, remittanceId: Number(legacy.id) });
+  }
+  if (!header) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر إنشاء سجل الكشف" });
+  const originalDate = header.statementDate ? new Date(header.statementDate).toISOString().slice(0, 10) : null;
+  if (exists && ((input.statementDate && input.statementDate !== originalDate) ||
+      (input.attachmentUrl?.trim() && input.attachmentUrl.trim() !== header.attachmentUrl))) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر إكمال كشف الشركة", why: "تاريخ الكشف أو مرفقه يختلف عن المستند الأصلي",
+      doThis: "راجع بيانات الكشف الأصلي وأضف الدفعة دون تغيير مستنده",
+    }) });
+  }
+  const prior = await tx.select({ id: deliveryCompanyStatementBatches.remittanceId }).from(deliveryCompanyStatementBatches)
+    .where(eq(deliveryCompanyStatementBatches.statementId, Number(header.id))).for("share");
+  if (exists && prior.length === 0) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر إكمال كشف الشركة", why: "سجل الكشف السابق لا يرتبط بأي سند توريد", doThis: "راجع سجل الكشف مع المحاسب قبل إضافة دفعة" }) });
+  }
+  if (prior.length) {
+    const priorIds = prior.map((row) => Number(row.id));
+    const priorHeaders = await tx.select({ id: deliveryRemittances.id, total: deliveryRemittances.collectedTotal })
+      .from(deliveryRemittances).where(inArray(deliveryRemittances.id, priorIds)).for("share");
+    const priorLines = await tx.select({ remittanceId: deliveryRemittanceLines.remittanceId,
+      grossApplied: deliveryRemittanceLines.grossApplied, legacySnapshot: deliveryRemittanceLines.legacySnapshot })
+      .from(deliveryRemittanceLines).where(inArray(deliveryRemittanceLines.remittanceId, priorIds)).for("share");
+    if (priorHeaders.length !== priorIds.length || priorHeaders.some((receipt) => {
+      const lines = priorLines.filter((line) => Number(line.remittanceId) === Number(receipt.id));
+      return lines.some((line) => line.legacySnapshot) ||
+        !round2(lines.reduce((sum, line) => sum.plus(money(line.grossApplied)), money(0))).eq(money(receipt.total));
+    })) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذر إكمال الكشف التاريخي تلقائياً", why: "أسطر أحد سندات الكشف السابق غير مكتملة أو مستخرجة من لقطة تاريخية",
+        doThis: "طابق السند وفواتيره مع كشف الشركة الأصلي قبل إضافة دفعة جديدة",
+      }) });
+    }
+    const duplicate = await tx.select({ consignmentId: deliveryRemittanceLines.consignmentId }).from(deliveryRemittanceLines)
+      .where(and(inArray(deliveryRemittanceLines.remittanceId, priorIds),
+        inArray(deliveryRemittanceLines.consignmentId, input.lines.map((line) => line.consignmentId))))
+      .for("share").limit(1);
+    if (duplicate.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر إضافة دفعة الكشف", why: `الإرسالية ${duplicate[0].consignmentId} موجودة في سند سابق للكشف نفسه`,
+      doThis: "راجع الدفعات المسجلة وحدد الشحنات التي لم تُورّد بعد فقط",
+    }) });
+  }
+  return { statementId: Number(header.id), storeOriginalNumber: !exists };
 }
 
 /**
@@ -169,8 +248,12 @@ async function loadStatementConsignments(input: {
       branchId: deliveryConsignments.branchId,
       parcelStatus: deliveryConsignments.parcelStatus,
       status: deliveryConsignments.status,
+      moneyStatus: deliveryConsignments.moneyStatus,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
+      counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      custodyRecognizedAt: deliveryConsignments.custodyRecognizedAt,
+      createdAt: deliveryConsignments.createdAt,
       invoiceId: deliveryConsignments.invoiceId,
       sourceType: deliveryConsignments.sourceType,
       fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
@@ -257,6 +340,42 @@ function splitStatementLines(lines: CompanyStatementLineInput[]) {
         message: `مبلغ تحصيلٍ سالب على سطر الإرسالية ${l.consignmentId} — صحّح الكشف قبل الإدخال`,
       });
     }
+    const reason = l.shortfallReason?.trim() || null;
+    if (reason && !isShortfallReason(reason)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذر تسجيل سبب العجز للإرسالية ${l.consignmentId}`,
+        why: "سبب العجز غير معروف في القائمة",
+        doThis: "اختر سبباً من قائمة أسباب العجز ثم أعد تسجيل الكشف",
+      }) });
+    }
+    if (l.shortfallResponsibility && !["CUSTOMER", "DELIVERY_PARTY", "COURIER_CUSTODY"].includes(l.shortfallResponsibility)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذر تحديد مسؤولية فرق الإرسالية ${l.consignmentId}`,
+        why: "مسؤولية الفرق غير معروفة",
+        doThis: "اختر العميل أو جهة التوصيل أو العهدة المثبتة وفق مستند التحصيل",
+      }) });
+    }
+    if (l.shortfallResponsibility === "DELIVERY_PARTY" && !reason) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذر إسناد فرق الإرسالية ${l.consignmentId} إلى جهة التوصيل`,
+        why: "يجب تحديد سبب مصنّف للفرق على جهة التوصيل",
+        doThis: "اختر سبب العجز من القائمة بعد مراجعة كشف الشركة",
+      }) });
+    }
+    if (reason && l.shortfallResponsibility && l.shortfallResponsibility !== "DELIVERY_PARTY") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذر تسجيل فرق الإرسالية ${l.consignmentId}`,
+        why: "سبب عجز جهة التوصيل يتعارض مع مسؤولية الفرق المختارة",
+        doThis: "راجع مستند التحصيل، ثم اختر مسؤولية الجهة أو أزل سبب العجز",
+      }) });
+    }
+    if ((l.expectedDue == null) !== (l.expectedProven == null)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذر مطابقة معاينة الإرسالية ${l.consignmentId}`,
+        why: "يلزم إرسال المطالبة والتحصيل المثبت معاً",
+        doThis: "حدّث معاينة الكشف لإرسال المبلغين الحاليين ثم أعد التسجيل",
+      }) });
+    }
     // التكرار يُرفض هنا لا في آلة التوريد وحدها: سطرا (صفر + مال) لنفس الطرد كانا سيندمجان
     // صامتَين قبل أن تراهما — والمرحلة ① تسبقها فلا يحميها حارسُها.
     if (collectedByLine.has(Number(l.consignmentId))) {
@@ -266,12 +385,96 @@ function splitStatementLines(lines: CompanyStatementLineInput[]) {
       });
     }
     collectedByLine.set(Number(l.consignmentId), amt.toFixed(2));
-    if (l.shortfallReason) reasonByLine.set(Number(l.consignmentId), l.shortfallReason);
+    if (reason) reasonByLine.set(Number(l.consignmentId), reason);
     if (amt.gt(0)) {
       moneyLines.push({ consignmentId: Number(l.consignmentId), collectedAmount: amt.toFixed(2) });
     }
   }
   return { collectedByLine, reasonByLine, moneyLines };
+}
+
+async function recordStatementRequestTx(tx: Tx, key: string | null | undefined, refId: number, hash: string) {
+  if (!key) return;
+  try {
+    await recordIdempotencyKey(tx, "delivery.companyStatement", key, refId, hash);
+  } catch (error) {
+    if (isDupEntry(error)) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر تسجيل طلب الكشف",
+      why: "معرّف طلب الكشف سُجّل بالتزامن؛ راجع العملية قبل إعادة المحاولة",
+      doThis: "افتح سجل كشوف الشركة وتحقق من الطلب المسجل قبل استخدام معرّف جديد",
+    }) });
+    throw error;
+  }
+}
+
+/** Transfer only the still-unpaid customer claim, never proven courier cash. */
+async function assignDeliveredStatementShortfallTx(
+  tx: Tx,
+  cn: { id: number; partyId: number; branchId: number; invoiceId: number | null; fulfillmentRequestId: number | null },
+  amount: Decimal,
+  reason: string,
+  statementKey: string,
+  actor: DeliveryTxActor,
+) {
+  if (amount.lte(0)) return;
+  const suffix = idempotencyHash({ statementKey, consignmentId: cn.id }).slice(0, 32);
+  if (cn.fulfillmentRequestId != null) {
+    // The classified-claim helper owns the allocation and its legacy fixed key.
+    const existing = await tx.select({ id: deliveryLedgerEntries.id }).from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.eventKey, `CN:${cn.id}:SHORTFALL_ASSIGNED`)).for("share").limit(1);
+    if (existing.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر تسجيل عجز إضافي للطلب المصنف", why: "يوجد قيد عجز سابق يحتاج مطابقة قبل إعادة التخصيص",
+      doThis: "راجع مطالبات الطلب ودفتر العجز قبل إكمال الكشف",
+    }) });
+    const result = await collectAssignedConsignmentClaimsTx(tx, {
+      consignmentId: cn.id, actualAmount: "0.00", eventKey: statementKey,
+      shortfallReason: reason, supplementary: true,
+    }, { userId: actor.userId, branchId: cn.branchId });
+    if (!result || !money(result.shortfallAmount).eq(amount)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر إسناد عجز الإرسالية ${cn.id}`,
+        why: "مطالبات الطلب المصنف لا تطابق الفرق غير المثبت",
+        doThis: "طابق مطالبات الطلب مع دفتر الإرسالية ثم أعد تسجيل الكشف",
+      }) });
+    }
+    return;
+  }
+  const invoice = cn.invoiceId == null ? undefined : (await tx.select().from(invoices)
+    .where(eq(invoices.id, cn.invoiceId)).for("update").limit(1))[0];
+  if (!invoice || ["CANCELLED", "RETURNED", "SUPERSEDED"].includes(invoice.status) ||
+      Number(invoice.branchId) !== cn.branchId ||
+      !round2(Decimal.max(0, money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))
+        .minus(money(invoice.paidAmount)))).eq(amount)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: `تعذر إسناد عجز الإرسالية ${cn.id}`,
+      why: "متبقي الفاتورة لا يطابق الفرق غير المثبت على جهة التوصيل",
+      doThis: "راجع حالة الفاتورة ومتبقيها ودفتر الإرسالية قبل تسجيل العجز",
+    }) });
+  }
+  await adjustDeliveryBalance(tx, cn.partyId, amount);
+  await appendDeliveryLedgerEntry(tx, {
+    eventKey: `CN:${cn.id}:SHORTFALL_ASSIGNED:STMT:${suffix}`,
+    partyId: cn.partyId, consignmentId: cn.id, branchId: cn.branchId,
+    entryType: "SHORTFALL_ASSIGNED", amount: toDbMoney(amount),
+    shortfallReason: reason, actorUserId: actor.userId,
+  });
+  await postEntry(tx, {
+    entryType: "DELIVERY_DISPATCH", branchId: cn.branchId, invoiceId: cn.invoiceId,
+    deliveryPartyId: cn.partyId, amount, createdBy: actor.userId,
+    dedupeKey: `DELIVERY_CUSTODY_STMT_SHORT:${cn.id}:${suffix}`,
+    postingIntent: deliveryDispatchMemoIntent(), notes: "عجز تحصيل متمم مثبت بكشف الشركة",
+  });
+  await postEntry(tx, {
+    entryType: "PAYMENT_IN", branchId: cn.branchId, invoiceId: cn.invoiceId,
+    customerId: invoice.customerId, deliveryPartyId: cn.partyId, amount, createdBy: actor.userId,
+    dedupeKey: `PAYMENT_IN:COURIER_DELIVERY_SUPP:${cn.id}:${suffix}`,
+    postingIntent: deliveryCustomerCollectionIntent(amount), notes: "نقل المتبقي غير المحصل إلى ذمة جهة التوصيل",
+  });
+  const paid = round2(money(invoice.paidAmount).plus(amount));
+  await tx.update(invoices).set({ paidAmount: toDbMoney(paid),
+    status: computeInvoiceStatus(invoice.total, toDbMoney(paid), invoice.returnedTotal), paymentDate: new Date() })
+    .where(eq(invoices.id, invoice.id));
+  if (invoice.customerId != null) await adjustCustomerBalance(tx, Number(invoice.customerId), amount.neg());
 }
 
 export async function recordCompanyStatement(
@@ -286,8 +489,22 @@ export async function recordCompanyStatement(
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكشف بلا أسطر" });
   }
   const { collectedByLine, reasonByLine, moneyLines } = splitStatementLines(input.lines);
+  if (input.lines.some((line) => line.shortfallReason?.trim() && line.shortfallResponsibility !== "DELIVERY_PARTY")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذر تسجيل سبب العجز في كشف الشركة",
+      why: "سبب عجز جهة التوصيل يحتاج اختيار مسؤوليتها صراحةً",
+      doThis: "راجع السطر واختر مسؤولية جهة التوصيل أو أزل سبب العجز",
+    }) });
+  }
   const proofOnly = moneyLines.length === 0;
   if (proofOnly) {
+    if (input.appendToStatement) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذر إكمال كشف الشركة بإثبات بلا نقد",
+        why: "إثبات بلا نقد لا ينشئ دفعة كشف؛ أزل خيار إكمال الكشف",
+        doThis: "سجّل الإثبات دون خيار إكمال الكشف، أو أضف مبلغ الدفعة التي استلمتها",
+      }) });
+    }
     // كشفُ إثباتٍ محض: لا نقد يدخل ⇒ نقدٌ معدودٌ غير صفريّ تناقضٌ يُرفض **قبل أيّ كتابة**
     // — قبولُه كان سيُدخل الدرجَ مالاً بلا سطرٍ يقابله (خرقُ «لا دينار بلا مسار» §٥).
     if (!round2(money(input.countedCash)).isZero()) {
@@ -312,11 +529,15 @@ export async function recordCompanyStatement(
         partyId: input.partyId,
         lines: moneyLines,
         countedCash: round2(money(input.countedCash)).toFixed(2),
+        requireFullShipment: true,
         shiftType: input.shiftType,
-        clientRequestId: input.clientRequestId ?? `stmt:${input.partyId}:${statementNumber}`,
+        clientRequestId: input.clientRequestId ?? (input.appendToStatement
+          ? `stmt-batch:${input.partyId}:${idempotencyHash({ statementNumber, moneyLines }).slice(0, 32)}`
+          : `stmt:${input.partyId}:${statementNumber}`),
         targetShiftId: input.targetShiftId,
         companyStatement: {
           statementNumber,
+          isContinuation: input.appendToStatement === true,
           statementDate: input.statementDate ?? null,
           attachmentUrl: input.attachmentUrl ?? null,
           deductionsTotal: input.deductionsTotal ?? null,
@@ -325,9 +546,30 @@ export async function recordCompanyStatement(
             consignmentId: Number(line.consignmentId),
             collectedAmount: round2(money(line.collectedAmount)).toFixed(2),
             shortfallReason: line.shortfallReason?.trim() || null,
+            ...(line.shortfallResponsibility ? { shortfallResponsibility: line.shortfallResponsibility } : {}),
+            ...(line.expectedDue != null ? { expectedDue: toDbMoney(money(line.expectedDue)) } : {}),
+            ...(line.expectedProven != null ? { expectedProven: toDbMoney(money(line.expectedProven)) } : {}),
+            ...(line.zeroDeliveryConfirmed != null ? { zeroDeliveryConfirmed: line.zeroDeliveryConfirmed } : {}),
           })),
         },
       };
+  const proofKey = input.clientRequestId ?? `stmt-proof:${input.partyId}:${statementNumber}`;
+  const proofHash = idempotencyHash({
+    partyId: input.partyId, branchId: input.branchId, statementNumber,
+    lines: input.lines.map((line) => ({
+      consignmentId: Number(line.consignmentId), collectedAmount: toDbMoney(money(line.collectedAmount)),
+      shortfallResponsibility: line.shortfallResponsibility ?? null,
+      shortfallReason: line.shortfallReason?.trim() || null,
+      expectedDue: line.expectedDue == null ? null : toDbMoney(money(line.expectedDue)),
+      expectedProven: line.expectedProven == null ? null : toDbMoney(money(line.expectedProven)),
+      zeroDeliveryConfirmed: line.zeroDeliveryConfirmed ?? false,
+    })).sort((a, b) => a.consignmentId - b.consignmentId),
+    statementDate: input.statementDate ?? null, attachmentUrl: input.attachmentUrl ?? null,
+    notes: input.notes ?? null, countedCash: toDbMoney(money(input.countedCash)),
+    deductionsTotal: toDbMoney(money(input.deductionsTotal ?? "0")),
+    shiftType: input.shiftType ?? "RECEPTION", targetShiftId: input.targetShiftId ?? null,
+    appendToStatement: input.appendToStatement === true,
+  });
 
   return withTx(async (tx) => {
   let cashSourceLock: DeliveryRemittanceCashSourceLock | undefined;
@@ -384,6 +626,21 @@ export async function recordCompanyStatement(
       }),
     });
   }
+  // One client request cannot change between proof-only and money-bearing work.
+  if (input.clientRequestId) {
+    const otherOperation = proofOnly ? "delivery.remit" : "delivery.companyStatementProof";
+    if (await checkIdempotency(tx, otherOperation, input.clientRequestId, undefined, { forUpdate: true }) != null) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذر تسجيل طلب كشف الشركة",
+        why: "معرّف الطلب مستخدم لنوع آخر من كشف الشركة؛ استخدم معرّفاً جديداً",
+        doThis: "راجع العملية السابقة، ثم استخدم معرّفاً جديداً إذا كانت هذه عملية أخرى",
+      }) });
+    }
+  }
+  const unifiedReplay = input.clientRequestId
+    ? await checkIdempotency(tx, "delivery.companyStatement", input.clientRequestId, proofHash,
+      { requireStoredHash: true, forUpdate: true })
+    : null;
   if (remittanceInput) {
     // إعادةُ الفحص تحت قفلَي المصدر والجهة تغلق سباق طلبَين حملا المفتاح نفسه.
     const replayAfterLock = await findDeliveryRemittanceReplayInTx(
@@ -395,19 +652,43 @@ export async function recordCompanyStatement(
       return companyStatementReplayResult(statementNumber, replayAfterLock);
     }
   }
-  await assertStatementNotUsed(input.partyId, statementNumber, tx);
+  if (proofOnly && await checkIdempotency(tx, "delivery.companyStatementProof", proofKey, proofHash,
+    { requireStoredHash: true, forUpdate: true }) != null) {
+    return { remittanceId: null, remittanceNumber: null, statementNumber, deliveriesConfirmed: 0,
+      collectedTotal: "0.00", netRemitted: "0.00", proofOnly: true, idempotentReplay: true };
+  }
+  if (unifiedReplay != null) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر إعادة طلب كشف الشركة",
+      why: "سجل إعادة طلب كشف الشركة غير مكتمل؛ راجع المستند قبل الإعادة",
+      doThis: "افتح سجل الكشف واطلب مطابقة المستند مع السند قبل إرسال طلب جديد",
+    }) });
+  }
+  if (proofOnly) await assertStatementNotUsed(input.partyId, statementNumber, tx);
+  if (!proofOnly && !input.appendToStatement) await assertStatementNotUsed(input.partyId, statementNumber, tx);
 
   // ── المرحلة ①: إثبات التسليم لكل سطرٍ غير مختوم — **بنوعَي السطر معاً** ──
   // القراءة قبل الكتابة تحدّد **ما يحتاج إثباتاً فعلاً**؛ الأسطر المختومة سلفاً (بوّابة مندوب
-  // أو كشفٌ سابق) تمرّ بلا مساس، فالكشف الجزئيّ المتمِّم لا يعيد ختم ما خُتم.
-  // سطرُ الإثبات (declared=0) يقبله الخادم أصلاً: يختم الطردَ الصفريّ ويُغلقه، ويُبقي متبقّي
-  // طرد COD>0 ذمّةً حيّة على العميل (رأس الملف — قرار المالك).
+  // أو كشف سابق) لا يُعاد ختمها؛ قد يلزم تحصيل متمم أو إسناد الجزء غير المثبت إلى الجهة.
   const { ids, byId } = await loadStatementConsignments(input, tx);
-  // Physical confirmation must include every invoice in the shipment. Supplementary money remains per invoice.
+  // The same physical shipment must be complete even after customer delivery.
   const statementIds = new Set(ids);
-  for (const id of ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")) {
+  const checkedMembers = new Set<number>();
+  for (const id of ids) {
+    if (checkedMembers.has(id)) continue;
     const members = operationalShipmentMembers(await loadShipmentMembersTx(tx, id, { currentRead: true }));
-    if (members.some((member) => !statementIds.has(Number(member.id)))) {
+    for (const member of members) checkedMembers.add(Number(member.id));
+    const missing = [];
+    for (const member of members) {
+      if (Number(member.partyId) !== input.partyId || Number(member.branchId) !== input.branchId) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر تسجيل الشحنة", why: "أحد أعضائها يخص جهة أو فرعاً آخر", doThis: "راجع جهة وفرع كل فاتورة مرتبطة بالشحنة" }) });
+      }
+      const due = round2(money(member.codAmount).minus(money(member.collectedAmount))
+        .minus(money(member.counterSettledAmount ?? "0"))
+        .minus(await shortfallAssignedForConsignmentTx(tx, Number(member.id), { partyId: input.partyId, branchId: input.branchId })));
+      if (!statementIds.has(Number(member.id)) && (member.parcelStatus !== "DELIVERED" || due.gt(0))) missing.push(member.id);
+    }
+    if (missing.length) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
         what: "تعذر تسجيل جزء من شحنة في كشف الشركة",
         why: "تضم الشحنة فواتير أخرى غير موجودة في أسطر الكشف",
@@ -417,6 +698,107 @@ export async function recordCompanyStatement(
   }
   // فحصٌ مسبقٌ لكل شروط الرفض المُنتظَرة قبل أيّ كتابة (Codex P1 #5).
   await preValidateStatementLines(input, ids, byId);
+  const lineById = new Map(input.lines.map((line) => [Number(line.consignmentId), line]));
+  const plans = new Map<number, { due: Decimal; proven: Decimal; declared: Decimal;
+    custodyRemaining: Decimal; unprovenRemaining: Decimal; responsibility: StatementShortfallResponsibility; reason: string | null }>();
+  for (const id of ids) {
+    const cn = byId.get(id)!;
+    const line = lineById.get(id)!;
+    const reason = reasonByLine.get(id) ?? null;
+    const responsibility = line.shortfallResponsibility ?? "CUSTOMER";
+    const due = round2(money(cn.codAmount).minus(money(cn.collectedAmount))
+      .minus(money(cn.counterSettledAmount ?? "0"))
+      .minus(await shortfallAssignedForConsignmentTx(tx, id, { partyId: input.partyId, branchId: input.branchId })));
+    const proven = await unremittedCollectionForConsignmentTx(tx, id, { partyId: input.partyId, branchId: input.branchId });
+    if (line.expectedDue != null && (!due.eq(round2(money(line.expectedDue))) ||
+      !proven.eq(round2(money(line.expectedProven))))) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: `تغيرت مطالبة الإرسالية ${id}`, why: "المطالبة أو التحصيل المثبت تغير منذ المعاينة",
+        doThis: "حدّث الكشف وراجع المبلغ والفرق قبل التسجيل",
+      }) });
+    }
+    const declared = money(collectedByLine.get(id) ?? "0");
+    if (declared.isZero() && (due.gt(0) || cn.parcelStatus !== "DELIVERED") && line.zeroDeliveryConfirmed !== true) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر تسجيل سطر الصفر للإرسالية ${id}`,
+        why: `يلزم الإقرار الصريح بتسليم الإرسالية ${id} لسطر الصفر`,
+        doThis: "تحقق من تسليم الإرسالية ثم أكد الإقرار، أو أزل السطر من الكشف",
+      }) });
+    }
+    if (due.lt(0) || proven.gt(due) || declared.gt(due)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر مطابقة الإرسالية ${id}`, why: "المبلغ المعلن أو التحصيل المثبت يتجاوز المطالبة الحالية",
+        doThis: "راجع الفاتورة ودفتر الإرسالية قبل تسجيل الكشف",
+      }) });
+    }
+    const partial = declared.lt(due);
+    if (partial && (line.shortfallResponsibility == null || line.expectedDue == null || line.expectedProven == null)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر تسجيل فرق الإرسالية ${id}`, why: "الفرق يحتاج مسؤولية صريحة ولقطة المطالبة والتحصيل المثبت",
+        doThis: "حدّث الكشف وحدد مسؤولية الفرق قبل التسجيل",
+      }) });
+    }
+    const custodyRemaining = round2(Decimal.max(0, proven.minus(declared)));
+    const unprovenRemaining = round2(due.minus(Decimal.max(proven, declared)));
+    if (unprovenRemaining.isZero() && custodyRemaining.gt(0)) {
+      if ((line.shortfallResponsibility && line.shortfallResponsibility !== "COURIER_CUSTODY") || reason) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: `تعذر تسجيل مسؤولية فرق الإرسالية ${id}`,
+          why: "الفرق كله نقد مثبت في عهدة جهة التوصيل؛ المسؤولية أو السبب المرسل غير مطابق",
+          doThis: "اختر العهدة المثبتة وأزل سبب العجز بعد مطابقة النقد غير المورد",
+        }) });
+      }
+    }
+    if (responsibility === "COURIER_CUSTODY" && (unprovenRemaining.gt(0) || custodyRemaining.lte(0))) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر إثبات عهدة الإرسالية ${id}`, why: "جزء من الفرق لم يثبت قبضه لدى جهة التوصيل",
+        doThis: "حدد مسؤولية العميل أو الجهة للجزء غير المثبت، ولا تعتبره نقداً مقبوضاً",
+      }) });
+    }
+    if (responsibility === "DELIVERY_PARTY" && unprovenRemaining.isZero()) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر تسجيل عجز للإرسالية ${id}`,
+        why: "لا يوجد فرق غير مثبت يمكن تسجيل سببه عجزاً على الجهة",
+        doThis: "راجع التحصيل المثبت وأزل سبب العجز أو اختر العهدة إن بقي نقد غير مورد",
+      }) });
+    }
+    if (cn.parcelStatus !== "DELIVERED" && proven.gt(0) && (declared.gt(0) || responsibility === "DELIVERY_PARTY")) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: `تعذر تسجيل كشف الإرسالية ${id}`,
+        why: "للإرسالية غير المسلمة تحصيل سابق مثبت يحتاج مطابقة قبل الكشف",
+        doThis: "طابق مستند التسليم والتحصيل السابق مع دفتر الإرسالية قبل تسجيل كشف جديد",
+      }) });
+    }
+    const addsCustody = (cn.parcelStatus !== "DELIVERED" ? declared.gt(0) : declared.gt(proven)) ||
+      (responsibility === "DELIVERY_PARTY" && unprovenRemaining.gt(0));
+    if (addsCustody) {
+      const opening = (await tx.select({ createdAt: deliveryLedgerEntries.createdAt }).from(deliveryLedgerEntries)
+        .where(and(eq(deliveryLedgerEntries.partyId, input.partyId),
+          eq(deliveryLedgerEntries.eventKey, `BACKFILL:PARTY:${input.partyId}:CASH_CUSTODY`),
+          effectiveDeliveryLedgerEntrySql())).for("share").limit(1))[0];
+      if (opening && cn.createdAt.getTime() <= opening.createdAt.getTime()) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: `تعذر تسجيل تحصيل الإرسالية ${id} تلقائياً`, why: "توجد عهدة افتتاحية تاريخية قد تشمل هذا المبلغ",
+          doThis: "طابق العهدة مع مستندات الإرسالية قبل تسجيل تحصيل أو عجز جديد",
+        }) });
+      }
+    }
+    if (cn.parcelStatus !== "DELIVERED" || partial || declared.gt(proven)) {
+      const invoice = cn.invoiceId == null ? undefined : (await tx.select().from(invoices)
+        .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
+      const charges = await loadAssignedChargeClaimsTx(tx, id);
+      const invoiceDue = round2(assignedGoodsCodDue(invoice, await creditCollectionChoiceTx(tx, id)).plus(charges.remaining));
+      if (!invoiceDue.eq(due.minus(proven))) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: `تعذر تسجيل الإرسالية ${id}`, why: `متبقي الفاتورة والأجور ${invoiceDue.toFixed(2)} لا يطابق الجزء غير المثبت ${due.minus(proven).toFixed(2)}`,
+          doThis: "طابق الفاتورة والتحصيل المثبت قبل تسجيل الفرق",
+        }) });
+      }
+    }
+    plans.set(id, { due, proven, declared, custodyRemaining, unprovenRemaining, responsibility, reason });
+  }
+  const statementBatch = proofOnly ? null : await prepareStatementBatchTx(tx, input, statementNumber, actor);
+  if (remittanceInput?.companyStatement && statementBatch) remittanceInput.companyStatement.storeOriginalNumber = statementBatch.storeOriginalNumber;
   const needConfirm = ids
     .filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")
     .sort((a, b) => a - b);
@@ -425,7 +807,7 @@ export async function recordCompanyStatement(
     .sort((a, b) => a - b);
   for (const id of needConfirm) {
     // مفتاحٌ مشتقٌّ من (الكشف × الإرسالية): إعادة إدخال الكشف تُعيد النتيجة نفسها بلا قيدٍ ثانٍ.
-    // ويُمرَّر **المُعلَن على الكشف** لا COD كاملاً: تحصيلٌ جزئيّ يُسجَّل كما وقع.
+    // يثبت مبلغ هذا السطر فقط، مع سبب الجهة إذا اختيرت لمسؤولية الجزء غير المقبوض.
     await confirmConsignmentDelivery(
       {
         consignmentId: id,
@@ -434,7 +816,7 @@ export async function recordCompanyStatement(
           partyId: Number(input.partyId),
           statementNumber,
           collectedAmount: collectedByLine.get(id),
-          shortfallReason: reasonByLine.get(id),
+          shortfallReason: plans.get(id)!.responsibility === "DELIVERY_PARTY" ? plans.get(id)!.reason ?? undefined : undefined,
         },
       },
       { userId: actor.userId },
@@ -450,12 +832,12 @@ export async function recordCompanyStatement(
    * تسجله `recordSupplementaryStatementCollection` على الفاتورة والعهدة.
    */
   for (const id of alreadyDeliveredIds) {
-    const declared = collectedByLine.get(id);
-    if (declared == null) continue;
-    const proven = await unremittedCollectionForConsignmentTx(tx, id);
-    const additional = round2(money(declared).minus(proven));
-    if (additional.lte(0)) continue;
-    await recordSupplementaryStatementCollection(
+    const plan = plans.get(id)!;
+    const additional = round2(Decimal.max(0, plan.declared.minus(plan.proven)));
+    const transfer = plan.responsibility === "DELIVERY_PARTY" ? plan.unprovenRemaining : money(0);
+    if (additional.isZero() && transfer.isZero()) continue;
+    const cn = byId.get(id)!;
+    if (additional.gt(0)) await recordSupplementaryStatementCollection(
       {
         consignmentId: id,
         additionalCollectedAmount: additional.toFixed(2),
@@ -465,12 +847,62 @@ export async function recordCompanyStatement(
       { userId: actor.userId },
       tx,
     );
+    if (transfer.gt(0)) {
+      await assignDeliveredStatementShortfallTx(tx, {
+        id, partyId: Number(cn.partyId), branchId: Number(cn.branchId),
+        invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
+        fulfillmentRequestId: cn.fulfillmentRequestId == null ? null : Number(cn.fulfillmentRequestId),
+      }, transfer, plan.reason!, `${input.partyId}:${statementNumber}:${input.clientRequestId ?? ""}`, actor);
+      if (plan.declared.isZero() && plan.custodyRemaining.isZero()) {
+        if (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: `تعذر إغلاق عجز الإرسالية ${id}`,
+            why: "حالة الإرسالية لا تسمح بإغلاق العجز",
+            doThis: "راجع حالة الإرسالية وتسوياتها السابقة قبل تسجيل إغلاق جديد",
+          }) });
+        }
+        await tx.update(deliveryConsignments).set({ status: "DELIVERED", moneyStatus: "SETTLED", settledAt: new Date() })
+          .where(eq(deliveryConsignments.id, id));
+        await appendDeliveryEvent(tx, {
+          eventKey: `CN:${id}:MONEY:STMT_SHORT:${idempotencyHash({ partyId: input.partyId, statementNumber, requestId: input.clientRequestId ?? null }).slice(0, 24)}`,
+          consignmentId: id, eventType: "MONEY_SETTLED", fromMoneyStatus: cn.moneyStatus,
+          toMoneyStatus: "SETTLED", actorUserId: actor.userId,
+          payload: { source: "COMPANY_STATEMENT", statementNumber, shortfallAssigned: toDbMoney(transfer) },
+        });
+      }
+    }
   }
+
+  const recordDifferences = async (remittanceId: number | null) => {
+    for (const id of ids) {
+      const plan = plans.get(id)!;
+      if (!plan.declared.lt(plan.due) && !proofOnly) continue;
+      const eventSuffix = idempotencyHash({ partyId: input.partyId, statementNumber,
+        requestId: input.clientRequestId ?? null, id }).slice(0, 32);
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${id}:STATEMENT_DIFFERENCE:${eventSuffix}`, consignmentId: id,
+        eventType: "STATEMENT_DIFFERENCE", actorUserId: actor.userId,
+        payload: { source: "COMPANY_STATEMENT", statementNumber, remittanceId,
+          statementDate: input.statementDate ?? null, attachmentUrl: input.attachmentUrl ?? null,
+          notes: input.notes ?? null, cashSourceUsed: !proofOnly,
+          requestedShiftType: input.shiftType ?? "RECEPTION", requestedTargetShiftId: input.targetShiftId ?? null,
+          dueBefore: toDbMoney(plan.due),
+          provenBefore: toDbMoney(plan.proven), remitted: toDbMoney(plan.declared),
+          custodyRemaining: toDbMoney(plan.custodyRemaining),
+          customerRemaining: toDbMoney(plan.responsibility === "CUSTOMER" ? plan.unprovenRemaining : 0),
+          partyShortfall: toDbMoney(plan.responsibility === "DELIVERY_PARTY" ? plan.unprovenRemaining : 0),
+          shortfallResponsibility: plan.responsibility, shortfallReason: plan.reason },
+      });
+    }
+  };
 
   if (proofOnly) {
     // لا مرحلةَ ②: لا سند توريد ولا إيصال درج — الكشفُ أدّى وظيفتَه المستندية كاملةً.
     // ملاحظة مقصودة: رقمُ الكشف لم يُحجَز (القيد الفريد على سندات التوريد) — إدخالُه لاحقاً
     // كاملاً بنفس الرقم لتوريد نقده مشروع، والمرحلة ① سترتدّ فيه بلا أثر.
+    await recordDifferences(null);
+    await recordIdempotencyKey(tx, "delivery.companyStatementProof", proofKey, ids[0], proofHash);
+    await recordStatementRequestTx(tx, input.clientRequestId, ids[0], proofHash);
     return {
       remittanceId: null,
       remittanceNumber: null,
@@ -494,7 +926,8 @@ export async function recordCompanyStatement(
 
   let res: Awaited<ReturnType<typeof recordDeliveryRemittanceInTx>>;
   try {
-    res = await recordDeliveryRemittanceInTx(tx, remittanceInput, actor, cashSourceLock);
+    res = await recordDeliveryRemittanceInTx(tx, remittanceInput, actor, cashSourceLock,
+      { allowPartialCompanyStatement: true });
   } catch (e) {
     // سباقٌ على نفس الكشف من جلستين: القيد الفريد يفصل — نُترجمه لرسالةٍ مفهومة.
     if (isDupEntry(e)) {
@@ -505,6 +938,11 @@ export async function recordCompanyStatement(
     }
     throw e;
   }
+  if (statementBatch) await tx.insert(deliveryCompanyStatementBatches).values({
+    statementId: statementBatch.statementId, remittanceId: res.remittanceId,
+  });
+  await recordDifferences(res.remittanceId);
+  await recordStatementRequestTx(tx, input.clientRequestId, res.remittanceId, proofHash);
 
   return {
     remittanceId: res.remittanceId,
@@ -631,6 +1069,7 @@ export interface ManualDeliveryProofInput {
 export async function recordStaffDeliveryConfirmation(
   input: ManualDeliveryProofInput,
   actor: DeliveryTxActor,
+  options: { requireFullCollection?: boolean } = {},
 ): Promise<ConfirmConsignmentResult> {
   const evidence = input.evidence.trim();
   if (evidence.length < 3) {
@@ -669,6 +1108,8 @@ export async function recordStaffDeliveryConfirmation(
       },
     },
     { userId: actor.userId },
+    undefined,
+    { requireFullCollection: options.requireFullCollection },
   );
 }
 

@@ -15,7 +15,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
-import { transitionConsignmentParcel, confirmConsignmentDelivery } from "../delivery/courier";
+import { transitionConsignmentParcel, confirmConsignmentDelivery, listMyDeliveries, acknowledgeConsignmentClaim } from "../delivery/courier";
+import { recordDeliveryRemittance } from "../delivery/remittance";
 import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
 import { returnSale } from "../returnService";
 
@@ -262,6 +263,70 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
     const summary2 = await getDeliveryFinancialSummary(1);
     expect(Number(summary2.codReleased)).toBe(10000);
     expect(Number(summary2.codOutstanding)).toBe(0);
+  });
+
+  it("يحصّل المندوب صافي الفاتورة بعد مرتجع جزئي ويورده على الإرسالية نفسها", async () => {
+    const shift = await openReception();
+    const sale = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "0", clientRequestId: "return-before-delivery-net",
+      regularSale: { lines: [LINE_10], amount: "10000.00" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = sale.regularSale!.invoiceId;
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+    await advanceToOutForDelivery(Number(cn.id));
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 4 }], restock: true }, MANAGER);
+
+    const displayed = (await listMyDeliveries(3)).toDeliver.find((row) => row.id === Number(cn.id));
+    expect(Number(displayed?.codDue)).toBe(6000);
+    expect(Number(displayed?.orderTotal)).toBe(6000);
+    expect(displayed?.codClaimVersion).toBe(2);
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-before-delivery-confirm" },
+      { userId: 3 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), collectedAmount: "6000.00",
+      clientRequestId: "return-before-delivery-explicit" }, { userId: 3 })).rejects.toThrow(/أقر/);
+    await acknowledgeConsignmentClaim({ consignmentId: Number(cn.id), expectedClaimVersion: 2,
+      clientRequestId: "return-before-delivery-ack" }, { userId: 3 });
+    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-before-delivery-confirm" }, { userId: 3 }, undefined, { requireFullCollection: true });
+    const ledger = await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, cn.id), eq(s.deliveryLedgerEntries.entryType, "COD_COLLECTED"),
+    ));
+    expect(ledger.map((entry) => Number(entry.amount))).toEqual([6000]);
+    await recordDeliveryRemittance({ branchId: 1, partyId: 1, requireFullShipment: true,
+      lines: [{ consignmentId: Number(cn.id), collectedAmount: "6000.00" }], countedCash: "6000.00",
+      targetShiftId: shift.shiftId, clientRequestId: "return-before-delivery-remit" }, CASHIER);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
+    expect(Number(invoice.returnedTotal)).toBe(4000);
+    expect(Number(invoice.paidAmount)).toBe(6000);
+    const remitted = await db().select().from(s.deliveryRemittanceLines).where(eq(s.deliveryRemittanceLines.consignmentId, cn.id));
+    expect(remitted.map((line) => Number(line.grossApplied))).toEqual([6000]);
+  });
+
+  it("يغلق التسليم بلا قبض عندما يصبح المتبقي صفراً بعد مرتجع جزئي", async () => {
+    const shift = await openReception();
+    const sale = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "6000.00", clientRequestId: "return-zero-delivery",
+      regularSale: { lines: [LINE_10], amount: "10000.00" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = sale.regularSale!.invoiceId;
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+    await advanceToOutForDelivery(Number(cn.id));
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 4 }], restock: true }, MANAGER);
+    const row = (await listMyDeliveries(3)).toDeliver.find((entry) => entry.id === Number(cn.id));
+    expect(Number(row?.codDue)).toBe(0);
+    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-zero-confirm" },
+      { userId: 3 }, undefined, { requireFullCollection: true });
+    const after = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, cn.id)))[0];
+    expect(after).toMatchObject({ parcelStatus: "DELIVERED", status: "DELIVERED", moneyStatus: "SETTLED" });
+    const entries = await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, cn.id), eq(s.deliveryLedgerEntries.entryType, "COD_COLLECTED"),
+    ));
+    expect(entries).toHaveLength(0);
   });
 
   it("المرتجع العادي لفاتورة بدون توصيل يستمر بالعمل دون أي تأثر أو انحدار", async () => {

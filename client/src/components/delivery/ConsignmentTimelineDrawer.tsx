@@ -27,7 +27,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 // موجة D6 (٢/٩/٢٦): أربعةُ قواميس كانت مُعرَّفةً هنا — نوعُ الحدث وسلطتُه ونوعُ قيد الدفتر
 // وإشارتُه. نُقلت إلى `@shared` كي يحرسها اختبارٌ ويستهلكها أيُّ قارئٍ ثانٍ لنفس الجدولين
 // (تقريرٌ أو كشفُ جهة) بلا اختراع تسميةٍ موازية.
-import { deliveryEventLabel, deliveryEventSourceLabel } from "@shared/deliveryEventType";
+import { deliveryEventLabel, deliveryEventSourceLabel, statementDifferenceEventDetails } from "@shared/deliveryEventType";
+import { isShortfallReason, SHORTFALL_REASON_LABEL_AR } from "@shared/shortfallReason";
 import { deliveryLedgerEntryLabel, deliveryLedgerEntrySign } from "@shared/deliveryLedgerEntryType";
 import { ShipmentDetailsPanel } from "./ShipmentDetailsPanel";
 import { CreditCollectionTermsEditor } from "./CreditCollectionTermsEditor";
@@ -252,6 +253,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                     const source = (ev.payload as { source?: string } | null)?.source;
                     const sourceLabel = deliveryEventSourceLabel(source);
                     const reason = (ev.payload as { reason?: string } | null)?.reason;
+                    const difference = ev.eventType === "STATEMENT_DIFFERENCE" ? statementDifferenceEventDetails(ev.payload) : null;
                     return (
                       <li key={ev.id} className="relative">
                         <span className={cn("absolute -start-[21px] top-2 size-2.5 rounded-full ring-2 ring-background", eventDot(ev.eventType))} />
@@ -274,6 +276,27 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                           {reason && (
                             <div className="mt-1 text-[11px] font-bold text-[var(--sem-danger)]">{reason}</div>
                           )}
+                          {ev.eventType === "STATEMENT_DIFFERENCE" && (difference ? (
+                            <div className="mt-2 space-y-1 text-xs">
+                              <p>كشف الشركة: <strong dir="ltr">{difference.statementNumber}</strong>
+                                {difference.remittanceId != null && <> · سند التوريد #{difference.remittanceId}</>}</p>
+                              <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+                                {([
+                                  ["المطلوب عند التسجيل", difference.dueBefore],
+                                  ["القبض المثبت قبل التوريد", difference.provenBefore],
+                                  ["المورّد لهذه الفاتورة", difference.remitted],
+                                  ["الباقي في عهدة الجهة", difference.custodyRemaining],
+                                  ["الباقي على العميل", difference.customerRemaining],
+                                  ["العجز على جهة التوصيل", difference.partyShortfall],
+                                ] as const).map(([label, amount]) => (
+                                  <div key={label} className="flex justify-between gap-2">
+                                    <dt>{label}</dt><dd dir="ltr" className="tabular-nums font-bold">{fmt(amount)} د.ع</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                              {isShortfallReason(difference.shortfallReason) && <p>سبب العجز: {SHORTFALL_REASON_LABEL_AR[difference.shortfallReason]}</p>}
+                            </div>
+                          ) : <p className="mt-1 text-xs text-[var(--sem-danger)]">تفاصيل فرق الكشف غير مكتملة؛ راجع المستند الأصلي.</p>)}
                         </div>
                       </li>
                     );

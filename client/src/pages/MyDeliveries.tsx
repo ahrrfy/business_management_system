@@ -331,10 +331,10 @@ export default function MyDeliveries() {
                       {isPartial ? (
                         <>
                           <span className="tabular-nums font-bold text-foreground" dir="ltr">
-                            مقبوض: {money(row.collectedAmount)} د.ع
+                            قيمة الفاتورة: {money(row.orderTotal)} د.ع
                           </span>
                           <span className="tabular-nums text-[10px] font-bold text-[var(--sem-warn)]" dir="ltr">
-                            عجز: {money(row.codDue)} د.ع
+                            المتبقي للتسوية: {money(row.codDue)} د.ع
                           </span>
                         </>
                       ) : (
@@ -536,11 +536,11 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, onAcknowledge, 
             )}
 
             {/* تسليم جزئي — متاح للإرساليات التي عليها مبلغ مطلوب */}
-            {row.kind === "consignment" && row.sourceType !== "AFTERCARE_EXECUTION" && (Number(row.codDue) > 0 || row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST") && (
+            {row.kind === "consignment" && (row.shipmentMemberCount ?? 1) <= 1 && row.sourceType !== "AFTERCARE_EXECUTION" && (Number(row.codDue) > 0 || row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST") && (
               <button
                 type="button"
-                onClick={onPartial}
                 disabled={busy}
+                onClick={onPartial}
                 className="flex items-center gap-1.5 rounded-lg border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/20 disabled:opacity-50"
               >
                 <AlertCircle aria-hidden className="size-3.5" /> {row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST" ? "سجّل المقبوض الفعلي" : "تسليم جزئي"}

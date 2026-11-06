@@ -549,8 +549,8 @@ export const deliveryRouter = router({
     }),
 
   /**
-   * الإقفال بتأكيدٍ واحد: المعدود يطابق ⇒ BALANCED؛ ينقص ⇒ SHORT بسببٍ مصنَّف من `shared/shortfallReason`
-   * (يُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة)؛ يزيد ⇒ رفضٌ خادميّ (الزيادة تحتاج مصدراً).
+   * الإقفال بتأكيدٍ واحد: يجب أن يطابق النقد المستلم الصافي المستحق للطرود المحددة كاملاً؛
+   * أي فرق يُرفض قبل التوريد، ويبقى التحقق المالي النهائي تحت أقفال الجهة والإرساليات.
    * البوّابة `deliveryCashierProcedure` (store:FULL بكاشير/مدير) — النقد يدخل الدرج فتُشترط ورديّته.
    */
   settleDaily: deliveryCashierProcedure
@@ -558,7 +558,7 @@ export const deliveryRouter = router({
       z.object({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
-        countedCash: moneyStr,
+        countedCash: moneyStr, expectedLines: z.array(z.object({ consignmentId: z.number().int().positive(), remaining: moneyStr })).min(1),
         shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
         shortfallNotes: z.string().trim().max(500).nullish(),
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
@@ -577,7 +577,7 @@ export const deliveryRouter = router({
             {
               partyId: input.partyId,
               branchId,
-              countedCash: input.countedCash,
+              countedCash: input.countedCash, expectedLines: input.expectedLines,
               shortfallReason: input.shortfallReason,
               shortfallNotes: input.shortfallNotes,
               shiftType: input.shiftType,
@@ -945,7 +945,7 @@ export const deliveryRouter = router({
             branchId,
             partyId: input.partyId,
             lines: input.lines,
-            countedCash: input.countedCash,
+            countedCash: input.countedCash, requireFullShipment: true,
             shiftType: input.shiftType,
             targetShiftId: input.targetShiftId ?? null,
             shortfall: input.shortfall as
@@ -988,13 +988,21 @@ export const deliveryRouter = router({
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
         /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
         targetShiftId: z.number().int().positive().nullish(),
-        statementNumber: z.string().trim().min(2).max(64),
+        statementNumber: z.string().trim().min(2).max(64), appendToStatement: z.boolean().optional(),
         statementDate: z.string().trim().min(8).max(10).nullish(),
         attachmentUrl: z.string().trim().max(2000).nullish(),
         deductionsTotal: moneyStr.nullish(),
         notes: z.string().trim().max(500).nullish(),
         lines: z
-          .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
+          .array(z.object({
+            consignmentId: z.number().int().positive(),
+            collectedAmount: moneyStr,
+            shortfallResponsibility: z.enum(["CUSTOMER", "DELIVERY_PARTY", "COURIER_CUSTODY"]).nullish(),
+            shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).nullish(),
+            expectedDue: moneyStr.nullish(),
+            expectedProven: moneyStr.nullish(),
+            zeroDeliveryConfirmed: z.boolean().optional(),
+          }))
           .min(1)
           .superRefine((lines, ctx) => {
             const seen = new Set<number>();
@@ -1019,7 +1027,7 @@ export const deliveryRouter = router({
       const res = await retryOnDeadlock(() => recordCompanyStatement({
         branchId,
         partyId: input.partyId,
-        statementNumber: input.statementNumber,
+        statementNumber: input.statementNumber, appendToStatement: input.appendToStatement,
         statementDate: input.statementDate ?? null,
         attachmentUrl: input.attachmentUrl ?? null,
         deductionsTotal: input.deductionsTotal ?? null,

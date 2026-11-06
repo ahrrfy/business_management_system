@@ -680,7 +680,7 @@ describe("atomic barcode batch dispatch", () => {
       ).toEqual(snapshots);
     },
   );
-  it("requires a classified reason for barcode partial collection and replays collection and remittance without duplicate AR or custody", async () => {
+  it("rejects partial barcode collection and replays full collection and remittance without duplicate AR or custody", async () => {
     await db()
       .update(s.invoices)
       .set({ paidAmount: "0", status: "PENDING", paymentMode: "COD" });
@@ -713,13 +713,15 @@ describe("atomic barcode batch dispatch", () => {
     };
     const beforeRejected = await collectionEffects();
     await expect(confirmWorkflowDelivery(baseProof, actor)).rejects.toThrow(
-      /سبب العجز/,
+      /كامل مطالبة الشحنة/,
     );
+    expect(await collectionEffects()).toEqual(beforeRejected);
+    await expect(confirmWorkflowDelivery({ ...baseProof, shortfallReason: "PARTIAL_REFUSAL" }, actor)).rejects.toThrow(/كامل مطالبة الشحنة/);
     expect(await collectionEffects()).toEqual(beforeRejected);
 
     const proof = {
       ...baseProof,
-      shortfallReason: "PARTIAL_REFUSAL",
+      collectedAmount: "20000",
     };
     expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
       consignmentId: dispatched.consignmentId,
@@ -736,12 +738,12 @@ describe("atomic barcode batch dispatch", () => {
       afterCollection.ledger
         .filter((row) => row.entryType === "COD_COLLECTED")
         .reduce((sum, row) => sum + Number(row.amount), 0),
-    ).toBe(15000);
+    ).toBe(20000);
     expect(
       afterCollection.ledger
         .filter((row) => row.entryType === "SHORTFALL_ASSIGNED")
         .reduce((sum, row) => sum + Number(row.amount), 0),
-    ).toBe(5000);
+    ).toBe(0);
     expect(afterCollection.receipts).toHaveLength(0);
     expect(afterCollection.remittances).toHaveLength(0);
     expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
@@ -761,7 +763,7 @@ describe("atomic barcode batch dispatch", () => {
       shiftType: "RETAIL" as const,
       targetShiftId: 1,
       lines: cashLines,
-      countedCash: "15000",
+      countedCash: "20000",
       clientRequestId: "workflow-partial-remittance",
     };
     expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
@@ -769,7 +771,7 @@ describe("atomic barcode batch dispatch", () => {
     });
     const afterRemittance = await collectionEffects();
     expect(afterRemittance.customers[0]?.currentBalance).toBe("0.00");
-    expect(afterRemittance.parties[0]?.currentBalance).toBe("5000.00");
+    expect(afterRemittance.parties[0]?.currentBalance).toBe("0.00");
     expect(afterRemittance.remittances).toHaveLength(1);
     expect(afterRemittance.receipts).toHaveLength(1);
     expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({

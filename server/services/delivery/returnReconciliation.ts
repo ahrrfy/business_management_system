@@ -20,9 +20,12 @@
  */
 
 import Decimal from "decimal.js";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { eq } from "drizzle-orm";
 import {
   deliveryConsignments,
+  deliveryShipmentMembers,
   onlineOrders,
   workOrders,
 } from "../../../drizzle/schema";
@@ -186,6 +189,55 @@ export async function reconcileDeliveryOnReturnTx(
         settledAt: targetSettledAt,
       })
       .where(eq(deliveryConsignments.id, Number(cn.id)));
+
+    // A return changes the amount the courier was told to collect. Bump the
+    // physical shipment leader's claim inside the same transaction so a stale
+    // confirmation cannot silently collect against the old amount.
+    if (amountToRelease.gt(0) && cn.parcelStatus !== "DELIVERED") {
+      const [membership] = await tx.select().from(deliveryShipmentMembers)
+        .where(eq(deliveryShipmentMembers.consignmentId, Number(cn.id))).for("share").limit(1);
+      const leaderId = Number(membership?.leaderConsignmentId ?? cn.id);
+      const remainingMembers = membership ? await tx.select({ cn: deliveryConsignments })
+        .from(deliveryShipmentMembers)
+        .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId))
+        .where(eq(deliveryShipmentMembers.leaderConsignmentId, leaderId)).for("share") : [];
+      const liveMembers = remainingMembers.filter(({ cn: member }) =>
+        !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(member.status) &&
+        !["CANCELLED", "RETURNED"].includes(member.parcelStatus));
+      const hasLiveClaim = !input.isFullReturn || liveMembers.length > 0;
+      const leader = leaderId === Number(cn.id) ? cn : (await tx.select().from(deliveryConsignments)
+        .where(eq(deliveryConsignments.id, leaderId)).for("update").limit(1))[0];
+      const inconsistentMember = remainingMembers.some(({ cn: member }) =>
+        Number(member.branchId) !== Number(cn.branchId) ||
+        ((liveMembers.some(({ cn: active }) => Number(active.id) === Number(member.id)) || money(member.deliveryFee).gt(0)) &&
+          Number(member.partyId) !== Number(cn.partyId)));
+      if (!leader || Number(leader.partyId) !== Number(cn.partyId) || Number(leader.branchId) !== Number(cn.branchId) ||
+          inconsistentMember || (membership && !remainingMembers.some(({ cn: member }) => Number(member.id) === leaderId))) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر تحديث مطالبة شحنة المرتجع", why: "قائد الشحنة لا يطابق روابط الجهة أو الفرع",
+          doThis: "راجع ارتباط فواتير الشحنة وجهتها قبل إعادة تسجيل المرتجع",
+        }) });
+      }
+      if (hasLiveClaim) {
+        const claimVersion = Number(leader.codClaimVersion) + 1;
+        const remainingClaim = membership ? liveMembers.reduce((total, { cn: member }) => total.plus(Decimal.max(
+          0, money(member.codAmount).minus(money(member.collectedAmount ?? "0")).minus(money(member.counterSettledAmount ?? "0")),
+        )), money(0)) : liveRemainingAfter;
+        await tx.update(deliveryConsignments).set({ codClaimVersion: claimVersion })
+          .where(eq(deliveryConsignments.id, leaderId));
+        if (leaderId !== Number(cn.id)) await tx.update(deliveryConsignments)
+          .set({ codClaimVersion: Number(cn.codClaimVersion) + 1 })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
+        await appendDeliveryEvent(tx, {
+          eventKey: `CN:${cn.id}:CLAIM_CHANGED:RETURN:${keySuffix}`,
+          consignmentId: leaderId,
+          eventType: "COD_CLAIM_CHANGED",
+          actorUserId: input.actor.userId,
+          payload: { source: "SALE_RETURN", invoiceId: input.invoiceId,
+            consignmentId: Number(cn.id), amountReleased: toDbMoney(amountToRelease), claimVersion, ackRequired: remainingClaim.gt(0) },
+        });
+      }
+    }
 
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${Number(cn.id)}:RETURN_SETTLEMENT:${keySuffix}`,

@@ -54,7 +54,11 @@ describe("current collection obligation", () => {
     state.fetching = false; state.hasNextPage = true; await render(); expect(confirm().disabled).toBe(true);
   });
 
-  it.each([13000, 5000])("recovers the immutable %i remittance after commit and a lost response without repeating delivery confirmation", async amount => {
+  it("does not allow manually changing the invoice remittance amount", async () => {
+    await render();
+    expect(host.querySelector<HTMLInputElement>('[aria-label="المبلغ المقبوض"]')?.disabled).toBe(true);
+  });
+  it.each([13000])("recovers the immutable %i remittance after commit and a lost response without repeating delivery confirmation", async amount => {
     const selected = { ...target, parcelStatus: "IN_TRANSIT" };
     state.rows = [{ ...state.rows[0], parcelStatus: "IN_TRANSIT" }];
     const receipt = { remittanceId: 91, remittanceNumber: "REM-91", netRemitted: String(amount), shortfallTotal: String(13000 - amount) };

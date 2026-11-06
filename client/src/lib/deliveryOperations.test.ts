@@ -5,6 +5,7 @@ import {
   manifestCanPrint,
   previewStatementImport,
   readStatementImportFile,
+  selectedShipmentRemittance,
 } from "./deliveryOperations";
 
 const candidates = [
@@ -28,6 +29,25 @@ const candidates = [
   },
 ];
 describe("delivery operational scope", () => {
+  it("builds remittance only from the scanned shipment, never older unrelated cash", () => {
+    const rows = [
+      { id: 1, cashInCourierCustody: "10000" },
+      { id: 2, cashInCourierCustody: "4000" },
+      { id: 3, cashInCourierCustody: "24000" },
+    ];
+    expect(selectedShipmentRemittance(rows, [{ key: "selected", memberIds: [3], expectedCash: "24000" }]))
+      .toEqual({ ok: true, total: "24000.00", lines: [{ consignmentId: 3, collectedAmount: "24000.00" }] });
+  });
+  it("keeps all selected shipment members together and rejects a stale or incomplete preview", () => {
+    const rows = [{ id: 1, cashInCourierCustody: "100" }, { id: 2, cashInCourierCustody: "200" }];
+    const shipment = { key: "group", memberIds: [1, 2], expectedCash: "300" };
+    expect(selectedShipmentRemittance(rows, [shipment])).toMatchObject({ ok: true, total: "300.00", lines: [
+      { consignmentId: 1, collectedAmount: "100.00" }, { consignmentId: 2, collectedAmount: "200.00" },
+    ] });
+    expect(selectedShipmentRemittance(rows.slice(0, 1), [shipment])).toMatchObject({ ok: false });
+    expect(selectedShipmentRemittance(rows, [{ ...shipment, expectedCash: "250" }])).toMatchObject({ ok: false });
+    expect(selectedShipmentRemittance(rows, [shipment, shipment])).toMatchObject({ ok: false });
+  });
   it("requires every Arabic search term and matches Iraqi phone formats", () => {
     expect(
       filterOperationalRows(candidates, "احمد سلامي 9647801234567").map(
@@ -82,22 +102,27 @@ describe("company statement preview", () => {
     rows: Parameters<typeof previewStatementImport>[0],
     selected = new Set<number>(),
   ) => previewStatementImport(rows, candidates, 7, selected);
-  it("resolves exact IDs/tracking, preserves leading zeros, zero proof and exact Decimal amounts", () => {
+  it("accepts a partial amount only with an explicit invoice identity and rejects excess", () => {
+    expect(preview([{ consignmentId: 2, collectedAmount: "19" }])[0].verdict).toBe("READY");
+    expect(preview([{ consignmentId: 2, collectedAmount: "21" }])[0].verdict).not.toBe("READY");
+    expect(preview([{ consignmentId: 2, collectedAmount: "20" }])[0].verdict).toBe("READY");
+  });
+  it("resolves exact IDs/tracking, preserves leading zeros and exact full Decimal amounts", () => {
     expect(
-      preview([{ externalTrackingRef: "00111", collectedAmount: "٠٫١٠" }])[0],
+      preview([{ externalTrackingRef: "00111", collectedAmount: "١٠٠٫١٠" }])[0],
     ).toMatchObject({
       verdict: "READY",
       candidate: { id: 1 },
-      collectedAmount: "0.10",
+      collectedAmount: "100.10",
     });
     expect(
       preview([{ consignmentId: 2, collectedAmount: "0" }])[0],
-    ).toMatchObject({ verdict: "READY", collectedAmount: "0.00" });
+    ).toMatchObject({ verdict: "READY", allocations: [{ consignmentId: 2, collectedAmount: "0.00" }] });
     expect(
       preview([{ externalTrackingRef: "111", collectedAmount: "1" }])[0]
         .verdict,
     ).toBe("UNMATCHED");
-    expect(preview([{ consignmentId: 1, collectedAmount: ".5" }])[0].collectedAmount).toBe("0.50");
+    expect(preview([{ consignmentId: 1, collectedAmount: ".5" }])[0].verdict).toBe("READY");
   });
   it("never interprets file references as scanner HID keys or AIM barcode prefixes", () => {
     for (const tracking of ["ش", "]C1123", "00123"]) {
@@ -148,8 +173,8 @@ describe("company statement preview", () => {
   it("rejects all duplicate rows instead of silently choosing the first amount", () => {
     expect(
       preview([
-        { consignmentId: 1, collectedAmount: "0.10" },
-        { externalTrackingRef: "00111", collectedAmount: "1.00" },
+        { consignmentId: 1, collectedAmount: "100.10" },
+        { externalTrackingRef: "00111", collectedAmount: "100.10" },
       ]).map((r) => r.verdict),
     ).toEqual(["DUPLICATE", "DUPLICATE"]);
   });
@@ -166,11 +191,9 @@ describe("company statement preview", () => {
       { consignmentId: 2, collectedAmount: "20.00" },
     ] });
     expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.11" }], shipment, 7, new Set())[0].verdict).toBe("EXCESS_AMOUNT");
-    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "100.11" }], shipment, 7, new Set())[0]).toMatchObject({
-      verdict: "READY", allocations: [{ consignmentId: 1, collectedAmount: "100.10" }, { consignmentId: 2, collectedAmount: "0.01" }],
-    });
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "100.11" }], shipment, 7, new Set())[0].verdict).toBe("SHORT_AMOUNT");
     expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment, 7, new Set([2]))[0].verdict).toBe("ALREADY_SELECTED");
-    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment.slice(0, 1), 7, new Set())[0].verdict).toBe("INCOMPLETE_SHIPMENT");
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment.slice(0, 1), 7, new Set())[0].verdict).not.toBe("READY");
     expect(previewStatementImport([
       { externalTrackingRef: "00111", collectedAmount: "120.10" },
       { consignmentId: 2, collectedAmount: "20.00" },
@@ -179,6 +202,14 @@ describe("company statement preview", () => {
   it("keeps explicit consignment amounts per invoice when a file lists shipment members separately", () => {
     const shipment = candidates.map((row) => ({ ...row, shipmentLeaderConsignmentId: 1, shipmentInvoiceCount: 2 }));
     expect(previewStatementImport([{ consignmentId: 1, collectedAmount: "100.10" }, { consignmentId: 2, collectedAmount: "20.00" }], shipment, 7, new Set()).map((row) => row.verdict)).toEqual(["READY", "READY"]);
+    expect(previewStatementImport([{ consignmentId: 1, collectedAmount: "40" }], shipment, 7, new Set())[0].verdict).toBe("INCOMPLETE_SHIPMENT");
+    expect(previewStatementImport([{ consignmentId: 1, collectedAmount: "40" }], shipment, 7, new Set([2]))[0]).toMatchObject({ verdict: "READY", allocations: [{ consignmentId: 1, collectedAmount: "40.00" }] });
+  });
+  it("recognizes one tracking reference shared by members of the same physical shipment", () => {
+    const shipment = candidates.map((row) => ({ ...row, shipmentLeaderConsignmentId: 1,
+      shipmentInvoiceCount: 3, externalTrackingRef: null, shipmentTrackingRef: "ORIGINAL-SHIPMENT" }));
+    expect(previewStatementImport([{ externalTrackingRef: "ORIGINAL-SHIPMENT", collectedAmount: "120.10" }], shipment, 7, new Set())[0])
+      .toMatchObject({ verdict: "READY", allocations: [{ consignmentId: 1, collectedAmount: "100.10" }, { consignmentId: 2, collectedAmount: "20.00" }] });
   });
   it("rejects malformed money, excess precision, unsafe IDs and oversized money without coercion", () => {
     for (const value of [
@@ -234,7 +265,7 @@ describe("strict company statement file reader", () => {
     const workbook = new ExcelJS.Workbook(),
       sheet = workbook.addWorksheet("Statement");
     sheet.addRow(["externalTrackingRef", "collectedAmount"]);
-    sheet.addRow(["00111", 0.1]);
+    sheet.addRow(["00111", 100.1]);
     sheet.addRow([111, 1]);
     sheet.getCell("A3").numFmt = "00000";
     const bytes = await workbook.xlsx.writeBuffer();
