@@ -104,7 +104,7 @@ export function CompanyConsignmentActions({
   if (c.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}>الشحنة · {c.shipmentInvoiceCount} فواتير</Button>;
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {partialLabel && c.parcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={c.id} />}
+      {partialLabel && c.returnDeclaredAt == null && c.parcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={c.id} />}
       <Button
         size="sm"
         variant="outline"

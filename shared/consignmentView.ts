@@ -68,6 +68,11 @@ export function partialDeliveryStatusLabel(
 export function deriveConsignmentView(
   r: ConsignmentViewInput,
 ): ConsignmentViewKey {
+  if (
+    LIVE_STATUSES.includes(r.status as (typeof LIVE_STATUSES)[number]) &&
+    r.returnDeclaredAt != null
+  )
+    return "RETURN_DECLARED";
   const partialView = partialDeliveryViewKey(r);
   if (
     partialView === "DELIVERED_WITH_RETURN" &&
@@ -81,7 +86,6 @@ export function deriveConsignmentView(
   // (درس [[read-every-writer-before-you-rely-on-a-field]]: اقرأ مَن يكتب الحقل قبل البناء عليه.)
   if (!LIVE_STATUSES.includes(r.status as (typeof LIVE_STATUSES)[number]))
     return "CLOSED";
-  if (r.returnDeclaredAt != null) return "RETURN_DECLARED";
   if (r.parcelStatus === "FAILED") return "FAILED";
   // سُلِّم فعلاً والإغلاق لم يكتمل ⇒ النقد بيد الجهة بانتظار التوريد (الحيّ هنا DISPATCHED/PARTIAL).
   if (r.parcelStatus === "DELIVERED") return "DELIVERED_AWAITING_REMIT";

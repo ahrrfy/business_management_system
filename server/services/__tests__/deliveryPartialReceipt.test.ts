@@ -11,6 +11,7 @@ import { receiveWorkflowReturn } from "../delivery/workflow/returns";
 import { appendDeliveryEvent } from "../delivery/lifecycle";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "../delivery/custody";
 import { withTx } from "../tx";
+import { physicalReturnReceiptTx } from "../delivery/workflow/returnReceipt";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const db = () => getDb()!;
@@ -164,6 +165,129 @@ async function custody(consignmentId: number) {
 }
 
 describe("استلام المرتجع الفعلي على مستوى البند", () => {
+  it("يكمل الطرد عند استلام أ ثم ب ويحفظ دلتا كل محضر والمرتجع المخزني مرة واحدة", async () => {
+    const f = await fixture(true);
+    const movements = await db().select().from(s.inventoryMovements);
+    const first = await f.input("cumulative-a");
+    first.receivedLines[0]!.invoiceItemId = f.delivered.id;
+    await receiveWorkflowReturn(first, actor);
+    const last = await f.input("cumulative-b");
+    await receiveWorkflowReturn(last, actor);
+    const [cn] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, f.cn.id));
+    expect(cn.parcelStatus).toBe("RETURNED");
+    expect(cn.returnedAt).not.toBeNull();
+    const receipt = await withTx((tx) => physicalReturnReceiptTx(tx, cn));
+    expect(receipt?.eventKey).toBe(
+      `CN:${f.cn.id}:PHYSICAL_RETURN:cumulative-b`,
+    );
+    expect(receipt?.payload).toMatchObject({
+      scope: "ITEMS",
+      receivedLines: [{ invoiceItemId: f.returned.id, baseQuantity: 1 }],
+    });
+    const beforeReplay = await custody(f.cn.id);
+    expect((await receiveWorkflowReturn(first, actor)).idempotentReplay).toBe(
+      true,
+    );
+    expect((await receiveWorkflowReturn(last, actor)).idempotentReplay).toBe(
+      true,
+    );
+    expect(await custody(f.cn.id)).toEqual(beforeReplay);
+    expect(
+      beforeReplay.find((row) => row.invoiceItemId === f.returned.id)
+        ?.restockedClosedBaseQuantity,
+    ).toBe(1);
+    expect(
+      beforeReplay.find((row) => row.invoiceItemId === f.delivered.id)
+        ?.customerOwnedHeldBaseQuantity,
+    ).toBe(1);
+    expect(await db().select().from(s.inventoryMovements)).toEqual(movements);
+  });
+
+  it("يجمع دفعات البند نفسه ولا يكمل الطرد قبل استلام كل وحداته الأصلية", async () => {
+    const f = await fixture(false, 3);
+    const first = await f.input("cumulative-item-a");
+    first.receivedLines[0]!.invoiceItemId = f.delivered.id;
+    await receiveWorkflowReturn(first, actor);
+    await receiveWorkflowReturn(await f.input("cumulative-item-b1"), actor);
+    let [cn] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, f.cn.id));
+    expect(cn.parcelStatus).not.toBe("RETURNED");
+    const last = await f.input("cumulative-item-b2", 2);
+    await receiveWorkflowReturn(last, actor);
+    [cn] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, f.cn.id));
+    expect(cn.parcelStatus).toBe("RETURNED");
+    expect(
+      (await custody(f.cn.id)).find(
+        (row) => row.invoiceItemId === f.returned.id,
+      )?.customerOwnedHeldBaseQuantity,
+    ).toBe(3);
+    expect((await receiveWorkflowReturn(last, actor)).idempotentReplay).toBe(
+      true,
+    );
+  });
+
+  it("لا يجمع محضر محاولة إرسال أخرى أو محاضر لا تطابق هوية المصدر وإثبات الفحص", async () => {
+    const f = await fixture();
+    const proof = {
+      version: 1,
+      inspected: true,
+      branchId: f.cn.branchId,
+      sourceType: f.cn.sourceType,
+      sourceId: f.cn.sourceId,
+      invoiceId: f.cn.invoiceId,
+      workOrderId: f.cn.workOrderId,
+      fulfillmentRequestId: f.cn.fulfillmentRequestId,
+      claimVersion: f.cn.codClaimVersion,
+      dispatchedAt: f.cn.dispatchedAt.toISOString(),
+      evidence: "محضر تاريخي لا يخص المصدر الحالي",
+      scope: "ITEMS",
+      receivedLines: [{ invoiceItemId: f.delivered.id, baseQuantity: 1 }],
+    };
+    const invalidProofs = [
+      {
+        dispatchedAt: new Date(
+          f.cn.dispatchedAt.getTime() - 60_000,
+        ).toISOString(),
+      },
+      { sourceId: f.cn.sourceId + 100 },
+      { branchId: 999 },
+      { invoiceId: f.invoiceId + 100 },
+      { workOrderId: 999 },
+      { fulfillmentRequestId: 999 },
+      { inspected: false },
+      { claimVersion: 0 },
+      { evidence: "" },
+      { version: 2 },
+    ];
+    for (let index = 0; index < invalidProofs.length; index++) {
+      const invalid = invalidProofs[index]!;
+      await db()
+        .insert(s.deliveryEvents)
+        .values({
+          eventKey: `FOREIGN:PHYSICAL:${index}`,
+          consignmentId: f.cn.id,
+          eventType: "WORKFLOW_RETURN_RECEIVED",
+          actorUserId: 1,
+          payload: { ...proof, ...invalid },
+        });
+    }
+    await receiveWorkflowReturn(await f.input("current-scope-only"), actor);
+    const [cn] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, f.cn.id));
+    expect(cn.parcelStatus).not.toBe("RETURNED");
+    expect(cn.returnedAt).toBeNull();
+  });
+
   it("يحتسب الكمية المغلقة تجارياً مرة واحدة عند استلام بقية كمية البند لاحقاً", async () => {
     const f = await fixture(true, 3);
     const movements = await db().select().from(s.inventoryMovements);

@@ -28,6 +28,7 @@ import {
   recordFulfillmentMutationTx,
 } from "../../fulfillment/core";
 import { money, round2, toDbMoney } from "../../money";
+import { loadAssignedChargeClaimsTx } from "../../fulfillment/chargeDelivery";
 import { withTx, type Actor } from "../../tx";
 import { confirmConsignmentDelivery } from "../courier";
 import { appendDeliveryEvent } from "../lifecycle";
@@ -98,6 +99,7 @@ async function loadPlan(
     .where(eq(deliveryEvents.consignmentId, cn.id))
     .orderBy(asc(deliveryEvents.id));
   const events = await (lock ? eventQuery.for("share") : eventQuery);
+  const assignedCharges = await loadAssignedChargeClaimsTx(tx, cn.id, { lock });
   const returnQuery = tx
     .select({ id: accountingEntries.id, amount: accountingEntries.amount })
     .from(accountingEntries)
@@ -319,34 +321,37 @@ async function loadPlan(
           ? "هذه إرسالية من شحنة مجمعة؛ راجع أعضاء الشحنة قبل تسويتها"
           : cn.returnDeclaredAt != null
             ? "يوجد إعلان رجوع كامل؛ راجع نطاق الإعلان وقيود تحرير المطالبة قبل تسوية تسليم جزئي"
-            : !returnedLines.length ||
-                !deliveredLines.length ||
-                !money(invoice.returnedTotal).gt(0)
-              ? "يلزم مرتجع تجاري جزئي منفذ مع بضاعة متبقية مسلمة للعميل"
-              : !returns.length
-                ? "لا يوجد مستند مرتجع تجاري منفذ مرتبط بالفاتورة"
-                : !receivedReturnCovered
-                  ? "محاضر الاستلام لا تغطي بنود المرتجع التجاري وكمياته؛ طابق البنود المستلمة قبل التسوية"
-                  : items.some(
-                        ({ item }) =>
-                          !item.variantId || Number(item.baseQuantity) <= 0,
-                      ) ||
-                      custody.some(
-                        (row) =>
-                          !["STOCKED_ITEM"].includes(row.itemKind) ||
-                          row.reviewStatus === "REVIEW_REQUIRED",
-                      )
-                    ? "تتضمن العهدة بنوداً تحتاج مراجعة مكوناتها أو كمياتها الأصلية"
-                    : cashReceipts.some((row) => row.status === "COMPLETED") &&
-                        !cashAlreadyRecorded
-                      ? "يوجد إيصال نقد سابق مرتبط بالفاتورة؛ طابق تخصيصه من مساره الأصلي لمنع قبض مكرر"
-                      : cashInCustody.lt(0) ||
-                          invoiceRemaining.lt(0) ||
-                          !goods.gt(0)
-                        ? "لا يوجد مبلغ بضاعة موجب قابل للتوريد؛ راجع القيود السابقة"
-                        : cashInCustody.gt(0) && invoiceRemaining.gt(0)
-                          ? "يوجد تحصيل جزئي سابق؛ أكمل إثبات التحصيل من كشفه الأصلي أولاً"
-                          : null;
+            : assignedCharges.remaining.gt(0)
+              ? "للإرسالية مطالبات أجور إضافية؛ طابق البضاعة والأجور من تحصيل طلب التوصيل قبل استكمال التسوية"
+              : !returnedLines.length ||
+                  !deliveredLines.length ||
+                  !money(invoice.returnedTotal).gt(0)
+                ? "يلزم مرتجع تجاري جزئي منفذ مع بضاعة متبقية مسلمة للعميل"
+                : !returns.length
+                  ? "لا يوجد مستند مرتجع تجاري منفذ مرتبط بالفاتورة"
+                  : !receivedReturnCovered
+                    ? "محاضر الاستلام لا تغطي بنود المرتجع التجاري وكمياته؛ طابق البنود المستلمة قبل التسوية"
+                    : items.some(
+                          ({ item }) =>
+                            !item.variantId || Number(item.baseQuantity) <= 0,
+                        ) ||
+                        custody.some(
+                          (row) =>
+                            !["STOCKED_ITEM"].includes(row.itemKind) ||
+                            row.reviewStatus === "REVIEW_REQUIRED",
+                        )
+                      ? "تتضمن العهدة بنوداً تحتاج مراجعة مكوناتها أو كمياتها الأصلية"
+                      : cashReceipts.some(
+                            (row) => row.status === "COMPLETED",
+                          ) && !cashAlreadyRecorded
+                        ? "يوجد إيصال نقد سابق مرتبط بالفاتورة؛ طابق تخصيصه من مساره الأصلي لمنع قبض مكرر"
+                        : cashInCustody.lt(0) ||
+                            invoiceRemaining.lt(0) ||
+                            !goods.gt(0)
+                          ? "لا يوجد مبلغ بضاعة موجب قابل للتوريد؛ راجع القيود السابقة"
+                          : cashInCustody.gt(0) && invoiceRemaining.gt(0)
+                            ? "يوجد تحصيل جزئي سابق؛ أكمل إثبات التحصيل من كشفه الأصلي أولاً"
+                            : null;
   const version = fulfillmentFingerprint({
     cn,
     invoice,
@@ -363,6 +368,11 @@ async function loadPlan(
     priorReceipt,
     priorPosting,
     receiptUses,
+    assignedCharges: {
+      event: assignedCharges.event,
+      rows: assignedCharges.rows,
+      remaining: toDbMoney(assignedCharges.remaining),
+    },
   });
   return {
     cn,

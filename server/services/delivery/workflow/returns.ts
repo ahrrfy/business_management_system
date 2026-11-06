@@ -254,6 +254,75 @@ export function receiveWorkflowReturn(
               ),
             )
             .for("share");
+          const cumulativeReceived = new Map<number, number>();
+          for (const event of priorEvents) {
+            const payload = event.payload as Record<string, unknown> | null;
+            if (
+              !Number.isSafeInteger(event.id) ||
+              event.id <= 0 ||
+              !payload ||
+              payload.version !== 1 ||
+              payload.inspected !== true ||
+              payload.branchId !== row.branchId ||
+              payload.sourceType !== row.sourceType ||
+              payload.sourceId !== row.sourceId ||
+              payload.invoiceId !== row.invoiceId ||
+              payload.workOrderId !== row.workOrderId ||
+              payload.fulfillmentRequestId !== row.fulfillmentRequestId ||
+              payload.dispatchedAt !== row.dispatchedAt.toISOString() ||
+              typeof payload.claimVersion !== "number" ||
+              !Number.isSafeInteger(payload.claimVersion) ||
+              payload.claimVersion <= 0 ||
+              payload.claimVersion > row.codClaimVersion ||
+              typeof payload.evidence !== "string" ||
+              payload.evidence.trim().length < 5
+            )
+              continue;
+            if (payload.scope === undefined)
+              throw fulfillmentError(
+                "سُجل استلام هذا الطرد كاملاً سابقاً؛ راجع محاضر الاستلام",
+                "CONFLICT",
+              );
+            if (
+              payload.scope !== "ITEMS" ||
+              !Array.isArray(payload.receivedLines) ||
+              !payload.receivedLines.length ||
+              new Set(payload.receivedLines.map((line) => line?.invoiceItemId))
+                .size !== payload.receivedLines.length ||
+              payload.receivedLines.some(
+                (line) =>
+                  !line ||
+                  !Number.isSafeInteger(line.invoiceItemId) ||
+                  !Number.isSafeInteger(line.baseQuantity) ||
+                  line.baseQuantity <= 0 ||
+                  !items.some(
+                    (item) =>
+                      item.id === line.invoiceItemId &&
+                      line.baseQuantity <= Number(item.baseQuantity),
+                  ),
+              )
+            )
+              continue;
+            for (const line of payload.receivedLines) {
+              cumulativeReceived.set(
+                line.invoiceItemId,
+                (cumulativeReceived.get(line.invoiceItemId) ?? 0) +
+                  line.baseQuantity,
+              );
+            }
+          }
+          if (
+            items.some(
+              (item) =>
+                !Number.isSafeInteger(cumulativeReceived.get(item.id) ?? 0) ||
+                (cumulativeReceived.get(item.id) ?? 0) >
+                  Number(item.baseQuantity),
+            )
+          )
+            throw fulfillmentError(
+              "محاضر الاستلام السابقة تتجاوز كمية البند الأصلية؛ يلزم تدقيق العهدة",
+              "CONFLICT",
+            );
           for (const line of receivedLines) {
             const item = items.find((item) => item.id === line.invoiceItemId);
             const matching = custody.filter(
@@ -271,21 +340,8 @@ export function receiveWorkflowReturn(
               throw fulfillmentError(
                 "البند لا يطابق صنفاً مخزنياً منفرداً في فاتورة الطرد؛ لا يقبل البكج أو الخدمة",
               );
-            let priorQuantity = 0;
-            for (const event of priorEvents) {
-              const payload = event.payload as Record<string, unknown> | null;
-              if (payload?.dispatchedAt !== row.dispatchedAt.toISOString())
-                continue;
-              if (payload.scope !== "ITEMS") {
-                priorQuantity = Number(item.baseQuantity);
-                break;
-              }
-              if (Array.isArray(payload.receivedLines))
-                for (const prior of payload.receivedLines) {
-                  if (prior.invoiceItemId === line.invoiceItemId)
-                    priorQuantity += Number(prior.baseQuantity);
-                }
-            }
+            const priorQuantity =
+              cumulativeReceived.get(line.invoiceItemId) ?? 0;
             if (
               !Number.isSafeInteger(priorQuantity) ||
               priorQuantity + line.baseQuantity > Number(item.baseQuantity)
@@ -294,15 +350,16 @@ export function receiveWorkflowReturn(
                 "سُجل استلام كمية هذا البند سابقاً أو تجاوزت الكمية الأصلية؛ راجع محاضر الاستلام",
                 "CONFLICT",
               );
+            cumulativeReceived.set(
+              line.invoiceItemId,
+              priorQuantity + line.baseQuantity,
+            );
           }
           wholeParcel =
-            items.length === receivedLines.length &&
-            items.every((item) =>
-              receivedLines.some(
-                (line) =>
-                  line.invoiceItemId === item.id &&
-                  line.baseQuantity === Number(item.baseQuantity),
-              ),
+            items.length > 0 &&
+            items.every(
+              (item) =>
+                cumulativeReceived.get(item.id) === Number(item.baseQuantity),
             );
         }
         const documentEventKey = `CN:${row.id}:PHYSICAL_RETURN:${input.clientRequestId}`;

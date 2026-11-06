@@ -26,6 +26,20 @@ const live = (over: Partial<ConsignmentViewInput>): ConsignmentViewInput => ({
 });
 
 describe("deriveConsignmentView", () => {
+  it("إعلان الرجوع الكامل يبقي إجراء الاستلام ظاهراً مع وجود مرتجع جزئي", () => {
+    for (const parcelStatus of ["OUT_FOR_DELIVERY", "RETURNED"]) {
+      expect(
+        deriveConsignmentView(
+          live({
+            parcelStatus,
+            returnDeclaredAt: new Date(),
+            hasPartialReturn: true,
+            partialReturnReceived: true,
+          }),
+        ),
+      ).toBe("RETURN_DECLARED");
+    }
+  });
   it("العهدة التاريخية المرتجعة تبقي التصحيح متاحاً بعد توريد النقد بالكامل", () => {
     const row = live({
       status: "DELIVERED",

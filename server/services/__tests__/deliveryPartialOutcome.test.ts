@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
-import { deliveryCustodyItems } from "../../../drizzle/fulfillmentSchema";
+import {
+  deliveryCustodyItems,
+  fulfillmentCharges,
+  fulfillmentRequests,
+} from "../../../drizzle/fulfillmentSchema";
 import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { returnSale } from "../returnService";
 import { previewWorkflowSource } from "../delivery/workflow/preview";
 import { receiveWorkflowReturn } from "../delivery/workflow/returns";
+import { attachFulfillmentRequestClaimsTx } from "../fulfillment/chargeDelivery";
+import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const db = () => getDb()!;
@@ -72,7 +78,11 @@ beforeEach(async () => {
   }
 });
 
-async function fixture(wholeReceipt = false, wrongReceiptLine = false) {
+async function fixture(
+  wholeReceipt = false,
+  wrongReceiptLine = false,
+  beforeReceipt?: (consignmentId: number) => Promise<void>,
+) {
   const shift = await openShift(
     { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
     actor,
@@ -121,6 +131,7 @@ async function fixture(wholeReceipt = false, wrongReceiptLine = false) {
     },
     actor,
   );
+  await beforeReceipt?.(Number(cn.id));
   const p = await previewWorkflowSource(
     {
       source: { kind: "consignment", id: Number(cn.id) },
@@ -176,6 +187,7 @@ async function snapshot() {
     custody: await db().select().from(deliveryCustodyItems),
     events: await db().select().from(s.deliveryEvents),
     stock: await db().select().from(s.inventoryMovements),
+    charges: await db().select().from(fulfillmentCharges),
   };
 }
 
@@ -202,6 +214,157 @@ async function settlement(wholeReceipt = true) {
 }
 
 describe("تسليم جزئي مع مرتجع وتوريد فعلي", () => {
+  async function chargeFixture(paidAmount = "0.00", hasCharge = true) {
+    return fixture(true, false, async (consignmentId) => {
+      await db()
+        .insert(fulfillmentRequests)
+        .values({
+          id: 1,
+          branchId: 1,
+          customerId: 1,
+          requestNumber: "PARTIAL-CHARGE",
+          recipientName: "عميل",
+          recipientPhone: "07700000000",
+          deliveryAddress: "الفرع",
+          partyId: 1,
+          createdBy: 1,
+          clientRequestId: "partial-charge-request",
+          sourceHash: "a".repeat(64),
+        });
+      if (hasCharge)
+        await db()
+          .insert(fulfillmentCharges)
+          .values({
+            id: 1,
+            branchId: 1,
+            requestId: 1,
+            customerId: 1,
+            category: "SERVICE",
+            status: "APPROVED",
+            description: "خدمة إضافية",
+            amount: "1000.00",
+            createdBy: 1,
+            approvedBy: 1,
+            approvedAt: new Date(),
+            clientRequestId: "partial-charge",
+            sourceHash: "b".repeat(64),
+          });
+      await withTx((tx) =>
+        attachFulfillmentRequestClaimsTx(
+          tx,
+          {
+            requestId: 1,
+            consignmentId,
+            branchId: 1,
+            partyId: 1,
+            clientRequestId: "partial-charge-assignment",
+          },
+          actor,
+        ),
+      );
+      if (hasCharge && paidAmount !== "0.00")
+        await db()
+          .update(fulfillmentCharges)
+          .set({ paidAmount })
+          .where(eq(fulfillmentCharges.id, 1));
+    });
+  }
+  it("يسوي طلب التوصيل ذي إسناد الأجور الفارغ دون إدخال أجرة المندوب", async () => {
+    const f = await chargeFixture("0.00", false);
+    const service = await import("../delivery/workflow/partialOutcome");
+    const p = await service.previewPartialDeliverySettlement(
+      { consignmentId: f.consignmentId },
+      actor,
+    );
+    expect(p.allowed).toBe(true);
+    await service.settlePartialDeliveryOutcome(
+      {
+        consignmentId: f.consignmentId,
+        expectedVersion: p.version,
+        cashReceivedAmount: "7000.00",
+        targetShiftId: f.shiftId,
+        evidence:
+          "طلب توصيل دون أجور إضافية؛ سلم الباقي وقبض7000 وأجرة2000 وتورد7000 فقط",
+        clientRequestId: "partial-request-zero-charges",
+      },
+      actor,
+    );
+    const [invoice] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, f.invoiceId));
+    expect([
+      invoice.total,
+      invoice.returnedTotal,
+      invoice.paidAmount,
+      invoice.status,
+    ]).toEqual(["17000.00", "10000.00", "7000.00", "PAID"]);
+    expect(
+      (await db().select().from(s.receipts)).map((row) => [
+        row.direction,
+        row.amount,
+      ]),
+    ).toEqual([["IN", "7000.00"]]);
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe(
+      "0.00",
+    );
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+  });
+  it("يحجب الأجور الإضافية المخصصة من المعاينة دون آثار تسوية جزئية", async () => {
+    const f = await chargeFixture();
+    const service = await import("../delivery/workflow/partialOutcome");
+    const p = await service.previewPartialDeliverySettlement(
+      { consignmentId: f.consignmentId },
+      actor,
+    );
+    expect(p.allowed).toBe(false);
+    expect(p.blockedReason).toMatch(/أجور/);
+    const before = await snapshot();
+    await expect(
+      service.settlePartialDeliveryOutcome(
+        {
+          consignmentId: f.consignmentId,
+          expectedVersion: p.version,
+          cashReceivedAmount: "7000.00",
+          targetShiftId: f.shiftId,
+          evidence: "العميل دفع البضاعة فقط وتحتاج الأجور إلى مطابقة مستقلة",
+          clientRequestId: "partial-charge-rejected",
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/أجور/);
+    expect(await snapshot()).toEqual(before);
+  });
+  it("لا يحجب تاريخ الأجور المسددة ويكشف تغير تفاصيلها بعد المعاينة", async () => {
+    const f = await chargeFixture("1000.00");
+    const service = await import("../delivery/workflow/partialOutcome");
+    const p = await service.previewPartialDeliverySettlement(
+      { consignmentId: f.consignmentId },
+      actor,
+    );
+    expect(p.allowed).toBe(true);
+    await db()
+      .update(fulfillmentCharges)
+      .set({ description: "تغير مستند الأجر بعد المعاينة" })
+      .where(eq(fulfillmentCharges.id, 1));
+    const before = await snapshot();
+    await expect(
+      service.settlePartialDeliveryOutcome(
+        {
+          consignmentId: f.consignmentId,
+          expectedVersion: p.version,
+          cashReceivedAmount: "7000.00",
+          targetShiftId: f.shiftId,
+          evidence: "تمت مطابقة الأجور مع مستندها قبل تعديل الدليل",
+          clientRequestId: "partial-charge-stale",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await snapshot()).toEqual(before);
+  });
   it("استلام بند المرتجع وحده لا يحول بقية البضاعة إلى عهدة المكتبة", async () => {
     const f = await fixture();
     const [cn] = await db()
