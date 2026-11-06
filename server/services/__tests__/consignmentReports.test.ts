@@ -54,6 +54,12 @@ describe("بضاعة الأمانة ش٤ — استثناء التقييم", () 
     const row = bal.find((r) => r.consignorId === cid)!;
     expect(row.remainingQty).toBe(20);
     expect(row.remainingValueByShare).toBe("80000.00");
+    await db().update(s.branchStock).set({ quantity: 20.0001 }).where(eq(s.branchStock.variantId, Number(v.id)));
+    const fractional = (await consignmentBalancesReport()).find((r) => r.consignorId === cid)!;
+    expect(fractional.remainingQty).toBe(20.0001);
+    expect(fractional.remainingValueByShare).toBe("80000.40");
+    const statement = await consignmentSettlementStatement({ consignorId: cid, startDate: "2020-01-01", endDate: "2099-12-31" });
+    expect(statement?.remaining).toEqual({ qty: 20.0001, valueByShare: "80000.40" });
   });
 });
 

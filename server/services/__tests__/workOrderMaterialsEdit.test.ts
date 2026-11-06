@@ -554,11 +554,17 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
     expect(await loadMats(woId)).toHaveLength(1);
   });
 
-  it("كمّية غير صحيحة أو صفرية مرفوضة (الحذف بإسقاط الصنف لا بصفر)", async () => {
+  it("يرفض الصفر والسالب والدقة الزائدة ويقبل الكسر الموجب للمواد", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await expect(editMaterials(woId, [
-      { variantId: 1, baseQuantity: 0 },
-    ])).rejects.toThrowError(/صحيحاً موجباً/);
+    for (const baseQuantity of [0, -1, 0.00001]) {
+      await expect(editMaterials(woId, [
+        { variantId: 1, baseQuantity },
+      ])).rejects.toThrowError(/موجبة بدقة أربع/);
+    }
+    expect(await loadMats(woId)).toMatchObject([{ variantId: 1, baseQuantity: 10 }]);
+    await editMaterials(woId, [{ variantId: 1, baseQuantity: 1.5 }]);
+    expect(await loadMats(woId)).toMatchObject([{ variantId: 1, baseQuantity: 1.5 }]);
+    expect(await stockOf(1)).toBe(500); // لم يبدأ التنفيذ بعد.
   });
 
   it("أمرٌ مُسلَّم لا تُعدَّل بنوده", async () => {
