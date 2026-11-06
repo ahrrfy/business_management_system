@@ -37,6 +37,9 @@ import {
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { printInvoicePaymentReceipt, type InvoicePaymentReceiptData } from "@/lib/printing/cashierLifecycleReceipts";
 import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
+import { PartialDeliverySettlementButton } from "@/components/delivery/PartialDeliverySettlementButton";
+import { partialDeliveryStatusLabel } from "@shared/consignmentView";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
   printCompanyStatementReceiptAsync,
   type CompanyStatementReceiptData,
@@ -197,6 +200,9 @@ export function ReceptionCollectSection({
   const remittanceRetry = useRef<FinancialRetry | null>(null);
   const statementRetry = useRef<FinancialRetry | null>(null);
   const me = trpc.auth.me.useQuery();
+  const canProvePartial = useOperationPermission("delivery.manualProof").allowed;
+  const canRemitPartial = useOperationPermission("delivery.recordRemittance").allowed;
+  const canCompletePartial = canProvePartial && canRemitPartial;
   const staffConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
   const workflowConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
   const remittancePrintContext = useRef<{
@@ -227,6 +233,8 @@ export function ReceptionCollectSection({
     preview: WorkflowScanPreview;
     raw: string;
   } | null>(null);
+  const [partialCollection, setPartialCollection] = useState<RouterOutputs["delivery"]["workflow"]["previewPartialOutcome"] | null>(null);
+  const [partialSettlementOpen, setPartialSettlementOpen] = useState(false);
   const [pendingCustomerCollection, setPendingCustomerCollection] = useState<{
     preview: WorkflowScanPreview;
     groupKey: string;
@@ -239,6 +247,8 @@ export function ReceptionCollectSection({
     scanSequence.current++;
     acceptedGroups.current.clear();
     setScanContext(null);
+    setPartialCollection(null);
+    setPartialSettlementOpen(false);
     setPendingCustomerCollection(null);
     setSelectedCourierShipments([]);
     setReturnedCustodyOnly(false);
@@ -892,6 +902,7 @@ export function ReceptionCollectSection({
   }
 
   draftBusyRef.current =
+    partialSettlementOpen ||
     companyStatementMut.isPending ||
     remitMut.isPending ||
     pendingRemittance != null ||
@@ -903,6 +914,7 @@ export function ReceptionCollectSection({
     async (raw: string) => {
       if (draftBusyRef.current || !raw.trim()) return;
       const generation = ++scanSequence.current;
+      setPartialCollection(null);
       setIsSearchingCollect(true);
       try {
         const preview = await utils.delivery.workflow.preview.fetch({
@@ -944,6 +956,35 @@ export function ReceptionCollectSection({
         const partyId = timeline.consignment.partyId;
         const pInfo = (partiesQ.data ?? []).find((p) => p.id === partyId);
         const groupKey = preview.group?.key ?? `consignment:${leaderId}`;
+        const heldIds = new Set(
+          preview.returnState?.members
+            .filter((row) => row.received)
+            .map((row) => row.consignmentId) ?? [],
+        );
+        const cn = timeline.consignment;
+        const partialLabel = partialDeliveryStatusLabel({
+          ...cn,
+          hasPartialReturn: D(cn.invoiceReturnedTotal ?? 0).gt(0) &&
+            D(cn.invoiceTotal ?? 0).gt(cn.invoiceReturnedTotal ?? 0),
+        });
+        if (partialLabel && cn.parcelStatus !== "DELIVERED" && cn.returnDeclaredAt == null) {
+          const partial = await utils.delivery.workflow.previewPartialOutcome.fetch({ consignmentId: leaderId });
+          if (generation !== scanSequence.current || draftBusyRef.current) return;
+          const operational = timeline.shipment.members.filter(row => row.operational);
+          // Keep the original goods-and-charges flow when the narrower repair cannot own it.
+          const normalCollectionAllowed = heldIds.size === 0 && operational.length > 0 &&
+            operational.every(row => ["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"].includes(row.parcelStatus)) &&
+            preview.allowedActions.some(action => action.action === "collect" && action.allowed);
+          if (partial.allowed || !normalCollectionAllowed) {
+            switchCollectParty(partyId, pInfo?.partyType);
+            acceptedGroups.current.delete(groupKey);
+            setPendingCustomerCollection(null);
+            setPartialCollection(partial);
+            setCollectBarcodeInput("");
+            onBarcodeConsumed?.();
+            return;
+          }
+        }
         if (acceptedGroups.current.has(groupKey)) {
           notify.info(
             "هذه الشحنة محددة بالفعل؛ مسح أحد أعضائها لا يكرر الاختيار",
@@ -953,11 +994,6 @@ export function ReceptionCollectSection({
         }
         switchCollectParty(partyId, pInfo?.partyType);
         acceptedGroups.current.add(groupKey);
-        const heldIds = new Set(
-          preview.returnState?.members
-            .filter((row) => row.received)
-            .map((row) => row.consignmentId) ?? [],
-        );
         const groupMembers = timeline.shipment.members.filter(
           (row) => row.operational || heldIds.has(row.id),
         );
@@ -1142,6 +1178,32 @@ export function ReceptionCollectSection({
             preview={scanContext.preview}
             mode="collect"
           />
+          {partialCollection && (
+            <div className="space-y-2 rounded-md border p-3" role="status">
+              <p className="font-bold">تسليم جزئي — مرتجع مسجل</p>
+              <p>قيمة البضاعة للتوريد: {fmt(partialCollection.goodsAmount)} د.ع</p>
+              {partialCollection.feeCollection === "COURIER" && (
+                <p className="text-sm text-muted-foreground">أجرة المندوب {fmt(partialCollection.feeAmount)} د.ع خارج نقد المكتبة.</p>
+              )}
+              {!partialCollection.allowed ? (
+                <p role="alert" className="text-sm text-destructive">{partialCollection.blockedReason}</p>
+              ) : !canCompletePartial ? (
+                <p className="text-sm text-muted-foreground">استكمال هذه التسوية يحتاج صلاحية الإثبات اليدوي وتوريد المندوب؛ اطلب موظفاً مخولاً.</p>
+              ) : (
+                <>
+                  {!shift && !partialCollection.cashAlreadyRecorded && <p className="text-sm text-muted-foreground">افتح وردية لاستلام التوريد في درجها.</p>}
+                  <PartialDeliverySettlementButton
+                    consignmentId={partialCollection.consignmentId}
+                    targetShiftId={shift?.id}
+                    disabled={!shift && !partialCollection.cashAlreadyRecorded}
+                    label={partialCollection.cashAlreadyRecorded ? "تصحيح العهدة وربط التوريد السابق" : "تحصيل التسليم الجزئي في الوردية"}
+                    onOpenChange={setPartialSettlementOpen}
+                    onCompleted={() => { setPartialCollection(null); setScanContext(null); }}
+                  />
+                </>
+              )}
+            </div>
+          )}
           {pendingCustomerCollection &&
             pendingCustomerCollection.preview.source.kind ===
               scanContext.preview.source.kind &&
@@ -2092,7 +2154,7 @@ export function ReceptionCollectSection({
                     </div>
                   )}
 
-                  {shift && remittableTotal === 0 && totalObligation > 0 && (
+                  {shift && !partialCollection && remittableTotal === 0 && totalObligation > 0 && (
                     <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
                       <div className="flex items-center gap-2 font-bold text-xs text-foreground">
                         <Clock
