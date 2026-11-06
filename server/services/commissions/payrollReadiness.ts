@@ -3,8 +3,14 @@ import { eq } from "drizzle-orm";
 import { commissionRuns } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
 import { loadEligible } from "./engine";
+import {
+  getDigitalCommissionPayoutHold,
+  digitalCommissionPayoutHoldMessage,
+  type DigitalCommissionPayoutHold,
+} from "./digitalReconciliation";
 
 export interface CommissionPayrollReadiness {
+  digitalPayoutHold?: DigitalCommissionPayoutHold | null;
   required: boolean;
   eligibleEmployeeCount: number;
   runId: number | null;
@@ -24,6 +30,8 @@ async function commissionPayrollReadiness(
   let query = runner
     .select({
       id: commissionRuns.id,
+      period: commissionRuns.period,
+      computedAt: commissionRuns.computedAt,
       status: commissionRuns.status,
       createdBy: commissionRuns.createdBy,
       payrollRunId: commissionRuns.payrollRunId,
@@ -35,14 +43,19 @@ async function commissionPayrollReadiness(
   const run = rows[0] ?? null;
   const eligible = await loadEligible(runner, period);
   const required = eligible.length > 0;
+  const digitalPayoutHold = run
+    ? await getDigitalCommissionPayoutHold(runner, run)
+    : null;
   return {
+    digitalPayoutHold,
     required,
     eligibleEmployeeCount: eligible.length,
     runId: run == null ? null : Number(run.id),
     status: run?.status ?? null,
-    ready: !required || run?.status === "approved",
+    ready: !digitalPayoutHold && (!required || run?.status === "approved"),
     runCreatedBy: run?.createdBy == null ? null : Number(run.createdBy),
-    capturedPayrollRunId: run?.payrollRunId == null ? null : Number(run.payrollRunId),
+    capturedPayrollRunId:
+      run?.payrollRunId == null ? null : Number(run.payrollRunId),
   };
 }
 
@@ -55,8 +68,17 @@ export function getCommissionPayrollReadiness(runner: DB | Tx, period: string) {
  * يُستدعى بعد قفل payrollRuns وقبل اعتماد/دفع المسيّر. قفل period الفريد يمنع سباق
  * إنشاء تشغيلة عمولة بعد عبور الحارس، ويحافظ على payroll → commission كترتيب ثابت.
  */
-export async function assertCommissionArtifactReadyForPayrollTx(tx: Tx, period: string) {
+export async function assertCommissionArtifactReadyForPayrollTx(
+  tx: Tx,
+  period: string,
+) {
   const readiness = await commissionPayrollReadiness(tx, period, true);
+  if (readiness.digitalPayoutHold) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: digitalCommissionPayoutHoldMessage(period),
+    });
+  }
   if (!readiness.ready) {
     const state = readiness.status == null ? "مفقودة" : "مسودة غير معتمدة";
     throw new TRPCError({

@@ -1,3 +1,4 @@
+import { assertDigitalCommissionPayoutReady } from "../commissions/digitalReconciliation";
 // توليد مسيّر الرواتب الشهري (draft) — الدالّة الذرّية الرئيسية: رأس + بند لكل موظف غير منتهي
 // الخدمة (نشط/في إجازة)، بالتقاط تشغيلة العمولات المعتمدة لنفس الشهر، تطبيق المكوّنات القانونية،
 // استقطاع السلفة المقترح، وخصم الإجازة بلا راتب (أو نموذج الأجر بالحضور عند تفعيله).
@@ -181,6 +182,7 @@ export async function generatePayroll(period: string, actor: Actor) {
       .for("update");
     const commissionByEmp = new Map<number, Decimal>();
     if (commissionRun) {
+      await assertDigitalCommissionPayoutReady(tx, commissionRun);
       if (commissionRun.payrollRunId != null) {
         // دفاعي — لا يبلغه مسار سليم (مسيّر الشهر فريد والفكّ تلقائي مع حذف مسودته).
         throw new TRPCError({ code: "CONFLICT", message: "تشغيلة العمولات مرتبطة بمسيّر آخر — فكّ الربط أولاً." });

@@ -106,6 +106,13 @@ function describeCommissionBlock(
   period: string,
   myUserId: number,
 ): { title: string; body: string; selfBlocked: boolean } {
+  if (r.digitalPayoutHold) {
+    return {
+      title: `صرف عمولات ${period} القديمة متوقف للمراجعة`,
+      body: "توجد حركة كروت رقمية ضمن لقطة الاحتساب السابقة. اطلب من المالك تسوية الاستحقاق التاريخي صراحةً؛ تبقى المبالغ والاعتمادات محفوظة، ولا تعالج الحالة بإعادة توليد الرواتب أو إعادة احتساب المعتمد بخطة حالية.",
+      selfBlocked: false,
+    };
+  }
   if (r.status === "approved") {
     return {
       title: `عمولات ${period} معتمدة لكن غير مُلتقطة في هذا المسيّر`,
@@ -217,7 +224,9 @@ export default function Payroll() {
   );
   const commissionReadiness = commissionReadinessQ.data ?? null;
   const commissionUncaptured = commissionReadiness?.status === "approved" && commissionReadiness.capturedPayrollRunId == null;
-  const commissionBlocking = !!run && isDraft && !!commissionReadiness && (!commissionReadiness.ready || commissionUncaptured);
+  const commissionBlocking = !!run && !isPaid && !!commissionReadiness && (
+    !!commissionReadiness.digitalPayoutHold || (isDraft && (!commissionReadiness.ready || commissionUncaptured))
+  );
   const commissionBlock = commissionBlocking && run
     ? describeCommissionBlock(commissionReadiness!, run.period, Number(me.data?.id ?? 0))
     : null;
@@ -702,7 +711,7 @@ export default function Payroll() {
           )}
           {canPayOpenSalary && (
             <>
-              <Button size="sm" onClick={() => setPayOpen(true)} disabled={busy}>
+              <Button size="sm" onClick={() => setPayOpen(true)} disabled={busy || commissionBlocking}>
                 <Wallet className="size-4" /> {isPaid ? "إعادة دفع الالتزامات المفتوحة" : "صرف صافي الرواتب"}
               </Button>
               {isApproved && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `إعادة مسيّر رواتب ${run.period} إلى مسوّدة`, description: "سيُنشئ النظام عكساً استحقاقياً كاملاً، يعكس تسويات السلف، ويرفع رقم المراجعة قبل السماح بالتعديل. لا توجد حركة نقدية في هذه الخطوة.", confirmText: "عكس الاستحقاق وإعادة" }))) return; cancel.mutate({ id: Number(run.id), reason: "إعادة للمسودة من شاشة الرواتب" }); }} disabled={busy}>

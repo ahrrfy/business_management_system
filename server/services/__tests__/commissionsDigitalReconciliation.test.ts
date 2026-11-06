@@ -1,12 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { getCommissionPayrollReadiness } from "../commissions/payrollReadiness";
 import { computeCommissionRun } from "../commissions/engine";
 import { assignPlan, createPlan } from "../commissions/plans";
 import { approveRun } from "../commissions/runs";
+import {
+  requestCommissionRunApproval,
+  approveCommissionRunRequest,
+} from "../commissions/runApprovals";
 import {
   finalizeService,
   intentService,
@@ -335,7 +340,25 @@ async function historicalRun(
       })
       .where(eq(s.commissionRuns.id, run.runId));
   }
-  await approveRun(run.runId, approver);
+  const request = await requestCommissionRunApproval(
+    {
+      runId: run.runId,
+      requestKey: `historical-request-${run.runId}`,
+      scopeBranchId: null,
+      reason: "Commission evidence fixture",
+    },
+    manager,
+    null,
+  );
+  await approveCommissionRunRequest(
+    {
+      id: Number(request.id),
+      expectedVersion: Number(request.baseRunVersion),
+      decisionKey: `historical-decision-${run.runId}`,
+    },
+    approver,
+    null,
+  );
   return run.runId;
 }
 
@@ -347,6 +370,10 @@ async function frozenState() {
     payrollItems: await db().select().from(s.payrollItems),
     journals: await db().select().from(s.accountingEntries),
     receipts: await db().select().from(s.receipts),
+    obligations: await db().select().from(s.payrollObligations),
+    payments: await db().select().from(s.payrollAccountingEvents),
+    paymentLines: await db().select().from(s.payrollObligationAllocations),
+    approvals: await db().select().from(s.commissionRunApprovalRequests),
   };
 }
 
@@ -396,6 +423,7 @@ describe("frozen digital commission difference review", () => {
       const payroll = await generatePayroll(PERIOD, manager);
       await approvePayroll(Number(payroll!.id), approver);
       await payRun(Number(payroll!.id), approver);
+      await restoreLegacyPolicy(runId);
       // A mutable plan change cannot manufacture a historical payout comparison.
       await db().update(s.commissionPlanTiers).set({ ratePct: "90" });
       const before = await frozenState();
@@ -457,6 +485,7 @@ describe("frozen digital commission difference review", () => {
           rows: [{ lineId: row.lineId }],
         });
       }
+      await payRun(Number(payroll!.id), approver);
       expect(await frozenState()).toEqual(before);
     },
   );
@@ -742,5 +771,331 @@ describe("frozen digital commission difference review", () => {
     expect(cli(["--actor-id", "3", "--database", "erp_test"], env).status).toBe(
       1,
     );
+  });
+});
+
+/** Restore an unstamped historical fixture only in the isolated DB, before the
+ * action under test. Production never exposes a policy-marker input or bypass. */
+async function restoreLegacyPolicy(runId: number) {
+  const lines = await db()
+    .select()
+    .from(s.commissionRunLines)
+    .where(eq(s.commissionRunLines.runId, runId));
+  for (const line of lines) {
+    const detail = { ...(line.detail as Record<string, unknown>) };
+    delete detail.digitalExclusionPolicy;
+    await db()
+      .update(s.commissionRunLines)
+      .set({ detail })
+      .where(eq(s.commissionRunLines.id, line.id));
+  }
+}
+
+async function expectHistoricalHold(action: () => Promise<unknown>) {
+  const before = await frozenState();
+  await expect(action()).rejects.toMatchObject({
+    code: "PRECONDITION_FAILED",
+    message: expect.stringContaining("الاستحقاق التاريخي"),
+  });
+  expect(await frozenState()).toEqual(before);
+}
+
+describe("unpaid legacy digital commission boundary", () => {
+  it.each(["PREPAID", "POSTPAID"] as const)(
+    "new mixed %s calculation proceeds through actual payroll payment",
+    async (mode) => {
+      await sale(mode);
+      await plan();
+      const runId = await historicalRun();
+      const [line] = await db().select().from(s.commissionRunLines);
+      expect(line).toMatchObject({
+        commissionAmount: "300.00",
+        detail: expect.objectContaining({
+          digitalExclusionPolicy: "EXCLUDE_DIGITAL_V1",
+        }),
+      });
+      const payroll = await generatePayroll(PERIOD, manager);
+      await approvePayroll(Number(payroll!.id), approver);
+      await payRun(Number(payroll!.id), approver);
+      expect((await db().select().from(s.payrollRuns))[0].status).toBe("paid");
+      expect((await db().select().from(s.commissionRuns))[0].id).toBe(runId);
+    },
+  );
+
+  it("holds legacy approved-unpaid generation even after current assignments disappear", async () => {
+    await sale("PREPAID");
+    await plan();
+    const runId = await historicalRun(PERIOD, {
+      baseSales: "17250.00",
+      baseReturns: "0.00",
+      baseConsignDeduction: "0.00",
+      effectiveBase: "17250.00",
+      commissionAmount: "1725.00",
+    });
+    await restoreLegacyPolicy(runId);
+    await db().delete(s.commissionAssignments);
+    const readiness = await getCommissionPayrollReadiness(db(), PERIOD);
+    expect(readiness).toMatchObject({
+      required: false,
+      ready: false,
+      digitalPayoutHold: { affectedEmployeeCount: 1 },
+    });
+    await expectHistoricalHold(() => generatePayroll(PERIOD, manager));
+  });
+
+  it.each(["draft", "approved"] as const)(
+    "holds an already-linked legacy %s payroll without changing financial evidence",
+    async (status) => {
+      await sale("POSTPAID");
+      await plan();
+      const runId = await historicalRun(PERIOD, {
+        baseSales: "17250.00",
+        baseReturns: "0.00",
+        baseConsignDeduction: "13400.00",
+        effectiveBase: "3850.00",
+        commissionAmount: "385.00",
+      });
+      const payroll = await generatePayroll(PERIOD, manager);
+      expect((await db().select().from(s.payrollItems))[0].commission).toBe(
+        "385.00",
+      );
+      expect(
+        (await db().select().from(s.commissionRunApprovalRequests))[0].status,
+      ).toBe("APPROVED");
+      if (status === "approved")
+        await approvePayroll(Number(payroll!.id), approver);
+      await restoreLegacyPolicy(runId);
+      if (status === "approved")
+        await expectHistoricalHold(() => payRun(Number(payroll!.id), approver));
+      await expectHistoricalHold(() =>
+        approvePayroll(Number(payroll!.id), approver),
+      );
+    },
+  );
+
+  it("holds a legacy draft before irreversible commission approval", async () => {
+    await sale("PREPAID");
+    await plan();
+    const run = await computeCommissionRun(PERIOD, manager);
+    await restoreLegacyPolicy(run.runId);
+    const request = await requestCommissionRunApproval(
+      {
+        runId: run.runId,
+        requestKey: "legacy-draft-request",
+        scopeBranchId: null,
+        reason: "Historical commission review",
+      },
+      manager,
+      null,
+    );
+    await expectHistoricalHold(() =>
+      approveCommissionRunRequest(
+        {
+          id: Number(request.id),
+          expectedVersion: Number(request.baseRunVersion),
+          decisionKey: "legacy-draft-decision",
+        },
+        approver,
+        null,
+      ),
+    );
+    expect(
+      (await db().select().from(s.commissionRunApprovalRequests))[0].status,
+    ).toBe("PENDING");
+  });
+
+  it("ordinary legacy plus consignment proceeds through generation, approval and payment", async () => {
+    await plan();
+    await db().insert(s.invoices).values({
+      id: 801,
+      invoiceNumber: "GOODS-ONLY",
+      sourceType: "POS",
+      sourceId: "goods-only",
+      branchId: 2,
+      createdBy: 1,
+      subtotal: "3000",
+      total: "3000",
+    });
+    await db()
+      .insert(s.accountingEntries)
+      .values([
+        {
+          invoiceId: 801,
+          branchId: 2,
+          entryType: "SALE",
+          revenue: "3000",
+          amount: "3000",
+          entryDate: DATE,
+        },
+        {
+          invoiceId: 801,
+          branchId: 2,
+          supplierId: 1,
+          entryType: "PURCHASE",
+          amount: "1000",
+          dedupeKey: "CONSIG:801:1",
+          entryDate: DATE,
+        },
+      ]);
+    const runId = await historicalRun();
+    await restoreLegacyPolicy(runId);
+    const payroll = await generatePayroll(PERIOD, manager);
+    await approvePayroll(Number(payroll!.id), approver);
+    await payRun(Number(payroll!.id), approver);
+    expect(
+      (await db().select().from(s.commissionRunLines))[0].commissionAmount,
+    ).toBe("200.00");
+  });
+
+  it.each(["later-event", "other-user", "zero-share"] as const)(
+    "does not falsely hold %s digital activity",
+    async (reason) => {
+      const sold = await sale("POSTPAID");
+      if (reason !== "later-event") {
+        await db()
+          .delete(s.invoiceAttributions)
+          .where(eq(s.invoiceAttributions.invoiceId, sold.invoiceId));
+        await db()
+          .insert(s.invoiceAttributions)
+          .values({
+            invoiceId: sold.invoiceId,
+            branchId: 1,
+            userId: reason === "other-user" ? 2 : 1,
+            role: "CASHIER",
+            sharePct: reason === "zero-share" ? "0" : "1",
+            attributionMode: "DIRECT",
+            creditedBaseAmount: "0",
+          });
+      }
+      await plan();
+      const runId = await historicalRun();
+      await restoreLegacyPolicy(runId);
+      if (reason === "later-event") {
+        const [run] = await db().select().from(s.commissionRuns);
+        await db()
+          .update(s.accountingEntries)
+          .set({ createdAt: new Date(run.computedAt.getTime() + 60_000) })
+          .where(eq(s.accountingEntries.invoiceId, sold.invoiceId));
+      }
+      expect((await getCommissionPayrollReadiness(db(), PERIOD)).ready).toBe(
+        true,
+      );
+      const payroll = await generatePayroll(PERIOD, manager);
+      await approvePayroll(Number(payroll!.id), approver);
+      await payRun(Number(payroll!.id), approver);
+    },
+  );
+
+  it("uses company-wide beneficiary scope and catches a legacy digital return in its event month", async () => {
+    const sold = await sale("POSTPAID");
+    await plan();
+    await historicalRun();
+    await withTx((tx) =>
+      reversalService.approveReversal(
+        tx,
+        { ...sold, reason: "Historical return" },
+        manager,
+      ),
+    );
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sold.invoiceId));
+    for (const entry of entries)
+      await db()
+        .update(s.accountingEntries)
+        .set({
+          branchId: 2,
+          entryDate: new Date(
+            entry.entryType === "RETURN" ||
+              entry.dedupeKey?.startsWith("DIGITAL:APREV:")
+              ? "2026-07-01T00:00:00Z"
+              : "2026-06-10T00:00:00Z",
+          ),
+        })
+        .where(eq(s.accountingEntries.id, entry.id));
+    const runId = await historicalRun("2026-07");
+    await restoreLegacyPolicy(runId);
+    await expectHistoricalHold(() => generatePayroll("2026-07", manager));
+  });
+
+  it("does not apply a later branch recomputation timestamp to an untouched legacy line", async () => {
+    await sale("POSTPAID");
+    await plan();
+    const runId = await historicalRun();
+    await restoreLegacyPolicy(runId);
+    const [run] = await db().select().from(s.commissionRuns);
+    // Restore the earlier line snapshot that a later branch-only recompute kept.
+    await db()
+      .update(s.commissionRunLines)
+      .set({ createdAt: new Date(run.computedAt.getTime() - 60_000) });
+    expect((await getCommissionPayrollReadiness(db(), PERIOD)).ready).toBe(
+      true,
+    );
+    const payroll = await generatePayroll(PERIOD, manager);
+    await approvePayroll(Number(payroll!.id), approver);
+    await payRun(Number(payroll!.id), approver);
+  });
+
+  it("holds digital supplier accruals independently of a sale outside the run period", async () => {
+    const sold = await sale("POSTPAID");
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sold.invoiceId));
+    for (const entry of entries.filter((e) => e.entryType !== "PURCHASE"))
+      await db()
+        .update(s.accountingEntries)
+        .set({ entryDate: new Date("2026-05-31T00:00:00Z") })
+        .where(eq(s.accountingEntries.id, entry.id));
+    await plan();
+    const runId = await historicalRun();
+    await restoreLegacyPolicy(runId);
+    await expectHistoricalHold(() => generatePayroll(PERIOD, manager));
+  });
+
+  it("production read-only CLI requires exact server identity and persisted authority", async () => {
+    const identity = await db().execute(
+      sql`SELECT @@server_uuid AS serverUuid`,
+    );
+    const uuid = (identity[0] as unknown as { serverUuid: string }[])[0]
+      .serverUuid;
+    const database = new URL(process.env.DATABASE_URL!).pathname.slice(1);
+    const args = [
+      "--period",
+      PERIOD,
+      "--actor-id",
+      "3",
+      "--database",
+      database,
+      "--mode",
+      "production-read-only",
+      "--server-uuid",
+      uuid,
+    ];
+    const before = await frozenState();
+    const ok = cli(args);
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(JSON.parse(ok.stdout)).toMatchObject({ readOnly: true, rows: [] });
+    expect(
+      cli([...args.slice(0, -1), "00000000-0000-0000-0000-000000000000"])
+        .status,
+    ).toBe(1);
+    const denied = [...args];
+    denied[3] = "1";
+    expect(cli(denied).status).toBe(1);
+    expect(cli(args.slice(0, -2)).status).toBe(1);
+    for (const suffix of ["?host=untrusted.example", "#override"]) {
+      const env = {
+        ...process.env,
+        DATABASE_URL: process.env.DATABASE_URL + suffix,
+        TEST_DATABASE_URL: process.env.DATABASE_URL + suffix,
+      };
+      const invalid = cli(args, env);
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("without query/fragment");
+      expect(cli(args.slice(0, 6), env).status).toBe(1);
+    }
+    expect(await frozenState()).toEqual(before);
   });
 });

@@ -39,6 +39,7 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { computeNetSalesByUser } from "./base";
 import { assertPeriod, periodDateRange } from "./period";
+import { DIGITAL_COMMISSION_POLICY } from "./digitalReconciliation";
 
 export interface EligibleRow {
   employeeId: number;
@@ -584,6 +585,7 @@ export async function computeCommissionRun(
         fixedBonus: toDbMoney(fixedBonus),
         commissionAmount: toDbMoney(totalLineCommission),
         detail: {
+          digitalExclusionPolicy: DIGITAL_COMMISSION_POLICY,
           planName: plan.name,
           tierMode: plan.tierMode,
           tierThreshold: tier ? tier.threshold.toFixed(2) : null,

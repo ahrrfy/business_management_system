@@ -1,4 +1,4 @@
-/** Local review only. No write mode, production target, or URL-bearing output. */
+/** Read-only review. Production requires explicit identity; no write mode. */
 import "dotenv/config";
 import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -9,7 +9,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--help") {
     console.log(
-      "node --import tsx scripts/digital-commission-reconcile.mts --period YYYY-MM --actor-id ID --database NAME_test [--branch-id ID] [--user-id ID]\nReads TEST_DATABASE_URL on 127.0.0.1:3311 only; JSON output. Branch filters frozen employee-home-branch lines; bases follow company-wide user activity.",
+      "node --import tsx scripts/digital-commission-reconcile.mts --period YYYY-MM --actor-id ID --database NAME_test [--branch-id ID] [--user-id ID] [--mode production-read-only --server-uuid UUID]\nDefault reads TEST_DATABASE_URL on 127.0.0.1:3311 only. Production review reads DATABASE_URL and requires explicit database and server UUID; JSON output. Branch filters frozen employee-home-branch lines; bases follow company-wide user activity.",
     );
     return;
   }
@@ -19,6 +19,8 @@ async function main() {
     "--database",
     "--branch-id",
     "--user-id",
+    "--mode",
+    "--server-uuid",
   ]);
   const flags = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
@@ -42,24 +44,58 @@ async function main() {
   const userId = id("--user-id");
   if (!period || !/^\d{4}-(0[1-9]|1[0-2])$/.test(period))
     throw new Error("An explicit YYYY-MM period is required.");
-  if (!database || !/^[a-z0-9_]+_test$/.test(database))
-    throw new Error("An explicit local _test database name is required.");
+  const productionReview = flags.get("--mode") === "production-read-only";
+  if (flags.has("--mode") && !productionReview)
+    throw new Error("Invalid review mode; use --help.");
+  const serverUuid = flags.get("--server-uuid");
+  if (
+    productionReview &&
+    (!serverUuid ||
+      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(serverUuid))
+  )
+    throw new Error(
+      "An explicit server UUID is required for production read-only review.",
+    );
+  if (!productionReview && serverUuid)
+    throw new Error(
+      "Invalid server UUID argument outside production read-only mode.",
+    );
+  if (
+    !database ||
+    !/^[a-zA-Z0-9_]+$/.test(database) ||
+    (!productionReview && !/^[a-z0-9_]+_test$/.test(database))
+  )
+    throw new Error(
+      "An explicit database name is required (local default requires _test).",
+    );
   let target: URL;
   try {
-    target = new URL(process.env.TEST_DATABASE_URL ?? "");
+    target = new URL(
+      (productionReview
+        ? process.env.DATABASE_URL
+        : process.env.TEST_DATABASE_URL) ?? "",
+    );
   } catch {
-    throw new Error("Configure a valid isolated TEST_DATABASE_URL.");
+    throw new Error(
+      "Configure a valid database URL for the selected read-only mode.",
+    );
   }
   if (
     target.protocol !== "mysql:" ||
-    target.hostname !== "127.0.0.1" ||
-    target.port !== "3311" ||
+    target.search !== "" ||
+    target.hash !== "" ||
+    (!productionReview &&
+      (target.hostname !== "127.0.0.1" || target.port !== "3311")) ||
     decodeURIComponent(target.pathname.slice(1)) !== database
   )
     throw new Error(
-      "Target must match the explicit database on 127.0.0.1:3311.",
+      "Target must match the explicit database without query/fragment options; local default requires 127.0.0.1:3311.",
     );
-  const identity = { host: "127.0.0.1", port: 3311, database };
+  const identity = {
+    host: target.hostname,
+    port: target.port ? Number(target.port) : 3306,
+    database,
+  };
   console.error(JSON.stringify({ target: identity, period, readOnly: true }));
   // Construct connection options explicitly: URL query parameters cannot replace
   // the already validated host, database, timezone or connection limits.
@@ -74,6 +110,18 @@ async function main() {
     connectTimeout: 10_000,
   });
   try {
+    if (productionReview) {
+      const [rows] = await pool.query<mysql.RowDataPacket[]>(
+        "SELECT DATABASE() AS databaseName, @@server_uuid AS serverUuid",
+      );
+      if (
+        rows[0]?.databaseName !== database ||
+        String(rows[0]?.serverUuid).toLowerCase() !== serverUuid!.toLowerCase()
+      )
+        throw new Error(
+          "Target must match the explicit database and server UUID.",
+        );
+    }
     const db = drizzle(pool, { schema, mode: "default" });
     const report = await reviewDigitalCommissionDifferences(db, {
       period,
@@ -92,7 +140,7 @@ main().catch((error) => {
   // Expose only our fixed argument messages or the service's known authority code.
   const message = error instanceof Error ? error.message : "";
   const safeArgument =
-    /^(Invalid or repeated|Missing or invalid|An explicit|Configure a valid|Target must match)/.test(
+    /^(Invalid |Missing or invalid|An explicit|Configure a valid|Target must match)/.test(
       message,
     );
   console.error(

@@ -32,7 +32,12 @@ const sellerId = sql<number>`COALESCE(${invoiceAttributions.userId},
 const digitalReturn = sql`(COALESCE(${accountingEntries.postingProfile}, '') = 'RETURN_SALE_DIGITAL'
   OR COALESCE(${accountingEntries.dedupeKey}, '') LIKE 'DIGITAL:REV:%')`;
 
-async function readDigitalSources(tx: Tx, period: string, userIds: number[]) {
+async function readDigitalSources(
+  tx: DB | Tx,
+  period: string,
+  userIds: number[],
+  computedAt?: Date,
+) {
   if (!userIds.length) return [];
   const { from, toExclusive } = periodDateRange(period);
   // Match the base reader's event date, beneficiary and original-share semantics.
@@ -53,7 +58,12 @@ async function readDigitalSources(tx: Tx, period: string, userIds: number[]) {
     .innerJoin(invoices, eq(invoices.id, accountingEntries.invoiceId))
     .leftJoin(
       invoiceAttributions,
-      eq(invoiceAttributions.invoiceId, invoices.id),
+      and(
+        eq(invoiceAttributions.invoiceId, invoices.id),
+        computedAt
+          ? sql`${invoiceAttributions.createdAt} <= ${computedAt}`
+          : undefined,
+      ),
     )
     .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
     .where(
@@ -61,9 +71,14 @@ async function readDigitalSources(tx: Tx, period: string, userIds: number[]) {
         sql`${accountingEntries.entryDate} >= ${from}`,
         sql`${accountingEntries.entryDate} < ${toExclusive}`,
         inArray(sellerId, userIds),
+        sql`COALESCE(${invoiceAttributions.sharePct}, 1) > 0`,
+        computedAt
+          ? sql`${accountingEntries.createdAt} <= ${computedAt}`
+          : undefined,
         sql`((
         ${accountingEntries.entryType} = 'SALE' AND ${accountingEntries.supplierId} IS NULL
-        AND EXISTS (SELECT 1 FROM ${digitalSaleDetails} WHERE ${digitalSaleDetails.invoiceId} = ${invoices.id})
+        AND EXISTS (SELECT 1 FROM ${digitalSaleDetails} WHERE ${digitalSaleDetails.invoiceId} = ${invoices.id}
+          AND ${computedAt ? sql`${digitalSaleDetails.createdAt} <= ${computedAt}` : sql`TRUE`})
       ) OR (
         ${accountingEntries.entryType} = 'RETURN' AND ${accountingEntries.supplierId} IS NULL AND ${digitalReturn}
       ) OR (
@@ -141,6 +156,94 @@ async function readDigitalSources(tx: Tx, period: string, userIds: number[]) {
       digitalDetails: invoiceDetails,
     };
   });
+}
+
+/** Written only by the canonical draft calculator, never retrofitted to history. */
+export const DIGITAL_COMMISSION_POLICY = "EXCLUDE_DIGITAL_V1";
+
+export interface DigitalCommissionPayoutHold {
+  reason: "LEGACY_DIGITAL_COMMISSION_REQUIRES_RECONCILIATION";
+  affectedEmployeeCount: number;
+}
+
+/** No entitlement is recomputed here. Frozen legacy approvals require the owner
+ * to reconcile the historical evidence before any unpaid payroll can proceed.
+ * Current assignments/plans cannot establish what that approval entitled. */
+export async function getDigitalCommissionPayoutHold(
+  runner: DB | Tx,
+  run: Pick<typeof commissionRuns.$inferSelect, "id" | "period" | "computedAt">,
+): Promise<DigitalCommissionPayoutHold | null> {
+  const [paid] = await runner
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(
+      and(eq(payrollRuns.period, run.period), eq(payrollRuns.status, "paid")),
+    )
+    .limit(1);
+  if (paid) return null;
+  const lines = await runner
+    .select({
+      userId: commissionRunLines.userId,
+      detail: commissionRunLines.detail,
+      createdAt: commissionRunLines.createdAt,
+    })
+    .from(commissionRunLines)
+    .where(eq(commissionRunLines.runId, run.id));
+  const legacy = lines.filter(
+    ({ detail }) =>
+      !detail ||
+      typeof detail !== "object" ||
+      (detail as { digitalExclusionPolicy?: unknown })
+        .digitalExclusionPolicy !== DIGITAL_COMMISSION_POLICY,
+  );
+  // A branch-only recomputation advances the run timestamp but leaves the other
+  // branches' lines intact. Never attribute those later events to an older line.
+  const bySnapshot = new Map<number, typeof legacy>();
+  for (const line of legacy) {
+    const cutoff = Math.min(run.computedAt.getTime(), line.createdAt.getTime());
+    const group = bySnapshot.get(cutoff) ?? [];
+    group.push(line);
+    bySnapshot.set(cutoff, group);
+  }
+  let affectedEmployeeCount = 0;
+  for (const [cutoff, group] of Array.from(bySnapshot)) {
+    const sources = await readDigitalSources(
+      runner,
+      run.period,
+      Array.from(new Set(group.map((line) => line.userId))),
+      new Date(cutoff),
+    );
+    const affected = new Set(sources.map((source) => source.userId));
+    affectedEmployeeCount += group.filter((line) =>
+      affected.has(line.userId),
+    ).length;
+  }
+  return affectedEmployeeCount
+    ? {
+        reason: "LEGACY_DIGITAL_COMMISSION_REQUIRES_RECONCILIATION",
+        affectedEmployeeCount,
+      }
+    : null;
+}
+
+export function digitalCommissionPayoutHoldMessage(period: string) {
+  return appErrorMessage({
+    what: `تعذر اعتماد أو صرف عمولات ${period} القديمة غير المصروفة`,
+    why: "توجد حركة كروت رقمية ضمن لقطة الاحتساب السابقة دون إثبات سياسة استبعادها",
+    doThis:
+      "أوقف الصرف واطلب من المالك مراجعة وتسوية الاستحقاق التاريخي صراحةً؛ تبقى مبالغ واعتمادات العمولات والرواتب محفوظة ولا يعاد احتساب المعتمد بخطة حالية",
+  });
+}
+
+export async function assertDigitalCommissionPayoutReady(
+  tx: Tx,
+  run: Pick<typeof commissionRuns.$inferSelect, "id" | "period" | "computedAt">,
+) {
+  if (await getDigitalCommissionPayoutHold(tx, run))
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: digitalCommissionPayoutHoldMessage(run.period),
+    });
 }
 
 /** Read-only review of frozen approved runs. Never evaluates a mutable plan or

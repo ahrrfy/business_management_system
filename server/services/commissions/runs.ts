@@ -23,6 +23,7 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { assertDigitalCommissionPayoutReady } from "./digitalReconciliation";
 import { assertPeriodOpen } from "../periodLockService";
 import { requireDb, withTx, type Actor } from "../tx";
 
@@ -196,6 +197,7 @@ export async function approveRunInTx(
   // صفريّ الموظفين) يمرّ منه. الاعتماد append-only (لا unapproveRun فعليّ) فلا رجوع لو فات.
   await assertPeriodOpen(tx, new Date(`${run.period}-01`));
 
+  await assertDigitalCommissionPayoutReady(tx, run);
   await options.beforeApply?.(run);
   await tx
     .update(commissionRuns)
