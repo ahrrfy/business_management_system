@@ -84,8 +84,9 @@ export function assignedGoodsCodDue(
 export async function loadAssignedChargeClaimsTx(
   tx: Tx,
   consignmentId: number,
+  options: { lock?: boolean } = {},
 ) {
-  const [event] = await tx
+  const eventQuery = tx
     .select()
     .from(deliveryEvents)
     .where(
@@ -93,17 +94,13 @@ export async function loadAssignedChargeClaimsTx(
         eq(deliveryEvents.consignmentId, consignmentId),
         eq(deliveryEvents.eventType, "FULFILLMENT_CHARGES_ASSIGNED"),
       ),
-    )
-    .for("share")
-    .limit(1);
+    );
+  const [event] = await (options.lock === false ? eventQuery : eventQuery.for("share")).limit(1);
   const ids = chargeIds(event?.payload);
+  const chargeQuery = tx.select().from(fulfillmentCharges)
+    .where(inArray(fulfillmentCharges.id, ids)).orderBy(asc(fulfillmentCharges.id));
   const rows = ids.length
-    ? await tx
-        .select()
-        .from(fulfillmentCharges)
-        .where(inArray(fulfillmentCharges.id, ids))
-        .orderBy(asc(fulfillmentCharges.id))
-        .for("update")
+    ? await (options.lock === false ? chargeQuery : chargeQuery.for("update"))
     : [];
   if (rows.length !== ids.length)
     throw fulfillmentError(

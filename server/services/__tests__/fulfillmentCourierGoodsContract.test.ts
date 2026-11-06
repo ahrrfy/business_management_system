@@ -195,6 +195,7 @@ async function acknowledge(cn: typeof s.deliveryConsignments.$inferSelect) {
     {
       consignmentId: cn.id,
       expectedClaimVersion: cn.codClaimVersion,
+      expectedClaimAmount: cn.codAmount,
       clientRequestId: key(),
     },
     driver,
@@ -320,7 +321,7 @@ describe("fulfillment courier goods COD contract", () => {
       await acknowledge(cn);
       const before = await goodsSnapshot();
       await confirmConsignmentDelivery(
-        { consignmentId: cn.id, clientRequestId: key() },
+        { consignmentId: cn.id, expectedClaimVersion: cn.codClaimVersion, expectedClaimAmount: cn.codAmount, clientRequestId: key() },
         driver,
       );
       expect(await goodsSnapshot()).toEqual(before);
@@ -384,7 +385,9 @@ describe("fulfillment courier goods COD contract", () => {
     const before = await goodsSnapshot();
     const input = {
       consignmentId: cn.id,
+      expectedClaimVersion: cn.codClaimVersion,
       collectedAmount: "3000",
+      expectedClaimAmount: cn.codAmount,
       clientRequestId: key(),
     };
     await expect(confirmConsignmentDelivery(input, driver)).rejects.toThrow(
@@ -604,7 +607,7 @@ describe("explicit credit collection instruction", () => {
     expect(await withTx(tx => creditCollectionChoiceTx(tx, cn.id))).toBe(true);
     expect(await withTx(tx => preservedCreditCollectionChoiceTx(tx, [cn]))).toBe(true);
     await acknowledge(cn);
-    await confirmConsignmentDelivery({consignmentId:cn.id,clientRequestId:key()},driver);
+    await confirmConsignmentDelivery({consignmentId:cn.id,expectedClaimVersion:cn.codClaimVersion,expectedClaimAmount:cn.codAmount,clientRequestId:key()},driver);
     expect((await db().select().from(s.invoices))[0].paidAmount).toBe("10000.00");
     expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
     expect((await db().select().from(fulfillmentCharges)).find(x=>x.id===chargeId)?.paidAmount).toBe("2000.00");
@@ -640,7 +643,7 @@ describe("explicit credit collection instruction", () => {
     await expect(reassignDeliveryConsignment({...input,collectCreditOnDelivery:false},admin)).rejects.toThrow();
     await expect(reassignDeliveryConsignment({...input,clientRequestId:key()},admin)).rejects.toThrow(/نسخة/);
     await acknowledge(current);
-    await confirmConsignmentDelivery({consignmentId:cn.id,clientRequestId:key()},driver);
+    await confirmConsignmentDelivery({consignmentId:cn.id,expectedClaimVersion:current.codClaimVersion,expectedClaimAmount:current.codAmount,clientRequestId:key()},driver);
     expect((await db().select().from(s.invoices))[0]).toMatchObject({paidAmount:"35000.00",paymentMode:"CREDIT"});
     expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
     const payments=(await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN");

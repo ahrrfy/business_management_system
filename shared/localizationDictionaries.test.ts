@@ -18,6 +18,7 @@ import {
   DELIVERY_EVENT_TYPES,
   deliveryEventLabel,
   deliveryEventSourceLabel,
+  statementDifferenceEventDetails,
 } from "./deliveryEventType";
 import {
   DELIVERY_LEDGER_ENTRY_LABEL,
@@ -41,6 +42,16 @@ import {
   orderDepositStatusLabel,
 } from "./orderDeposit";
 import { paymentMethodCompact } from "./terms";
+
+describe("تفاصيل فرق كشف الشركة", () => {
+  it("exposes the documented invoice-level split without inventing missing amounts", () => {
+    const event = { statementNumber: "S-1", remittanceId: 12, dueBefore: "100.00", provenBefore: "70.00",
+      remitted: "40.00", custodyRemaining: "30.00", customerRemaining: "30.00", partyShortfall: "0.00" };
+    expect(statementDifferenceEventDetails(event)).toMatchObject(event);
+    expect(statementDifferenceEventDetails({ ...event, custodyRemaining: undefined })).toBeNull();
+    expect(statementDifferenceEventDetails({ ...event, remitted: "bad" })).toBeNull();
+  });
+});
 
 /**
  * حارسُ قواميس التسميات المستخرَجة من داخل المكوّنات (موجة D6، ٢/٩/٢٦).

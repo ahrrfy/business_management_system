@@ -1,30 +1,25 @@
 /**
  * التسوية اليوميّة بتأكيدٍ واحد (م١ PR-C): المعاينة محسوبةٌ سلفاً من الخادم (المتوقَّع · الأجرة ·
  * الاستقطاعات · الصافي · الأسطر · المرتجعات المُعلَنة)، وسؤالٌ واحد «المعدود فعلاً» مُملأٌ بالصافي:
- * طابق ⇒ «إقفال» · نقص ⇒ سبب العجز إلزاميّ (من `shared/shortfallReason`، يُقيَّد ذمّةً فوريّة على
- * الجهة خادمياً) · زاد ⇒ يُرسَل كما هو ورسالة الخادم تُعرض كما هي. النتيجة مُهيكَلة (BALANCED/SHORT
+ * يتطلب التوريد مطابقة الصافي كاملاً. النتيجة مُهيكَلة (BALANCED/SHORT
  * + رقم السند/الإيصال). المنطق النقيّ في `dailySettlement.ts`.
  */
 import { useEffect, useState } from "react";
 import { CheckCircle2, Printer, Scale, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ErrorState } from "@/components/PageState";
 import { fmt } from "@/lib/money";
+import { errMsg } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { DELIVERY_TERMS } from "@shared/deliveryTerminology";
-import { SHORTFALL_REASON_DESCRIPTION_AR, type ShortfallReason } from "@shared/shortfallReason";
 import { printRemittanceReceipt } from "./printRemittanceReceipt";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import {
-  SHORTFALL_OPTIONS,
   buildSettleDailyPayload,
-  canSettle,
   previewSignature,
   previewTotals,
   settleResultSummary,
@@ -49,9 +44,8 @@ export interface DailySettlementDialogProps {
 
 export function DailySettlementDialog({ party, open, onOpenChange, preview, previewLoading, previewError, onRetryPreview, shiftType, onSettle }: DailySettlementDialogProps) {
   const [counted, setCounted] = useState("");
-  const [reason, setReason] = useState<ShortfallReason | null>(null);
-  const [notes, setNotes] = useState("");
   const [pending, setPending] = useState(false);
+  const [submitted, setSubmitted] = useState<SettleDailyPayload | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [result, setResult] = useState<SettleDailyResult | null>(null);
   // بصمةُ المعاينة التي رآها المستخدم وأدخل المعدودَ عليها (Codex #1012 P1) — تُلتقَط أوّلَ وصولٍ.
@@ -62,11 +56,10 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
   useEffect(() => {
     if (!open) return;
     setCounted("");
-    setReason(null);
-    setNotes("");
     setServerError(null);
     setResult(null);
     setPending(false);
+    setSubmitted(null);
     setReviewedSig(null);
     setClientRequestId(crypto.randomUUID());
   }, [open, party?.id]);
@@ -82,42 +75,45 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
   const verdict = preview ? settlementVerdict(preview, counted) : null;
   const totals = preview ? previewTotals(preview) : null;
-  const settleEnabled = !!preview && !!verdict && canSettle(verdict, reason) && !pending && !result;
+  const settleEnabled = !!preview && verdict?.kind === "BALANCED" && !pending && !result && !submitted;
 
   const submit = async () => {
-    if (!preview || !verdict) return;
+    if ((!preview || !verdict) && !submitted) return;
     // Codex #1012 P1 — لا تُقفِل على مجموعةٍ تغيّرت منذ راجعها المستخدم: طردٌ سُلِّم بعد المعاينة يُضخِّم
     // العجزَ تحت السبب نفسه. نُعيد التقاط البصمة ونطلب مراجعةً بدل تسويةٍ لأرقامٍ لم يرها.
-    const liveSig = previewSignature(preview);
-    if (reviewedSig != null && liveSig !== reviewedSig) {
+    const liveSig = preview ? previewSignature(preview) : null;
+    if (!submitted && preview && reviewedSig != null && liveSig !== reviewedSig) {
       setReviewedSig(liveSig);
       setCounted(preview.net);
-      setReason(null);
       setServerError("تغيّرت المعاينة منذ فتحها (طرأ طردٌ أو تحرّك مبلغ) — راجِع الأرقام ثمّ أعد الإقفال.");
       return;
     }
-    const payload = buildSettleDailyPayload(preview, verdict, reason, shiftType, clientRequestId, notes);
+    const payload = submitted ?? (preview && verdict ? buildSettleDailyPayload(preview, verdict, null, shiftType, clientRequestId) : null);
     if (!payload) return;
     const settleWin = preopenDocumentWindow();
     setPending(true);
+    setSubmitted(payload);
     setServerError(null);
     try {
       const settled = await onSettle(payload);
       setResult(settled);
+      setSubmitted(null);
       printRemittanceReceipt(
         party?.name ?? "جهة التوصيل",
         {
           remittanceNumber: settled.remittanceNumber || `DR-${settled.remittanceId}`,
-          collectedTotal: settled.collectedTotal || preview.expectedCash || "0.00",
-          feesTotal: settled.feesTotal || preview.feeDue || "0.00",
-          netRemitted: settled.netRemitted || counted || preview.net || "0.00",
+          collectedTotal: settled.collectedTotal || preview?.expectedCash || "0.00",
+          feesTotal: settled.feesTotal || preview?.feeDue || "0.00",
+          netRemitted: settled.netRemitted || counted || preview?.net || "0.00",
           shortfallTotal: settled.shortfallTotal ?? "0.00",
         },
         settleWin ? { into: settleWin } : undefined,
       );
     } catch (error: unknown) {
       try { settleWin?.close(); } catch { /* noop */ }
-      setServerError(error instanceof Error ? error.message : String(error));
+      const status = (error as { data?: { httpStatus?: number } } | null)?.data?.httpStatus;
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setSubmitted(null);
+      setServerError(errMsg(error));
     } finally {
       setPending(false);
     }
@@ -126,14 +122,19 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
   const summary = result ? settleResultSummary(result) : null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && (pending || submitted)) return; onOpenChange(next); }}>
       <DialogContent className="sm:max-w-lg" dir="rtl">
         <DialogHeader>
           <DialogTitle className="inline-flex items-center gap-2"><Scale aria-hidden className="size-5" /> سوِّ اليوم — {party?.name}</DialogTitle>
           <DialogDescription>
-            الصافي محسوبٌ سلفاً من الطرود المُسلَّمة غير المورَّدة (متبقّيها الحيّ) ناقص استقطاعات الكشف. أدخل ما عُدَّ فعلاً وأقفل بتأكيدٍ واحد.
+            الصافي محسوبٌ سلفاً من الطرود المُسلَّمة غير المورَّدة. راجع الفواتير وتأكد من استلام كامل الصافي قبل الإقفال.
           </DialogDescription>
         </DialogHeader>
+
+        {submitted && <div role="alert" className="rounded-md border p-2 text-sm">
+          <p>نتيجة التوريد غير مؤكدة؛ استعدها باستخدام الطلب المحفوظ نفسه.</p>
+          <Button type="button" disabled={pending} onClick={() => void submit()}>استعادة نتيجة التوريد</Button>
+        </div>}
 
         {previewError ? (
           <ErrorState message={previewError} onRetry={onRetryPreview} />
@@ -211,30 +212,25 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
             <div>
               <Label htmlFor="daily-settlement-counted" className="mb-1 block text-xs font-bold">المعدود فعلاً (د.ع)</Label>
-              <MoneyInput id="daily-settlement-counted" value={counted} onChange={setCounted} ariaLabel="النقد المعدود فعلاً" className="h-11 text-end text-lg font-black tabular-nums" />
+              <MoneyInput id="daily-settlement-counted" value={counted} onChange={setCounted} disabled ariaLabel="النقد المعدود فعلاً" className="h-11 text-end text-lg font-black tabular-nums" />
               <p className={cn("mt-1 text-xs font-bold", verdict.kind === "BALANCED" ? "text-[var(--sem-pos)]" : verdict.kind === "SHORT" ? "text-[var(--sem-neg)]" : verdict.kind === "OVER" ? "text-[var(--sem-warn)]" : "text-muted-foreground")}>
                 {verdict.kind === "BALANCED" && "مطابق تماماً — إقفالٌ بتأكيدٍ واحد."}
-                {verdict.kind === "SHORT" && <>عجز <span dir="ltr">{fmt(verdict.diff)}</span> د.ع — يُقيَّد ذمّةً فوريّة على الجهة بسببٍ مصنَّف.</>}
-                {verdict.kind === "OVER" && <>زيادة <span dir="ltr">{fmt(verdict.diff)}</span> د.ع — تُرسَل كما هي والخادم يقرّر.</>}
-                {verdict.kind === "EMPTY" && "أدخل ما عُدَّ فعلاً."}
+                {verdict.kind === "SHORT" && "تغير الصافي منذ المعاينة؛ حدّثه قبل الإقفال."}
+                {verdict.kind === "OVER" && "تغير الصافي منذ المعاينة؛ حدّثه قبل الإقفال."}
+                {verdict.kind === "EMPTY" && "جارٍ إعداد الصافي."}
                 {verdict.kind === "INVALID" && "المبلغ ليس رقماً صالحاً."}
               </p>
             </div>
 
-            {verdict.kind === "SHORT" && (
-              <div>
-                <Label htmlFor="daily-settlement-reason" className="mb-1 block text-xs font-bold">سبب العجز (إلزاميّ)</Label>
-                <AppSelect id="daily-settlement-reason" value={reason ?? ""} onValueChange={(v) => setReason((v || null) as ShortfallReason | null)} aria-label="سبب العجز" className="h-10 text-sm">
-                  <option value="">اختر السبب</option>
-                  {SHORTFALL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </AppSelect>
-                {reason && <p className="mt-1 text-[11px] text-muted-foreground">{SHORTFALL_REASON_DESCRIPTION_AR[reason]}</p>}
-                <Input id="daily-settlement-notes" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="ملاحظة (اختياريّ) — مرجع المكالمة أو المحضر" aria-label="ملاحظة العجز" className="mt-2 h-9 text-xs" />
-              </div>
-            )}
+            {(verdict.kind === "SHORT" || verdict.kind === "OVER") && <Button type="button" variant="outline" onClick={() => {
+              setCounted(preview.net); setReviewedSig(previewSignature(preview)); setServerError(null);
+            }}>تحديث الصافي ومراجعته</Button>}
 
             {serverError && (
-              <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs font-bold text-destructive">{serverError}</p>
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs font-bold text-destructive">
+                <p>{serverError}</p>
+                {!submitted && <Button type="button" variant="outline" disabled={pending} onClick={() => { setServerError(null); onRetryPreview(); }}>تحديث المعاينة</Button>}
+              </div>
             )}
           </div>
         )}
@@ -271,9 +267,9 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
           ) : (
             <>
               <Button disabled={!settleEnabled} onClick={() => void submit()}>
-                {pending ? ACTION_LABELS.saving : verdict?.kind === "SHORT" ? "إقفال بعجزٍ مُصنَّف" : "إقفال"}
+                {pending ? ACTION_LABELS.saving : "إقفال"}
               </Button>
-              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>إلغاء</Button>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending || submitted != null}>إلغاء</Button>
             </>
           )}
         </DialogFooter>

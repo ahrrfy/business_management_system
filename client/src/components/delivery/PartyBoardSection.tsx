@@ -76,16 +76,17 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
     ]);
 
   const onSettle = async (payload: SettleDailyPayload) => {
+    // نُرسل فرعَ الفاعل صراحةً كي تطابق التسويةُ الفرعَ الذي عُرضت عليه المعاينة (لا الاشتقاق الخادميّ).
+    // يُترك خطأ tRPC الأصلي للحوار كي يميّز الرفض المؤكد من انقطاع النتيجة.
+    const res = await settle.mutateAsync({ ...payload, branchId: effectiveBranchId });
+    notify.ok(res.status === "BALANCED" ? "أُقفل اليوم مطابقاً" : "أُقفل اليوم بعجزٍ مُصنَّف", `سند التوريد #${res.remittanceId}`);
     try {
-      // نُرسل فرعَ الفاعل صراحةً كي تطابق التسويةُ الفرعَ الذي عُرضت عليه المعاينة (لا الاشتقاق الخادميّ).
-      const res = await settle.mutateAsync({ ...payload, branchId: effectiveBranchId });
-      notify.ok(res.status === "BALANCED" ? "أُقفل اليوم مطابقاً" : "أُقفل اليوم بعجزٍ مُصنَّف", `سند التوريد #${res.remittanceId}`);
       await invalidateAll();
-      return res;
-    } catch (error: unknown) {
-      // الزيادة وغيرها: رسالة الخادم كما هي — الحوار يعرضها بلا تفسيرٍ محلّيّ.
-      throw new Error(errMsg(error));
+    } catch {
+      // لا نُصنّف خطأ التحديث بعد نجاح التوريد على أنه رفض للعملية المالية.
+      notify.warn("تم التوريد وتعذّر تحديث اللوحة", "أعد تحميل الصفحة لعرض الأرصدة المحدّثة.");
     }
+    return res;
   };
 
   return (

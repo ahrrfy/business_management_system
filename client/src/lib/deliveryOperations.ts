@@ -4,7 +4,7 @@ import {
   type DeliverySearchTarget,
 } from "@shared/deliverySearch";
 import { digitsArabicToLatin } from "@shared/numberNormalize";
-import { D } from "@/lib/money";
+import { D, round2 } from "@/lib/money";
 import {
   shipmentStatementCandidates,
   statementQueueRemaining,
@@ -29,6 +29,44 @@ export interface OperationalSearchRow {
   invoiceNumber?: string | null;
   consignmentNumber?: string | null;
   externalTrackingRef?: string | null;
+}
+
+export type SelectedCourierShipment = {
+  key: string;
+  memberIds: number[];
+  expectedCash: string;
+};
+
+/** Build the cash receipt only from the shipments explicitly scanned by the operator. */
+export function selectedShipmentRemittance(
+  rows: readonly { id: number; cashInCourierCustody: string | number }[],
+  shipments: readonly SelectedCourierShipment[],
+): { ok: true; total: string; lines: { consignmentId: number; collectedAmount: string }[] } | { ok: false } {
+  if (!shipments.length) return { ok: false };
+  const seen = new Set<number>();
+  const keys = new Set<string>();
+  const lines: { consignmentId: number; collectedAmount: string }[] = [];
+  let total = D(0);
+  for (const shipment of shipments) {
+    if (keys.has(shipment.key) || !shipment.memberIds.length) return { ok: false };
+    keys.add(shipment.key);
+    const members = new Set(shipment.memberIds);
+    if (members.size !== shipment.memberIds.length || Array.from(members).some((id) => seen.has(id))) return { ok: false };
+    members.forEach((id) => seen.add(id));
+    let groupTotal = D(0);
+    for (const row of rows) {
+      if (!members.has(row.id)) continue;
+      const cash = round2(D(row.cashInCourierCustody));
+      if (!cash.isFinite() || cash.lt(0)) return { ok: false };
+      if (cash.gt(0)) {
+        lines.push({ consignmentId: row.id, collectedAmount: cash.toFixed(2) });
+        groupTotal = groupTotal.plus(cash);
+      }
+    }
+    if (!groupTotal.gt(0) || !groupTotal.eq(round2(D(shipment.expectedCash)))) return { ok: false };
+    total = total.plus(groupTotal);
+  }
+  return { ok: true, total: round2(total).toFixed(2), lines };
 }
 
 export function operationalSearchTarget(
@@ -191,6 +229,7 @@ export type StatementImportVerdict =
   | "INVALID_AMOUNT"
   | "INVALID_REFERENCE"
   | "EXCESS_AMOUNT"
+  | "SHORT_AMOUNT"
   | "INVALID_ID"
   | "UNMATCHED"
   | "AMBIGUOUS"
@@ -212,6 +251,7 @@ export const STATEMENT_IMPORT_REASON: Record<StatementImportVerdict, string> = {
   DUPLICATE: "إرسالية مكررة داخل الملف",
   ALREADY_SELECTED: "الإرسالية محددة مسبقاً؛ المبلغ الحالي محفوظ",
   EXCESS_AMOUNT: "المبلغ يتجاوز المتبقي على الإرسالية",
+  SHORT_AMOUNT: "المبلغ الجزئي يحتاج معرّف الإرسالية لتحديد الفاتورة دون تخمين",
 };
 const cellText = (value: unknown) =>
   digitsArabicToLatin(String(value ?? "")).trim();
@@ -233,9 +273,10 @@ export function previewStatementImport(
     const matches = rawId
       ? candidates.filter((c) => String(c.id) === rawId)
       : candidates.filter(
-          (c) => tracking && cellText(c.externalTrackingRef) === tracking,
+          (c) => tracking && [c.externalTrackingRef, c.shipmentTrackingRef].some((ref) => cellText(ref) === tracking),
         );
-    const candidate = matches.length === 1 ? matches[0] : undefined;
+    const matchedGroups = new Set(matches.map((row) => row.shipmentLeaderConsignmentId ?? row.id));
+    const candidate = matchedGroups.size === 1 ? matches[0] : undefined;
     // A carrier tracking reference identifies the physical shipment; an explicit internal ID identifies one invoice.
     const members = candidate
       ? (!rawId && candidate.shipmentLeaderConsignmentId != null
@@ -258,19 +299,19 @@ export function previewStatementImport(
       D(rawAmount || "0").gt("9999999999999.99")
     )
       verdict = "INVALID_AMOUNT";
-    else if (matches.length > 1) verdict = "AMBIGUOUS";
+    else if (matchedGroups.size > 1) verdict = "AMBIGUOUS";
     else if (!candidate) verdict = "UNMATCHED";
     else if (
       rawId &&
       tracking &&
-      cellText(candidate.externalTrackingRef) !== tracking
+      ![candidate.externalTrackingRef, candidate.shipmentTrackingRef].some((ref) => cellText(ref) === tracking)
     )
       verdict = "IDENTIFIER_CONFLICT";
-    else if (!rawId && (candidate.shipmentInvoiceCount ?? 1) > members.length)
-      verdict = "INCOMPLETE_SHIPMENT";
     else if (members.some((member) => selectedIds.has(member.id))) verdict = "ALREADY_SELECTED";
     else if (D(rawAmount).gt(members.reduce((sum, member) => sum.plus(statementQueueRemaining(member)), D(0))))
       verdict = "EXCESS_AMOUNT";
+    else if (!rawId && D(rawAmount).lt(members.reduce((sum, member) => sum.plus(statementQueueRemaining(member)), D(0))))
+      verdict = "SHORT_AMOUNT";
     let unallocated = verdict === "READY" ? D(rawAmount) : D(0);
     const allocations: Array<{ consignmentId: number; collectedAmount: string }> = verdict === "READY"
       ? [...members].sort((a, b) => a.id - b.id).map((member) => {
@@ -294,9 +335,13 @@ export function previewStatementImport(
   const counts = new Map<number, number>();
   for (const row of preview)
     for (const id of row.memberIds) counts.set(id, (counts.get(id) ?? 0) + 1);
-  return preview.map(({ memberIds, ...row }) =>
-    row.verdict === "READY" && memberIds.some((id) => (counts.get(id) ?? 0) > 1)
-      ? { ...row, verdict: "DUPLICATE" as const, collectedAmount: null, allocations: [] }
-      : row,
-  );
+  const validIds = new Set(preview.filter((row) => row.verdict === "READY").flatMap((row) => row.memberIds));
+  selectedIds.forEach((id) => validIds.add(id));
+  return preview.map(({ memberIds, ...row }) => {
+    if (row.verdict === "READY" && memberIds.some((id) => (counts.get(id) ?? 0) > 1))
+      return { ...row, verdict: "DUPLICATE" as const, collectedAmount: null, allocations: [] };
+    if (row.verdict === "READY" && row.candidate && shipmentStatementCandidates(candidates, row.candidate.id).some((member) => !validIds.has(member.id)))
+      return { ...row, verdict: "INCOMPLETE_SHIPMENT" as const, collectedAmount: null, allocations: [] };
+    return row;
+  });
 }

@@ -1,4 +1,31 @@
 import { sql, type SQL } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import type { deliveryLedgerEntries } from "../../../drizzle/schema";
+import { money } from "../money";
+
+/** Validate current ledger rows; an exact older snapshot is evidence, not another event. */
+export function verifiedConsignmentLedgerRows(
+  cn: { id: number | string; partyId: number | string; branchId: number | string },
+  rows: Array<typeof deliveryLedgerEntries.$inferSelect>,
+  what: string,
+): Array<typeof deliveryLedgerEntries.$inferSelect> {
+  const invalidIdentity = rows.some((row) => Number(row.partyId) !== Number(cn.partyId) ||
+    row.branchId == null || Number(row.branchId) !== Number(cn.branchId));
+  const effective = rows.filter((row) => row.eventKey !== `BACKFILL:CN:${cn.id}:${row.entryType}` ||
+    !rows.some((native) => !native.eventKey.startsWith("BACKFILL:") && native.entryType === row.entryType &&
+      Number(native.partyId) === Number(row.partyId) && Number(native.branchId) === Number(row.branchId) &&
+      money(native.amount).eq(money(row.amount)) && native.createdAt <= row.createdAt));
+  const ambiguous = effective.some((row) => row.eventKey.startsWith("BACKFILL:") &&
+    effective.some((native) => !native.eventKey.startsWith("BACKFILL:") && native.entryType === row.entryType));
+  if (invalidIdentity || ambiguous || rows.some((row) => money(row.amount).lt(0))) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what, why: "قيود الجهة أو الفرع أو القيود التاريخية غير متسقة أو ملتبسة",
+      doThis: "راجع مستندات الشحنة قبل التسوية",
+    }) });
+  }
+  return effective;
+}
 
 /**
  * A legacy snapshot is evidence, not a second occurrence of an already posted

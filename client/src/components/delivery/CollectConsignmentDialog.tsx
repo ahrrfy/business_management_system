@@ -157,6 +157,8 @@ export function CollectConsignmentDialog({
       .filter((r) => r.remainingDue > 0);
   }, [openCn.data]);
   const currentConsignment = consignment ? remittableRows.find(row => row.id === consignment.id) : null;
+  const deliveredRows = remittableRows.filter((row) => row.parcelStatus === "DELIVERED");
+  const isGroupedShipment = (currentConsignment?.shipmentInvoiceCount ?? 0) > 1;
 
   // حساب المتبقي للطرد الفردي المستهدف
   const singleRemainingDue = useMemo(() => {
@@ -165,16 +167,14 @@ export function CollectConsignmentDialog({
 
   // إجمالي المتبقي على جميع طرود الجهة
   const allPartyRemainingDue = useMemo(() => {
-    return remittableRows.reduce((sum, r) => sum + r.remainingDue, 0);
+    return deliveredRows.reduce((sum, r) => sum + r.remainingDue, 0);
   }, [remittableRows]);
 
   // المبلغ المتوقع توريده بناءً على النطاق المختار
   const expectedTotal = useMemo(() => {
-    if (settleScope === "SINGLE") {
-      return singleRemainingDue;
-    }
-    return allPartyRemainingDue;
-  }, [settleScope, singleRemainingDue, allPartyRemainingDue]);
+    const selected = settleScope === "SINGLE" ? (currentConsignment ? [currentConsignment] : []) : deliveredRows;
+    return selected.reduce((sum, row) => sum + row.remainingDue - Math.min(row.remainingDue, Number(row.feeWithholdingCash ?? 0)), 0);
+  }, [settleScope, currentConsignment, remittableRows]);
 
   // إعادة الضبط عند الفتح
   useEffect(() => {
@@ -267,14 +267,18 @@ export function CollectConsignmentDialog({
       notify.err("لم يتم تحديد جهة التوصيل");
       return;
     }
+    if (settleScope === "SINGLE" && isGroupedShipment) {
+      notify.err("هذه الإرسالية جزء من شحنة متعددة الفواتير؛ امسح الشحنة من شاشة التحصيل لتحديد فواتيرها كاملة");
+      return;
+    }
 
     if (isExcess) {
       notify.err("المبلغ المقبوض أكبر من الصافي المتوقع للتوريد");
       return;
     }
 
-    if (isShortfall && !shortfallReason) {
-      notify.err("يلزم تحديد سبب العجز المالي لتسجيله ذمة على المندوب");
+    if (isShortfall) {
+      notify.err("يجب أن يطابق النقد المستلم صافي التوريد كاملاً");
       return;
     }
 
@@ -284,7 +288,7 @@ export function CollectConsignmentDialog({
       if (settleScope === "SINGLE" && currentConsignment && confirmDeliveryFirst && currentConsignment.parcelStatus !== "DELIVERED") {
         await staffConfirm.mutateAsync({
           consignmentId: currentConsignment.id,
-          collectedAmount: String(countedNum),
+          collectedAmount: String(singleRemainingDue),
           evidence: "تسليم وتحصيل مباشر بالكاونتر",
           clientRequestId: crypto.randomUUID(),
           shortfallReason: isShortfall && shortfallReason ? (shortfallReason as ShortfallReason) : undefined,
@@ -300,41 +304,23 @@ export function CollectConsignmentDialog({
         lines = [
           {
             consignmentId: consignment.id,
-            collectedAmount: String(countedNum),
+            collectedAmount: String(singleRemainingDue),
           },
         ];
       } else {
         // في حالة التصفية الشاملة لكافة طرود الجهة
-        if (remittableRows.length === 0) {
+        if (deliveredRows.length === 0) {
           try { remitWinRef.current?.close(); } catch { /* noop */ }
           remitWinRef.current = null;
           notify.err("لا توجد طرود مسلّمة بانتظار التوريد لهذه الجهة");
           return;
         }
 
-        if (countedNum === expectedTotal) {
-          // تطابق تام: كل طرد يُسدد كامل متبقيه
-          lines = remittableRows.map((r) => ({
+        {
+          lines = deliveredRows.map((r) => ({
             consignmentId: r.id,
             collectedAmount: String(r.remainingDue),
           }));
-        } else {
-          // توزيع تناسبي أكبر البواقي
-          let remainingBudget = countedNum;
-          lines = remittableRows.map((r, idx) => {
-            if (idx === remittableRows.length - 1) {
-              return {
-                consignmentId: r.id,
-                collectedAmount: String(Math.max(0, remainingBudget)),
-              };
-            }
-            const share = Math.min(r.remainingDue, remainingBudget);
-            remainingBudget -= share;
-            return {
-              consignmentId: r.id,
-              collectedAmount: String(share),
-            };
-          });
         }
       }
 
@@ -350,12 +336,7 @@ export function CollectConsignmentDialog({
         shiftType,
         lines: activeLines,
         countedCash: String(countedNum),
-        shortfall: isShortfall
-          ? {
-              reason: shortfallReason as ShortfallReason,
-              notes: shortfallNotes.trim() || null,
-            }
-          : null,
+        shortfall: null,
         clientRequestId,
       }, partyLabel: consignment?.partyName ?? partyName ?? "جهة التوصيل" });
     } catch (err: unknown) {
@@ -455,7 +436,7 @@ export function CollectConsignmentDialog({
                   {fmt(allPartyRemainingDue)} د.ع
                 </span>
                 <span className="text-[10px] text-muted-foreground mt-0.5">
-                  جميع الطرود المسلمة ({remittableRows.length} طرد)
+                  جميع الطرود المسلمة ({deliveredRows.length} طرد)
                 </span>
               </button>
             </div>
@@ -477,6 +458,7 @@ export function CollectConsignmentDialog({
               </label>
             </div>
           )}
+          {settleScope === "SINGLE" && isGroupedShipment && <p role="alert" className="text-sm font-bold text-destructive">هذه شحنة متعددة الفواتير. استخدم مسح الشحنة في شاشة التحصيل لتحديدها كاملة.</p>}
 
           {/* تحديد الوردية والدرج */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -524,7 +506,7 @@ export function CollectConsignmentDialog({
             <MoneyInput
               id="counted-cash-input"
               value={countedCash}
-              disabled={intentLocked}
+              disabled
               onChange={setCountedCash}
               className="h-12 text-lg font-black text-end tabular-nums border-2 border-emerald-600/30 focus-visible:border-emerald-600"
               ariaLabel="المبلغ المقبوض"
@@ -589,7 +571,8 @@ export function CollectConsignmentDialog({
               isPending ||
               countedNum <= 0 ||
               isExcess ||
-              (isShortfall && !shortfallReason) ||
+              isShortfall ||
+              (settleScope === "SINGLE" && isGroupedShipment) ||
               (settleScope === "SINGLE" && !consignment)
             }
             onClick={() => void handleSettle()}

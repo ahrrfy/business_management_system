@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
-import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { consignmentFeeDueSql, createFeeWithholdingPolicy } from "./fees";
+import { planDetachedShipmentFees } from "./detachedShipmentFees";
 import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 /**
  * **التسويةُ اليوميّة لجهة التوصيل — «المتوقَّع محسوبٌ سلفاً، والتأكيدُ واحد»** (م١، PR-2).
@@ -9,8 +10,7 @@ import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
  * لماذا: شاشةُ التوريد القائمة تطلب من الموظّف اختيارَ الأسطر وإدخالَ مبالغها ثمّ عدَّ النقد — بينما
  * النظام يعرف المتوقَّع (كلّ طردٍ مُسلَّم لم يُورَّد + متبقّيه الحيّ). فالمعاينةُ تحسبه، والتسويةُ
  * تستدعي **الآلية القائمة نفسها** (`recordDeliveryRemittanceInTx`) بكلّ الأسطر — لا نسخةَ ثانية
- * من التوريد تنجرف عن الأولى — وتُضيف قرار العجز بسببٍ مصنَّف (يُقيَّد ذمّةً على الجهة) أو
- * ترفض الزيادة (تحتاج مصدراً: سندُ قبضٍ مستقلّ).
+ * من التوريد تنجرف عن الأولى — ويجب أن يطابق النقد المستلم الصافي كاملاً.
  */
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
@@ -21,10 +21,7 @@ import type {
   SettlementPreviewLine,
   SettleDailyResult,
 } from "@shared/deliveryBoard";
-import {
-  isShortfallReason,
-  type ShortfallReason,
-} from "@shared/shortfallReason";
+import type { ShortfallReason } from "@shared/shortfallReason";
 import {
   computePartyExposure,
   type PartyExposureLedgerEntry,
@@ -122,11 +119,12 @@ async function loadSettlementLines(
       ),
     )
     .orderBy(deliveryConsignments.id);
-  const quoteFee = await createFeeWithholdingQuote(
+  const feePolicy = await createFeeWithholdingPolicy(
     tx,
     scope.partyId,
     useCommission,
   );
+  const { quoteFee } = feePolicy;
   const lines: SettlementPreviewLine[] = [];
   for (const r of rows) {
     const cod = round2(money(r.codAmount));
@@ -161,6 +159,16 @@ async function loadSettlementLines(
       feeWithholding: feeWithholding.toFixed(2),
     });
   }
+  const detached = await planDetachedShipmentFees(tx, { partyId: scope.partyId, branchId: scope.branchId,
+    consignmentIds: lines.map((line) => line.consignmentId), useCommission, includePending: false, requireComplete: true, feePolicy });
+  if (detached.blocked || detached.uncovered || detached.incomplete) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر معاينة تسوية الشحنة", why: detached.incomplete ? "توجد فواتير أخرى للشحنة لم تُدرج في التسوية" : detached.blocked ? "أجرة على فاتورة مغلقة تحتاج مطابقة قاعدة العمولة" : "نقد الشحنة لا يغطي أجرتها كاملة",
+      doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
+    }) });
+  }
+  for (const line of lines) line.feeWithholding = round2(money(line.feeWithholding ?? "0")
+    .plus(detached.allocations.get(line.consignmentId) ?? 0)).toFixed(2);
   return lines;
 }
 
@@ -238,6 +246,8 @@ export async function previewDailySettlementTx(
 export interface SettleDailyInput extends DailySettlementScope {
   /** النقدُ الذي عدّه المستلِم فعلياً من يد الجهة. */
   countedCash: string;
+  /** Exact lines reviewed by the user; checked before any financial posting. */
+  expectedLines?: Array<{ consignmentId: number; remaining: string }>;
   /** إلزاميٌّ حين يقلّ المعدود عن المتوقَّع — من القائمة المغلقة `shared/shortfallReason.ts`. */
   shortfallReason?: ShortfallReason | string | null;
   shortfallNotes?: string | null;
@@ -280,6 +290,9 @@ export async function settleDailyTx(
     shiftType: input.shiftType ?? "RECEPTION",
     // ش-ISOLATION: الوردية المستلِمة جزء من هوية التسوية — إعادة بوردية مختلفة تعارض لا replay.
     targetShiftId: input.targetShiftId ?? null,
+    ...(input.expectedLines ? { expectedLines: input.expectedLines.map((line) => ({
+      consignmentId: Number(line.consignmentId), remaining: toDbMoney(line.remaining),
+    })).sort((a, b) => a.consignmentId - b.consignmentId) } : {}),
   });
   if (input.clientRequestId) {
     const existingId = await checkIdempotency(
@@ -325,6 +338,16 @@ export async function settleDailyTx(
     input,
     party.useCommission === true,
   );
+  if (input.expectedLines) {
+    const canonical = (items: Array<{ consignmentId: number; remaining: string }>) => items
+      .map((line) => `${Number(line.consignmentId)}:${toDbMoney(line.remaining)}`).sort();
+    if (JSON.stringify(canonical(input.expectedLines)) !== JSON.stringify(canonical(lines))) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تغيرت شحنات التسوية منذ المعاينة", why: "الإرساليات أو مبالغها لم تعد مطابقة لما راجعته",
+        doThis: "حدّث المعاينة وراجع الشحنات مجدداً قبل تأكيد التوريد",
+      }) });
+    }
+  }
   if (!lines.length) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -354,23 +377,10 @@ export async function settleDailyTx(
       }),
     });
   }
-  let shortfall: { reason: ShortfallReason; notes?: string | null } | null =
-    null;
-  if (counted.lt(expected)) {
-    const reason = input.shortfallReason;
-    if (!reason || !isShortfallReason(reason)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: `النقد المعدود أقلّ من المتوقَّع لجهة «${party.name}»`,
-          why: `المتوقَّع ${expected.toFixed(2)} والمعدود ${counted.toFixed(2)} — عجزٌ قدره ${expected.minus(counted).toFixed(2)} بلا سببٍ مصنَّف، والعجزُ يُقيَّد ذمّةً على الجهة فلا يُقبل بلا تصنيف`,
-          doThis:
-            "اختر سبب العجز من القائمة ثمّ أكّد؛ أو أعد عدّ النقد إن كان الفرق خطأً",
-        }),
-      });
-    }
-    shortfall = { reason, notes: input.shortfallNotes ?? null };
-  }
+  if (!counted.eq(expected)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+    what: `تعذر إقفال توريد جهة «${party.name}»`, why: `المستلم ${counted.toFixed(2)} لا يطابق الصافي ${expected.toFixed(2)}`,
+    doThis: "راجع الشحنات وأعد عدّ كامل النقد قبل التوريد",
+  }) });
   const res = await recordDeliveryRemittanceInTx(
     tx,
     {
@@ -381,9 +391,10 @@ export async function settleDailyTx(
         collectedAmount: l.remaining,
       })),
       countedCash: counted.toFixed(2),
+      requireFullShipment: true,
       shiftType: input.shiftType ?? "RECEPTION",
       clientRequestId: input.clientRequestId ?? null,
-      shortfall,
+      shortfall: null,
       targetShiftId: input.targetShiftId, // ش-ISOLATION: تمرير الدرج الصريح
     },
     actor,

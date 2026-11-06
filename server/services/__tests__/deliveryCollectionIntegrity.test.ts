@@ -443,7 +443,7 @@ describe("delivery collection, remittance and fee integrity", () => {
       if (!paused) { paused = true; reached(); await gate; }
       return originalLock(...args);
     });
-    const pending = recordCompanyStatement(statementInput(delivery, "CONCURRENT-CASH", "4000"), CASHIER);
+    const pending = recordCompanyStatement(statementInput(delivery, "CONCURRENT-CASH", "20000"), CASHIER);
     try {
       await snapshotReady;
       await recordDeliveryProof({
@@ -453,8 +453,8 @@ describe("delivery collection, remittance and fee integrity", () => {
       }, CASHIER);
       release();
       await pending;
-      await expectCollection(delivery, "12000", "12000", "4000", "8000");
-      expect(await financialState(delivery)).toMatchObject({ paymentCount: 1, receiptCount: 1 });
+      await expectCollection(delivery, "20000", "20000", "20000", "0");
+      expect(await financialState(delivery)).toMatchObject({ paymentCount: 2, receiptCount: 1 });
     } finally {
       release();
       spy.mockRestore();
@@ -641,26 +641,22 @@ describe("delivery collection, remittance and fee integrity", () => {
     });
   });
 
-  it("collects 12,000 + 4,000 + 4,000 once each and preserves the remaining customer debt after every statement", async () => {
+  it("rejects partial company statements before collecting the full invoice once", async () => {
     const delivery = await sale("three-part");
-    for (const [index, collected, paid] of [
-      [1, "12000", "12000"],
-      [2, "4000", "16000"],
-      [3, "4000", "20000"],
-    ] as const) {
-      const input = statementInput(delivery, `THREE-${index}`, collected);
-      const result = await recordCompanyStatement(input, CASHIER);
-      await expectCollection(delivery, paid, paid, paid);
-      const saved = await snapshot(delivery);
-      const replay = await recordCompanyStatement(input, CASHIER);
-      expect(replay.remittanceId).toBe(result.remittanceId);
-      expect(await snapshot(delivery)).toEqual(saved);
-    }
+    const before = await snapshot(delivery);
+    await expect(recordCompanyStatement(statementInput(delivery, "THREE-PARTIAL", "12000"), CASHIER)).rejects.toThrow();
+    expect(await snapshot(delivery)).toEqual(before);
+    const input = statementInput(delivery, "THREE-FULL", "20000");
+    const result = await recordCompanyStatement(input, CASHIER);
+    await expectCollection(delivery, "20000", "20000", "20000");
+    const saved = await snapshot(delivery);
+    expect((await recordCompanyStatement(input, CASHIER)).remittanceId).toBe(result.remittanceId);
+    expect(await snapshot(delivery)).toEqual(saved);
     expect(await financialState(delivery)).toMatchObject({
       status: "PAID",
       moneyStatus: "SETTLED",
-      paymentCount: 3,
-      receiptCount: 3,
+      paymentCount: 1,
+      receiptCount: 1,
     });
   });
 
@@ -696,42 +692,46 @@ describe("delivery collection, remittance and fee integrity", () => {
     );
     await expectCollection(delivery, "12000", "12000", "0", "12000");
     await recordCompanyStatement(
-      statementInput(delivery, "PARTIAL-CASH", "16000"),
-      CASHIER,
-    );
-    await expectCollection(delivery, "16000", "16000", "16000");
-    expect(await financialState(delivery)).toMatchObject({
-      paymentCount: 2,
-      status: "PARTIALLY_PAID",
-    });
-    await recordCompanyStatement(
-      statementInput(delivery, "PARTIAL-FINAL", "4000"),
+      statementInput(delivery, "PARTIAL-CASH", "20000"),
       CASHIER,
     );
     await expectCollection(delivery, "20000", "20000", "20000");
+    expect(await financialState(delivery)).toMatchObject({
+      paymentCount: 2,
+      status: "PAID",
+    });
   });
 
-  it("remits an already collected 20,000 in two company statements of 10,000 without changing the paid invoice", async () => {
+  it("does not invent supplementary custody when an unresolved historical opening may contain it", async () => {
+    const delivery = await sale("ambiguous-opening");
+    await recordDeliveryProof({ branchId: 1, partyId: 1, statementNumber: "OPENING-PROOF",
+      lines: [{ consignmentId: delivery.consignmentId, collectedAmount: "12000" }], clientRequestId: "opening-proof" }, CASHIER);
+    await db().insert(s.deliveryLedgerEntries).values({ eventKey: "BACKFILL:PARTY:1:CASH_CUSTODY", partyId: 1,
+      branchId: 1, entryType: "COD_COLLECTED", amount: "1000.00", createdAt: new Date(Date.now() + 1000) });
+    await db().update(s.deliveryParties).set({ currentBalance: "13000.00" }).where(eq(s.deliveryParties.id, 1));
+    const before = await snapshot(delivery);
+    await expect(recordCompanyStatement(statementInput(delivery, "OPENING-STATEMENT", "20000"), CASHIER)).rejects.toThrow(/عهدة افتتاحية/);
+    expect(await snapshot(delivery)).toEqual(before);
+  });
+
+  it("rejects a partial remittance of an already collected invoice and permits its full remainder", async () => {
     const delivery = await sale("prior-split");
     await staffProof(delivery, "prior-split-proof");
-    await recordCompanyStatement(
+    const before = await snapshot(delivery);
+    await expect(recordCompanyStatement(
       statementInput(delivery, "PRIOR-SPLIT-1", "10000"),
       CASHIER,
-    );
-    await expectCollection(delivery, "20000", "20000", "10000", "10000");
-    expect(await financialState(delivery)).toMatchObject({
-      paymentCount: 1,
-      moneyStatus: "PARTIAL",
-    });
+    )).rejects.toThrow();
+    expect(await snapshot(delivery)).toEqual(before);
     await recordCompanyStatement(
-      statementInput(delivery, "PRIOR-SPLIT-2", "10000"),
+      statementInput(delivery, "PRIOR-SPLIT-2", "20000"),
       CASHIER,
     );
     await expectCollection(delivery, "20000", "20000", "20000");
     expect(await financialState(delivery)).toMatchObject({
       paymentCount: 1,
       moneyStatus: "SETTLED",
-      receiptCount: 2,
+      receiptCount: 1,
     });
   });
 
@@ -754,10 +754,16 @@ describe("delivery collection, remittance and fee integrity", () => {
       }
       const confirm = () =>
         channel === "STAFF"
-          ? recordStaffDeliveryConfirmation(input, CASHIER)
+          ? recordStaffDeliveryConfirmation(input, CASHIER, { requireFullCollection: true })
           : channel === "MANUAL"
             ? recordManualDeliveryProof(input, MANAGER)
             : confirmConsignmentDelivery(input, DRIVER);
+      if (channel === "STAFF") {
+        const before = await snapshot(delivery);
+        await expect(confirm()).rejects.toThrow(/كامل/);
+        expect(await snapshot(delivery)).toEqual(before);
+        return;
+      }
       await confirm();
       await expectCollection(delivery, "20000", "0", "0", "20000", "20000");
       expect(await financialState(delivery)).toMatchObject({
@@ -799,7 +805,8 @@ describe("delivery collection, remittance and fee integrity", () => {
   it("keeps company proof of zero collection without a reason as customer debt with no cash or party shortfall", async () => {
     const delivery = await sale("company-zero");
     const result = await recordCompanyStatement(
-      statementInput(delivery, "ZERO-COMPANY", "0"),
+      { ...statementInput(delivery, "ZERO-COMPANY", "0"), lines: [{ consignmentId: delivery.consignmentId,
+        collectedAmount: "0", shortfallResponsibility: "CUSTOMER", expectedDue: "20000", expectedProven: "0", zeroDeliveryConfirmed: true }] },
       CASHIER,
     );
     expect(result.remittanceId).toBeNull();
@@ -813,19 +820,18 @@ describe("delivery collection, remittance and fee integrity", () => {
 
   it("rolls back a supplementary collection, customer balance and every monetary document when counted cash exceeds the statement", async () => {
     const delivery = await sale("rollback-partial");
-    await recordCompanyStatement(
-      statementInput(delivery, "ROLLBACK-FIRST", "12000"),
-      CASHIER,
-    );
+    await recordDeliveryProof({ branchId: 1, partyId: 1, statementNumber: "ROLLBACK-FIRST",
+      lines: [{ consignmentId: delivery.consignmentId, collectedAmount: "12000" }],
+      clientRequestId: "rollback-partial-proof" }, CASHIER);
     const saved = await snapshot(delivery);
     await expect(
       recordCompanyStatement(
-        statementInput(delivery, "ROLLBACK-BAD", "4000", "5000"),
+        statementInput(delivery, "ROLLBACK-BAD", "20000", "21000"),
         CASHIER,
       ),
     ).rejects.toThrow();
     expect(await snapshot(delivery)).toEqual(saved);
-    await expectCollection(delivery, "12000", "12000", "12000");
+    await expectCollection(delivery, "12000", "12000", "0", "12000");
   });
 
   it.each(["COURIER", "SHOP", "COUNTER"] as const)(

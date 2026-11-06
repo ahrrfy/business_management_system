@@ -1,6 +1,5 @@
 import { DeliverySourceLink } from "./DeliverySourceLink";
 import { Check, RotateCcw } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -11,7 +10,7 @@ import {
   DELIVERY_AGE_CLS,
 } from "@shared/deliveryAging";
 import type { ReturnConsignmentTarget } from "./ReturnConsignmentDialog";
-import { statementQueueRemaining } from "./companyStatementQueue";
+import { parseStatementAmount, statementQueueRemaining } from "./companyStatementQueue";
 
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
 
@@ -21,7 +20,6 @@ export function DeliveryConsignmentsTable({
   statementMode,
   canReturn,
   onOutcomeToggle,
-  onCollectedChange,
   onReturn,
   onOpenTimeline,
 }: {
@@ -56,12 +54,7 @@ export function DeliveryConsignmentsTable({
     Number(c.collectedAmount) === 0;
 
   const get = (c: OpenConsignment) =>
-    rows[c.id] ??
-    (statementMode
-      ? { outcome: "NONE" as const, collected: "0" }
-      : isSettleable(c)
-        ? { outcome: "COLLECTED" as const, collected: String(remainingOf(c)) }
-        : { outcome: "NONE" as const, collected: "0" });
+    rows[c.id] ?? { outcome: "NONE" as const, collected: "0" };
 
   return (
     <ScrollTableShell className="bg-card">
@@ -135,14 +128,7 @@ export function DeliveryConsignmentsTable({
                 </td>
                 <td className="p-3 text-left">
                   {remittable ? (
-                    <Input
-                      dir="ltr"
-                      inputMode="decimal"
-                      disabled={st.outcome !== "COLLECTED"}
-                      value={st.collected}
-                      onChange={(e) => onCollectedChange(c.id, e.target.value)}
-                      className="h-8 w-28 text-end tabular-nums"
-                    />
+                    <output className="tabular-nums" dir="ltr">{st.outcome === "COLLECTED" ? (statementMode ? (parseStatementAmount(st.collected) ? fmt(st.collected) : "—") : fmt(String(remaining))) : "—"}</output>
                   ) : "—"}
                 </td>
               </tr>

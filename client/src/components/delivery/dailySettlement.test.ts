@@ -35,20 +35,20 @@ describe("التسوية اليوميّة بتأكيدٍ واحد — الحكم
     expect(settlementVerdict(preview, "9,500")).toMatchObject({ kind: "INVALID", counted: null });
   });
 
-  it("الإقفال: المطابق بلا شرط، العجز بسببٍ مصنَّف، الزيادة تُرسَل والخادم يجيب، والفارغ/غير الصالح لا", () => {
+  it("الإقفال يقبل المطابق فقط ويرفض العجز والزيادة حتى مع السبب", () => {
     expect(canSettle(settlementVerdict(preview, "9500"), null)).toBe(true);
     expect(canSettle(settlementVerdict(preview, "9000"), null)).toBe(false);
-    expect(canSettle(settlementVerdict(preview, "9000"), "CUSTOMER_REQUESTED_DISCOUNT")).toBe(true);
-    expect(canSettle(settlementVerdict(preview, "9999"), null)).toBe(true);
+    expect(canSettle(settlementVerdict(preview, "9000"), "CUSTOMER_REQUESTED_DISCOUNT")).toBe(false);
+    expect(canSettle(settlementVerdict(preview, "9999"), null)).toBe(false);
     expect(canSettle(settlementVerdict(preview, ""), "OTHER")).toBe(false);
     expect(canSettle(settlementVerdict(preview, "x"), "OTHER")).toBe(false);
   });
 
-  it("الحمولة الخادميّة: العجز يحمل سببه، والمطابق لا يحمل سبباً ولو اختير", () => {
+  it("الحمولة الخادميّة: لا تُنشأ للعجز، والمطابق لا يحمل سبباً", () => {
     const short = buildSettleDailyPayload(preview, settlementVerdict(preview, "9000"), "PARTIAL_REFUSAL", "RECEPTION", "req-1");
-    expect(short).toEqual({ partyId: 3, branchId: 1, countedCash: "9000.00", shortfallReason: "PARTIAL_REFUSAL", shiftType: "RECEPTION", clientRequestId: "req-1" });
+    expect(short).toBeNull();
     const balanced = buildSettleDailyPayload(preview, settlementVerdict(preview, "9500"), "OTHER", "RETAIL", "req-2");
-    expect(balanced).toEqual({ partyId: 3, branchId: 1, countedCash: "9500.00", shiftType: "RETAIL", clientRequestId: "req-2" });
+    expect(balanced).toEqual({ partyId: 3, branchId: 1, countedCash: "9500.00", expectedLines: preview.lines.map((line) => ({ consignmentId: line.consignmentId, remaining: line.remaining })), shiftType: "RETAIL", clientRequestId: "req-2" });
     expect(buildSettleDailyPayload(preview, settlementVerdict(preview, "9000"), null, "RETAIL", "req-3")).toBeNull();
     expect(buildSettleDailyPayload(preview, settlementVerdict(preview, ""), null, "RETAIL", "req-4")).toBeNull();
   });

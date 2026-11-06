@@ -53,8 +53,8 @@ import {
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import {
-  createFeeWithholdingQuote,
-  ledgerFeeDue,
+  createFeeWithholdingPolicy,
+  verifiedLedgerFeeDue,
   postFeePayment,
 } from "./fees";
 import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
@@ -63,6 +63,8 @@ import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
+import { planDetachedShipmentFees } from "./detachedShipmentFees";
+import { loadShipmentMembersTx, operationalShipmentMembers } from "./shipments";
 import {
   deliveryCustomerCollectionIntent,
   deliveryRemitIntent,
@@ -84,6 +86,8 @@ export interface RemittanceInput {
   lines: RemittanceLineInput[];
   /** النقد الذي عدّه المستلم فعلياً؛ يجب أن يطابق صافي التوريد بعد استقطاع الكشف. */
   countedCash: string;
+  /** Server-selected policy: settle all outstanding cash for each selected shipment. */
+  requireFullShipment?: boolean;
   shiftType?: "RECEPTION" | "RETAIL";
   clientRequestId?: string | null;
   /**
@@ -99,6 +103,9 @@ export interface RemittanceInput {
    */
   companyStatement?: {
     statementNumber: string;
+    isContinuation?: boolean;
+    /** Internal only: later batches keep the original number on their shared statement header. */
+    storeOriginalNumber?: boolean;
     statementDate?: string | null;
     attachmentUrl?: string | null;
     /** استقطاعات الشركة من الحصيلة (أجور توصيل حسمتها قبل التوريد) — إفصاحٌ على المستند. */
@@ -113,6 +120,10 @@ export interface RemittanceInput {
       consignmentId: number;
       collectedAmount: string;
       shortfallReason?: string | null;
+      shortfallResponsibility?: "CUSTOMER" | "DELIVERY_PARTY" | "COURIER_CUSTODY" | null;
+      expectedDue?: string | null;
+      expectedProven?: string | null;
+      zeroDeliveryConfirmed?: boolean;
     }>;
   } | null;
   /**
@@ -229,6 +240,7 @@ function deliveryRemittancePayloadHashes(input: RemittanceInput): {
   const companyStatement = input.companyStatement
     ? {
         idempotencyVersion: 2,
+        ...(input.companyStatement.isContinuation ? { isContinuation: true } : {}),
         statementNumber: input.companyStatement.statementNumber.trim(),
         statementDate: input.companyStatement.statementDate?.trim() || null,
         attachmentUrl: input.companyStatement.attachmentUrl?.trim() || null,
@@ -242,6 +254,10 @@ function deliveryRemittancePayloadHashes(input: RemittanceInput): {
                 consignmentId: Number(line.consignmentId),
                 collectedAmount: toDbMoney(round2(money(line.collectedAmount))),
                 shortfallReason: line.shortfallReason?.trim() || null,
+                ...(line.shortfallResponsibility ? { shortfallResponsibility: line.shortfallResponsibility } : {}),
+                ...(line.expectedDue != null ? { expectedDue: toDbMoney(money(line.expectedDue)) } : {}),
+                ...(line.expectedProven != null ? { expectedProven: toDbMoney(money(line.expectedProven)) } : {}),
+                ...(line.zeroDeliveryConfirmed != null ? { zeroDeliveryConfirmed: line.zeroDeliveryConfirmed } : {}),
               }))
               .sort((a, b) => a.consignmentId - b.consignmentId)
           : null,
@@ -406,7 +422,10 @@ export async function recordDeliveryRemittanceInTx(
   input: RemittanceInput,
   actor: DeliveryTxActor,
   prelockedCashSource?: DeliveryRemittanceCashSourceLock,
+  options?: { allowPartialCompanyStatement?: boolean },
 ) {
+  const partialStatement = options?.allowPartialCompanyStatement === true &&
+    input.companyStatement != null && prelockedCashSource != null;
   const { payloadHash } = deliveryRemittancePayloadHashes(input);
   if (input.clientRequestId) {
     const replay = await findDeliveryRemittanceReplayInTx(tx, input);
@@ -458,6 +477,35 @@ export async function recordDeliveryRemittanceInTx(
       code: "BAD_REQUEST",
       message: "جهة التوصيل لا تخصّ فرع التوريد",
     });
+  }
+
+  // A shipment is a physical unit. Never settle one still-owing member while
+  // silently leaving another member of that same shipment out of the request.
+  if (input.requireFullShipment) {
+    const checked = new Set<number>();
+    const amountById = new Map(input.lines.map((line) => [line.consignmentId, round2(money(line.collectedAmount))]));
+    const statementIds = new Set(input.companyStatement?.statementLines?.map((line) => Number(line.consignmentId)) ?? []);
+    if (partialStatement && input.lines.some((line) => !statementIds.has(Number(line.consignmentId)))) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "أسطر التوريد لا تطابق أسطر كشف الشركة" });
+    }
+    for (const line of input.lines) {
+      if (checked.has(line.consignmentId) || money(line.collectedAmount).lte(0)) continue;
+      const members = operationalShipmentMembers(await loadShipmentMembersTx(tx, line.consignmentId, { currentRead: true }));
+      for (const member of members) {
+        checked.add(Number(member.id));
+        if (Number(member.partyId) !== input.partyId || Number(member.branchId) !== input.branchId) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر توريد الشحنة", why: "أحد أعضائها يخص جهة أو فرعاً آخر", doThis: "راجع جهة وفرع كل فاتورة مرتبطة بالشحنة" }) });
+        }
+        const due = round2(money(member.codAmount).minus(money(member.collectedAmount))
+          .minus(money(member.counterSettledAmount ?? "0"))
+          .minus(await shortfallAssignedForConsignmentTx(tx, Number(member.id), { partyId: input.partyId, branchId: input.branchId })));
+        if (due.gt(0) && (partialStatement
+          ? !statementIds.has(Number(member.id))
+          : !amountById.has(Number(member.id)) || !amountById.get(Number(member.id))!.eq(due))) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر توريد جزء من الشحنة", why: "فاتورة مفتوحة مفقودة أو مبلغها غير كامل", doThis: "أضف جميع فواتير الشحنة المفتوحة بالمبالغ الكاملة" }) });
+        }
+      }
+    }
   }
 
   // المرور ١: قفل + تحقّق + حساب (بلا كتابة) — ترتيب أقفال الإرساليات تصاعدياً يمنع الجمود.
@@ -541,6 +589,7 @@ export async function recordDeliveryRemittanceInTx(
     const shortfallAssigned = await shortfallAssignedForConsignmentTx(
       tx,
       Number(cn.id),
+      { partyId: input.partyId, branchId: input.branchId },
     );
     const remaining = round2(
       money(cn.codAmount)
@@ -553,8 +602,10 @@ export async function recordDeliveryRemittanceInTx(
         code: "BAD_REQUEST",
         message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}`,
       });
-    if (cn.fulfillmentRequestId != null || physicallyReturned) {
-      const proven = await unremittedCollectionForConsignmentTx(tx, Number(cn.id));
+    {
+      const proven = await unremittedCollectionForConsignmentTx(tx, Number(cn.id), {
+        partyId: input.partyId, branchId: input.branchId,
+      });
       if (collected.gt(proven))
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -564,6 +615,19 @@ export async function recordDeliveryRemittanceInTx(
             doThis: "ثبّت قبض الطلب من بوابة المندوب أو كشف الشركة أولاً، ثم ورّد النقد المثبت على الإرسالية نفسها",
           }),
         });
+      if (input.requireFullShipment && !partialStatement && !physicallyReturned &&
+          (!collected.eq(remaining) || !proven.eq(remaining))) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: `تعذر توريد الشحنة ${cn.consignmentNumber}`, why: `المتبقي ${remaining.toFixed(2)} والتحصيل المثبت ${proven.toFixed(2)} لا يطابقان المبلغ المطلوب`,
+          doThis: "طابق قبض الإرسالية وسجل الفرق قبل إعادة التوريد",
+        }) });
+      }
+      if (input.requireFullShipment && !partialStatement && physicallyReturned && !collected.eq(proven)) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: `تعذر توريد نقد المرتجع ${cn.consignmentNumber}`, why: `النقد المثبت غير المورد هو ${proven.toFixed(2)} د.ع`,
+          doThis: "طابق النقد المستلم بكامل المبلغ المثبت على المرتجع",
+        }) });
+      }
     }
     // مراجعة عدائية (٥/٨) — حزامٌ ثانٍ: السقف على متبقّي **الفاتورة** الحيّ لا الإرسالية وحدها.
     // codAmount لُقط لحظة الإرسال؛ تسديدٌ كاونتريّ لاحق (قبل حارس collectOnInvoice أو من مسارٍ
@@ -708,15 +772,18 @@ export async function recordDeliveryRemittanceInTx(
     });
   }
   let feeBudget = declaredDeduction.gt(0) ? declaredDeduction : collectedTotal;
+  let fullFeesTotal = new Decimal(0);
   const offsets = new Map<
     number,
     { amount: Decimal; cash: Decimal; due: Decimal }
   >();
-  const quoteFee = await createFeeWithholdingQuote(
+  const feePolicy = await createFeeWithholdingPolicy(
     tx,
     input.partyId,
     party.useCommissionForSettlement === true,
+    true,
   );
+  const { quoteFee } = feePolicy;
   for (const w of work) {
     if (
       w.cn.sourceType !== "ONLINE_ORDER" ||
@@ -724,9 +791,10 @@ export async function recordDeliveryRemittanceInTx(
       w.cn.parcelStatus !== "DELIVERED"
     )
       continue;
-    const due = Decimal.max(0, await ledgerFeeDue(tx, w.id));
+    const due = await verifiedLedgerFeeDue(tx, { id: w.id, partyId: Number(w.cn.partyId), branchId: Number(w.cn.branchId) });
     if (due.lte(0)) continue;
     const quotedCash = quoteFee(due, w.orderTotal);
+    fullFeesTotal = fullFeesTotal.plus(quotedCash);
     const cap = Decimal.min(w.collected, feeBudget);
     // A commission replaces the whole fee. Defer a split quote instead of inventing a rate.
     assertFeeWithholdingCapacity(due, quotedCash, cap);
@@ -737,12 +805,105 @@ export async function recordDeliveryRemittanceInTx(
     feeBudget = feeBudget.minus(cash);
     feesTotal = feesTotal.plus(cash);
   }
+  const detached = input.requireFullShipment
+    ? await planDetachedShipmentFees(tx, { partyId: input.partyId, branchId: input.branchId,
+        consignmentIds: work.map((w) => w.id), useCommission: party.useCommissionForSettlement === true,
+        includePending: false, currentRead: true, requireComplete: !partialStatement, feePolicy })
+    : { sources: [], allocations: new Map<number, Decimal>(), blocked: false, uncovered: false,
+        incomplete: false, blockedIds: new Set<number>(), uncoveredIds: new Set<number>() };
+  if (detached.blocked || detached.uncovered || detached.incomplete) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر حسم أجرة الشحنة", why: detached.incomplete
+        ? "فواتير الشحنة غير مكتملة في التوريد" : detached.blocked
+        ? "أجرة الشحنة مرتبطة بفاتورة مغلقة وتحتاج مطابقة قاعدة العمولة"
+        : "نقد فواتير هذه الشحنة لا يكفي لحسم أجرتها كاملة",
+      doThis: "راجع أجرة الشحنة وسوّها من مسارها المعتمد قبل التوريد",
+    }) });
+  }
+  if (partialStatement) {
+    // A zero-valued member can own the shipment fee. Project that fee only
+    // onto positive cash lines from the same shipment, never a neighbouring one.
+    const checked = new Set<number>();
+    for (const line of work) {
+      if (checked.has(line.id)) continue;
+      const members = operationalShipmentMembers(await loadShipmentMembersTx(tx, line.id, { currentRead: true }));
+      members.forEach((member) => checked.add(Number(member.id)));
+      const memberIds = new Set(members.map((member) => Number(member.id)));
+      const shipmentWork = work.filter((item) => memberIds.has(item.id));
+      for (const source of members) {
+        if (work.some((item) => item.id === Number(source.id)) || source.sourceType !== "ONLINE_ORDER" ||
+          source.feeCollection !== "SHOP") continue;
+        const sourceRemaining = round2(money(source.codAmount).minus(money(source.collectedAmount))
+          .minus(money(source.counterSettledAmount ?? "0"))
+          .minus(await shortfallAssignedForConsignmentTx(tx, Number(source.id), {
+            partyId: input.partyId, branchId: input.branchId,
+          })));
+        // Closed sources were already handled by planDetachedShipmentFees.
+        if (sourceRemaining.lte(0)) continue;
+        const amount = await verifiedLedgerFeeDue(tx, { id: Number(source.id), partyId: input.partyId, branchId: input.branchId });
+        if (amount.lte(0)) continue;
+        const invoice = source.invoiceId == null ? undefined : (await tx.select({
+          total: invoices.total, returnedTotal: invoices.returnedTotal, status: invoices.status,
+        }).from(invoices).where(eq(invoices.id, Number(source.invoiceId))).for("update").limit(1))[0];
+        if (feePolicy.hasOrderBasedCommission && (!invoice || ["CANCELLED", "RETURNED", "SUPERSEDED"].includes(invoice.status))) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "تعذر تحديد أساس عمولة أجرة الشحنة" });
+        }
+        const orderTotal = invoice ? Decimal.max(0, money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))) : money(0);
+        const cash = quoteFee(amount, orderTotal);
+        let left = cash;
+        for (const target of shipmentWork) {
+          const available = Decimal.max(0, target.collected.minus(offsets.get(target.id)?.cash ?? 0)
+            .minus(detached.allocations.get(target.id) ?? 0));
+          const take = Decimal.min(left, available);
+          if (take.gt(0)) detached.allocations.set(target.id,
+            round2((detached.allocations.get(target.id) ?? money(0)).plus(take)));
+          left = round2(left.minus(take));
+          if (left.isZero()) break;
+        }
+        if (left.gt(0)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر حسم أجرة الشحنة", why: "نقد فواتير هذه الشحنة لا يكفي لحسم أجرتها كاملة",
+          doThis: "راجع مبلغ الشحنة أو سوّ الأجرة من مسارها المستقل",
+        }) });
+        detached.sources.push({ cn: source, amount, cash });
+      }
+    }
+  }
+  const detachedTotal = round2(detached.sources.reduce((sum, source) => sum.plus(source.cash), money(0)));
+  if (detachedTotal.gt(feeBudget) || Array.from(detached.allocations).some(([id, amount]) => {
+    const row = work.find((item) => item.id === id);
+    return !row || amount.gt(row.collected.minus(offsets.get(id)?.cash ?? 0));
+  })) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر حسم أجرة الشحنة", why: "الاستقطاع أو نقد الفواتير المحددة لا يغطي أجرة الشحنة نفسها",
+      doThis: "طابق استقطاع هذه الشحنة كاملاً مع فواتيرها قبل التوريد",
+    }) });
+  }
+  feesTotal = feesTotal.plus(detachedTotal);
+  fullFeesTotal = fullFeesTotal.plus(detachedTotal);
+  if (input.requireFullShipment && !feesTotal.eq(fullFeesTotal)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر تسوية أجور الشحنات المحددة", why: `الأجور المستحقة لهذه الدفعة ${fullFeesTotal.toFixed(2)} د.ع ولا يمكن حسمها جزئياً`,
+      doThis: "طابق أجور هذه الدفعة كاملة أو سوّ الأجرة من مسارها المستقل قبل التوريد",
+    }) });
+  }
   const deductionsTotal = Decimal.max(0, declaredDeduction.minus(feesTotal));
+  if (input.requireFullShipment && deductionsTotal.gt(0)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر تسجيل استقطاع الكشف", why: `استقطاع ${deductionsTotal.toFixed(2)} د.ع لا يقابله أجر مثبت على شحنات هذه الدفعة`,
+      doThis: "أدخل أجور الشحنات المحددة في هذه الدفعة فقط، وراجع أي فرق مستقل مع المحاسب",
+    }) });
+  }
   const totalWithheld = feesTotal.plus(deductionsTotal);
   const netRemitted = round2(
     collectedTotal.minus(feesTotal).minus(deductionsTotal),
   );
   const countedCash = round2(money(input.countedCash));
+  if (input.requireFullShipment && !countedCash.eq(netRemitted)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر توريد الشحنة", why: `النقد المستلم ${countedCash.toFixed(2)} لا يطابق صافي التوريد ${netRemitted.toFixed(2)}`,
+      doThis: "أعد عدّ النقد وطابقه مع المبلغ المطلوب قبل التسجيل",
+    }) });
+  }
   if (countedCash.lt(0)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -833,7 +994,7 @@ export async function recordDeliveryRemittanceInTx(
     courierCommissionAmount = null;
   }
 
-  if (offsets.size > 0 && party.useCommissionForSettlement === true) {
+  if ((offsets.size > 0 || detached.sources.length > 0) && party.useCommissionForSettlement === true) {
     courierCommissionAmount = feesTotal;
   }
   const rmRes = await tx.insert(deliveryRemittances).values({
@@ -854,7 +1015,7 @@ export async function recordDeliveryRemittanceInTx(
     // كشف شركة التوصيل (١٩/٨) — مستند الشركة الذي قاد التسوية. القيد الفريد
     // (partyId, companyStatementNumber) يجعل إعادةَ إدخال الكشف ترتدّ بدل مضاعفة القيود.
     companyStatementNumber:
-      input.companyStatement?.statementNumber?.trim() || null,
+      input.companyStatement?.storeOriginalNumber === false ? null : input.companyStatement?.statementNumber?.trim() || null,
     statementDate: input.companyStatement?.statementDate
       ? new Date(input.companyStatement.statementDate)
       : null,
@@ -960,7 +1121,7 @@ export async function recordDeliveryRemittanceInTx(
   // المرور ٢: تطبيق لكل إرسالية.
   // م١ (PR-2): نقدُ كلّ سطرٍ الداخل الدرجَ فعلاً = حصّتُه من (المُحصَّل − العجز) بنسبة قيمته.
   const afterFees = work.map((w) =>
-    w.collected.minus(offsets.get(w.id)?.cash ?? 0),
+    w.collected.minus(offsets.get(w.id)?.cash ?? 0).minus(detached.allocations.get(w.id) ?? 0),
   );
   const deductionByLine = allocateProportionally(deductionsTotal, afterFees);
   const netByLine = allocateProportionally(
@@ -972,6 +1133,7 @@ export async function recordDeliveryRemittanceInTx(
     const netCash = netByLine[i] ?? new Decimal(0);
     const remitCash = netCash
       .plus(offsets.get(w.id)?.cash ?? 0)
+      .plus(detached.allocations.get(w.id) ?? 0)
       .plus(deductionByLine[i] ?? 0);
     const newStatus = w.delivered ? "DELIVERED" : "PARTIAL";
     assertConsignmentStatusTransition(w.fromStatus, newStatus);
@@ -990,7 +1152,7 @@ export async function recordDeliveryRemittanceInTx(
       remittanceId,
       consignmentId: w.id,
       grossApplied: toDbMoney(w.collected),
-      feeOffset: toDbMoney(offsets.get(w.id)?.cash ?? "0"),
+      feeOffset: toDbMoney((offsets.get(w.id)?.cash ?? money(0)).plus(detached.allocations.get(w.id) ?? 0)),
       // ما دخل الدرج من هذا السطر (يقلّ عن `grossApplied` بحصّته من عجز التوريد).
       cashReceived: toDbMoney(netCash),
       writtenOffAmount: "0.00",
@@ -1123,6 +1285,11 @@ export async function recordDeliveryRemittanceInTx(
         { cashBucket, remittanceId },
       );
     }
+  }
+
+  for (const source of detached.sources) {
+    await postFeePayment(tx, source.cn, source.amount, true, receiptOutId,
+      `REMIT:${remittanceId}`, actor, source.cash, { cashBucket, remittanceId });
   }
 
   // م١ (PR-2) — عجزُ التوريد: عهدةُ الجهة ترتفع بمقداره (ذمّةٌ فوريّة بسببٍ مصنَّف)، ويبقى في

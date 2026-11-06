@@ -174,12 +174,20 @@ describe("F2 — حزام التوريد: قيد الفاتورة مسقوف ب�
     await db().update(s.invoices).set({ returnedTotal: "5000.00" }).where(eq(s.invoices.id, 602));
     await db().update(s.customers).set({ currentBalance: "5000.00" }).where(eq(s.customers.id, 1));
 
-    const ok = await recordDeliveryRemittance({
+    const remittance = {
       branchId: 1, partyId,
       lines: [{ consignmentId: dispatched.consignmentId, collectedAmount: "10000.00" }],
       countedCash: "10000.00",
       clientRequestId: "rf-f2-r",
-    }, CASHIER);
+    };
+    // A party-wide historical balance does not prove which shipment held the cash.
+    await expect(recordDeliveryRemittance(remittance, CASHIER)).rejects.toThrow(/لم يثبت تحصيله/);
+    // Explicit consignment evidence restores the original invoice-cap regression scenario.
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `CN:${dispatched.consignmentId}:HISTORICAL-COD-PROOF`, partyId, branchId: 1,
+      consignmentId: dispatched.consignmentId, entryType: "COD_COLLECTED", amount: "10000.00", createdBy: 1,
+    });
+    const ok = await recordDeliveryRemittance(remittance, CASHIER);
     expect(ok).toBeTruthy();
     const after = (await db().select().from(s.invoices).where(eq(s.invoices.id, 602)))[0];
     expect(after.paidAmount).toBe("5000.00"); // 5000 مدفوع + 5000 مرتجع = الإجمالي، بلا تجاوز

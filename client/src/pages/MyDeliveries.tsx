@@ -41,10 +41,36 @@ function money(v: string | number | null | undefined): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
+function claimMoney(v: string): string {
+  const [whole, fraction] = D(v).toFixed(2).split(".");
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fraction === "00" ? "" : `.${fraction}`);
+}
+
 // مفتاح فريد يجمع المصدر مع المعرّف — معرّفات onlineOrders وdeliveryConsignments مستقلّة فقد
 // تتصادم (طلبٌ id=5 وإرساليةٌ id=5)، فالمفتاح المركّب يمنع تصادم مفاتيح React واختلاط الحالة.
 function rowKey(row: DeliveryRow): string {
   return `${row.kind}-${row.id}`;
+}
+
+/** Keep the invoice amounts that were actually returned with the displayed row. */
+function viewedConsignmentClaim(row: DeliveryRow) {
+  const ids = row.consignmentIds ?? [row.id];
+  const claims = row.consignmentClaims;
+  const validAmount = (value: unknown): value is string => typeof value === "string" && /^(?:\d+|\d*\.\d{1,2})$/.test(value);
+  if (row.codClaimVersion == null || !validAmount(row.codDue) || !claims?.length ||
+      ids.length !== claims.length || new Set(ids).size !== ids.length ||
+      ids.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+      claims.some((claim) => !claim || !Number.isSafeInteger(claim.consignmentId) || !validAmount(claim.amount)) ||
+      new Set(claims.map((claim) => claim.consignmentId)).size !== claims.length ||
+      claims.some((claim) => !ids.includes(claim.consignmentId)) ||
+      !claims.reduce((sum, claim) => sum.plus(D(claim.amount)), D(0)).eq(D(row.codDue))) return null;
+  return {
+    consignmentId: row.id,
+    expectedClaimVersion: row.codClaimVersion,
+    expectedConsignmentIds: ids,
+    expectedClaimAmount: row.codDue,
+    expectedConsignmentClaims: claims.map(({ consignmentId, amount }) => ({ consignmentId, amount })),
+  };
 }
 
 export default function MyDeliveries() {
@@ -97,12 +123,17 @@ export default function MyDeliveries() {
 
   const claimAckM = trpc.courier.acknowledgeConsignmentClaim.useMutation({
     onSuccess: () => { notify.ok("تم إقرار مبلغ التحصيل الحالي"); void utils.courier.myDeliveries.invalidate(); },
-    onError: (error) => notify.err(error),
+    onError: (error) => { notify.err(error); if (error.data?.code === "CONFLICT") void utils.courier.myDeliveries.invalidate(); },
   });
 
   function acknowledgeClaim(row: DeliveryRow) {
-    if (row.kind !== "consignment" || row.codClaimVersion == null) return;
-    const payload = { consignmentId: row.id, expectedClaimVersion: row.codClaimVersion };
+    if (row.kind !== "consignment") return;
+    const payload = viewedConsignmentClaim(row);
+    if (!payload) {
+      notify.warn("تعذّر إقرار المطالبة", "حدّث توصيلاتي لعرض المطالبة ومبالغ فواتيرها الحالية.");
+      void utils.courier.myDeliveries.invalidate();
+      return;
+    }
     claimAckM.mutate({ ...payload, clientRequestId: requestKey("ack", payload) });
   }
 
@@ -113,7 +144,15 @@ export default function MyDeliveries() {
       setPartialTarget(null);
       void utils.courier.myDeliveries.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (e.data?.code === "CONFLICT") {
+        if (partialTarget) {
+          setPartialTarget(null);
+          notify.warn("تغيرت المطالبة", "راجع المبلغ الحالي وأعد إدخال المبلغ المقبوض قبل التأكيد.");
+        } else notify.err(e);
+        void utils.courier.myDeliveries.invalidate();
+      } else notify.err(e);
+    },
     onSettled: () => setConfirmingKey(null),
   });
 
@@ -147,11 +186,17 @@ export default function MyDeliveries() {
   async function doConfirm(row: DeliveryRow) {
     // التسليم يحوّل COD المحصّل إلى عهدة الجهة حتى توريده للمتجر.
     if (row.kind === "consignment") {
+      const payload = viewedConsignmentClaim(row);
+      if (!payload) {
+        notify.warn("تعذّر تأكيد التسليم", "حدّث توصيلاتي لعرض المطالبة ومبالغ فواتيرها الحالية.");
+        void utils.courier.myDeliveries.invalidate();
+        return;
+      }
       const isFree = row.deliveryFree || row.feeCollection === "SHOP";
       const feeAmount = row.consignmentDeliveryFee ?? row.deliveryWaivedAmount;
       const desc = isFree
-        ? `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. (توصيل مجاني: لا تُحصّل أي أجرة توصيل من الزبون، المطلوب فقط قيمة البضاعة ${money(row.codDue)} د.ع — وأجرتك ${Number(feeAmount) > 0 ? `بمبلغ ${money(feeAmount)} د.ع ` : ""}مستحقة لك على المتجر وتُسوّى في حسابك).`
-        : `أكّد تسليم الإرسالية ${row.orderNumber} للزبون وتحصيل مبلغها ${money(row.codDue)} د.ع${Number(row.courierFee) > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون)` : ""}. سيُسجَّل المبلغ في عهدة جهة التوصيل حتى توريده للمتجر.`;
+        ? `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. (توصيل مجاني: لا تُحصّل أي أجرة توصيل من الزبون، المطلوب فقط قيمة البضاعة ${claimMoney(row.codDue)} د.ع — وأجرتك ${Number(feeAmount) > 0 ? `بمبلغ ${money(feeAmount)} د.ع ` : ""}مستحقة لك على المتجر وتُسوّى في حسابك).`
+        : `أكّد تسليم الإرسالية ${row.orderNumber} للزبون وتحصيل مبلغها ${claimMoney(row.codDue)} د.ع${Number(row.courierFee) > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون)` : ""}. سيُسجَّل المبلغ في عهدة جهة التوصيل حتى توريده للمتجر.`;
       const ok = await confirm({
         variant: "info",
         title: "تأكيد التسليم",
@@ -160,7 +205,7 @@ export default function MyDeliveries() {
       });
       if (!ok) return;
       setConfirmingKey(rowKey(row));
-      confirmCnM.mutate({ consignmentId: row.id, clientRequestId: requestKey("confirm", { consignmentId: row.id, claimVersion: row.codClaimVersion }) });
+      confirmCnM.mutate({ ...payload, clientRequestId: requestKey("confirm", payload) });
       return;
     }
     // طلب متجر: فتح حوار إدخال رمز استلام الزبون (Handshake OTP) ومراجعة التحصيل.
@@ -168,9 +213,17 @@ export default function MyDeliveries() {
   }
 
   function doPartialConfirm(row: DeliveryRow, collectedAmount: string, reason?: ShortfallReason, collectionEvidence?: string) {
+    const viewedClaim = viewedConsignmentClaim(row);
+    if (!viewedClaim) {
+      setPartialTarget(null);
+      notify.warn("تعذّر تأكيد التسليم", "حدّث توصيلاتي لعرض المطالبة ومبالغ فواتيرها الحالية.");
+      void utils.courier.myDeliveries.invalidate();
+      return;
+    }
     setConfirmingKey(rowKey(row));
-    const payload = { consignmentId: row.id, collectedAmount, ...(collectionEvidence ? { collectionEvidence } : {}), ...(reason ? { shortfallReason: reason } : {}) };
-    confirmCnM.mutate({ ...payload, clientRequestId: requestKey("actualCollection", { ...payload, claimVersion: row.codClaimVersion }) });
+    const payload = { ...viewedClaim,
+      collectedAmount, ...(collectionEvidence ? { collectionEvidence } : {}), ...(reason ? { shortfallReason: reason } : {}) };
+    confirmCnM.mutate({ ...payload, clientRequestId: requestKey("actualCollection", payload) });
   }
 
   if (q.isError) return <div className="p-6"><ErrorState onRetry={() => q.refetch()} /></div>;
@@ -331,10 +384,10 @@ export default function MyDeliveries() {
                       {isPartial ? (
                         <>
                           <span className="tabular-nums font-bold text-foreground" dir="ltr">
-                            مقبوض: {money(row.collectedAmount)} د.ع
+                            قيمة الفاتورة: {money(row.orderTotal)} د.ع
                           </span>
                           <span className="tabular-nums text-[10px] font-bold text-[var(--sem-warn)]" dir="ltr">
-                            عجز: {money(row.codDue)} د.ع
+                            المتبقي للتسوية: {claimMoney(row.codDue)} د.ع
                           </span>
                         </>
                       ) : (
@@ -448,7 +501,7 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, onAcknowledge, 
         </div>
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>
-          <div className="text-lg font-extrabold tabular-nums text-teal-700 dark:text-teal-400" dir="ltr">{money(row.codDue)} د.ع</div>
+          <div className="text-lg font-extrabold tabular-nums text-teal-700 dark:text-teal-400" dir="ltr">{claimMoney(row.codDue)} د.ع</div>
           {/* توصيل مجاني: الزبون لا يدفع أجرة — الأجرة مستحقة للمندوب على المتجر */}
           {row.deliveryFree || row.feeCollection === "SHOP" ? (
             <div
@@ -464,9 +517,20 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, onAcknowledge, 
         </div>
       </div>
 
+      {row.kind === "consignment" && row.consignmentIds?.length && row.consignmentClaims?.length ? (
+        <ul aria-label="مطالبات فواتير الشحنة" className="mb-3 space-y-1 rounded-md border p-2 text-xs">
+          {row.consignmentClaims.map((claim) => (
+            <li key={claim.consignmentId} className="flex justify-between gap-3">
+              <span>{claim.invoiceNumber ? `فاتورة ${claim.invoiceNumber}` : `طرد ${claim.consignmentId}`}</span>
+              <span dir="ltr" className="tabular-nums">{claimMoney(claim.amount)} د.ع</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {row.kind === "consignment" && row.codClaimVersion != null && (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border p-2 text-xs">
-          <span>نسخة مطالبة التحصيل {row.codClaimVersion} · المتبقي الحالي {money(row.codDue)} د.ع</span>
+          <span>نسخة مطالبة التحصيل {row.codClaimVersion} · المتبقي الحالي {claimMoney(row.codDue)} د.ع</span>
           {needsClaimAck && !readOnly ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onAcknowledge}>أقرّ مبلغ التحصيل الحالي</Button> : <span className="text-muted-foreground">{Number(row.codDue) === 0 ? "لا تحصيل من العميل" : "مبلغ التحصيل مقَرّ"}</span>}
           {needsClaimAck && <span className="text-muted-foreground">راجع المبلغ الحالي قبل مطالبة العميل؛ الإقرار لا يسجل قبضاً أو تسليماً.</span>}
         </div>
@@ -536,11 +600,11 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, onAcknowledge, 
             )}
 
             {/* تسليم جزئي — متاح للإرساليات التي عليها مبلغ مطلوب */}
-            {row.kind === "consignment" && row.sourceType !== "AFTERCARE_EXECUTION" && (Number(row.codDue) > 0 || row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST") && (
+            {row.kind === "consignment" && (row.shipmentMemberCount ?? 1) <= 1 && row.sourceType !== "AFTERCARE_EXECUTION" && (Number(row.codDue) > 0 || row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST") && (
               <button
                 type="button"
-                onClick={onPartial}
                 disabled={busy}
+                onClick={onPartial}
                 className="flex items-center gap-1.5 rounded-lg border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/20 disabled:opacity-50"
               >
                 <AlertCircle aria-hidden className="size-3.5" /> {row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST" ? "سجّل المقبوض الفعلي" : "تسليم جزئي"}
@@ -622,17 +686,17 @@ function PartialModal({
         <div className="mb-4 rounded-lg border border-border bg-muted/40 p-3 text-xs space-y-1">
           <div className="flex justify-between">
             <span className="text-muted-foreground">المبلغ المطلوب كاملاً:</span>
-            <span className="font-bold tabular-nums" dir="ltr">{money(due)} د.ع</span>
+            <span className="font-bold tabular-nums" dir="ltr">{claimMoney(due)} د.ع</span>
           </div>
           {isValidAmount && (
             <>
               <div className="flex justify-between font-medium text-[var(--sem-pos)]">
                 <span>المقبوض:</span>
-                <span className="tabular-nums" dir="ltr">{money(actual.toFixed(2))} د.ع</span>
+                <span className="tabular-nums" dir="ltr">{claimMoney(actual.toFixed(2))} د.ع</span>
               </div>
               <div className="flex justify-between font-bold text-[var(--sem-warn)]">
                 <span>عجز التحصيل:</span>
-                <span className="tabular-nums" dir="ltr">{money(shortage)} د.ع</span>
+                <span className="tabular-nums" dir="ltr">{claimMoney(shortage)} د.ع</span>
               </div>
             </>
           )}
@@ -647,10 +711,10 @@ function PartialModal({
               value={amountStr}
               onChange={setAmountStr}
               ariaLabel="المبلغ المقبوض فعلياً"
-              placeholder={isRequest ? "المبلغ الفعلي مع إثبات الزيادة" : `أقل من ${money(due)}`}
+              placeholder={isRequest ? "المبلغ الفعلي مع إثبات الزيادة" : `أقل من ${claimMoney(due)}`}
               className="w-full"
             />
-            {excess.gt(0) && <p className="mt-1 text-xs text-muted-foreground">زيادة مقبوضة {money(excess.toFixed(2))} د.ع — يلزم إثبات، وتُحفظ للعميل دون زيادة المبيعات.</p>}
+            {excess.gt(0) && <p className="mt-1 text-xs text-muted-foreground">زيادة مقبوضة {claimMoney(excess.toFixed(2))} د.ع — يلزم إثبات، وتُحفظ للعميل دون زيادة المبيعات.</p>}
             {isRequest && <Input value={evidence} onChange={(event) => setEvidence(event.target.value)} placeholder="دليل القبض الفعلي (إلزامي عند الزيادة)" aria-label="دليل القبض الفعلي" className="mt-2" maxLength={2000} />}
 
           </div>
@@ -812,7 +876,7 @@ function OnlineDeliveryModal({
             </div>
           ) : due > 0 ? (
             <div>
-              المطلوب تحصيله نقداً: <span className="font-extrabold tabular-nums text-teal-700 dark:text-teal-400">{money(row.codDue)} د.ع</span>
+              المطلوب تحصيله نقداً: <span className="font-extrabold tabular-nums text-teal-700 dark:text-teal-400">{claimMoney(row.codDue)} د.ع</span>
               {fee > 0 && <span className="text-muted-foreground"> (+ أجرتك {money(row.courierFee)} د.ع تقبضها من الزبون)</span>}
               . سيُضاف مبلغ التوريد إلى عهدتك حتى تُورّده للمتجر.
             </div>

@@ -15,6 +15,7 @@ import {
 import {
   acknowledgeConsignmentClaim,
   confirmConsignmentDelivery,
+  listMyDeliveries,
 } from "../delivery/courier";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { cancelShipmentAssignment } from "../delivery/shipmentOperations";
@@ -168,10 +169,14 @@ describe("request goods collection while courier is in transit", () => {
         .select()
         .from(s.deliveryConsignments)
         .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      const oldRow = (await listMyDeliveries(3)).toDeliver.find((row) => row.id === sent.consignmentId)!;
       await acknowledgeConsignmentClaim(
         {
           consignmentId: sent.consignmentId,
           expectedClaimVersion: oldClaim.codClaimVersion,
+          expectedClaimAmount: oldRow.codDue,
+          expectedConsignmentIds: oldRow.consignmentIds ?? [oldRow.id],
+          expectedConsignmentClaims: oldRow.consignmentClaims,
           clientRequestId: "fc-before-reassign-ack",
         },
         { userId: 3 },
@@ -263,16 +268,22 @@ describe("request goods collection while courier is in transit", () => {
           { userId: 3 },
         ),
       ).rejects.toThrow(/تغيرت المطالبة/);
+      const replacementView = (await listMyDeliveries(3)).toDeliver.find((row) => row.id === sent.consignmentId)!;
+      const view = { expectedClaimAmount: replacementView.codDue, expectedConsignmentIds: replacementView.consignmentIds ?? [replacementView.id],
+        expectedConsignmentClaims: replacementView.consignmentClaims };
       await acknowledgeConsignmentClaim(
         {
           consignmentId: sent.consignmentId,
           expectedClaimVersion: replacement.codClaimVersion,
+          ...view,
           clientRequestId: "fc-reassign-ack",
         },
         { userId: 3 },
       );
       const collect = {
         consignmentId: sent.consignmentId,
+        expectedClaimVersion: replacement.codClaimVersion,
+        ...view,
         collectedAmount: "6000",
         clientRequestId: "fc-reassign-collect",
       };
@@ -440,9 +451,13 @@ describe("request goods collection while courier is in transit", () => {
   it("records proven old courier cash as real custody with a refund liability, never as a second invoice payment", async () => {
     const sent = await dispatchRequest();
     await payCard();
+    const [currentClaim] = await db().select().from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, sent.consignmentId));
     await confirmConsignmentDelivery(
       {
         consignmentId: sent.consignmentId,
+        expectedClaimVersion: currentClaim.codClaimVersion,
+        expectedClaimAmount: "6000.00",
         collectedAmount: "10000",
         collectionEvidence:
           "قبض المندوب المبلغ القديم قبل استلام تحديث الكاونتر",

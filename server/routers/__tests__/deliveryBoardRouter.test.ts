@@ -23,7 +23,8 @@ import { deliveryRouter } from "../deliveryRouter";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
-  "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
+  "deliveryCompanyStatementBatches", "deliveryCompanyStatements", "deliveryRemittances",
+  "deliveryShipmentMembers", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "deliveryPricingRules", "deliveryZones",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
@@ -84,7 +85,8 @@ async function saleWithDelivery(reqId: string, quantity: string, governorate = "
   const r = await createSale({
     branchId: 1, sourceType: "POS", customerId: 1,
     lines: [{ variantId: 1, productUnitId: 1, quantity }],
-    delivery: { partyId: PARTY, fee: "1500", feeCollection: "COURIER", recipientPhone: "07701234567", address: "بغداد", governorate },
+    delivery: { partyId: PARTY, fee: "1500", feeCollection: "COURIER", recipientPhone: "07701234567", address: "بغداد", governorate,
+      externalTrackingRef: `TEST-${reqId}` },
     clientRequestId: reqId,
   }, CASHIER);
   return { invoiceId: r.invoiceId, consignmentId: r.consignmentId! };
@@ -106,6 +108,61 @@ beforeEach(async () => {
 });
 
 describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية اليوميّة (م١ PR-C)", () => {
+  it("passes statement responsibility, reason and preview snapshot through the router and replay fingerprint", async () => {
+    await db().update(s.deliveryParties).set({ partyType: "COMPANY" }).where(eq(s.deliveryParties.id, PARTY));
+    const a = await saleWithDelivery("router-statement-payload", "2");
+    const input = { partyId: PARTY, branchId: 1, statementNumber: "ROUTER-STATEMENT",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "500.00", shortfallResponsibility: "DELIVERY_PARTY" as const,
+        shortfallReason: "OTHER", expectedDue: "2000.00", expectedProven: "0.00" }],
+      countedCash: "500.00", clientRequestId: "router-statement-payload" };
+    await expect(cashier().recordCompanyStatement({ ...input, lines: [{ ...input.lines[0], expectedProven: "1.00" }] }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId)))
+      .map((row) => row.entryType)).toEqual(["COD_ASSIGNED"]);
+    const result = await cashier().recordCompanyStatement(input);
+    const event = (await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.consignmentId, a.consignmentId)))
+      .find((row) => row.eventType === "STATEMENT_DIFFERENCE");
+    expect(event?.payload).toMatchObject({ dueBefore: "2000.00", provenBefore: "0.00",
+      shortfallResponsibility: "DELIVERY_PARTY", shortfallReason: "OTHER", partyShortfall: "1500.00" });
+    expect(await cashier().recordCompanyStatement(input)).toMatchObject({ remittanceId: result.remittanceId, idempotentReplay: true });
+    await expect(cashier().recordCompanyStatement({ ...input, lines: [{ ...input.lines[0], expectedDue: "1999.00" }] }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("requires the custody classification when the entire difference was already collected", async () => {
+    await db().update(s.deliveryParties).set({ partyType: "COMPANY" }).where(eq(s.deliveryParties.id, PARTY));
+    const a = await saleWithDelivery("router-statement-custody", "2");
+    await confirmDelivered(a.consignmentId, "2000.00");
+    const base = { partyId: PARTY, branchId: 1, statementNumber: "ROUTER-CUSTODY", countedCash: "500.00",
+      clientRequestId: "router-custody-check" };
+    const line = { consignmentId: a.consignmentId, collectedAmount: "500.00", expectedDue: "2000.00", expectedProven: "2000.00" };
+    const before = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId));
+    await expect(cashier().recordCompanyStatement({ ...base, lines: [{ ...line, shortfallResponsibility: "CUSTOMER" }] })).rejects.toThrow();
+    await expect(cashier().recordCompanyStatement({ ...base, lines: [{ ...line, shortfallResponsibility: "DELIVERY_PARTY", shortfallReason: "OTHER" }] })).rejects.toThrow();
+    await expect(cashier().recordCompanyStatement({ ...base, lines: [{ ...line, shortfallResponsibility: "COURIER_CUSTODY", shortfallReason: "OTHER" }] })).rejects.toThrow();
+    expect(await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId))).toEqual(before);
+    await cashier().recordCompanyStatement({ ...base, lines: [{ ...line, shortfallResponsibility: "COURIER_CUSTODY" }] });
+    const event = (await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.consignmentId, a.consignmentId)))
+      .find((row) => row.eventType === "STATEMENT_DIFFERENCE");
+    expect(event?.payload).toMatchObject({ shortfallResponsibility: "COURIER_CUSTODY", custodyRemaining: "1500.00",
+      customerRemaining: "0.00", partyShortfall: "0.00" });
+  });
+
+  it("requires and forwards an explicit zero-delivery confirmation", async () => {
+    await db().update(s.deliveryParties).set({ partyType: "COMPANY" }).where(eq(s.deliveryParties.id, PARTY));
+    const a = await saleWithDelivery("router-zero-confirm", "2");
+    const input = { partyId: PARTY, branchId: 1, statementNumber: "ROUTER-ZERO", countedCash: "0.00",
+      clientRequestId: "router-zero-confirm", lines: [{ consignmentId: a.consignmentId, collectedAmount: "0.00",
+        shortfallResponsibility: "CUSTOMER" as const, expectedDue: "2000.00", expectedProven: "0.00" }] };
+    await expect(cashier().recordCompanyStatement(input)).rejects.toThrow(/الإقرار/);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, a.consignmentId)))[0].parcelStatus)
+      .not.toBe("DELIVERED");
+    const approved = { ...input, lines: [{ ...input.lines[0], zeroDeliveryConfirmed: true }] };
+    await expect(cashier().recordCompanyStatement(approved)).resolves.toMatchObject({ proofOnly: true });
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, a.consignmentId)))[0].parcelStatus)
+      .toBe("DELIVERED");
+    await expect(cashier().recordCompanyStatement(input)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
   it("① عزل الفرع: كاشير الفرع ١ يرى الجهة على اللوحة ويعاينها؛ كاشير الفرع ٢ لا يراها ولا يعاينها", async () => {
     const a = await saleWithDelivery("r-1", "2"); // COD 2000
     await confirmDelivered(a.consignmentId, "2000");
@@ -133,8 +190,9 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
     await confirmDelivered(a.consignmentId, "2000");
     await confirmDelivered(b.consignmentId, "3000");
     expect((await cashier().settlementPreview({ partyId: PARTY })).net).toBe("5000.00");
+    const expectedLines = [{ consignmentId: a.consignmentId, remaining: "2000.00" }, { consignmentId: b.consignmentId, remaining: "3000.00" }];
 
-    const first = await cashier().settleDaily({ partyId: PARTY, countedCash: "5000.00", clientRequestId: "settle-daily-balanced-0001" });
+    const first = await cashier().settleDaily({ partyId: PARTY, countedCash: "5000.00", expectedLines, clientRequestId: "settle-daily-balanced-0001" });
     expect(first.status).toBe("BALANCED");
     expect(first.shortfallTotal).toBe("0.00");
     expect(first.receiptId).not.toBeNull();
@@ -147,8 +205,8 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
     expect(rows[0].net).toBe("0.00");
     expect(await partyBalance()).toBe("0.00");
     // لا شيء يُسوَّى بعد الإقفال ⇒ رفضٌ صريح لا سندٌ فارغ.
-    await expect(cashier().settleDaily({ partyId: PARTY, countedCash: "0.00", clientRequestId: "settle-daily-empty-0001" }))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(cashier().settleDaily({ partyId: PARTY, countedCash: "0.00", expectedLines, clientRequestId: "settle-daily-empty-0001" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   /**
@@ -162,8 +220,9 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
     const a = await saleWithDelivery("r-6", "2");
     await confirmDelivered(a.consignmentId, "2000");
     const key = "settle-daily-replay-0001";
-    const first = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", clientRequestId: key });
-    const again = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", clientRequestId: key });
+    const expectedLines = [{ consignmentId: a.consignmentId, remaining: "2000.00" }];
+    const first = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", expectedLines, clientRequestId: key });
+    const again = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", expectedLines, clientRequestId: key });
     expect(again.remittanceId).toBe(first.remittanceId);
     // العائدُ متطابقٌ حرفياً (نفس SettleDailyResult) — لا نجاحٌ صامتٌ بقيمٍ مختلفة.
     expect(again).toEqual(first);
@@ -171,31 +230,23 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
     expect(await db().select().from(s.deliveryRemittances)).toHaveLength(1);
   });
 
-  it("③ العجز: بسببٍ مصنَّف ⇒ SHORT + SHORTFALL_ASSIGNED ذمّةً على الجهة؛ بلا سبب ⇒ رفض؛ الزيادة ⇒ رفض", async () => {
+  it("③ يرفض العجز والزيادة حتى عند تقديم سبب، ولا يتحرك مال قبل المطابقة", async () => {
     const a = await saleWithDelivery("r-4", "2"); // 2000
     await confirmDelivered(a.consignmentId, "2000");
 
-    await expect(cashier().settleDaily({ partyId: PARTY, countedCash: "1950.00", clientRequestId: "settle-daily-noreason-01" }))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: expect.stringContaining("سبب") });
-    await expect(cashier().settleDaily({ partyId: PARTY, countedCash: "2500.00", clientRequestId: "settle-daily-over-0001" }))
+    const expectedLines = [{ consignmentId: a.consignmentId, remaining: "2000.00" }];
+    await expect(cashier().settleDaily({ partyId: PARTY, expectedLines, countedCash: "1950.00", clientRequestId: "settle-daily-noreason-01" }))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(cashier().settleDaily({ partyId: PARTY, expectedLines, countedCash: "2500.00", clientRequestId: "settle-daily-over-0001" }))
       .rejects.toBeTruthy();
 
-    const res = await cashier().settleDaily({
-      partyId: PARTY, countedCash: "1950.00", shortfallReason: "OTHER", shortfallNotes: "فرق عدّ",
+    await expect(cashier().settleDaily({
+      partyId: PARTY, expectedLines, countedCash: "1950.00", shortfallReason: "OTHER", shortfallNotes: "فرق عدّ",
       clientRequestId: "settle-daily-short-0001",
-    });
-    expect(res.status).toBe("SHORT");
-    expect(res.shortfallTotal).toBe("50.00");
-    expect(await ledgerTypes()).toContain("SHORTFALL_ASSIGNED");
-    expect(await partyBalance()).toBe("50.00");
-
-    const rows = await cashier().partyBoard();
-    expect(rows[0].deliveredUnremitted.count).toBe(0);
-    // note-J (Codex #1012 P2): العجزُ ذمّةٌ **غير نقديّة** — يُطرَح من «نقد بيده» (يبقى ماديّاً وحده)
-    // ويظهر في عموده الخامس المستقلّ `shortfallOwed`. العهدةُ الكلّية (نقد 0 + عجز 50) تطابق المخزَّن.
-    expect(rows[0].cashInHandLedger).toBe("0.00");
-    expect(rows[0].shortfallOwed).toBe("50.00");
-    expect(rows[0].cashInHandDrift).toBe("0.00");
+    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await ledgerTypes()).not.toContain("SHORTFALL_ASSIGNED");
+    expect(await partyBalance()).toBe("2000.00");
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
   });
 
   it("④ اقتراح الجهة للمنطقة: من تاريخ الإسناد الفعليّ بأجرة الجهة الافتراضية؛ رمزٌ غير معروف يُرفض؛ منطقةٌ بلا تاريخ ⇒ null", async () => {

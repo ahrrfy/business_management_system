@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   fulfillmentCharges,
   fulfillmentChargePayments,
@@ -19,7 +19,11 @@ import { previewWorkflowSource } from "../delivery/workflow/preview";
 import { mutateWorkflowAssignment } from "../delivery/workflow/assignment";
 import { receiveWorkflowReturn } from "../delivery/workflow/returns";
 import { confirmWorkflowDelivery } from "../delivery/workflow/collection";
-import { PHYSICAL_RETURN_RECEIVED } from "../delivery/workflow/returnReceipt";
+import { PHYSICAL_RETURN_RECEIVED, physicalReturnReceiptExistsSql, physicalReturnReceiptTx } from "../delivery/workflow/returnReceipt";
+import { acknowledgeConsignmentClaim, confirmConsignmentDelivery, listMyDeliveries } from "../delivery/courier";
+import { withTx } from "../tx";
+import { returnSale } from "../returnService";
+import { reconcileDeliveryOnReturnTx } from "../delivery/returnReconciliation";
 import { returnShipment } from "../delivery/shipmentOperations";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import {
@@ -32,6 +36,11 @@ function db() {
   const value = getDb();
   if (!value) throw new Error("Isolated DB required");
   return value;
+}
+async function courierSnapshot(id: number) {
+  const row = (await listMyDeliveries(2)).toDeliver.find((entry) => entry.id === id)!;
+  return { expectedClaimAmount: row.codDue, expectedConsignmentIds: row.consignmentIds ?? [id],
+    expectedConsignmentClaims: row.consignmentClaims };
 }
 beforeEach(async () => {
   await db()
@@ -126,9 +135,9 @@ async function source(id: number): Promise<WorkflowDispatchSource> {
     expectedVersion: p.source.version,
   };
 }
-async function dispatch() {
+async function dispatch(invoiceIds = [1, 2]) {
   const sources: WorkflowDispatchSource[] = [];
-  for (const id of [1, 2]) {
+  for (const id of invoiceIds) {
     const p = await previewWorkflowSource(
       { source: { kind: "invoice", id }, station: "dispatch", branchId: 1 },
       actor,
@@ -202,6 +211,288 @@ async function economics() {
   };
 }
 describe("physical return receipt separate from commercial and money actions", () => {
+  it("matches numeric work-order identifiers consistently in receipt readers", async () => {
+    await db().insert(s.workOrders).values({ id: 1, orderNumber: "RETURN-WORK-1", branchId: 1, title: "عمل مسترجع" });
+    await db().insert(s.deliveryConsignments).values({
+      id: 100, consignmentNumber: "RETURN-WORK-CN-1", branchId: 1, partyId: 1,
+      sourceType: "WORK_ORDER", sourceId: 1, invoiceId: 1, workOrderId: 1, codAmount: "0.00",
+      parcelStatus: "RETURNED", returnedAt: new Date(),
+    });
+    const [row] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 100));
+    const payload = {
+      version: 1, inspected: true, branchId: row.branchId, sourceType: row.sourceType, sourceId: row.sourceId,
+      invoiceId: row.invoiceId, workOrderId: row.workOrderId, fulfillmentRequestId: row.fulfillmentRequestId,
+      claimVersion: row.codClaimVersion, dispatchedAt: row.dispatchedAt.toISOString(), evidence: "دليل استلام كافٍ",
+    };
+    await db().insert(s.deliveryEvents).values({
+      eventKey: "numeric-work-order-receipt", consignmentId: 100, eventType: PHYSICAL_RETURN_RECEIVED, payload, actorUserId: 1,
+    });
+    const valid = async () => {
+      const [projection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+        .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 100));
+      return [Boolean(await withTx((tx) => physicalReturnReceiptTx(tx, row))), Boolean(projection.physical)];
+    };
+    await db().update(s.deliveryEvents).set({ payload: sql`JSON_SET(${s.deliveryEvents.payload}, '$.workOrderId', CAST('1.0' AS JSON))` })
+      .where(eq(s.deliveryEvents.eventKey, "numeric-work-order-receipt"));
+    expect(await valid()).toEqual([true, true]);
+    await db().update(s.deliveryEvents).set({ payload: { ...payload, workOrderId: "1" } })
+      .where(eq(s.deliveryEvents.eventKey, "numeric-work-order-receipt"));
+    expect(await valid()).toEqual([false, false]);
+  });
+
+  it("retains the original inspected receipt after a partial sale return of that received parcel", async () => {
+    await db().update(s.invoiceItems).set({ quantity: "2", baseQuantity: 2, unitPrice: "50.00" })
+      .where(eq(s.invoiceItems.invoiceId, 1));
+    await db().update(s.inventoryMovements).set({ quantity: 2 }).where(and(
+      eq(s.inventoryMovements.referenceType, "INVOICE"), eq(s.inventoryMovements.referenceId, 1)));
+    const shipment = await dispatch();
+    const leaderId = shipment.consignmentId;
+    await receive(leaderId, [leaderId], "physical-leader-before-sale-return");
+    const [before] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 1));
+    await returnSale({ invoiceId: 1, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, clientRequestId: "physical-received-partial-sale-return" }, actor);
+    const [after] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(after.codClaimVersion).toBe(before.codClaimVersion);
+    expect(after.returnedAt?.getTime()).toBe(before.returnedAt?.getTime());
+    expect(await withTx((tx) => physicalReturnReceiptTx(tx, after))).not.toBeNull();
+    const [projection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+      .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(Boolean(projection.physical)).toBe(true);
+    await receive(leaderId, [shipment.consignmentIds.find((id) => id !== leaderId)!], "physical-other-after-partial-return");
+    const commercial = { barcode: shipment.consignmentNumber,
+      returnReason: "إرجاع تجاري بعد الاستلام الفعلي والمرتجع الجزئي",
+      clientRequestId: "physical-commercial-after-partial" };
+    await expect(returnByBarcode(commercial, actor)).rejects.toThrow(/استكمل مرتجع/);
+    await returnSale({ invoiceId: 1, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, clientRequestId: "physical-received-complete-sale-return" }, actor);
+    await expect(returnByBarcode(commercial, actor)).resolves.toBeDefined();
+  });
+
+  it("keeps a received leader's receipt linked while an active member's changed claim requires acknowledgement", async () => {
+    await db().update(s.invoiceItems).set({ quantity: "2", baseQuantity: 2, unitPrice: "50.00" })
+      .where(eq(s.invoiceItems.invoiceId, 2));
+    await db().update(s.inventoryMovements).set({ quantity: 2 }).where(and(
+      eq(s.inventoryMovements.referenceType, "INVOICE"), eq(s.inventoryMovements.referenceId, 2)));
+    const shipment = await dispatch();
+    const leaderId = shipment.consignmentId;
+    await receive(leaderId, [leaderId], "physical-leader-received-first");
+    const [afterReceipt] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(afterReceipt.codClaimVersion).toBe(2);
+    expect(await withTx((tx) => physicalReturnReceiptTx(tx, afterReceipt))).not.toBeNull();
+    const [receiptProjection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+      .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(Boolean(receiptProjection.physical)).toBe(true);
+    await db().insert(s.users).values({ id: 2, openId: "physical-claim-driver", role: "courier", branchId: 1 });
+    await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 2, memberRole: "DRIVER", isActive: true, createdBy: 1 });
+    const [originalReceipt] = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, PHYSICAL_RETURN_RECEIVED));
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 2));
+    await returnSale({ invoiceId: 2, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, clientRequestId: "physical-leader-member-sale-return" }, actor);
+    const [leader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(leader.codClaimVersion).toBe(3);
+    const changes = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, "COD_CLAIM_CHANGED"));
+    const change = changes.find((event) => (event.payload as { source?: string })?.source === "SALE_RETURN")!;
+    expect(change.payload).toMatchObject({ physicalReturnReceiptEventId: originalReceipt.id, claimVersion: 3 });
+    expect((await withTx((tx) => physicalReturnReceiptTx(tx, leader)))?.id).toBe(originalReceipt.id);
+    const [projection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+      .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(Boolean(projection.physical)).toBe(true);
+    const currentPreview = await previewWorkflowSource({ source: { kind: "consignment", id: leaderId }, station: "return", branchId: 1 }, actor);
+    expect(currentPreview.returnState?.members.find((member) => member.consignmentId === leaderId)?.received).toBe(true);
+    const receiptPayload = originalReceipt.payload as Record<string, unknown>;
+    const changePayload = change.payload as Record<string, unknown>;
+    const expectReceiptValidity = async (valid: boolean) => {
+      const [row] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+      const [view] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+        .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+      expect(Boolean(await withTx((tx) => physicalReturnReceiptTx(tx, row)))).toBe(valid);
+      expect(Boolean(view.physical)).toBe(valid);
+    };
+    for (const altered of [
+      { evidence: " \u00a0\ufeff " }, { claimVersion: "1" }, { inspected: "true" }, { invoiceId: "1" }, { sourceType: "invoice" },
+    ]) {
+      await db().update(s.deliveryEvents).set({ payload: { ...receiptPayload, ...altered } }).where(eq(s.deliveryEvents.id, originalReceipt.id));
+      await expectReceiptValidity(false);
+    }
+    for (const [path, value] of [
+      ["$.version", "1.0"], ["$.branchId", "1.0"],
+      ["$.sourceId", `${receiptPayload.sourceId}.0`], ["$.invoiceId", `${receiptPayload.invoiceId}.0`],
+      ["$.fulfillmentRequestId", `${receiptPayload.fulfillmentRequestId}.0`], ["$.claimVersion", "1.0"],
+    ]) {
+      await db().update(s.deliveryEvents).set({ payload: receiptPayload }).where(eq(s.deliveryEvents.id, originalReceipt.id));
+      await db().update(s.deliveryEvents).set({ payload: sql`JSON_SET(${s.deliveryEvents.payload}, ${path}, CAST(${value} AS JSON))` })
+        .where(eq(s.deliveryEvents.id, originalReceipt.id));
+      await expectReceiptValidity(true);
+    }
+    for (const value of ["1.5", "-1", "9007199254740992"]) {
+      await db().update(s.deliveryEvents).set({ payload: receiptPayload }).where(eq(s.deliveryEvents.id, originalReceipt.id));
+      await db().update(s.deliveryEvents).set({ payload: sql`JSON_SET(${s.deliveryEvents.payload}, '$.claimVersion', CAST(${value} AS JSON))` })
+        .where(eq(s.deliveryEvents.id, originalReceipt.id));
+      await expectReceiptValidity(false);
+    }
+    await db().update(s.deliveryEvents).set({ payload: { ...receiptPayload, evidence: "\u00a0😀😀😀\ufeff" } }).where(eq(s.deliveryEvents.id, originalReceipt.id));
+    await expectReceiptValidity(true); // Three astral characters are six UTF-16 code units after trim.
+    await db().update(s.deliveryEvents).set({ payload: receiptPayload }).where(eq(s.deliveryEvents.id, originalReceipt.id));
+    for (const altered of [{ claimVersion: "3" }, { physicalReturnReceiptEventId: String(originalReceipt.id) }]) {
+      await db().update(s.deliveryEvents).set({ payload: { ...changePayload, ...altered } }).where(eq(s.deliveryEvents.id, change.id));
+      await expectReceiptValidity(false);
+    }
+    await db().update(s.deliveryEvents).set({ payload: changePayload }).where(eq(s.deliveryEvents.id, change.id));
+    await db().update(s.deliveryEvents).set({ payload: sql`JSON_SET(${s.deliveryEvents.payload}, '$.claimVersion', CAST('3.0' AS JSON), '$.physicalReturnReceiptEventId', CAST(${`${originalReceipt.id}.0`} AS JSON))` })
+      .where(eq(s.deliveryEvents.id, change.id));
+    await expectReceiptValidity(true);
+    await db().update(s.deliveryEvents).set({ payload: changePayload }).where(eq(s.deliveryEvents.id, change.id));
+    const view = await courierSnapshot(leaderId);
+    expect(view.expectedConsignmentIds).toEqual([shipment.consignmentIds.find((id) => id !== leaderId)]);
+    await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 3, ...view, clientRequestId: "received-leader-no-ack" },
+      { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
+    await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 3, ...view,
+      clientRequestId: "received-leader-ack-claim" }, { userId: 2 });
+    await confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 3, ...view, clientRequestId: "received-leader-ack-deliver" },
+      { userId: 2 }, undefined, { requireFullCollection: true });
+    const [after] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect((await withTx((tx) => physicalReturnReceiptTx(tx, after)))?.id).toBe(originalReceipt.id);
+    // An unrelated increment never inherits the historical receipt by age alone.
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 4 }).where(eq(s.deliveryConsignments.id, leaderId));
+    const [unrelated] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(await withTx((tx) => physicalReturnReceiptTx(tx, unrelated))).toBeNull();
+    const [unrelatedProjection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+      .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(Boolean(unrelatedProjection.physical)).toBe(false);
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 3 }).where(eq(s.deliveryConsignments.id, leaderId));
+    await expectReceiptValidity(true);
+    // Both readers intentionally inspect only the latest 30 receipt events.
+    await db().insert(s.deliveryEvents).values(Array.from({ length: 30 }, (_, index) => ({
+      eventKey: `invalid-receipt-window-${leaderId}-${index}`,
+      consignmentId: leaderId, eventType: PHYSICAL_RETURN_RECEIVED, payload: {}, actorUserId: 1,
+    })));
+    await expectReceiptValidity(false);
+  });
+
+  for (const legacy of [false, true]) {
+    it(`${legacy ? "legacy" : "new"} physical member receipt invalidates the old group claim exactly once`, async () => {
+      await db().update(s.invoiceItems).set({ quantity: "2", baseQuantity: 2, unitPrice: "50.00" })
+        .where(eq(s.invoiceItems.invoiceId, 2));
+      await db().update(s.inventoryMovements).set({ quantity: 2 }).where(and(
+        eq(s.inventoryMovements.referenceType, "INVOICE"), eq(s.inventoryMovements.referenceId, 2)));
+      const shipment = await dispatch();
+      const leaderId = shipment.consignmentId;
+      const memberId = shipment.consignmentIds.find((id) => id !== leaderId)!;
+      await db().insert(s.users).values({ id: 2, openId: "receipt-version-driver", role: "courier", branchId: 1 });
+      await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 2, memberRole: "DRIVER", isActive: true, createdBy: 1 });
+      await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 1,
+        clientRequestId: "ack-before-physical-member" }, { userId: 2 });
+      const received = await receive(leaderId, [memberId], "physical-remove-member");
+      expect((await receiveWorkflowReturn(received.input, actor)).idempotentReplay).toBe(true);
+      const [physicalChange] = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, "COD_CLAIM_CHANGED"));
+      const [receipt] = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, PHYSICAL_RETURN_RECEIVED));
+      expect(physicalChange.payload).toMatchObject({ source: "PHYSICAL_RETURN", claimVersion: 2, removedReceiptEventIds: [receipt.id] });
+      if (legacy) {
+        // Simulate the pre-fix database state: physical receipt exists, but its
+        // membership change was never versioned or recorded on the leader.
+        await db().delete(s.deliveryEvents).where(eq(s.deliveryEvents.id, physicalChange.id));
+        await db().update(s.deliveryConsignments).set({ codClaimVersion: 1 }).where(eq(s.deliveryConsignments.id, leaderId));
+        const before = await Promise.all([db().select().from(s.deliveryConsignments), db().select().from(s.invoices),
+          db().select().from(s.deliveryLedgerEntries), db().select().from(s.deliveryEvents)]);
+        await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 1,
+          expectedClaimAmount: "100.00", clientRequestId: "legacy-members-missing" }, { userId: 2 }))
+          .rejects.toMatchObject({ code: "CONFLICT" });
+        await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 1,
+          expectedConsignmentIds: [leaderId, memberId], expectedClaimAmount: "200.00",
+          expectedConsignmentClaims: [{ consignmentId: leaderId, amount: "100.00" }, { consignmentId: memberId, amount: "100.00" }],
+          clientRequestId: "legacy-members-stale" }, { userId: 2 })).rejects.toMatchObject({ code: "CONFLICT" });
+        expect(await Promise.all([db().select().from(s.deliveryConsignments), db().select().from(s.invoices),
+          db().select().from(s.deliveryLedgerEntries), db().select().from(s.deliveryEvents)])).toEqual(before);
+      }
+      const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 2));
+      for (const key of ["first", "second"]) {
+        await returnSale({ invoiceId: 2, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+          restock: true, clientRequestId: `receipt-member-return-${key}` }, actor);
+        const [leader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+        const [member] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, memberId));
+        expect(leader.codClaimVersion).toBe(2);
+        expect((await withTx((tx) => physicalReturnReceiptTx(tx, member)))?.id).toBe(receipt.id);
+      }
+      await expect(acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 1,
+        clientRequestId: "stale-receipt-claim-ack" }, { userId: 2 })).rejects.toThrow(/تغيرت المطالبة/);
+      const view = await courierSnapshot(leaderId);
+      await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 2, ...view, clientRequestId: "receipt-member-no-ack" },
+        { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
+      await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 2, ...view,
+        clientRequestId: "receipt-member-ack" }, { userId: 2 });
+      await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 2, ...view, clientRequestId: "receipt-member-deliver" },
+        { userId: 2 }, undefined, { requireFullCollection: true })).resolves.toBeDefined();
+    });
+  }
+
+  it("versions removal of a fully returned member even when its live claim is zero", async () => {
+    const shipment = await dispatch();
+    const leaderId = shipment.consignmentId;
+    const memberId = shipment.consignmentIds.find((id) => id !== leaderId)!;
+    await db().insert(s.users).values({ id: 2, openId: "zero-claim-member-driver", role: "courier", branchId: 1 });
+    await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 2, memberRole: "DRIVER", isActive: true, createdBy: 1 });
+    await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 1,
+      clientRequestId: "ack-before-zero-member-return" }, { userId: 2 });
+    // A previously settled member can leave the physical group without releasing additional COD.
+    await db().update(s.invoices).set({ paidAmount: "100.00" }).where(eq(s.invoices.id, 2));
+    await db().update(s.deliveryConsignments).set({ counterSettledAmount: "100.00" }).where(eq(s.deliveryConsignments.id, memberId));
+    await withTx((tx) => reconcileDeliveryOnReturnTx(tx, { invoiceId: 2, returnedTotal: "100.00", isFullReturn: true,
+      actor, clientRequestId: "full-return-zero-member" }));
+    const [leader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(leader.codClaimVersion).toBe(2);
+    const [change] = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, "COD_CLAIM_CHANGED"));
+    expect(change.payload).toMatchObject({ source: "SALE_RETURN", amountReleased: "0.00", claimVersion: 2 });
+    const view = await courierSnapshot(leaderId);
+    await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 2, ...view, clientRequestId: "zero-member-no-ack" },
+      { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
+    await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 2, ...view,
+      clientRequestId: "ack-after-zero-member-return" }, { userId: 2 });
+    await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 2, ...view, clientRequestId: "zero-member-deliver" },
+      { userId: 2 }, undefined, { requireFullCollection: true })).resolves.toBeDefined();
+  });
+
+  it("versions a multi-parcel receipt once and preserves the leader receipt across a later receipt", async () => {
+    for (const id of [3, 4]) {
+      await db().insert(s.invoices).values({ id, invoiceNumber: String(92000 + id), sourceType: "POS", branchId: 1, customerId: 1,
+        subtotal: "100.00", total: "100.00", costTotal: "40.00", paidAmount: "0.00", paymentMode: "COD", createdBy: 1 });
+      await db().insert(s.invoiceItems).values({ invoiceId: id, variantId: 1, quantity: "1", baseQuantity: 1,
+        unitPrice: "100.00", unitCost: "40.00", lineCost: "40.00", total: "100.00" });
+    }
+    const shipment = await dispatch([1, 2, 3, 4]);
+    const leaderId = shipment.consignmentId;
+    const others = shipment.consignmentIds.filter((id) => id !== leaderId);
+    await db().insert(s.users).values({ id: 2, openId: "receipt-batch-driver", role: "courier", branchId: 1 });
+    await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 2, memberRole: "DRIVER", isActive: true, createdBy: 1 });
+    await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 1,
+      clientRequestId: "ack-before-batch-receipt" }, { userId: 2 });
+    const first = await receive(leaderId, [leaderId, others[0]!], "physical-batch-two-members");
+    expect((await receiveWorkflowReturn(first.input, actor)).idempotentReplay).toBe(true);
+    let [leader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(leader.codClaimVersion).toBe(2);
+    const firstReceipt = await withTx((tx) => physicalReturnReceiptTx(tx, leader));
+    expect(firstReceipt).not.toBeNull();
+    let claimChanges = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, "COD_CLAIM_CHANGED"));
+    expect(claimChanges).toHaveLength(1);
+    expect((claimChanges[0].payload as { removedReceiptEventIds: number[] }).removedReceiptEventIds).toHaveLength(2);
+    await receive(leaderId, [others[1]!], "physical-batch-later-member");
+    [leader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(leader.codClaimVersion).toBe(3);
+    expect((await withTx((tx) => physicalReturnReceiptTx(tx, leader)))?.id).toBe(firstReceipt?.id);
+    const [projection] = await db().select({ physical: physicalReturnReceiptExistsSql() })
+      .from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    expect(Boolean(projection.physical)).toBe(true);
+    claimChanges = await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.eventType, "COD_CLAIM_CHANGED"));
+    expect(claimChanges).toHaveLength(2);
+    const view = await courierSnapshot(leaderId);
+    await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 3, ...view, clientRequestId: "batch-receipt-no-ack" },
+      { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
+    await acknowledgeConsignmentClaim({ consignmentId: leaderId, expectedClaimVersion: 3, ...view,
+      clientRequestId: "batch-receipt-current-ack" }, { userId: 2 });
+    await expect(confirmConsignmentDelivery({ consignmentId: leaderId, expectedClaimVersion: 3, ...view, clientRequestId: "batch-receipt-deliver" },
+      { userId: 2 }, undefined, { requireFullCollection: true })).resolves.toBeDefined();
+  });
+
   it("keeps legacy barcode financial return usable after full inspected receipt while rejecting partial physical groups without effects", async () => {
     const shipment = await dispatch();
     await declare(shipment.consignmentId);

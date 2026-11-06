@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../sale/create";
-import { recordStaffDeliveryConfirmation } from "../delivery/companyStatement";
+import { recordManualDeliveryProof, recordStaffDeliveryConfirmation } from "../delivery/companyStatement";
 import { listPartyBoardTx, suggestPartyForZoneTx } from "../delivery/board";
 import { previewDailySettlementTx, settleDailyTx } from "../delivery/dailySettlement";
 import { listOpenConsignments } from "../delivery/queries";
@@ -84,9 +84,10 @@ async function saleWithDelivery(reqId: string, quantity: string, governorate: st
   return { invoiceId: r.invoiceId, consignmentId: r.consignmentId! };
 }
 async function confirmDelivered(consignmentId: number, collectedAmount: string, shortfallReason?: string) {
-  return recordStaffDeliveryConfirmation(
+  const confirm = shortfallReason ? recordManualDeliveryProof : recordStaffDeliveryConfirmation;
+  return confirm(
     { consignmentId, collectedAmount, evidence: "اتصال المندوب", clientRequestId: `staff-${consignmentId}`, shortfallReason },
-    CASHIER,
+    shortfallReason ? { userId: 1, branchId: 1, role: "manager" } : CASHIER,
   );
 }
 const board = () => withTx((tx) => listPartyBoardTx(tx, { branchId: 1, canCrossBranches: false }, CASHIER));
@@ -175,47 +176,18 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect(p.returnsAwaitingReceipt).toBe(0);
   });
 
-  it("⭐ عجزٌ بسببٍ مصنَّف ⇒ SHORT: ذمّةٌ فوريّة على الجهة، إيصالُ الدرج بما دخل فعلاً، ومطابقةُ العهدة متوازنة", async () => {
-    const shiftId = await openReception();
+  it("يرفض العجز حتى مع السبب دون تحريك النقد أو العهدة", async () => {
+    await openReception();
     const a = await saleWithDelivery("s-1", "3"); // 3000
     await confirmDelivered(a.consignmentId, "3000");
     expect(await partyBalance()).toBe("3000.00");
 
-    await expect(settle("2500")).rejects.toThrow(/بلا سببٍ مصنَّف/);
-    await expect(settle("2500", "NOT_A_REASON")).rejects.toThrow(/بلا سببٍ مصنَّف/);
+    await expect(settle("2500")).rejects.toThrow(/لا يطابق/);
+    await expect(settle("2500", "NOT_A_REASON")).rejects.toThrow(/لا يطابق/);
+    await expect(settle("2500", "CUSTOMER_REQUESTED_DISCOUNT")).rejects.toThrow(/لا يطابق/);
     expect(await partyBalance()).toBe("3000.00");
-
-    const res = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT");
-    expect(res.status).toBe("SHORT");
-    expect(res.shortfallTotal).toBe("500.00");
-    expect(res.receiptId).toEqual(expect.any(Number));
-
-    // الجهة تدين بالعجز، والطرد أُغلق، والدرج استلم 2500 لا 3000.
-    expect(await partyBalance()).toBe("500.00");
-    const cn = await consignmentOf(a.consignmentId);
-    expect(cn.moneyStatus).toBe("SETTLED");
-    expect(cn.status).toBe("DELIVERED");
-    const rm = (await db().select().from(s.deliveryRemittances).where(eq(s.deliveryRemittances.id, res.remittanceId)))[0];
-    expect(rm.status).toBe("SHORT");
-    expect(rm.shortfallTotal).toBe("500.00");
-    expect(rm.collectedTotal).toBe("3000.00");
-    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, res.receiptId!)))[0];
-    expect(receipt.direction).toBe("IN");
-    expect(receipt.amount).toBe("2500.00");
-    expect(Number(receipt.shiftId)).toBe(shiftId);
-    const shortfall = (await ledger()).find((e) => e.entryType === "SHORTFALL_ASSIGNED");
-    expect(shortfall?.amount).toBe("500.00");
-    expect(shortfall?.shortfallReason).toBe("CUSTOMER_REQUESTED_DISCOUNT");
-    expect(Number(shortfall?.remittanceId)).toBe(res.remittanceId);
-    // الدفتر = المخزَّن، وصيغة المطابقة (DISPATCH − REMIT − WRITEOFF = currentBalance) بلا انحراف.
-    // Codex #1012 P2 — العجزُ ذمّةٌ لا نقدٌ ماديّ: «نقد بيده» صفر (وُرِّد كلُّ المقبوض فعلاً)، والعجزُ
-    // عمودٌ مستقلّ (كان يُعرَض خطأً 500 «نقداً بيده»). الانحرافُ صفر لأنّ الماديَّين متساويان.
-    const row = (await board())[0];
-    expect(row.cashInHandLedger).toBe("0.00");
-    expect(row.cashInHandStored).toBe("0.00");
-    expect(row.shortfallOwed).toBe("500.00");
-    expect(row.cashInHandDrift).toBe("0.00");
-    expect(row.net).toBe("500.00"); // الجهةُ ما زالت مدينةً بالعجز (net لم يتغيّر بالفصل)
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(0);
     expect(await reconcileDeliveryFloat()).toEqual([]);
   });
 
@@ -246,7 +218,7 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     await expect(settle("100")).rejects.toThrow(/لا شيء يُسوَّى/);
     const a = await saleWithDelivery("o-1", "2"); // 2000
     await confirmDelivered(a.consignmentId, "2000");
-    await expect(settle("2500")).rejects.toThrow(/النقد المعدود يزيد/);
+    await expect(settle("2500")).rejects.toThrow(/لا يطابق/);
     expect(await partyBalance()).toBe("2000.00");
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(0);
   });
@@ -267,36 +239,36 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
   });
 
-  it("إعادةُ تسويةٍ بعجزٍ بنفس المفتاح ⇒ replay بنفس العجز (لا تكرار)", async () => {
+  it("إعادةُ توريد كامل بنفس المفتاح تعيد السند دون تكرار", async () => {
     await openReception();
     const a = await saleWithDelivery("gs-1", "3"); // 3000
     await confirmDelivered(a.consignmentId, "3000");
-    const first = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", "daily-short-key");
-    expect(first.status).toBe("SHORT");
-    const replay = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", "daily-short-key");
+    const first = await settle("3000", undefined, "daily-short-key");
+    expect(first.status).toBe("BALANCED");
+    const replay = await settle("3000", undefined, "daily-short-key");
     expect(replay.remittanceId).toBe(first.remittanceId);
-    expect(replay.status).toBe("SHORT");
-    expect(replay.shortfallTotal).toBe("500.00");
+    expect(replay.status).toBe("BALANCED");
+    expect(replay.shortfallTotal).toBe("0.00");
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
     // العجزُ لم يُقيَّد مرّتين على الجهة.
-    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(0);
   });
 
   it.each([
-    ["countedCash", "2400", "CUSTOMER_REQUESTED_DISCOUNT", "RECEPTION"],
-    ["shortfallReason", "2500", "MERCHANT_REFUSED_COMMISSION", "RECEPTION"],
-    ["shiftType", "2500", "CUSTOMER_REQUESTED_DISCOUNT", "RETAIL"],
+    ["countedCash", "2400", undefined, "RECEPTION"],
+    ["shortfallReason", "3000", "MERCHANT_REFUSED_COMMISSION", "RECEPTION"],
+    ["shiftType", "3000", undefined, "RETAIL"],
   ] as const)("نفس مفتاح التسوية مع %s مغيّر ⇒ CONFLICT لا السند القديم", async (_field, countedCash, shortfallReason, shiftType) => {
     await openReception();
     const a = await saleWithDelivery(`payload-conflict-${shiftType}`, "3");
     await confirmDelivered(a.consignmentId, "3000");
     const key = `daily-payload-conflict-${shiftType}-${shortfallReason}`;
-    const first = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key);
-    expect(first.status).toBe("SHORT");
+    const first = await settle("3000", undefined, key);
+    expect(first.status).toBe("BALANCED");
 
     await expect(settle(countedCash, shortfallReason, key, shiftType)).rejects.toMatchObject({ code: "CONFLICT" });
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
-    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(0);
   });
 });
 

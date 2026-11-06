@@ -95,7 +95,11 @@ export async function previewCommission(
 
 /** Load active rule inputs once for a settlement/list, then quote in memory. */
 export async function createCommissionPreviewer(tx: Pick<Tx, "select">, partyId: number) {
-  const rows = await listCommissionRulesForParty(tx, partyId);
+  return commissionPreviewerFromRows(await listCommissionRulesForParty(tx, partyId));
+}
+
+/** Build the same quote from a previously loaded, possibly locked rule set. */
+export function commissionPreviewerFromRows(rows: Awaited<ReturnType<typeof listCommissionRulesForParty>>) {
   const asInput: CourierCommissionRuleInput[] = rows.map((r) => ({
     id: Number(r.id),
     ruleType: r.ruleType,
