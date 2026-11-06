@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
@@ -10,12 +10,23 @@ const SettlementDialog = lazy(
 /** Keep the financial workspace out of invoice and public-page startup bundles. */
 export function PartialDeliverySettlementButton({
   consignmentId,
+  targetShiftId,
+  disabled,
+  label = "استكمال تسوية تسليم جزئي",
+  onOpenChange,
+  onCompleted,
 }: {
   consignmentId: number;
+  targetShiftId?: number;
+  disabled?: boolean;
+  label?: string;
+  onOpenChange?: (open: boolean) => void;
+  onCompleted?: () => void;
 }) {
   const canProve = useOperationPermission("delivery.manualProof").allowed;
   const canRemit = useOperationPermission("delivery.recordRemittance").allowed;
   const [open, setOpen] = useState(false);
+  useEffect(() => () => onOpenChange?.(false), [onOpenChange]);
   if (!canProve || !canRemit) return null;
   return (
     <>
@@ -23,9 +34,13 @@ export function PartialDeliverySettlementButton({
         type="button"
         size="sm"
         variant="outline"
-        onClick={() => setOpen(true)}
+        disabled={disabled}
+        onClick={() => {
+          setOpen(true);
+          onOpenChange?.(true);
+        }}
       >
-        استكمال تسوية تسليم جزئي
+        {label}
       </Button>
       {open && (
         <Suspense
@@ -38,7 +53,12 @@ export function PartialDeliverySettlementButton({
         >
           <SettlementDialog
             consignmentId={consignmentId}
-            onClose={() => setOpen(false)}
+            targetShiftId={targetShiftId}
+            onCompleted={onCompleted}
+            onClose={() => {
+              setOpen(false);
+              onOpenChange?.(false);
+            }}
           />
         </Suspense>
       )}

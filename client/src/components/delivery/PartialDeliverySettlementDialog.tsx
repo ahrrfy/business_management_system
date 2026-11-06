@@ -20,9 +20,13 @@ import { notify } from "@/lib/notify";
 export default function PartialDeliverySettlementDialog({
   consignmentId,
   onClose,
+  targetShiftId,
+  onCompleted,
 }: {
   consignmentId: number;
   onClose: () => void;
+  targetShiftId?: number;
+  onCompleted?: () => void;
 }) {
   const preview = trpc.delivery.workflow.previewPartialOutcome.useQuery(
     { consignmentId },
@@ -34,7 +38,9 @@ export default function PartialDeliverySettlementDialog({
     { enabled: data?.branchId != null },
   );
   const [amount, setAmount] = useState("");
-  const [shiftId, setShiftId] = useState("");
+  const [shiftId, setShiftId] = useState(() =>
+    targetShiftId == null ? "" : String(targetShiftId),
+  );
   const [evidence, setEvidence] = useState("");
   const [witnessed, setWitnessed] = useState(false);
   const request = useRef({ key: crypto.randomUUID(), fingerprint: "" });
@@ -51,6 +57,7 @@ export default function PartialDeliverySettlementDialog({
         utils.delivery.invalidate(),
         invalidateFinancialQueries(queryClient, data?.branchId),
       ]);
+      onCompleted?.();
       onClose();
     },
     onError: (error) => notify.err(error),
@@ -60,6 +67,7 @@ export default function PartialDeliverySettlementDialog({
     !data?.allowed ||
     !witnessed ||
     (!data.cashAlreadyRecorded && !shiftId) ||
+    (targetShiftId != null && shiftId !== String(targetShiftId)) ||
     evidence.trim().length < 5 ||
     !D(received).gt(0) ||
     D(received).gt(D(data?.goodsAmount ?? 0));
@@ -131,7 +139,7 @@ export default function PartialDeliverySettlementDialog({
                     <AppSelect
                       value={shiftId}
                       onValueChange={setShiftId}
-                      disabled={settle.isPending}
+                      disabled={settle.isPending || targetShiftId != null}
                       aria-label="درج استلام التوريد"
                     >
                       <option value="">حدد الدرج المستلم</option>
@@ -183,7 +191,7 @@ export default function PartialDeliverySettlementDialog({
                       expectedVersion: data.version,
                       targetShiftId: data.cashAlreadyRecorded
                         ? undefined
-                        : Number(shiftId),
+                        : (targetShiftId ?? Number(shiftId)),
                       cashReceivedAmount: D(received).toFixed(2),
                       evidence: evidence.trim(),
                     };
