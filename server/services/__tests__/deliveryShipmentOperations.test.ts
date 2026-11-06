@@ -21,6 +21,7 @@ import { returnConsignment } from "../delivery/returns";
 import { consignmentReturnPreflight } from "../workOrder/refundPreflight";
 import { openShift } from "../shiftService";
 import { returnSale } from "../returnService";
+import { courierRouter } from "../../routers/courierRouter";
 import {
   acknowledgeConsignmentClaim,
   confirmConsignmentDelivery,
@@ -189,6 +190,94 @@ async function returnFeeLeader(fee: string, requestId: string) {
 }
 
 describe("one physical shipment with independent invoice accounting", () => {
+  it("rejects a stale courier display even after another device acknowledges the new claim, and replays success", async () => {
+    await db().update(s.deliveryConsignments).set({ assignedUserId: 2 });
+    const oldView = (await listMyDeliveries(2)).toDeliver.find((row) => row.id === 11)!;
+    expect(oldView).toMatchObject({ codClaimVersion: 1, codDue: "300.00" });
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 2));
+    await returnSale({ invoiceId: 2, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, clientRequestId: "claim-view-return" }, actor);
+    const currentView = (await listMyDeliveries(2)).toDeliver.find((row) => row.id === 11)!;
+    const view = { expectedConsignmentIds: currentView.consignmentIds!, expectedClaimAmount: currentView.codDue,
+      expectedConsignmentClaims: currentView.consignmentClaims!.map(({ consignmentId, amount }) => ({ consignmentId, amount })) };
+    const caller = courierRouter.createCaller({
+      req: { headers: {}, ip: "127.0.0.1", method: "POST" }, res: {}, sessionId: null, platformAdmin: null,
+      user: { id: 2, role: "courier", branchId: 1, permissionsOverride: null, totpEnabledAt: new Date(), isActive: true },
+    } as never);
+    const beforeAck = await snapshot();
+    await expect(caller.acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
+      clientRequestId: "claim-view-ack-no-amount" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, ...view,
+      expectedConsignmentClaims: [{ consignmentId: 11, amount: "150.00" }, { consignmentId: 12, amount: "50.00" }],
+      clientRequestId: "claim-view-ack-offset" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await snapshot()).toEqual(beforeAck);
+    const ack = { consignmentId: 11, expectedClaimVersion: 2, ...view, clientRequestId: "claim-view-other-device-ack" };
+    await caller.acknowledgeConsignmentClaim(ack);
+    const before = await snapshot();
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 1,
+      clientRequestId: "claim-view-stale" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11,
+      clientRequestId: "claim-view-old-client" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2,
+      clientRequestId: "claim-view-no-amount" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(view).toEqual({ expectedConsignmentIds: [11, 12], expectedClaimAmount: "200.00",
+      expectedConsignmentClaims: [{ consignmentId: 11, amount: "100.00" }, { consignmentId: 12, amount: "100.00" }] });
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2,
+      ...view, expectedClaimAmount: "300.00", clientRequestId: "claim-view-stale-amount" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2,
+      ...view, expectedConsignmentClaims: [{ consignmentId: 11, amount: "150.00" }, { consignmentId: 12, amount: "50.00" }],
+      clientRequestId: "claim-view-offset-amounts" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2,
+      expectedClaimAmount: "200.00", expectedConsignmentIds: [11, 12], clientRequestId: "claim-view-no-members-amounts" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await snapshot()).toEqual(before);
+    const current = { consignmentId: 11, expectedClaimVersion: 2, ...view, clientRequestId: "claim-view-current" };
+    expect(await caller.confirmConsignmentDelivery(current)).toMatchObject({ collectedAmount: "200.00" });
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 3 }).where(eq(s.deliveryConsignments.id, 11));
+    const after = await snapshot();
+    expect(await caller.acknowledgeConsignmentClaim(ack)).toMatchObject({ claimVersion: 2 });
+    expect(await caller.confirmConsignmentDelivery(current)).toMatchObject({ alreadyDelivered: true });
+    expect(await snapshot()).toEqual(after);
+    await expect(caller.confirmConsignmentDelivery({ ...current, expectedClaimVersion: 3 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "RETURNED" });
+    const afterClosingMembers = await snapshot();
+    expect(await caller.confirmConsignmentDelivery(current)).toMatchObject({ alreadyDelivered: true });
+    expect(await snapshot()).toEqual(afterClosingMembers);
+    await expect(caller.confirmConsignmentDelivery({ ...current, expectedClaimAmount: "201.00" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await db().insert(s.users).values({ id: 3, openId: "shipment-other-driver", role: "courier", branchId: 1 });
+    await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 3, memberRole: "DRIVER", isActive: true, createdBy: 1 });
+    const beforeOther = await snapshot();
+    await expect(confirmConsignmentDelivery(current, { userId: 3 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await snapshot()).toEqual(beforeOther);
+  });
+  it("rejects an acknowledgement and confirmation from a mixed read when member claims change but their total does not", async () => {
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 2 }).where(eq(s.deliveryConsignments.id, 11));
+    const oldRow = (await listMyDeliveries(2)).toDeliver.find((row) => row.id === 11)!;
+    const oldView = { expectedConsignmentIds: oldRow.consignmentIds!, expectedClaimAmount: oldRow.codDue,
+      expectedConsignmentClaims: oldRow.consignmentClaims!.map(({ consignmentId, amount }) => ({ consignmentId, amount })) };
+    await db().update(s.invoices).set({ total: "50.00", subtotal: "50.00" }).where(eq(s.invoices.id, 1));
+    await db().update(s.invoices).set({ total: "250.00", subtotal: "250.00" }).where(eq(s.invoices.id, 2));
+    await db().update(s.deliveryConsignments).set({ codAmount: "50.00" }).where(eq(s.deliveryConsignments.id, 11));
+    await db().update(s.deliveryConsignments).set({ codAmount: "250.00" }).where(eq(s.deliveryConsignments.id, 12));
+    const newRow = (await listMyDeliveries(2)).toDeliver.find((row) => row.id === 11)!;
+    expect(newRow.codDue).toBe(oldRow.codDue);
+    expect(newRow.consignmentClaims).toMatchObject([{ consignmentId: 11, amount: "50.00" }, { consignmentId: 12, amount: "250.00" }]);
+    const before = await snapshot();
+    await expect(acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, ...oldView,
+      clientRequestId: "mixed-read-ack" }, { userId: 2 })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, ...oldView,
+      clientRequestId: "mixed-read-confirm" }, { userId: 2 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await snapshot()).toEqual(before);
+    const newView = { expectedConsignmentIds: newRow.consignmentIds!, expectedClaimAmount: newRow.codDue,
+      expectedConsignmentClaims: newRow.consignmentClaims!.map(({ consignmentId, amount }) => ({ consignmentId, amount })) };
+    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, ...newView,
+      clientRequestId: "mixed-read-fresh-ack" }, { userId: 2 });
+    expect(await confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, ...newView,
+      clientRequestId: "mixed-read-fresh-confirm" }, { userId: 2 })).toMatchObject({ collectedAmount: "300.00" });
+  });
   it("does not guess allocations for a partial courier amount on a multi-invoice shipment", async () => {
     const before = await snapshot();
     await expect(confirmConsignmentDelivery({ consignmentId: 11, collectedAmount: "100.00",
@@ -205,13 +294,15 @@ describe("one physical shipment with independent invoice accounting", () => {
     expect(beforeAck.codDue).toBe("200.00");
     expect(beforeAck.orderTotal).toBe("200.00");
     expect(beforeAck.codClaimVersion).toBe(2);
-    await expect(confirmConsignmentDelivery({ consignmentId: 11, clientRequestId: "shipment-return-confirm" },
+    const view = { expectedClaimAmount: beforeAck.codDue, expectedConsignmentIds: beforeAck.consignmentIds,
+      expectedConsignmentClaims: beforeAck.consignmentClaims };
+    await expect(confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, ...view, clientRequestId: "shipment-return-confirm" },
       { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
-    await expect(confirmConsignmentDelivery({ consignmentId: 11, collectedAmount: "200.00", clientRequestId: "shipment-return-explicit" },
+    await expect(confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, ...view, collectedAmount: "200.00", clientRequestId: "shipment-return-explicit" },
       { userId: 2 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
-    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
+    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, ...view,
       clientRequestId: "shipment-return-ack" }, { userId: 2 });
-    await confirmConsignmentDelivery({ consignmentId: 11, clientRequestId: "shipment-return-confirm" },
+    await confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, ...view, clientRequestId: "shipment-return-confirm" },
       { userId: 2 }, undefined, { requireFullCollection: true });
     const invoices = await db().select().from(s.invoices).orderBy(s.invoices.id);
     expect(invoices.map((invoice) => Number(invoice.paidAmount))).toEqual([100, 100]);
@@ -248,9 +339,13 @@ describe("one physical shipment with independent invoice accounting", () => {
     const row = (await listMyDeliveries(2)).toDeliver.find((entry) => entry.id === 11)!;
     expect(row.codDue).toBe("200.00");
     expect(row.codClaimVersion).toBe(2);
-    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
+    expect(row.consignmentIds).toEqual([12]);
+    expect(row.consignmentClaims).toMatchObject([{ consignmentId: 12, amount: "200.00" }]);
+    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
+      expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims,
       clientRequestId: "shipment-return-leader-ack" }, { userId: 2 });
-    await confirmConsignmentDelivery({ consignmentId: 11, clientRequestId: "shipment-return-leader-confirm" },
+    await confirmConsignmentDelivery({ consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
+      expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims, clientRequestId: "shipment-return-leader-confirm" },
       { userId: 2 }, undefined, { requireFullCollection: true });
     const invoices = await db().select().from(s.invoices).orderBy(s.invoices.id);
     expect(invoices.map((invoice) => Number(invoice.paidAmount))).toEqual([0, 200]);
@@ -268,7 +363,8 @@ describe("one physical shipment with independent invoice accounting", () => {
     expect(row.codClaimVersion).toBe(2);
     await expect(acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
       clientRequestId: "shipment-old-driver-ack" }, { userId: 2 })).rejects.toThrow(/سائق/);
-    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
+    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
+      expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims,
       clientRequestId: "shipment-new-driver-ack" }, { userId: 3 });
   });
 

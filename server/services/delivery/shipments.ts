@@ -38,7 +38,9 @@ import {
   recordIdempotencyKey,
 } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
+import { assignedGoodsCodDue, loadAssignedChargeClaimsTx } from "../fulfillment/chargeDelivery";
 import { enqueuePostCommit, requireDb, withTx } from "../tx";
+import { creditCollectionChoiceTx } from "./creditCollectionTerms";
 import {
   dispatchInvoiceInTx,
   loadInvoiceDeliveryFeeHeldTx,
@@ -272,7 +274,7 @@ async function shipmentDetailsTx(
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
-    paymentMode: invoices.paymentMode,
+      paymentMode: invoices.paymentMode,
       total: invoices.total,
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
@@ -489,7 +491,23 @@ export async function getShipmentDetails(
   consignmentId: number,
   actor: DeliveryTxActor,
 ) {
-  return withTx((tx) => shipmentDetailsTx(tx, consignmentId, actor), {
+  return withTx(async (tx) => {
+    const details = await shipmentDetailsTx(tx, consignmentId, actor);
+    const operational = details.members.filter((row) => row.operational);
+    const invoiceIds = operational.flatMap((row) => row.invoiceId == null ? [] : [Number(row.invoiceId)]);
+    const invoiceRows = invoiceIds.length ? await tx.select({ id: invoices.id, paymentMode: invoices.paymentMode,
+      total: invoices.total, returnedTotal: invoices.returnedTotal, paidAmount: invoices.paidAmount,
+    }).from(invoices).where(inArray(invoices.id, invoiceIds)) : [];
+    const invoiceById = new Map(invoiceRows.map((row) => [Number(row.id), row]));
+    let collectible = money(0);
+    for (const row of operational) {
+      const invoice = row.invoiceId == null ? undefined : invoiceById.get(Number(row.invoiceId));
+      const charges = await loadAssignedChargeClaimsTx(tx, Number(row.id), { lock: false });
+      const collectCredit = invoice?.paymentMode === "CREDIT" && await creditCollectionChoiceTx(tx, Number(row.id));
+      collectible = collectible.plus(round2(assignedGoodsCodDue(invoice, collectCredit).plus(charges.remaining)));
+    }
+    return { ...details, collectibleAmount: toDbMoney(round2(collectible)) };
+  }, {
     gate: "NONE",
   });
 }

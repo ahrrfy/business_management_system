@@ -22,9 +22,10 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
+  deliveryEvents,
   deliveryShipmentMembers,
   onlineOrders,
   workOrders,
@@ -33,6 +34,7 @@ import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 
 export interface ReconcileDeliveryOnReturnInput {
   invoiceId: number;
@@ -153,7 +155,7 @@ export async function reconcileDeliveryOnReturnTx(
         targetStatus = "RETURNED";
         const hasCollected = money(cn.collectedAmount ?? "0").gt(0);
         targetMoneyStatus = hasCollected ? "SETTLED" : "CANCELLED";
-        targetReturnedAt = now;
+        targetReturnedAt = cn.parcelStatus === "RETURNED" ? cn.returnedAt ?? now : now;
         targetSettledAt = now;
 
         if (cn.workOrderId != null) {
@@ -193,7 +195,11 @@ export async function reconcileDeliveryOnReturnTx(
     // A return changes the amount the courier was told to collect. Bump the
     // physical shipment leader's claim inside the same transaction so a stale
     // confirmation cannot silently collect against the old amount.
-    if (amountToRelease.gt(0) && cn.parcelStatus !== "DELIVERED") {
+    const wasOperational = !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(cn.status) &&
+      !["CANCELLED", "RETURNED"].includes(cn.parcelStatus);
+    const activeClaimChanged = cn.parcelStatus !== "DELIVERED" && cn.parcelStatus !== "RETURNED" &&
+      (amountToRelease.gt(0) || (input.isFullReturn && wasOperational));
+    if (activeClaimChanged || cn.parcelStatus === "RETURNED") {
       const [membership] = await tx.select().from(deliveryShipmentMembers)
         .where(eq(deliveryShipmentMembers.consignmentId, Number(cn.id))).for("share").limit(1);
       const leaderId = Number(membership?.leaderConsignmentId ?? cn.id);
@@ -204,28 +210,58 @@ export async function reconcileDeliveryOnReturnTx(
       const liveMembers = remainingMembers.filter(({ cn: member }) =>
         !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(member.status) &&
         !["CANCELLED", "RETURNED"].includes(member.parcelStatus));
-      const hasLiveClaim = !input.isFullReturn || liveMembers.length > 0;
       const leader = leaderId === Number(cn.id) ? cn : (await tx.select().from(deliveryConsignments)
         .where(eq(deliveryConsignments.id, leaderId)).for("update").limit(1))[0];
+      if (!leader) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر تحديث مطالبة شحنة المرتجع", why: "قائد الشحنة غير موجود",
+          doThis: "راجع ارتباط فواتير الشحنة وجهتها قبل إعادة تسجيل المرتجع",
+        }) });
+      }
       const inconsistentMember = remainingMembers.some(({ cn: member }) =>
         Number(member.branchId) !== Number(cn.branchId) ||
         ((liveMembers.some(({ cn: active }) => Number(active.id) === Number(member.id)) || money(member.deliveryFee).gt(0)) &&
-          Number(member.partyId) !== Number(cn.partyId)));
-      if (!leader || Number(leader.partyId) !== Number(cn.partyId) || Number(leader.branchId) !== Number(cn.branchId) ||
-          inconsistentMember || (membership && !remainingMembers.some(({ cn: member }) => Number(member.id) === leaderId))) {
+          Number(member.partyId) !== Number(leader.partyId)));
+      // Legacy physical receipts predate the membership-version event. If a
+      // live sibling remains, invalidate the old courier claim once at the
+      // first commercial return. A linked receipt event proves a newer receipt
+      // already did so; do not bump again for later partial returns.
+      const received = cn.parcelStatus === "RETURNED" && membership && liveMembers.length
+        ? await physicalReturnReceiptTx(tx, cn, { currentRead: true }) : null;
+      const [recorded] = received ? await tx.select({ id: deliveryEvents.id }).from(deliveryEvents)
+        .where(and(
+          eq(deliveryEvents.consignmentId, leaderId), eq(deliveryEvents.eventType, "COD_CLAIM_CHANGED"),
+          gt(deliveryEvents.id, Number(received.id)),
+          sql`BINARY JSON_UNQUOTE(JSON_EXTRACT(${deliveryEvents.payload}, '$.source')) IN (BINARY 'PHYSICAL_RETURN', BINARY 'SALE_RETURN')`,
+          sql`JSON_TYPE(JSON_EXTRACT(${deliveryEvents.payload}, '$.claimVersion')) IN ('INTEGER', 'DOUBLE', 'DECIMAL')`,
+          sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${deliveryEvents.payload}, '$.claimVersion')) AS DOUBLE) > 0`,
+          sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${deliveryEvents.payload}, '$.claimVersion')) AS DOUBLE) = FLOOR(CAST(JSON_UNQUOTE(JSON_EXTRACT(${deliveryEvents.payload}, '$.claimVersion')) AS DOUBLE))`,
+          sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${deliveryEvents.payload}, '$.claimVersion')) AS DOUBLE) <= ${leader.codClaimVersion}`,
+          sql`JSON_CONTAINS(JSON_EXTRACT(${deliveryEvents.payload}, '$.removedReceiptEventIds'), JSON_ARRAY(${Number(received.id)})) = 1`,
+        )).for("share").limit(1) : [];
+      const legacyMembershipChanged = cn.parcelStatus === "RETURNED" && !!membership && liveMembers.length > 0 && !recorded;
+      const hasLiveClaim = activeClaimChanged ? (!input.isFullReturn || liveMembers.length > 0) : legacyMembershipChanged;
+      if ((activeClaimChanged || hasLiveClaim) &&
+          ((activeClaimChanged && Number(leader.partyId) !== Number(cn.partyId)) ||
+            Number(leader.branchId) !== Number(cn.branchId) || inconsistentMember ||
+            (membership && !remainingMembers.some(({ cn: member }) => Number(member.id) === leaderId)))) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
           what: "تعذر تحديث مطالبة شحنة المرتجع", why: "قائد الشحنة لا يطابق روابط الجهة أو الفرع",
           doThis: "راجع ارتباط فواتير الشحنة وجهتها قبل إعادة تسجيل المرتجع",
         }) });
       }
       if (hasLiveClaim) {
+        // A physically received leader can still anchor the active members' claim.
+        // Link its existing immutable receipt before advancing the group version.
+        const receipt = leader.parcelStatus === "RETURNED"
+          ? await physicalReturnReceiptTx(tx, leader, { currentRead: true }) : null;
         const claimVersion = Number(leader.codClaimVersion) + 1;
         const remainingClaim = membership ? liveMembers.reduce((total, { cn: member }) => total.plus(Decimal.max(
           0, money(member.codAmount).minus(money(member.collectedAmount ?? "0")).minus(money(member.counterSettledAmount ?? "0")),
         )), money(0)) : liveRemainingAfter;
         await tx.update(deliveryConsignments).set({ codClaimVersion: claimVersion })
           .where(eq(deliveryConsignments.id, leaderId));
-        if (leaderId !== Number(cn.id)) await tx.update(deliveryConsignments)
+        if (activeClaimChanged && leaderId !== Number(cn.id)) await tx.update(deliveryConsignments)
           .set({ codClaimVersion: Number(cn.codClaimVersion) + 1 })
           .where(eq(deliveryConsignments.id, Number(cn.id)));
         await appendDeliveryEvent(tx, {
@@ -234,7 +270,10 @@ export async function reconcileDeliveryOnReturnTx(
           eventType: "COD_CLAIM_CHANGED",
           actorUserId: input.actor.userId,
           payload: { source: "SALE_RETURN", invoiceId: input.invoiceId,
-            consignmentId: Number(cn.id), amountReleased: toDbMoney(amountToRelease), claimVersion, ackRequired: remainingClaim.gt(0) },
+            consignmentId: Number(cn.id), amountReleased: toDbMoney(amountToRelease), claimVersion,
+            ...(receipt ? { physicalReturnReceiptEventId: Number(receipt.id) } : {}),
+            ...(legacyMembershipChanged && received ? { removedReceiptEventIds: [Number(received.id)] } : {}),
+            ackRequired: remainingClaim.gt(0) },
         });
       }
     }

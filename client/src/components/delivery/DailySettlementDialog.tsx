@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ErrorState } from "@/components/PageState";
 import { fmt } from "@/lib/money";
+import { errMsg } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { DELIVERY_TERMS } from "@shared/deliveryTerminology";
@@ -112,7 +113,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
       try { settleWin?.close(); } catch { /* noop */ }
       const status = (error as { data?: { httpStatus?: number } } | null)?.data?.httpStatus;
       if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) setSubmitted(null);
-      setServerError(error instanceof Error ? error.message : String(error));
+      setServerError(errMsg(error));
     } finally {
       setPending(false);
     }
@@ -226,7 +227,10 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
             }}>تحديث الصافي ومراجعته</Button>}
 
             {serverError && (
-              <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs font-bold text-destructive">{serverError}</p>
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs font-bold text-destructive">
+                <p>{serverError}</p>
+                {!submitted && <Button type="button" variant="outline" disabled={pending} onClick={() => { setServerError(null); onRetryPreview(); }}>تحديث المعاينة</Button>}
+              </div>
             )}
           </div>
         )}

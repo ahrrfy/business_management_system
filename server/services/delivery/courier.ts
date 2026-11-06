@@ -143,6 +143,7 @@ export interface MyDeliveryRow {
   shipmentMemberCount?: number;
   invoiceReferences?: string[];
   consignmentIds?: number[];
+  consignmentClaims?: Array<{ consignmentId: number; amount: string; invoiceNumber: string | null }>;
   sourceType?: string;
   sourceId?: number;
   fulfillmentRequestId?: number | null;
@@ -313,6 +314,7 @@ export async function listMyDeliveries(
     deliveryFee: deliveryConsignments.deliveryFee,
     feeCollection: deliveryConsignments.feeCollection,
     invTotal: invoices.total,
+    invNumber: invoices.invoiceNumber,
     invPaid: invoices.paidAmount,
     invReturned: invoices.returnedTotal,
     deliveryFree: invoices.deliveryFree,
@@ -403,6 +405,7 @@ export async function listMyDeliveries(
         money(r.invTotal).minus(money(r.invReturned ?? "0")), 0,
       )),
       codDue: toDbMoney(due),
+      consignmentClaims: [{ consignmentId: Number(r.id), amount: toDbMoney(due), invoiceNumber: r.invNumber ?? null }],
       // COURIER = يقبض أجرته من الزبون بنفسه فوق COD؛ COUNTER/SHOP لا يقبض من الزبون شيئاً فوقه.
       courierFee: toDbMoney(
         r.feeCollection === "COURIER" ? money(r.deliveryFee ?? "0") : money(0),
@@ -532,6 +535,9 @@ export async function listMyDeliveries(
           deliveryFree: source?.feeCollection === "SHOP" || leader.deliveryFree,
           shipmentMemberCount: members.length,
           consignmentIds: members.map((row) => row.id).sort((a, b) => a - b),
+          consignmentClaims: members.map((row) => ({ consignmentId: row.id, amount: row.codDue,
+            invoiceNumber: mappingById.get(row.id)?.invoiceNumber ?? null }))
+            .sort((a, b) => a.consignmentId - b.consignmentId),
           invoiceReferences: members.map(
             (row) => mappingById.get(row.id)!.invoiceNumber,
           ),
@@ -867,12 +873,62 @@ export async function confirmCourierDelivery(
   });
 }
 
+type CourierClaimView = {
+  expectedClaimVersion?: number;
+  expectedConsignmentIds?: number[];
+  expectedClaimAmount?: string;
+  expectedConsignmentClaims?: Array<{ consignmentId: number; amount: string }>;
+};
+
+function courierClaimViewAssertions(input: CourierClaimView, bypass = false) {
+  const assertViewedClaim = (cn: { codClaimVersion: number }) => {
+    if (bypass) return;
+    if (!(input.expectedClaimVersion == null && cn.codClaimVersion === 1) &&
+        input.expectedClaimVersion !== cn.codClaimVersion)
+      throw fulfillmentError("تغيرت مطالبة التحصيل منذ عرضها أو لم تُرسل نسختها الحالية؛ حدّث توصيلاتي وأقر المطالبة قبل التأكيد", "CONFLICT");
+    if ((cn.codClaimVersion > 1 || input.expectedConsignmentIds != null) && input.expectedClaimAmount == null)
+      throw fulfillmentError("لم يُرسل مبلغ المطالبة المعروض؛ حدّث توصيلاتي وراجع المبلغ قبل التأكيد", "CONFLICT");
+  };
+  const assertViewedMembers = (ids: number[], hasClosedMembers: boolean) => {
+    if (bypass) return;
+    const expected = input.expectedConsignmentIds;
+    if (expected == null) {
+      if (hasClosedMembers)
+        throw fulfillmentError("تغير أعضاء الشحنة أو أُغلق بعضهم؛ حدّث توصيلاتي وراجع الشحنة قبل التأكيد", "CONFLICT");
+      return;
+    }
+    if (!Array.isArray(expected) || !expected.length || expected.length > 30 ||
+        expected.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+        new Set(expected).size !== expected.length || expected.length !== ids.length ||
+        [...expected].sort((a, b) => a - b).some((id, index) => id !== [...ids].sort((a, b) => a - b)[index]))
+      throw fulfillmentError("تغير أعضاء الشحنة منذ عرضها؛ حدّث توصيلاتي وراجع الشحنة قبل التأكيد", "CONFLICT");
+  };
+  const assertViewedAmount = (amount: Decimal) => {
+    if (bypass || input.expectedClaimAmount == null) return;
+    if (typeof input.expectedClaimAmount !== "string" || !/^\d+(\.\d{1,2})?$/.test(input.expectedClaimAmount) ||
+        !money(input.expectedClaimAmount).eq(amount))
+      throw fulfillmentError("تغير مبلغ المطالبة منذ عرضه؛ حدّث توصيلاتي وراجع المبلغ قبل التأكيد", "CONFLICT");
+  };
+  const assertViewedClaims = (claims: Array<{ consignmentId: number; amount: Decimal }>, required: boolean) => {
+    if (bypass) return;
+    const expected = input.expectedConsignmentClaims;
+    if (expected == null && !required) return;
+    if (!Array.isArray(expected) || expected.length !== claims.length || expected.length > 30 ||
+        new Set(expected.map((item) => item?.consignmentId)).size !== expected.length ||
+        expected.some((item) => !Number.isSafeInteger(item?.consignmentId) || item.consignmentId <= 0 ||
+          typeof item.amount !== "string" || !/^\d+(\.\d{1,2})?$/.test(item.amount) ||
+          !claims.some((claim) => claim.consignmentId === item.consignmentId && money(item.amount).eq(claim.amount))))
+      throw fulfillmentError("تغيرت مطالبات فواتير الشحنة أو لم تُرسل؛ حدّث توصيلاتي وراجع فواتيرها قبل التأكيد", "CONFLICT");
+  };
+  return { assertViewedClaim, assertViewedMembers, assertViewedAmount, assertViewedClaims };
+}
+
 export async function acknowledgeConsignmentClaim(
   input: {
     consignmentId: number;
     expectedClaimVersion: number;
     clientRequestId: string;
-  },
+  } & CourierClaimView,
   actor: { userId: number },
 ) {
   const membership = await resolveDeliveryMembership(actor.userId);
@@ -898,9 +954,15 @@ export async function acknowledgeConsignmentClaim(
     await loadOperationUserTx(tx, actor.userId);
     const [shipmentMembership] = await tx.select().from(deliveryShipmentMembers)
       .where(eq(deliveryShipmentMembers.consignmentId, Number(cn.id))).for("share").limit(1);
+    let viewedMembers = [cn];
+    let hasClosedMembers = false;
+    let isGroup = false;
     if (shipmentMembership) {
       const members = await loadShipmentMembersTx(tx, Number(cn.id), { currentRead: true });
       const activeMembers = operationalShipmentMembers(members);
+      viewedMembers = activeMembers;
+      hasClosedMembers = members.length !== activeMembers.length;
+      isGroup = members.length > 1;
       if (!members.some((member) => Number(member.id) === Number(shipmentMembership.leaderConsignmentId)) ||
           !activeMembers.length || Number(cn.partyId) !== membership.partyId ||
           members.some((member) => Number(member.branchId) !== Number(cn.branchId)) ||
@@ -934,6 +996,15 @@ export async function acknowledgeConsignmentClaim(
         "تغيرت المطالبة قبل الإقرار؛ حدّث تفاصيل الإرسالية ثم أقر النسخة الحالية",
         "CONFLICT",
       );
+    const view = courierClaimViewAssertions(input);
+    view.assertViewedClaim(cn);
+    view.assertViewedMembers(viewedMembers.map((member) => Number(member.id)), hasClosedMembers);
+    const claims = viewedMembers.map((member) => ({
+      consignmentId: Number(member.id),
+      amount: round2(money(member.codAmount).minus(money(member.collectedAmount)).minus(money(member.counterSettledAmount))),
+    }));
+    view.assertViewedAmount(round2(claims.reduce((sum, claim) => sum.plus(claim.amount), money(0))));
+    view.assertViewedClaims(claims, isGroup && (cn.codClaimVersion > 1 || hasClosedMembers));
     if (cn.courierAckClaimVersion === cn.codClaimVersion) {
       await recordIdempotencyKey(
         tx,
@@ -1080,6 +1151,12 @@ export async function confirmConsignmentDelivery(
     consignmentId: number;
     collectionEvidence?: string;
     clientRequestId?: string;
+    /** نسخة المطالبة التي شاهدها المندوب عند التأكيد. */
+    expectedClaimVersion?: number;
+    /** أعضاء الشحنة ومبلغها كما ظهرا في شاشة المندوب. */
+    expectedConsignmentIds?: number[];
+    expectedClaimAmount?: string;
+    expectedConsignmentClaims?: Array<{ consignmentId: number; amount: string }>;
     /**
      * **إثباتُ كشف شركة التوصيل** (١٩/٨) — تفويضٌ داخليّ تضبطه `recordCompanyStatement`
      * حصراً؛ لا يقبله أيّ راوتر (نمط `receptionDeferredAuthorized` في سلّة الاستقبال).
@@ -1158,6 +1235,8 @@ export async function confirmConsignmentDelivery(
   const clientRequestId =
     input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
   const payloadHash = idempotencyHash({ ...input, actorId: actor.userId });
+  const { assertViewedClaim, assertViewedMembers, assertViewedAmount, assertViewedClaims } =
+    courierClaimViewAssertions(input, Boolean(input.statementWitness || options.shipmentMember));
   const run = async (tx: Tx): Promise<ConfirmConsignmentResult> => {
     // Every money-bearing delivery flow locks party → consignment → invoice.
     // Keeping one order prevents confirm/remittance deadlocks under load.
@@ -1185,15 +1264,6 @@ export async function confirmConsignmentDelivery(
       });
       if (allMembers.length > 1 && !input.statementWitness) {
         const members = operationalShipmentMembers(allMembers);
-        if (!members.length)
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: appErrorMessage({
-              what: "تعذر تسليم الشحنة",
-              why: "كل فواتير الشحنة أغلقت أو أرجعت",
-              doThis: "راجع سجل الفواتير والشحنة",
-            }),
-          });
         for (const member of members)
           assertMemberCanUseConsignment(membership, member);
         const [mapping] = await tx
@@ -1202,7 +1272,16 @@ export async function confirmConsignmentDelivery(
           .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
           .for("share")
           .limit(1);
-        const leaderId = Number(mapping?.leaderConsignmentId ?? members[0].id);
+        const leaderId = Number(mapping?.leaderConsignmentId ?? allMembers[0].id);
+        const leader = allMembers.find(
+          (member) => Number(member.id) === leaderId,
+        );
+        if (!leader) throw fulfillmentError("تعذر تحديد قائد الشحنة؛ حدّث توصيلاتي وراجع الشحنة", "CONFLICT");
+        const authorizedClosedDelivery = allMembers.find((member) => member.courierDeliveredAt != null &&
+          Number(member.partyId) === membership.partyId &&
+          (membership.memberRole !== "DRIVER" || member.assignedUserId == null || Number(member.assignedUserId) === membership.userId));
+        if (!members.length && !authorizedClosedDelivery)
+          throw fulfillmentError("لا توجد إرسالية مسلّمة مرتبطة بحسابك في هذه الشحنة؛ حدّث توصيلاتي", "FORBIDDEN");
         const groupHash = idempotencyHash({
           ...input,
           consignmentId: leaderId,
@@ -1213,13 +1292,10 @@ export async function confirmConsignmentDelivery(
           clientRequestId,
           groupHash,
         );
-        const leader = allMembers.find(
-          (member) => Number(member.id) === leaderId,
-        )!;
         if (replay != null) {
-          const deliveredAt = members.find(
+          const deliveredAt = (members.find(
             (member) => member.courierDeliveredAt != null,
-          )?.courierDeliveredAt;
+          ) ?? authorizedClosedDelivery)?.courierDeliveredAt;
           if (!deliveredAt)
             throw new TRPCError({
               code: "CONFLICT",
@@ -1236,6 +1312,17 @@ export async function confirmConsignmentDelivery(
             alreadyDelivered: true,
           };
         }
+        if (!members.length)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر تسليم الشحنة",
+              why: "كل فواتير الشحنة أغلقت أو أرجعت",
+              doThis: "راجع سجل الفواتير والشحنة",
+            }),
+          });
+        assertViewedClaim(leader);
+        assertViewedMembers(members.map((member) => Number(member.id)), members.length !== allMembers.length);
         const invoiceRows = await tx
           .select()
           .from(invoices)
@@ -1278,6 +1365,10 @@ export async function confirmConsignmentDelivery(
         const totalDue = round2(
           weights.reduce((sum, value) => sum.plus(value), money(0)),
         );
+        assertViewedAmount(totalDue);
+        assertViewedClaims(members.map((member, index) => ({
+          consignmentId: Number(member.id), amount: weights[index],
+        })), leader.codClaimVersion > 1 || members.length !== allMembers.length);
         const amount =
           input.collectedAmount == null
             ? totalDue
@@ -1379,9 +1470,12 @@ export async function confirmConsignmentDelivery(
           : input.statementWitness?.kind === "STAFF_CONFIRMED"
             ? "delivery.staffConfirm"
             : "delivery.recordCompanyStatement";
-      const aftercare = await routeAftercareDeliveryResultTx(
-        tx,
-        {
+      // Keep the displayed snapshot in the aftercare idempotency hash too.
+      const aftercareInput: Parameters<typeof routeAftercareDeliveryResultTx>[1] & {
+        expectedConsignmentIds?: number[];
+        expectedClaimAmount?: string;
+        expectedConsignmentClaims?: Array<{ consignmentId: number; amount: string }>;
+      } = {
           consignmentId: cn.id,
           result: "DELIVERED",
           proof:
@@ -1393,11 +1487,24 @@ export async function confirmConsignmentDelivery(
             input.statementWitness?.collectedAmount ??
             input.collectedAmount ??
             "0",
+          ...(input.expectedClaimVersion == null ? {} : { expectedClaimVersion: input.expectedClaimVersion }),
+          ...(input.expectedConsignmentIds == null ? {} : { expectedConsignmentIds: input.expectedConsignmentIds }),
+          ...(input.expectedClaimAmount == null ? {} : { expectedClaimAmount: input.expectedClaimAmount }),
+          ...(input.expectedConsignmentClaims == null ? {} : { expectedConsignmentClaims: input.expectedConsignmentClaims }),
           authorization: input.statementWitness
             ? { kind: "STAFF", operationPath }
             : { kind: "COURIER" },
-        },
+      };
+      const aftercare = await routeAftercareDeliveryResultTx(
+        tx,
+        aftercareInput,
         { userId: actor.userId, branchId: cn.branchId },
+        { beforeApply: (current) => {
+          assertViewedClaim(current);
+          assertViewedMembers([Number(current.id)], false);
+          assertViewedAmount(money(0));
+          assertViewedClaims([{ consignmentId: Number(current.id), amount: money(0) }], false);
+        } },
       );
       if (aftercare.handled) {
         const [completed] = await tx
@@ -1440,6 +1547,8 @@ export async function confirmConsignmentDelivery(
         alreadyDelivered: true,
       };
     }
+    assertViewedClaim(cn);
+    assertViewedMembers([Number(cn.id)], false);
     if (cn.parcelStatus === "DELIVERED" && cn.courierDeliveredAt) {
       await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return {
@@ -1536,6 +1645,8 @@ export async function confirmConsignmentDelivery(
             "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصحّح التحصيل المسجَّل قبل الختم",
         }),
       });
+    assertViewedAmount(codRemaining);
+    assertViewedClaims([{ consignmentId: Number(cn.id), amount: codRemaining }], false);
     /**
      * **التحصيل الجزئيّ من الكشف** (١٩/٨): بوّابة المندوب تفترض أنّ الختم يعني قبض COD
      * كاملاً (وهو صحيحٌ لمن يختم بيده لحظة التسليم). أمّا كشف الشركة فقد يقول صراحةً

@@ -41,6 +41,7 @@ export type AftercareDeliveryResultInput = {
   clientRequestId: string;
   feeEarned?: boolean;
   customerCollectedAmount?: string;
+  expectedClaimVersion?: number;
   authorization: AftercareResultAuthorization;
 };
 function scopedSourceActor(
@@ -94,6 +95,7 @@ export async function routeAftercareDeliveryResultTx(
   tx: Tx,
   input: AftercareDeliveryResultInput,
   actor: DeliveryTxActor,
+  options: { beforeApply?: (cn: typeof deliveryConsignments.$inferSelect) => void } = {},
 ) {
   const cn = await currentSourceTx(tx, input.consignmentId);
   if (!cn) return { handled: false as const };
@@ -141,6 +143,7 @@ export async function routeAftercareDeliveryResultTx(
     await repairDeliveryCustodyFromRecordedEventsTx(tx, cn.id);
     return { handled: true as const, executionId: replay, replay: true };
   }
+  options.beforeApply?.(cn);
   const [execution] = await tx
     .select()
     .from(aftercareExecutions)

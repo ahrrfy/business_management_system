@@ -283,13 +283,22 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
     expect(Number(displayed?.codDue)).toBe(6000);
     expect(Number(displayed?.orderTotal)).toBe(6000);
     expect(displayed?.codClaimVersion).toBe(2);
-    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-before-delivery-confirm" },
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: 2, expectedClaimAmount: displayed!.codDue, clientRequestId: "return-before-delivery-confirm" },
       { userId: 3 }, undefined, { requireFullCollection: true })).rejects.toThrow(/أقر/);
-    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), collectedAmount: "6000.00",
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: 2, expectedClaimAmount: displayed!.codDue, collectedAmount: "6000.00",
       clientRequestId: "return-before-delivery-explicit" }, { userId: 3 })).rejects.toThrow(/أقر/);
-    await acknowledgeConsignmentClaim({ consignmentId: Number(cn.id), expectedClaimVersion: 2,
+    await acknowledgeConsignmentClaim({ consignmentId: Number(cn.id), expectedClaimVersion: 2, expectedClaimAmount: displayed!.codDue,
       clientRequestId: "return-before-delivery-ack" }, { userId: 3 });
-    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-before-delivery-confirm" }, { userId: 3 }, undefined, { requireFullCollection: true });
+    const beforeStale = await Promise.all([db().select().from(s.deliveryLedgerEntries), db().select().from(s.invoices),
+      db().select().from(s.deliveryConsignments), db().select().from(s.accountingEntries)]);
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: 1,
+      collectedAmount: "4000.00", shortfallReason: "OTHER", collectionEvidence: "تأكيد مبلغ قبض سابق",
+      clientRequestId: "return-before-delivery-stale-partial" }, { userId: 3 })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id),
+      clientRequestId: "return-before-delivery-legacy" }, { userId: 3 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await Promise.all([db().select().from(s.deliveryLedgerEntries), db().select().from(s.invoices),
+      db().select().from(s.deliveryConsignments), db().select().from(s.accountingEntries)])).toEqual(beforeStale);
+    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: 2, expectedClaimAmount: displayed!.codDue, clientRequestId: "return-before-delivery-confirm" }, { userId: 3 }, undefined, { requireFullCollection: true });
     const ledger = await db().select().from(s.deliveryLedgerEntries).where(and(
       eq(s.deliveryLedgerEntries.consignmentId, cn.id), eq(s.deliveryLedgerEntries.entryType, "COD_COLLECTED"),
     ));
@@ -319,7 +328,13 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
     await returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 4 }], restock: true }, MANAGER);
     const row = (await listMyDeliveries(3)).toDeliver.find((entry) => entry.id === Number(cn.id));
     expect(Number(row?.codDue)).toBe(0);
-    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), clientRequestId: "return-zero-confirm" },
+    expect(row?.codClaimVersion).toBe(2);
+    await expect(confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: row!.codClaimVersion,
+      clientRequestId: "return-zero-missing-amount" }, { userId: 3 }, undefined, { requireFullCollection: true }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await confirmConsignmentDelivery({ consignmentId: Number(cn.id), expectedClaimVersion: row!.codClaimVersion,
+      expectedClaimAmount: row!.codDue, expectedConsignmentIds: [Number(cn.id)], expectedConsignmentClaims: row!.consignmentClaims,
+      clientRequestId: "return-zero-confirm" },
       { userId: 3 }, undefined, { requireFullCollection: true });
     const after = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, cn.id)))[0];
     expect(after).toMatchObject({ parcelStatus: "DELIVERED", status: "DELIVERED", moneyStatus: "SETTLED" });

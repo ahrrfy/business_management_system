@@ -43,7 +43,8 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
   const [physicalHeld, setPhysicalHeld] = useState(false);
   const request = useRef({ fingerprint: "", key: crypto.randomUUID() });
   const leader = shipment.members.find((row) => row.id === shipment.leaderConsignmentId)!;
-  const remaining = new Decimal(shipment.remainingAmount);
+  const remaining = new Decimal(shipment.collectibleAmount);
+  const invoiceRemaining = new Decimal(shipment.remainingAmount);
   const legacy = !!me.data && moduleAccessAllowed(me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]);
   const operational = shipment.members.filter((row) => row.operational);
@@ -86,7 +87,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
           consignmentNumber: shipment.consignmentNumber,
           sourceRef: operational.map((m) => m.invoiceNumber).join("، ") || shipment.consignmentNumber,
           recipientName: leader.recipientName,
-          codAmount: shipment.remainingAmount,
+          codAmount: shipment.collectibleAmount,
           reason: wins.reason,
           cashierName: me.data?.name ?? null,
         }, { into: wins.pack });
@@ -147,7 +148,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
           </div>
         ))}
       </div>
-      <p className="text-xs leading-6 text-muted-foreground">{returnDeclared ? "قيمة الفواتير بانتظار استلام المرتجع" : "المتبقي لتحصيل الشحنة"}: <b className="text-foreground">{fmt(remaining.toFixed(2))} د.ع</b> · أجرة الشحنة مرة واحدة: {fmt(shipment.deliveryFee)} د.ع · البوليصة: <span dir="ltr">{leader.externalTrackingRef ?? "—"}</span></p>
+      <p className="text-xs leading-6 text-muted-foreground">{returnDeclared ? "قيمة الفواتير بانتظار استلام المرتجع" : "المتبقي لتحصيل الشحنة"}: <b className="text-foreground">{fmt((returnDeclared ? invoiceRemaining : remaining).toFixed(2))} د.ع</b> · أجرة الشحنة مرة واحدة: {fmt(shipment.deliveryFee)} د.ع · البوليصة: <span dir="ltr">{leader.externalTrackingRef ?? "—"}</span></p>
       {returnDeclared && open && <p className="text-sm text-muted-foreground">أُعلن رجوع الشحنة وتوقف توقع تحصيلها. بعد وصولها وفحصها نفّذ «استلام وإرجاع الشحنة كاملة» لإعادة المخزون ومعالجة الفواتير.</p>}
       {cancelled && lifecycleActionAllowed(me.data, "delivery.dispatchInvoice", legacy) && <Button size="sm" variant="outline" onClick={() => setRedispatchOpen(true)}>إعادة إسناد الشحنة كاملة</Button>}
       <InvoiceDispatchDialog invoice={redispatchOpen && redispatchAnchor ? { id: Number(redispatchAnchor.invoiceId), invoiceNumber: redispatchAnchor.invoiceNumber, branchId: Number(leader.branchId), total: redispatchAnchor.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />

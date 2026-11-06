@@ -20,12 +20,14 @@ import {
   createFulfillmentCharge,
   approveFulfillmentCharge,
 } from "../fulfillment/charges";
+import { loadAssignedChargeClaimsTx } from "../fulfillment/chargeDelivery";
 import { confirmWorkflowDelivery } from "../delivery/workflow/collection";
 import { previewWorkflowScan } from "../delivery/workflow/preview";
 import { mutateWorkflowAssignment } from "../delivery/workflow/assignment";
 import {
   createFulfillmentRequest,
   releaseFulfillmentRequest,
+  releaseFulfillmentRequestInTx,
 } from "../fulfillment/requests";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { recordDeliveryRemittance } from "../delivery/remittance";
@@ -171,6 +173,60 @@ async function useSparseNativeRole(grants: Record<string, boolean>) {
     .where(eq(s.users.id, 1));
 }
 describe("atomic barcode batch dispatch", () => {
+  it("assigns a newly approved charge and generates shipment documents after an older transaction snapshot", async () => {
+    const request = await createFulfillmentRequest({
+      branchId: 1, customerId: 1, recipientName: "عميل الشحنة", recipientPhone: "07701234567",
+      deliveryAddress: "بغداد المنصور قرب المكتبة", partyId: 1, deliveryFee: "0",
+      feeCollection: "COURIER", sources: [{ invoiceId: 1 }, { invoiceId: 2 }],
+      clientRequestId: "stale-charge-request",
+    }, actor);
+    let resume!: () => void;
+    let announce!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { announce = resolve; });
+    let approvedChargeId = 0;
+    const pending = withTx(async (tx) => {
+      // Establish a REPEATABLE READ snapshot before the other transaction creates the charge.
+      expect(await tx.select().from(fulfillmentCharges)).toHaveLength(0);
+      announce();
+      await gate;
+      expect(await tx.select().from(fulfillmentCharges).where(eq(fulfillmentCharges.id, approvedChargeId))).toHaveLength(0);
+      const released = await releaseFulfillmentRequestInTx(tx, {
+        id: request.id, expectedVersion: request.version, assignedUserId: 2,
+        externalTrackingRef: "SNAPSHOT-CHARGE", clientRequestId: "stale-charge-release",
+      }, actor);
+      // The old placement in the writer would see its newly inserted assignment
+      // but not the charge outside this snapshot, and would abort dispatch.
+      await expect(loadAssignedChargeClaimsTx(tx, released.consignmentId, { lock: false }))
+        .rejects.toThrow(/مطالبات أجر الإرسالية مفقودة/);
+      return released;
+    });
+    await ready;
+    try {
+      const charge = await createFulfillmentCharge({
+        branchId: 1, requestId: request.id, customerId: 1, category: "SERVICE",
+        description: "أجر تجهيز أُضيف قبل إسناد الشحنة", amount: "1000", externalCost: "0",
+        clientRequestId: "stale-charge-create",
+      }, actor);
+      await approveFulfillmentCharge({ id: charge.id, expectedVersion: charge.version,
+        clientRequestId: "stale-charge-approve" }, actor);
+      approvedChargeId = charge.id;
+    } finally {
+      resume();
+    }
+    const result = await pending;
+    const [assignment] = await db().select().from(s.deliveryEvents)
+      .where(eq(s.deliveryEvents.eventKey, `FULFILLMENT_CHARGES_ASSIGNED:${request.id}`));
+    expect(assignment).toMatchObject({ consignmentId: result.consignmentId, payload: { chargeIds: [approvedChargeId] } });
+    const [leader] = await db().select().from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, result.consignmentId));
+    expect(leader.codAmount).toBe("1000.00");
+    const documents = await db().select().from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+    expect(documents).toHaveLength(3);
+    for (const document of documents.filter((row) => row.documentType !== "DELIVERY_MANIFEST"))
+      expect(document.payload).toMatchObject({ money: { codAmount: "1000.00" }, invoiceIds: [1, 2] });
+  });
   it.each([
     { channel: "workflow", legacy: false, degraded: false },
     { channel: "workflow", legacy: true, degraded: false },

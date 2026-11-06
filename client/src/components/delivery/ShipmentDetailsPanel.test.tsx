@@ -17,12 +17,14 @@ vi.mock("./InvoiceDispatchDialog", () => ({ InvoiceDispatchDialog: ({ invoice }:
 vi.mock("@/components/ui/AppSelect", () => ({ AppSelect: ({ children, onValueChange, ...props }: React.ComponentProps<"select"> & { onValueChange?: (value: string) => void }) =>
   <select {...props} onChange={event => onValueChange?.(event.currentTarget.value)}>{children}</select> }));
 vi.mock("@/components/ui/button", () => ({ Button: ({ children, size: _size, variant: _variant, ...props }: React.ComponentProps<"button"> & { size?: string; variant?: string }) => <button {...props}>{children}</button> }));
+vi.mock("@/components/form/MoneyInput", () => ({ MoneyInput: ({ value, ariaLabel, disabled }: { value: string; ariaLabel: string; disabled?: boolean }) =>
+  <input aria-label={ariaLabel} value={value} disabled={disabled} readOnly /> }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Shipment = React.ComponentProps<typeof ShipmentDetailsPanel>["shipment"];
 const member = { id: 1, invoiceId: 101, invoiceNumber: "INV-101", invoiceStatus: "CANCELLED", invoiceRemaining: "0.00", operational: false,
   status: "CANCELLED", parcelStatus: "CANCELLED", collectedAmount: "0", returnDeclaredAt: null, partyId: 1, externalTrackingRef: "TRACK-1", assignedUserId: null };
-const fixture = () => ({ leaderConsignmentId: 1, consignmentNumber: "CN-1", memberCount: 2, remainingAmount: "10000.00", deliveryFee: "1500.00",
+const fixture = () => ({ leaderConsignmentId: 1, consignmentNumber: "CN-1", memberCount: 2, remainingAmount: "10000.00", collectibleAmount: "10000.00", deliveryFee: "1500.00",
   members: [member, { ...member, id: 2, invoiceId: 102, invoiceNumber: "INV-102", invoiceStatus: "PENDING", invoiceRemaining: "10000.00",
     operational: true, status: "DISPATCHED", parcelStatus: "OUT_FOR_DELIVERY" }] }) as Shipment;
 let cleanup: (() => void) | undefined;
@@ -49,5 +51,15 @@ describe("shipment member continuity in the details panel", () => {
     const button = Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("إعادة إسناد"))!;
     act(() => button.click());
     expect(state.invoiceId).toBe(102);
+  });
+  it("uses the delivery claim rather than credit debt as the locked collection amount", () => {
+    const shipment = { ...fixture(), remainingAmount: "20000.00", collectibleAmount: "10000.00" };
+    const host = render(shipment);
+    const select = host.querySelector('select[aria-label="إجراء على كامل الشحنة"]') as HTMLSelectElement;
+    act(() => { select.value = "confirm"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const amount = host.querySelector('input[aria-label="مبلغ تحصيل الشحنة"]') as HTMLInputElement;
+    expect(amount.disabled).toBe(true);
+    expect(amount.value.replace(/[,\s]/g, "")).toMatch(/^10000(?:\.00)?$/);
+    expect(host.textContent).toContain("10,000");
   });
 });
