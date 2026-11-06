@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
 import { appErrorMessage } from "../../../shared/errors";
+import { isQuantity, quantityNumber, toDbQuantity } from "@shared/quantity";
 import {
   productUnits,
   productVariants,
@@ -11,6 +12,7 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { convertToBaseQuantity } from "../inventoryService";
+import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
 import { money, round2, toDateStr } from "../money";
 import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
@@ -21,24 +23,28 @@ import type {
   RunPlan,
 } from "./types";
 
-/** يحلّ سطراً إلى كمية أساس صحيحة (عبر الوحدة أو مباشرة). */
-async function resolveLine(tx: any, line: ProductionLineInput): Promise<ResolvedLine> {
+/** مدخلات المواد تقبل دقة المخزون؛ المخرجات تحتفظ بشرط كمية الأساس الصحيحة. */
+async function resolveLine(tx: any, line: ProductionLineInput, options: { allowFractionalBase?: boolean } = {}): Promise<ResolvedLine> {
   if (!Number.isInteger(line.variantId) || line.variantId <= 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "صنف غير صالح في أحد الأسطر" });
   }
   let baseQuantity: number;
   let quantity: string;
   if (line.productUnitId != null && line.quantity != null) {
-    const conv = await convertToBaseQuantity(tx, line.productUnitId, line.quantity, line.variantId);
+    const conv = await convertToBaseQuantity(tx, line.productUnitId, line.quantity, line.variantId, options);
     baseQuantity = conv.baseQuantity;
-    quantity = money(line.quantity).toFixed(4);
+    quantity = toDbQuantity(line.quantity);
   } else {
     if (line.productUnitId != null) await convertToBaseQuantity(tx, line.productUnitId, "1", line.variantId);
-    if (line.baseQuantity == null || !Number.isInteger(line.baseQuantity) || line.baseQuantity <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
+    if (line.baseQuantity == null || !isQuantity(line.baseQuantity) || line.baseQuantity <= 0 || (!options.allowFractionalBase && !Number.isInteger(line.baseQuantity))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذّر تثبيت كمية سطر الإنتاج",
+        why: options.allowFractionalBase ? "كمية المادة يجب أن تكون موجبة بأربع منازل عشرية أو أقل" : "كمية الناتج الأساس يجب أن تكون عدداً صحيحاً موجباً",
+        doThis: options.allowFractionalBase ? "أدخل كمية المادة ضمن دقة المخزون ثم أعد المحاولة" : "أدخل عدداً صحيحاً للناتج النهائي ثم أعد المحاولة",
+      }) });
     }
-    baseQuantity = line.baseQuantity;
-    quantity = money(line.baseQuantity).toFixed(4);
+    baseQuantity = quantityNumber(line.baseQuantity);
+    quantity = toDbQuantity(baseQuantity);
   }
   return {
     variantId: line.variantId,
@@ -231,22 +237,12 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
       });
     }
 
-    const consumed = qtyDec.times(batch);
-    if (!consumed.isInteger()) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
-          why: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — المخزون يُخصم بوحدات أساس صحيحة فقط`,
-          doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
-        }),
-      });
-    }
+    const consumed = exactRecipeMaterialQuantity(effectiveQtyPerOutputBase, batch, `مادة الإنتاج «${displayName}»`);
     return {
       variantId: effectiveVariantId,
       productUnitId: effectiveProductUnitId,
-      quantity: consumed.toFixed(4),
-      baseQuantity: consumed.toNumber(),
+      quantity: toDbQuantity(consumed),
+      baseQuantity: consumed,
       manualSharePct: null,
     };
   });

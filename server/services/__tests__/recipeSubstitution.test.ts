@@ -250,16 +250,15 @@ describe("الاستبدال المؤقت (Ad-hoc) في معاينة وترحي�
     expect(recipeLines.some((l) => l.inputVariantId === 2)).toBe(false);
   });
 
-  it("يرفض الترحيل إذا كان استهلاك المادة البديلة ليس عدداً صحيحاً", async () => {
+  it("يرحّل الكمية الكسرية للمادة البديلة ويحفظ استهلاكها وتكلفتها", async () => {
     const recipeId = await createTestRecipe();
 
-    await expect(
-      createProduction(
+    const order = await createProduction(
         {
           branchId: 1,
           run: {
             recipeId,
-            batchQty: 3, // 3 * 2.5 = 7.5 (ليس عدداً صحيحاً)
+            batchQty: 3, // الناتج صحيح؛ استهلاك المادة 3 * 2.5 = 7.5
             scrapQty: 0,
             materialSubstitutions: [
               {
@@ -271,8 +270,16 @@ describe("الاستبدال المؤقت (Ad-hoc) في معاينة وترحي�
           },
         },
         adminActor,
-      ),
-    ).rejects.toThrow(/ليس عدداً صحيحاً/);
+      );
+    const [material] = await db().select().from(s.productionLines).where(
+      sql`${s.productionLines.productionOrderId} = ${order.productionOrderId} AND ${s.productionLines.variantId} = 2 AND ${s.productionLines.direction} = 'INPUT'`,
+    );
+    expect(material.baseQuantity).toBe(7.5);
+    expect(material.lineCost).toBe("112.50");
+    const [stock] = await db().select().from(s.branchStock).where(
+      sql`${s.branchStock.variantId} = 2 AND ${s.branchStock.branchId} = 1`,
+    );
+    expect(stock.quantity).toBe(4992.5);
   });
 });
 
@@ -1039,17 +1046,18 @@ describe("الاستبدال بوحدات قياس غير أساسية والح�
     expect(res.success).toBe(true);
     expect(res.qtyPerOutputBase).toBe("50.0000"); // اعتمد كمية المادة 1 السابقة تلقائياً
 
-    // 3. التحقق من رسالة الخطأ الهيكلية appErrorMessage عند استهلاك غير صحيح
-    await expect(
-      runPreview({
+    // 3. تقبل المعاينة الاستهلاك الكسري مع بقاء كمية الناتج صحيحة.
+    const preview = await runPreview({
         recipeId,
         batchQty: 3,
         branchId: 1,
         materialSubstitutions: [
           { originalVariantId: 2, substituteVariantId: 1, qtyPerOutputBase: "1.2500" }, // 3 * 1.25 = 3.75
         ],
-      }),
-    ).rejects.toThrow(/استهلاك مادة الإنتاج ليس عدداً صحيحاً/);
+      });
+    const material = preview.inputs.find((line) => line.variantId === 1);
+    expect(material?.consumed).toBe(3.75);
+    expect(material?.lineCost).toBe("37.50");
   });
 });
 

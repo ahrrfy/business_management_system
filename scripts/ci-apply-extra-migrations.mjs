@@ -259,6 +259,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0419_purchase_return_physical_only_reversal.sql",
   "drizzle/migrations/0425_delivery_company_statement_batches.sql",
   "drizzle/migrations/0426_digital_cycle_settlements.sql",
+  "drizzle/migrations/0427_fractional_recipe_inventory.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

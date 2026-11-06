@@ -39,7 +39,8 @@ export function readActivationJournal(file) {
     !/^[a-f0-9]{64}$/.test(j.nonce)
   )
     throw new Error("INVENTORY_JOURNAL_INVALID");
-  for (const a of j.artifacts)
+  if (j.recoveryArtifacts !== undefined && (!Array.isArray(j.recoveryArtifacts) || j.recoveryArtifacts.length > 64)) throw new Error("INVENTORY_RECOVERY_ARTIFACTS_INVALID");
+  for (const a of [...j.artifacts, ...(j.recoveryArtifacts ?? [])])
     if (
       !path.isAbsolute(a.script) ||
       !path.isAbsolute(a.bundle) ||
@@ -49,6 +50,11 @@ export function readActivationJournal(file) {
       !["erp-server", "erp-hr-bridge"].includes(a.name)
     )
       throw new Error("INVENTORY_JOURNAL_ARTIFACT_INVALID");
+  if (j.schemaTransition && (
+    j.schemaTransition.id !== "fractional-material-quantities-v1" ||
+    j.schemaTransition.rollbackPolicy !== "FORWARD_ONLY" ||
+    typeof j.schemaTransition.started !== "boolean"
+  )) throw new Error("INVENTORY_SCHEMA_TRANSITION_INVALID");
   return j;
 }
 export function writeActivationJournal(file, journal) {

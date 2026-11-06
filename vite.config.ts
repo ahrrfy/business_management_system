@@ -545,6 +545,13 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
             return "assets/[name]-[hash].js";
           },
           manualChunks(id) {
+            // Product customization and reviews share the detail view. Keep their
+            // code out of the catalog chunk without weakening its size budget.
+            if (
+              id.includes("/client/src/components/storefront/StorefrontCustomizerStudio.tsx") ||
+              id.includes("/client/src/components/storefront/StorefrontProductReviews.tsx")
+            )
+              return "storefront-product-content";
             // Legacy permission dictionaries remain needed for untouched roles, but do not
             // belong in the account-sharing or application entry chunks.
             if (id.includes("/shared/atomicPermissionExtensions.ts"))

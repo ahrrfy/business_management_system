@@ -98,28 +98,27 @@ describe("recipeCapacity — سقف الإنتاج الممكن", () => {
     expect(cap.components[0].perOutputBase).toBe("20");
   });
 
-  it("⭐ المعامل الكسريّ يقصّ السقف على المضاعف — وهو بلاغ المالك بعينه", async () => {
-    // ورق 1000 ÷ 10 = 100، لكنّ الغراء بمعامل 0.01 يفرض مضاعفات 100.
+  it("المعامل الكسري لا يقيد دفعة الناتج الصحيح بمضاعف", async () => {
+    // الكفاية تحدد السقف، والغراء يقبل الاستهلاك الكسري.
     const r = await makeRecipe([
       { inputVariantId: 1, qtyPerOutputBase: "10" },
       { inputVariantId: 3, qtyPerOutputBase: "0.01" },
     ]);
     const cap = await recipeCapacity({ recipeId: r.recipeId, branchId: 1 });
-    expect(cap.batchMultiple).toBe(100);
+    expect(cap.batchMultiple).toBe(1);
     expect(cap.maxByStock).toBe(100);
     expect(cap.maxBatch).toBe(100);
-    expect(cap.batchMultipleNote).toContain("مضاعفةً لـ100");
+    expect(cap.batchMultipleNote).toBeNull();
   });
 
-  it("سقفٌ دون أصغر دفعةٍ صالحة ⇒ صفر صريح لا رقمٌ يُرفَض عند الترحيل", async () => {
-    // ورق بمعامل 200 ⇒ الكفاية تسمح بـ5 فقط، والمضاعف 100 ⇒ لا دفعة صالحة.
+  it("الكفاية لخمسة منتجات تسمح بخمسة ولو كان استهلاك الغراء كسرياً", async () => {
     const r = await makeRecipe([
       { inputVariantId: 1, qtyPerOutputBase: "200" },
       { inputVariantId: 3, qtyPerOutputBase: "0.01" },
     ]);
     const cap = await recipeCapacity({ recipeId: r.recipeId, branchId: 1 });
     expect(cap.maxByStock).toBe(5);
-    expect(cap.maxBatch).toBe(0);
+    expect(cap.maxBatch).toBe(5);
   });
 
   it("عزل الفرع: نفس الوصفة تُعطي سقفاً مختلفاً لكل فرع", async () => {

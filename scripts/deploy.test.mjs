@@ -40,7 +40,54 @@ const {
   finalizeReleasedInventoryWebArtifact,
   evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
+  archiveInterruptedWebActivationForForwardRecovery,
+  synchronizeAndMaybeReexec,
 } = await import("./deploy.mjs");
+
+{
+  const calls = [];
+  let reads = 0;
+  synchronizeAndMaybeReexec({ token: "test-token", release() {} }, {
+    args: ["--resume-fractional-schema-cutover"],
+    repository: () => ({ head: (++reads === 1 ? "a" : "b").repeat(40), remote: "b".repeat(40) }),
+    execute: (command, args) => calls.push([command, ...args]),
+    spawnChild: (_node, args) => { calls.push(args); return { status: 0 }; },
+    exit: () => {},
+  });
+  assert.ok(calls.some((args) => args.includes("--resume-fractional-schema-cutover") && args.includes("--after-pull")), "forward-only recovery choice must survive controller re-execution");
+}
+
+{
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "fractional-forward-web-"));
+  try {
+    const writeArtifact = (directory) => {
+      fs.mkdirSync(path.join(directory, "public"), { recursive: true });
+      fs.writeFileSync(path.join(directory, "index.js"), "compiled-candidate");
+      fs.writeFileSync(path.join(directory, "public/index.html"), "client");
+    };
+    writeArtifact(path.join(fixture, "dist"));
+    const snapshot = snapshotWebArtifact(fixture, { id: "web-fractional-failed" });
+    const candidate = prepareWebCandidate(fixture, {
+      id: "candidate-fractional-recovery", expectedSha: "b".repeat(40),
+      operations: { createWorktree: (source) => fs.mkdirSync(source), linkDependencies() {}, build: (source) => writeArtifact(path.join(source, "dist")), removeWorktree() {} },
+    });
+    installWebCandidate(snapshot, candidate);
+    const linkBefore = fs.readlinkSync(snapshot.activeLinkPath);
+    const failed = { id: "12345678-1234-1234-1234-123456789abc", phase: "FATAL", schemaTransition: { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: true }, artifacts: [{ name: "erp-server", bundle: path.join(snapshot.candidatePath, "index.js") }] };
+    assert.throws(() => archiveInterruptedWebActivationForForwardRecovery(fixture, { ...failed, artifacts: [] }), /WEB_JOURNAL_MISMATCH/);
+    assert.equal(hasPendingWebActivation(fixture), true);
+    const retried = { ...failed, id: "22345678-1234-1234-1234-123456789abc", artifacts: [{ name: "erp-server", bundle: path.join(fixture, "not-started-next-candidate/index.js") }], recoveryArtifacts: failed.artifacts };
+    const archive = archiveInterruptedWebActivationForForwardRecovery(fixture, retried);
+    assert.equal(fs.existsSync(archive), true);
+    assert.equal(hasPendingWebActivation(fixture), false);
+    assert.equal(fs.readlinkSync(snapshot.activeLinkPath), linkBefore, "archive must never switch the active pointer to an old binary");
+  } finally {
+    const resolved = fs.realpathSync(fixture);
+    assert.equal(path.dirname(resolved), fs.realpathSync(os.tmpdir()));
+    assert.ok(path.basename(resolved).startsWith("fractional-forward-web-"));
+    fs.rmSync(resolved, { recursive: true });
+  }
+}
 assert.doesNotThrow(() => assertLegacyWebDeployment({}, [{ name: "erp-server" }], {}));
 for (const [env, rows] of [
   [{ WEB_RUNTIME_MODE: "split" }, []],

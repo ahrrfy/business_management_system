@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { Check, Hourglass, RefreshCw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { addQuantities, isQuantity } from "@shared/quantity";
 import type { PortalState } from "@shared/countPortalMerge";
 import type { QueuedCount } from "@/lib/countQueue";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
+import { calculateCountDraft, normalizeCountDraft } from "./quantityDraft";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,7 +63,7 @@ export function StocktakeQtyEditor({
         const init: Record<string, string> = {};
         for (const u of item.units) {
           const v = parsed[u.unitName];
-          if (typeof v === "number" && Number.isInteger(v) && v >= 0)
+          if (isQuantity(v) && v >= 0)
             init[u.unitName] = String(v);
         }
         if (Object.keys(init).length > 0) return init;
@@ -75,22 +77,14 @@ export function StocktakeQtyEditor({
   });
 
   const setVal = (unitName: string, raw: string) =>
-    setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
+    setVals((v) => ({ ...v, [unitName]: normalizeCountDraft(raw) }));
   const step = (unitName: string, delta: number) =>
     setVals((v) => {
-      const cur = parseInt(v[unitName] || "0", 10) || 0;
-      return { ...v, [unitName]: String(Math.max(0, cur + delta)) };
+      const cur = Number(v[unitName] || "0");
+      return { ...v, [unitName]: String(Math.max(0, addQuantities(isQuantity(cur) ? cur : 0, delta))) };
     });
 
-  // الكميات أعداد صحيحة (ليست أموالاً) — حساب عددي مباشر.
-  const entries: Record<string, number> = {};
-  for (const u of units) {
-    const raw = vals[u.unitName];
-    if (raw !== undefined && raw !== "") entries[u.unitName] = parseInt(raw, 10) || 0;
-  }
-  const total = units.reduce((s, u) => s + (entries[u.unitName] ?? 0) * u.factor, 0);
-  const anyEntered = Object.keys(entries).length > 0;
-  const valid = anyEntered && Number.isSafeInteger(total) && total >= 0;
+  const { entries, total, valid } = calculateCountDraft(units, vals);
 
   const handleSave = () => {
     if (!valid || saving) return;
@@ -163,14 +157,14 @@ export function StocktakeQtyEditor({
                   type="button"
                   aria-label={`إنقاص ${u.unitName}`}
                   onClick={() => step(u.unitName, -1)}
-                  disabled={(parseInt(cur || "0", 10) || 0) === 0}
+                  disabled={Number(cur || "0") === 0}
                   className="grid size-11 place-items-center rounded-lg border bg-background text-xl font-bold active:scale-95 disabled:opacity-40"
                 >
                   −
                 </button>
                 <Input
                   autoFocus={focusUnit ? focusUnit === u.unitName : u.factor === 1}
-                  inputMode="numeric"
+                  inputMode="decimal"
                   dir="ltr"
                   value={cur}
                   placeholder="0"
@@ -201,7 +195,7 @@ export function StocktakeQtyEditor({
           className="font-mono text-xl font-bold tabular-nums text-primary"
           dir="ltr"
         >
-          {fmtInt(total)} {baseUnit}
+          {valid ? formatQuantity(total) : "—"} {baseUnit}
         </span>
       </div>
 

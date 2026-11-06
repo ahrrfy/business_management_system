@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { addQuantities, isQuantity, subtractQuantities } from "@shared/quantity";
+import { normalizeCountDraft } from "@/components/stocktake/quantityDraft";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -233,7 +235,7 @@ export default function TransfersLog({
     return doc.lines.map((l) => {
       const st = recv[Number(l.id)] ?? { qty: String(l.quantitySent), note: "" };
       const q = st.qty.trim() === "" ? NaN : Number(st.qty);
-      if (!Number.isInteger(q) || q < 0) return "كمية غير صالحة";
+      if (!isQuantity(q) || q < 0 || (l.isBundle && !Number.isInteger(q))) return "كمية غير صالحة؛ المواد تقبل أربع منازل عشرية والبكج يُستلم كاملاً";
       if (q > l.quantitySent) return `تتجاوز المرسَل (${formatQuantity(l.quantitySent)})`;
       if (q !== l.quantitySent && !st.note.trim()) return "الفرق يتطلّب ملاحظة";
       return "";
@@ -245,7 +247,7 @@ export default function TransfersLog({
     return doc.lines.reduce((a, l) => {
       const st = recv[Number(l.id)] ?? { qty: String(l.quantitySent), note: "" };
       const q = Number(st.qty);
-      return a + (Number.isInteger(q) && q >= 0 && q <= l.quantitySent ? l.quantitySent - q : 0);
+      return addQuantities(a, isQuantity(q) && q >= 0 && q <= l.quantitySent ? subtractQuantities(l.quantitySent, q) : 0);
     }, 0);
   }, [doc, recv]);
 
@@ -479,8 +481,8 @@ export default function TransfersLog({
                       const st = lineState(Number(l.id), l.quantitySent);
                       const q = Number(st.qty);
                       const diff = canReceive
-                        ? (Number.isInteger(q) && q >= 0 && q <= l.quantitySent ? l.quantitySent - q : null)
-                        : l.quantityReceived == null ? null : l.quantitySent - Number(l.quantityReceived);
+                        ? (isQuantity(q) && q >= 0 && q <= l.quantitySent ? subtractQuantities(l.quantitySent, q) : null)
+                        : l.quantityReceived == null ? null : subtractQuantities(l.quantitySent, l.quantityReceived);
                       return (
                         <tr key={Number(l.id)} className="border-t align-top">
                           <td className="p-2 px-3">
@@ -501,9 +503,9 @@ export default function TransfersLog({
                               <>
                                 <Input
                                   dir="ltr"
-                                  inputMode="numeric"
+                                  inputMode="decimal"
                                   value={st.qty}
-                                  onChange={(e) => setLine(Number(l.id), l.quantitySent, { qty: e.target.value.replace(/[^\d]/g, "") })}
+                                  onChange={(e) => setLine(Number(l.id), l.quantitySent, { qty: normalizeCountDraft(e.target.value) })}
                                   className={`h-8 text-center ${recvErrors[i] ? "border-destructive" : ""}`}
                                   aria-label={`الكمية المستلَمة بوحدة ${l.unitLabel} — ${l.productName}`}
                                 />

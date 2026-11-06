@@ -4,6 +4,7 @@ import Decimal from "decimal.js";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { branchStock, inventoryMovements, openingModeSettings, productUnits, productVariants, products } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
+import { addQuantities, isQuantity, multiplyQuantities, quantityNumber, subtractQuantities, toDbQuantity } from "@shared/quantity";
 import { variantDisplayName } from "@shared/variantDisplay";
 import type { Tx } from "../db";
 import { money, round2, type DecimalInput } from "./money";
@@ -102,10 +103,10 @@ const DEDUCTING = new Set<DirectionalType>(["OUT", "TRANSFER_OUT"]);
  *  (ثغرة تحقيق ٢٠/٦). null = لا علامة مطابِقة ⇒ يَتجاهلها المُستدعي. */
 export function adjustSignedDelta(notes: string | null): number | null {
   if (!notes) return null;
-  const m = notes.match(/\(فرق\s*([+\-−]?)\s*(\d+)\)\s*$/);
+  const m = notes.match(/\(فرق\s*([+\-−]?)\s*(\d+(?:\.\d{1,4})?)\)\s*$/);
   if (!m) return null;
   const sign = m[1] === "-" || m[1] === "−" ? -1 : 1;
-  return sign * parseInt(m[2], 10);
+  return multiplyQuantities(sign, m[2]);
 }
 
 /** المصدر الوحيد لإشارة حركات المخزون (الكاردكس + الجرد يَستعملانه ⇒ لا تَباعُد). الكمية مخزَّنة
@@ -133,7 +134,7 @@ export interface ApplyMovementArgs {
   economicScope?: EconomicInventoryScope;
   variantId: number;
   branchId: number;
-  baseQuantity: number; // positive integer, in base units
+  baseQuantity: number; // exact positive quantity, up to four decimal places
   movementType: DirectionalType; // ADJUST goes through setStock only
   referenceType?: string;
   referenceId?: number;
@@ -252,13 +253,13 @@ async function assertInventoryPeriodOpen(tx: Tx): Promise<void> {
 
 /** Read current stock under a row lock, then write a movement + the new branchStock. */
 export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<ApplyMovementResult> {
-  if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
+  if (!isQuantity(a.baseQuantity) || a.baseQuantity <= 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: "تعذّرت حركة المخزون",
-        why: `الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً، والمُرسَل ${a.baseQuantity}`,
-        doThis: "أدخِل كمّيةً موجبة تُنتج عدداً صحيحاً بالوحدة الأساس، أو اختر وحدةً بمعامل تحويلٍ يقبل كسر الكمية",
+        why: `الكمية الأساس يجب أن تكون موجبة وبأربع منازل عشرية ضمن الحد المسموح، والمُرسَل ${a.baseQuantity}`,
+        doThis: "أدخل كمية المادة الفعلية بالوحدة الأساس بأربع منازل عشرية أو أقل",
       }),
     });
   }
@@ -340,7 +341,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     return backorderCache;
   };
 
-  const requestedFormalExemption = Number.isSafeInteger(a.formalReservationExemptionBase)
+  const requestedFormalExemption = isQuantity(a.formalReservationExemptionBase ?? 0)
     && Number(a.formalReservationExemptionBase) > 0
     ? Number(a.formalReservationExemptionBase)
     : 0;
@@ -348,8 +349,8 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     lockedAvailability?.formalReservationBase ?? 0,
     requestedFormalExemption,
   );
-  const reservedBase = Math.max(0, (lockedAvailability?.reservedBase ?? 0) - formalReservationExemption);
-  const availableAfterAllocations = Math.max(0, currentQty - reservedBase);
+  const reservedBase = Math.max(0, subtractQuantities(lockedAvailability?.reservedBase ?? 0, formalReservationExemption));
+  const availableAfterAllocations = Math.max(0, subtractQuantities(currentQty, reservedBase));
   // «يُباع بالطلب» يعبر حاجز الحجوزات أيضاً — وإلّا بقي الصنف محجوباً كلّما وُجد حجزٌ قائم،
   // وهو نقيض معنى الصفة: الطلب المحجوز يُغطّى من التوريد التالي كما يُغطّى البيع الجديد.
   if (
@@ -406,8 +407,8 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
       }),
     });
   }
-  const signedDelta = sign * a.baseQuantity;
-  const newQuantity = currentQty + signedDelta;
+  const signedDelta = multiplyQuantities(sign, a.baseQuantity);
+  const newQuantity = addQuantities(currentQty, signedDelta);
 
   // ── أرضية السالب التراكمية (تحقيق سوالب ١٢/٨) ───────────────────────────────────────────────
   // السقف (openingModeSettings.maxNegativeQtyPerLine) كان يُفحَص في sale/create على **كمية السطر**
@@ -471,8 +472,8 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     .update(branchStock)
     .set(
       a.stampOpened
-        ? { quantity: sql`${branchStock.quantity} + ${signedDelta}`, openedAt: sql`COALESCE(${branchStock.openedAt}, NOW())` }
-        : { quantity: sql`${branchStock.quantity} + ${signedDelta}` },
+         ? { quantity: sql`${branchStock.quantity} + ${toDbQuantity(signedDelta)}`, openedAt: sql`COALESCE(${branchStock.openedAt}, NOW())` }
+         : { quantity: sql`${branchStock.quantity} + ${toDbQuantity(signedDelta)}` },
     )
     .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
 
@@ -495,12 +496,12 @@ export async function applyValuedInboundMovement(
   tx: Tx,
   a: ApplyValuedInboundMovementArgs,
 ): Promise<ApplyValuedInboundMovementResult> {
-  if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
+  if (!isQuantity(a.baseQuantity) || a.baseQuantity <= 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: "تعذّر إدخال المخزون بقيمته التاريخية",
-        why: `الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً، والمُرسَل ${a.baseQuantity}`,
+        why: `الكمية الأساس يجب أن تكون موجبة وبأربع منازل عشرية ضمن الحد المسموح، والمُرسَل ${a.baseQuantity}`,
         doThis: "صحّح الكمية في المستند الأصلي ثمّ أعِد محاولة العكس",
       }),
     });
@@ -597,7 +598,8 @@ export async function convertToBaseQuantity(
   tx: Tx,
   productUnitId: number,
   quantity: DecimalInput,
-  variantId?: number
+  variantId?: number,
+  options: { allowFractionalBase?: boolean } = {},
 ): Promise<ConvertResult> {
   const rows = await tx
     // `unitName` للرسالة وحدها: «وحدة المنتج معطّلة» بلا اسمِ الوحدة تُجبر الموظّف على تخمين
@@ -666,7 +668,7 @@ export async function convertToBaseQuantity(
     });
   }
   const base = q.mul(f);
-  if (!base.isInteger()) {
+  if (!base.isInteger() && options.allowFractionalBase !== true) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
@@ -676,7 +678,17 @@ export async function convertToBaseQuantity(
       }),
     });
   }
-  return { baseQuantity: base.toNumber(), conversionFactor: f.toString(), isBaseUnit: !!u.isBase };
+  if (!base.isFinite() || base.decimalPlaces() > 4 || base.gt("99999999999.9999")) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تحويل كمية المادة إلى الوحدة الأساس",
+        why: "الكمية الناتجة تتجاوز دقة التخزين أو الحد المسموح",
+        doThis: "أدخل كمية موجبة بأربع منازل عشرية أو أقل ضمن الحد المسموح",
+      }),
+    });
+  }
+  return { baseQuantity: quantityNumber(base), conversionFactor: f.toString(), isBaseUnit: !!u.isBase };
 }
 
 export interface SetStockArgs {
@@ -700,12 +712,12 @@ export interface SetStockArgs {
 
 /** Absolute stock adjustment (ADJUST). Records abs(delta) and the direction in notes. */
 export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementResult> {
-  if (!Number.isInteger(a.targetQuantity) || (a.targetQuantity < 0 && !a.allowNegativeTarget)) {
+  if (!isQuantity(a.targetQuantity) || (a.targetQuantity < 0 && !a.allowNegativeTarget)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: "تعذّرت تسوية الرصيد",
-        why: `الرصيد المستهدف يجب أن يكون عدداً صحيحاً غير سالب، والمُرسَل ${a.targetQuantity}`,
+        why: `الرصيد المستهدف يجب أن يكون غير سالب وبأربع منازل عشرية ضمن الحد المسموح، والمُرسَل ${a.targetQuantity}`,
         doThis: "أدخِل العدد المعدود فعلياً بالوحدة الأساس (صفر إن لم يبقَ منه شيء)؛ والرصيد السالب لا يُثبَّت إلّا بجردٍ افتتاحيّ",
       }),
     });
@@ -740,7 +752,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     .for("update")
     .limit(1);
   const currentQty = rows[0]?.quantity ?? 0;
-  const delta = a.targetQuantity - currentQty;
+  const delta = subtractQuantities(a.targetQuantity, currentQty);
 
   // علامة الإشارة «(فرق ±D)» تُلحق دائماً — حتى مع ملاحظات مخصّصة — لأن quantity تُخزَّن
   // مطلقة والاتجاه يُسترجَع منها (مثلاً تصحيح netAfter في خدمة الجرد). لا تحذفها.

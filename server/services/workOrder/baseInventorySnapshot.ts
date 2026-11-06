@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { isQuantity } from "@shared/quantity";
 import { eq } from "drizzle-orm";
 
 import { productUnits } from "../../../drizzle/schema";
@@ -116,7 +117,7 @@ export function assertBaseMaterialInvariant(
   if (
     marked.length !== 1 ||
     Number(base?.variantId) !== snapshot.variantId ||
-    !Number.isSafeInteger(Number(base?.baseQuantity)) ||
+    !isQuantity(Number(base?.baseQuantity)) ||
     Number(base?.baseQuantity) < snapshot.baseQuantity
   ) {
     throw new TRPCError({

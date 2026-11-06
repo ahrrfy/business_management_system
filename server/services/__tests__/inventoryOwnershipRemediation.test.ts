@@ -103,6 +103,16 @@ async function inbound() {
     }),
   );
 }
+it("preserves fractional raw material use and restores its historical quantity on cancellation", async () => {
+  const result = await createExpense({
+    branchId: 1, category: "SUPPLIES", amount: "0", paymentMethod: "CASH", source: "STOCK", stockReason: "INTERNAL_USE",
+    items: [{ variantId: 1, baseQuantity: 1.5 }],
+  }, actor);
+  expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(8.5);
+  expect((await db().select().from(s.expenseStockItems))[0].baseQuantity).toBe(1.5);
+  await cancelExpense(result.expenseId, actor);
+  expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(10);
+});
 it("A03 returns saved expense value after WAVG drift, with no second reversal", async () => {
   const result = await expense();
   await inbound();

@@ -23,6 +23,7 @@ import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { ArrowRightLeft, Inbox, PackagePlus, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { addQuantities, isQuantity, multiplyQuantities } from "@shared/quantity";
 import { Link } from "wouter";
 import TransfersLog from "@/pages/TransfersLog";
 import { selectClsFull } from "@/lib/ui/formStyles";
@@ -49,11 +50,12 @@ export function aggregateByVariant(lines: TransferCartLine[]): Array<{ variantId
   const byVariant = new Map<number, { variantId: number; baseQuantity: number; name: string; stockBase: number; availableBase: number }>();
   for (const l of lines) {
     const factor = Number(l.conversionFactor) || 1;
-    const base = (Number(l.qty) || 0) * factor;
+    let base = Number.NaN;
+    try { if (isQuantity(l.qty) && l.qty > 0) base = multiplyQuantities(l.qty, factor); } catch { /* Invalid drafts are shown by computeLineStates. */ }
     const availableBase = Number(l.availableBase ?? l.stockBase) || 0;
     const cur = byVariant.get(l.variantId);
     if (cur) {
-      cur.baseQuantity += base;
+      try { cur.baseQuantity = addQuantities(cur.baseQuantity, base); } catch { cur.baseQuantity = Number.NaN; }
       cur.availableBase = Math.min(cur.availableBase, availableBase);
     } else {
       byVariant.set(l.variantId, { variantId: l.variantId, baseQuantity: base, name: l.name, stockBase: Number(l.stockBase) || 0, availableBase });
@@ -146,16 +148,19 @@ export default function Transfers() {
 
   const aggregated = useMemo(() => aggregateByVariant(cart), [cart]);
   const lineStates = useMemo(() => computeLineStates(cart), [cart]);
-  const totalBase = aggregated.reduce((a, x) => a + x.baseQuantity, 0);
+  let totalBase = 0;
+  let quantityOverflow = false;
+  try { totalBase = aggregated.reduce((a, x) => addQuantities(a, x.baseQuantity), 0); } catch { quantityOverflow = true; }
 
   /** أول خطأ يمنع الإرسال (الرسالة تسمّي الصنف) — بالتجميع لا بالسطر (الرصيد مشترك بين الوحدات). */
   const blocking = useMemo(() => {
     const frac = cart.findIndex((_, i) => lineStates[i]?.fractional);
-    if (frac >= 0) return `المنتج «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
+    if (frac >= 0) return `المنتج «${cart[frac].name}»: أدخل كمية موجبة بأربع منازل عشرية أو أقل ومعامل وحدة صحيح؛ البكج يُنقل كاملاً.`;
+    if (quantityOverflow) return "إجمالي كمية سند التحويل يتجاوز الحد المسموح؛ قلّل الكمية أو قسّم السند.";
     const over = aggregated.find((x) => x.baseQuantity > x.availableBase);
     if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${formatQuantity(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${formatQuantity(over.availableBase)}).`;
     return "";
-  }, [cart, lineStates, aggregated, fromName]);
+  }, [cart, lineStates, aggregated, fromName, quantityOverflow]);
 
   const valid = cart.length > 0 && !blocking && !!effectiveFrom && !!effectiveTo && effectiveFrom !== effectiveTo;
 

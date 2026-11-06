@@ -21,6 +21,7 @@ import {
 import { isDeadInvoice } from "@shared/predicates";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
 import Decimal from "decimal.js";
+import { addQuantities, quantityNumber } from "@shared/quantity";
 import { allocatedReturnRounding, financialReturnItems, remainingInvoiceCashRounding } from "./returns/cashRounding";
 import {
   and,
@@ -1888,12 +1889,15 @@ export async function returnSaleInTx(
         const quantity = money(snapshot.baseQuantity)
           .times(line.baseQuantity)
           .div(Number(item.baseQuantity));
-        if (!quantity.isInteger()) {
+        let restoredQuantity: number;
+        try {
+          restoredQuantity = quantityNumber(quantity);
+        } catch {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: appErrorMessage({
               what: "تعذّر توزيع مادة الخدمة على كمية التصحيح",
-              why: `لقطة المادة #${Number(snapshot.materialVariantId)} تنتج كمية كسرية ${quantity.toString()}`,
+              why: `لقطة المادة #${Number(snapshot.materialVariantId)} تنتج كمية ${quantity.toString()} لا تقبل دقة المخزون ذات الأربع منازل`,
               doThis:
                 "صحّح كامل السطر دفعة واحدة أو نفّذ تسوية مخزون يدوية موثقة",
             }),
@@ -1902,7 +1906,7 @@ export async function returnSaleInTx(
         if (quantity.gt(0)) {
           stockOps.push({
             variantId: Number(snapshot.materialVariantId),
-            baseQuantity: quantity.toNumber(),
+            baseQuantity: restoredQuantity,
             historicalValue: allocateLineCost(
               snapshot.lineCost,
               Number(item.baseQuantity),
@@ -2148,7 +2152,7 @@ export async function returnSaleInTx(
         quantity: 0,
         historicalValue: money(0),
       };
-      current.quantity += op.baseQuantity;
+      current.quantity = addQuantities(current.quantity, op.baseQuantity);
       current.historicalValue = current.historicalValue.plus(
         op.historicalValue,
       );

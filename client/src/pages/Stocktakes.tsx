@@ -28,7 +28,7 @@ import { SplitCandidatesPanel } from "@/components/stocktake/SplitCandidatesPane
 import { AlternativeStockReportPanel } from "@/components/stocktake/AlternativeStockBreakdown";
 import { StocktakeDetailDrawer } from "@/components/stocktake/StocktakeDetailDrawer";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { fmt, fmtInt } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
@@ -961,7 +961,7 @@ function ReconDriftCard({
                     متغيّر رقم <span className="font-mono tabular-nums" dir="ltr">{fmtInt(d.id)}</span>
                   </p>
                   <p className="text-[11px] text-muted-foreground">
-                    رصيد سالب رُصد في الفحص الأخير (الرصيد الحالي: {fmtInt(Number(d.actual))})
+                    رصيد سالب رُصد في الفحص الأخير (الرصيد الحالي: {formatQuantity(d.actual)})
                   </p>
                 </div>
                 <Link

@@ -12,8 +12,7 @@ import type { RecipeController } from "./useProductRecipe";
 type TransferProps = Pick<
   RecipeController,
   | "can"
-  | "createMut"
-  | "updateMut"
+  | "isWritePending"
   | "data"
   | "currentRecipe"
   | "currentCompanyId"
@@ -34,8 +33,7 @@ type TransferProps = Pick<
 >;
 export function useRecipeTransfer({
   can,
-  createMut,
-  updateMut,
+  isWritePending,
   data,
   currentRecipe,
   currentCompanyId,
@@ -117,8 +115,7 @@ export function useRecipeTransfer({
   // ميزة لصق الوصفة
   async function handlePasteRecipe() {
     if (
-      createMut.isPending ||
-      updateMut.isPending ||
+      isWritePending ||
       !can(
         currentRecipe
           ? "production.recipes.update"
@@ -220,8 +217,7 @@ export function useRecipeTransfer({
     template: ImportedRecipeData,
   ): Promise<boolean> {
     if (
-      createMut.isPending ||
-      updateMut.isPending ||
+      isWritePending ||
       !can(
         currentRecipe
           ? "production.recipes.update"

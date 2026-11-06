@@ -11,6 +11,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
+import { isQuantity } from "@shared/quantity";
 import { getSessionCookieOptions } from "../cookies";
 import { stocktakeAssignments, stocktakeSessions } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -200,9 +201,9 @@ export const countPortalRouter = router({
         // الكمية بالوحدة الأساس (التحويل من كرتون/درزن يتم في الواجهة قبل الإرسال).
         qty: z
           .number()
-          .int("الكمية بالوحدة الأساس يجب أن تكون عدداً صحيحاً")
           .min(0, "الكمية لا تكون سالبة")
           .max(99_999_999, "الكمية أكبر من المعقول — راجع الإدخال")
+          .refine(isQuantity, "الكمية بالوحدة الأساس تقبل أربع منازل عشرية أو أقل ضمن الحد المسموح")
           .optional(),
         unitBreakdown: z.string().max(500).optional(),
         scannerGuardOverride: z.boolean().optional(),

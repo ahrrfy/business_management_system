@@ -104,6 +104,8 @@ export async function withTx<T>(
   fn: (tx: Tx) => Promise<T>,
   options: {
     gate?: TransactionGate;
+    /** Composite editors discover a lock scope before waiting; later reads must be current. */
+    isolationLevel?: "read committed";
     /**
      * Legacy application flows bootstrap a missing singleton gate before retrying.
      * Audited target-pinned tooling can disable that durable out-of-transaction
@@ -128,7 +130,7 @@ export async function withTx<T>(
       financialWriterGateTransactions.delete(tx);
       governanceGateTransactions.delete(tx);
     }
-  });
+  }, options.isolationLevel ? { isolationLevel: options.isolationLevel } : undefined);
 
   try {
     const result = await run();

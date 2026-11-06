@@ -12,6 +12,7 @@ import { updateProduct } from "../catalog/productUpdate";
 import { createOnlineOrder } from "../onlineOrderService";
 import { loadProductForUpdateOrThrow } from "../catalog/productUpdateGuards";
 import { withTx } from "../tx";
+import { createRecipe, getRecipeForProduct, updateRecipe } from "../recipeService";
 import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
@@ -105,6 +106,76 @@ const baseTemplate = () => [
   { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
 ];
 
+const recipeDefinition = () => ({
+  name: "وصفة خدمة الاختبار", outputVariantId: 2, outputProductUnitId: 3,
+  laborPerOutputBase: "0", wasteStdPct: "0", notes: "تعريف محفوظ",
+  lines: [{ inputVariantId: 1, inputProductUnitId: 1, qtyPerOutputBase: "1.5000" }],
+});
+const productTwoUpdate = () => ({
+  productId: 2, name: "خدمة معدلة مع الوصفة",
+  unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000" }] }],
+  variants: [{ id: 2, sku: "PEN-2", costPrice: "250", unitBarcodes: { قطعة: "BC-PEN-2" } }],
+});
+
+describe("حفظ المنتج ووصفته الذري", () => {
+  beforeEach(async () => {
+    await db().update(s.products).set({ isService: true, showInReception: true }).where(eq(s.products.id, 2));
+  });
+
+  it("يضيف الوصفة مع تعديل المنتج ويعيد بصمة النسخة المحفوظة", async () => {
+    const res = await updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: null, expectedFingerprint: "NONE" } }, actor);
+    const saved = await getRecipeForProduct(2);
+    expect(saved.product.name).toBe("خدمة معدلة مع الوصفة");
+    expect(saved.recipe?.lines[0].qtyPerOutputBase).toBe("1.5000");
+    expect(saved.recipeFingerprint).not.toBe("NONE");
+    expect(res.recipeFingerprint).toBe(saved.recipeFingerprint);
+    expect(res.recipeId).toBe(saved.recipe?.id);
+  });
+
+  it("يصحح وصفة قائمة ويعيد بصمة التعريف الجديد", async () => {
+    const created = await createRecipe(recipeDefinition(), actor);
+    const before = await getRecipeForProduct(2);
+    const res = await updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: created.recipeId, expectedFingerprint: before.recipeFingerprint, lines: [{ inputVariantId: 1, inputProductUnitId: 1, qtyPerOutputBase: "0.1250" }] } }, actor);
+    const after = await getRecipeForProduct(2);
+    expect(after.recipe?.id).toBe(created.recipeId);
+    expect(after.recipe?.lines[0].qtyPerOutputBase).toBe("0.1250");
+    expect(res.recipeFingerprint).toBe(after.recipeFingerprint);
+  });
+
+  it("يرجع تعديل المنتج كاملاً عند فشل تعريف الوصفة", async () => {
+    await expect(updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: null, expectedFingerprint: "NONE", outputProductUnitId: 1 } }, actor)).rejects.toThrow(/وحدة الناتج/);
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 2));
+    expect(product.name).toBe("قلم حبر");
+    expect((await getRecipeForProduct(2)).recipe).toBeNull();
+  });
+
+  it("يرفض مسودة بائتة بعد تصحيح الوصفة من جلسة أخرى", async () => {
+    const created = await createRecipe(recipeDefinition(), actor);
+    const before = await getRecipeForProduct(2);
+    await updateRecipe(created.recipeId, { ...recipeDefinition(), notes: "تصحيح متزامن" });
+    await expect(updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: created.recipeId, expectedFingerprint: before.recipeFingerprint } }, actor)).rejects.toMatchObject({ code: "CONFLICT" });
+    const saved = await getRecipeForProduct(2);
+    expect(saved.product.name).toBe("قلم حبر");
+    expect(saved.recipe?.notes).toBe("تصحيح متزامن");
+  });
+
+  it("يرفض استخدام وصفة منتج آخر داخل حفظ المنتج", async () => {
+    await db().insert(s.products).values({ id: 3, name: "ناتج آخر" });
+    await db().insert(s.productVariants).values({ id: 3, productId: 3, sku: "OTHER-3", costPrice: "0" });
+    await db().insert(s.productUnits).values({ id: 4, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    const created = await createRecipe({ ...recipeDefinition(), outputVariantId: 3, outputProductUnitId: 4 }, actor);
+    const before = await getRecipeForProduct(3);
+    await expect(updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: created.recipeId, expectedFingerprint: before.recipeFingerprint } }, actor)).rejects.toThrow(/المنتج/);
+    expect((await getRecipeForProduct(2)).recipe).toBeNull();
+  });
+
+  it("صلاحية المنتجات وحدها لا تمنح إنشاء وصفة ضمن الحفظ المركب", async () => {
+    await db().insert(s.users).values({ id: 2, openId: "products_only", name: "مدير المنتجات", role: "manager", branchId: 1, permissionsOverride: { products: "FULL", inventory: "NONE" } });
+    await expect(updateProductWithVariants({ ...productTwoUpdate(), recipeChange: { ...recipeDefinition(), recipeId: null, expectedFingerprint: "NONE" } }, { userId: 2, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await getRecipeForProduct(2)).product.name).toBe("قلم حبر");
+  });
+});
+
 describe("getProductForVariantEdit — القراءة", () => {
   it("منتج غير موجود ⇒ null", async () => {
     expect(await getProductForVariantEdit(999999)).toBeNull();
@@ -136,6 +207,26 @@ describe("getProductForVariantEdit — القراءة", () => {
 });
 
 describe("updateProductWithVariants — الكتابة", () => {
+  it.each([null, "طباعة قديمة"])("يحفظ خدمة قديمة ذات تاريخ دون ترقية تصنيفها %s عند عدم تغيير التوجيه", async (productType) => {
+    await db().update(s.products).set({ isService: true, productType, showInReception: true }).where(eq(s.products.id, 1));
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await seedInvoiceHistoryForProductOne();
+    await updateProductWithVariants({
+      productId: 1, name: "خدمة قديمة مصححة", productType, isService: true, showInReception: true,
+      unitTemplate: baseTemplate(),
+      variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+    }, actor);
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.productType).toBe(productType);
+    expect(product.name).toBe("خدمة قديمة مصححة");
+    await updateProductWithVariants({
+      productId: 1, productType: "وصف مصحح", isService: true, showInReception: true,
+      unitTemplate: baseTemplate(),
+      variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+    }, actor);
+    expect((await db().select().from(s.products).where(eq(s.products.id, 1)))[0].productType).toBe("وصف مصحح");
+  });
+
   it("تحديث متغيّر موجود: يغيّر الاسم/السعر في نفس الصفّ ويصون التكلفة ذات الرصيد", async () => {
     const r = await updateProductWithVariants(
       {

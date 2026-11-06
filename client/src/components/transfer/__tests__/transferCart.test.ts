@@ -29,6 +29,15 @@ function line(p: Partial<TransferCartLine> & { variantId: number; productUnitId:
 }
 
 describe("T1: التجميع بالوحدة الأساس", () => {
+  it("keeps invalid precision and overflow as validation states without throwing during render", () => {
+    for (const row of [line({ variantId: 7, productUnitId: 70, conversionFactor: "0.5", qty: 0.0001 }), line({ variantId: 7, productUnitId: 70, conversionFactor: "12", qty: 99999999999.9999 })]) {
+      expect(() => aggregateByVariant([row])).not.toThrow();
+      expect(computeLineStates([row])[0].fractional).toBe(true);
+    }
+  });
+  it("shows the usable material fraction in a larger unit", () => {
+    expect(computeLineStates([line({ variantId: 7, productUnitId: 70, conversionFactor: "12", qty: 0.5, stockBase: 6 })])[0].availInUnit).toBe(0.5);
+  });
   it("يدمج وحدتين لنفس المتغيّر في بندٍ واحد (درزن ١٢ + قطعة ٣ = ١٥)", () => {
     const rows = aggregateByVariant([
       line({ variantId: 7, productUnitId: 71, unit: "درزن", conversionFactor: "12", qty: 1, stockBase: 50 }),
@@ -68,9 +77,9 @@ describe("T2: حالة المخزون بالطلب المجمَّع", () => {
     expect(st[0].availInUnit).toBe(0);
   });
 
-  it("المتاح بالوحدة = تقريب لأسفل (رصيد ٢٥ قطعة ⇒ درزنان فقط)", () => {
+  it("المتاح بوحدة المادة يحفظ الكسر في الوحدات الكبيرة", () => {
     const st = computeLineStates([line({ variantId: 3, productUnitId: 31, unit: "درزن", conversionFactor: "12", qty: 2, stockBase: 25 })]);
-    expect(st[0].availInUnit).toBe(2);
+    expect(st[0].availInUnit).toBeCloseTo(25 / 12, 8);
     expect(st[0].baseQty).toBe(24);
     expect(st[0].isShort).toBe(false);
   });
@@ -83,6 +92,12 @@ describe("T2: حالة المخزون بالطلب المجمَّع", () => {
 });
 
 describe("T3: الكمية الأساس عدد صحيح", () => {
+  it("يسمح بنقل خامة بكمية كسرية دون قصّها ويجمع الأعشار بدقة", () => {
+    const lines = Array.from({ length: 10 }, (_, index) => line({ variantId: 4, productUnitId: 41 + index, conversionFactor: "1", qty: 0.1, stockBase: 1 }));
+    expect(computeLineStates(lines).every((state) => !state.fractional && !state.isShort)).toBe(true);
+    expect(aggregateByVariant(lines)[0].baseQuantity).toBe(1);
+  });
+
   it("معامل كسري ⇒ fractional=true (يُحجب الإرسال)", () => {
     const st = computeLineStates([line({ variantId: 4, productUnitId: 41, conversionFactor: "1.5", qty: 1, stockBase: 10 })]);
     expect(st[0].fractional).toBe(true);

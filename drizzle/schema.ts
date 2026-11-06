@@ -23,6 +23,7 @@ import {
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
+import { quantityColumn } from "./quantityColumn";
 import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 import type { CheckoutChargesInput } from "../shared/checkoutCharges";
@@ -1514,7 +1515,7 @@ export const branchStock = mysqlTable(
       .references(() => branches.id),
     // DB-01: لا CHECK(quantity>=0) — خدمات الطباعة (allowNegative) تَدفع الرصيد سالباً عمداً (قرار عمل)؛
     // حارس البيع الزائد تطبيقيّ للبيع العاديّ. أُقصِي من 0018 لأنّ قيد القاعدة يَكسر بيع الطباعة.
-    quantity: int("quantity").default(0).notNull(),
+    quantity: quantityColumn("quantity").default(0).notNull(),
     // آخر جرد معتمد شمل هذا الصنف في هذا الفرع — يغذّي «آخر جرد» والجرد الدوري ABC.
     lastCountedAt: timestamp("lastCountedAt"),
     // «الافتتاح التدريجي» (١٨/٧): متى ثُبِّت الرصيد الافتتاحي لهذا (الصنف×الفرع) — NULL = غير مُفتتَح
@@ -1566,12 +1567,12 @@ export const inventoryMovements = mysqlTable(
       "TRANSFER_OUT",
     ]).notNull(),
     // الكمية بالوحدة الأساس (موجبة دائماً؛ الاتجاه من النوع).
-    quantity: int("quantity").notNull(),
+    quantity: quantityColumn("quantity").notNull(),
     // ⭐ P1-#3 (٢٥/٨): الدلتا الموقَّعة — يُعبَّأ على كل كتابة (applyMovement + setStock)، ويُستخدم
     // كمصدرٍ رخيصٍ للـSQL لبناء تقارير المطابقة (`Σ signedDelta = رصيد الفرع`) بلا Parsing للنصّ.
     // NULL مسموحٌ للتوافق مع الصفوف القائمة قبل هذه الهجرة (تُملأ backfill في 0265). القرّاء الجدد
     // يفضّلونه على `signedMoveQty` — يبقى الأخير fallback نصّياً للـidempotency في القراءة القديمة.
-    signedDelta: int("signedDelta"),
+    signedDelta: quantityColumn("signedDelta"),
     referenceType: varchar("referenceType", { length: 24 }),
     referenceId: bigint("referenceId", { mode: "number" }),
     documentNumber: varchar("documentNumber", { length: 100 }),
@@ -1615,10 +1616,10 @@ export const stockAdjustmentRequests = mysqlTable(
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    targetQuantity: int("targetQuantity").notNull(),
+    targetQuantity: quantityColumn("targetQuantity").notNull(),
     // لقطة الرصيد لحظة الطلب — يُرفَض الاعتماد إن اختلف الرصيد الحيّ عنها (تفاؤليّ) لمنع محو حركاتٍ
     // وقعت في نافذة الاعتماد وترحيل ربحٍ/خسارةٍ وهميّة (المراجعة العدائية C1).
-    expectedQuantity: int("expectedQuantity").notNull(),
+    expectedQuantity: quantityColumn("expectedQuantity").notNull(),
     notes: varchar("notes", { length: 500 }),
     // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق مع الصفوف القائمة (NULL = «غير محدَّد»).
     // الأسباب الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl` أدناه على مستوى الخدمة.
@@ -1734,7 +1735,7 @@ export const costRevaluationRequests = mysqlTable(
     ]).notNull(),
     reason: varchar("reason", { length: 1000 }).notNull(),
     /** لقطة إجمالي الكمية المملوكة لحظة الطلب — يُرفَض الاعتماد إن انحرفت (قيمة القيد تتبعها). */
-    expectedQuantity: int("expectedQuantity").notNull(),
+    expectedQuantity: quantityColumn("expectedQuantity").notNull(),
     /** لقطة الكمية لكل فرع: `[{ branchId, quantity }]` — منها تُشتقّ قيود الاعتماد فرعاً فرعاً. */
     branchQuantities: json("branchQuantities"),
     /** أثر القيمة المتوقَّع = (newCost − oldCost) × expectedQuantity — يُعرَض قبل الاعتماد. */
@@ -1798,7 +1799,7 @@ export const costUpdateWaves = mysqlTable(
     previewFingerprint: char("previewFingerprint", { length: 64 }).notNull(),
     itemCount: int("itemCount").notNull(),
     skippedCount: int("skippedCount").default(0).notNull(),
-    expectedQuantity: int("expectedQuantity").notNull(),
+    expectedQuantity: quantityColumn("expectedQuantity").notNull(),
     inventoryValueBefore: decimal("inventoryValueBefore", { precision: 20, scale: 2 }).notNull(),
     inventoryValueAfter: decimal("inventoryValueAfter", { precision: 20, scale: 2 }).notNull(),
     expectedValueDelta: decimal("expectedValueDelta", { precision: 20, scale: 2 }).notNull(),
@@ -1857,7 +1858,7 @@ export const costUpdateWaveItems = mysqlTable(
     categoryNameSnapshot: varchar("categoryNameSnapshot", { length: 255 }),
     oldCost: decimal("oldCost", { precision: 15, scale: 2 }).notNull(),
     newCost: decimal("newCost", { precision: 15, scale: 2 }).notNull(),
-    expectedQuantity: int("expectedQuantity").notNull(),
+    expectedQuantity: quantityColumn("expectedQuantity").notNull(),
     branchQuantities: json("branchQuantities").notNull(),
     inventoryValueBefore: decimal("inventoryValueBefore", { precision: 20, scale: 2 }).notNull(),
     inventoryValueAfter: decimal("inventoryValueAfter", { precision: 20, scale: 2 }).notNull(),
@@ -1957,8 +1958,8 @@ export const stockTransfers = mysqlTable(
     reason: varchar("reason", { length: 24 }),
     notes: text("notes"),
     // مجاميع بالوحدة الأساس (تُعرَض في القوائم بلا join على الأسطر).
-    totalSentBase: int("totalSentBase").default(0).notNull(),
-    totalReceivedBase: int("totalReceivedBase"),
+    totalSentBase: quantityColumn("totalSentBase").default(0).notNull(),
+    totalReceivedBase: quantityColumn("totalReceivedBase"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     receivedBy: int("receivedBy").references(() => users.id),
@@ -1992,9 +1993,9 @@ export const stockTransferLines = mysqlTable(
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id),
-    quantitySent: int("quantitySent").notNull(),
+    quantitySent: quantityColumn("quantitySent").notNull(),
     // NULL حتى الاستلام؛ بعده = ما وصل فعلاً (0..المرسَل). الفرق = عجز نقل موثَّق.
-    quantityReceived: int("quantityReceived"),
+    quantityReceived: quantityColumn("quantityReceived"),
     // ملاحظة السطر (إلزامية خادمياً عند وجود فرق بين المرسَل والمستلَم).
     note: varchar("note", { length: 255 }),
   },
@@ -2459,7 +2460,7 @@ export const invoiceItemServiceMaterials = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull(),
     materialVariantId: bigint("materialVariantId", { mode: "number" }).notNull(),
-    baseQuantity: int("baseQuantity").notNull(),
+    baseQuantity: quantityColumn("baseQuantity").notNull(),
     unitCost: decimal("unitCost", { precision: 15, scale: 2 }).notNull(),
     lineCost: decimal("lineCost", { precision: 15, scale: 2 }).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -4537,7 +4538,7 @@ export const workOrders = mysqlTable(
     baseProductUnitId: bigint("baseProductUnitId", { mode: "number" }).references(
       () => productUnits.id,
     ),
-    baseBaseQuantity: int("baseBaseQuantity"),
+    baseBaseQuantity: quantityColumn("baseBaseQuantity"),
     /** TRUE = الصنف الأساس مادي ويجب أن يظهر مادةً إلزامية؛ FALSE = خدمة بلا خصمٍ لذاتها. */
     baseConsumesInventory: boolean("baseConsumesInventory"),
     title: varchar("title", { length: 255 }).notNull(),
@@ -4979,7 +4980,9 @@ export const workOrderMaterials = mysqlTable(
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id),
-    baseQuantity: int("baseQuantity").notNull(),
+    baseQuantity: quantityColumn("baseQuantity").notNull(),
+    // Remaining historical batch value; zero is authoritative. NULL is unconsumed/legacy.
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 }),
     /** السطر الوحيد الذي يحمل على الأقل حصة الصنف الأساس المادي الحاكمة. */
     isBaseMaterial: boolean("isBaseMaterial").default(false).notNull(),
     /** UNIQUE(workOrderId, baseMaterialSlot) يسمح بمواد كثيرة ويفرض سطر أساس واحداً فقط. */
@@ -9800,7 +9803,7 @@ export const stocktakeItems = mysqlTable(
       .notNull()
       .references(() => branches.id),
     // الرصيد الدفتري بالوحدة الأساس لحظة بدء الجلسة — لا يصل لبوابة العدّ أبداً.
-    expectedQty: int("expectedQty").notNull(),
+    expectedQty: quantityColumn("expectedQty").notNull(),
     // تكلفة المتغيّر لحظة الإنشاء — تقييم الفرق يثبت عليها.
     unitCost: decimal("unitCost", { precision: 15, scale: 2 }).notNull(),
     // طلب إعادة العدّ: PENDING يحجب الاعتماد حتى يصل عدّ RECOUNT.
@@ -9815,7 +9818,7 @@ export const stocktakeItems = mysqlTable(
     reviewApprovedOperationId: bigint("reviewApprovedOperationId", {
       mode: "number",
     }),
-    reviewApprovedQty: int("reviewApprovedQty"),
+    reviewApprovedQty: quantityColumn("reviewApprovedQty"),
     reviewApprovedSnapshotHash: varchar("reviewApprovedSnapshotHash", {
       length: 64,
     }),
@@ -9868,7 +9871,7 @@ export const stocktakeCounts = mysqlTable(
       .references(() => stocktakeAssignments.id),
     kind: mysqlEnum("kind", ["FIRST", "RECOUNT", "VERIFY"]).notNull(),
     // بالوحدة الأساس (التحويل من وحدات الإدخال يتم قبل الحفظ).
-    qty: int("qty").notNull(),
+    qty: quantityColumn("qty").notNull(),
     // تفصيل الإدخال متعدد الوحدات (JSON): {"كرتون":2,"قطعة":5} — للتدقيق.
     unitBreakdown: text("unitBreakdown"),
     // نسب العدّة إلى مصدرها (وثيقة «الجرد بالباركود» ٢٢/٨): مسح قارئ/كاميرا، أو استثناء يدويّ
@@ -9931,7 +9934,7 @@ export const stocktakeCountOperations = mysqlTable(
       .notNull()
       .references(() => stocktakeAssignments.id),
     clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
-    requestQty: int("requestQty").notNull(),
+    requestQty: quantityColumn("requestQty").notNull(),
     requestUnitBreakdown: text("requestUnitBreakdown"),
     resultKind: mysqlEnum("resultKind", [
       "FIRST",
@@ -10023,7 +10026,7 @@ export const stocktakeItemReviewEvents = mysqlTable(
     variantId: bigint("variantId", { mode: "number" }).notNull(),
     action: mysqlEnum("action", ["APPROVE", "REOPEN"]).notNull(),
     snapshotOperationId: bigint("snapshotOperationId", { mode: "number" }),
-    snapshotQty: int("snapshotQty"),
+    snapshotQty: quantityColumn("snapshotQty"),
     snapshotHash: varchar("snapshotHash", { length: 64 }),
     reason: varchar("reason", { length: 255 }),
     actedBy: int("actedBy").notNull(),
@@ -10078,9 +10081,9 @@ export const stocktakeDecisions = mysqlTable(
       .references(() => productVariants.id),
     action: mysqlEnum("action", ["ADJUST", "KEEP"]).notNull(),
     // العدّ المصحَّح النهائي بالوحدة الأساس (يُعاد حسابه داخل معاملة الاعتماد).
-    finalQty: int("finalQty"),
+    finalQty: quantityColumn("finalQty"),
     // الفرق المُسوّى فعلياً وقيمته بتكلفة اللقطة — تُكتب عند الاعتماد.
-    diffQty: int("diffQty"),
+    diffQty: quantityColumn("diffQty"),
     value: decimal("value", { precision: 15, scale: 2 }),
     reason: mysqlEnum("reason", [
       "UNSPECIFIED",
@@ -10308,7 +10311,7 @@ export const productionLines = mysqlTable(
       () => productUnits.id,
     ),
     quantity: decimal("quantity", { precision: 15, scale: 4 }).notNull(),
-    baseQuantity: int("baseQuantity").notNull(),
+    baseQuantity: quantityColumn("baseQuantity").notNull(),
     unitCost: decimal("unitCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -10346,7 +10349,7 @@ export const expenseStockItems = mysqlTable(
       () => productUnits.id,
     ),
     quantity: decimal("quantity", { precision: 15, scale: 4 }).notNull(),
-    baseQuantity: int("baseQuantity").notNull(),
+    baseQuantity: quantityColumn("baseQuantity").notNull(),
     unitCost: decimal("unitCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -16523,8 +16526,8 @@ export const reservationLines = mysqlTable(
     productUnitId: bigint("productUnitId", { mode: "number" })
       .notNull()
       .references(() => productUnits.id),
-    baseQuantity: int("baseQuantity").notNull(),
-    fulfilledBase: int("fulfilledBase").default(0).notNull(),
+    baseQuantity: quantityColumn("baseQuantity").notNull(),
+    fulfilledBase: quantityColumn("fulfilledBase").default(0).notNull(),
     // سعر مرجعيّ وقت الحجز (عرض فقط — السعر النهائي يُحسَب عند البيع).
     quotedUnitPrice: decimal("quotedUnitPrice", { precision: 15, scale: 2 }),
   },
@@ -16585,7 +16588,7 @@ export const reservationStock = mysqlTable(
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    reservedBase: int("reservedBase").default(0).notNull(),
+    reservedBase: quantityColumn("reservedBase").default(0).notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (t) => ({
@@ -17501,7 +17504,7 @@ export const digitalIntentInventoryReservations = mysqlTable(
     sourceVariantId: bigint("sourceVariantId", { mode: "number" }).notNull(),
     /** الصنف المخزني المحجوز؛ يساوي المصدر لقفل كتالوج بلا كمية. */
     stockVariantId: bigint("stockVariantId", { mode: "number" }).notNull(),
-    reservedBase: int("reservedBase").default(0).notNull(),
+    reservedBase: quantityColumn("reservedBase").default(0).notNull(),
     status: mysqlEnum("status", ["ACTIVE", "CONSUMED", "RELEASED"])
       .default("ACTIVE")
       .notNull(),
@@ -19135,7 +19138,7 @@ export const documentEffects = mysqlTable(
     signedAmount: decimal("signedAmount", { precision: 15, scale: 4 })
       .default("0")
       .notNull(),
-    signedQuantity: int("signedQuantity").default(0).notNull(),
+    signedQuantity: quantityColumn("signedQuantity").default(0).notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     actorUserId: int("actorUserId"),
     reversalOfEffectId: bigint("reversalOfEffectId", { mode: "number" }),

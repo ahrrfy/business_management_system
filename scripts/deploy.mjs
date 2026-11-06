@@ -18,6 +18,7 @@ import { tmpdir, userInfo } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { assertActivationRecoveryAllowed, readActivationJournal, activeInventoryManifest, JOURNAL_NAME } from "./lib/inventory-activation-journal.mjs";
+import { assertForwardSchemaRecovery, FRACTIONAL_SCHEMA_TRANSITION, readFractionalInventorySchema } from "./lib/fractional-inventory-schema.mjs";
 const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
 function inventoryJournalFile() {
@@ -231,6 +232,31 @@ function pendingWebActivationSnapshot(projectRoot) {
 
 export function hasPendingWebActivation(projectRoot) {
   return lstatOrNull(webActivationJournalPath(projectRoot)) !== null;
+}
+
+export function archiveInterruptedWebActivationForForwardRecovery(projectRoot, failedJournal) {
+  assertForwardSchemaRecovery(failedJournal);
+  const pending = pendingWebActivationSnapshot(projectRoot);
+  if (!pending) return null;
+  const web = [...failedJournal.artifacts, ...(failedJournal.recoveryArtifacts ?? [])].find((artifact) => artifact.name === "erp-server" && artifact.bundle === path.join(pending.candidatePath, "index.js"));
+  if (!web) throw codedError("FRACTIONAL_FORWARD_RECOVERY_WEB_JOURNAL_MISMATCH");
+  const archive = path.join(pending.runtimeRoot, `web-activation-forward-${failedJournal.id}.json`);
+  if (lstatOrNull(archive)) throw codedError("FRACTIONAL_FORWARD_RECOVERY_WEB_ARCHIVE_EXISTS");
+  fs.renameSync(webActivationJournalPath(projectRoot), archive);
+  fsyncDirectory(pending.runtimeRoot);
+  return archive;
+}
+
+function retainedForwardRecoveryWebIds(projectRoot, journal) {
+  if (!journal) return [];
+  const releasesRoot = path.join(projectRoot, ".runtime/web-releases");
+  return [...new Set([...journal.artifacts, ...(journal.recoveryArtifacts ?? []), ...(journal.priorArtifacts ?? []), ...(journal.priorActive?.artifacts ?? [])]
+    .filter((artifact) => artifact.name === "erp-server")
+    .map((artifact) => {
+      const parts = path.relative(releasesRoot, artifact.bundle).split(path.sep);
+      if (parts.length !== 3 || !WEB_ARTIFACT_ID.test(parts[0]) || !["candidate", "previous"].includes(parts[1]) || parts[2] !== "index.js") throw codedError("FRACTIONAL_FORWARD_RECOVERY_ARTIFACT_PATH_INVALID");
+      return parts[0];
+    }))];
 }
 
 function writeWebActivationJournal(snapshot) {
@@ -1454,6 +1480,8 @@ export function synchronizeAndMaybeReexec(syncLock, {
   args = process.argv.slice(2), repository = assertRepository, execute = run,
   spawnChild = spawnSync, exit = code => process.exit(code),
 } = {}) {
+  const resumeSchemaCutover = args[0] === "--resume-fractional-schema-cutover";
+  if (resumeSchemaCutover) args = args.slice(1);
   if (args.length === 0) {
     const before = repository().head;
     execute("git", ["pull", "--ff-only", "origin", "main"], {
@@ -1466,7 +1494,7 @@ export function synchronizeAndMaybeReexec(syncLock, {
     if (afterState.head !== before) {
       const child = spawnChild(
         process.execPath,
-        [DEPLOY_SCRIPT, "--after-pull", afterState.head],
+        [DEPLOY_SCRIPT, ...(resumeSchemaCutover ? ["--resume-fractional-schema-cutover"] : []), "--after-pull", afterState.head],
         {
           cwd: PROJECT_ROOT,
           stdio: "inherit",
@@ -2588,7 +2616,7 @@ export function reconcileCommittedBridge(
   operations.save();
 }
 
-async function deploy(expectedHead) {
+async function deploy(expectedHead, { forwardRecovery = null } = {}) {
   assertInstalledLegacyWebTopology();
   // Import repository release helpers only after synchronization/re-exec.
   const { prepareStorefrontRelease, activateStorefrontRelease, pruneStorefrontReleases } = await import("./storefront-release.mjs");
@@ -2621,9 +2649,10 @@ async function deploy(expectedHead) {
   );
   const releaseLock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
   try {
-    settleReleasedInventoryBridgeBaseline(releaseTools);
+    if (!forwardRecovery) settleReleasedInventoryBridgeBaseline(releaseTools);
     const initialState = releaseTools.readState(PROJECT_ROOT);
     if (initialState.pending) {
+      if (forwardRecovery) throw codedError("FRACTIONAL_FORWARD_RECOVERY_BRIDGE_STATE_PENDING");
       step("استعادة آخر إصدار ملتزم بعد نشر منقطع", () => {
         const operations = makeActivationOperations(
           initialState.pending.candidate.id,
@@ -2639,7 +2668,7 @@ async function deploy(expectedHead) {
       });
     }
     const settledState = releaseTools.readState(PROJECT_ROOT);
-    if (settledState.current) {
+    if (settledState.current && !forwardRecovery) {
       reconcileCommittedBridge(settledState.current, releaseTools, pm2Contract);
     }
     step("1/12 تثبيت الاعتماديات المقفلة", () =>
@@ -2654,6 +2683,14 @@ async function deploy(expectedHead) {
       dotenvModule.config,
     );
     const pinnedDeploymentTarget = await resolveDbTarget(parsedDeploymentEnvironment.DATABASE_URL, { adapter: "native" });
+    if (forwardRecovery) assertForwardSchemaRecovery(forwardRecovery, { database: pinnedDeploymentTarget.db, serverUuid: pinnedDeploymentTarget.serverUuid });
+    const mysql = await import("mysql2/promise");
+    const inspectFractionalSchema = async () => {
+      const connection = await mysql.createConnection(parsedDeploymentEnvironment.DATABASE_URL);
+      try { return await readFractionalInventorySchema(connection, PROJECT_ROOT, pinnedDeploymentTarget.db); }
+      finally { await connection.end(); }
+    };
+    const requiresSchemaCutover = (await inspectFractionalSchema()).pending || Boolean(forwardRecovery);
     process.env.DB_TARGET_EXPECTED_UUID = pinnedDeploymentTarget.serverUuid;
     const deploymentEnvironment = normalizeBridgeDeploymentEnvironment(
       policy,
@@ -2685,7 +2722,7 @@ async function deploy(expectedHead) {
         });
         pruneWebArtifactSnapshots(PROJECT_ROOT, {
           keepRecent: WEB_ARTIFACT_RETENTION,
-          protectedIds: [webArtifact.id],
+          protectedIds: [webArtifact.id, ...retainedForwardRecoveryWebIds(PROJECT_ROOT, forwardRecovery)],
         });
         run(
           process.execPath,
@@ -2714,6 +2751,7 @@ async function deploy(expectedHead) {
         runPreflight(provisional, releaseTools),
       );
 
+      const prepareDatabase = async () => {
       step("4/12 تجهيز عميل النسخ ثم إنشاء نسخة احتياطية", () => {
         run(process.execPath, ["scripts/provision-backup-client.mjs", "--pull"]);
         run("pnpm", ["db:backup"]);
@@ -2739,8 +2777,12 @@ async function deploy(expectedHead) {
       if (beforeMode !== afterMode) {
         throw new Error("HR_BRIDGE_MODE_CHANGED_DURING_DEPLOY");
       }
-      candidate = { id: candidateRelease.id, mode: afterMode };
+      if ((await inspectFractionalSchema()).pending) throw codedError("FRACTIONAL_SCHEMA_CUTOVER_INCOMPLETE");
+      };
+      candidate = { id: candidateRelease.id, mode: beforeMode };
       committed = releaseTools.readState(PROJECT_ROOT).current;
+      if (!requiresSchemaCutover) {
+      await prepareDatabase();
       await step(
         "8/12 إثبات صلاحية إصداري الرجوع مع المخطط الجديد",
         async () => {
@@ -2755,6 +2797,9 @@ async function deploy(expectedHead) {
           }
         },
       );
+      } else {
+        console.log("FRACTIONAL_SCHEMA_CUTOVER_DEFERRED_UNTIL_QUIESCENT:FORWARD_ONLY");
+      }
 
       await step("9/12 تفعيل المخزون تحت حاجز العمليات والإقلاع", async () => {
         const require = createRequire(import.meta.url);
@@ -2765,11 +2810,11 @@ async function deploy(expectedHead) {
         const bundleHash = hashFile(path.join(webCandidate.distPath, "index.js"));
         const artifacts = [{ name: "erp-server", script: bundle, bundle, hash: bundleHash, scriptHash: bundleHash, instances: count }];
         const priorJournal = readActivationJournal(inventoryJournalFile());
-        const priorActive = activeInventoryManifest(priorJournal);
-        const priorArtifacts = priorActive ? [...priorActive.artifacts] : [{ name: "erp-server", script: path.join(PROJECT_ROOT, ".runtime/web-current/index.js"), bundle: path.join(webArtifact.previousPath, "index.js"), hash: hashFile(path.join(webArtifact.previousPath, "index.js")), scriptHash: hashFile(path.join(webArtifact.previousPath, "index.js")), instances: pm2Rows().filter(r => r.name === "erp-server").length }];
+        const priorActive = forwardRecovery ? forwardRecovery.priorActive : activeInventoryManifest(priorJournal);
+        const priorArtifacts = forwardRecovery ? forwardRecovery.priorArtifacts : priorActive ? [...priorActive.artifacts] : [{ name: "erp-server", script: path.join(PROJECT_ROOT, ".runtime/web-current/index.js"), bundle: path.join(webArtifact.previousPath, "index.js"), hash: hashFile(path.join(webArtifact.previousPath, "index.js")), scriptHash: hashFile(path.join(webArtifact.previousPath, "index.js")), instances: pm2Rows().filter(r => r.name === "erp-server").length }];
         const bridge = releaseTools.validateRelease(PROJECT_ROOT, candidate.id);
         if (candidate.mode === "enabled") artifacts.push({ name: BRIDGE_PROCESS_NAME, script: bridge.bootstrapPath, bundle: bridge.artifactPath, hash: hashFile(bridge.artifactPath), scriptHash: hashFile(bridge.bootstrapPath), instances: 1 });
-        if (committed?.mode === "enabled" && !priorActive) {
+        if (committed?.mode === "enabled" && !priorActive && !forwardRecovery) {
           const previousBridge = releaseTools.validateRelease(PROJECT_ROOT, committed.id);
           priorArtifacts.push({ name: BRIDGE_PROCESS_NAME, script: previousBridge.bootstrapPath, bundle: previousBridge.artifactPath, hash: hashFile(previousBridge.artifactPath), scriptHash: hashFile(previousBridge.bootstrapPath), instances: 1 });
         }
@@ -2782,6 +2827,12 @@ async function deploy(expectedHead) {
           expectedServerUuid: pinnedDeploymentTarget.serverUuid,
           artifacts,
           priorArtifacts,
+          schemaTransition: requiresSchemaCutover ? { id: FRACTIONAL_SCHEMA_TRANSITION, rollbackPolicy: "FORWARD_ONLY", started: Boolean(forwardRecovery) } : undefined,
+          forwardRecoveryActivationId: forwardRecovery?.id,
+          prepareSchema: requiresSchemaCutover ? async () => {
+            if (forwardRecovery) archiveInterruptedWebActivationForForwardRecovery(PROJECT_ROOT, forwardRecovery);
+            await prepareDatabase();
+          } : undefined,
           bridgeBaseline: { candidate, prior: committed, candidateSourceCommit: bridge.sourceCommit },
           candidateWebApp: { ...app, script: bundle, cwd: PROJECT_ROOT, instances: count, filter_env: [...app.filter_env, "ERP_INVENTORY_CONTROL_DATABASE_URL", "ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS"], env: { ...app.env, ERP_INVENTORY_CONTROL_DATABASE_URL: "", ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS: "", DATABASE_URL: parsedDeploymentEnvironment.DATABASE_URL } },
           bridgeConfigPath: candidate.mode === "enabled" ? bridge.pm2ConfigPath : null,
@@ -2979,7 +3030,7 @@ function assertDeploymentNodeRuntime() {
   }
 }
 
-async function main() {
+async function main({ resumeSchemaCutover = false } = {}) {
   assertDeploymentIdentity();
   process.chdir(PROJECT_ROOT);
   assertDeploymentNodeRuntime();
@@ -2987,17 +3038,20 @@ async function main() {
   assertInstalledLegacyWebTopology();
   const releaseSyncLock = acquirePrePullLock();
   try {
-    assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
-    await recoverPendingWebActivationBeforePull();
-    const baseline = assertBridgeBaselineBeforePull();
-    if (baseline?.pending || baseline?.reconcile) {
-      await recoverBeforePull();
+    const forwardRecovery = resumeSchemaCutover ? assertForwardSchemaRecovery(readActivationJournal(inventoryJournalFile())) : null;
+    if (!forwardRecovery) {
+      assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
+      await recoverPendingWebActivationBeforePull();
+      const baseline = assertBridgeBaselineBeforePull();
+      if (baseline?.pending || baseline?.reconcile) {
+        await recoverBeforePull();
+      }
     }
     const expectedHead = synchronizeAndMaybeReexec(releaseSyncLock);
     assertDeploymentNodeRuntime();
     console.log("🚀 نشر إنتاجي هندسي — بداية");
     const startedAt = Date.now();
-    await deploy(expectedHead);
+    await deploy(expectedHead, { forwardRecovery });
     console.log(
       `\n✓ اكتمل النشر في ${((Date.now() - startedAt) / 1000).toFixed(1)} ثانية.`,
     );
@@ -3307,12 +3361,15 @@ async function dispatch() {
     }
     return;
   }
-  await main();
+  await main({ resumeSchemaCutover: mode === "--resume-fractional-schema-cutover" });
 }
 
 function reportDeploymentFailure(error) {
   const code = error?.code || error?.message || "DEPLOY_FAILED";
   console.error(`\n⛔ فشل النشر: ${code}`);
+  if (code === "INVENTORY_ACTIVATION_FATAL" || String(code).startsWith("FRACTIONAL_")) {
+    console.error("   أبقِ حاجز الإقلاع وسجل التفعيل محفوظين؛ التعافي الأمامي الموثق: node scripts/deploy.mjs --resume-fractional-schema-cutover (docs/fractional-materials-cutover.md).");
+  }
   if (String(code).startsWith("PM2_VERSION_UNSUPPORTED")) {
     console.error("   نفّذ كـ root: sudo npm install -g pm2@7.0.3");
     console.error("   ثم: sudo -iu deploy pm2 update");

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   activateInventoryProjection,
   invalidateInventoryProjection,
+  deriveInventoryTransitProjection,
+  assertInventoryTransitParity,
 } from "./inventory-projection-activation.mjs";
 function connection({ missing = false, commitError = false } = {}) {
   const calls = [];
@@ -82,4 +84,29 @@ test("invalidation also distinguishes uncertain commit", async () => {
     invalidateInventoryProjection(c, options()),
     /INVENTORY_INVALIDATION_COMMIT_UNCERTAIN/,
   );
+});
+
+test("derives fractional material transit from saved dispatch evidence exactly", async () => {
+  const conn = { async query(sql) {
+    if (sql.includes("p.isBundle")) return [[{ id: 1, isBundle: 0, isService: 0 }]];
+    if (sql.startsWith("SELECT COUNT")) return [[{ n: 1 }]];
+    if (sql.includes("FROM stockTransfers")) return [[{ id: 1, fromBranchId: 1, toBranchId: 2, totalSentBase: "0.3000" }]];
+    if (sql.includes("FROM branches")) return [[{ id: 1 }, { id: 2 }]];
+    if (sql.includes("FROM stockTransferLines")) return [[
+      { id: 1, variantId: 1, quantitySent: "0.1000", quantityReceived: null },
+      { id: 2, variantId: 1, quantitySent: "0.2000", quantityReceived: null },
+    ]];
+    if (sql.includes("FROM inventoryMovements")) return [[{ variantId: 1, branchId: 1, relatedBranchId: 2, quantity: "0.3000", signedDelta: "-0.3000" }]];
+    return [[]];
+  } };
+  const result = await deriveInventoryTransitProjection(conn);
+  assert.deepEqual(result.projection.get(1), { "1": "0.3" });
+});
+
+test("validates decimal SQL parity against canonical fractional JSON without rewriting legacy integers", async () => {
+  const conn = { async query(sql) {
+    if (sql.includes("CAST(SUM")) return [[{ variantId: 1, branchId: 1, quantity: "1.5000" }]];
+    return [[{ id: 1, transitBaseBySourceBranch: { "1": "1.5" } }, { id: 2, transitBaseBySourceBranch: {} }]];
+  } };
+  assert.deepEqual(await assertInventoryTransitParity(conn), { variants: 2, sourcePositions: 1 });
 });

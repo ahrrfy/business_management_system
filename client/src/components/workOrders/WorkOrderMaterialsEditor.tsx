@@ -27,6 +27,7 @@ import { trpc } from "@/lib/trpc";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { canViewOperationData } from "@shared/operationPermissions";
 import { newClientRequestId } from "@/lib/countQueue";
+import { addQuantities, quantityNumber, subtractQuantities } from "@shared/quantity";
 
 export interface EditableMaterial {
   variantId: number;
@@ -53,7 +54,7 @@ function aggregateEditableMaterials(input: EditableMaterial[]): EditableMaterial
   for (const row of input) {
     const current = byVariant.get(row.variantId);
     byVariant.set(row.variantId, current
-      ? { ...current, baseQuantity: current.baseQuantity + row.baseQuantity }
+      ? { ...current, baseQuantity: addQuantities(current.baseQuantity, row.baseQuantity) }
       : { ...row });
   }
   return Array.from(byVariant.values());
@@ -66,6 +67,7 @@ export function WorkOrderMaterialsEditor({
   const [baseline, setBaseline] = useState(() => ({ workOrderId, version, branchId, orderNumber, status, initial: aggregateEditableMaterials(initial) }));
   const aggregatedInitial = baseline.initial;
   const [rows, setRows] = useState<EditableMaterial[]>(() => aggregateEditableMaterials(initial));
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<number, string>>({});
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -73,7 +75,7 @@ export function WorkOrderMaterialsEditor({
   function hydrate() {
     const materials = aggregateEditableMaterials(initial);
     setBaseline({ workOrderId, version, branchId, orderNumber, status, initial: materials });
-    setRows(materials); setReason(""); setSearch(""); requestKeyRef.current = null;
+    setRows(materials); setQuantityDrafts({}); setReason(""); setSearch(""); requestKeyRef.current = null;
   }
   useEffect(() => { if (baseline.workOrderId !== workOrderId) hydrate(); }, [workOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
   const stale = baseline.workOrderId === workOrderId && (version !== baseline.version || status !== baseline.status);
@@ -81,6 +83,10 @@ export function WorkOrderMaterialsEditor({
   // المواد استُهلكت لحظة «بدء التنفيذ» ⇒ التعديل بعدها يحرّك المخزون والدفتر فعلاً.
   const consumed = baseline.status === "IN_PROGRESS" || baseline.status === "READY";
   const locked = baseline.status === "DELIVERED" || baseline.status === "CANCELLED";
+  const quantityIssue = rows.some((row) => {
+    try { return quantityNumber(quantityDrafts[row.variantId] ?? row.baseQuantity) <= 0; }
+    catch { return true; }
+  }) ? "أدخل كمية مادة موجبة بأربع منازل عشرية أو أقل ضمن الحد المسموح؛ الحذف بزر الحذف." : null;
 
   const posList = trpc.catalog.posList.useQuery(
     { branchId: baseline.branchId, tier: "RETAIL", query: search, limit: 20 },
@@ -131,10 +137,11 @@ export function WorkOrderMaterialsEditor({
     setRows((prev) => {
       const existing = prev.find((x) => x.variantId === r.variantId);
       if (existing) {
-        return prev.map((x) => (x.variantId === r.variantId ? { ...x, baseQuantity: x.baseQuantity + 1 } : x));
+        return prev.map((x) => (x.variantId === r.variantId ? { ...x, baseQuantity: addQuantities(x.baseQuantity, 1) } : x));
       }
       return [...prev, { variantId: r.variantId, baseQuantity: 1, productName: r.productName, sku: r.sku }];
     });
+    setQuantityDrafts((prev) => { const next = { ...prev }; delete next[r.variantId]; return next; });
     setSearch("");
     searchRef.current?.focus();
   }
@@ -162,13 +169,23 @@ export function WorkOrderMaterialsEditor({
   }
 
   function setQty(variantId: number, next: number) {
+    setQuantityDrafts((prev) => { const drafts = { ...prev }; delete drafts[variantId]; return drafts; });
     // الحذف بإسقاط الصنف لا بصفر — مرآةٌ لعقد الخادم (يرفض الكمّية الصفرية صراحةً).
     if (next <= 0) return setRows((prev) => prev.filter((x) => x.variantId !== variantId));
-    setRows((prev) => prev.map((x) => (x.variantId === variantId ? { ...x, baseQuantity: Math.trunc(next) } : x)));
+    setRows((prev) => prev.map((x) => (x.variantId === variantId ? { ...x, baseQuantity: quantityNumber(next) } : x)));
+  }
+
+  function editQty(variantId: number, raw: string) {
+    setQuantityDrafts((prev) => ({ ...prev, [variantId]: raw }));
+    try {
+      const next = quantityNumber(raw);
+      if (next > 0) setRows((prev) => prev.map((row) => row.variantId === variantId ? { ...row, baseQuantity: next } : row));
+    } catch { /* Keep incomplete/invalid input visible; saving is blocked explicitly. */ }
   }
 
   async function save() {
     if (baseline.workOrderId !== workOrderId || locked) return;
+    if (quantityIssue) return notify.warn(quantityIssue);
     if (!canLifecycleOperation(me.data, consumed ? "workOrders.requestControl" : "workOrders.setMaterials", true)) return notify.err("عملية تعديل البنود غير مفوضة لهذا الحساب.");
     if (!diff.length) return notify.info("لا تغييرات لحفظها.");
     const normalizedReason = reason.trim();
@@ -287,13 +304,13 @@ export function WorkOrderMaterialsEditor({
                     <div className="flex items-center justify-center gap-1" dir="ltr">
                       <Button size="sm" variant="outline" className="h-8 w-8 p-0 font-black"
                         aria-label={`أنقص كمية ${m.productName}`}
-                        onClick={() => setQty(m.variantId, m.baseQuantity - 1)}>−</Button>
-                      <Input dir="ltr" inputMode="numeric" className="h-8 w-20 text-center font-bold tabular-nums"
-                        value={String(m.baseQuantity)} aria-label={`كمية ${m.productName}`}
-                        onChange={(e) => setQty(m.variantId, parseInt(e.target.value.replace(/[^\d]/g, ""), 10) || 0)} />
+                         onClick={() => setQty(m.variantId, subtractQuantities(m.baseQuantity, 1))}>−</Button>
+                       <Input dir="ltr" inputMode="decimal" className="h-8 w-20 text-center font-bold tabular-nums"
+                         value={quantityDrafts[m.variantId] ?? String(m.baseQuantity)} aria-label={`كمية ${m.productName}`}
+                         onChange={(e) => editQty(m.variantId, e.target.value)} />
                       <Button size="sm" variant="outline" className="h-8 w-8 p-0 font-black"
                         aria-label={`زد كمية ${m.productName}`}
-                        onClick={() => setQty(m.variantId, m.baseQuantity + 1)}>+</Button>
+                         onClick={() => setQty(m.variantId, addQuantities(m.baseQuantity, 1))}>+</Button>
                     </div>
                   </td>
                   <td className="px-3 py-2 text-center">
@@ -341,8 +358,9 @@ export function WorkOrderMaterialsEditor({
           />
         </div>
 
+        {quantityIssue && <p role="alert" className="text-xs text-destructive">{quantityIssue}</p>}
         <div className="flex flex-wrap gap-2">
-          <Button onClick={save} disabled={locked || setMaterials.isPending || requestControl.isPending || diff.length === 0 || reason.trim().length < 3}>
+          <Button onClick={save} disabled={locked || setMaterials.isPending || requestControl.isPending || !!quantityIssue || diff.length === 0 || reason.trim().length < 3}>
             {setMaterials.isPending || requestControl.isPending
               ? "جارٍ الحفظ…"
               : consumed ? "إرسال طلب تعديل البنود" : "حفظ البنود"}

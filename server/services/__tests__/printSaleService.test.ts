@@ -9,12 +9,17 @@ import { createPrintSale } from "../printSaleService";
 import { getShiftReport } from "../shiftService";
 import { withTx } from "../tx";
 import { assertCreditLimit } from "../../lib/credit";
+import { createProduction } from "../production/create";
+import { cancelProduction } from "../production/cancel";
+import { runPreview } from "../production/preview";
+import { correctSale } from "../sale/correct";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 const TABLES = [
   "accountingEntries", "receipts", "invoiceItemServiceMaterials", "invoiceItems", "invoices",
+  "productionLines", "productionOrders",
   "productionRecipeLines", "productionRecipes", "inventoryMovements", "branchStock",
   "productPrices", "productUnits", "productVariants", "products",
   "customers", "shifts", "branches", "users", "idempotencyKeys",
@@ -243,18 +248,123 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     await expectNoSaleArtifacts();
   });
 
-  it("كمية وصفة كسرية لا تُقرّب صامتاً إلى وحدة مخزون", async () => {
+  it("بيع خدمة واحدة يستهلك 1.5 من مادة الوصفة ويحفظ كميتها وتكلفتها", async () => {
     await db().update(s.productionRecipeLines)
-      .set({ qtyPerOutputBase: "0.5000" })
+      .set({ qtyPerOutputBase: "1.5000" })
       .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
-    await expect(createPrintSale({
+    const result = await createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
       payment: { amount: "250", method: "CASH" },
-    }, actor)).rejects.toThrow(/كمية كسرية/);
+    }, actor);
+    expect(await stock(1)).toBe(98.5);
+    expect(await stock(2)).toBe(99);
+    expect((await invoice(result.invoiceId)).costTotal).toBe("72.50");
+    const [snapshot] = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.materialVariantId, 1));
+    expect(Number(snapshot.baseQuantity)).toBe(1.5);
+    expect(snapshot.lineCost).toBe("52.50");
+    const [movement] = (await movements()).filter((row) => Number(row.variantId) === 1);
+    expect(Number(movement.quantity)).toBe(1.5);
+    expect(Number(movement.signedDelta)).toBe(-1.5);
+  });
+
+  it("استهلاك 0.1 عشر مرات يحتفظ بالرصيد الدقيق وإعادة الطلب لا تخصم ثانية", async () => {
+    await db().update(s.productionRecipeLines)
+      .set({ qtyPerOutputBase: "0.1000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    for (let index = 0; index < 10; index++) {
+      const input = {
+        branchId: 1, shiftId: 1,
+        lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+        payment: { amount: "250", method: "CASH" as const },
+        clientRequestId: `fraction-repeat-${index}`,
+      };
+      const first = await createPrintSale(input, actor);
+      const retry = await createPrintSale(input, actor);
+      expect(retry.invoiceId).toBe(first.invoiceId);
+    }
+    expect(await stock(1)).toBe(99);
+    expect((await movements()).filter((row) => Number(row.variantId) === 1)).toHaveLength(10);
+  });
+
+  it("يجمع 0.1 و0.2 من خدمتين في حركة مادة واحدة مقدارها 0.3", async () => {
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "0.1000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    const [recipe] = await db().insert(s.productionRecipes).values({
+      name: "وصفة مادة مشتركة", outputVariantId: 11, outputProductUnitId: 11,
+    }).$returningId();
+    await db().insert(s.productionRecipeLines).values({
+      recipeId: recipe.id, inputVariantId: 1, qtyPerOutputBase: "0.2000",
+    });
+    await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [
+        { variantId: 10, productUnitId: 10, quantity: "1" },
+        { variantId: 11, productUnitId: 11, quantity: "1" },
+      ],
+      payment: { amount: "5250", method: "CASH" },
+    }, actor);
+    expect(await stock(1)).toBe(99.7);
+    const materialMoves = (await movements()).filter((row) => Number(row.variantId) === 1);
+    expect(materialMoves).toHaveLength(1);
+    expect(Number(materialMoves[0].quantity)).toBe(0.3);
+  });
+
+  it("يحفظ أصغر كسر مسموح 0.0001 دون تحويله إلى صفر", async () => {
+    await db().update(s.productionRecipeLines)
+      .set({ qtyPerOutputBase: "0.0001" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor);
+    expect(await stock(1)).toBe(99.9999);
+    const [snapshot] = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.materialVariantId, 1));
+    expect(Number(snapshot.baseQuantity)).toBe(0.0001);
+  });
+
+  it("تصحيح الفاتورة يعيد كسر الوصفة الأصلية ثم يستهلك الوصفة المصححة مرة واحدة", async () => {
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "1.5000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    const original = await createPrintSale({
+      branchId: 1, shiftId: 1, customerId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor);
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "0.5000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    const corrected = await correctSale({
+      originalInvoiceId: original.invoiceId, customerId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      clientRequestId: "fractional-recipe-correction",
+    }, { ...actor, role: "admin" });
+    expect(await stock(1)).toBe(99.5);
+    expect(await stock(2)).toBe(99);
+    const originalItem = (await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, original.invoiceId)))[0];
+    const [originalSnapshot] = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(sql`${s.invoiceItemServiceMaterials.invoiceItemId} = ${originalItem.id} AND ${s.invoiceItemServiceMaterials.materialVariantId} = 1`);
+    expect(Number(originalSnapshot.baseQuantity)).toBe(1.5);
+    expect((await invoice(original.invoiceId)).status).toBe("SUPERSEDED");
+    expect((await invoice(corrected.correctedInvoiceId)).costTotal).toBe("37.50");
+  });
+
+  it("معاينة وإنتاج وحدة نهائية صحيحة يستهلكان 1.5 خامة والإلغاء يعيدها بدقة", async () => {
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "1.5000" })
+      .where(eq(s.productionRecipeLines.recipeId, 2));
+    const preview = await runPreview({ recipeId: 2, batchQty: 1, branchId: 1 });
+    expect(preview.inputs[0].consumed).toBe(1.5);
+    const produced = await createProduction({
+      branchId: 1, run: { recipeId: 2, batchQty: 1 }, clientRequestId: "fraction-production-one",
+    }, { ...actor, role: "admin" });
+    expect(await stock(1)).toBe(98.5);
+    expect(await stock(12)).toBe(11);
+    await cancelProduction(produced.productionOrderId, { ...actor, role: "admin" });
     expect(await stock(1)).toBe(100);
-    expect(await stock(2)).toBe(100);
-    await expectNoSaleArtifacts();
+    expect(await stock(12)).toBe(10);
   });
 
   it("وصفة كسرية قابلة للتتبع 0.5×2 تخصم وحدة واحدة وتحسب COGS بدقة", async () => {

@@ -44,6 +44,7 @@ import {
 } from "../bundleService";
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
+import { addQuantities } from "@shared/quantity";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { assertEconomicInventoryRepostScope } from "../inventory/economicOwnership";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
@@ -1052,7 +1053,7 @@ export async function createSaleInTx(
           unitCost: matCost.toFixed(2),
           lineCost: money(0),
         };
-        current.baseQuantity += consumed;
+        current.baseQuantity = addQuantities(current.baseQuantity, consumed);
         current.lineCost = current.lineCost.plus(materialLineCost);
         byMaterial.set(rl.inputVariantId, current);
       }
@@ -1816,7 +1817,7 @@ export async function createSaleInTx(
   for (const op of stockOps) {
     aggregated.set(
       op.variantId,
-      (aggregated.get(op.variantId) ?? 0) + op.baseQuantity,
+      addQuantities(aggregated.get(op.variantId) ?? 0, op.baseQuantity),
     );
   }
   const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
@@ -1824,7 +1825,7 @@ export async function createSaleInTx(
   for (const op of serviceMaterialOps) {
     serviceMaterialAgg.set(
       op.variantId,
-      (serviceMaterialAgg.get(op.variantId) ?? 0) + op.baseQuantity,
+      addQuantities(serviceMaterialAgg.get(op.variantId) ?? 0, op.baseQuantity),
     );
   }
   const serviceMaterialVariantIds = Array.from(serviceMaterialAgg.keys()).sort(

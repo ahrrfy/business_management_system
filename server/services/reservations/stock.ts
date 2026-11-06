@@ -2,6 +2,7 @@
 // حجز ناعم (soft/ATP): لا يمسّ branchStock إطلاقاً. المتاح الحاكم يجمع الحجز الرسمي
 // وتخصيص الطلبات الإلكترونية النشطة من primitive الكتالوج نفسها، فلا ينشأ ATP ثانٍ متناقض.
 import { and, eq, sql } from "drizzle-orm";
+import { subtractQuantities, toDbQuantity } from "@shared/quantity";
 import { reservationStock } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
@@ -38,7 +39,7 @@ export async function readAvailability(
   })).get(variantId);
   const onHand = state?.onHandBase ?? 0;
   const reserved = state?.reservedBase ?? 0;
-  const rawAvailableBase = onHand - reserved;
+  const rawAvailableBase = subtractQuantities(onHand, reserved);
   return {
     onHand,
     reserved,
@@ -62,6 +63,6 @@ export async function adjustReservedStock(
   await ensureReservedRow(tx, variantId, branchId);
   await tx
     .update(reservationStock)
-    .set({ reservedBase: sql`GREATEST(0, ${reservationStock.reservedBase} + ${delta})` })
+    .set({ reservedBase: sql`GREATEST(0, ${reservationStock.reservedBase} + ${toDbQuantity(delta)})` })
     .where(and(eq(reservationStock.variantId, variantId), eq(reservationStock.branchId, branchId)));
 }

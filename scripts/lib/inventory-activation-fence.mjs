@@ -111,6 +111,7 @@ export async function runInventoryActivation({
 }) {
   if (![0, 1].includes(initialReadyVersion))
     throw new Error("INVENTORY_READY_VERSION_UNSUPPORTED");
+  if (journal.schemaTransition && (journal.schemaTransition.id !== "fractional-material-quantities-v1" || journal.schemaTransition.rollbackPolicy !== "FORWARD_ONLY" || typeof journal.schemaTransition.started !== "boolean")) throw new Error("INVENTORY_SCHEMA_TRANSITION_INVALID");
   let gate,
     stopped = false,
     committingGate = false,
@@ -151,6 +152,15 @@ export async function runInventoryActivation({
     await op.stopOld();
     await fence.assertQuiescentAndLocked();
     await save("QUIESCENT");
+    if (journal.schemaTransition) {
+      if (typeof op.prepareSchema !== "function") throw new Error("INVENTORY_SCHEMA_PREPARATION_REQUIRED");
+      // DDL may commit only part of a migration. Persist the one-way boundary before
+      // invoking any schema writer, so a crash never authorizes an old binary.
+      journal = { ...journal, schemaTransition: { ...journal.schemaTransition, started: true } };
+      await save("QUIESCENT");
+      await op.prepareSchema();
+      await fence.assertQuiescentAndLocked();
+    }
     if (initialReadyVersion === 0) await activate(connectionB, options);
     await save("READY");
     await op.installCandidate();
@@ -185,6 +195,7 @@ export async function runInventoryActivation({
     uncertain = committingGate || /COMMIT_UNCERTAIN/.test(error?.message ?? "");
     try {
       if (stopped) await op.stopCandidates();
+      if (journal.schemaTransition?.started === true) throw new Error("INVENTORY_SCHEMA_FORWARD_RECOVERY_REQUIRED");
       if (!gate || uncertain) throw new Error("INVENTORY_UNCERTAIN_ACTIVATION");
       await fence.assertQuiescentAndLocked();
       if (initialReadyVersion === 0) await invalidate(connectionB, options);

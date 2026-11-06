@@ -8,7 +8,7 @@ export interface ProductionLineInput {
   /** إن وُجد مع quantity ⇒ يُحوّل لكمية أساس عبر convertToBaseQuantity (يفرض الصحّة). */
   productUnitId?: number | null;
   quantity?: string;
-  /** بديل مباشر: كمية أساس (عدد صحيح موجب). */
+  /** بديل مباشر: كمية أساس موجبة؛ مدخل المادة يقبل أربع منازل، والناتج يبقى صحيحاً. */
   baseQuantity?: number;
   /** OUTPUT فقط: نسبة توزيع يدوية اختيارية (كلّها يدوي بمجموع≈100 أو كلّها تناسبي). */
   manualSharePct?: string | null;

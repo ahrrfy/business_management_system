@@ -37,6 +37,7 @@ import { localDayStart } from "./dateRange";
 import { getDb, type Tx } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { applyMovement, applyValuedInboundMovement, convertToBaseQuantity } from "./inventoryService";
+import { isQuantity } from "@shared/quantity";
 import { lockInventoryVariants } from "./inventory/stockLock";
 import {
   checkIdempotency,
@@ -469,18 +470,19 @@ async function createStockExpenseTx(
         it.productUnitId,
         it.quantity,
         it.variantId,
+        { allowFractionalBase: true },
       );
       baseQuantity = conv.baseQuantity;
       quantity = money(it.quantity).toFixed(4);
     } else {
       if (
         it.baseQuantity == null ||
-        !Number.isInteger(it.baseQuantity) ||
+        !isQuantity(it.baseQuantity) ||
         it.baseQuantity <= 0
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً",
+          message: appErrorMessage({ what: "تعذّر صرف المادة من المخزون", why: "كمية المادة يجب أن تكون موجبة وبأربع منازل عشرية ضمن الحد المسموح", doThis: "أدخل كمية المادة الفعلية دون تقريب إلى وحدة كاملة" }),
         });
       }
       baseQuantity = it.baseQuantity;

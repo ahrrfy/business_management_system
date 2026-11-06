@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { addQuantities, multiplyQuantities, quantityDecimal, subtractQuantities } from "@shared/quantity";
 import {
   branchStock,
   bundleComponents,
@@ -250,7 +251,7 @@ async function loadOnlineAllocatedBase(
   const directRows = options.lock ? await directQuery.for("share") : await directQuery;
   for (const row of directRows) {
     const variantId = Number(row.variantId);
-    result.set(variantId, (result.get(variantId) ?? 0) + Math.max(0, Number(row.baseQuantity)));
+    result.set(variantId, addQuantities(result.get(variantId) ?? 0, Math.max(0, Number(row.baseQuantity))));
   }
 
   // تخصيص البكج = كمية البكج الأساس × كمية المكوّن في الوصفة. لا نضيف تخصيصاً
@@ -276,8 +277,8 @@ async function loadOnlineAllocatedBase(
   const bundleRows = options.lock ? await bundleQuery.for("share") : await bundleQuery;
   for (const row of bundleRows) {
     const variantId = Number(row.componentVariantId);
-    const allocated = Math.max(0, Number(row.baseQuantity)) * Math.max(0, Number(row.componentBaseQuantity));
-    result.set(variantId, (result.get(variantId) ?? 0) + allocated);
+    const allocated = multiplyQuantities(Math.max(0, Number(row.baseQuantity)), Math.max(0, Number(row.componentBaseQuantity)));
+    result.set(variantId, addQuantities(result.get(variantId) ?? 0, allocated));
   }
   return result;
 }
@@ -329,13 +330,13 @@ export async function loadVariantAvailability(
     const variantId = Number(row.variantId);
     const onHandBase = Number(row.onHandBase ?? 0);
     const formalReservationBase = Math.max(0, Number(row.reservedBase ?? 0));
-    const reservedBase = formalReservationBase + Math.max(0, onlineAllocated.get(variantId) ?? 0);
+    const reservedBase = addQuantities(formalReservationBase, Math.max(0, onlineAllocated.get(variantId) ?? 0));
     const isBundle = row.isBundle === true;
     result.set(variantId, {
       onHandBase,
       formalReservationBase,
       reservedBase,
-      availableBase: Math.max(0, onHandBase - reservedBase),
+      availableBase: Math.max(0, subtractQuantities(onHandBase, reservedBase)),
       hasStockRow: row.onHandBase != null,
       isBundle,
       isService: row.isService === true,
@@ -450,8 +451,8 @@ export async function loadVariantAvailability(
         break;
       }
       if (availability.isService) continue;
-      onHandCapacity = Math.min(onHandCapacity, Math.floor(availability.onHandBase / quantity));
-      const componentCapacity = Math.floor(availability.availableBase / quantity);
+      onHandCapacity = Math.min(onHandCapacity, quantityDecimal(availability.onHandBase).div(quantity).floor().toNumber());
+      const componentCapacity = quantityDecimal(availability.availableBase).div(quantity).floor().toNumber();
       if (componentCapacity < availableCapacity) {
         availableCapacity = componentCapacity;
         limitingComponent = component;

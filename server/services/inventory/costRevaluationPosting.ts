@@ -6,6 +6,7 @@ import { lockEconomicInventoryScope, readEconomicOwnedPositions } from "./econom
  * ← أثر التدقيق ← قيد ADJUST لكل فرع. لا تستعمل هذه الدوال خارج معاملة `withTx`.
  */
 import Decimal from "decimal.js";
+import { quantityNumber } from "@shared/quantity";
 import { TRPCError } from "@trpc/server";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
@@ -63,7 +64,7 @@ export async function loadBranchQuantitySnapshot(
 }
 
 export function totalBranchQuantity(rows: BranchQuantitySnapshot[]): number {
-  return rows.reduce((sum, row) => sum + row.quantity, 0);
+  return rows.reduce((sum, row) => quantityNumber(new Decimal(sum).plus(row.quantity)), 0);
 }
 
 export function parseBranchQuantitySnapshot(

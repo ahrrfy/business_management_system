@@ -35,6 +35,7 @@ import { WorkOrderDeliveryPaymentCard, type WoPaymentMethod } from "@/components
 import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
+import { workOrderMaterialValue } from "@shared/workOrderMaterialCost";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
@@ -468,11 +469,16 @@ export default function WorkOrderDetail() {
      تُبنى هنا لا في `useMemo` لأنّ الشاشة ترجع مبكّراً قبل هذه النقطة (تحميل/خطأ)، وخطّافٌ
      بعد رجوعٍ مشروط ممنوع. أعمدة الكلفة مشروطةٌ بـ`showCost` كما كانت في الجدول الخامّ. */
   type MaterialRow = (typeof data)["materials"][number];
+  const materialCost = (material: MaterialRow): string | null => {
+    try { return workOrderMaterialValue(material).toFixed(2); }
+    catch { return null; } // A fractional snapshot without its saved value is not a zero-cost material.
+  };
   // مشروطٌ بـ`showCost` كما كان `<tfoot>` الأصليّ: لا حسابَ كلفةٍ لمن حُجبت عنه (قد تصل
   // `unitCost` محجوبةً فيرمي `D()` على قيمةٍ غير رقمية).
-  const materialsCostTotal = showCost
-    ? data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2)
-    : "0";
+  const materialCostValues = showCost ? data.materials.map(materialCost) : [];
+  const materialsCostTotal = showCost && materialCostValues.every((value) => value != null)
+    ? materialCostValues.reduce((sum, value) => sum.plus(D(value)), D(0)).toFixed(2)
+    : null;
   const materialColumns: ColumnDef<MaterialRow, unknown>[] = [
     {
       id: "material",
@@ -521,9 +527,9 @@ export default function WorkOrderDetail() {
           {
             id: "lineCost",
             header: "كلفة السطر",
-            accessorFn: (m) => fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2)),
+            accessorFn: (m) => fmt(materialCost(m)),
             meta: { kind: "money" },
-            cell: ({ row }) => fmt(D(row.original.unitCost).times(row.original.baseQuantity).toFixed(2)),
+            cell: ({ row }) => fmt(materialCost(row.original)),
             footer: () => fmt(materialsCostTotal),
           },
         ] as ColumnDef<MaterialRow, unknown>[])
@@ -1242,6 +1248,7 @@ export default function WorkOrderDetail() {
                 }) || m.sku || `#${m.variantId}`,
                 baseQuantity: Number(m.baseQuantity),
                 unitCost: m.unitCost ?? null,
+                lineCost: m.lineCost ?? null,
               }))
             : []
         }

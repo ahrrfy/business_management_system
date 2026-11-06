@@ -541,6 +541,11 @@ describe("تقارير المبيعات التحليلية", () => {
     expect(slow).toHaveLength(1);
     // المخزون الحقيقي 98 (١٠٠ − بيعتان) لا 196 (98×صفّين) لو وقع انفجار الانضمام.
     expect(slow[0].qtyInStock).toBe("98");
+    await db().update(s.branchStock).set({ quantity: 98.0001 }).where(
+      sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`,
+    );
+    const fractional = await getSlowMovers({ sinceDays: 30 });
+    expect(fractional[0].qtyInStock).toBe("98.0001");
   });
 });
 

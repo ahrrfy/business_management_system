@@ -419,7 +419,7 @@ export async function consignmentBalancesReport(branchId?: number) {
     owed: String(r.owed ?? "0"),
     variantCount: Number(r.variantCount ?? 0),
     remainingQty: Number(r.remainingQty ?? 0),
-    remainingValueByShare: String(r.remainingValueByShare ?? "0"),
+    remainingValueByShare: round2(money(r.remainingValueByShare ?? "0")).toFixed(2),
   }));
 }
 

@@ -2,6 +2,7 @@ import { receptionComposedPaymentsSchema } from "../services/reception/splitPaym
 import {checkoutChargesFields,hasCheckoutCharges} from "../services/checkoutCharges";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { isQuantity } from "@shared/quantity";
 import { hasOperationPolicy, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
 import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -107,11 +108,13 @@ const receptionPaymentMethod = z
   .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
+const positiveMaterialQuantity = z.number().positive().refine(isQuantity, "كمية المادة يجب ألا تتجاوز أربع منازل عشرية أو حد المخزون");
+const nonNegativeMaterialQuantity = z.number().nonnegative().refine(isQuantity, "كمية المادة يجب ألا تتجاوز أربع منازل عشرية أو حد المخزون");
 const workOrderControlReason = z.string().trim().min(3).max(500);
 const workOrderMaterialPayload = z.object({
   materials: z.array(z.object({
     variantId: z.number().int().positive(),
-    baseQuantity: z.number().int().positive(),
+    baseQuantity: positiveMaterialQuantity,
   })).max(200),
 });
 const workOrderCancelPayload = z.object({
@@ -125,8 +128,8 @@ const workOrderCancelPayload = z.object({
   confirmAllMaterialsReturnedUsable: z.boolean().nullish(),
   materials: z.array(z.object({
     workOrderMaterialId: z.number().int().positive(),
-    returnBase: z.number().int().min(0),
-    wasteBase: z.number().int().min(0),
+    returnBase: nonNegativeMaterialQuantity,
+    wasteBase: nonNegativeMaterialQuantity,
   })).max(200).nullish(),
 });
 const workOrderRefundSourcePlan = z.object({
@@ -160,7 +163,7 @@ const receptionWorkOrderSchema = z.object({
   title: z.string().trim().min(1),
   customizationText: z.string().nullish(),
   quantity: z.number().int().positive().default(1),
-  materials: z.array(z.object({ variantId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).default([]),
+  materials: z.array(z.object({ variantId: z.number().int().positive(), baseQuantity: positiveMaterialQuantity })).default([]),
   laborCost: nonNegMoneyString.default("0"),
   salePrice: positiveMoneyString,
   dueDate: z.string().nullish(),
@@ -1025,6 +1028,7 @@ export const workOrderRouter = router({
         variantId: workOrderMaterials.variantId,
         baseQuantity: workOrderMaterials.baseQuantity,
         unitCost: workOrderMaterials.unitCost,
+        lineCost: workOrderMaterials.lineCost,
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
@@ -1114,7 +1118,7 @@ export const workOrderRouter = router({
     // §٧ تكلفة: نُخفي materialsCost/laborCost/unitCost عن غير المرتفعين (defense-in-depth).
     // نُبقي شكل الـtype ثابتاً (null بدلاً من حذف الحقول) لئلا تنكسر شاشة التفاصيل.
     if (!canSeeCostForUser(ctx.user)) {
-      const safeMaterials = materials.map((m) => ({ ...m, unitCost: null as unknown as string }));
+      const safeMaterials = materials.map((m) => ({ ...m, unitCost: null as unknown as string, lineCost: null }));
       return {
         ...wo,
         ...deliveryInfo,
@@ -1925,7 +1929,7 @@ export const workOrderRouter = router({
         customizationText: z.string().nullish(),
         quantity: z.number().int().positive().default(1),
         materials: z
-          .array(z.object({ variantId: z.number().int().positive(), baseQuantity: z.number().int().positive() }))
+          .array(z.object({ variantId: z.number().int().positive(), baseQuantity: positiveMaterialQuantity }))
           .default([]),
         // تدقيق ١٧/٧: تحقّق مالي خادميّ — كانت سلاسل حرّة تقبل السالب (عربون/عمالة سالبان يشوّهان الذمم/الربح).
         laborCost: nonNegMoneyString.default("0"),
@@ -2145,7 +2149,7 @@ export const workOrderRouter = router({
           .array(
             z.object({
               variantId: z.number().int().positive(),
-              baseQuantity: z.number().int().positive(),
+              baseQuantity: positiveMaterialQuantity,
             }),
           )
           .max(200),
@@ -2489,8 +2493,8 @@ export const workOrderRouter = router({
       /** مصيرُ كلّ خامة مستهلَكة؛ بعد البدء يلزم هذا أو إقرار الرجوع الكامل أدناه. */
       materials: z.array(z.object({
         workOrderMaterialId: z.number().int().positive(),
-        returnBase: z.number().int().min(0),
-        wasteBase: z.number().int().min(0),
+        returnBase: nonNegativeMaterialQuantity,
+        wasteBase: nonNegativeMaterialQuantity,
       })).max(200).optional(),
       /** إقرارٌ صريح بأنّ كل الخامات المستهلَكة عادت صالحةً فعلياً. */
       confirmAllMaterialsReturnedUsable: z.boolean().optional(),

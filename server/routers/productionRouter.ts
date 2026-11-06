@@ -57,30 +57,21 @@ import { listMaterialsForRecipe } from "../services/catalog/productExtras";
 import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { canonicalOperationAllowed } from "../services/authorization/operationAuthority";
+import { productRecipeDefinitionSchema, productRecipeFingerprintSchema } from "@shared/productRecipeSave";
+import { isQuantity } from "@shared/quantity";
 
 const lineInput = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive().nullish(),
   quantity: z.string().optional(),
+  baseQuantity: z.number().positive().refine(isQuantity, "كمية المواد تقبل أربع منازل عشرية كحد أقصى").optional(),
+});
+const outputLineInput = lineInput.extend({
   baseQuantity: z.number().int().positive().optional(),
+  manualSharePct: z.string().nullish(),
 });
-const outputLineInput = lineInput.extend({ manualSharePct: z.string().nullish() });
-
-const recipeLineInput = z.object({
-  inputVariantId: z.number().int().positive(),
-  inputProductUnitId: z.number().int().positive().nullish(),
-  qtyPerOutputBase: z.string(),
-  notes: z.string().nullish(),
-});
-const recipeInput = z.object({
-  name: z.string().min(1).max(150),
-  outputVariantId: z.number().int().positive(),
-  outputProductUnitId: z.number().int().positive(),
-  laborPerOutputBase: z.string().nullish(),
-  wasteStdPct: z.string().nullish(),
-  notes: z.string().nullish(),
-  isActive: z.boolean().optional(),
-  lines: z.array(recipeLineInput).min(1),
+const recipeInput = productRecipeDefinitionSchema.extend({
+  expectedFingerprint: productRecipeFingerprintSchema.optional(),
 });
 
 /** مسار «التشغيل بوصفة»: الخادم يوسّع الوصفة (نموذج الدفعة تقود الاستهلاك) ⇒ يمنع تلاعب الكلفة. */

@@ -486,12 +486,12 @@ async function childDatabasePhase(
   let execution = source.slice(
     source.indexOf("const url = process.env.DATABASE_URL;"),
   );
-  if (phase === "verify")
-    execution =
-      execution.slice(
-        0,
-        execution.indexOf("  const [rows] = await conn.query("),
-      ) + "return; } finally { await conn.end(); }";
+  if (phase === "verify") {
+    const identityGuard = execution.match(/await\s+assertConnectionTarget\(\s*conn,\s*url,\s*process\.env\.DB_TARGET_EXPECTED_UUID\s*,?\s*\);/);
+    assert.ok(identityGuard, "verify endpoint identity guard boundary must exist");
+    execution = execution.slice(0, identityGuard.index + identityGuard[0].length)
+      + "\nreturn; } finally { await conn.end(); }";
+  }
   try {
     await vm.runInContext(`(async () => { ${execution} })()`, context);
   } catch (error) {

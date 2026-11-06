@@ -29,6 +29,7 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
     currentRecipe,
     currentBranchId,
     isEditing,
+    isWritePending,
     isImportDialogOpen,
     setIsImportDialogOpen,
     setPriceTierMode,
@@ -50,7 +51,6 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
     createMut,
     updateMut,
     setActiveMut,
-    deleteMut,
     activeLinesForCheck,
     stockCheckQ,
     stockData,
@@ -103,13 +103,11 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
         can={can}
         currentRecipe={currentRecipe}
         isEditing={isEditing}
+        isWritePending={isWritePending}
         setIsImportDialogOpen={setIsImportDialogOpen}
         clipboardData={clipboardData}
         formLines={formLines}
-        createMut={createMut}
-        updateMut={updateMut}
         setActiveMut={setActiveMut}
-        deleteMut={deleteMut}
         startEditing={startEditing}
         cancelEditing={cancelEditing}
         handleCopyRecipe={handleCopyRecipe}
@@ -123,7 +121,7 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
       <CardContent className="p-4 sm:p-5 space-y-4">
         <fieldset
           className="contents"
-          disabled={createMut.isPending || updateMut.isPending}
+          disabled={isWritePending}
         >
           <RecipeEmptyState
             currentRecipe={currentRecipe}

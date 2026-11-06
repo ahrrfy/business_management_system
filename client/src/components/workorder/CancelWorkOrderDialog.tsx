@@ -19,7 +19,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fmtAr, formatQuantity } from "@/lib/money";
+import { D, fmtAr, formatQuantity } from "@/lib/money";
+import { addQuantities, quantityNumber, subtractQuantities } from "@shared/quantity";
+import { splitWorkOrderMaterialValue } from "@shared/workOrderMaterialCost";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { RefundPreflight } from "@shared/refundPreflight";
@@ -31,6 +33,7 @@ export interface CancelMaterialRow {
   name: string;
   baseQuantity: number;
   unitCost: string | null;
+  lineCost?: string | null;
 }
 
 /**
@@ -97,6 +100,7 @@ export function CancelWorkOrderDialogById({
               name: [m.productName, m.variantName].filter(Boolean).join(" — ") || m.sku || `#${m.variantId}`,
               baseQuantity: Number(m.baseQuantity),
               unitCost: m.unitCost ?? null,
+              lineCost: m.lineCost ?? null,
             }))
           : []
       }
@@ -163,7 +167,7 @@ export default function CancelWorkOrderDialog({
   onConfirm: (d: CancelDecision) => void;
 }) {
   const [reason, setReason] = useState("");
-  const [waste, setWaste] = useState<Record<number, number>>({});
+  const [wasteDrafts, setWasteDrafts] = useState<Record<number, string>>({});
   const [allReturnedConfirmed, setAllReturnedConfirmed] = useState(false);
   /** حالةُ المنتقي الموحَّد — الاختيارُ وسببُ الحجب والتحميل، كلُّها من الخادم لا من تخمين. */
   const [rail, setRail] = useState<RefundRailPickerState | null>(null);
@@ -174,7 +178,7 @@ export default function CancelWorkOrderDialog({
   useEffect(() => {
     if (!open) return;
     setReason("");
-    setWaste({});
+    setWasteDrafts({});
     setAllReturnedConfirmed(false);
     setRail(null);
   }, [open]);
@@ -194,8 +198,22 @@ export default function CancelWorkOrderDialog({
     : undefined;
 
   const hasMaterials = materials.length > 0;
+  const { waste, wasteIssue } = useMemo(() => {
+    const values: Record<number, number> = {};
+    let issue: string | null = null;
+    for (const material of materials) {
+      try {
+        const amount = quantityNumber(wasteDrafts[material.id] ?? "0");
+        if (amount < 0 || amount > material.baseQuantity) {
+          issue ??= "كمية التالف يجب أن تكون بين صفر والكمية المستهلكة.";
+        } else values[material.id] = amount;
+      } catch {
+        issue ??= "أدخل كمية تالف صحيحة بأربع منازل عشرية أو أقل ضمن الحد المسموح، دون تقريب.";
+      }
+    }
+    return { waste: values, wasteIssue: issue };
+  }, [materials, wasteDrafts]);
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
-  const materialDecisionReady = !hasMaterials || anyWaste || allReturnedConfirmed;
   /**
    * **الكلفة محجوبةٌ عن بعض الأدوار** (`redactPosCost` — الكاشير يرى الكمّيات لا الأسعار)
    * فتصل `unitCost = null`. و`Number(null ?? 0)` كان يُنتج **صفراً يُعرَض رقماً حقيقياً**:
@@ -204,12 +222,22 @@ export default function CancelWorkOrderDialog({
    * القيمة غير مرئيّة لهذا الدور. والخادم يحسبها من كلفته الحقيقيّة في كلّ الأحوال.
    */
   const wastedLines = materials.filter((m) => (waste[m.id] ?? 0) > 0);
-  const costVisible = wastedLines.length > 0 && wastedLines.every((m) => m.unitCost != null);
-  const wastedValue = useMemo(
-    () => materials.reduce((sum, m) => sum + (waste[m.id] ?? 0) * Number(m.unitCost ?? 0), 0),
-    [materials, waste],
-  );
-  const wastedPieces = wastedLines.reduce((n, m) => n + (waste[m.id] ?? 0), 0);
+  const { wastedValues, costIssue } = useMemo(() => {
+    const values = new Map<number, string>();
+    let issue: string | null = null;
+    for (const material of materials) {
+      if (material.unitCost == null && material.lineCost == null) continue; // Costs redacted for this role.
+      try {
+        const returnedBase = subtractQuantities(material.baseQuantity, waste[material.id] ?? 0);
+        values.set(material.id, splitWorkOrderMaterialValue(material, returnedBase).remainingValue.toFixed(2));
+      } catch { issue = "تعذّر تحديد كلفة الخامة من اللقطة المحفوظة؛ راجع بيانات أمر الشغل قبل الإلغاء."; }
+    }
+    return { wastedValues: values, costIssue: issue };
+  }, [materials, waste]);
+  const materialDecisionReady = !wasteIssue && !costIssue && (!hasMaterials || anyWaste || allReturnedConfirmed);
+  const costVisible = wastedLines.length > 0 && wastedLines.every((material) => wastedValues.has(material.id));
+  const wastedValue = wastedLines.reduce((sum, material) => sum.plus(D(wastedValues.get(material.id) ?? "0")), D(0));
+  const wastedPieces = addQuantities(...wastedLines.map((m) => waste[m.id] ?? 0));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -275,20 +303,17 @@ export default function CancelWorkOrderDialog({
                           <td className="p-2 text-center tabular-nums">{formatQuantity(m.baseQuantity)}</td>
                           <td className="p-2 text-center">
                             <Input
-                              type="number"
-                              min={0}
-                              max={m.baseQuantity}
-                              value={String(w)}
-                              onChange={(e) => {
-                                const v = Math.max(0, Math.min(m.baseQuantity, Math.floor(Number(e.target.value) || 0)));
-                                setWaste((prev) => ({ ...prev, [m.id]: v }));
-                              }}
+                              inputMode="decimal"
+                              aria-label={`كمية التالف من ${m.name}`}
+                              value={wasteDrafts[m.id] ?? "0"}
+                              onChange={(e) => setWasteDrafts((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                              disabled={pending}
                               className="mx-auto h-7 w-20 text-center"
                             />
                           </td>
-                          <td className="p-2 text-center font-bold tabular-nums">{formatQuantity(m.baseQuantity - w)}</td>
+                          <td className="p-2 text-center font-bold tabular-nums">{wasteIssue ? "—" : formatQuantity(subtractQuantities(m.baseQuantity, w))}</td>
                           <td className="p-2 text-end tabular-nums" dir="ltr">
-                            {w > 0 ? (m.unitCost != null ? fmtAr(String(w * Number(m.unitCost))) : "—") : "—"}
+                            {w > 0 ? fmtAr(wastedValues.get(m.id)) : "—"}
                           </td>
                         </tr>
                       );
@@ -296,6 +321,8 @@ export default function CancelWorkOrderDialog({
                   </tbody>
                 </table>
               </div>
+              {wasteIssue && <p role="alert" className="mt-2 text-xs text-destructive">{wasteIssue}</p>}
+              {costIssue && <p role="alert" className="mt-2 text-xs text-destructive">{costIssue}</p>}
               {anyWaste && (
                 <p className="mt-2 flex items-center gap-1.5 rounded-md bg-[var(--sem-warn-bg)] p-2 text-2xs font-bold text-[var(--sem-warn)]">
                   <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
@@ -405,7 +432,7 @@ export default function CancelWorkOrderDialog({
                       ? materials.map((m) => ({
                           workOrderMaterialId: m.id,
                           wasteBase: waste[m.id] ?? 0,
-                          returnBase: m.baseQuantity - (waste[m.id] ?? 0),
+                          returnBase: subtractQuantities(m.baseQuantity, waste[m.id] ?? 0),
                         }))
                       : undefined,
                     confirmAllMaterialsReturnedUsable: hasMaterials && !anyWaste && allReturnedConfirmed

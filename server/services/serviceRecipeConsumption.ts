@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { quantityNumber } from "@shared/quantity";
 import { inArray } from "drizzle-orm";
 
 import { productionRecipeLines, productionRecipes } from "../../drizzle/schema";
@@ -174,8 +175,7 @@ export async function loadServiceRecipeDefinitions(
 }
 
 /**
- * المخزون محفوظ بوحدات أساس صحيحة. التقريب الصامت كان يجعل 0.4×1 صفراً و0.6×1 واحداً؛
- * لذلك نرفض أي تحجيم لا ينتج عدداً صحيحاً ونطلب اختيار كمية/وحدة وصفة قابلة للتتبع.
+ * استهلاك فعلي دقيق حتى أربع منازل، بلا تقريب إلى وحدة كاملة أو إلى دقة التخزين.
  */
 export function exactRecipeMaterialQuantity(
   qtyPerOutputBase: string,
@@ -183,17 +183,17 @@ export function exactRecipeMaterialQuantity(
   label = "مادة الوصفة",
 ): number {
   const quantity = money(qtyPerOutputBase).times(outputBaseQuantity);
-  if (!quantity.isInteger()) {
+  if (!quantity.isFinite() || quantity.decimalPlaces() > 4) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: `تعذّر احتساب ${label}`,
-        why: `نتجت كمية كسرية (${quantity.toString()}) لا يمكن تتبعها بوحدة الأساس`,
-        doThis: "عدّل معامل الوصفة أو كمية الخدمة لتنتج عدداً صحيحاً من وحدات الأساس",
+        why: `الكمية الناتجة (${quantity.toString()}) تتجاوز دقة الأربع منازل العشرية`,
+        doThis: "أدخل معامل وصفة وكمية خدمة ينتجان كمية قابلة للحفظ بأربع منازل عشرية أو أقل",
       }),
     });
   }
-  if (quantity.lte(0) || quantity.gt(Number.MAX_SAFE_INTEGER)) {
+  if (quantity.lte(0) || quantity.gt("99999999999.9999")) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
@@ -203,5 +203,5 @@ export function exactRecipeMaterialQuantity(
       }),
     });
   }
-  return quantity.toNumber();
+  return quantityNumber(quantity);
 }

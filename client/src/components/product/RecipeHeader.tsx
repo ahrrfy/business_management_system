@@ -22,13 +22,11 @@ type Props = Pick<
   | "can"
   | "currentRecipe"
   | "isEditing"
+  | "isWritePending"
   | "setIsImportDialogOpen"
   | "clipboardData"
   | "formLines"
-  | "createMut"
-  | "updateMut"
   | "setActiveMut"
-  | "deleteMut"
   | "startEditing"
   | "cancelEditing"
 > &
@@ -41,13 +39,11 @@ export function RecipeHeader({
   can,
   currentRecipe,
   isEditing,
+  isWritePending,
   setIsImportDialogOpen,
   clipboardData,
   formLines,
-  createMut,
-  updateMut,
   setActiveMut,
-  deleteMut,
   startEditing,
   cancelEditing,
   handleCopyRecipe,
@@ -61,8 +57,7 @@ export function RecipeHeader({
     !can(
       currentRecipe ? "production.recipes.update" : "production.recipes.create",
     ) ||
-    createMut.isPending ||
-    updateMut.isPending;
+    isWritePending;
   return (
     <>
       <CardHeader className="bg-muted/30 pb-4 border-b">
@@ -186,7 +181,7 @@ export function RecipeHeader({
                   }
                   disabled={
                     !can("production.recipes.setActive") ||
-                    setActiveMut.isPending
+                    isWritePending
                   }
                   className="h-8 gap-1 text-xs"
                 >
@@ -210,7 +205,7 @@ export function RecipeHeader({
                   size="sm"
                   onClick={handleDelete}
                   disabled={
-                    !can("production.recipes.remove") || deleteMut.isPending
+                    !can("production.recipes.remove") || isWritePending
                   }
                   className="h-8 gap-1 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
@@ -250,7 +245,7 @@ export function RecipeHeader({
                   variant="outline"
                   size="sm"
                   onClick={cancelEditing}
-                  disabled={createMut.isPending || updateMut.isPending}
+                  disabled={isWritePending}
                   className="h-8 gap-1 text-xs"
                 >
                   <X className="size-3.5" />

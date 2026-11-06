@@ -18,6 +18,7 @@ import { alias } from "drizzle-orm/mysql-core";
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
+import { isQuantity } from "@shared/quantity";
 import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users, variantBranchThresholds } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createAppNotification } from "../services/appNotificationService";
@@ -240,7 +241,7 @@ export const inventoryRouter = router({
           .array(
             z.object({
               variantId: z.number().int().positive(),
-              baseQuantity: z.number().int().positive(),
+              baseQuantity: z.number().positive().refine(isQuantity, "كمية المخزون تقبل أربع منازل عشرية أو أقل"),
             })
           )
           .min(1, "أضف صنفاً واحداً على الأقل")
@@ -388,7 +389,7 @@ export const inventoryRouter = router({
           .array(
             z.object({
               lineId: z.number().int().positive(),
-              quantityReceived: z.number().int().min(0),
+              quantityReceived: z.number().min(0).refine(isQuantity, "كمية المخزون تقبل أربع منازل عشرية أو أقل"),
               note: z.string().max(255).optional(),
             })
           )
@@ -444,7 +445,7 @@ export const inventoryRouter = router({
       z.object({
         variantId: z.number().int().positive(),
         branchId: z.number().int().positive(),
-        targetQuantity: z.number().int().min(0),
+        targetQuantity: z.number().min(0).refine(isQuantity, "كمية المخزون تقبل أربع منازل عشرية أو أقل"),
         notes: z.string().optional(),
         // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق الخلفيّ مع مستدعياتٍ قديمة، لكنّ الشاشات
         // الجديدة تُلزمه. الأسبابُ الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl`.

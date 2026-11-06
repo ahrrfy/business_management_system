@@ -1,5 +1,29 @@
 // Raw dedicated connection B only. The deployment fence owns and continuously verifies connection A.
 export const INVENTORY_PROJECTION_VERSION = 1;
+// Independent fixed-point oracle: saved SQL values may be padded; JSON stays canonical.
+const QUANTITY_FACTOR = 10_000n;
+const MAX_QUANTITY_UNITS = 999_999_999_999_999n;
+function quantityUnits(value, positive = false) {
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,4}))?$/.exec(String(value));
+  if (!match) throw new Error("Invalid inventory projection quantity");
+  const units = BigInt(match[1]) * QUANTITY_FACTOR + BigInt((match[2] ?? "").padEnd(4, "0"));
+  if (units > MAX_QUANTITY_UNITS || (positive && units === 0n))
+    throw new Error("Inventory projection quantity overflow");
+  return units;
+}
+function formatQuantityUnits(units) {
+  if (units < 0n || units > MAX_QUANTITY_UNITS)
+    throw new Error("Inventory projection quantity overflow");
+  const fraction = String(units % QUANTITY_FACTOR).padStart(4, "0").replace(/0+$/, "");
+  return `${units / QUANTITY_FACTOR}${fraction ? `.${fraction}` : ""}`;
+}
+const canonicalQuantity = (value, positive = false) => formatQuantityUnits(quantityUnits(value, positive));
+const addQuantities = (left, right) => formatQuantityUnits(quantityUnits(left) + quantityUnits(right));
+const multiplyQuantities = (left, right) => {
+  const product = quantityUnits(left) * quantityUnits(right);
+  if (product % QUANTITY_FACTOR !== 0n) throw new Error("Inventory projection precision loss");
+  return formatQuantityUnits(product / QUANTITY_FACTOR);
+};
 function integer(value, positive = false) {
   if (!/^(0|[1-9]\d*)$/.test(String(value)))
     throw new Error("Invalid inventory projection integer");
@@ -11,11 +35,11 @@ function integer(value, positive = false) {
 function add(map, variant, branch, quantity) {
   const id = integer(variant, true),
     source = integer(branch, true),
-    q = integer(quantity);
+    q = canonicalQuantity(quantity);
   const result = map.get(id);
   if (!result) throw new Error(`Projection references missing variant ${id}`);
-  const total = integer(Number(result[source] ?? 0) + q);
-  if (total) result[source] = String(total);
+  const total = addQuantities(result[source] ?? "0", q);
+  if (total !== "0") result[source] = total;
 }
 const stable = (value) =>
   JSON.stringify(
@@ -49,12 +73,12 @@ export async function deriveInventoryTransitProjection(conn) {
       [doc.id],
     );
     if (!lines.length) throw new Error(`Transfer ${doc.id} has no lines`);
-    let sentTotal = 0;
+    let sentTotal = "0";
     const expected = new Map();
     const increase = (map, id, q) =>
       map.set(
         integer(id, true),
-        integer((map.get(Number(id)) ?? 0) + integer(q)),
+        addQuantities(map.get(Number(id)) ?? "0", canonicalQuantity(q)),
       );
     for (const line of lines) {
       const meta = metadata.get(Number(line.variantId));
@@ -62,8 +86,8 @@ export async function deriveInventoryTransitProjection(conn) {
         throw new Error(
           `Transfer ${doc.id} has unresolved historical line evidence`,
         );
-      const sent = integer(line.quantitySent, true);
-      sentTotal = integer(sentTotal + sent);
+      const sent = canonicalQuantity(line.quantitySent, true);
+      sentTotal = addQuantities(sentTotal, sent);
       const [components] = await conn.query(
         "SELECT componentVariantId, componentBaseQuantity FROM stockTransferLineBundleComponents WHERE transferLineId=? ORDER BY componentVariantId",
         [line.id],
@@ -89,11 +113,11 @@ export async function deriveInventoryTransitProjection(conn) {
         increase(
           expected,
           id,
-          integer(sent * integer(c.componentBaseQuantity, true)),
+          multiplyQuantities(sent, integer(c.componentBaseQuantity, true)),
         );
       }
     }
-    if (sentTotal !== integer(doc.totalSentBase, true))
+    if (sentTotal !== canonicalQuantity(doc.totalSentBase, true))
       throw new Error(`Transfer ${doc.id} total mismatch`);
     const [moves] = await conn.query(
       "SELECT variantId, branchId, relatedBranchId, quantity, signedDelta FROM inventoryMovements WHERE referenceType='TRANSFER' AND referenceId=? AND movementType='TRANSFER_OUT'",
@@ -107,7 +131,7 @@ export async function deriveInventoryTransitProjection(conn) {
         (move.signedDelta !== null && Number(move.signedDelta) !== -Number(move.quantity))
       )
         throw new Error(`Transfer ${doc.id} dispatch branch mismatch`);
-      increase(actual, move.variantId, integer(move.quantity, true));
+      increase(actual, move.variantId, canonicalQuantity(move.quantity, true));
     }
     const entries = (map) =>
       JSON.stringify(Array.from(map).sort(([a], [b]) => a - b));
@@ -143,7 +167,7 @@ export async function assertInventoryTransitParity(conn) {
       if (
         String(integer(branch, true)) !== branch ||
         typeof quantity !== "string" ||
-        String(integer(quantity, true)) !== quantity
+        canonicalQuantity(quantity, true) !== quantity
       )
         throw new Error(`Projection noncanonical at variant ${row.id}`);
     }

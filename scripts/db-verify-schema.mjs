@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertConnectionTarget } from "./lib/db-target.mjs";
+import { assertMaterialCostSnapshotColumn, readFractionalInventorySchema } from "./lib/fractional-inventory-schema.mjs";
 
 const META_DIR = "./drizzle/migrations/meta";
 const REQUIRED_EXPENSE_STATUSES = [
@@ -708,6 +709,10 @@ const dbName = new URL(url).pathname.replace(/^\//, "");
 
 try {
   await assertConnectionTarget(conn, url, process.env.DB_TARGET_EXPECTED_UUID);
+  const fractionalSchema = await readFractionalInventorySchema(conn, process.cwd(), dbName);
+  if (fractionalSchema.pending) throw new Error("FRACTIONAL_INVENTORY_MIGRATION_REQUIRED");
+  const [materialCostColumns] = await conn.query("SELECT DATA_TYPE AS dataType,NUMERIC_PRECISION AS `precision`,NUMERIC_SCALE AS scale,IS_NULLABLE AS isNullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='workOrderMaterials' AND COLUMN_NAME='lineCost'", [dbName]);
+  assertMaterialCostSnapshotColumn(materialCostColumns[0]);
   const [rows] = await conn.query(
     "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?",
     [dbName],
@@ -1487,6 +1492,7 @@ try {
     `✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`,
   );
   console.log("✓ تحقّق enum: receipts.paymentMethod يحوي TELECOM (I23).");
+  console.log(`✓ كميات المواد: ${fractionalSchema.columns.length} عموداً عشرياً ولقطة قيمة دفعة الخامة مطابقة.`);
   console.log(
     "✓ تحقّق enum: إلغاء إسناد التوصيل متاح في parcelStatus وconsignmentStatus.",
   );

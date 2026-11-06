@@ -263,16 +263,15 @@ describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01.
   // ADV-10: Batch divisibility multiple validation via production helper
   // -------------------------------------------------------------
   describe("ADV-10: Batch divisibility multiple checking via production helper", () => {
-    it("identifies when batch quantity violates required batch multiple using isBatchDivisible", () => {
-      // Coef 0.5 requires batch multiple of 2 (0.5 * 2 = 1)
-      expect(isBatchDivisible(["0.5"], 5)).toBe(false);
+    it("accepts exact fractional materials while rejecting fractional final batch quantities", () => {
+      expect(isBatchDivisible(["0.5"], 5)).toBe(true);
       expect(isBatchDivisible(["0.5"], 6)).toBe(true);
-      // Coef 0.25 requires multiple of 4
-      expect(isBatchDivisible(["0.25"], 7)).toBe(false);
+      expect(isBatchDivisible(["0.25"], 7)).toBe(true);
       expect(isBatchDivisible(["0.25"], 8)).toBe(true);
-      // Coef 0.125 requires multiple of 8
-      expect(isBatchDivisible(["0.125"], 15)).toBe(false);
+      expect(isBatchDivisible(["0.125"], 15)).toBe(true);
       expect(isBatchDivisible(["0.125"], 16)).toBe(true);
+      expect(isBatchDivisible(["0.125"], 1.5)).toBe(false);
+      expect(isBatchDivisible(["0.00001"], 1)).toBe(false);
     });
   });
 

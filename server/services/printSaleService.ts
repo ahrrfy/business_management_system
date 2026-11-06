@@ -42,6 +42,7 @@ import {
   lineDiscountExceedsThreshold,
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { addQuantities } from "@shared/quantity";
 import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
@@ -716,7 +717,7 @@ export async function createPrintSaleInTx(
               unitCost: materialUnitCost.toFixed(2),
               lineCost: money(0),
             };
-            current.baseQuantity += consumed;
+            current.baseQuantity = addQuantities(current.baseQuantity, consumed);
             current.lineCost = current.lineCost.plus(materialLineCost);
             materialByVariant.set(rl.inputVariantId, current);
           }
@@ -737,7 +738,7 @@ export async function createPrintSaleInTx(
             baseQuantity: 0,
             unitCost: money(snapshot.unitCost),
           };
-          agg.baseQuantity += snapshot.baseQuantity;
+          agg.baseQuantity = addQuantities(agg.baseQuantity, snapshot.baseQuantity);
           materialAgg.set(snapshot.materialVariantId, agg);
         }
       }

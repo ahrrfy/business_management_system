@@ -7,6 +7,7 @@
 //   - الكمية: تخصم returnedBaseQuantity للحصول على صافي البيع (ما بقي مع العميل).
 //   - التكلفة (COGS): تخصم returnedRestockedBaseQuantity فقط (المُعاد للرفّ) ⇒ التالف يبقى خسارةً مطابِقةً للدفتر.
 //   - الأموال تُعاد كنصوص (CAST AS CHAR) لتمرّ عبر decimal.js على الواجهة بلا فقد دقّة.
+import Decimal from "decimal.js";
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
@@ -220,7 +221,9 @@ export async function getSlowMovers(
     productId: Number(r.productId),
     productName: String(r.productName ?? ""),
     categoryName: r.categoryName ? String(r.categoryName) : null,
-    qtyInStock: String(r.qtyInStock ?? "0"),
+    // The product total may exceed one stock row's range; retain its exact
+    // decimal string and the existing whole-number presentation.
+    qtyInStock: new Decimal(String(r.qtyInStock ?? "0")).toFixed(),
     lastSaleDate: r.lastSaleDate ? String(r.lastSaleDate) : null,
     daysSinceLastSale: r.daysSinceLastSale == null ? null : Number(r.daysSinceLastSale),
   }));

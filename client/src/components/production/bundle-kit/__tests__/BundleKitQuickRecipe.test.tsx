@@ -272,18 +272,16 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     expect(totalUnitCost.toString()).toBe("3125");
   });
 
-  it("يحتسب مضاعف الدفعة الشرعي الصحيح لمنع الكسور وتلف المخزون", () => {
+  it("يبقي دفعة الناتج صحيحة مع حفظ كسر المواد بأربع منازل", () => {
     // كميات صحيحة فقط => المضاعف 1
     expect(requiredBatchMultiple(["1", "3", "5"])).toBe(1);
 
-    // كمية كسرية 2.5 => المضاعف 2
-    expect(requiredBatchMultiple(["2.5000"])).toBe(2);
+    expect(requiredBatchMultiple(["2.5000"])).toBe(1);
 
-    // كمية كسرية 0.25 => المضاعف 4
-    expect(requiredBatchMultiple(["0.2500"])).toBe(4);
+    expect(requiredBatchMultiple(["0.2500"])).toBe(1);
 
-    // خليط من 1.5 و 2.5 => المضاعف 2
-    expect(requiredBatchMultiple(["1.5000", "2.5000"])).toBe(2);
+    expect(requiredBatchMultiple(["1.5000", "2.5000"])).toBe(1);
+    expect(requiredBatchMultiple(["0.00001"])).toBe(0);
   });
 
   it("يتحمل المدخلات العشرية الجزئية (مثل . أو .5) بدون انهيار شاشة الواجهة بـ DecimalError", () => {

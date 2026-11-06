@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
+import { isQuantity } from "@shared/quantity";
 import {
   approveExpense,
   cancelExpense,
@@ -320,7 +321,7 @@ export const expenseRouter = router({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive().nullish(),
               quantity: z.string().optional(),
-              baseQuantity: z.number().int().positive().optional(),
+              baseQuantity: z.number().positive().refine(isQuantity).optional(),
             }),
           )
           .optional(),

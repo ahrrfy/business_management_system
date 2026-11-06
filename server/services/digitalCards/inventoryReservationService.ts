@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
+import { addQuantities, isQuantity, multiplyQuantities, quantityNumber, toDbQuantity } from "@shared/quantity";
 
 import {
   digitalIntentInventoryReservations,
@@ -66,9 +67,9 @@ function normalizeSnapshotRows(
       sourceVariantId <= 0 ||
       !Number.isSafeInteger(stockVariantId) ||
       stockVariantId <= 0 ||
-      !Number.isSafeInteger(demandedBase) ||
+      !isQuantity(demandedBase) ||
       demandedBase < 0 ||
-      !Number.isSafeInteger(reservedBase) ||
+      !isQuantity(reservedBase) ||
       reservedBase < 0 ||
       reservedBase > demandedBase ||
       (reservedBase !== 0 && reservedBase !== demandedBase)
@@ -248,13 +249,15 @@ async function assertCurrentBinding(
   );
   const expected = new Map<string, DigitalCheckoutInventoryReservationSnapshot>();
   const add = (sourceVariantId: number, stockVariantId: number, qty: number) => {
-    if (!Number.isSafeInteger(qty) || qty < 0) {
+    if (!isQuantity(qty) || qty < 0) {
       reservationError(`طلب المخزون للصنف #${sourceVariantId} غير قابل للتتبع`);
     }
     const key = `${sourceVariantId}:${stockVariantId}`;
     const old = expected.get(key);
-    const demandedBase = (old?.demandedBase ?? 0) + qty;
-    if (!Number.isSafeInteger(demandedBase)) {
+    let demandedBase: number;
+    try {
+      demandedBase = addQuantities(old?.demandedBase ?? 0, qty);
+    } catch {
       reservationError(`إجمالي طلب المخزون للصنف #${sourceVariantId} يتجاوز الحد الآمن`);
     }
     expected.set(key, {
@@ -289,7 +292,7 @@ async function assertCurrentBinding(
         add(
           sourceId,
           component.componentVariantId,
-          component.componentBaseQuantity * baseQuantity,
+          multiplyQuantities(component.componentBaseQuantity, baseQuantity),
         );
       }
     } else if (source.isService === true) {
@@ -382,7 +385,7 @@ export async function reserveIntentInventory(
     if (row.reservedBase <= 0) continue;
     reservedByStock.set(
       row.stockVariantId,
-      (reservedByStock.get(row.stockVariantId) ?? 0) + row.reservedBase,
+      addQuantities(reservedByStock.get(row.stockVariantId) ?? 0, row.reservedBase),
     );
   }
   const stockIds = Array.from(reservedByStock.keys()).sort((a, b) => a - b);
@@ -405,7 +408,7 @@ export async function reserveIntentInventory(
       await tx
         .update(reservationStock)
         .set({
-          reservedBase: sql`${reservationStock.reservedBase} + ${quantity}`,
+          reservedBase: sql`${reservationStock.reservedBase} + ${toDbQuantity(quantity)}`,
         })
         .where(
           and(
@@ -455,10 +458,10 @@ export async function intentInventoryExemptions(
   }
   const out: Record<number, number> = {};
   for (const row of rows) {
-    const quantity = Number(row.reservedBase);
+    const quantity = quantityNumber(row.reservedBase);
     if (quantity <= 0) continue;
     const variantId = Number(row.stockVariantId);
-    out[variantId] = (out[variantId] ?? 0) + quantity;
+    out[variantId] = addQuantities(out[variantId] ?? 0, quantity);
   }
   return out;
 }
@@ -475,10 +478,10 @@ async function closeIntentInventoryRows(
   const branchId = Number(rows[0].branchId);
   const byStock = new Map<number, number>();
   for (const row of rows) {
-    const quantity = Number(row.reservedBase);
+    const quantity = quantityNumber(row.reservedBase);
     if (quantity <= 0) continue;
     const variantId = Number(row.stockVariantId);
-    byStock.set(variantId, (byStock.get(variantId) ?? 0) + quantity);
+    byStock.set(variantId, addQuantities(byStock.get(variantId) ?? 0, quantity));
   }
   for (const variantId of Array.from(byStock.keys()).sort((a, b) => a - b)) {
     const quantity = byStock.get(variantId)!;
@@ -501,7 +504,7 @@ async function closeIntentInventoryRows(
     }
     await tx
       .update(reservationStock)
-      .set({ reservedBase: sql`${reservationStock.reservedBase} - ${quantity}` })
+      .set({ reservedBase: sql`${reservationStock.reservedBase} - ${toDbQuantity(quantity)}` })
       .where(
         and(
           eq(reservationStock.variantId, variantId),

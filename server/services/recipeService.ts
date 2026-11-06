@@ -3,12 +3,16 @@
  *
  * المكوّنات تُعرّف **لكل وحدة ناتج أساس واحدة** (مثلاً 30 ورقة/ملزمة). عند طلب إنتاج كمية Q:
  *   outputBase = convertToBaseQuantity(outputUnit, Q)
- *   inputBase  = qtyPerOutputBase × outputBase   (يجب أن يكون عدداً صحيحاً)
+ *   inputBase  = qtyPerOutputBase × outputBase   (بدقة أربع منازل عشرية)
  * `recipePreview` يحسب الأسطر الجاهزة (مدخلات + مخرَج) + الكلفة الحيّة ⇒ يملأ نموذج الإنتاج.
  * الترحيل يمرّ بـ`createProduction` نفسه (مسار طفرة واحد آمن) مع linkedRecipeId.
  */
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed } from "@shared/permissions";
+import { NO_PRODUCT_RECIPE_FINGERPRINT, type ProductRecipeChange } from "@shared/productRecipeSave";
+import { quantityNumber } from "@shared/quantity";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -34,6 +38,7 @@ import { extractInsertId } from "../lib/insertId";
 import { escLike } from "../lib/sqlLike";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
 import { syncBundlesContainingComponents } from "./bundleService";
+import { logAuditTx } from "./auditService";
 import type {
   SubstituteRecipeMaterialInput,
   SubstituteRecipeMaterialResult,
@@ -57,6 +62,8 @@ export interface CreateRecipeInput {
   /** الإنشاء الإداري المعتاد فعّال؛ النسخ/المسودّة يمرّران false صراحةً. */
   isActive?: boolean;
   lines: RecipeLineInput[];
+  /** Optional for old clients; new editors always send the version they read. */
+  expectedFingerprint?: string;
 }
 
 export interface CreateRecipeOptions {
@@ -174,6 +181,15 @@ function validateRecipeShape(input: CreateRecipeInput) {
         code: "BAD_REQUEST",
         message: "كمية المكوّن لكل وحدة يجب أن تكون موجبة",
       });
+    }
+    try {
+      quantityNumber(quantity);
+    } catch {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذّر حفظ الوصفة",
+        why: "كمية المكوّن غير منتهية أو تتجاوز المدى العشري المسموح للمخزون",
+        doThis: "أدخل كمية موجبة ضمن دقة ومدى تخزين مواد الوصفة",
+      }) });
     }
   }
   return name;
@@ -464,11 +480,81 @@ async function readRecipeMutationSnapshot(
 }
 
 function recipeSnapshotFingerprint(snapshot: RecipeMutationSnapshot): string {
-  return JSON.stringify({
+  return createHash("sha256").update(JSON.stringify({
     ...snapshot.head,
     updatedAt: snapshot.head.updatedAt.getTime(),
     lines: snapshot.lines,
-  });
+  })).digest("hex");
+}
+
+async function storedRecipeFingerprint(tx: Tx, recipeId: number): Promise<string> {
+  const snapshot = await readRecipeMutationSnapshot(tx, recipeId, false);
+  if (!snapshot) throwConcurrentRecipeChange();
+  return recipeSnapshotFingerprint(snapshot);
+}
+
+/**
+ * Prepare a composite editor save before its product row is locked. The complete
+ * old/new material+output scope is locked once in the same products→variants order
+ * as independent recipe writers; the returned step stays inside the caller's Tx.
+ */
+export async function prepareProductRecipeChangeTx(
+  tx: Tx,
+  productId: number,
+  change: ProductRecipeChange,
+  actor: Actor,
+) {
+  await assertOperationAuthorityTx(tx, actor, "catalog.updateProductVariants", (current) =>
+    moduleAccessAllowed(current.role, current.persistedPermissionsOverride, "products", "FULL", ["manager"]),
+  );
+  await assertOperationAuthorityTx(tx, actor,
+    change.recipeId == null ? "production.recipes.create" : "production.recipes.update",
+    (current) => moduleAccessAllowed(current.role, current.persistedPermissionsOverride, "inventory", "FULL", ["manager"]),
+  );
+  validateRecipeShape(change);
+  const productVariantRows = await tx.select({ id: productVariants.id }).from(productVariants)
+    .where(eq(productVariants.productId, productId)).orderBy(productVariants.id);
+  const productVariantIds = productVariantRows.map((row) => Number(row.id));
+  const initial = change.recipeId == null ? null : await readRecipeMutationSnapshot(tx, change.recipeId, false);
+  if (change.recipeId != null && !initial) throwConcurrentRecipeChange();
+  const scope = await lockRecipeVariantScope(tx, [
+    ...productVariantIds,
+    change.outputVariantId,
+    ...change.lines.map((line) => line.inputVariantId),
+    ...(initial ? [initial.head.outputVariantId, ...initial.lines.map((line) => line.inputVariantId)] : []),
+  ]);
+  if (scope.get(change.outputVariantId)?.productId !== productId ||
+    (initial && scope.get(initial.head.outputVariantId)?.productId !== productId)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "لم تُحفَظ وصفة المنتج",
+      why: "الوصفة أو صنف الناتج لا يخصّ المنتج الجاري تعديله",
+      doThis: "افتح وصفة هذا المنتج نفسه ثم أعد الحفظ",
+    }) });
+  }
+  const current = change.recipeId == null ? null : await readRecipeMutationSnapshot(tx, change.recipeId, true);
+  if (initial && (!current || recipeSnapshotFingerprint(initial) !== recipeSnapshotFingerprint(current))) {
+    throwConcurrentRecipeChange();
+  }
+  const currentFingerprint = current ? recipeSnapshotFingerprint(current) : NO_PRODUCT_RECIPE_FINGERPRINT;
+  if (change.expectedFingerprint !== currentFingerprint) throwConcurrentRecipeChange();
+  if (!current) {
+    const existing = await tx.select({ id: productionRecipes.id }).from(productionRecipes)
+      .where(inArray(productionRecipes.outputVariantId, productVariantIds)).limit(1).for("update");
+    if (existing.length) throwConcurrentRecipeChange();
+  }
+  await assertNoActiveDigitalInventoryBinding(tx, Array.from(scope.keys()), "حفظ المنتج ووصفته أثناء إصدار سلة رقمية");
+  return async () => {
+    const result = change.recipeId == null
+      ? await createRecipeInTx(tx, change, actor)
+      : await updateRecipeInTx(tx, change.recipeId, change);
+    await logAuditTx(tx, actor, {
+      action: change.recipeId == null ? "production.recipe.create" : "production.recipe.update",
+      entityType: "productionRecipe", entityId: result.recipeId,
+      oldValue: current ? recipeSnapshotAsInput(current) : null,
+      newValue: recipeSnapshotAsInput((await readRecipeMutationSnapshot(tx, result.recipeId, false))!),
+    });
+    return { recipeId: result.recipeId, recipeFingerprint: result.recipeFingerprint };
+  };
 }
 
 function recipeSnapshotAsInput(
@@ -836,6 +922,12 @@ export async function createRecipeInTx(
     ...input.lines.map((line) => line.inputVariantId),
   ];
   const lockedVariants = await lockRecipeVariantScope(tx, scopedIds);
+  if (input.expectedFingerprint !== undefined) {
+    if (input.expectedFingerprint !== NO_PRODUCT_RECIPE_FINGERPRINT) throwConcurrentRecipeChange();
+    const existing = await tx.select({ id: productionRecipes.id }).from(productionRecipes)
+      .where(eq(productionRecipes.outputVariantId, input.outputVariantId)).limit(1).for("update");
+    if (existing.length) throwConcurrentRecipeChange();
+  }
   await assertNoActiveDigitalInventoryBinding(
     tx,
     scopedIds,
@@ -873,7 +965,7 @@ export async function createRecipeInTx(
         })),
       );
     }
-    return { recipeId, isActive: active };
+    return { recipeId, isActive: active, recipeFingerprint: await storedRecipeFingerprint(tx, recipeId) };
   } catch (error) {
     rethrowRecipeWriteError(error);
   }
@@ -890,7 +982,11 @@ export async function createRecipe(
 
 /** تحديث تعريف الوصفة مع قفل نطاقها ومنع محو هوية الناتج التاريخية. */
 export async function updateRecipe(id: number, input: CreateRecipeInput) {
-  return withTx(async (tx) => {
+  return withTx((tx) => updateRecipeInTx(tx, id, input));
+}
+
+/** Recipe correction participating in an existing atomic editor transaction. */
+export async function updateRecipeInTx(tx: Tx, id: number, input: CreateRecipeInput) {
     const name = validateRecipeShape(input);
     const initial = await readRecipeMutationSnapshot(tx, id, false);
     if (!initial)
@@ -912,6 +1008,9 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
     if (
       recipeSnapshotFingerprint(initial) !== recipeSnapshotFingerprint(current)
     ) {
+      throwConcurrentRecipeChange();
+    }
+    if (input.expectedFingerprint !== undefined && input.expectedFingerprint !== recipeSnapshotFingerprint(current)) {
       throwConcurrentRecipeChange();
     }
     if (current.head.outputVariantId !== input.outputVariantId) {
@@ -959,11 +1058,10 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
           })),
         );
       }
-      return { recipeId: id };
+      return { recipeId: id, recipeFingerprint: await storedRecipeFingerprint(tx, id) };
     } catch (error) {
       rethrowRecipeWriteError(error);
     }
-  });
 }
 
 /**
@@ -1434,13 +1532,7 @@ export async function recipePreview(args: {
     const inputs = recLines.map((l: any) => {
       const perOut = new Decimal(l.qtyPerOutputBase);
       const baseDec = perOut.times(outputBase);
-      if (!baseDec.isInteger()) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `استهلاك المكوّن «${l.productName ?? l.inputVariantId}» الناتج (${baseDec.toString()}) ليس عدداً صحيحاً — عدّل الكمية أو الوصفة`,
-        });
-      }
-      const baseQuantity = baseDec.toNumber();
+      const baseQuantity = quantityNumber(baseDec);
       const unitCost = round2(
         money(costMap.get(Number(l.inputVariantId)) ?? "0"),
       );
@@ -1529,6 +1621,7 @@ export interface ProductRecipeResult {
   sellingPrice: string | null;
   wholesalePrice: string | null;
   recipe: ProductRecipeDetail | null;
+  recipeFingerprint: string;
   allRecipes: ProductRecipeSummary[];
 }
 
@@ -1593,6 +1686,7 @@ export async function getRecipeForProduct(
         sellingPrice: null,
         wholesalePrice: null,
         recipe: null,
+        recipeFingerprint: NO_PRODUCT_RECIPE_FINGERPRINT,
         allRecipes: [],
       };
     }
@@ -1779,6 +1873,7 @@ export async function getRecipeForProduct(
       sellingPrice,
       wholesalePrice,
       recipe: fullRecipe,
+      recipeFingerprint: fullRecipe ? await storedRecipeFingerprint(tx, fullRecipe.id) : NO_PRODUCT_RECIPE_FINGERPRINT,
       allRecipes,
     };
   });

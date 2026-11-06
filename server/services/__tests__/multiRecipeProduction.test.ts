@@ -250,9 +250,7 @@ describe("الإنتاج المتعدد: analyzeMultiRecipeRequirements", () => 
     expect(cover?.isSufficient).toBe(false);
   });
 
-  it("يتحقق من قيد قابلية القسمة للدفعات (batch divisibility)", async () => {
-    // وصفة 1 تتطلب 2.5 ورقة لكل وحدة => مضاعف الدفعة الإلزامي = 2
-    // تمرير دفعة فردية 3 يجب أن يُعلَّم كـ غير صالح
+  it("دفعة فردية صحيحة تقبل استهلاك مادة 2.5 لكل منتج", async () => {
     const result = await analyzeMultiRecipeRequirements({
       branchId: 1,
       items: [
@@ -262,9 +260,9 @@ describe("الإنتاج المتعدد: analyzeMultiRecipeRequirements", () => 
     });
 
     const r1 = result.recipes.find((r) => r.recipeId === 1);
-    expect(r1?.requiredBatchMultiple).toBe(2);
-    expect(r1?.isMultipleValid).toBe(false);
-    expect(result.canProduceAll).toBe(false);
+    expect(r1?.requiredBatchMultiple).toBe(1);
+    expect(r1?.isMultipleValid).toBe(true);
+    expect(result.canProduceAll).toBe(true);
   });
 
   it("يرفض تحليل وصفة غير موجودة أو معطلة أو خدمة أو تكرار بالطلب", async () => {
@@ -515,19 +513,17 @@ describe("الإنتاج المتعدد: produceMultiRecipeBatches", () => {
     expect(orderRow.notes).toContain("تشغيل متعدد مع تخصيص عمالة");
   });
 
-  it("يرفض ترحيل دفعة غير متوافقة مع قيد قابلية القسمة (batch divisibility) مسبقاً", async () => {
-    // وصفة 1 تتطلب 2.5 ورقة => مضاعفها المطلوب = 2
-    // تمرير كمية فردية (3) يجب أن يُرفض فوراً برسالة دقيقة
-    await expect(
-      produceMultiRecipeBatches(
+  it("ترحيل دفعة ثلاثة منتجات يخصم 7.5 من المادة الخام", async () => {
+    const before = await getStock(1);
+    await produceMultiRecipeBatches(
         {
           branchId: 1,
-          clientRequestId: "FAIL-DIVISIBILITY-BATCH",
+          clientRequestId: "FRACTIONAL-MATERIAL-BATCH",
           batches: [{ recipeId: 1, batchQty: 3 }],
         },
         actor
-      )
-    ).rejects.toThrow(/كمية دفعة غير متوافقة مع مضاعفات الوصفة/);
+      );
+    expect(await getStock(1)).toBe(before - 7.5);
   });
 
   it("Idempotency: يضمن ثبات بصمة المجموعة docGroupRef حتى مع الرموز الخاصة في clientRequestId", async () => {

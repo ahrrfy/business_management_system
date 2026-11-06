@@ -71,6 +71,36 @@ const dispatch = (quantity = 10, key?: string) =>
       clientRequestId: key,
     }),
   );
+
+it("transfers fractional raw material and books an exact fractional shortage once", async () => {
+  const sent = await dispatch(1.5, "fractional-material-send");
+  expect(await projection()).toEqual({ "1": "1.5" });
+  expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1))).find((row) => row.branchId === 1)?.quantity).toBe(8.5);
+  const line = await lineOf(sent.transferId);
+  const receive = {
+    transferId: sent.transferId, actor, clientRequestId: "fractional-material-receive",
+    lines: [{ lineId: line.id, quantityReceived: 1.4, note: "0.1 lost" }],
+  };
+  await withTx((tx) => receiveStockTransfer(tx, receive));
+  await withTx((tx) => receiveStockTransfer(tx, receive));
+  expect(await projection()).toEqual({});
+  const stock = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+  expect(stock.find((row) => row.branchId === 2)?.quantity).toBe(1.4);
+  const losses = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `TRANSFER_LOSS:${sent.transferId}`));
+  expect(losses).toHaveLength(1);
+  expect(losses[0].cost).toBe("10.00");
+});
+
+it("dispatches and cancels ten tenths without shelf or transit drift", async () => {
+  const sent = [];
+  for (let i = 0; i < 10; i++) sent.push(await dispatch(0.1, `material-tenth-${i}`));
+  expect(await projection()).toEqual({ "1": "1" });
+  for (const transfer of sent) {
+    await withTx((tx) => cancelStockTransfer(tx, { transferId: transfer.transferId, actor }));
+  }
+  expect(await projection()).toEqual({});
+  expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1))).find((row) => row.branchId === 1)?.quantity).toBe(10);
+});
 async function lineOf(id: number) {
   return (
     await db()
@@ -311,7 +341,7 @@ it("rejects invalid quantities/branches and arithmetic overflow without rounding
     [],
     { "0": "1" },
     { "1": "-1" },
-    { "1": "1.2" },
+    { "1": "1.23456" },
     { "1": "01" },
     { "1": "9007199254740992" },
   ])

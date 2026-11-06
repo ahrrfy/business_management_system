@@ -9,6 +9,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
+import { isQuantity } from "@shared/quantity";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
@@ -184,13 +185,13 @@ export async function requestStockAdjustment(
       })
     : null;
   const result = await withTx(async (tx) => {
-    if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
+    if (!isQuantity(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "تعذّر فتح طلب تسوية المخزون",
-          why: `الرصيد المستهدف يجب أن يكون صحيحاً غير سالب، والمُرسَل ${input.targetQuantity}`,
-          doThis: "أدخل رصيداً مستهدفاً صحيحاً (بلا كسور) وموجباً أو صفراً في «الكمية المستهدفة»، ثمّ أعد الإرسال",
+          why: `الرصيد المستهدف يجب أن يكون غير سالب وبدقة المخزون، والمُرسَل ${input.targetQuantity}`,
+          doThis: "أدخل رصيداً موجباً أو صفراً بأربع منازل عشرية أو أقل في «الكمية المستهدفة»، ثمّ أعد الإرسال",
         }),
       });
     }
