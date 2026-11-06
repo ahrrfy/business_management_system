@@ -1,6 +1,6 @@
 import { consignmentCreditCollectionSql } from "./creditCollectionTerms";
 import { consignmentFeeDueSql, createFeeWithholdingPolicy } from "./fees";
-import { physicalReturnReceiptExistsSql } from "./workflow/returnReceipt";
+import { physicalReturnReceiptExistsSql, partialReturnReceivedSql } from "./workflow/returnReceipt";
 import { remittanceCashReceivedSql } from "./remittanceCash";
 import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 import { planDetachedShipmentFees } from "./detachedShipmentFees";
@@ -403,6 +403,8 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
       invoiceTotal: invoices.total,
       invoiceReturnedTotal: invoices.returnedTotal,
+      status: deliveryConsignments.status,
+      partialReturnReceived: partialReturnReceivedSql(),
       /**
        * **المقبوضُ على المستند** — هو ما يقيس به `returnConsignment` خروجَ النقد
        * (`previewNeedsCash = paidAmount > 0 || feeNet > 0`، [`returns.ts`](./returns.ts)).
@@ -579,6 +581,9 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       sourceId: deliveryConsignments.sourceId,
       invoiceNumber: invoices.invoiceNumber,
       invoiceStatus: invoices.status,
+      invoiceTotal: invoices.total,
+      invoiceReturnedTotal: invoices.returnedTotal,
+      partialReturnReceived: partialReturnReceivedSql(),
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
@@ -926,6 +931,9 @@ export async function getConsignmentTimeline(consignmentId: number) {
         codClaimVersion: deliveryConsignments.codClaimVersion,
         collectCreditOnDelivery: consignmentCreditCollectionSql,
         invoicePaymentMode: invoices.paymentMode,
+        invoiceTotal: invoices.total,
+        invoiceReturnedTotal: invoices.returnedTotal,
+        partialReturnReceived: partialReturnReceivedSql(),
         invoiceRemainingAmount: openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }),
         collectedAmount: deliveryConsignments.collectedAmount,
         counterSettledAmount: deliveryConsignments.counterSettledAmount,

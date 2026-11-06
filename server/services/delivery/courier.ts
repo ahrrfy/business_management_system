@@ -41,6 +41,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
+  deliveryEvents,
   deliveryParties,
   deliveryLedgerEntries,
   deliveryShipmentMembers,
@@ -1220,7 +1221,7 @@ export async function confirmConsignmentDelivery(
   },
   actor: { userId: number },
   existingTx?: Tx,
-  options: { shipmentMember?: boolean; requireFullCollection?: boolean } = {},
+  options: { shipmentMember?: boolean; requireFullCollection?: boolean; partialOutcomeEventId?: number } = {},
 ): Promise<ConfirmConsignmentResult> {
   const membership = input.statementWitness
     ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
@@ -1585,7 +1586,16 @@ export async function confirmConsignmentDelivery(
     // كشف الشركة) يُسجّل تحصيلاً عليه ⇒ متبقٍّ سالب، ويصير استرجاعُه الفعليّ متعذّراً لأنّ
     // مالاً قُبض. يشمل هذا الحارسُ **مسار الكشف** أيضاً (`statementWitness`) عمداً.
     assertNotReturnDeclared(cn, "deliver");
-    const parcelOut =
+    // Only the staff-authorized reconciliation service may correct a historical
+    // whole-parcel receipt. Its immutable event binds the source and current claim.
+    const [partialOutcome] = options.partialOutcomeEventId == null ? [] : await tx.select().from(deliveryEvents)
+      .where(and(eq(deliveryEvents.id, options.partialOutcomeEventId), eq(deliveryEvents.consignmentId, Number(cn.id)),
+        eq(deliveryEvents.eventType, "PARTIAL_DELIVERY_SCOPE_CORRECTED"))).limit(1);
+    const partialProof = partialOutcome?.payload as { invoiceId?: number; claimVersion?: number; deliveredLines?: unknown[]; receivedLines?: unknown[] } | null;
+    const correctedReturn = input.statementWitness?.kind === "MANUAL_PROOF" && cn.parcelStatus === "RETURNED" &&
+      partialProof?.invoiceId === cn.invoiceId && partialProof.claimVersion === cn.codClaimVersion &&
+      !!partialProof.deliveredLines?.length && !!partialProof.receivedLines?.length;
+    const parcelOut = correctedReturn ||
       cn.parcelStatus === "ASSIGNED" ||
       cn.parcelStatus === "ACCEPTED" ||
       cn.parcelStatus === "PICKED_UP" ||

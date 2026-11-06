@@ -1,3 +1,4 @@
+import { partialDeliveryStatusLabel } from "@shared/consignmentView";
 import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { isInvoiceCodInTransit } from "@shared/invoiceDeliveryCollection";
 import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
@@ -102,8 +103,9 @@ const exportStatusLabel = (s: string) => invoiceStatusLabel(s);
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
 // خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…/ORD-…)» أو فارغة لغير الموصَّلة.
 // ١٠/٨: المفتاح consignmentStatus (موحَّد خادمياً) — يشمل طلبات المتجر المُسنَدة بلا إرسالية.
-const deliveryCell = (r: Pick<Row, "consignmentStatus" | "deliveryPartyName" | "consignmentNumber">) =>
-  r.consignmentStatus ? `${CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}` : "";
+const deliveryLabel = (r: Row) => partialDeliveryStatusLabel({ status: r.consignmentStatus, parcelStatus: r.consignmentParcelStatus, partialReturnReceived: r.consignmentPartialReturnReceived, hasPartialReturn: D(r.returnedTotal ?? 0).gt(0) && D(r.returnedTotal ?? 0).lt(D(r.total)) }) ?? (CONSIGNMENT_STATUS[r.consignmentStatus ?? ""]?.label ?? r.consignmentStatus ?? "—");
+const deliveryCell = (r: Row) =>
+  r.consignmentStatus ? `${deliveryLabel(r)} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}` : "";
 // Shipping state cannot turn approved customer credit into a courier collection obligation.
 const codInTransit = isInvoiceCodInTransit;
 const paymentLabel = (r: Pick<Row, "consignmentStatus" | "consignmentCodAmount" | "paymentMode" | "collectCreditOnDelivery" | "paymentMethod" | "paidAmount" | "status">) =>
@@ -557,7 +559,7 @@ export default function Invoices() {
       {
         id: "delivery",
         header: "التوصيل",
-        accessorFn: (r) => (r.consignmentStatus ? (CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus) : "—"),
+        accessorFn: deliveryLabel,
         meta: { kind: "status" },
         cell: ({ row }) => {
           const r = row.original;
@@ -565,7 +567,7 @@ export default function Invoices() {
           const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? { label: r.consignmentStatus, cls: "bg-muted" };
           return (
             <div className="flex flex-col items-start gap-0.5">
-              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>توصيل — {st.label}</span>
+              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>توصيل — {deliveryLabel(r)}</span>
               <span className="text-[11px] text-muted-foreground">{r.deliveryPartyName ?? "—"}{r.consignmentNumber ? <span className="ms-1 font-mono" dir="ltr">{r.consignmentNumber}</span> : null}</span>
             </div>
           );
@@ -606,6 +608,7 @@ export default function Invoices() {
           return (
             <div className="flex flex-col items-end gap-0.5">
               <span className="font-semibold tabular-nums" dir="ltr">{fmt(total.toFixed(2))}</span>
+              {returned.gt(0) && <span className="text-[11px] text-muted-foreground">مرتجع: {fmt(returned.toFixed(2))} · الصافي: {fmt(total.minus(returned).toFixed(2))}</span>}
               <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
                 <span className="text-muted-foreground" title="المدفوع">مدفوع: {fmt(paid.toFixed(2))}</span>
                 {remaining.gt(0) ? (

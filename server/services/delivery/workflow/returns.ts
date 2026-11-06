@@ -1,5 +1,12 @@
-import { asc, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryShipmentMembers } from "../../../../drizzle/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  deliveryConsignments,
+  deliveryEvents,
+  deliveryShipmentMembers,
+  invoiceItems,
+  products,
+  productVariants,
+} from "../../../../drizzle/schema";
 import {
   hasOperationPolicy,
   operationDecision,
@@ -18,8 +25,14 @@ import { routeAftercareDeliveryResultTx } from "../../fulfillment/aftercareDeliv
 import { money } from "../../money";
 import { withTx, type Actor } from "../../tx";
 import { appendDeliveryEvent } from "../lifecycle";
-import { repairDeliveryCustodyFromRecordedEventsTx } from "../custody";
-import { loadShipmentMembersTx, operationalShipmentMembers } from "../shipments";
+import {
+  initializeConsignmentCustodyTx,
+  repairDeliveryCustodyFromRecordedEventsTx,
+} from "../custody";
+import {
+  loadShipmentMembersTx,
+  operationalShipmentMembers,
+} from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import {
   PHYSICAL_RETURN_RECEIVED,
@@ -37,6 +50,11 @@ export interface ReceiveWorkflowReturnInput {
   evidence: string;
   inspected: true;
   receivedConsignmentIds?: number[];
+  receivedLines?: Array<{
+    consignmentId: number;
+    invoiceItemId: number;
+    baseQuantity: number;
+  }>;
   clientRequestId: string;
 }
 
@@ -87,6 +105,31 @@ export function receiveWorkflowReturn(
       )
         throw fulfillmentError(
           "حدد كل طرد استلمته وفحصته فعلياً من أعضاء الشحنة؛ لا يُفترض رجوع المجموعة كاملة",
+        );
+      if (
+        input.receivedLines !== undefined &&
+        (!input.receivedLines.length ||
+          input.receivedLines.length > 300 ||
+          input.receivedLines.some(
+            (line) =>
+              !ids.includes(line.consignmentId) ||
+              !Number.isSafeInteger(line.invoiceItemId) ||
+              line.invoiceItemId <= 0 ||
+              !Number.isSafeInteger(line.baseQuantity) ||
+              line.baseQuantity <= 0,
+          ) ||
+          new Set(
+            input.receivedLines.map(
+              (line) => `${line.consignmentId}:${line.invoiceItemId}`,
+            ),
+          ).size !== input.receivedLines.length ||
+          ids.some(
+            (id) =>
+              !input.receivedLines!.some((line) => line.consignmentId === id),
+          ))
+      )
+        throw fulfillmentError(
+          "حدد بنوداً مخزنية فريدة وكميات أساس صحيحة موجبة لكل طرد مستلم",
         );
       const context = fulfillmentMutationContext(
         "workflow.receiveReturn",
@@ -168,6 +211,100 @@ export function receiveWorkflowReturn(
             "الطرد لا ينتمي إلى فرع الاستلام",
             "FORBIDDEN",
           );
+        const receivedLines = input.receivedLines
+          ?.filter((line) => line.consignmentId === row.id)
+          .map(({ invoiceItemId, baseQuantity }) => ({
+            invoiceItemId,
+            baseQuantity,
+          }));
+        let wholeParcel = receivedLines === undefined;
+        if (receivedLines) {
+          if (row.invoiceId == null || row.sourceType !== "INVOICE")
+            throw fulfillmentError(
+              "الاستلام الجزئي يتطلب فاتورة أصناف مخزنية؛ استخدم استلام الطرد الكامل للمصادر الأخرى",
+            );
+          const items = await tx
+            .select({
+              id: invoiceItems.id,
+              baseQuantity: invoiceItems.baseQuantity,
+              isService: products.isService,
+              isBundle: products.isBundle,
+              productType: products.productType,
+            })
+            .from(invoiceItems)
+            .innerJoin(
+              productVariants,
+              eq(productVariants.id, invoiceItems.variantId),
+            )
+            .innerJoin(products, eq(products.id, productVariants.productId))
+            .where(eq(invoiceItems.invoiceId, row.invoiceId))
+            .for("share");
+          const custody = await initializeConsignmentCustodyTx(tx, {
+            consignmentId: row.id,
+            actorUserId: auth.actor.userId,
+            operationId: `physical-return:${input.clientRequestId}`,
+          });
+          const priorEvents = await tx
+            .select()
+            .from(deliveryEvents)
+            .where(
+              and(
+                eq(deliveryEvents.consignmentId, row.id),
+                eq(deliveryEvents.eventType, PHYSICAL_RETURN_RECEIVED),
+              ),
+            )
+            .for("share");
+          for (const line of receivedLines) {
+            const item = items.find((item) => item.id === line.invoiceItemId);
+            const matching = custody.filter(
+              (item) => item.invoiceItemId === line.invoiceItemId,
+            );
+            if (
+              !item ||
+              item.isService ||
+              item.isBundle ||
+              item.productType === "DIGITAL_CARD" ||
+              matching.length !== 1 ||
+              matching[0]!.itemKind !== "STOCKED_ITEM" ||
+              Number(matching[0]!.baseQuantity) !== Number(item.baseQuantity)
+            )
+              throw fulfillmentError(
+                "البند لا يطابق صنفاً مخزنياً منفرداً في فاتورة الطرد؛ لا يقبل البكج أو الخدمة",
+              );
+            let priorQuantity = 0;
+            for (const event of priorEvents) {
+              const payload = event.payload as Record<string, unknown> | null;
+              if (payload?.dispatchedAt !== row.dispatchedAt.toISOString())
+                continue;
+              if (payload.scope !== "ITEMS") {
+                priorQuantity = Number(item.baseQuantity);
+                break;
+              }
+              if (Array.isArray(payload.receivedLines))
+                for (const prior of payload.receivedLines) {
+                  if (prior.invoiceItemId === line.invoiceItemId)
+                    priorQuantity += Number(prior.baseQuantity);
+                }
+            }
+            if (
+              !Number.isSafeInteger(priorQuantity) ||
+              priorQuantity + line.baseQuantity > Number(item.baseQuantity)
+            )
+              throw fulfillmentError(
+                "سُجل استلام كمية هذا البند سابقاً أو تجاوزت الكمية الأصلية؛ راجع محاضر الاستلام",
+                "CONFLICT",
+              );
+          }
+          wholeParcel =
+            items.length === receivedLines.length &&
+            items.every((item) =>
+              receivedLines.some(
+                (line) =>
+                  line.invoiceItemId === item.id &&
+                  line.baseQuantity === Number(item.baseQuantity),
+              ),
+            );
+        }
         const documentEventKey = `CN:${row.id}:PHYSICAL_RETURN:${input.clientRequestId}`;
         const document: WorkflowDocumentBody = {
           title: "محضر استلام وفحص طرد عائد",
@@ -190,6 +327,7 @@ export function receiveWorkflowReturn(
           leaderConsignmentId: leaderId,
           documentType: "PHYSICAL_RETURN_RECEIPT",
           document,
+          ...(receivedLines ? { scope: "ITEMS", receivedLines } : {}),
         };
         if (row.sourceType === "AFTERCARE_EXECUTION") {
           await routeAftercareDeliveryResultTx(
@@ -240,16 +378,17 @@ export function receiveWorkflowReturn(
             "لا توجد عهدة مرسلة حالية تقبل إثبات الاستلام؛ لا يمثل الإلغاء الإداري رجوعاً فعلياً",
           );
         const receivedAt = new Date();
-        await tx
-          .update(deliveryConsignments)
-          .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })
-          .where(eq(deliveryConsignments.id, row.id));
+        if (wholeParcel)
+          await tx
+            .update(deliveryConsignments)
+            .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })
+            .where(eq(deliveryConsignments.id, row.id));
         const receiptEventId = await appendDeliveryEvent(tx, {
           eventKey: documentEventKey,
           consignmentId: row.id,
           eventType: PHYSICAL_RETURN_RECEIVED,
           fromParcelStatus: row.parcelStatus,
-          toParcelStatus: "RETURNED",
+          toParcelStatus: wholeParcel ? "RETURNED" : row.parcelStatus,
           actorUserId: auth.actor.userId,
           payload: {
             ...documentEvidence,
@@ -269,7 +408,8 @@ export function receiveWorkflowReturn(
             availableStockAdded: false,
           },
         });
-        if (operationalShipmentMembers([row]).length) removedReceiptEventIds.push(receiptEventId);
+        if (wholeParcel && operationalShipmentMembers([row]).length)
+          removedReceiptEventIds.push(receiptEventId);
         documentSnapshotIds.push(
           await createRecordedShipmentDocumentTx(tx, {
             consignmentId: leaderId,
@@ -284,7 +424,8 @@ export function receiveWorkflowReturn(
           entityId: row.id,
           oldValue: { parcelStatus: row.parcelStatus },
           newValue: {
-            parcelStatus: "RETURNED",
+            parcelStatus: wholeParcel ? "RETURNED" : row.parcelStatus,
+            ...(receivedLines ? { scope: "ITEMS", receivedLines } : {}),
             receivedAt,
             evidence: input.evidence.trim(),
             commercialActionPending: true,
@@ -295,21 +436,43 @@ export function receiveWorkflowReturn(
       // Removing one or more parcels changes the claim presented to the driver.
       // Advance once per physical receipt transaction, not once per parcel.
       if (members.length > 1 && removedReceiptEventIds.length) {
-        const [leader] = await tx.select().from(deliveryConsignments)
-          .where(eq(deliveryConsignments.id, leaderId)).for("update").limit(1);
-        const [leaderMembership] = await tx.select().from(deliveryShipmentMembers)
-          .where(eq(deliveryShipmentMembers.consignmentId, leaderId)).for("share").limit(1);
-        const currentMembers = await loadShipmentMembersTx(tx, leaderId, { currentRead: true });
+        const [leader] = await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, leaderId))
+          .for("update")
+          .limit(1);
+        const [leaderMembership] = await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, leaderId))
+          .for("share")
+          .limit(1);
+        const currentMembers = await loadShipmentMembersTx(tx, leaderId, {
+          currentRead: true,
+        });
         const remaining = operationalShipmentMembers(currentMembers);
-        if (!leader || Number(leaderMembership?.leaderConsignmentId) !== Number(leaderId) ||
-            currentMembers.length !== members.length ||
-            currentMembers.some((row) => !members.some((original) => original.id === row.id)))
-          throw fulfillmentError("تغيرت روابط الشحنة أثناء إثبات المرتجع؛ حدّث المعاينة وأعد المحاولة", "CONFLICT");
+        if (
+          !leader ||
+          Number(leaderMembership?.leaderConsignmentId) !== Number(leaderId) ||
+          currentMembers.length !== members.length ||
+          currentMembers.some(
+            (row) => !members.some((original) => original.id === row.id),
+          )
+        )
+          throw fulfillmentError(
+            "تغيرت روابط الشحنة أثناء إثبات المرتجع؛ حدّث المعاينة وأعد المحاولة",
+            "CONFLICT",
+          );
         if (remaining.length) {
-          const receipt = leader.parcelStatus === "RETURNED"
-            ? await physicalReturnReceiptTx(tx, leader, { currentRead: true }) : null;
+          const receipt =
+            leader.parcelStatus === "RETURNED"
+              ? await physicalReturnReceiptTx(tx, leader, { currentRead: true })
+              : null;
           const claimVersion = Number(leader.codClaimVersion) + 1;
-          await tx.update(deliveryConsignments).set({ codClaimVersion: claimVersion })
+          await tx
+            .update(deliveryConsignments)
+            .set({ codClaimVersion: claimVersion })
             .where(eq(deliveryConsignments.id, leaderId));
           await appendDeliveryEvent(tx, {
             eventKey: `CN:${leaderId}:CLAIM_CHANGED:PHYSICAL_RETURN:${input.clientRequestId}`,
@@ -317,10 +480,19 @@ export function receiveWorkflowReturn(
             eventType: "COD_CLAIM_CHANGED",
             actorUserId: auth.actor.userId,
             payload: {
-              source: "PHYSICAL_RETURN", claimVersion, removedReceiptEventIds,
-              ...(receipt ? { physicalReturnReceiptEventId: Number(receipt.id) } : {}),
-              ackRequired: remaining.some((row) => money(row.codAmount)
-                .gt(money(row.collectedAmount ?? "0").plus(money(row.counterSettledAmount ?? "0")))),
+              source: "PHYSICAL_RETURN",
+              claimVersion,
+              removedReceiptEventIds,
+              ...(receipt
+                ? { physicalReturnReceiptEventId: Number(receipt.id) }
+                : {}),
+              ackRequired: remaining.some((row) =>
+                money(row.codAmount).gt(
+                  money(row.collectedAmount ?? "0").plus(
+                    money(row.counterSettledAmount ?? "0"),
+                  ),
+                ),
+              ),
             },
           });
         }

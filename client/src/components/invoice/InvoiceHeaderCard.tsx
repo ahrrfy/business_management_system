@@ -1,6 +1,8 @@
 import { Link } from "wouter";
 import { invoiceDeliveryCollection, isInvoiceCodInTransit } from "@shared/invoiceDeliveryCollection";
 import { Truck } from "lucide-react";
+import { partialDeliveryStatusLabel } from "@shared/consignmentView";
+import { PartialDeliverySettlementButton } from "@/components/delivery/PartialDeliverySettlementButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CopyInline } from "@/components/CopyButton";
@@ -26,6 +28,8 @@ export function InvoiceHeaderCard({
 }: InvoiceHeaderCardProps) {
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
+  const partialLabel = partialDeliveryStatusLabel({ status: data.consignmentStatus, parcelStatus: data.consignmentParcelStatus, partialReturnReceived: data.consignmentPartialReturnReceived, hasPartialReturn: D(data.returnedTotal ?? 0).gt(0) && D(data.returnedTotal ?? 0).lt(D(data.total)) });
+  const awaitingDelivery = !["DELIVERED", "RETURNED", "CANCELLED"].includes(data.consignmentParcelStatus ?? "");
   const collection = invoiceDeliveryCollection({ remainingAmount: remaining.toFixed(2), paymentMode: data.paymentMode, collectCreditOnDelivery: data.collectCreditOnDelivery, fee: data.courierFee, feeCollection: data.courierFeeCollection, status: data.status });
 
   return (
@@ -166,11 +170,11 @@ export function InvoiceHeaderCard({
               <div className="mt-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-bold text-[var(--sem-warn)]">
-                    <Truck aria-hidden className="size-3.5" /> أجرة التوصيل ({data.courierFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : data.courierFeeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${data.courierName}`})
+                    <Truck aria-hidden className="size-3.5" /> أجرة التوصيل ({data.courierFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : data.courierFeeCollection === "SHOP" ? "على المكتبة" : data.consignmentParcelStatus === "DELIVERED" ? `قبضها ${data.courierName} من العميل` : `من العميل إلى ${data.courierName}`})
                   </span>
                   <span className="font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(data.courierFee)}</span>
                 </div>
-                {D(collection.atDoorDue).gt(0) && (
+                {awaitingDelivery && D(collection.atDoorDue).gt(0) && (
                   <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
                     <span>المطلوب عند التسليم{data.paymentMode === "CREDIT" && !data.collectCreditOnDelivery ? " (أجرة التوصيل فقط)" : " شاملاً التوصيل"}</span>
                     <span className="tabular-nums" dir="ltr">
@@ -195,11 +199,11 @@ export function InvoiceHeaderCard({
                           ? "badge-stock-out"
                           : "badge-stock-low"
                     }`}>
-                    {data.consignmentStatus === "DISPATCHED" ? "بالطريق"
+                    {partialLabel ?? (data.consignmentStatus === "DISPATCHED" ? "بالطريق"
                       : data.consignmentStatus === "PARTIAL" ? "حُصِّل جزئياً"
                       : data.consignmentStatus === "DELIVERED" ? "سُلِّمت"
                       : data.consignmentStatus === "RETURNED" ? "أُرجعت"
-                      : data.consignmentStatus === "WRITTEN_OFF" ? "شُطبت" : data.consignmentStatus}
+                      : data.consignmentStatus === "WRITTEN_OFF" ? "شُطبت" : data.consignmentStatus)}
                   </span>
                 </span>
                 <a className="text-xs font-bold text-primary hover:underline" href={`/delivery?tab=parties&detail=${data.deliveryPartyId ?? ""}`}>
@@ -207,6 +211,8 @@ export function InvoiceHeaderCard({
                 </a>
               </div>
             )}
+            {partialLabel && data.consignmentId && data.consignmentParcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={data.consignmentId} />}
+            {D(data.returnedTotal ?? 0).gt(0) && <SummaryRow label="المرتجع التجاري" value={data.returnedTotal} />}
             <SummaryRow label="المدفوع" value={data.paidAmount} />
             <SummaryRow
               label="المتبقّي"

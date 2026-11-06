@@ -38,6 +38,7 @@ const commandSchema = z.discriminatedUnion("action", [
           branchId: id,
           evidence: z.string().min(5).max(255),
           inspected: z.literal(true),
+          receivedLines: z.array(z.object({ consignmentId: id, invoiceItemId: id, baseQuantity: id }).strict()).min(1).max(500).optional(),
           receivedConsignmentIds: z
             .array(id)
             .min(1)

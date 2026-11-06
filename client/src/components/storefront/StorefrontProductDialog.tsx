@@ -27,7 +27,11 @@ import {
 } from "lucide-react";
 import React from "react";
 import type { StorefrontCustomizationConfig } from "./storefrontCustomizationModel";
-import { StorefrontProductInformation } from "./StorefrontProductInformation";
+const StorefrontProductInformation = React.lazy(() =>
+  import("./StorefrontProductInformation").then((module) => ({
+    default: module.StorefrontProductInformation,
+  })),
+);
 type StorefrontVariantOption = NonNullable<
   NonNullable<RouterOutputs["storefront"]["product"]>["variants"]
 >[number];
@@ -217,6 +221,7 @@ export function StorefrontProductDialog({
                       fallbackUrl={detailMedia.fallbackUrl}
                       alt={product.productName}
                     />
+                    <React.Suspense fallback={<p role="status" className="p-3 text-sm text-muted-foreground">جارٍ تحميل تفاصيل المنتج…</p>}>
                     <StorefrontProductInformation
                       product={product}
                       setProductReviewOpenRequest={setProductReviewOpenRequest}
@@ -237,6 +242,7 @@ export function StorefrontProductDialog({
                       setCustomizationAssets={setCustomizationAssets}
                       setCustomizationUploadState={setCustomizationUploadState}
                     />
+                    </React.Suspense>
                   </div>
                   <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
                     <AnimatedAddToCartButton
