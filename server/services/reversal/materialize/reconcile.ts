@@ -11,6 +11,7 @@
 import type Decimal from "decimal.js";
 
 import type { DocumentEffectKind, DocumentType } from "@shared/documentEffects";
+import { subtractQuantities } from "@shared/quantity";
 
 import type { Tx } from "../../../db";
 import { loadApplyEffects, recordEffect, recordReverseRow } from "../effectLedger";
@@ -96,7 +97,7 @@ export async function reconcile(
     args.existing.set(key, current);
   }
   const deltaAmount = truth.targetAmount.minus(current.outstandingAmount);
-  const deltaQuantity = truth.targetQuantity - current.outstandingQuantity;
+  const deltaQuantity = subtractQuantities(truth.targetQuantity, current.outstandingQuantity);
   if (deltaAmount.isZero() && deltaQuantity === 0) return;
   await recordReverseRow(
     tx,

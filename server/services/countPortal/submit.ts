@@ -1,6 +1,7 @@
 // تسجيل عدّة (submit) داخل withTx واحدة — العقد §٥ من docs/stocktake-contract.md.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { addQuantities, isQuantity } from "@shared/quantity";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -51,7 +52,7 @@ function parseUnitBreakdown(
     for (const [key, value] of Object.entries(parsed)) {
       if (
         typeof value === "number" &&
-        Number.isSafeInteger(value) &&
+        isQuantity(value) &&
         value >= 0
       )
         out[key] = value;
@@ -64,7 +65,7 @@ function parseUnitBreakdown(
 
 export type SubmitCountInput = {
   variantId: number;
-  /** الكمية المعدودة بالوحدة الأساس (عدد صحيح ≥ 0). */
+  /** الكمية المعدودة بالوحدة الأساس (غير سالبة، أربع منازل عشرية كحد أقصى). */
   qty: number;
   /** تفصيل الإدخال متعدد الوحدات (JSON نصي ≤ 500 حرف) — للتدقيق فقط. */
   unitBreakdown?: string | null;
@@ -113,10 +114,14 @@ export async function submitCount(
   input: SubmitCountInput,
 ): Promise<SubmitCountResult> {
   // حراسة دفاعية (zod في الراوتر يضمنها أيضاً).
-  if (!Number.isInteger(input.qty) || input.qty < 0) {
+  if (!isQuantity(input.qty) || input.qty < 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "الكمية يجب أن تكون عدداً صحيحاً غير سالب.",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل كمية الجرد",
+        why: "الكمية غير صالحة أو تتجاوز دقة المخزون",
+        doThis: "أدخل كمية غير سالبة بأربع منازل عشرية أو أقل",
+      }),
     });
   }
   if (input.unitBreakdown && input.unitBreakdown.length > 500) {
@@ -412,7 +417,7 @@ export async function submitCount(
           // إذا كان الصنف غير نشط ولا يملك أي وحدات نشطة (مخزون وهمي/ghost stock يراد تسويته)،
           // تقبل البوابة تفصيل الوحدة الافتراضية طالما تطابق الكمية الإجمالية (Codex finding).
           if (activeUnits.length === 0) {
-            const sumCounts = userEntries.reduce((acc, [, count]) => acc + count, 0);
+            const sumCounts = userEntries.reduce((acc, [, count]) => addQuantities(acc, count), 0);
             if (sumCounts !== input.qty) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
@@ -450,7 +455,7 @@ export async function submitCount(
               const unitObj = matches[0];
               expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
             }
-            if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
+            if (!expectedBaseQty.eq(input.qty)) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: appErrorMessage({

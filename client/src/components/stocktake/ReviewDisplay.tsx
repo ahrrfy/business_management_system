@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Card } from "@/components/ui/card";
-import { D, fmt, fmtInt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   COUNTING: {
@@ -21,9 +21,9 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   },
 };
 /* ───────── أدوات تنسيق (أرقام لاتينية، أموال decimal.js حصراً) ───────── */
-export const nf = (n: number | null | undefined) => fmtInt(n ?? 0);
+export const nf = (n: number | null | undefined) => formatQuantity(n ?? 0);
 export const signed = (n: number) =>
-  (n > 0 ? "+" : n < 0 ? "−" : "") + fmtInt(Math.abs(n));
+  (n > 0 ? "+" : n < 0 ? "−" : "") + formatQuantity(Math.abs(n));
 export const money = (v: string | number | null | undefined) => {
   const d = D(v ?? 0);
   return (d.isNegative() ? "−" : "") + fmt(d.abs().toFixed(2)) + " د.ع";

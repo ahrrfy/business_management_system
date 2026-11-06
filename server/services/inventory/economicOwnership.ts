@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { addQuantities, quantityNumber } from "@shared/quantity";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
   branchStock,
@@ -255,15 +256,15 @@ export async function readEconomicOwnedPositions(
     byBranch.set(row.branchId, {
       variantId,
       branchId: row.branchId,
-      shelfQuantity: row.quantity,
+      shelfQuantity: quantityNumber(row.quantity),
       inTransitQuantity: 0,
-      ownedQuantity: row.quantity,
+      ownedQuantity: quantityNumber(row.quantity),
     });
   for (const [branch, raw] of Object.entries(
     variant.transitBaseBySourceBranch,
   )) {
     const branchId = Number(branch),
-      quantity = Number(raw);
+      quantity = quantityNumber(raw);
     const position = byBranch.get(branchId) ?? {
       variantId,
       branchId,
@@ -272,9 +273,11 @@ export async function readEconomicOwnedPositions(
       ownedQuantity: 0,
     };
     position.inTransitQuantity = quantity;
-    position.ownedQuantity = position.shelfQuantity + quantity;
-    if (!Number.isSafeInteger(position.ownedQuantity))
+    try {
+      position.ownedQuantity = addQuantities(position.shelfQuantity, quantity);
+    } catch {
       throw conflict("تجاوز كمية المخزون المسموح");
+    }
     byBranch.set(branchId, position);
   }
   const owned =

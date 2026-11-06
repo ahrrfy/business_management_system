@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
+import { isBatchDivisible } from "@shared/batchDivisibility";
 
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readRepoFile = (rel: string) => readFileSync(new URL(`../../../../${rel}`, import.meta.url), "utf8");
@@ -15,9 +16,7 @@ const readRepoFile = (rel: string) => readFileSync(new URL(`../../../../${rel}`,
  * يبقى معطَّلاً أبداً بلا سطرٍ واحد يفسّر. النتيجة عند المستعمل: دفعةٌ تعمل عند رقمٍ
  * وتتجمّد عند غيره — وهو بلاغ المالك «لا تقبل إلا 100».
  *
- * أخطرُ الرافضين هو **حارس الاستهلاك الصحيح**: `qtyPerOutputBase × الدفعة` يجب أن يكون
- * عدداً صحيحاً (لا يُخصَم نصفُ ورقة). ومعامِلٌ بمنزلتين عشريّتين يجعل دفعاتٍ بعينها
- * صالحةً وغيرَها لا — وهو سلوكٌ صحيحٌ محاسبياً، لكنّه يبدو عطلاً ما لم يُشرَح.
+ * المواد تقبل الكسور بدقة أربع منازل، وتظل أخطاء الدقة والمدى والمواد المعطلة واضحة للمستخدم.
  */
 describe("عقد إظهار خطأ معاينة الإنتاج", () => {
   const page = readPage("ProductionNew.tsx");
@@ -44,20 +43,23 @@ describe("عقد إظهار خطأ معاينة الإنتاج", () => {
 
   it("الخادم فعلاً يرفض بهذه الرسائل — فالعرض ليس زينة", () => {
     const preview = readRepoFile("server/services/production/preview.ts");
-    expect(preview).toMatch(/ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة/);
+    expect(preview).toMatch(/exactRecipeMaterialQuantity/);
     expect(preview).toMatch(/الوصفة معطّلة/);
     expect(preview).toMatch(/الوصفة بلا مكوّنات/);
     // الرسالة تحمل اسم المكوّن والرقم الكسريّ ⇒ قابلة للتنفيذ حين تُعرَض.
-    expect(preview).toMatch(/استهلاك «\$\{l\.productName \?\? l\.inputVariantId\}» \(\$\{consumedDec\.toString\(\)\}\)/);
+    expect(preview).toContain("استهلاك «${l.productName ?? l.inputVariantId}»");
   });
 
-  it("آلية «تعمل عند 100 وتتجمّد عند 50»: معامِلٌ بمنزلتين يقيّد الدفعات الصالحة", () => {
-    // مثالٌ حيّ للحارس: معامِل 0.01 وحدة لكل ناتج ⇒ الدفعة يجب أن تكون مضاعفاً لـ100.
+  it("معامل0.01 يقبل دفعات ناتج50و150 باستهلاك0.5و1.5 بدقة", () => {
     const perOut = new Decimal("0.01");
     expect(perOut.times(100).isInteger()).toBe(true);   // 1     ⇒ يمرّ
     expect(perOut.times(200).isInteger()).toBe(true);   // 2     ⇒ يمرّ
-    expect(perOut.times(50).isInteger()).toBe(false);   // 0.5   ⇒ يُرفض
-    expect(perOut.times(150).isInteger()).toBe(false);  // 1.5   ⇒ يُرفض
+    expect(perOut.times(50).toString()).toBe("0.5");
+    expect(perOut.times(150).toString()).toBe("1.5");
+    expect(isBatchDivisible(["0.01"], 50)).toBe(true);
+    expect(isBatchDivisible(["0.01"], 150)).toBe(true);
+    expect(isBatchDivisible(["0.01"], 1.5)).toBe(false);
+    expect(isBatchDivisible(["0.00001"], 1)).toBe(false);
     // ومعامِلٌ صحيح لا يقيّد شيئاً — فالمشكلة في الوصفة لا في الشاشة.
     expect(new Decimal("80").times(50).isInteger()).toBe(true);
   });

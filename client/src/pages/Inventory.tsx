@@ -1,4 +1,5 @@
 import { INVENTORY_MOVEMENT_LABEL as MTYPE } from "@shared/inventoryTerms";
+import { isQuantity } from "@shared/quantity";
 import { RowActions } from "@/components/list";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
@@ -338,8 +339,8 @@ export default function Inventory() {
   async function saveAdjust(variantId: number) {
     setErr("");
     const t = Number(target);
-    if (!Number.isInteger(t) || t < 0) {
-      setErr("الرصيد المستهدف يجب أن يكون عدداً صحيحاً غير سالب.");
+    if (!isQuantity(t) || t < 0 || target.trim() === "") {
+      setErr("أدخل رصيداً غير سالب بأربع منازل عشرية أو أقل.");
       return;
     }
     // ⭐ P2-#3: السببُ إلزاميّ على الشاشات الجديدة (الخادم يقبل NULL للتوافق الخلفيّ فقط).

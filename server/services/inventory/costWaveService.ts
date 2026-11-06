@@ -1,4 +1,5 @@
 import { parseTransitProjection } from "./transitProjection";
+import { addQuantities } from "@shared/quantity";
 import { lockEconomicInventoryScope, readEconomicVariant } from "./economicOwnership";
 /**
  * موجات التكلفة: مستند جماعيّ بمعاينة موقّعة، اعتمادين مستقلين، وتطبيق مالي ذري.
@@ -564,7 +565,7 @@ async function computeCostWave(
     const positions = new Map((stockByVariant.get(row.variantId) ?? []).map(p => [p.branchId, p.quantity]));
     for (const [branch, qty] of Object.entries(parseTransitProjection(row.transit))) {
       const branchId = Number(branch);
-      positions.set(branchId, (positions.get(branchId) ?? 0) + Number(qty));
+      positions.set(branchId, addQuantities(positions.get(branchId) ?? 0, qty));
     }
     stockByVariant.set(row.variantId, Array.from(positions, ([branchId, quantity]) => ({ branchId, quantity })).filter(p => p.quantity !== 0).sort((a,b) => a.branchId-b.branchId));
   }
@@ -719,7 +720,7 @@ async function computeCostWave(
       itemCount: rows.length,
       skippedCount: skipped.length,
       expectedQuantity: rows.reduce(
-        (sum, row) => sum + row.expectedQuantity,
+        (sum, row) => addQuantities(sum, row.expectedQuantity),
         0,
       ),
       inventoryValueBefore: round2(beforeTotal).toFixed(2),
@@ -1132,7 +1133,7 @@ function waveTotalsMatch(
   skipped: CostWaveSkippedRow[],
 ): boolean {
   const expectedQuantity = items.reduce(
-    (sum, item) => sum + Number(item.expectedQuantity),
+    (sum, item) => addQuantities(sum, item.expectedQuantity),
     0,
   );
   const before = items.reduce(

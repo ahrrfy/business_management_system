@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ListPlus, RefreshCw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { addQuantities, isQuantity } from "@shared/quantity";
 import type { PortalState } from "@shared/countPortalMerge";
 import type { QueuedCount } from "@/lib/countQueue";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
+import { calculateCountDraft, normalizeCountDraft } from "./quantityDraft";
 import { cn } from "@/lib/utils";
 
 export type CountItem = PortalState["items"][number];
@@ -56,7 +58,7 @@ export function CountPortalQtySheet({
           const init: Record<string, string> = {};
           for (const u of item.units) {
             const v = parsed[u.unitName];
-            if (typeof v === "number" && Number.isInteger(v) && v >= 0) init[u.unitName] = String(v);
+            if (isQuantity(v) && v >= 0) init[u.unitName] = String(v);
           }
           if (Object.keys(init).length > 0) return init;
         } catch {
@@ -75,31 +77,23 @@ export function CountPortalQtySheet({
     if (!tally || !bump || bump.token <= lastBump.current) return;
     lastBump.current = bump.token;
     setVals((v) => {
-      const cur = parseInt(v[bump.unit] || "0", 10) || 0;
-      return { ...v, [bump.unit]: String(Math.min(cur + 1, 9_999_999)) };
+      const cur = Number(v[bump.unit] || "0");
+      return { ...v, [bump.unit]: String(Math.min(addQuantities(isQuantity(cur) ? cur : 0, 1), 9_999_999)) };
     });
   }, [bump, tally]);
 
   const setVal = (unitName: string, raw: string) => {
-    setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
+    setVals((v) => ({ ...v, [unitName]: normalizeCountDraft(raw) }));
   };
   const step = (unitName: string, delta: number) => {
     setVals((v) => {
-      const cur = parseInt(v[unitName] || "0", 10) || 0;
-      const next = Math.max(0, cur + delta);
+      const cur = Number(v[unitName] || "0");
+      const next = Math.max(0, addQuantities(isQuantity(cur) ? cur : 0, delta));
       return { ...v, [unitName]: String(next) };
     });
   };
 
-  // الكميات أعداد صحيحة (ليست أموالاً) — حساب عددي مباشر.
-  const entries: Record<string, number> = {};
-  for (const u of units) {
-    const raw = vals[u.unitName];
-    if (raw !== undefined && raw !== "") entries[u.unitName] = parseInt(raw, 10) || 0;
-  }
-  const total = units.reduce((s, u) => s + (entries[u.unitName] ?? 0) * u.factor, 0);
-  const anyEntered = Object.keys(entries).length > 0;
-  const valid = anyEntered && Number.isSafeInteger(total) && total >= 0;
+  const { entries, total, valid } = calculateCountDraft(units, vals);
 
   const handleSave = () => {
     if (!valid || saving) return;
@@ -161,13 +155,13 @@ export function CountPortalQtySheet({
                   type="button"
                   aria-label={`إنقاص ${u.unitName}`}
                   onClick={() => step(u.unitName, -1)}
-                  disabled={(parseInt(cur || "0", 10) || 0) === 0}
+                  disabled={Number(cur || "0") === 0}
                   className="grid size-11 place-items-center rounded-lg border border-border bg-background text-xl font-bold active:scale-95 disabled:opacity-40"
                 >
                   −
                 </button>
                 <input
-                  inputMode="numeric"
+                  inputMode="decimal"
                   dir="ltr"
                   value={cur}
                   placeholder="0"
@@ -192,7 +186,7 @@ export function CountPortalQtySheet({
       <div className="mt-3 flex items-center justify-between rounded-xl bg-primary/5 px-4 py-3">
         <span className="text-sm font-bold">الإجمالي بالوحدة الأساس</span>
         <span className="font-mono text-xl font-bold tabular-nums text-primary" dir="ltr">
-          {fmtInt(total)} {baseUnit}
+          {valid ? formatQuantity(total) : "—"} {baseUnit}
         </span>
       </div>
 

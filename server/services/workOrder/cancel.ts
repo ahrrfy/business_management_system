@@ -1,4 +1,6 @@
 import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
+import { addQuantities, isQuantity, quantityDecimal } from "@shared/quantity";
+import { splitWorkOrderMaterialValue } from "@shared/workOrderMaterialCost";
 import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
@@ -415,24 +417,25 @@ export async function cancelWorkOrderInTx(
           }
           const ret = Number(d.returnBase);
           const waste = Number(d.wasteBase);
-          if (!Number.isInteger(ret) || !Number.isInteger(waste) || ret < 0 || waste < 0) {
+          if (!isQuantity(ret) || !isQuantity(waste) || ret < 0 || waste < 0) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: appErrorMessage({
                 what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
-                why: `كمّيات سطر الخامة ${id} وصلت «راجع ${d.returnBase} · هدر ${d.wasteBase}» — وهما عددان صحيحان غير سالبين بالوحدة الأساس (لا كسور ولا سالب)`,
+                why: `كمّيات سطر الخامة ${id} وصلت «راجع ${d.returnBase} · هدر ${d.wasteBase}» — يلزم رقمان غير سالبين بأربع منازل عشرية أو أقل بالوحدة الأساس`,
                 doThis: "صحّح الرقمين في نافذة الإلغاء: ما عاد صالحاً للرفّ في «راجع» وما تلف في «هدر»، وضع صفراً حيث لا شيء",
               }),
             });
           }
           // ⛔ لا فرقَ يُمتصّ صامتاً: ما استُهلك إمّا عاد وإمّا تلف — الرقمان يجمعانه بالضبط.
-          if (ret + waste !== consumed) {
+          const declared = quantityDecimal(ret).plus(waste);
+          if (!declared.eq(consumed)) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: appErrorMessage({
                 what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
-                why: `في سطر الخامة ${id}: مجموع الرجوع والهدر ${ret + waste} (راجع ${ret} · هدر ${waste}) لا يساوي المستهلَك ${consumed} — ${ret + waste < consumed ? `ناقص ${consumed - (ret + waste)}` : `زائد ${(ret + waste) - consumed}`}؛ وما استُهلك إمّا عاد للرفّ وإمّا تلف، فلا كمّيةَ تتبخّر بين الرقمين`,
-                doThis: `عدّل الرقمين حتى يبلغ مجموعهما ${consumed} بالضبط — ${ret + waste < consumed ? `أضِف الفرق ${consumed - (ret + waste)} إلى الهدر إن لم يعد صالحاً، أو إلى الراجع إن عاد للرفّ` : `أنقص الزيادة ${(ret + waste) - consumed} من الرقم الذي بالغتَ فيه`}`,
+                why: `في سطر الخامة ${id}: مجموع الرجوع والهدر ${declared.toString()} (راجع ${ret} · هدر ${waste}) لا يساوي المستهلَك ${consumed} — ${declared.lt(consumed) ? `ناقص ${declared.minus(consumed).abs().toString()}` : `زائد ${declared.minus(consumed).toString()}`}؛ وما استُهلك إمّا عاد للرفّ وإمّا تلف، فلا كمّيةَ تتبخّر بين الرقمين`,
+                doThis: `عدّل الرقمين حتى يبلغ مجموعهما ${consumed} بالضبط — ${declared.lt(consumed) ? `أضِف الفرق ${declared.minus(consumed).abs().toString()} إلى الهدر إن لم يعد صالحاً، أو إلى الراجع إن عاد للرفّ` : `أنقص الزيادة ${declared.minus(consumed).toString()} من الرقم الذي بالغتَ فيه`}`,
               }),
             });
           }
@@ -468,14 +471,28 @@ export async function cancelWorkOrderInTx(
         const isNonStock = nonStockVariants.has(variantId);
         const consumed = Number(m.baseQuantity);
         const d = decisions.get(Number(m.id)) ?? { returnBase: consumed, wasteBase: 0 };
+        let lineValue = money(0);
+        if (!isNonStock) {
+          try {
+            lineValue = splitWorkOrderMaterialValue(m, d.returnBase).returnedValue;
+          } catch (error) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: `تعذّر ردّ قيمة خامة أمر الشغل ${wo.orderNumber}`,
+                why: error instanceof Error ? error.message : "لقطة قيمة الصرف غير صالحة",
+                doThis: "راجع قيمة دفعة الخامة التاريخية قبل الإلغاء؛ لا تُرجعها بتكلفة اليوم تخميناً",
+              }),
+            });
+          }
+        }
         if (d.returnBase > 0 && !isNonStock) {
           const variantId = Number(m.variantId);
-          const lineValue = round2(money(m.unitCost ?? "0").times(d.returnBase));
           const previous = returnedByVariant.get(variantId) ?? {
             quantity: 0,
             value: money(0),
           };
-          previous.quantity += d.returnBase;
+          previous.quantity = addQuantities(previous.quantity, d.returnBase);
           previous.value = previous.value.plus(lineValue);
           returnedByVariant.set(variantId, previous);
         }
@@ -483,7 +500,7 @@ export async function cancelWorkOrderInTx(
         // لا بتكلفةِ اليوم: الرجوعُ يعيد للمخزون ما خرج منه بقيمته وقتَها.
         // الأصناف الخدمية والبكجات لا رصيد مخزني لها فلا تدخل في returnedCost المعكوس لمخزون الرف (§١٨/٨).
         if (!isNonStock) {
-          returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
+          returnedCost = returnedCost.plus(lineValue);
         }
       }
       returnedCost = round2(returnedCost);

@@ -183,6 +183,8 @@ const BIND_RE = /(?<![-\w.])(?:value|checked|defaultValue|defaultChecked)\s*=\s*
 
 /** عناصرُ الخيارات: `value` فيها قيمةُ خيارٍ لا حقلَ نموذج. */
 const OPTION_TAGS = /<(?:option|SelectItem|ToggleGroupItem|TabsTrigger|TabsContent)\b[^>]*>/g;
+// React context carries editor coordination, not an editable document field.
+const CONTEXT_PROVIDER_TAGS = /<[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.Provider\b[^>]*>/g;
 
 /** يقشّر أغلفة التحويل ثمّ يُرجع آخرَ مقطعٍ من أوّل مسارٍ بسيط؛ `null` حين لا مسار. */
 export function normalizeBinding(expression) {
@@ -200,7 +202,7 @@ export function normalizeBinding(expression) {
 
 /** مجموعةُ الحقول الظاهرة في شاشةٍ واحدة. */
 export function collectFormFields(source) {
-  const scope = defaultComponentBody(stripComments(source)).replace(OPTION_TAGS, " ");
+  const scope = defaultComponentBody(stripComments(source)).replace(OPTION_TAGS, " ").replace(CONTEXT_PROVIDER_TAGS, " ");
   const fields = new Set();
   for (const match of scope.matchAll(BIND_RE)) {
     const name = normalizeBinding(match[1]);
@@ -504,6 +506,9 @@ export default function P() { return <A value={z} />; }
   const noiseFields = collectFormFields(noise);
   has("لا يفوت الحقلَ الحقيقيّ وسط الضجيج", noiseFields, "branchId", "city");
   lacks("يتجاهل aria-checked و<option>", noiseFields, "n", "rating", "id");
+  const contextFields = collectFormFields('export default function P() { return <Recipe.Context.Provider value={editor.context}><Input value={form.name} /></Recipe.Context.Provider>; }');
+  has("يحفظ حقول النموذج داخل مزود السياق", contextFields, "name");
+  lacks("قيمة سياق React ليست حقل نموذج", contextFields, "context");
 
   eq(
     "يتجاهل الحقلَ المذكور في تعليق",

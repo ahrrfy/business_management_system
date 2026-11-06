@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -502,6 +502,28 @@ describe("digital catalog preflight", () => {
 });
 
 describe("durable mixed digital/ordinary checkout", () => {
+  it("reserves and consumes 1.5 service material once through durable mixed checkout", async () => {
+    const line = await seedRecipeBackedService({ qtyPerOutputBase: "1.5000", materialCost: "100" });
+    const f = await fixture({ customerId: 1, regularLines: [line] });
+    const [reserved] = await db().select().from(s.reservationStock)
+      .where(and(eq(s.reservationStock.variantId, 6), eq(s.reservationStock.branchId, 1)));
+    expect(Number(reserved.reservedBase)).toBe(1.5);
+    const result = await withTx((tx) => finalizeService.finalize(tx, f.input, cashier));
+    const retry = await withTx((tx) => finalizeService.finalize(tx, f.input, cashier));
+    expect(retry.invoiceId).toBe(result.invoiceId);
+    const [materialStock] = await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, 6), eq(s.branchStock.branchId, 1)));
+    expect(Number(materialStock.quantity)).toBe(98.5);
+    const [released] = await db().select().from(s.reservationStock)
+      .where(and(eq(s.reservationStock.variantId, 6), eq(s.reservationStock.branchId, 1)));
+    expect(Number(released.reservedBase)).toBe(0);
+    const snapshots = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.materialVariantId, 6));
+    expect(snapshots).toHaveLength(1);
+    expect(Number(snapshots[0].baseQuantity)).toBe(1.5);
+    expect(snapshots[0].lineCost).toBe("150.00");
+  });
+
   it("يرفض إنشاء فاتورة رقمية جديدة عبر CARD بلا محاولة دفع خارجية مؤكدة", async () => {
     const seeded = await fixture();
     const [offering] = await db()
@@ -1207,9 +1229,15 @@ describe("ordinary snapshot validation", () => {
     await expectServiceRecipeRejected(line, /فعالة لكنها بلا مواد/);
   });
 
-  it("rejects fractional recipe consumption instead of rounding inventory quantity", async () => {
+  it("prepares fractional recipe consumption without rounding inventory quantity", async () => {
     const line = await seedRecipeBackedService({ qtyPerOutputBase: "0.5000", materialCost: "100" });
-    await expectServiceRecipeRejected(line, /كمية كسرية/);
+    const snapshot = await withTx((tx) =>
+      prepareCheckoutSnapshot(tx, { regularLines: [line] }, cashier),
+    );
+    expect(snapshot.expectedSubtotal).toBe("500.00");
+    expect(snapshot.inventoryReservations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stockVariantId: 6, demandedBase: 0.5 }),
+    ]));
   });
 
   it("accepts exact fractional scaling when 0.5×2 equals one base unit", async () => {

@@ -36,7 +36,7 @@ import { notify } from "@/lib/notify";
 import { internalUrl } from "@/lib/siteHosts";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
-import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@/lib/money";
 import { useEffect, useRef, useState } from "react";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useRealtimeEvent } from "@/lib/realtime";
@@ -91,7 +91,7 @@ const LOG_LABEL: Record<string, string> = {
 };
 
 /* ───────── أدوات تنسيق (أرقام لاتينية دائماً) ───────── */
-const nf = (n: number | null | undefined) => fmtInt(n ?? 0);
+const nf = (n: number | null | undefined) => formatQuantity(n ?? 0);
 const dt = (v: string | number | Date | null | undefined) =>
   fmtDateTime(v);
 /** وقت نسبي مقروء: «قبل ٥ دقائق» — بأرقام لاتينية. */

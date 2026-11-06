@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import Decimal from "decimal.js";
+import { isQuantity } from "@shared/quantity";
 import { productUnitBarcodes, productUnits } from "../../../drizzle/schema";
 import { chunk, type DbLike } from "./internal";
 import type { ReviewRow } from "./reviewCore";
@@ -32,7 +33,7 @@ function parseStoredBreakdown(raw: string | null): {
     for (const [key, value] of Object.entries(parsed)) {
       if (
         typeof value === "number" &&
-        Number.isSafeInteger(value) &&
+        isQuantity(value) &&
         value >= 0
       )
         result[key] = value;
@@ -43,7 +44,7 @@ function parseStoredBreakdown(raw: string | null): {
       guard != null &&
       (guard as Record<string, unknown>).version === 1 &&
       typeof (guard as Record<string, unknown>).qty === "number" &&
-      Number.isSafeInteger((guard as Record<string, unknown>).qty) &&
+      isQuantity((guard as Record<string, unknown>).qty) &&
       typeof (guard as Record<string, unknown>).candidateDigest === "string" &&
       /^[a-f0-9]{64}$/.test(
         String((guard as Record<string, unknown>).candidateDigest),

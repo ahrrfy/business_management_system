@@ -17,7 +17,9 @@ import {
 } from "@/components/form/product/productFormModel";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import { BarcodeAliasDialog } from "@/components/product/BarcodeAliasDialog";
+import { ProductRecipeSaveContext, useProductRecipeFormSave } from "@/components/product/productRecipeDraft";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { exportRows } from "@/lib/export";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -56,7 +58,7 @@ export default function ProductEdit() {
 
   const originalBarcodeCodes = useRef(new Map<string, string | null>());
   const [savedSignature, setSavedSignature] = useState<string>("");
-  const isDirty = savedSignature ? productFormSignature(model) !== savedSignature : false;
+  const productIsDirty = savedSignature ? productFormSignature(model) !== savedSignature : false;
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -129,10 +131,18 @@ export default function ProductEdit() {
       if (aliasWarnings.length) notify.warn(`تنبيه بدائل الباركود: ${aliasWarnings.join(" — ")}`);
     },
   });
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const recipeSave = useProductRecipeFormSave(isSaving || update.isPending);
+  const isDirty = productIsDirty || recipeSave.isDirty;
 
-  const blockedBy = useMemo(() => validateProductForm(model), [model]);
+  const blockedBy = useMemo(() => [...validateProductForm(model), ...recipeSave.blockedBy], [model, recipeSave.blockedBy]);
 
   async function save(): Promise<unknown> {
+    if (savingRef.current) throw new Error("يوجد طلب حفظ قيد التنفيذ");
+    savingRef.current = true;
+    setIsSaving(true);
+    try {
     if (!can("catalog.updateProductVariants")) throw new Error("العملية غير مفوضة لحسابك");
     if (allCodes.length) {
       let usages: StoredBarcodeUsage[] = [];
@@ -147,7 +157,12 @@ export default function ProductEdit() {
       }
     }
     const submitted = productFormSignature(model);
-    const res = await update.mutateAsync(buildUpdateProductPayload(model, productId));
+    const recipeSubmission = recipeSave.prepare();
+    const res = await update.mutateAsync({
+      ...buildUpdateProductPayload(model, productId),
+      ...(recipeSubmission ? { recipeChange: recipeSubmission.change } : {}),
+    });
+    await recipeSubmission?.complete(res);
     setSavedSignature(submitted);
     await Promise.all([
       utils.catalog.posList.invalidate(),
@@ -155,10 +170,15 @@ export default function ProductEdit() {
       utils.catalog.getForVariantEdit.invalidate({ productId }),
     ]);
     return res;
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
   }
 
   async function saveAndClose() {
     const res = await save();
+    bypassUnsavedGuard();
     navigate("/products");
     return res;
   }
@@ -233,6 +253,7 @@ export default function ProductEdit() {
         }
       />
 
+      <ProductRecipeSaveContext.Provider value={recipeSave.context}>
       <RecordForm
         mode="edit"
         isDirty={isDirty}
@@ -240,9 +261,10 @@ export default function ProductEdit() {
         onSave={save}
         onSaveAndClose={saveAndClose}
         onCancel={() => navigate("/products")}
-        isPending={update.isPending}
+        isPending={isSaving || update.isPending || recipeSave.isPending}
         savedMessage="تم حفظ التعديلات بنجاح"
       >
+        <fieldset className="contents" disabled={isSaving || update.isPending || recipeSave.isPending}>
         <ProductFormFields
           mode="edit"
           model={model}
@@ -256,7 +278,9 @@ export default function ProductEdit() {
           takenInDb={takenInDb}
           onOpenAliasDialog={setAliasDialog}
         />
+        </fieldset>
       </RecordForm>
+      </ProductRecipeSaveContext.Provider>
 
       {aliasDialog && (
         <BarcodeAliasDialog

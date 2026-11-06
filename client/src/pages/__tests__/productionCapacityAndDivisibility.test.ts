@@ -10,9 +10,7 @@ const readRepoFile = (rel: string) => readFileSync(new URL(`../../../../${rel}`,
  *
  *   **السقف والمضاعف يُعلَنان قبل المحاولة، من مصدرٍ واحد يشترك فيه الخادم والشاشتان.**
  *
- * الخلط الذي أنتج البلاغ: قيدان مختلفان يظهران للمستعمل كعطلٍ واحد — الكفاية (هل المخزون
- * يكفي؟) والقابلية للقسمة (هل الاستهلاك عددٌ صحيح؟). الثاني **غير تصاعديّ**، فيرى المستعمل
- * دفعةً تعمل عند 100 وتُرفض عند 50 والمواد وافرة، فيستنتج حدّاً وهمياً.
+ * عدد الناتج يبقى صحيحاً، واستهلاك المواد يقبل أربع منازل عشرية دون فرض مضاعفات وهمية.
  */
 describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", () => {
   const productionNew = readPage("ProductionNew.tsx");
@@ -22,9 +20,10 @@ describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", ()
   const preview = readRepoFile("server/services/production/preview.ts");
 
   it("مصدر الحساب واحد — لا شاشة تعيد تعريف القاعدة محلّياً", () => {
-    for (const src of [recipes, capacity, preview]) {
+    for (const src of [recipes, capacity]) {
       expect(src).toMatch(/batchDivisibility/);
     }
+    expect(preview).toMatch(/exactRecipeMaterialQuantity/);
     // ⛔ لا اشتقاق مقامٍ يدويّ في الشاشات (نمط الانحراف الذي تمنعه §٥).
     expect(recipes).not.toMatch(/10\s*\*\*\s*4/);
     expect(productionNew).not.toMatch(/requiredBatchMultiple\(/); // الشاشة تعرض ما يحسبه الخادم
@@ -63,9 +62,9 @@ describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", ()
     expect(recipes).not.toMatch(/return `?هذه الوصفة ستقبل/);
   });
 
-  it("رسالة رفض المعاينة صارت تسمّي الدفعة الصالحة لا مجرّد الخطأ", () => {
-    expect(preview).toMatch(/const multipleNote = batchMultipleNote\(batchMultiple\)/);
-    expect(preview).toMatch(/ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة\.\$\{multipleNote/);
+  it("معاينة الاستهلاك تستخدم التحقق الدقيق الذي يسمّي المادة عند رفض الكمية", () => {
+    expect(preview).toContain("exactRecipeMaterialQuantity(");
+    expect(preview).toContain("استهلاك «${l.productName ?? l.inputVariantId}»");
   });
 
   /* ===== ملاحظات مراجعة Codex على #911 — كلٌّ منها مثبَّتة هنا ===== */
@@ -89,12 +88,10 @@ describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", ()
     expect(capacity).toContain(".div(agg.coefSum)");
   });
 
-  it("P2: ⭐ القابلية للقسمة تبقى بالسطر لا بالمجموع", () => {
-    // حارس runPreview يفحص كل سطرٍ وحده ⇒ سطران بـ0.5 يلزمهما مضاعف 2،
-    // بينما مجموعهما 1.0 لا يلزم شيئاً. الخلط هنا كان سيجعل الشاشة تَعِد بدفعةٍ يرفضها الخادم.
-    expect(requiredBatchMultiple(["0.5", "0.5"])).toBe(2);
+  it("يتحقق من دقة كل مادة ويقبل نصف وحدة لكل سطر", () => {
+    expect(requiredBatchMultiple(["0.5", "0.5"])).toBe(1);
     expect(requiredBatchMultiple(["1"])).toBe(1);
-    // ولذلك مصدر المضاعف في الخدمة هو الأسطر لا المجموع.
+    expect(requiredBatchMultiple(["0.00001", "0.99999"])).toBe(0);
     expect(capacity).toContain("const multiple = requiredBatchMultiple(coefficients)");
     expect(capacity).toContain("coefficients = recLines.map");
   });
@@ -111,10 +108,10 @@ describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", ()
     // مكوّن متاحٌ منه 195,680 ومعامِله 80 لكل ناتج ⇒ الكفاية تسمح بـ2446.
     const maxByStock = Math.floor(195680 / 80);
     expect(maxByStock).toBe(2446);
-    // ومعامِلٌ كسريّ ثانٍ (0.01) يفرض مضاعفات 100 ⇒ الأقصى القابل للإنتاج 2400 لا 2446.
+    // استهلاك المادة0.01 يُحفظ كما هو، فتظل كل دفعة ناتج صحيحة ضمن سقف المواد ممكنة.
     const multiple = requiredBatchMultiple(["80", "0.01"]);
-    expect(multiple).toBe(100);
-    expect(largestValidBatchAtMost(maxByStock, multiple)).toBe(2400);
+    expect(multiple).toBe(1);
+    expect(largestValidBatchAtMost(maxByStock, multiple)).toBe(2446);
     // وبمعامِلات صحيحة فقط، السقف هو الكفاية نفسها بلا قصّ.
     expect(largestValidBatchAtMost(maxByStock, requiredBatchMultiple(["80"]))).toBe(2446);
   });

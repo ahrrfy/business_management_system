@@ -2,11 +2,11 @@
 // الشاشة نفسها كي لا تكبر صفحةٌ فوق العتبة أكثر (check:page-size). المصدر الوحيد لثلاثة
 // عروض: خلية المعدود المصحَّح، شارة الحالة الفردية، وتحذير حوار التأكيد.
 import { AlertTriangle } from "lucide-react";
-import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@/lib/money";
 
-const nf = (n: number | null | undefined) => fmtInt(n ?? 0);
+const nf = (n: number | null | undefined) => formatQuantity(n ?? 0);
 const signed = (n: number) =>
-  (n > 0 ? "+" : n < 0 ? "−" : "") + fmtInt(Math.abs(n));
+  (n > 0 ? "+" : n < 0 ? "−" : "") + formatQuantity(Math.abs(n));
 
 export interface NegativeSettlementRow {
   adjustedCount: number | null;

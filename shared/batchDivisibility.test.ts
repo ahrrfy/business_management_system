@@ -8,49 +8,46 @@ import {
   requiredBatchMultiple,
 } from "./batchDivisibility";
 
-/**
- * القاعدة تحرس السلوك الذي أربك المالك: «تعمل عند 100 ولا تعمل عند 50 مع توفّر المواد».
- * الرفض اختبارُ باقي قسمةٍ لا اختبارُ حجم — فهو غير تصاعديّ، والاختبارات تثبّت ذلك صراحةً.
- */
-describe("قابلية قسمة الدفعة", () => {
+describe("دفعات صحيحة باستهلاك مواد عشري دقيق", () => {
   it("المعامِل الصحيح لا يقيّد شيئاً", () => {
     expect(coefficientBatchMultiple("80")).toBe(1);
     expect(coefficientBatchMultiple(1)).toBe(1);
     expect(coefficientBatchMultiple("12.0000")).toBe(1);
   });
 
-  it("المقام يُختزَل — لا يُؤخَذ 10^المنازل خامّاً", () => {
-    expect(coefficientBatchMultiple("0.5")).toBe(2);
-    expect(coefficientBatchMultiple("0.25")).toBe(4);
-    expect(coefficientBatchMultiple("0.16")).toBe(25); // 0.16 × 25 = 4 صحيح
-    expect(coefficientBatchMultiple("0.01")).toBe(100);
-    expect(coefficientBatchMultiple("0.0001")).toBe(MAX_BATCH_MULTIPLE);
+  it("أربع منازل استهلاك لا تفرض مضاعفات على الناتج الصحيح", () => {
+    expect(MAX_BATCH_MULTIPLE).toBe(1);
+    for (const coefficient of ["0.5", "0.25", "0.16", "0.01", "0.0001"]) {
+      expect(coefficientBatchMultiple(coefficient)).toBe(1);
+    }
   });
 
-  it("المعامِل غير الصالح لا يُقحم رأياً — يعود 1", () => {
-    expect(coefficientBatchMultiple("0")).toBe(1);
-    expect(coefficientBatchMultiple("-2.5")).toBe(1);
-    expect(coefficientBatchMultiple("abc")).toBe(1);
-    expect(coefficientBatchMultiple("")).toBe(1);
+  it("المعامِل غير الصالح لا ينتج دفعة قابلة للتنفيذ ولا يرمي في محرر الواجهة", () => {
+    for (const coefficient of ["0", "-2.5", "abc", "", "0.00001", "NaN", "Infinity"]) {
+      expect(coefficientBatchMultiple(coefficient)).toBe(0);
+      expect(requiredBatchMultiple(["1", coefficient])).toBe(0);
+      expect(isBatchDivisible([coefficient], 1)).toBe(false);
+    }
   });
 
-  it("مضاعف الوصفة = lcm مقامات مكوّناتها", () => {
+  it("خلط المواد الصحيحة والكسرية يبقي أصغر دفعة وحدة نهائية واحدة", () => {
     expect(requiredBatchMultiple(["80", "40"])).toBe(1);
-    expect(requiredBatchMultiple(["80", "0.5"])).toBe(2);
-    expect(requiredBatchMultiple(["0.5", "0.25"])).toBe(4);
-    expect(requiredBatchMultiple(["0.16", "0.5"])).toBe(50); // lcm(25, 2)
-    expect(requiredBatchMultiple(["0.01", "80"])).toBe(100);
+    expect(requiredBatchMultiple(["80", "0.5"])).toBe(1);
+    expect(requiredBatchMultiple(["0.5", "0.25"])).toBe(1);
+    expect(requiredBatchMultiple(["0.16", "0.5"])).toBe(1);
+    expect(requiredBatchMultiple(["0.01", "80"])).toBe(1);
     expect(requiredBatchMultiple([])).toBe(1);
   });
 
-  it("⭐ الأصغر ليس أسلم — هذا هو بلاغ المالك بعينه", () => {
+  it("بيع وإنتاج وحدة واحدة أو أي دفعة صحيحة يقبلان معامل 0.01", () => {
     const recipe = ["0.01", "80"]; // مكوّن كسريّ + مكوّن صحيح
     expect(isBatchDivisible(recipe, 100)).toBe(true);
     expect(isBatchDivisible(recipe, 200)).toBe(true);
     expect(isBatchDivisible(recipe, 300)).toBe(true);
-    expect(isBatchDivisible(recipe, 50)).toBe(false);  // أقلّ ⇒ يُرفض
-    expect(isBatchDivisible(recipe, 150)).toBe(false); // أكثر ⇒ يُرفض أيضاً
-    expect(isBatchDivisible(recipe, 99)).toBe(false);
+    expect(isBatchDivisible(recipe, 1)).toBe(true);
+    expect(isBatchDivisible(recipe, 50)).toBe(true);
+    expect(isBatchDivisible(recipe, 150)).toBe(true);
+    expect(isBatchDivisible(recipe, 99)).toBe(true);
   });
 
   it("الدفعة غير الصحيحة أو غير الموجبة مرفوضة دائماً", () => {

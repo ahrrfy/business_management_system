@@ -1,4 +1,6 @@
 import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
+import { addQuantities, isQuantity, subtractQuantities } from "@shared/quantity";
+import { splitWorkOrderMaterialValue } from "@shared/workOrderMaterialCost";
 /**
  * تحرير **بنود** أمر الشغل (المواد) — إضافةً وحذفاً وتغييرَ كمّية، قبل التسليم.
  *
@@ -72,7 +74,7 @@ function aggregate(rows: Array<{ variantId: number | string; baseQuantity: numbe
   const map = new Map<number, number>();
   for (const r of rows) {
     const vid = Number(r.variantId);
-    map.set(vid, (map.get(vid) ?? 0) + Number(r.baseQuantity));
+    map.set(vid, addQuantities(map.get(vid) ?? 0, r.baseQuantity));
   }
   return map;
 }
@@ -91,8 +93,12 @@ export async function setWorkOrderMaterialsInTx(
       throw new TRPCError({ code: "BAD_REQUEST", message: "نسخة أمر الشغل المتوقعة مطلوبة" });
     }
     for (const m of input.materials) {
-      if (!Number.isInteger(m.baseQuantity) || m.baseQuantity <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المادة يجب أن تكون عدداً صحيحاً موجباً" });
+      if (!isQuantity(m.baseQuantity) || m.baseQuantity <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+          what: "تعذّر تعديل كمية المادة",
+          why: "كمية المادة يجب أن تكون موجبة بدقة أربع منازل عشرية كحد أقصى",
+          doThis: "أدخل كمية موجبة بأربع منازل عشرية أو أقل ثم أعد الحفظ",
+        }) });
       }
       if (!Number.isInteger(m.variantId) || m.variantId <= 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "صنف المادة غير صالح" });
@@ -132,6 +138,7 @@ export async function setWorkOrderMaterialsInTx(
         baseQuantity: workOrderMaterials.baseQuantity,
         isBaseMaterial: workOrderMaterials.isBaseMaterial,
         unitCost: workOrderMaterials.unitCost,
+        lineCost: workOrderMaterials.lineCost,
       })
       .from(workOrderMaterials)
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
@@ -271,7 +278,7 @@ export async function setWorkOrderMaterialsInTx(
       for (const vid of touchedIds) {
         const from = currentQty.get(vid) ?? 0;
         const to = desiredQty.get(vid) ?? 0;
-        const delta = to - from;
+        const delta = subtractQuantities(to, from);
         if (delta === 0) continue;
         if (delta > 0) {
           // كل زيادة بعد البدء **دفعة صرف جديدة** بلقطة WAVG الحالية المقفلة أعلاه. لا نعيد
@@ -311,6 +318,7 @@ export async function setWorkOrderMaterialsInTx(
             // حصة الصنف الأساس الحاكمة تبقى في سطر الإنشاء الوحيد؛ الزيادة دفعةٌ لاحقة.
             isBaseMaterial: false,
             unitCost: issueUnitCost.toFixed(2),
+            lineCost: issuedValue.toFixed(2),
           });
         } else {
           // الردّ LIFO على دفعات الصرف الفعلية: الزيادة الأحدث تعود أولاً بتكلفتها، ثم الدفعات
@@ -326,20 +334,33 @@ export async function setWorkOrderMaterialsInTx(
             const minimumKeep = batch.isBaseMaterial === true && wo.baseConsumesInventory === true
               ? Number(baseBaseQuantity ?? 0)
               : 0;
-            const removable = Math.max(0, Number(batch.baseQuantity) - minimumKeep);
+            const removable = Math.max(0, subtractQuantities(batch.baseQuantity, minimumKeep));
             const take = Math.min(remaining, removable);
             if (take <= 0) continue;
-            returnedValue = returnedValue.plus(round2(money(batch.unitCost ?? "0").times(take)));
-            const nextQuantity = Number(batch.baseQuantity) - take;
+            let split: ReturnType<typeof splitWorkOrderMaterialValue>;
+            try {
+              split = splitWorkOrderMaterialValue(batch, take);
+            } catch (error) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: `تعذّر ردّ دفعة خامة الصنف #${vid}`,
+                  why: error instanceof Error ? error.message : "لقطة قيمة الصرف غير صالحة",
+                  doThis: "راجع دفعات الصرف وقيمها التاريخية قبل تعديل المواد؛ لا تستبدلها بتكلفة اليوم",
+                }),
+              });
+            }
+            returnedValue = returnedValue.plus(split.returnedValue);
+            const nextQuantity = subtractQuantities(batch.baseQuantity, take);
             if (nextQuantity === 0) {
               await tx.delete(workOrderMaterials).where(eq(workOrderMaterials.id, Number(batch.id)));
             } else {
               await tx
                 .update(workOrderMaterials)
-                .set({ baseQuantity: nextQuantity })
+                .set({ baseQuantity: nextQuantity, lineCost: split.remainingValue.toFixed(2) })
                 .where(eq(workOrderMaterials.id, Number(batch.id)));
             }
-            remaining -= take;
+            remaining = subtractQuantities(remaining, take);
           }
           if (remaining !== 0) {
             throw new TRPCError({
@@ -408,6 +429,7 @@ export async function setWorkOrderMaterialsInTx(
           baseQuantity: desiredQty.get(vid)!,
           isBaseMaterial: wo.baseConsumesInventory === true && vid === baseVariantId,
           unitCost: "0",
+          lineCost: "0.00",
         });
       }
     }

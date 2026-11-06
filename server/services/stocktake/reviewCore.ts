@@ -2,6 +2,7 @@
 // المعادلات حرفياً من العقد §٢ (docs/stocktake-contract.md).
 import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
+import { addQuantities, subtractQuantities } from "@shared/quantity";
 import {
   branchStock,
   inventoryMovements,
@@ -471,7 +472,7 @@ async function loadReviewCore(
         : "—",
       at: m.createdAt,
     }));
-    const netAfter = movesAfter.reduce((acc, m) => acc + m.qty, 0);
+    const netAfter = movesAfter.reduce((acc, m) => addQuantities(acc, m.qty), 0);
 
     const interveningStocktakeMovement =
       used == null
@@ -493,9 +494,9 @@ async function loadReviewCore(
       s.status !== "CANCELLED" &&
       (interveningStocktake != null || activeStocktakeOverlap != null);
     const adjustedCount =
-      rawCount == null ? null : rawCount + (autoAdjust ? netAfter : 0);
+      rawCount == null ? null : addQuantities(rawCount, autoAdjust ? netAfter : 0);
     const bookNow = stockNow.get(v) ?? 0;
-    const diff = adjustedCount == null ? null : adjustedCount - bookNow;
+    const diff = adjustedCount == null ? null : subtractQuantities(adjustedCount, bookNow);
     const unitCost = String(it.unitCost ?? "0");
     const valueDec = diff == null ? null : money(unitCost).times(diff);
     const value = valueDec == null ? null : toDbMoney(valueDec);

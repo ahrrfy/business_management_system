@@ -19,5 +19,5 @@ it("executes activation failure, ownership, per-PID and durable boot contracts",
     { encoding: "utf8", timeout: 30000 },
   );
   expect(result).toMatch(/fail 0/);
-  expect(result).toMatch(/pass 39/);
+  expect(Number(result.match(/pass (\d+)/)?.[1])).toBeGreaterThanOrEqual(39);
 });

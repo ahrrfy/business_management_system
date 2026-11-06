@@ -1,4 +1,5 @@
 import test from "node:test";
+import "./fractional-inventory-schema.test.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,7 +14,19 @@ import {
   hashFile,
   readProcessIdentity,
   withInventoryConnectionDeadline,
+  forwardRecoveryProjectionBaseline,
 } from "./inventory-activation-host.mjs";
+
+test("forward recovery validates retained projection provenance instead of declaring rollback", () => {
+  const artifact = { name: "erp-server", script: path.resolve("old/index.js"), bundle: path.resolve("old/index.js"), hash: "a".repeat(64), scriptHash: "a".repeat(64), instances: 2 };
+  const active = { readyVersion: 1, activationId: "12345678-1234-1234-1234-123456789abc", commit: "b".repeat(40), projectionCommit: "c".repeat(40), database: "erp_test", serverUuid: "server-one", artifacts: [artifact] };
+  const journal = { phase: "FATAL", database: "erp_test", serverUuid: "server-one", initialReadyVersion: 1, priorActive: active, schemaTransition: { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: true } };
+  const before = JSON.stringify(journal);
+  assert.equal(forwardRecoveryProjectionBaseline(journal, { readyVersion: 1, activatedCommit: "c".repeat(40) }), active);
+  assert.equal(JSON.stringify(journal), before);
+  assert.throws(() => forwardRecoveryProjectionBaseline(journal, { readyVersion: 1, activatedCommit: "d".repeat(40) }), /PROJECTION_MISMATCH/);
+  assert.throws(() => forwardRecoveryProjectionBaseline(journal, { readyVersion: 0 }), /PROJECTION_MISMATCH/);
+});
 
 test("an unresolved database operation destroys its exact connection without reconnect", async () => {
   let destroyed = 0;

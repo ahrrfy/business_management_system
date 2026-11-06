@@ -18,6 +18,7 @@ import {
   runInventoryActivation,
   writeActivationJournal,
 } from "./inventory-activation-fence.mjs";
+import { assertForwardSchemaRecovery } from "./fractional-inventory-schema.mjs";
 
 export const hashFile = (file) =>
   createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -223,6 +224,8 @@ export function createLinuxActivationOperations({
   installedHelperPath = "/usr/local/libexec/erp/pm2-systemd-start.mjs",
   requestAttestation = queryWorkerAttestation,
   drainTimeoutMs = 45000,
+  prepareSchema,
+  forwardRecoveryJournal = null,
 }) {
   const file = path.join(pm2Home, JOURNAL_NAME);
   const rows = () => JSON.parse(execute("pm2", ["jlist"]));
@@ -436,6 +439,16 @@ export function createLinuxActivationOperations({
       if (old.some((r) => r.name === "erp-provision-worker"))
         throw new Error("INVENTORY_PROVISIONING_CLASSIFICATION_REQUIRED");
       const previous = readActivationJournal(file);
+      if (forwardRecoveryJournal) {
+        if (previous?.id !== forwardRecoveryJournal.id) throw new Error("FRACTIONAL_FORWARD_RECOVERY_JOURNAL_CHANGED");
+        assertForwardSchemaRecovery(previous, { database: journal.database, serverUuid: journal.serverUuid });
+        // A crash may leave a subset of the failed candidate running. Only that
+        // exact immutable candidate may be stopped; old artifacts cannot reappear.
+        for (const item of old) {
+          const artifact = [...previous.artifacts, ...(previous.recoveryArtifacts ?? [])].find((a) => a.name === item.name && path.resolve(item.row.pm2_env.pm_exec_path) === a.script);
+          if (!artifact || hashFile(artifact.bundle) !== artifact.hash || hashFile(artifact.script) !== artifact.scriptHash) throw new Error("FRACTIONAL_FORWARD_RECOVERY_PROCESS_MISMATCH");
+        }
+      }
       const priorActive = activeInventoryManifest(previous);
       if (priorActive) {
         for (const item of old) {
@@ -558,6 +571,7 @@ export function createLinuxActivationOperations({
       );
     },
     installCandidate,
+    prepareSchema,
     async startCandidates() {
       execute("pm2", ["start", configFile, "--only", "erp-server"]);
       if (bridgeConfigPath)
@@ -690,6 +704,19 @@ export function createLinuxActivationOperations({
   };
 }
 
+export function forwardRecoveryProjectionBaseline(existing, state) {
+  assertForwardSchemaRecovery(existing);
+  if (Number(state?.readyVersion) === 0 && existing.initialReadyVersion === 0) return null;
+  if (Number(state?.readyVersion) !== 1) throw new Error("FRACTIONAL_FORWARD_RECOVERY_PROJECTION_MISMATCH");
+  let active = existing.priorActive;
+  if (!active && existing.initialReadyVersion === 0 && state.activatedCommit === existing.commit) {
+    active = { readyVersion: 1, activationId: existing.id, commit: existing.commit, projectionCommit: existing.commit, database: existing.database, serverUuid: existing.serverUuid, artifacts: existing.artifacts };
+  }
+  if (!active || active.projectionCommit !== state.activatedCommit) throw new Error("FRACTIONAL_FORWARD_RECOVERY_PROJECTION_MISMATCH");
+  // Validate retained evidence without inventing a durable rollback transition.
+  return activeInventoryManifest({ ...existing, id: active.activationId, phase: "RELEASED", commit: active.commit, artifacts: active.artifacts, active });
+}
+
 export async function executeInventoryDeployment(options) {
   const {
     projectRoot,
@@ -701,7 +728,12 @@ export async function executeInventoryDeployment(options) {
   } = options;
   const file = path.join(pm2Home, JOURNAL_NAME);
   const existing = readActivationJournal(file);
-  if (existing && !["RELEASED", "ROLLED_BACK"].includes(existing.phase))
+  const forwardRecovery = options.forwardRecoveryActivationId !== undefined;
+  if (forwardRecovery) {
+    assertForwardSchemaRecovery(existing);
+    if (options.forwardRecoveryActivationId !== existing.id) throw new Error("FRACTIONAL_FORWARD_RECOVERY_JOURNAL_CHANGED");
+    if (options.schemaTransition?.id !== existing.schemaTransition.id || options.schemaTransition.started !== true || options.schemaTransition.rollbackPolicy !== "FORWARD_ONLY" || typeof options.prepareSchema !== "function") throw new Error("FRACTIONAL_FORWARD_RECOVERY_PREPARATION_REQUIRED");
+  } else if (existing && !["RELEASED", "ROLLED_BACK"].includes(existing.phase))
     throw new Error("INVENTORY_ACTIVATION_RECOVERY_REQUIRED");
   // Runtime multi-tenancy routes ordinary getDb through company context. It needs
   // an explicitly enumerated multi-database fence, never a guessed DATABASE_URL.
@@ -732,6 +764,7 @@ export async function executeInventoryDeployment(options) {
       throw new Error("INVENTORY_BACKUP_TARGET_IDENTITY_CHANGED");
     if (target.databaseName !== runtime.db)
       throw new Error("INVENTORY_RUNTIME_DATABASE_TARGET_MISMATCH");
+    if (forwardRecovery) assertForwardSchemaRecovery(existing, { database: target.databaseName, serverUuid: target.serverUuid });
     if (
       existing &&
       (existing.database !== target.databaseName ||
@@ -741,7 +774,10 @@ export async function executeInventoryDeployment(options) {
     const [[state]] = await b.query(
       "SELECT readyVersion,activatedCommit FROM inventoryProjectionState WHERE id=1",
     );
-    const priorActive = assertInventoryReadinessLifecycle(existing, state);
+    if (options.schemaTransition && Number(state?.readyVersion) !== 1) throw new Error("FRACTIONAL_SCHEMA_CUTOVER_REQUIRES_READY_PROJECTION");
+    const priorActive = forwardRecovery ? forwardRecoveryProjectionBaseline(existing, state) : assertInventoryReadinessLifecycle(existing, state);
+    const recoveryArtifacts = forwardRecovery ? [...new Map([...existing.artifacts, ...(existing.recoveryArtifacts ?? [])].map((artifact) => [`${artifact.script}:${artifact.hash}`, artifact])).values()] : undefined;
+    if (recoveryArtifacts?.length > 64) throw new Error("INVENTORY_RECOVERY_ARTIFACTS_LIMIT");
     const journal = {
       version: 1,
       id: randomUUID(),
@@ -751,9 +787,12 @@ export async function executeInventoryDeployment(options) {
       serverUuid: target.serverUuid,
       nonce: randomBytes(32).toString("hex"),
       artifacts,
-      priorArtifacts,
+      priorArtifacts: forwardRecovery && priorActive ? priorActive.artifacts : priorArtifacts,
       priorActive,
       bridgeBaseline: options.bridgeBaseline,
+      schemaTransition: options.schemaTransition,
+      resumedFrom: forwardRecovery ? existing.id : undefined,
+      recoveryArtifacts,
     };
     const operations = createLinuxActivationOperations({
       ...options,
@@ -762,6 +801,7 @@ export async function executeInventoryDeployment(options) {
       connectionB: b,
       externalWritersExcluded:
         environment.ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED === "1",
+      forwardRecoveryJournal: forwardRecovery ? existing : null,
     });
     return await runInventoryActivation({
       journal,

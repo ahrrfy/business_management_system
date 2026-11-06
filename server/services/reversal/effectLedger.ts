@@ -17,6 +17,7 @@ import Decimal from "decimal.js";
 import { sql } from "drizzle-orm";
 
 import { appErrorMessage } from "@shared/errors";
+import { addQuantities, quantityNumber } from "@shared/quantity";
 import type {
   DocumentEffectKind,
   DocumentType,
@@ -65,16 +66,21 @@ export function toEffectAmountString(value: string | number | Decimal | undefine
   return dec.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
 }
 
-/** ينحت قيمةً صحيحةً موقَّعة لحركة المخزون. يرفض غير الأعداد الصحيحة. */
+/** كمية موقعة بدقة المخزون؛ لا تقريب ولا حذف للكسر. */
 export function toEffectQuantity(value: number | undefined | null): number {
   if (value === undefined || value === null) return 0;
-  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+  try {
+    return quantityNumber(value);
+  } catch {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: "كمّيةُ أثرٍ ليست عدداً صحيحاً موقَّعاً",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل كمية أثر المخزون",
+        why: "الكمية غير منتهية أو تتجاوز دقة المخزون أو سعته",
+        doThis: "راجع كمية المادة وأدخل أربع منازل عشرية أو أقل ضمن الحد المسموح",
+      }),
     });
   }
-  return value;
 }
 
 /** يسجّل صفَّ APPLY داخل المعاملة الحاليّة ويُرجع مُعرِّفه. */
@@ -236,7 +242,7 @@ export async function loadApplyEffects(
   `)) as unknown;
   return rowsOf<RawApplyRow>(execResult).map((r) => {
     const signedAmount = new Decimal(r.signedAmount ?? 0);
-    const signedQuantity = Number(r.signedQuantity ?? 0);
+    const signedQuantity = quantityNumber(r.signedQuantity ?? 0);
     return {
       id: Number(r.id),
       documentType: r.documentType as DocumentType,
@@ -250,7 +256,7 @@ export async function loadApplyEffects(
       signedAmount,
       signedQuantity,
       outstandingAmount: signedAmount.plus(new Decimal(r.reversedAmount ?? 0)),
-      outstandingQuantity: signedQuantity + Number(r.reversedQuantity ?? 0),
+      outstandingQuantity: addQuantities(signedQuantity, r.reversedQuantity ?? 0),
     };
   });
 }
@@ -325,6 +331,6 @@ export async function summarizeEffects(
     sumAmount: new Decimal(r.sumAmount ?? 0)
       .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
       .toFixed(4),
-    sumQuantity: Number(r.sumQuantity ?? 0),
+    sumQuantity: quantityNumber(r.sumQuantity ?? 0),
   }));
 }

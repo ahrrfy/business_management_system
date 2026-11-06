@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { operationDecision } from "@shared/operationPermissions";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { useSessionContext } from "@/hooks/useSessionContext";
+import {
+  buildRecipeChange, recipeDraftBlockers, recipeDraftSignature,
+  useProductRecipeDraftRegistration, type ProductRecipeChange, type RecipeDraftFields,
+  type RecipeDraftIdentity,
+} from "./productRecipeDraft";
 import {
   getStoredRecipeClipboard,
   getRecipeClipboardKey,
@@ -59,7 +64,31 @@ export function useProductRecipe({
     },
   );
 
-  const [isEditing, setIsEditing] = useState(false);
+  const data = recipeQ.data;
+  const [isEditing, setEditing] = useState(false);
+  const editSource = useRef<{
+    data: NonNullable<typeof data>; identity: RecipeDraftIdentity; baseline: string;
+  } | null>(null);
+  function setIsEditing(next: boolean) {
+    if (next && !isEditing && data && !recipeQ.isError) {
+      const recipe = data.recipe;
+      editSource.current = {
+        data,
+        identity: {
+          recipeId: recipe?.id ?? null,
+          outputVariantId: recipe?.outputVariantId ?? data.primaryVariantId ?? 0,
+          outputProductUnitId: recipe?.outputProductUnitId ?? data.primaryProductUnitId ?? 0,
+          expectedFingerprint: (data as typeof data & { recipeFingerprint?: string }).recipeFingerprint ?? "",
+        },
+        baseline: recipeDraftSignature({
+          formName: recipe?.name ?? `وصفة ${data.product.name || "المنتج"}`,
+          formLabor: recipe?.laborPerOutputBase ?? "0", formWaste: recipe?.wasteStdPct ?? "0",
+          formNotes: recipe?.notes ?? "", formLines: recipe?.lines ?? [],
+        }),
+      };
+    }
+    setEditing(next);
+  }
   const [selectedRecipeId, setSelectedRecipeId] = useState<number | null>(null);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [priceTierMode, setPriceTierMode] = useState<"RETAIL" | "WHOLESALE">(
@@ -106,7 +135,8 @@ export function useProductRecipe({
 
   // إعادة ضبط حالة التحرير ونموذج الإدخال عند التبديل لمنتج آخر
   useEffect(() => {
-    setIsEditing(false);
+    setEditing(false);
+    editSource.current = null;
     setSelectedRecipeId(null);
     setSearchQuery("");
     setShowSearchDropdown(false);
@@ -151,19 +181,15 @@ export function useProductRecipe({
 
   // طفرات إدارة الوصفة
   const createMut = trpc.production.recipes.create.useMutation({
-    onSuccess: async () => {
+    onSuccess: () => {
       notify.ok("تم إنشاء وصفة المواد بنجاح");
-      setIsEditing(false);
-      await invalidateRecipeCaches();
     },
     onError: (err) => notify.err(err.message || "تعذّر حفظ الوصفة"),
   });
 
   const updateMut = trpc.production.recipes.update.useMutation({
-    onSuccess: async () => {
+    onSuccess: () => {
       notify.ok("تم تحديث وصفة المواد بنجاح");
-      setIsEditing(false);
-      await invalidateRecipeCaches();
     },
     onError: (err) => notify.err(err.message || "تعذّر تحديث الوصفة"),
   });
@@ -185,16 +211,16 @@ export function useProductRecipe({
     onError: (err) => notify.err(err.message || "تعذّر حذف الوصفة"),
   });
 
-  const data = recipeQ.data;
   const currentRecipe = useMemo(() => {
-    if (!data) return null;
+    const source = isEditing ? editSource.current?.data : data;
+    if (!source) return null;
     if (selectedRecipeId != null) {
-      if (data.recipe && data.recipe.id === selectedRecipeId) {
-        return data.recipe;
+      if (source.recipe && source.recipe.id === selectedRecipeId) {
+        return source.recipe;
       }
     }
-    return data.recipe;
-  }, [data, selectedRecipeId]);
+    return source.recipe;
+  }, [data, selectedRecipeId, isEditing]);
 
   // بنود الوصفة النشطة لفحص المخزون الفوري
   const activeLinesForCheck = useMemo(() => {
@@ -236,8 +262,7 @@ export function useProductRecipe({
           ? "production.recipes.update"
           : "production.recipes.create",
       ) ||
-      createMut.isPending ||
-      updateMut.isPending
+      isWritePending
     )
       return;
     if (currentRecipe) {
@@ -347,8 +372,53 @@ export function useProductRecipe({
     );
   }
 
+  const fields: RecipeDraftFields = { formName, formLabor, formWaste, formNotes, formLines };
+  const latestFields = useRef(fields);
+  latestFields.current = fields;
+  const recipeIsDirty = isEditing && editSource.current != null
+    && recipeDraftSignature(fields) !== editSource.current.baseline;
+  const recipeBlockedBy = isEditing ? recipeDraftBlockers(fields, editSource.current?.identity ?? null,
+    can(editSource.current?.identity.recipeId != null ? "production.recipes.update" : "production.recipes.create")) : [];
+  function prepareRecipeChange(force = false): ProductRecipeChange | undefined {
+    if (!isEditing || (!force && !recipeIsDirty)) return undefined;
+    if (recipeBlockedBy.length) throw new Error(recipeBlockedBy[0]);
+    return buildRecipeChange(fields, editSource.current!.identity);
+  }
+  async function acceptRecipeSave(change: ProductRecipeChange, result: unknown) {
+    const saved = result as { recipeId?: number; recipeFingerprint?: string } | null;
+    if (!saved?.recipeId || !saved.recipeFingerprint)
+      throw new Error("تعذّر تأكيد حفظ الوصفة؛ حدّث الصفحة وراجع الوصفة المحفوظة");
+    if (editSource.current) {
+      editSource.current.identity = { ...editSource.current.identity,
+        recipeId: saved.recipeId, expectedFingerprint: saved.recipeFingerprint };
+      const submittedFields: RecipeDraftFields = {
+        formName: change.name, formLabor: change.laborPerOutputBase ?? "0",
+        formWaste: change.wasteStdPct ?? "0", formNotes: change.notes ?? "",
+        formLines: change.lines.map((line) => ({ ...line, inputProductName: "", inputSku: "", inputCostPrice: "0" })),
+      };
+      editSource.current.baseline = recipeDraftSignature(submittedFields);
+      if (recipeDraftSignature(latestFields.current) === editSource.current.baseline) setEditing(false);
+    }
+    await invalidateRecipeCaches();
+  }
+  const localPending = createMut.isPending || updateMut.isPending || setActiveMut.isPending || deleteMut.isPending;
+  const parentPending = useProductRecipeDraftRegistration({
+    isDirty: recipeIsDirty, isPending: localPending, blockedBy: recipeIsDirty ? recipeBlockedBy : [],
+    prepare: () => {
+      if (localPending) throw new Error("انتظر اكتمال العملية الحالية على الوصفة");
+      const change = prepareRecipeChange();
+      return change ? { change, complete: (result) => acceptRecipeSave(change, result) } : undefined;
+    },
+  }, productId);
+  const isWritePending = parentPending || localPending;
+
   return {
     can,
+    recipeIsDirty,
+    recipeBlockedBy,
+    prepareRecipeChange,
+    acceptRecipeSave,
+    isWritePending,
     recipeQ,
     data,
     currentRecipe,

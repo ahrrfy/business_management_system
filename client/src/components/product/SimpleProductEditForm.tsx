@@ -13,6 +13,7 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { type ImageItem } from "@/components/form/ImageUploader";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import ProductRecipeSection from "@/components/product/ProductRecipeSection";
+import { ProductRecipeSaveContext, useProductRecipeFormSave } from "./productRecipeDraft";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
@@ -28,6 +29,7 @@ import { NameAssistant } from "@/components/product/NameAssistant";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import { Badge } from "@/components/ui/badge";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
@@ -119,6 +121,10 @@ export default function SimpleProductEditForm({
 }) {
   const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
+  const update = trpc.catalog.updateProductVariants.useMutation();
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const recipeSave = useProductRecipeFormSave(isSaving || update.isPending);
   const [, navigate] = useLocation();
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
   const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
@@ -241,7 +247,7 @@ export default function SimpleProductEditForm({
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
   }, [hydrated, formSig]);
-  const dirty = hydrated && baseline.current !== null && formSig !== baseline.current;
+  const dirty = (hydrated && baseline.current !== null && formSig !== baseline.current) || recipeSave.isDirty;
   // الانتقال للتحرير المتقدّم يعيد التحميل من الخادم ⇒ نؤكّد قبل تجاهل تعديلات غير محفوظة.
   const goAdvanced = async () => {
     if (
@@ -278,8 +284,6 @@ export default function SimpleProductEditForm({
     () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
     [checkQ.data, barcodeFields]
   );
-
-  const update = trpc.catalog.updateProductVariants.useMutation();
 
   /** بعد حفظٍ أو استعادةٍ ناجحة: إبطالُ الكاش وإعادةُ التعبئة من الخادم (لقطة الأساس تُلتقَط من جديد). */
   async function reloadFromServer() {
@@ -332,6 +336,10 @@ export default function SimpleProductEditForm({
 
   /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
   async function save(): Promise<unknown> {
+    if (savingRef.current) throw new Error("يوجد طلب حفظ قيد التنفيذ");
+    savingRef.current = true;
+    setIsSaving(true);
+    try {
     if (!can("catalog.updateProductVariants")) throw new Error("العملية غير مفوضة لحسابك");
     const err = validate();
     if (err) throw new Error(err);
@@ -367,6 +375,7 @@ export default function SimpleProductEditForm({
     }));
     const unitBarcodes: Record<string, string> = {};
     for (const u of units) { const b = u.barcode.trim(); if (b) unitBarcodes[u.name.trim()] = b; }
+    const recipeSubmission = recipeSave.prepare();
     const res = await update.mutateAsync({
       productId,
       name: finalName || null,
@@ -398,8 +407,21 @@ export default function SimpleProductEditForm({
       ],
       // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
+      ...(recipeSubmission ? { recipeChange: recipeSubmission.change } : {}),
     });
+    await recipeSubmission?.complete(res);
     await reloadFromServer();
+    return res;
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  }
+
+  async function saveAndClose() {
+    const res = await save();
+    bypassUnsavedGuard();
+    navigate("/products");
     return res;
   }
 
@@ -427,16 +449,19 @@ export default function SimpleProductEditForm({
         }
       />
 
+      <ProductRecipeSaveContext.Provider value={recipeSave.context}>
       <RecordForm
         mode="edit"
         isDirty={dirty}
-        blockedBy={!can("catalog.updateProductVariants") ? ["العملية غير مفوضة لحسابك"] : validationReason ? [validationReason] : []}
-        isPending={update.isPending}
+        blockedBy={[...(!can("catalog.updateProductVariants") ? ["العملية غير مفوضة لحسابك"] : validationReason ? [validationReason] : []), ...recipeSave.blockedBy]}
+        isPending={isSaving || update.isPending || recipeSave.isPending}
         onSave={save}
+        onSaveAndClose={saveAndClose}
         onCancel={() => navigate("/products")}
         savedMessage="تم حفظ التعديلات"
         barHint="تعديل سلعة بسيطة — المخزون يُدار عبر الجرد/الحركات."
       >
+       <fieldset className="contents" disabled={isSaving || update.isPending || recipeSave.isPending}>
       {!product.data?.isService && !product.data?.isBundle && (
         <ConsignmentField
           value={consignment}
@@ -743,7 +768,9 @@ export default function SimpleProductEditForm({
           setHydrated(false);
         }}
       />
+       </fieldset>
       </RecordForm>
+      </ProductRecipeSaveContext.Provider>
     </div>
   );
 }

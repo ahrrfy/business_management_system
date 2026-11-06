@@ -2,6 +2,7 @@ import { lockEconomicInventoryScope, readEconomicVariant, readEconomicOwnedPosit
 // إنشاء مستند إنتاج: يستهلك المدخلات ويُنتج المخرجات ذرّياً + يُحدّث كلفة المخرجات (بلا قيد محاسبي).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { isQuantity, quantityNumber } from "@shared/quantity";
 import Decimal from "decimal.js";
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -218,10 +219,12 @@ async function assertManualUnitsStillCurrent(
     ...(input.inputs ?? []).map((line, index) => ({
       line,
       planned: inLines[index],
+      isMaterial: true,
     })),
     ...(input.outputs ?? []).map((line, index) => ({
       line,
       planned: outLines[index],
+      isMaterial: false,
     })),
   ].filter(({ line }) => line.productUnitId != null);
   if (!requested.length) return;
@@ -242,7 +245,7 @@ async function assertManualUnitsStillCurrent(
     .for("update");
   const byId = new Map(rows.map((row) => [Number(row.id), row]));
 
-  for (const { line, planned } of requested) {
+  for (const { line, planned, isMaterial } of requested) {
     const unit = byId.get(Number(line.productUnitId));
     if (
       !planned ||
@@ -258,10 +261,11 @@ async function assertManualUnitsStillCurrent(
         unit.conversionFactor,
       );
       if (
-        !currentBaseQuantity.isInteger() ||
+        (!isMaterial && !currentBaseQuantity.isInteger()) ||
+        !isQuantity(currentBaseQuantity.toNumber()) ||
         currentBaseQuantity.lte(0) ||
         currentBaseQuantity.gt(Number.MAX_SAFE_INTEGER) ||
-        currentBaseQuantity.toNumber() !== planned.baseQuantity
+        quantityNumber(currentBaseQuantity) !== planned.baseQuantity
       ) {
         throwConcurrentUnitChange();
       }
@@ -393,12 +397,12 @@ async function assertRunPlanStillCurrent(
       spoilage.batch,
     );
     if (
-      !currentBaseQuantity.isInteger() ||
+      !isQuantity(currentBaseQuantity.toNumber()) ||
       currentBaseQuantity.lte(0) ||
       currentBaseQuantity.gt(Number.MAX_SAFE_INTEGER) ||
       expectedVariantId !== planned.variantId ||
       expectedProductUnitId !== planned.productUnitId ||
-      currentBaseQuantity.toNumber() !== planned.baseQuantity
+      quantityNumber(currentBaseQuantity) !== planned.baseQuantity
     ) {
       throwConcurrentRecipeChange();
     }
@@ -555,7 +559,7 @@ async function resolveAndValidateLines(
         }),
       });
     inLines = [];
-    for (const l of input.inputs) inLines.push(await resolveLine(tx, l));
+    for (const l of input.inputs) inLines.push(await resolveLine(tx, l, { allowFractionalBase: true }));
     outLines = [];
     for (const l of input.outputs) outLines.push(await resolveLine(tx, l));
     laborCost = round2(money(input.laborCost ?? "0"));

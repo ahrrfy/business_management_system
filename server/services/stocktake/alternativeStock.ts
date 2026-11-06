@@ -5,6 +5,7 @@
 // وحصّة كلّ ترميزٍ من الإجماليّ (كمية + نسبة). المخزون بوحدة الأساس (صحيح) من branchStock — إمّا
 // مجمّعاً عبر الفروع (branchId = null) أو لفرعٍ بعينه.
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { addQuantities } from "@shared/quantity";
 import { branchStock, products, productUnits, productVariants } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 
@@ -125,11 +126,11 @@ export async function listAlternativeStockBreakdown(
 
   const out: AlternativeStockBreakdown[] = [];
   for (const group of Array.from(byProduct.values())) {
-    const totalBase = group.variants.reduce((s, v) => s + v.quantityBase, 0);
+    const totalBase = group.variants.reduce((s, v) => addQuantities(s, v.quantityBase), 0);
     // الحصص تُحسَب من الرصيد **الموجب** فقط: branchStock قد يكون سالباً (وضع الافتتاح/الأوفلاين)،
     // والقسمة على المجموع المُوقَّع تُنتج حصصاً خارج [0,100] (‎−100٪/200٪) أو صفراً مُضلِّلاً (Codex P2).
     // الكمية السالبة عجزٌ لا حصّة ⇒ حصّتها 0، والمقام مجموع الكميات الموجبة. القيمة السالبة تبقى ظاهرةً.
-    const positiveTotal = group.variants.reduce((s, v) => s + Math.max(0, v.quantityBase), 0);
+    const positiveTotal = group.variants.reduce((s, v) => addQuantities(s, Math.max(0, v.quantityBase)), 0);
     for (const v of group.variants) {
       v.sharePct =
         positiveTotal > 0 && v.quantityBase > 0

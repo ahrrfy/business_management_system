@@ -3,7 +3,7 @@ import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 // يستهلكه تقرير Stocktakes.tsx وحوار Products.tsx (نفس العرض في المكانين).
 import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown, Boxes } from "lucide-react";
@@ -26,7 +26,7 @@ export function AlternativeStockCard({ product }: { product: ProductBreakdown })
         <p className="shrink-0 text-sm">
           <span className="text-muted-foreground">الإجماليّ: </span>
           <span className="font-bold tabular-nums" dir="ltr">
-            {fmtInt(product.totalBase)}
+            {formatQuantity(product.totalBase)}
           </span>{" "}
           <span className="text-xs text-muted-foreground">{baseUnit}</span>
         </p>
@@ -55,7 +55,7 @@ export function AlternativeStockCard({ product }: { product: ProductBreakdown })
             </div>
             <div className="w-24 shrink-0 text-start">
               <span className="text-sm font-bold tabular-nums" dir="ltr">
-                {fmtInt(v.quantityBase)}
+                {formatQuantity(v.quantityBase)}
               </span>
               <span className="ms-1 text-xs text-muted-foreground tabular-nums">
                 ({v.sharePct.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪)

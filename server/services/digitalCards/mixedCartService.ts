@@ -30,6 +30,7 @@ import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { resolveContractPrices } from "../contractPriceService";
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { convertToBaseQuantity } from "../inventoryService";
+import { addQuantities, isQuantity } from "@shared/quantity";
 import { money, round2, sumMoney, toDbMoney } from "../money";
 import {
   getUnitPrice,
@@ -366,12 +367,14 @@ export async function prepareCheckoutSnapshot(
       requiresOwnedStock: boolean,
       label: string,
     ) => {
-      if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      if (!isQuantity(quantity) || quantity <= 0) {
         checkoutError(`كمية ${label} غير قابلة للتتبع بوحدة الأساس`);
       }
       const current = requestedStock.get(variantId);
-      const total = (current?.quantity ?? 0) + quantity;
-      if (!Number.isSafeInteger(total)) {
+      let total: number;
+      try {
+        total = addQuantities(current?.quantity ?? 0, quantity);
+      } catch {
         checkoutError(`إجمالي كمية ${label} يتجاوز الحد الآمن`);
       }
       requestedStock.set(variantId, {
@@ -384,7 +387,7 @@ export async function prepareCheckoutSnapshot(
       reservationBySourceStock.set(reservationKey, {
         sourceVariantId,
         stockVariantId: variantId,
-        demandedBase: (reservation?.demandedBase ?? 0) + quantity,
+        demandedBase: addQuantities(reservation?.demandedBase ?? 0, quantity),
         reservedBase: 0,
       });
     };

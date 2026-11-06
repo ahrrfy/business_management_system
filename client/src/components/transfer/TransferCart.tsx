@@ -9,7 +9,10 @@
  * الأسطر بوحدة البيع المختارة (درزن/كرتون…) وتُجمَّع بالأساس لكل متغيّر عند الإرسال
  * (الخادم يرفض تكرار المتغيّر في السند الواحد — التجميع في Transfers.tsx).
  */
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { addQuantities, isQuantity, multiplyQuantities } from "@shared/quantity";
+import Decimal from "decimal.js";
+import { normalizeCountDraft } from "../stocktake/quantityDraft";
 import { Package, PackagePlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,8 +33,12 @@ export interface TransferLineState {
   isShort: boolean;
   availInUnit: number;
   baseQty: number;
-  /** معامل تحويل غير صحيح × الكمية ⇒ كمية أساس كسرية (مرفوضة §٥). */
+  /** كمية أو معامل غير صالح، أو كسر بكج؛ المواد تقبل أربع منازل عشرية. */
   fractional: boolean;
+}
+
+function shiftQuantity(value: number, delta: number): number {
+  try { return addQuantities(value, delta); } catch { return Number.NaN; }
 }
 
 /** حالة المخزون لكل سطر بطلبٍ مجمَّع per-variant (نفس منطق ProductTable). */
@@ -39,41 +46,54 @@ export function computeLineStates(lines: TransferCartLine[]): TransferLineState[
   const demandByVariant = new Map<number, number>();
   for (const l of lines) {
     const f = Number(l.conversionFactor) || 1;
-    demandByVariant.set(l.variantId, (demandByVariant.get(l.variantId) ?? 0) + (Number(l.qty) || 0) * f);
+    try {
+      demandByVariant.set(l.variantId, addQuantities(demandByVariant.get(l.variantId) ?? 0, multiplyQuantities(l.qty, f)));
+    } catch {
+      demandByVariant.set(l.variantId, Number.NaN);
+    }
   }
   return lines.map((l) => {
     const f = Number(l.conversionFactor) || 1;
-    const baseQty = (Number(l.qty) || 0) * f;
+    let baseQty = Number.NaN;
+    try { baseQty = multiplyQuantities(l.qty, f); } catch { /* invalid draft */ }
     const availBase = Number(l.availableBase ?? l.stockBase) || 0;
     const reqBase = demandByVariant.get(l.variantId) ?? baseQty;
     const isOut = availBase <= 0;
     return {
       isOut,
       isShort: !isOut && reqBase > availBase,
-      availInUnit: Math.floor(availBase / f),
+      availInUnit: l.isBundle === true ? Math.floor(availBase / f) : new Decimal(availBase).div(f).toNumber(),
       baseQty,
-      fractional: !Number.isInteger(baseQty) || baseQty <= 0,
+      fractional: !Number.isSafeInteger(f) || f <= 0 || !isQuantity(baseQty) || !isQuantity(reqBase) || baseQty <= 0 || (l.isBundle === true && !Number.isInteger(l.qty)),
     };
   });
 }
 
 function QuantityControl({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { if (isQuantity(value)) setDraft(String(value)); }, [value]);
+  const shift = (delta: number) => {
+    onChange(Math.max(0.0001, shiftQuantity(isQuantity(value) ? value : 0, delta)));
+  };
   return (
     <div className="flex items-center justify-center gap-1">
-      <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-base" onClick={() => onChange(Math.max(1, value - 1))} aria-label="إنقاص">
+      <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-base" onClick={() => shift(-1)} aria-label="إنقاص">
         −
       </Button>
       <Input
         dir="ltr"
-        value={String(value)}
+        inputMode="decimal"
+        value={draft}
         onChange={(e) => {
-          const n = parseInt(e.target.value, 10);
-          if (!Number.isNaN(n) && n >= 1) onChange(n);
+          const raw = normalizeCountDraft(e.target.value);
+          setDraft(raw);
+          const n = raw.trim() === "" ? Number.NaN : Number(raw);
+          onChange(/^(?:\d+(?:\.\d{0,4})?|\.\d{1,4})$/.test(raw) && isQuantity(n) && n > 0 ? n : Number.NaN);
         }}
         className="h-8 w-14 text-center text-sm font-extrabold"
         aria-label="الكمية"
       />
-      <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-base" onClick={() => onChange(value + 1)} aria-label="زيادة">
+      <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-base" onClick={() => shift(1)} aria-label="زيادة">
         +
       </Button>
     </div>
@@ -92,7 +112,7 @@ export interface TransferCartProps {
 
 export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen, onNotify }: TransferCartProps) {
   const states = computeLineStates(lines);
-  const totalBase = states.reduce((s, st) => s + (Number.isFinite(st.baseQty) ? st.baseQty : 0), 0);
+  const totalBase = states.reduce((s, st) => addQuantities(s, Number.isFinite(st.baseQty) ? st.baseQty : 0), 0);
 
   /** إضافة سطر بدمج نفس الوحدة (نفس دلالة ADD_ITEM في reducer الفاتورة: نفس productUnitId ⇒ +1). */
   const addLine = (line: InvoiceLine) => {
@@ -100,7 +120,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
       const i = prev.findIndex((l) => l.productUnitId === line.productUnitId);
       if (i >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], qty: next[i].qty + 1 };
+        next[i] = { ...next[i], qty: shiftQuantity(next[i].qty, 1) };
         return next;
       }
       const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle } = line;
@@ -113,7 +133,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
       for (const line of items) {
         const i = next.findIndex((l) => l.productUnitId === line.productUnitId);
         if (i >= 0) {
-          next[i] = { ...next[i], qty: next[i].qty + 1 };
+          next[i] = { ...next[i], qty: shiftQuantity(next[i].qty, 1) };
         } else {
           const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle } = line;
           next.push({ productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle });

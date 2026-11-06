@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -178,7 +178,7 @@ async function stock(variantId: number, branchId = 1): Promise<number> {
 }
 
 describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirements", () => {
-  it("يحسب العجز الصافي ويجبر الدفعة للمضاعف الشرعي الصحيح", async () => {
+  it("يحسب العجز الصافي دون إنتاج فائض بسبب كسر مادة الوصفة", async () => {
     // نطلب 10 بكجات:
     // دفتر A: مطلوب 10 * 2 = 20. المتوفر = 5. العجز = 15.
     // معامِل دفتر A هو 2.5 => المضاعف المطلوب = 2.
@@ -203,9 +203,9 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
     expect(compA?.totalRequiredQty).toBe(20);
     expect(compA?.onHandStock).toBe(5);
     expect(compA?.shortageQty).toBe(15);
-    expect(compA?.requiredBatchMultiple).toBe(2);
-    expect(compA?.suggestedBatchQty).toBe(16);
-    expect(compA?.surplusBufferQty).toBe(1);
+    expect(compA?.requiredBatchMultiple).toBe(1);
+    expect(compA?.suggestedBatchQty).toBe(15);
+    expect(compA?.surplusBufferQty).toBe(0);
     expect(compA?.isManufactured).toBe(true);
 
     const compB = res.components.find((c) => c.variantId === 3);
@@ -227,6 +227,18 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
     expect(compC?.isManufactured).toBe(false);
   });
 
+  it("عجز المكوّن الكسري يقترح دفعة ناتج صحيحة دون تقريب استهلاك الخامات", async () => {
+    await db().update(s.branchStock).set({ quantity: 5.5 })
+      .where(and(eq(s.branchStock.variantId, 2), eq(s.branchStock.branchId, 1)));
+    const result = await analyzeBundleRequirements({
+      bundleVariantId: 100, bundleQuantity: 10, branchId: 1, mode: "NET_SHORTAGE",
+    });
+    const component = result.components.find((row) => row.variantId === 2);
+    expect(component?.shortageQty).toBe(14.5);
+    expect(component?.suggestedBatchQty).toBe(15);
+    expect(component?.surplusBufferQty).toBe(0.5);
+  });
+
   it("يجمّع المواد الخام المشتركة ويكشف عنق الزجاجة الحاكم بدقة", async () => {
     // إنتاج مقترح:
     // دفتر A: دفعة 16 => يستهلك 16 * 2.5 = 40 ورقة من R1.
@@ -245,10 +257,10 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
 
     const matR1 = res.aggregatedMaterials.find((m) => m.materialVariantId === 1);
     expect(matR1).toBeDefined();
-    expect(matR1?.totalRequiredBase).toBe("48.0000");
+    expect(matR1?.totalRequiredBase).toBe("45.5000");
     expect(matR1?.availableInBranch).toBe(40);
     expect(matR1?.isSufficient).toBe(false);
-    expect(matR1?.deficitBase).toBe("8.0000");
+    expect(matR1?.deficitBase).toBe("5.5000");
 
     const matR2 = res.aggregatedMaterials.find((m) => m.materialVariantId === 6);
     expect(matR2).toBeDefined();
@@ -306,7 +318,7 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
 
     const matSubAfter = afterSub.aggregatedMaterials.find((m) => m.materialVariantId === 7);
     expect(matSubAfter).toBeDefined();
-    expect(matSubAfter?.totalRequiredBase).toBe("48.0000");
+    expect(matSubAfter?.totalRequiredBase).toBe("45.5000");
     expect(matSubAfter?.availableInBranch).toBe(100);
     expect(matSubAfter?.isSufficient).toBe(true);
     expect(matSubAfter?.isSubstituted).toBe(true);

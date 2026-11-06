@@ -30,7 +30,7 @@ export const fixtureJournal = () => ({
     },
   ],
 });
-function harness(fail = "", { initialReadyVersion = 0 } = {}) {
+function harness(fail = "", { initialReadyVersion = 0, schemaCutover = false } = {}) {
   const log = [],
     journal = fixtureJournal();
   journal.priorArtifacts = journal.artifacts.map((a) => ({
@@ -69,6 +69,10 @@ function harness(fail = "", { initialReadyVersion = 0 } = {}) {
       "restartOld",
     ].map((n) => [n, act(n)]),
   );
+  if (schemaCutover) {
+    journal.schemaTransition = { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: false };
+    operations.prepareSchema = act("prepareSchema");
+  }
   operations.acquireGate = async () => {
     await act("acquireGate")();
     return {
@@ -111,6 +115,26 @@ function harness(fail = "", { initialReadyVersion = 0 } = {}) {
         initialReadyVersion,
       }),
   };
+}
+
+test("incompatible schema preparation runs only after durable quiescence and before candidate boot", async () => {
+  const h = harness("", { initialReadyVersion: 1, schemaCutover: true });
+  await h.run();
+  assert.ok(h.log.indexOf("persist:QUIESCENT") < h.log.indexOf("prepareSchema"));
+  assert.ok(h.log.indexOf("prepareSchema") < h.log.indexOf("installCandidate"));
+  assert.equal(h.latest.schemaTransition.started, true);
+  assert.equal(h.latest.phase, "RELEASED");
+});
+for (const failure of ["prepareSchema", "installCandidate", "verifyCandidates", "persist:RELEASED"]) {
+  test(`schema cutover ${failure} retains fatal interlock without restoring incompatible binaries`, async () => {
+    const h = harness(failure, { initialReadyVersion: 1, schemaCutover: true });
+    await assert.rejects(h.run(), /FATAL/);
+    assert.equal(h.latest.schemaTransition.started, true);
+    assert.equal(h.latest.phase, "FATAL");
+    assert.ok(!h.log.includes("restoreArtifact"));
+    assert.ok(!h.log.includes("restartOld"));
+    assert.ok(!h.log.includes("INVALIDATE_COMMIT"));
+  });
 }
 test("release permits boot only after original A commit and durable final phase", async () => {
   const h = harness();

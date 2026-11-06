@@ -10,7 +10,8 @@ import {
   productionRecipeLines,
   productionRecipes,
 } from "../../../drizzle/schema";
-import { batchMultipleNote, requiredBatchMultiple } from "../../../shared/batchDivisibility";
+import { addQuantities } from "@shared/quantity";
+import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
 import { appErrorMessage } from "../../../shared/errors";
 import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
@@ -297,7 +298,6 @@ export async function runPreview(args: {
       };
     });
 
-    const coefficients = effectiveLines.map((l: any) => String(l.qtyPerOutputBase));
     const inVarIds = Array.from(new Set(effectiveLines.map((l: any) => Number(l.inputVariantId))));
     const costMap = new Map(effectiveLines.map((l: any) => [Number(l.inputVariantId), l.costPrice]));
 
@@ -327,38 +327,18 @@ export async function runPreview(args: {
       scrap,
     });
 
-    /*
-     * المضاعف المطلوب يُحسَب مرّةً هنا كي **تحمله رسالة الرفض**: «ليس عدداً صحيحاً» وحدها
-     * تُخبر أنّ الدفعة خطأ ولا تقول أيّها صحيح، فيبقى المستعمل يجرّب أرقاماً عشوائية.
-     */
-    const batchMultiple = requiredBatchMultiple(coefficients);
-    const multipleNote = batchMultipleNote(batchMultiple);
-
     const consumedByVariant = new Map<number, number>();
     for (const line of effectiveLines as any[]) {
       const variantId = Number(line.inputVariantId);
-      const consumed = new Decimal(line.qtyPerOutputBase).times(calc.started);
-      if (consumed.isInteger()) {
-        consumedByVariant.set(
-          variantId,
-          (consumedByVariant.get(variantId) ?? 0) + consumed.toNumber(),
-        );
-      }
+      const consumed = exactRecipeMaterialQuantity(String(line.qtyPerOutputBase), calc.started, `استهلاك «${line.productName ?? line.inputVariantId}»`);
+      consumedByVariant.set(
+        variantId,
+        addQuantities(consumedByVariant.get(variantId) ?? 0, consumed),
+      );
     }
     const inputs = effectiveLines.map((l: any) => {
       const perOut = new Decimal(l.qtyPerOutputBase);
-      const consumedDec = perOut.times(calc.started);
-      if (!consumedDec.isInteger()) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
-            why: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة.${multipleNote ? ` ${multipleNote}` : ""}`,
-            doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
-          }),
-        });
-      }
-      const consumed = consumedDec.toNumber();
+      const consumed = exactRecipeMaterialQuantity(String(l.qtyPerOutputBase), calc.started, `استهلاك «${l.productName ?? l.inputVariantId}»`);
       const unitCost = round2(money(costMap.get(Number(l.inputVariantId)) ?? "0"));
       const available = availMap.has(Number(l.inputVariantId)) ? availMap.get(Number(l.inputVariantId))! : null;
       return {
@@ -392,7 +372,7 @@ export async function runPreview(args: {
     const oldQty = Math.max(0, Number(sumRow?.total ?? 0));
     const oldCost = money(head.outputCost ?? "0");
     const unitCost = money(calc.unitCost);
-    const newQty = oldQty + good;
+    const newQty = addQuantities(oldQty, good);
     const newCost = oldQty > 0 && oldCost.gt(0)
       ? round2(new Decimal(oldQty).times(oldCost).plus(new Decimal(good).times(unitCost)).div(newQty))
       : round2(unitCost);

@@ -1,6 +1,7 @@
 // دورة تنفيذ الأمر: سحب ذاتي (claim) ← بدء التنفيذ (يستهلك المواد) ← جاهز (بلا تغيير مخزون).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
+import { addQuantities } from "@shared/quantity";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
@@ -19,6 +20,7 @@ import { hasModuleAccess } from "@shared/permissions";
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { applyMovement } from "../inventoryService";
+import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { postEntry } from "../ledgerService";
 import {
@@ -216,12 +218,11 @@ export async function startWorkOrder(
               const baseOutputQty = Number(wo.baseBaseQuantity ?? wo.quantity ?? 1);
               if (recipeLines.length > 0) {
                 const newLines = recipeLines.map((line) => {
-                  const perOutput = new Decimal(line.qtyPerOutputBase);
-                  const totalQty = perOutput.times(baseOutputQty);
                   return {
                     workOrderId,
                     variantId: Number(line.inputVariantId),
-                    baseQuantity: Math.max(1, Math.round(totalQty.toNumber())),
+                    baseQuantity: exactRecipeMaterialQuantity(line.qtyPerOutputBase, baseOutputQty),
+                    lineCost: "0.00",
                     unitCost: "0.00",
                   };
                 });
@@ -299,9 +300,9 @@ export async function startWorkOrder(
       materialsCost = materialsCost.plus(lineCost);
       await tx
         .update(workOrderMaterials)
-        .set({ unitCost: unitCost.toFixed(2) })
+        .set({ unitCost: unitCost.toFixed(2), lineCost: lineCost.toFixed(2) })
         .where(eq(workOrderMaterials.id, Number(m.id)));
-      aggregated.set(vid, (aggregated.get(vid) ?? 0) + m.baseQuantity);
+      aggregated.set(vid, addQuantities(aggregated.get(vid) ?? 0, m.baseQuantity));
     }
     materialsCost = round2(materialsCost);
 

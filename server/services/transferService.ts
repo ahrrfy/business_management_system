@@ -9,6 +9,7 @@
 // الإلغاء (سند بالطريق فقط): يعيد الكمية كاملة للمصدر بحركة TRANSFER_IN عكسية ويغلق السند.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { addQuantities, isQuantity, multiplyQuantities, subtractQuantities } from "@shared/quantity";
 import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLineBundleComponents, stockTransferLines, stockTransfers, suppliers, users } from "../../drizzle/schema";
 import type { DB, Tx } from "../db";
@@ -222,7 +223,7 @@ async function lockTransferSettlementScope(tx: Tx, transferId: number) {
   if (
     !sent.size ||
     sorted(sent) !== sorted(actual) ||
-    current.lines.reduce((sum, line) => sum + line.quantitySent, 0) !==
+    current.lines.reduce((sum, line) => addQuantities(sum, line.quantitySent), 0) !==
       current.doc.totalSentBase
   )
     throw new TRPCError({
@@ -247,7 +248,7 @@ function expandTransferLine(
   }
   return components.map((component) => ({
     variantId: component.componentVariantId,
-    baseQuantity: component.componentBaseQuantity * operationalQuantity,
+    baseQuantity: multiplyQuantities(component.componentBaseQuantity, operationalQuantity),
   }));
 }
 
@@ -295,8 +296,8 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   }
   const seen = new Set<number>();
   for (const it of a.items) {
-    if (!Number.isInteger(it.baseQuantity) || it.baseQuantity <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
+    if (!isQuantity(it.baseQuantity) || it.baseQuantity <= 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تسجيل كمية التحويل", why: "الكمية غير موجبة أو تتجاوز دقة المخزون", doThis: "أدخل كمية موجبة بأربع منازل عشرية أو أقل" }) });
     }
     if (seen.has(it.variantId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "صنف مكرّر في السند — ادمج كميته في سطر واحد." });
@@ -392,6 +393,9 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
     (variantId) => lockedKinds.get(variantId) === "BUNDLE",
   );
   const lockedDefinitions = await getBundleDefinitions(tx, lockedBundleIds, { lock: true });
+  if (sorted.some((item) => lockedKinds.get(item.variantId) === "BUNDLE" && !Number.isInteger(item.baseQuantity))) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر نقل جزء من بكج", why: "البكج وحدة ناتج كاملة بينما الكسر متاح للمواد المخزنية", doThis: "أدخل عدداً صحيحاً للبكج أو انقل مكوّناته المخزنية مباشرة" }) });
+  }
   if (
     lockedBundleIds.join(",") !== provisionalBundleIds.join(",") ||
     bundleDefinitionsFingerprint(lockedBundleIds, lockedDefinitions) !== provisionalFingerprint
@@ -438,7 +442,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
         addBaseQuantity(
           movementTotals,
           component.componentVariantId,
-          component.componentBaseQuantity * item.baseQuantity,
+          multiplyQuantities(component.componentBaseQuantity, item.baseQuantity),
         );
       }
     } else {
@@ -467,7 +471,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   const yymm = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
   const seq = await nextCounterValue(tx, `stock_transfer_${yymm}`);
   const transferNumber = `TRF-${yymm}-${seq}`;
-  const totalSentBase = a.items.reduce((s, it) => s + it.baseQuantity, 0);
+  const totalSentBase = a.items.reduce((s, it) => addQuantities(s, it.baseQuantity), 0);
   const res = await tx.insert(stockTransfers).values({
     transferNumber,
     fromBranchId: a.fromBranchId,
@@ -608,7 +612,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
         .limit(1)
     )[0];
     const replayDiscrepancy = replayDoc
-      ? Number(replayDoc.totalSentBase) - Number(replayDoc.totalReceivedBase ?? 0)
+      ? subtractQuantities(replayDoc.totalSentBase, replayDoc.totalReceivedBase ?? 0)
       : 0;
     return {
       transferId: a.transferId,
@@ -632,8 +636,11 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "سطر استلام لا يطابق أسطر السند" });
     }
     seenLine.add(l.lineId);
-    if (!Number.isInteger(l.quantityReceived) || l.quantityReceived < 0 || l.quantityReceived > dl.quantitySent) {
+    if (!isQuantity(l.quantityReceived) || l.quantityReceived < 0 || l.quantityReceived > dl.quantitySent) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة يجب أن تكون بين 0 و${dl.quantitySent} (المرسَل)` });
+    }
+    if (bundleSnapshots.get(l.lineId)?.length && !Number.isInteger(l.quantityReceived)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر استلام جزء من بكج", why: "الاستلام الجزئي للبكج يغيّر عدد وحدات الناتج الكاملة", doThis: "أدخل عدد البكجات المستلمة كاملاً ووثّق أي عجز في الملاحظات" }) });
     }
     if (l.quantityReceived !== dl.quantitySent && !l.note?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "سطر بفارق عن المرسَل يتطلّب ملاحظة تشرح العجز" });
@@ -646,11 +653,11 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   const shortageByVariant = new Map<number, number>();
   for (const l of a.lines) {
     const dl = byId.get(l.lineId)!;
-    totalReceivedBase += l.quantityReceived;
+    totalReceivedBase = addQuantities(totalReceivedBase, l.quantityReceived);
     if (l.quantityReceived < dl.quantitySent) {
       for (const movement of expandTransferLine(
         dl,
-        dl.quantitySent - l.quantityReceived,
+        subtractQuantities(dl.quantitySent, l.quantityReceived),
         bundleSnapshots,
       )) {
         addBaseQuantity(shortageByVariant, movement.variantId, movement.baseQuantity);
@@ -667,7 +674,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
       .where(eq(stockTransferLines.id, l.lineId));
   }
 
-  const operationalDiscrepancy = Number(doc.totalSentBase) - totalReceivedBase;
+  const operationalDiscrepancy = subtractQuantities(doc.totalSentBase, totalReceivedBase);
   for (const variantId of Array.from(receivedByVariant.keys()).sort((a, b) => a - b)) {
     await applyMovement(tx, {
       variantId,
@@ -744,7 +751,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
         profit: ownedLossValue.neg(),
         amount: money(0),
         dedupeKey: `TRANSFER_LOSS:${a.transferId}`,
-        notes: `عجز نقل — سند ${doc.transferNumber} (${shortages.reduce((s, x) => s + x.qty, 0)} وحدة)`,
+        notes: `عجز نقل — سند ${doc.transferNumber} (${shortages.reduce((s, x) => addQuantities(s, x.qty), 0)} وحدة)`,
         postingIntent: createPostingIntent(
           "ADJUST_INVENTORY_LOSS",
           "ADJUST",
@@ -825,7 +832,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   return {
     transferId: a.transferId,
     idempotentReplay: false as const,
-    discrepancyUnits: Number(doc.totalSentBase) - totalReceivedBase,
+    discrepancyUnits: subtractQuantities(doc.totalSentBase, totalReceivedBase),
   };
 }
 

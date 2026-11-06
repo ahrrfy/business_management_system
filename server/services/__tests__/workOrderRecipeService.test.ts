@@ -13,7 +13,8 @@ import { createRecipe, getRecipeForProduct } from "../recipeService";
 import { createWorkOrder } from "../workOrder/create";
 import { startWorkOrder } from "../workOrder/lifecycle";
 import { cancelWorkOrder } from "../workOrder/cancel";
-import { setWorkOrderMaterials } from "../workOrder/materials";
+import { setWorkOrderMaterials, setWorkOrderMaterialsInTx } from "../workOrder/materials";
+import { withTx } from "../tx";
 
 const TABLES = [
   "idempotencyKeys",
@@ -197,6 +198,102 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
     expect(fabricMat?.baseQuantity).toBe(6);
     expect(poleMat).toBeDefined();
     expect(poleMat?.baseQuantity).toBe(3);
+  });
+
+  it("أمر خدمة واحد يثبت خامة 1.5 ويصرفها ثم يعكس لقطته رغم تصحيح الوصفة لاحقاً", async () => {
+    const recipe = await createRecipe({
+      name: "وصفة علم باستهلاك كسري",
+      outputVariantId: 100,
+      outputProductUnitId: 1000,
+      lines: [
+        { inputVariantId: 200, inputProductUnitId: 2000, qtyPerOutputBase: "1.5000" },
+        { inputVariantId: 300, inputProductUnitId: 3000, qtyPerOutputBase: "1.0000" },
+      ],
+    }, MGR);
+    const result = await createWorkOrder({
+      branchId: 1, customerId: 1, baseVariantId: 100, baseProductUnitId: 1000,
+      title: "علم واحد بخامة كسرية", quantity: 1, assignedTo: 2,
+      salePrice: "15000.00", clientRequestId: randomUUID(),
+    }, MGR);
+    const saved = await db().select().from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, result.workOrderId));
+    expect(Number(saved.find((row) => Number(row.variantId) === 200)?.baseQuantity)).toBe(1.5);
+    await startWorkOrder(result.workOrderId, MGR);
+    const [started] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrderId));
+    expect(started.materialsCost).toBe("9500.00");
+    const [consumed] = await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, 200), eq(s.branchStock.branchId, 1)));
+    expect(Number(consumed.quantity)).toBe(98.5);
+
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "0.5000" })
+      .where(and(eq(s.productionRecipeLines.recipeId, recipe.recipeId), eq(s.productionRecipeLines.inputVariantId, 200)));
+    await cancelWorkOrder(result.workOrderId, MGR, {
+      expectedVersion: Number(started.version), reason: "إلغاء بعد تغيير وصفة العمليات الجديدة",
+      materials: saved.map((row) => ({
+        workOrderMaterialId: Number(row.id), returnBase: Number(row.baseQuantity), wasteBase: 0,
+      })),
+    }, { approvedControlRequestId: 999 });
+    const [restored] = await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, 200), eq(s.branchStock.branchId, 1)));
+    expect(Number(restored.quantity)).toBe(100);
+    const moves = await db().select().from(s.inventoryMovements)
+      .where(and(eq(s.inventoryMovements.variantId, 200), eq(s.inventoryMovements.referenceId, result.workOrderId)));
+    expect(moves.map((row) => Number(row.signedDelta)).sort()).toEqual([-1.5, 1.5]);
+  });
+
+  it("رد جزء من خامة كسرية ثم إلغاء الباقي يعيد كامل قيمة الصرف دون هدر وهمي", async () => {
+    await db().update(s.productVariants).set({ costPrice: "0.01" }).where(eq(s.productVariants.id, 200));
+    await createRecipe({
+      name: "خامة كسرية منخفضة القيمة", outputVariantId: 100, outputProductUnitId: 1000,
+      lines: [{ inputVariantId: 200, inputProductUnitId: 2000, qtyPerOutputBase: "0.5000" }],
+    }, MGR);
+    const created = await createWorkOrder({
+      branchId: 1, customerId: 1, baseVariantId: 100, baseProductUnitId: 1000,
+      title: "قيمة باقية في دفعة الخام", quantity: 1, assignedTo: 2,
+      salePrice: "250.00", clientRequestId: randomUUID(),
+    }, MGR);
+    await startWorkOrder(created.workOrderId, MGR);
+    const [started] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, created.workOrderId));
+    expect(started.materialsCost).toBe("0.01");
+    await withTx((tx) => setWorkOrderMaterialsInTx(tx, {
+      workOrderId: created.workOrderId, expectedVersion: Number(started.version),
+      reason: "رد جزء من الدفعة دون فقد باقي قيمتها", materials: [{ variantId: 200, baseQuantity: 0.4 }],
+    }, MGR, { approvedControlRequestId: 999 }));
+    const [edited] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, created.workOrderId));
+    await cancelWorkOrder(created.workOrderId, MGR, {
+      expectedVersion: Number(edited.version), reason: "إعادة بقية الخامة صالحة كاملة",
+      confirmAllMaterialsReturnedUsable: true,
+    }, { approvedControlRequestId: 1000 });
+    const entries = await db().select().from(s.accountingEntries);
+    expect(entries.find((entry) => entry.dedupeKey === `WO-WIP-CANCEL:${created.workOrderId}`)?.cost).toBe("0.01");
+    expect(entries.some((entry) => entry.dedupeKey === `WO-WIP-WASTE:${created.workOrderId}`)).toBe(false);
+    const [restored] = await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, 200), eq(s.branchStock.branchId, 1)));
+    expect(Number(restored.quantity)).toBe(100);
+  });
+
+  it("تخفيض زيادة كسرية يبقي الحصة الأساسية وقيمتها التاريخية مثبتتين", async () => {
+    await db().update(s.productVariants).set({ costPrice: "0.03" }).where(eq(s.productVariants.id, 200));
+    const result = await createWorkOrder({
+      branchId: 1, customerId: 1, baseVariantId: 200, baseProductUnitId: 2000,
+      title: "حصة أساس مع زيادة كسرية", quantity: 1, assignedTo: 2,
+      materials: [{ variantId: 200, baseQuantity: 1.5 }],
+      salePrice: "250.00", clientRequestId: randomUUID(),
+    }, MGR);
+    await startWorkOrder(result.workOrderId, MGR);
+    const [started] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrderId));
+    expect(started.materialsCost).toBe("0.05");
+    await withTx((tx) => setWorkOrderMaterialsInTx(tx, {
+      workOrderId: result.workOrderId, expectedVersion: Number(started.version),
+      reason: "إعادة الزيادة مع بقاء الحصة الأساسية", materials: [{ variantId: 200, baseQuantity: 1 }],
+    }, MGR, { approvedControlRequestId: 999 }));
+    const [remaining] = await db().select().from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, result.workOrderId));
+    expect(remaining.isBaseMaterial).toBe(true);
+    expect(Number(remaining.baseQuantity)).toBe(1);
+    expect(remaining.lineCost).toBe("0.03");
+    const [edited] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrderId));
+    expect(edited.materialsCost).toBe("0.03");
   });
 
   it("startWorkOrder يشفي ذاتياً الأوامر القائمة التي تحتوي على صنف الخدمة ويصرف المواد الخام", async () => {

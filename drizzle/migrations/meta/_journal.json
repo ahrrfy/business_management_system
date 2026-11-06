@@ -2682,6 +2682,13 @@
 			"when": 1788148884000,
 			"tag": "0426_digital_cycle_settlements",
 			"breakpoints": true
+		},
+		{
+			"idx": 427,
+			"version": "5",
+			"when": 1788148885000,
+			"tag": "0427_fractional_recipe_inventory",
+			"breakpoints": true
 		}
 	]
 }

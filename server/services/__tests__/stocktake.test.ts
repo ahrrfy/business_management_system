@@ -1953,6 +1953,10 @@ describe("الاعتماد الذرّي", () => {
     expect(negRow).toBeTruthy();
     expect(negRow!.quantity).toBe("-8");
     expect(negRow!.opened).toBe(true);
+    await db().update(s.branchStock).set({ quantity: -0.1 }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    const fractionalNegative = await getNegativeStock({ branchId: 1 });
+    expect(fractionalNegative.rows.find((x) => x.variantId === 1)?.quantity).toBe("-0.1");
+    expect(fractionalNegative.summary.totalNegValue).toBe("10.00");
   });
 
   it("ROLLBACK كامل عند فشل وسط الاعتماد: لا مخزون ولا حركات ولا قرارات ولا lastCountedAt", async () => {

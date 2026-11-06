@@ -386,14 +386,15 @@ describe("الإنتاج: الوصفات", () => {
     expect(await stock(2)).toBe(50);
   });
 
-  it("تحجيم لا يُنتج عدداً صحيحاً ⇒ يُرفض", async () => {
+  it("تحجيم وصفة ناتج صحيح يحفظ كمية المادة الكسرية", async () => {
     const rec = await createRecipe({
       name: "وصفة كسرية",
       outputVariantId: 2,
       outputProductUnitId: 3,
       lines: [{ inputVariantId: 1, qtyPerOutputBase: "0.5" }],
     }, actor);
-    await expect(recipePreview({ recipeId: rec.recipeId, outputQuantity: "3", branchId: 1 })).rejects.toThrow();
+    const preview = await recipePreview({ recipeId: rec.recipeId, outputQuantity: "3", branchId: 1 });
+    expect(preview.inputs[0].baseQuantity).toBe(1.5);
   });
 
   it("المنتج الناتج لا يكون مكوّناً من نفسه", async () => {

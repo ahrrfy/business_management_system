@@ -40,6 +40,8 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { rejectLegacyCatalogMediaWrite } from "./catalog/mediaWriteGuard";
 import { PRINT_SERVICE_TYPE } from "./printSaleService";
+import type { ProductRecipeChange } from "@shared/productRecipeSave";
+import { prepareProductRecipeChangeTx } from "./recipeService";
 
 /* ============================ القراءة (للتعديل) ============================ */
 // نُقلت إلى `./catalog/productEditDocument.ts` (م٦ ق٨ — مستندُ التعديل صار مصدرَ اللقطة). يُعاد تصديرها هنا
@@ -130,6 +132,8 @@ export interface UpdateProductVariantsInput {
   images?: UpdateProductImageInput[];
   /** سببُ التعديل — يُلحق بلقطة `recordVersions` ويظهر في سجلّ النسخ (م٦ ق٨). اختياريّ. */
   updateReason?: string | null;
+  /** Optional recipe draft; saved in the same transaction as the product. */
+  recipeChange?: ProductRecipeChange;
 }
 
 // الاسم الصريح (input.name) هو المرجع الأول: المنتجات المستوردة تحمل اسماً كاملاً في `name`
@@ -398,7 +402,8 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
 export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: Actor) {
-  return withTx((tx) => updateProductWithVariantsTx(tx, input, actor));
+  return withTx((tx) => updateProductWithVariantsTx(tx, input, actor),
+    input.recipeChange ? { isolationLevel: "read committed" } : undefined);
 }
 
 /**
@@ -406,6 +411,10 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
  * معاملته فتمرّ الاستعادةُ بالحرّاس نفسها وتكتب لقطتها في نفس المعاملة. لا تستدعِه من راوترٍ مباشرةً.
  */
 export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVariantsInput, actor: Actor) {
+    // Lock the union before the product's own row: recipe writers use products→variants.
+    const saveRecipe = input.recipeChange
+      ? await prepareProductRecipeChangeTx(tx, input.productId, input.recipeChange, actor)
+      : null;
     const p = await loadProductForUpdateOrThrow(tx, input.productId);
     assertHasVariants(input.variants.length);
     const baseUnits = input.unitTemplate.filter((u) => u.isBaseUnit).length;
@@ -452,7 +461,17 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       p.productType === PRINT_SERVICE_TYPE ||
       requestedProductType === PRINT_SERVICE_TYPE
     );
-    const effectiveProductType = hasServiceRouting ? PRINT_SERVICE_TYPE : requestedProductType;
+    const routingChanged =
+      effectiveShowInPrintPos !== !!p.showInPrintPos ||
+      effectiveShowInReception !== !!p.showInReception ||
+      effectiveShowInQuotations !== !!p.showInQuotations ||
+      effectiveShowInAdvancedSales !== !!p.showInAdvancedSales;
+    // An unchanged legacy service must keep its historical route on a round-trip save.
+    const shouldPromoteService = hasServiceRouting && (
+      p.productType === PRINT_SERVICE_TYPE || requestedProductType === PRINT_SERVICE_TYPE ||
+      serviceChanged || routingChanged
+    );
+    const effectiveProductType = shouldPromoteService ? PRINT_SERVICE_TYPE : requestedProductType;
 
     const operationalProductRoute = (type: string | null | undefined, isSvc: boolean): "PRINT_SERVICE" | "DIGITAL_CARD" | "STANDARD" => {
       if (type === "DIGITAL_CARD") return "DIGITAL_CARD";
@@ -745,5 +764,6 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       await reconcileProductImages(tx, input.productId, input.images);
     }
 
-    return { productId: input.productId, added };
+    const recipeResult = saveRecipe ? await saveRecipe() : undefined;
+    return { productId: input.productId, added, ...recipeResult };
 }

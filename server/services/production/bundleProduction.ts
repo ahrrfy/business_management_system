@@ -14,6 +14,7 @@ import {
   products,
 } from "../../../drizzle/schema";
 import { requiredBatchMultiple } from "../../../shared/batchDivisibility";
+import { subtractQuantities } from "@shared/quantity";
 import {
   collectBundleProductionLockVariantIds,
   deriveBundleComponentSubRequestId,
@@ -380,7 +381,7 @@ export async function analyzeBundleRequirements(
       if (input.mode === "FULL_QUANTITY") {
         shortageQty = totalRequiredQty;
       } else {
-        shortageQty = Math.max(0, totalRequiredQty - onHandStock);
+        shortageQty = Math.max(0, subtractQuantities(totalRequiredQty, onHandStock));
       }
 
       const recipe = recipeByVariantId.get(variantId);
@@ -396,8 +397,8 @@ export async function analyzeBundleRequirements(
         suggestedBatchQty =
           requiredMultiple > 1
             ? Math.ceil(shortageQty / requiredMultiple) * requiredMultiple
-            : shortageQty;
-        surplusBufferQty = Math.max(0, suggestedBatchQty - shortageQty);
+            : Math.ceil(shortageQty);
+        surplusBufferQty = Math.max(0, subtractQuantities(suggestedBatchQty, shortageQty));
       }
 
       const laborPerUnit = recipe ? String(recipe.laborPerOutputBase ?? "0.00") : "0.00";

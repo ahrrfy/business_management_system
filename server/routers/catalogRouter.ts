@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { productRecipeChangeSchema } from "@shared/productRecipeSave";
 import { asc, eq, sql } from "drizzle-orm";
 import { categories, productVariants } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -1181,6 +1182,7 @@ export const catalogRouter = router({
         images: z.array(editImageSchema).max(10).optional(),
         // م٦ ق٨: سببُ التعديل — يُلحق بلقطة `recordVersions` ويظهر في سجلّ النسخ. اختياريّ.
         updateReason: z.string().max(500).nullish(),
+        recipeChange: productRecipeChangeSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1228,6 +1230,7 @@ export const catalogRouter = router({
       const res = await updateProductWithVariants(input, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
       });
       // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
       await syncActiveFullStocktakeScopes();

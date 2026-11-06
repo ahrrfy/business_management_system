@@ -30,6 +30,7 @@ it("runs raw deployment B failure and uncertain-commit contracts under the curre
     ],
     { encoding: "utf8", timeout: 15_000 },
   );
-  expect(output).toMatch(/pass 5/);
+  const passes = Number(output.match(/(?:pass|passed)\s+(\d+)/)?.[1] ?? 0);
+  expect(passes).toBeGreaterThanOrEqual(5);
   expect(output).toMatch(/fail 0/);
 });

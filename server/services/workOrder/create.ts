@@ -50,6 +50,7 @@ import { paymentAssetRole } from "../sale/paymentPosting";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
+import { addQuantities, isQuantity } from "@shared/quantity";
 import {
   createWorkOrderDesignRevisionTx,
   normalizeDesignContentImages,
@@ -306,20 +307,24 @@ export async function createWorkOrderInTx(
     if (
       !Number.isInteger(m.variantId) ||
       m.variantId <= 0 ||
-      !Number.isInteger(m.baseQuantity) ||
+      !isQuantity(m.baseQuantity) ||
       m.baseQuantity <= 0
     )
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "كميات المواد يجب أن تكون أعداداً صحيحة موجبة",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت كميات المواد لأمر الشغل",
+          why: "معرّف المادة غير صالح أو كميتها ليست موجبة بدقة أربع منازل عشرية",
+          doThis: "اختر مادة صالحة وأدخل كمية موجبة بأربع منازل عشرية أو أقل",
+        }),
       });
   }
   const materialQuantities = new Map<number, number>();
   for (const material of requestedMaterials) {
-    const total =
-      (materialQuantities.get(material.variantId) ?? 0) +
-      material.baseQuantity;
-    if (!Number.isSafeInteger(total)) {
+    let total: number;
+    try {
+      total = addQuantities(materialQuantities.get(material.variantId) ?? 0, material.baseQuantity);
+    } catch {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -473,8 +478,10 @@ export async function createWorkOrderInTx(
           baseBaseQuantity!,
           `مادة وصفة الخدمة #${line.inputVariantId}`,
         );
-        const total = (derived.get(line.inputVariantId) ?? 0) + lineQuantity;
-        if (!Number.isSafeInteger(total)) {
+        let total: number;
+        try {
+          total = addQuantities(derived.get(line.inputVariantId) ?? 0, lineQuantity);
+        } catch {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: appErrorMessage({
@@ -846,6 +853,7 @@ export async function createWorkOrderInTx(
       workOrderId,
       variantId: m.variantId,
       baseQuantity: m.baseQuantity,
+      lineCost: "0.00",
       isBaseMaterial:
         baseConsumesInventory === true &&
         input.baseVariantId != null &&

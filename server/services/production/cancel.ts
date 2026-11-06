@@ -2,6 +2,7 @@ import { readEconomicOwnedPositions } from "../inventory/economicOwnership";
 import { lockProductionInventoryScope, syncProductionBundleCosts } from "./bundleCostScope";
 // إلغاء مستند إنتاج: يعكس المخرجات (OUT) ثم المدخلات (IN)، ويفك مساهمة دفعة الإنتاج من WAVG.
 import { TRPCError } from "@trpc/server";
+import { addQuantities } from "@shared/quantity";
 import Decimal from "decimal.js";
 import { asc, eq, inArray } from "drizzle-orm";
 import { branchStock, productVariants, productionLines, productionOrders } from "../../../drizzle/schema";
@@ -118,7 +119,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     for (const l of ins) {
       const variantId = Number(l.variantId);
       const previous = returnedInputs.get(variantId) ?? { qty: 0, value: new Decimal(0) };
-      previous.qty += Number(l.baseQuantity);
+      previous.qty = addQuantities(previous.qty, l.baseQuantity);
       previous.value = previous.value.plus(money(l.lineCost ?? "0"));
       returnedInputs.set(variantId, previous);
     }

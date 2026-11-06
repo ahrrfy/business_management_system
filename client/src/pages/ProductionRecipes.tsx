@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
+import { quantityDecimal } from "@shared/quantity";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
@@ -196,6 +197,7 @@ export default function ProductionRecipes() {
     for (const c of comps) {
       if (c.inputVariantId === out.variantId) return "المنتج الناتج لا يكون مكوّناً من نفسه.";
       if (compBaseQty(c).lte(0)) return `كمية المكوّن «${c.productName}» يجب أن تكون موجبة.`;
+      try { quantityDecimal(compBaseQty(c)); } catch { return `كمية المكوّن «${c.productName}» يجب أن تقبل الحفظ بأربع منازل عشرية ضمن الحد المسموح دون تقريب.`; }
     }
     return null;
   }
