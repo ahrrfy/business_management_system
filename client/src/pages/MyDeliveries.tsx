@@ -122,7 +122,7 @@ export default function MyDeliveries() {
   });
 
   const claimAckM = trpc.courier.acknowledgeConsignmentClaim.useMutation({
-    onSuccess: () => { notify.ok("تم إقرار مبلغ التحصيل الحالي"); void utils.courier.myDeliveries.invalidate(); },
+    onSuccess: () => { notify.ok("تم تسجيل إقرار مبلغ التحصيل"); void utils.courier.myDeliveries.invalidate(); },
     onError: (error) => { notify.err(error); if (error.data?.code === "CONFLICT") void utils.courier.myDeliveries.invalidate(); },
   });
 

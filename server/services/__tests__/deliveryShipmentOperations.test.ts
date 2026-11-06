@@ -243,13 +243,28 @@ describe("one physical shipment with independent invoice accounting", () => {
       .rejects.toMatchObject({ code: "CONFLICT" });
     await db().update(s.deliveryConsignments).set({ parcelStatus: "RETURNED" });
     const afterClosingMembers = await snapshot();
+    const closedAckReplays = await Promise.all([
+      caller.acknowledgeConsignmentClaim(ack),
+      caller.acknowledgeConsignmentClaim(ack),
+    ]);
+    for (const replay of closedAckReplays)
+      expect(replay).toMatchObject({ consignmentId: 11, claimVersion: 2, acknowledgedAt: expect.any(Date) });
     expect(await caller.confirmConsignmentDelivery(current)).toMatchObject({ alreadyDelivered: true });
     expect(await snapshot()).toEqual(afterClosingMembers);
+    await expect(caller.acknowledgeConsignmentClaim({ ...ack, expectedClaimAmount: "201.00" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.acknowledgeConsignmentClaim({ ...ack, clientRequestId: "new-closed-claim-ack" }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(caller.confirmConsignmentDelivery({ ...current, expectedClaimAmount: "201.00" }))
       .rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.deliveryPartyMembers).set({ isActive: false }).where(eq(s.deliveryPartyMembers.userId, 2));
+    await expect(acknowledgeConsignmentClaim(ack, { userId: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.deliveryPartyMembers).set({ isActive: true }).where(eq(s.deliveryPartyMembers.userId, 2));
+    expect(await snapshot()).toEqual(afterClosingMembers);
     await db().insert(s.users).values({ id: 3, openId: "shipment-other-driver", role: "courier", branchId: 1 });
     await db().insert(s.deliveryPartyMembers).values({ partyId: 1, userId: 3, memberRole: "DRIVER", isActive: true, createdBy: 1 });
     const beforeOther = await snapshot();
+    await expect(acknowledgeConsignmentClaim(ack, { userId: 3 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(confirmConsignmentDelivery(current, { userId: 3 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await snapshot()).toEqual(beforeOther);
   });
@@ -363,9 +378,46 @@ describe("one physical shipment with independent invoice accounting", () => {
     expect(row.codClaimVersion).toBe(2);
     await expect(acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2,
       clientRequestId: "shipment-old-driver-ack" }, { userId: 2 })).rejects.toThrow(/سائق/);
-    await acknowledgeConsignmentClaim({ consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
+    const newDriverAck = { consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
       expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims,
-      clientRequestId: "shipment-new-driver-ack" }, { userId: 3 });
+      clientRequestId: "shipment-new-driver-ack" };
+    await acknowledgeConsignmentClaim(newDriverAck, { userId: 3 });
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "RETURNED" }).where(eq(s.deliveryConsignments.id, 12));
+    const closed = await snapshot();
+    expect(await acknowledgeConsignmentClaim(newDriverAck, { userId: 3 })).toMatchObject({ claimVersion: 2 });
+    await expect(acknowledgeConsignmentClaim(newDriverAck, { userId: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await snapshot()).toEqual(closed);
+  });
+
+  it("replays the acknowledged version after the current claim acknowledgement is reset", async () => {
+    await db().update(s.deliveryConsignments).set({ assignedUserId: 2 });
+    const ack = { consignmentId: 11, expectedClaimVersion: 1, clientRequestId: "old-claim-ack-replay" };
+    await acknowledgeConsignmentClaim(ack, { userId: 2 });
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "RETURNED" });
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 2, courierAckClaimVersion: 0, courierAckAt: null })
+      .where(eq(s.deliveryConsignments.id, 11));
+    const closed = await snapshot();
+    expect(await acknowledgeConsignmentClaim(ack, { userId: 2 })).toMatchObject({
+      consignmentId: 11, claimVersion: 1, acknowledgedAt: null,
+    });
+    expect(await snapshot()).toEqual(closed);
+  });
+
+  it("keeps older and newer acknowledgements distinct after the shipment closes", async () => {
+    await db().update(s.deliveryConsignments).set({ assignedUserId: 2 });
+    const oldAck = { consignmentId: 11, expectedClaimVersion: 1, clientRequestId: "old-version-ack" };
+    await acknowledgeConsignmentClaim(oldAck, { userId: 2 });
+    await db().update(s.deliveryConsignments).set({ codClaimVersion: 2 }).where(eq(s.deliveryConsignments.id, 11));
+    const row = (await listMyDeliveries(2)).toDeliver.find((entry) => entry.id === 11)!;
+    const newAck = { consignmentId: 11, expectedClaimVersion: 2, expectedClaimAmount: row.codDue,
+      expectedConsignmentIds: row.consignmentIds, expectedConsignmentClaims: row.consignmentClaims,
+      clientRequestId: "new-version-ack" };
+    await acknowledgeConsignmentClaim(newAck, { userId: 2 });
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "RETURNED" });
+    const closed = await snapshot();
+    expect(await acknowledgeConsignmentClaim(oldAck, { userId: 2 })).toMatchObject({ claimVersion: 1, acknowledgedAt: null });
+    expect(await acknowledgeConsignmentClaim(newAck, { userId: 2 })).toMatchObject({ claimVersion: 2, acknowledgedAt: expect.any(Date) });
+    expect(await snapshot()).toEqual(closed);
   });
 
   it("settles each invoice of a company shipment at its net amount after a partial return", async () => {
