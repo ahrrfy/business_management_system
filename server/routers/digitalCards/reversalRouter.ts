@@ -6,13 +6,14 @@ import { z } from "zod";
 import { reversalService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
 import { digitalCardsAdminReadProcedure, digitalCardsManagerProcedure, router } from "../../trpc";
-import { actorOf, requireDb, scopedBranchOf } from "./shared";
+import { actorOf, digitalRefundActionFields, digitalRefundControl, digitalRefundTender, requireDb, scopedBranchOf } from "./shared";
 
 export const reversalRouter = router({
   reversible: digitalCardsAdminReadProcedure
-    .input(z.object({ invoiceId: z.number().int().positive() }))
+    .input(z.object({ invoiceId: z.number().int().positive(), detailIds: z.array(z.number().int().positive()).min(1).max(50).optional(),
+      kind: z.enum(["REVERSED", "LOSS_REFUND"]).default("REVERSED") }))
     .query(async ({ input, ctx }) =>
-      reversalService.reversibleDetails(requireDb(), input.invoiceId, scopedBranchOf(ctx))),
+      reversalService.reversibleDetails(requireDb(), input.invoiceId, scopedBranchOf(ctx), input.detailIds ? { detailIds: input.detailIds, kind: input.kind, actor: actorOf(ctx) } : undefined)),
 
   approve: digitalCardsManagerProcedure
     .input(
@@ -20,11 +21,14 @@ export const reversalRouter = router({
         invoiceId: z.number().int().positive(),
         detailIds: z.array(z.number().int().positive()).min(1).max(50),
         reason: z.string().min(3).max(300),
+        ...digitalRefundActionFields,
       }),
     )
-    .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.approveReversal(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.approve") })),
-    ),
+    .mutation(async ({ input, ctx }) => withTx(async (tx) => {
+      const actor = { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.approve") };
+      if (input.stage !== "EXECUTE") return { stage: input.stage, ...await reversalService.controlRefund(tx, input, digitalRefundControl(input), "REVERSED", actor) };
+      return { stage: "EXECUTE" as const, ...await reversalService.approveReversal(tx, { ...input, refund: digitalRefundTender(input.refund) }, actor) };
+    })),
 
   /* ردّ الخسارة باعتمادٍ ثانٍ (قرار المالك ٣٠/٧): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في
    * الاعتماد الذي يفرض SOD. العكس المؤكَّد يبقى فعلاً واحداً — صافيه صفر ولا خسارة فيه. */
@@ -45,11 +49,14 @@ export const reversalRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         detailIds: z.array(z.number().int().positive()).min(1).max(50),
+        ...digitalRefundActionFields,
       }),
     )
-    .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.lossRefund(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.lossRefund") })),
-    ),
+    .mutation(async ({ input, ctx }) => withTx(async (tx) => {
+      const actor = { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.lossRefund") };
+      if (input.stage !== "EXECUTE") return { stage: input.stage, ...await reversalService.controlRefund(tx, input, digitalRefundControl(input), "LOSS_REFUND", actor) };
+      return { stage: "EXECUTE" as const, ...await reversalService.lossRefund(tx, { ...input, refund: digitalRefundTender(input.refund) }, actor) };
+    })),
 
   rejectLossRefund: digitalCardsManagerProcedure
     .input(

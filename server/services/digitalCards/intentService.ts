@@ -61,7 +61,10 @@ import {
   type DigitalIntentActor,
 } from "./intentOperationScope";
 import { redactAuditValue } from "../auditService";
-import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
+import { closeRejectedDigitalSale, prepareCapturedDigitalSale } from "./unadmittedCaptureService";
+import { assertExternalPaymentReplay, lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
+import { digitalPaymentChannel, isCapturedReceptionCash, parseReceptionSource, publicDigitalIntent, receptionIntentTotal } from "./receptionSource";
+import { digitalIntentSettlements, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
 import {
   assertCheckoutReplay,
   prepareCheckoutSnapshot,
@@ -125,6 +128,8 @@ export interface PrepareInput {
   externalPaymentAttemptId?: number | null;
   externalPaymentDeviceId?: string | null;
   cartFingerprint: string;
+  closeRejectedWithoutPayment?: true;
+  capturedDigitalPayment?: { confirmed: true; amount: string; deviceId: string };
   lines: PrepareLine[];
   customerId?: number | null;
   priceTier?: PriceTier | null;
@@ -197,13 +202,11 @@ function normalizeIntentSource(input: PrepareInput): {
   invoicePayload: InvoiceSourcePayload | null;
 } {
   if (input.sourceType === "RECEPTION") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: intentOperationError(
-        "إصدار الكروت من سلة الاستقبال غير مفعّل بعقد آمن بعد",
-        "استخدم نقطة البيع أو فاتورة البيع المتقدمة حتى يكتمل عقد الاستقبال الآمن",
-      ),
-    });
+    const sourcePayload = parseReceptionSource(input.sourcePayload, input.paymentMethod);
+    if ((input.regularLines ?? []).some((line) => line.isGift || line.promotionId != null || money(line.discountAmount ?? "0").gt(0) || money(line.discountPercent ?? "0").gt(0))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: intentOperationError("لا تُجمع خصومات أو هدايا مع الكروت في الاستقبال", "افصل البنود المخفضة قبل إصدار الكروت") });
+    }
+    return { input: { ...input, sourcePayload }, invoicePayload: null };
   }
   if (input.sourceType === "INVOICE") {
     const invoicePayload = parseInvoiceSourcePayload(input.sourcePayload);
@@ -243,16 +246,41 @@ async function assertInvoiceSalesRepresentative(tx: Tx, payload: InvoiceSourcePa
   }
 }
 
+async function settledCancellation(tx: Tx, intentId: number) {
+  const [row] = await tx.select({ settlement: digitalIntentSettlements, refund: digitalRefundPayments })
+    .from(digitalIntentSettlements).innerJoin(digitalRefundPayments, eq(digitalRefundPayments.id, digitalIntentSettlements.refundPaymentId))
+    .where(eq(digitalIntentSettlements.intentId, intentId)).limit(1);
+  return row?.settlement.status === "COMPLETED" && row.settlement.collectionReceiptId != null && row.settlement.invoiceId == null
+    && money(row.settlement.saleAmount).isZero() && money(row.settlement.refundAmount).eq(row.settlement.capturedAmount)
+    && row.refund.status === "COMPLETED" && row.refund.receiptId != null && money(row.refund.amount).eq(row.settlement.refundAmount);
+}
+
 export async function prepare(
   tx: Tx,
   input: PrepareInput,
   actor: DigitalIntentActor,
 ): Promise<{ intentId: number; replay: boolean; expiresAt: Date }> {
+  // All admission and tombstone writers serialize before any snapshot read.
+  await tx.select({ id: shifts.id }).from(shifts).where(eq(shifts.id, input.shiftId)).for("update");
+  if (input.closeRejectedWithoutPayment) {
+    const normalized = normalizeIntentSource(input).input;
+    return closeRejectedDigitalSale(tx, normalized, actor, digitalCartFingerprint(normalized), (inner) => prepareAdmitted(inner, normalized, actor, true));
+  }
+  if (input.capturedDigitalPayment) {
+    const normalized = normalizeIntentSource(input).input;
+    return prepareCapturedDigitalSale(tx, normalized, actor, digitalCartFingerprint(normalized), async (inner, currentReplay) =>
+      prepareAdmitted(inner, normalized, actor, currentReplay));
+  }
+  return prepareAdmitted(tx, input, actor);
+}
+
+async function prepareAdmitted(tx: Tx, input: PrepareInput, actor: DigitalIntentActor, currentReplay = false) {
   const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.prepare");
   assertDigitalIntentScope(authority, { createdBy: actor.userId, branchId: input.branchId });
   const normalizedSource = normalizeIntentSource(input);
   input = normalizedSource.input;
   const invoicePayload = normalizedSource.invoicePayload;
+  const receptionSource = input.sourceType === "RECEPTION" ? parseReceptionSource(input.sourcePayload, input.paymentMethod) : null;
   await assertInvoiceSalesRepresentative(tx, invoicePayload);
   // يسبق replay حتى لا تعبر نيّة تاريخية CREDIT/طريقة معطّلة إلى claim ثم تفشل بعد الإصدار.
   if (
@@ -265,7 +293,7 @@ export async function prepare(
     });
   }
   // idempotency: نقرة مزدوجة/إعادة إرسال بنفس المفتاح تُعيد النيّة القائمة بدل حجزٍ ثانٍ.
-  const [existing] = await tx
+  const existingQuery = tx
     .select({
       id: digitalSaleIntents.id,
       expiresAt: digitalSaleIntents.expiresAt,
@@ -279,10 +307,12 @@ export async function prepare(
       externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
       externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
       checkoutSnapshot: digitalSaleIntents.checkoutSnapshot,
+      invoiceId: digitalSaleIntents.invoiceId,
     })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
     .limit(1);
+  const [existing] = await (currentReplay ? existingQuery.for("update") : existingQuery);
   if (existing) {
     if (authority.canonical) assertDigitalIntentScope(authority, existing);
     if (
@@ -299,23 +329,27 @@ export async function prepare(
         message: "نفس مفتاح الطلب استُعمل لسلّةٍ مختلفة أو سياق بيع مختلف — ابدأ طلباً جديداً",
       });
     }
+    if (existing.checkoutSnapshot?.unadmittedCapture && (!input.capturedDigitalPayment || existing.checkoutSnapshot.unadmittedCapture.deviceId !== input.capturedDigitalPayment.deviceId || !money(existing.expectedTotal).eq(input.capturedDigitalPayment.amount) || Number(existing.createdBy) !== actor.userId)) throw new TRPCError({ code: "CONFLICT", message: intentOperationError("إثبات القبض المحفوظ لا يطابق طلب الاستعادة", "استعد الأمر الأصلي دون قبض أو إصدار جديد") });
     assertCheckoutReplay(existing.checkoutSnapshot, input);
-    if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(existing.status)) {
+    const refundComplete = existing.status === "CANCELLED" && await settledCancellation(tx, Number(existing.id));
+    if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW", "FINALIZED"].includes(existing.status) && !refundComplete && !existing.checkoutSnapshot?.noAdmissionClosed) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "المحاولة السابقة أُغلقت — ابدأ طلباً جديداً قبل إعادة بيع الكروت",
       });
     }
-    if (existing.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
-      await lockConfirmedExternalPaymentAttempt(tx, {
+    if (!refundComplete && existing.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
+      const binding = {
         branchId: input.branchId,
-        channel: "POS",
+        channel: digitalPaymentChannel(input.sourceType),
         method: "CARD",
         amount: existing.expectedTotal,
         attemptId: input.externalPaymentAttemptId,
         deviceId: input.externalPaymentDeviceId,
         digitalSaleIntentId: Number(existing.id),
-      }, actor);
+      };
+      if (existing.status === "FINALIZED" && existing.invoiceId != null) await assertExternalPaymentReplay(tx, Number(existing.invoiceId), binding, actor);
+      else await lockConfirmedExternalPaymentAttempt(tx, binding, actor);
     }
     return { intentId: Number(existing.id), replay: true, expiresAt: existing.expiresAt };
   }
@@ -379,13 +413,16 @@ export async function prepare(
 
   // وردية مفتوحة ومملوكة للفاعل في الفرع نفسه.
   const [shift] = await tx
-    .select({ id: shifts.id, branchId: shifts.branchId, userId: shifts.userId, status: shifts.status })
+    .select({ id: shifts.id, branchId: shifts.branchId, userId: shifts.userId, status: shifts.status, shiftType: shifts.shiftType })
     .from(shifts)
     .where(eq(shifts.id, input.shiftId))
     .for("update")
     .limit(1);
   if (!shift || shift.status !== "OPEN") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا وردية مفتوحة" });
+  }
+  if (receptionSource && shift.shiftType !== "RECEPTION") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: intentOperationError("بيع الاستقبال يحتاج وردية استقبال مفتوحة", "افتح وردية استقبال صحيحة قبل إعداد الكروت") });
   }
   if (Number(shift.branchId) !== input.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الوردية تخصّ فرعاً آخر" });
@@ -748,6 +785,8 @@ export async function prepare(
     }
   }
 
+  expectedTotal = receptionIntentTotal(expectedTotal, receptionSource);
+  if (input.capturedDigitalPayment && !money(input.capturedDigitalPayment.amount).eq(expectedTotal)) throw new TRPCError({ code: "CONFLICT", message: intentOperationError("القبض الفعلي لا يطابق إجمالي السلة الحالية", "طابق القبض الأصلي من شاشة المراجعة دون قبض جديد") });
   let creditApprovalId: number | null = null;
   let creditLimitPreflight: { customerId: number; branchId: number; amount: string } | undefined;
   if (input.paymentMethod === "CREDIT") {
@@ -815,6 +854,7 @@ export async function prepare(
         externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
         externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
         checkoutSnapshot: digitalSaleIntents.checkoutSnapshot,
+        invoiceId: digitalSaleIntents.invoiceId,
       })
       .from(digitalSaleIntents)
       .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
@@ -854,22 +894,25 @@ export async function prepare(
       });
     }
     assertCheckoutReplay(winner.checkoutSnapshot, input);
-    if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(winner.status)) {
+    const refundComplete = winner.status === "CANCELLED" && await settledCancellation(tx, Number(winner.id));
+    if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW", "FINALIZED"].includes(winner.status) && !refundComplete) {
       throw new TRPCError({
         code: "CONFLICT",
         message: intentOperationError("المحاولة المتزامنة أُغلقت", "ابدأ طلباً جديداً قبل أي قبض أو إصدار"),
       });
     }
-    if (input.paymentMethod === "CARD") {
-      await lockConfirmedExternalPaymentAttempt(tx, {
+    if (!refundComplete && input.paymentMethod === "CARD") {
+      const binding = {
         branchId: input.branchId,
-        channel: "POS",
+        channel: digitalPaymentChannel(input.sourceType),
         method: "CARD",
         amount: winner.expectedTotal,
         attemptId: input.externalPaymentAttemptId,
         deviceId: input.externalPaymentDeviceId,
         digitalSaleIntentId: Number(winner.id),
-      }, actor);
+      };
+      if (winner.status === "FINALIZED" && winner.invoiceId != null) await assertExternalPaymentReplay(tx, Number(winner.invoiceId), binding, actor);
+      else await lockConfirmedExternalPaymentAttempt(tx, binding, actor);
     }
     return {
       intentId: Number(winner.id),
@@ -880,7 +923,7 @@ export async function prepare(
   if (input.paymentMethod === "CARD") {
     await lockConfirmedExternalPaymentAttempt(tx, {
       branchId: input.branchId,
-      channel: "POS",
+      channel: digitalPaymentChannel(input.sourceType),
       method: "CARD",
       amount: expectedTotal,
       attemptId: input.externalPaymentAttemptId,
@@ -1045,6 +1088,7 @@ export async function claimExecution(
       branchId: shifts.branchId,
       userId: shifts.userId,
       status: shifts.status,
+      shiftType: shifts.shiftType,
     })
     .from(shifts)
     .where(eq(shifts.id, Number(intent.shiftId)))
@@ -1053,6 +1097,7 @@ export async function claimExecution(
   if (
     !issuanceShift ||
     issuanceShift.status !== "OPEN" ||
+    (intent.checkoutSnapshot?.sourceType === "RECEPTION" && issuanceShift.shiftType !== "RECEPTION") ||
     Number(issuanceShift.branchId) !== Number(intent.branchId) ||
     (!digitalIntentCanUseOtherShift(authority) && Number(issuanceShift.userId) !== actor.userId)
   ) {
@@ -1069,6 +1114,7 @@ export async function claimExecution(
   if (intent.checkoutSnapshot?.sourceType === "INVOICE") {
     await assertInvoiceSalesRepresentative(tx, parseInvoiceSourcePayload(intent.checkoutSnapshot.sourcePayload));
   }
+  if (intent.checkoutSnapshot?.sourceType === "RECEPTION") parseReceptionSource(intent.checkoutSnapshot.sourcePayload, intent.paymentMethod);
 
   const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
   const intentItemId = Number(item.id);
@@ -1297,7 +1343,7 @@ export async function cancelIntent(
   }
 
   const unsafe = await hasUnsafeExecution(tx, input.intentId);
-  const hasConfirmedExternalPayment = intent.externalPaymentAttemptId != null;
+  const hasConfirmedExternalPayment = intent.externalPaymentAttemptId != null || isCapturedReceptionCash(intent.paymentMethod, intent.checkoutSnapshot);
   if (unsafe || hasConfirmedExternalPayment) {
     // الحجز **لا يُحرَّر**: كرتٌ صدر فعلاً وله أثرٌ ماليّ مستحقّ. المراجعة الإدارية تحسمه.
     await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, input.intentId));
@@ -1357,7 +1403,7 @@ export async function expireStaleIntents(
       continue;
     }
     if (
-      locked.externalPaymentAttemptId != null ||
+      locked.externalPaymentAttemptId != null || isCapturedReceptionCash(locked.paymentMethod, locked.checkoutSnapshot) ||
       await hasUnsafeExecution(tx, intentId)
     ) {
       await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, intentId));
@@ -1414,7 +1460,7 @@ export async function getIntent(db: DB, intentId: number, actor: DigitalIntentAc
 
     let netByLineKey: Map<string, string> | null = null;
     const checkout = intent.checkoutSnapshot ?? null;
-    if (checkout?.sourceType === "INVOICE") {
+    if (checkout?.sourceType === "INVOICE" && !checkout.noAdmissionClosed) {
       const payload = parseInvoiceSourcePayload(checkout.sourcePayload);
       netByLineKey = computeInvoiceIntentTotal({
         regularSubtotal: checkout.expectedSubtotal,
@@ -1429,7 +1475,11 @@ export async function getIntent(db: DB, intentId: number, actor: DigitalIntentAc
     }
 
     return {
-      intent,
+      intent: publicDigitalIntent(intent),
+      noAdmissionClosed: intent.status === "CANCELLED" && intent.checkoutSnapshot?.noAdmissionClosed != null,
+      financialSettlement: (await tx.select({ status: digitalIntentSettlements.status, saleAmount: digitalIntentSettlements.saleAmount,
+        refundAmount: digitalIntentSettlements.refundAmount, refundMethod: digitalIntentSettlements.refundMethod,
+        invoiceId: digitalIntentSettlements.invoiceId }).from(digitalIntentSettlements).where(eq(digitalIntentSettlements.intentId, intentId)).limit(1))[0] ?? null,
       items: items.map(({ variantId: _variantId, productUnitId: _productUnitId, ...item }) => ({
         ...item,
         /** المبلغ الفعلي المحصّل لهذا السطر؛ سعر القائمة وحده يضلّل عند خصم السطر. */

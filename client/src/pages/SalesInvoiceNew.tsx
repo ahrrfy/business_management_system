@@ -1,3 +1,4 @@
+import { DigitalWorkspaceRecovery, useDurableDigitalSale } from "@/components/digitalCards/useDurableDigitalSale";
 import { useInvoicePaymentSession } from "@/components/payments/useInvoicePaymentSession";
 import { fmtAr } from "@/lib/money";
 import { useSplitTender } from "@/components/payments/useSplitTender";
@@ -440,35 +441,27 @@ export default function SalesInvoice() {
   }
 
   /* ─── Digital Fulfillment ─────────────────────────────────────── */
-  const [digitalIntentId, setDigitalIntentId] = useState<number | null>(null);
-  const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  
-  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
-    onSuccess: (res) => {
-      setDigitalIntentId(res.intentId); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+  const durable=useDurableDigitalSale(!isCorrection && me.data?.id && clientRequestId && state.branchId ? {
+    companyId:me.data.companyId??null,userId:me.data.id,branchId:state.branchId,operation:"DIGITAL_INVOICE",target:`tab:${clientRequestId}`,
+  }:null,{
+    onPrepared:()=>{setCreditPrompt(null);setMgrEmail("");setMgrPwd("");},
+    onError:(err)=>{
+      const message=err instanceof Error?err.message:"تعذّر استكمال البيع الرقمي";
+      if(/حدّ الائتمان|بأقل من التكلفة|موافقة مدير|اعتماد مدير/.test(message))setCreditPrompt(message);
+      else {releaseReservedPrintWindow();notify.err(message);}
     },
-    onError: (e) => {
-      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("اعتماد مدير"))) {
-        setCreditPrompt(e.message); return;
-      }
-      releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; notify.err(e);
-    },
-  });
-
-  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
-    onSuccess: (r) => {
+    onNotAdmitted:()=>{setClientRequestId(crypto.randomUUID());notify.ok("أُغلق الطلب المرفوض بلا قبض؛ صحح الفاتورة");},
+    onRefunded:()=>{setClientRequestId(crypto.randomUUID());notify.ok("أُغلق الأمر بعد رد كامل القبض");},
+    onCompleted:(r)=>{
       utils.sales.list.invalidate();
       const id = (r as { invoiceId: number }).invoiceId;
       notify.ok("تم حفظ فاتورة البيع والكروت الرقمية واعتمادها");
-      setDigitalIntentId(null);
-      setDigitalFinalizeError(null);
       setClientRequestId(crypto.randomUUID()); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
       const printAfterSave = printAfterSaveRef.current; const shareAfterSave = shareAfterSaveRef.current;
       printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
       bypassUnsavedGuard();
       navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
-    onError: (e) => { releaseReservedPrintWindow(); setDigitalFinalizeError(e.message); },
   });
 
   /* ─── mutation ─────────────────────────────────────────────────── */
@@ -804,15 +797,14 @@ export default function SalesInvoice() {
     if (!digitalLines.length) { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; return; }
     const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
     const payload = buildPayload(approval); const { managerApproval, ...sourcePayload } = payload;
-    prepareIntent.mutate({
+    if(settlement.paymentMethod==="CARD"){notify.warn("الدفع بالبطاقة لفاتورة الكروت غير متاح");return;}
+    void durable.start({amount:settlement.paymentAmount,received:settlement.paymentAmount,prepare:{
       branchId: Number(state.branchId), shiftId: currentShift.data.id, clientRequestId,
       paymentMethod: settlement.paymentMethod,
-      externalPaymentAttemptId: settlement.paymentMethod === "CARD" ? externalAttempt?.attemptId ?? undefined : undefined,
-      externalPaymentDeviceId: settlement.paymentMethod === "CARD" ? externalAttempt?.deviceId ?? undefined : undefined,
       cartFingerprint: clientRequestId, customerId: state.entityId ?? undefined, priceTier: state.tier,
       dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: composeDocumentNotes({ notes: state.notes, terms: state.terms }), sourceType: "INVOICE",
-      sourcePayload, regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(managerApproval ? { managerApproval } : {}),
-    });
+      sourcePayload, regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)),
+    }}, managerApproval);
   }
 
   function addDigitalBasket(basket: DigitalBasketCapture) {
@@ -826,16 +818,12 @@ export default function SalesInvoice() {
 
   function finalizeDigitalIntent(id: number) {
     if (!salesOperationAllowed(me.data, "digitalCards.sales.finalize", true)) { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; return notify.warn("إتمام الفاتورة الرقمية غير مفوّض لحسابك."); }
-    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return;
     if (printAfterSaveRef.current) reservePrintWindow();
-    finalizeSale.mutate({
-      intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount,
-      paymentMethod: settlement.paymentMethod,
-      customerId: state.entityId ?? undefined,
-    });
+    void durable.finish(id);
   }
 
   function handleSubmit(approval?: Approval, requestReview = false) {
+    if(!isCorrection && (durable.pending || durable.busy || (clientRequestId && state.branchId && !durable.ready)))return;
     // قيمة مالية غير رقمية (في المدفوع/الخصم) تجعل decimal.js يرمي — نلتقطها برسالة واضحة بدل تعطّل صامت.
     let err: string | null;
     try {
@@ -898,6 +886,7 @@ export default function SalesInvoice() {
   }
 
   function handleReset() {
+    if(durable.pending || durable.busy)return;
     splitTender.reset();
     dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
     setClientRequestId(crypto.randomUUID());
@@ -916,7 +905,8 @@ export default function SalesInvoice() {
       notify.warn("أدخل بريد المدير وكلمة المرور للاعتماد.");
       return;
     }
-    handleSubmit({ email: mgrEmail.trim(), password: mgrPwd });
+    const approval={ email:mgrEmail.trim(),password:mgrPwd };
+    if(durable.pending) void durable.retry(approval); else handleSubmit(approval);
   }
 
   function closeApprovalPrompt() {
@@ -1008,7 +998,7 @@ export default function SalesInvoice() {
 
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
-  const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending || prepareIntent.isPending || finalizeSale.isPending;
+  const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending || durable.busy;
   const shortcutHandlersRef = useRef({ handleSubmit, handleReset, closeApprovalPrompt });
   shortcutHandlersRef.current = { handleSubmit, handleReset, closeApprovalPrompt };
   useEffect(() => {
@@ -1021,6 +1011,7 @@ export default function SalesInvoice() {
       typeof document !== "undefined" && !!document.querySelector('[role="alertdialog"][data-state="open"]');
 
     const onKey = (e: KeyboardEvent) => {
+      if(durable.pending || durable.busy) return;
       if (document.querySelector('[data-split-tender-editor][data-state="open"]')) return;
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
       if (creditPrompt) {
@@ -1090,7 +1081,7 @@ export default function SalesInvoice() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, bulkOpen, creditPrompt, submitPending, isDirty, me.data, correctionKind, externalAttempt]);
+  }, [state, bulkOpen, creditPrompt, submitPending, isDirty, me.data, correctionKind, externalAttempt, durable.pending, durable.busy]);
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
@@ -1141,6 +1132,8 @@ export default function SalesInvoice() {
         isCorrection && "rounded-lg ring-2 ring-[var(--sem-warn)]/40",
       )}
     >
+      {!isCorrection && (durable.pending || durable.busy || (!!clientRequestId && !!state.branchId && !durable.ready)) && <DigitalWorkspaceRecovery message={durable.error} busy={!durable.ready || durable.busy} retry={()=>void durable.retry()} closeRejected={durable.canCloseRejected?()=>void durable.closeRejected():undefined}/>}
+      <div className="contents" style={!isCorrection && (durable.pending || durable.busy || (!!clientRequestId && !!state.branchId && !durable.ready)) ? {display:"none"}:undefined}>
       {isCorrection && (
         <div className="flex items-center gap-2 rounded-md border-2 border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-extrabold text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4 shrink-0" />
@@ -1310,6 +1303,7 @@ export default function SalesInvoice() {
 
       <ShortcutsBar shortcuts={salesEditorShortcuts(availableActions, isCorrection)} />
 
+      </div>
       {/* حوار موافقة المدير (تجاوز حدّ الائتمان / بيع بأقل من التكلفة) */}
       <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) closeApprovalPrompt(); }}>
         <DialogContent dir="rtl" className="sm:max-w-md">
@@ -1368,8 +1362,8 @@ export default function SalesInvoice() {
         </DialogContent>
       </Dialog>
 
-      <DigitalFulfillmentDialog intentId={digitalIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError}
-        onClose={() => { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; setDigitalIntentId(null); setDigitalFinalizeError(null); }}
+      <DigitalFulfillmentDialog intentId={durable.intentId} finalizing={durable.busy} finalizeError={durable.error}
+        onClose={() => { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; durable.dismiss(); }}
         onAllExecuted={finalizeDigitalIntent}
       />
     </div>

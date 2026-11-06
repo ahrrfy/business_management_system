@@ -53,14 +53,17 @@ import {
 import { redactAuditValue } from "../auditService";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 import { checkoutSnapshotToSaleLines } from "./mixedCartService";
+import { digitalPaymentChannel, parseReceptionSource, receptionIntentTotal } from "./receptionSource";
+import { digitalIntentSettlements } from "../../../drizzle/digitalSettlementSchema";
 import {
   consumeIntentInventory,
   intentInventoryExemptions,
+  releaseIntentInventory,
 } from "./inventoryReservationService";
 import {
   assertInvoiceFullPayment,
   assertInvoiceSourceEnvelope,
-  computeInvoiceIntentTotal,
+  computeInvoiceIntentTotal, retainedInvoicePayload,
   parseInvoiceSourcePayload,
   type InvoiceSourcePayload,
 } from "./intentSchemas";
@@ -76,6 +79,9 @@ export interface FinalizeInput {
   deviceId?: string | null;
   customerId?: number | null;
 }
+
+/** Never accepted from an API payload; the resolution service supplies this capability. */
+export const DIGITAL_SETTLEMENT_FINALIZATION = Symbol("DIGITAL_SETTLEMENT_FINALIZATION");
 
 /** لقطة كرتٍ للطباعة (§١٢.١) — **بلا حصة مزوّد ولا ربح ولا رصيد**؛ الحقول ببساطة غير موجودة. */
 export interface DigitalPrintDetail {
@@ -104,6 +110,12 @@ export interface FinalizeResult {
   receiptLines: DigitalReceiptLine[];
   customerId: number | null;
   shiftId: number | null;
+  paymentMethod: PaymentMethod | "CREDIT";
+  paidAmount: string;
+  cashRoundingAdjustment: string;
+  returnedTotal: string;
+  invoiceStatus: string;
+  settledCapture: {capturedAmount:string;refundAmount:string} | null;
 }
 
 export interface DigitalReceiptLine {
@@ -137,6 +149,7 @@ export async function finalize(
   input: FinalizeInput,
   actor: Actor,
   authorizationActor: DigitalIntentActor = actor,
+  settlementAuthorization?: { capability: typeof DIGITAL_SETTLEMENT_FINALIZATION; settlementId: number },
 ): Promise<FinalizeResult> {
   const authority = await loadDigitalIntentScopeTx(tx, authorizationActor, "digitalCards.sales.finalize", [
     "digitalCards.sales.recover", DIGITAL_REVIEW_PARENT,
@@ -157,7 +170,20 @@ export async function finalize(
       message: "طريقة الدفع تغيّرت بعد إعداد الكروت — ألغِ النيّة قبل الإصدار وابدأ من جديد",
     });
   }
-  const checkout = intent.checkoutSnapshot ?? null;
+  let checkout = intent.checkoutSnapshot ?? null;
+  const [storedSettlement] = await tx.select().from(digitalIntentSettlements)
+    .where(eq(digitalIntentSettlements.intentId, input.intentId)).for("update").limit(1);
+  const settlement = settlementAuthorization?.capability === DIGITAL_SETTLEMENT_FINALIZATION
+    && storedSettlement?.id === settlementAuthorization.settlementId && storedSettlement.status === "REQUESTED"
+    && storedSettlement.approvedBy != null && storedSettlement.collectionReceiptId != null ? storedSettlement : null;
+  if (settlementAuthorization && !settlement) throw new TRPCError({ code: "FORBIDDEN", message: "تفويض تسوية القبض لا يطابق القرار المعتمد" });
+  if (storedSettlement && intent.status !== "FINALIZED" && !settlement) throw new TRPCError({ code: "CONFLICT", message: "للنيّة تخصيص قبض محفوظ؛ أكمل قرار تسويته دون مسار قبض جديد" });
+  if (settlement?.regularDisposition === "RELEASE" && checkout) {
+    await releaseIntentInventory(tx, input.intentId);
+    checkout = { ...checkout, regularLines: [], expectedSubtotal: "0.00", inventoryReservations: [] };
+  }
+  const receptionSource = checkout?.sourceType === "RECEPTION"
+    ? parseReceptionSource(checkout.sourcePayload, intent.paymentMethod) : null;
   const invoicePayload: InvoiceSourcePayload | null =
     checkout?.sourceType === "INVOICE"
       ? parseInvoiceSourcePayload(checkout.sourcePayload)
@@ -236,7 +262,8 @@ export async function finalize(
     }
     const [inv] = await tx
       .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, total: invoices.total,
-        customerId: invoices.customerId, shiftId: invoices.shiftId })
+        customerId: invoices.customerId, shiftId: invoices.shiftId, cashRoundingAdjustment: invoices.cashRoundingAdjustment,
+        paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal, status: invoices.status })
       .from(invoices)
       .where(eq(invoices.id, Number(intent.invoiceId)))
       .limit(1);
@@ -250,7 +277,7 @@ export async function finalize(
     if (boundExternalAttemptId != null) {
       await assertExternalPaymentReplay(tx, Number(intent.invoiceId), {
         branchId: Number(intent.branchId),
-        channel: "POS",
+        channel: digitalPaymentChannel(checkout?.sourceType),
         method: input.paymentMethod,
         amount: input.paymentAmount,
         attemptId: boundExternalAttemptId,
@@ -268,6 +295,11 @@ export async function finalize(
       receiptLines: await buildReceiptLines(tx, Number(intent.invoiceId)),
       customerId: inv.customerId ?? null,
       shiftId: inv.shiftId ?? null,
+      paymentMethod: input.paymentMethod,
+      paidAmount: inv.paidAmount,
+      cashRoundingAdjustment: inv.cashRoundingAdjustment ?? "0.00",
+      returnedTotal: inv.returnedTotal ?? "0.00", invoiceStatus: inv.status,
+      settledCapture: storedSettlement?.status === "COMPLETED" ? {capturedAmount:storedSettlement.capturedAmount,refundAmount:storedSettlement.refundAmount} : null,
     };
   }
 
@@ -278,26 +310,25 @@ export async function finalize(
       message: `لا تُثبَّت نيّة حالتها ${intent.status} — يجب أن تنجح كل الكروت أوّلاً`,
     });
   }
-  if (checkout?.sourceType === "RECEPTION") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message:
-        "نيّة استقبال رقمية قديمة لا تحمل عقداً آمناً للتثبيت — عالجها من طابور المراجعة ولا تنشئ فاتورة آلية",
-    });
-  }
   const inventoryExemptions = await intentInventoryExemptions(
     tx,
     input.intentId,
     checkout,
   );
 
-  const items = await tx
+  const allItems = await tx
     .select()
     .from(digitalSaleIntentItems)
     .where(eq(digitalSaleIntentItems.intentId, input.intentId))
     .orderBy(asc(digitalSaleIntentItems.id))
     .for("update");
-  if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "النيّة بلا بنود" });
+  const items = settlement ? allItems.filter((item) => settlement.issuedItemIds.includes(Number(item.id))) : allItems;
+  if (!items.length && !(settlement && (checkout?.regularLines.length ?? 0) > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "النيّة بلا بنود صادرة قابلة للفوترة" });
+  if (settlement && (allItems.some((item) => !["SUCCESS", "FAILED"].includes(item.fulfillmentStatus))
+    || allItems.filter((item) => item.fulfillmentStatus === "SUCCESS").length !== items.length
+    || items.length !== settlement.issuedItemIds.length)) {
+    throw new TRPCError({ code: "CONFLICT", message: "لم تُحسم نتيجة كل كرت حسب قرار التسوية؛ النتيجة المجهولة تبقى للمراجعة" });
+  }
 
   /* ٤. رفض أيّ بند غير SUCCESS (حارسٌ ثانٍ فوق حالة النيّة). */
   const notSuccess = items.filter((i) => i.fulfillmentStatus !== "SUCCESS");
@@ -305,8 +336,8 @@ export async function finalize(
     throw new TRPCError({ code: "CONFLICT", message: `${notSuccess.length} كرت لم ينجح تنفيذه — لا تُنشأ فاتورة` });
   }
 
-  let expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
-  if (!invoicePayload && !money(intent.expectedTotal).eq(expectedTotal)) {
+  let expectedTotal = money(receptionIntentTotal(toDbMoney(sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"))), receptionSource));
+  if (!invoicePayload && !money(settlement?.saleAmount ?? intent.expectedTotal).eq(expectedTotal)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({ what: "تعذّر تثبيت إجمالي السلة", why: "إجمالي النيّة لا يطابق لقطات بنودها", doThis: "أوقف التثبيت وراجِع العملية مع مسؤول النظام دون إعادة إصدار الكروت" }),
@@ -357,7 +388,7 @@ export async function finalize(
   if (invoicePayload) {
     invoicePricing = computeInvoiceIntentTotal({
       regularSubtotal: checkout?.expectedSubtotal ?? "0",
-      sourcePayload: invoicePayload,
+      sourcePayload: settlement ? retainedInvoicePayload(invoicePayload, new Set(items.map(item => item.lineKey)), settlement.regularDisposition === "SELL") : invoicePayload,
       digitalLines: items.map((item) => {
         const offering = meta.get(Number(item.offeringId))!;
         return {
@@ -369,7 +400,7 @@ export async function finalize(
       }),
     });
     expectedTotal = money(invoicePricing.total);
-    if (!money(intent.expectedTotal).eq(expectedTotal)) {
+    if (!money(settlement?.saleAmount ?? intent.expectedTotal).eq(expectedTotal)) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -420,7 +451,8 @@ export async function finalize(
     if (Number(w.branchId) !== Number(intent.branchId)) {
       throw new TRPCError({ code: "CONFLICT", message: "حجز محفظة من فرع آخر — أوقف التثبيت وراجِع الربط" });
     }
-    if (money(w.currentBalance).lt(money(r.amount))) {
+    const requiredShare = settlement ? sumMoney(items.filter((item) => Number(item.providerId) === Number(w.providerId)).map((item) => item.providerShareSnapshot)) : money(r.amount);
+    if (money(w.currentBalance).lt(requiredShare) || money(w.reservedBalance).lt(r.amount)) {
       throw new TRPCError({
         code: "CONFLICT",
         message: `رصيد «${w.name}» لم يعد يكفي للاستهلاك المحجوز — راجِع المحفظة`,
@@ -471,13 +503,14 @@ export async function finalize(
     shiftId: Number(intent.shiftId),
     customerId: checkout?.customerId ?? null,
     salesRepId: invoicePayload?.salesRepId,
-    contactName: null,
-    contactPhone: null,
+    contactName: receptionSource?.contactName ?? null,
+    contactPhone: receptionSource?.contactPhone ?? null,
     couponCode: null,
     priceTier: checkout?.priceTier ?? null,
     priceOverrideApproved: checkout?.priceOverrideApproved === true,
     // شاشة الفاتورة المتقدمة تبقى قناة بيع تجزئة؛ ORDER كانت تصنّفها خطأً كاستقبال.
     sourceType: "POS",
+    cashRoundIQD: receptionSource?.cashRoundIQD ?? false,
     clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
     creditApproved: checkout?.creditApprovalId != null,
     creditApprovalId: checkout?.creditApprovalId ?? undefined,
@@ -490,13 +523,14 @@ export async function finalize(
         amount: creditPreflight!.amount,
       },
     } : {}),
-    payment: input.paymentMethod === "CREDIT" ? undefined : {
+    payment: input.paymentMethod === "CREDIT" || settlement ? undefined : {
       amount: input.paymentAmount,
       method: input.paymentMethod,
       externalPaymentAttemptId: boundExternalAttemptId,
       externalPaymentIntentId: input.intentId,
     },
-    requireExternalPaymentAttempt: input.paymentMethod === "CARD",
+    requireExternalPaymentAttempt: input.paymentMethod === "CARD" && !settlement,
+    preCollected: settlement ? { amount: settlement.saleAmount, receiptIds: [], method: intent.paymentMethod as "CASH" | "CARD" } : undefined,
     formalReservationExemptions: inventoryExemptions,
     deviceId: boundExternalDeviceId,
     invoiceDiscount: invoicePayload?.invoiceDiscount,
@@ -531,6 +565,7 @@ export async function finalize(
     salePayload as any,
     actor,
     DIGITAL_SALE_CAPABILITY,
+    digitalPaymentChannel(checkout?.sourceType),
   );
   if (!money(sale.total).eq(expectedTotal)) {
     throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
@@ -558,7 +593,13 @@ export async function finalize(
   for (const r of reservations) {
     const walletId = Number(r.walletId);
     const w = lockedWallets.get(walletId)!;
-    const consumed = money(r.amount);
+    const consumed = settlement ? sumMoney(items.filter((item) => Number(item.providerId) === w.providerId).map((item) => item.providerShareSnapshot)) : money(r.amount);
+
+    if (consumed.isZero()) {
+      await tx.update(digitalWallets).set({ reservedBalance: toDbMoney(money(w.reservedBalance).minus(r.amount)) }).where(eq(digitalWallets.id, walletId));
+      await tx.update(digitalWalletReservations).set({ status: "RELEASED", releasedAt: new Date() }).where(eq(digitalWalletReservations.id, Number(r.id)));
+      continue;
+    }
 
     const txRes = await tx.insert(digitalWalletTransactions).values({
       walletId,
@@ -581,7 +622,7 @@ export async function finalize(
       .set({
         currentBalance: toDbMoney(money(w.currentBalance).minus(consumed)),
         reservedBalance: toDbMoney(
-          money(w.reservedBalance).minus(consumed).lt(0) ? money(0) : money(w.reservedBalance).minus(consumed),
+          money(w.reservedBalance).minus(r.amount),
         ),
       })
       .where(eq(digitalWallets.id, walletId));
@@ -743,6 +784,9 @@ export async function finalize(
   });
 
   /* ١١. بيانات الطباعة من الخادم (§١٢.٣). */
+  const [receiptInvoice] = await tx.select({ cashRoundingAdjustment: invoices.cashRoundingAdjustment, paidAmount: invoices.paidAmount,
+    returnedTotal: invoices.returnedTotal, status: invoices.status })
+    .from(invoices).where(eq(invoices.id, sale.invoiceId)).limit(1);
   return {
     intentId: input.intentId,
     invoiceId: sale.invoiceId,
@@ -753,6 +797,11 @@ export async function finalize(
     receiptLines: await buildReceiptLines(tx, sale.invoiceId),
     customerId: boundCustomerId,
     shiftId: Number(intent.shiftId),
+    paymentMethod: input.paymentMethod,
+    paidAmount: receiptInvoice!.paidAmount,
+    cashRoundingAdjustment: receiptInvoice?.cashRoundingAdjustment ?? "0.00",
+    returnedTotal: receiptInvoice!.returnedTotal ?? "0.00", invoiceStatus: receiptInvoice!.status,
+    settledCapture: settlement ? {capturedAmount:settlement.capturedAmount,refundAmount:settlement.refundAmount} : null,
   };
 }
 

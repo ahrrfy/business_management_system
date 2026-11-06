@@ -38,6 +38,7 @@ import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { releaseIntentInventory } from "./inventoryReservationService";
+import { assertCaptureResolvedBeforeClosure } from "./captureDisposition";
 
 async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, details: unknown): Promise<void> {
   try {
@@ -97,6 +98,7 @@ export async function requestWriteoff(
   if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبباً واضحاً للشطب" });
 
   const intent = await lockIntent(tx, input.intentId);
+  await assertCaptureResolvedBeforeClosure(tx, intent);
   if (intent.status === "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "للنيّة طلب شطبٍ معلّق — ينتظر اعتماد مديرٍ آخر" });
   }
@@ -151,6 +153,7 @@ export async function approveWriteoff(
   await assertServiceOperationTx(tx, actor, "digitalCards.sales.approveWriteoff", ["digitalCards.sales.approveReviewResolution"]);
 
   const intent = await lockIntent(tx, input.intentId);
+  await assertCaptureResolvedBeforeClosure(tx, intent);
   if (intent.status === "WRITTEN_OFF") {
     throw new TRPCError({ code: "CONFLICT", message: "النيّة مشطوبة مسبقاً" });
   }

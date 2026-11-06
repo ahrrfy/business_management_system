@@ -46,6 +46,7 @@ import {
 } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { receiptCashEventAtSql } from "../cash/cashEventAt";
+import { digitalCommissionPayoutHoldMessage } from "../commissions/digitalReconciliation";
 import { getCommissionPayrollReadiness } from "../commissions/payrollReadiness";
 import { money } from "../money";
 import { getPurchaseMonthCloseBlockersTx } from "../purchase/monthCloseBlockers";
@@ -551,6 +552,7 @@ export async function getMonthCloseReadiness(
     : {
         required: false,
         eligibleEmployeeCount: 0,
+        digitalPayoutHold: null,
         runId: null,
         status: null,
         ready: true,
@@ -724,6 +726,8 @@ export async function getMonthCloseReadiness(
   const payrollBlockCount = payrollAccrued ? 0 : 1;
   const payrollDetail = !payrollExpected
     ? "لا موظفون مستحقون للأجر في هذه الفترة."
+    : commissionArtifactReadiness.digitalPayoutHold
+      ? digitalCommissionPayoutHoldMessage(input.month)
     : commissionArtifactReadiness.required && commissionArtifactReadiness.runId == null
       ? `تشغيلة عمولات ${input.month} مفقودة مع وجود ${commissionArtifactReadiness.eligibleEmployeeCount} موظف ذي خطة فعالة؛ احتسبها واعتمدها قبل إقفال الشركة.`
       : commissionArtifactReadiness.required && commissionArtifactReadiness.status === "draft"

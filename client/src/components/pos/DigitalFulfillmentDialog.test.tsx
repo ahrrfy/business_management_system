@@ -21,8 +21,8 @@ describe("نافذة تنفيذ الكروت — سبب فشل التثبيت ا
     expect(dialog).toContain('"إعادة محاولة تثبيت الفاتورة عند تعذّر الاتصال"');
   });
 
-  it("POS.tsx يمرّر خطأ finalizeSale الفعلي إلى النافذة بدل إسقاطه صامتاً", () => {
-    expect(pos).toContain("finalizeError={finalizeSale.error ? errMsg(finalizeSale.error) : null}");
+  it("POS.tsx يمرّر خطأ الاستكمال الفعلي إلى النافذة بدل إسقاطه صامتاً", () => {
+    expect(pos).toContain("finalizeError={durable.error}");
   });
 
   it("يعرض صافي السطر المحصّل بعد الخصم لا سعر القائمة", () => {

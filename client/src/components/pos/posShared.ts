@@ -3,6 +3,7 @@
 // سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
 // ومقياس الاحتكاك D4، وتبقى كلّ الحالة المالية عند الأب (POS.tsx) وتصل عبر props.
 
+import { invoicePrintAmounts } from "@/lib/printing/receiptLayoutInvoiceAmounts";
 import { newClientRequestId } from "@/lib/countQueue";
 import { D, round2 } from "@/lib/money";
 import type { ReceiptBrowserData } from "@/lib/printing/print";
@@ -131,6 +132,8 @@ export type Receipt = {
   /** تعديل التقريب النقديّ IQD (± د.ع، النقد الكامل فقط) — يطابق `cashRoundingAdj` الخادميّ. */
   cashRounding?: number;
   total: number;
+  returnedTotal?: string;
+  status?: string;
   received: number;
   change: number;
   credit: number;
@@ -411,6 +414,8 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
       r.cashRounding != null && r.cashRounding !== 0 ? r.cashRounding : null,
     total: r.total,
     paid: r.received,
+    returnedTotal: r.returnedTotal,
+    status: r.status,
     // «الباقي» يُطبع فقط حين يكون موجباً (فكّة فعلية) — كحارس الشاشة. الدفع المطابق/السريع
     // (بلا إدخال مبلغ) باقيه ٠ ⇒ لا سطر، بدل طباعة «الباقي: ‑الإجمالي» (باقٍ سالب لا معنى له).
     change: r.isCredit || r.change <= 0 ? null : r.change,
@@ -424,4 +429,20 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     delivery: r.delivery ?? null,
     bounceBackCoupon: r.bounceBackCoupon ?? null,
   };
+}
+
+
+/** Settlement/return facts win over the original tender on recovered digital sales. */
+export function digitalRecoveredReceiptMoney(sale: {
+  total:string;paidAmount:string;paymentMethod:string;returnedTotal:string;invoiceStatus:string;cashRoundingAdjustment:string;
+  settledCapture:{capturedAmount:string;refundAmount:string}|null;
+}, tender:string) {
+  const facts=invoicePrintAmounts({total:sale.total,paidAmount:sale.paidAmount,returnedTotal:sale.returnedTotal,status:sale.invoiceStatus});
+  const revised=!!sale.settledCapture || D(sale.returnedTotal).gt(0) || facts.dead;
+  const credit=D(facts.remainingAmount);
+  const received=!revised && sale.paymentMethod==="CASH"?D(tender):D(sale.paidAmount);
+  return {total:D(sale.total).toNumber(),received:received.toNumber(),
+    change:!revised && sale.paymentMethod==="CASH"?received.minus(sale.total).clamp(0,Infinity).toNumber():0,
+    credit:credit.toNumber(),isCredit:credit.gt(0),method:sale.paymentMethod,methodCode:sale.paymentMethod,
+    cashRounding:D(sale.cashRoundingAdjustment).toNumber(),returnedTotal:sale.returnedTotal,status:sale.invoiceStatus};
 }

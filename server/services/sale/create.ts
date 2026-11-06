@@ -227,9 +227,12 @@ export async function createSaleInTx(
       });
     }
   }
+  if (input.preCollected?.method && capability !== DIGITAL_SALE_CAPABILITY) {
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({"what":"تعذّر ربط المقبوض السابق بالفاتورة","why":"تحديد وسيلة المقبوض السابق يتطلب تسوية رقمية موثقة","doThis":"استعد قرار تسوية القبض الرقمي من طابور المراجعة واعتمده أولاً"}) });
+  }
   const effectiveInvoicePaymentMethod = rawPaymentLegs.reduce<string | null>(
     (acc, leg) => mixedAwarePaymentMethod(acc, leg.method),
-    null,
+    input.preCollected?.method ?? null,
   );
   // This namespace is generated only by the trusted digital-card finalizer.  Check it
   // before idempotency lookup so a public POS request cannot replay an existing
@@ -1372,7 +1375,8 @@ export async function createSaleInTx(
   //    في الدفعات المختلطة (نقد + بطاقة) يبقى الإجمالي الدقيق دون تقريب لئلا ينجرف الخادم عن العميل.
   const hasCashLeg = rawPaymentLegs.some((leg) => leg.method === "CASH");
   const allCashLegs =
-    rawPaymentLegs.length > 0 &&
+    (rawPaymentLegs.length > 0 || input.preCollected?.method === "CASH") &&
+    (!input.preCollected?.method || input.preCollected.method === "CASH") &&
     rawPaymentLegs.every((leg) => leg.method === "CASH");
   const roundCash = !!input.cashRoundIQD && allCashLegs;
   const grandTotalD = money(totals.total);

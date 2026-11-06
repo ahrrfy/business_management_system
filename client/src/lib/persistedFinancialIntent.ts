@@ -5,7 +5,7 @@ export interface FinancialIntentScope {
   companyId: number | null;
   userId: number;
   branchId: number;
-  operation: "SALES_PAYMENT" | "SUPPLIER_SETTLEMENT";
+  operation: "SALES_PAYMENT" | "SUPPLIER_SETTLEMENT" | "DIGITAL_RECEPTION" | "DIGITAL_POS" | "DIGITAL_INVOICE";
   target: string;
 }
 
@@ -25,12 +25,25 @@ export function financialIntentScopeKey(scope: FinancialIntentScope): string {
     scope.branchId <= 0 ||
     (scope.companyId !== null &&
       (!Number.isSafeInteger(scope.companyId) || scope.companyId <= 0)) ||
-    !["SALES_PAYMENT", "SUPPLIER_SETTLEMENT"].includes(scope.operation) ||
-    !/^(?:invoice:[1-9]\d*|workspace)$/.test(scope.target)
+    !(scope.operation === "DIGITAL_POS" ? /^tab:[1-9]\d{0,15}$/.test(scope.target)
+      : scope.operation === "DIGITAL_INVOICE" ? /^tab:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(scope.target)
+      : scope.operation === "DIGITAL_RECEPTION" ? scope.target === "workspace"
+      : ["SALES_PAYMENT","SUPPLIER_SETTLEMENT"].includes(scope.operation) && /^(?:invoice:[1-9]\d*|workspace)$/.test(scope.target))
   ) {
     throw new Error("تعذّر تحديد هوية محاولة الدفع؛ أعد تسجيل الدخول.");
   }
   return `financial-intent:v1:${scope.companyId === null ? "single" : `company-${scope.companyId}`}:user-${scope.userId}:branch-${scope.branchId}:${scope.operation}:${scope.target}`;
+}
+
+/** Discover pending envelopes after a blank cart/different default branch; only scoped keys are read. */
+export async function digitalWorkspaceScopes(scope: FinancialIntentScope): Promise<FinancialIntentScope[]> {
+  const base = financialIntentScopeKey(scope).split(":branch-")[0] + ":branch-";
+  const keys = await offlineDb.meta.where("key").startsWith(base).primaryKeys();
+  return keys.flatMap(key => {
+    const match = /^(\d+):(DIGITAL_POS|DIGITAL_INVOICE):(tab:.+)$/.exec(key.slice(base.length));
+    if (!match || match[2] !== scope.operation || (scope.operation === "DIGITAL_POS" ? Number(match[1]) !== scope.branchId : match[3] !== scope.target)) return [];
+    return [{...scope, branchId:Number(match[1]), target:match[3]}];
+  });
 }
 
 async function encryptionKey(create: boolean): Promise<CryptoKey> {

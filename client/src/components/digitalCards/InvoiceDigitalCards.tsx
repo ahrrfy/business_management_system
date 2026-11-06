@@ -16,13 +16,15 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { digitalSaleReferenceLabel } from "@shared/digitalSale";
 import { RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { DigitalRefundTenderFields } from "./DigitalRefundTenderFields";
+import type { DigitalRefundMethod, DigitalRefundTender } from "@shared/digitalPaymentSettlement";
 
 const FULFILLMENT: Record<string, string> = {
   ISSUED: "صادر",
@@ -137,8 +139,29 @@ function ReversalDialog({
   const me = trpc.auth.me.useQuery();
   const [selected, setSelected] = useState<number[]>([]);
   const [reason, setReason] = useState("");
+  const [selectedKind, setSelectedKind] = useState<"REVERSED" | "LOSS_REFUND">("REVERSED");
+  const [refundMethod, setRefundMethod] = useState<DigitalRefundMethod>("CASH");
+  const [refundReference, setRefundReference] = useState("");
+  const [refundConfirmed, setRefundConfirmed] = useState(false);
+  const [bankGrant, setBankGrant] = useState<{ refundId: number; token: string } | null>(null);
 
-  const q = digitalAccess.query("digitalCards.reversal.reversible", trpc.digitalCards.reversal.reversible.useQuery({ invoiceId }, { enabled: digitalAccess.can("digitalCards.reversal.reversible") && (open) }));
+  const q = digitalAccess.query("digitalCards.reversal.reversible", trpc.digitalCards.reversal.reversible.useQuery({ invoiceId,
+    detailIds: selected.length ? selected : undefined, kind: selectedKind }, { enabled: digitalAccess.can("digitalCards.reversal.reversible") && (open), retry: false }));
+  const rawQuote = q.data?.[0]?.refundQuote;
+  const quote = rawQuote && rawQuote.kind === selectedKind && rawQuote.detailIds.join(",") === selected.slice().sort((a,b) => a-b).join(",") ? rawQuote : null;
+  const evidence = quote?.evidence;
+  const evidenced = evidence != null && evidence.status !== "RESERVED";
+  const grantToken = evidence && bankGrant?.refundId === evidence.refundId ? bankGrant.token : null;
+  useEffect(() => { setSelected([]); setReason(""); setRefundMethod("CASH"); setRefundReference(""); setRefundConfirmed(false); setBankGrant(null); }, [invoiceId, open]);
+  useEffect(() => { if (evidence) { setRefundMethod(evidence.method); setRefundReference(evidence.reference ?? ""); setRefundConfirmed(evidence.status !== "RESERVED"); } }, [evidence?.method, evidence?.reference, evidence?.status]);
+  function refundTender(): DigitalRefundTender { return refundMethod === "CARD"
+    ? { method: "CARD", reference: refundReference.trim(), confirmed: true } : { method: "CASH" }; }
+  function refundControlSaved(result: { stage: string; refundId?: number; newReservation?: boolean; grantToken?: string | null }) {
+    if (result.stage === "RESERVE" && result.newReservation && result.grantToken && result.refundId) setBankGrant({ refundId: result.refundId, token: result.grantToken });
+    if (result.stage !== "RESERVE") setBankGrant(null);
+    void utils.digitalCards.reversal.reversible.invalidate();
+    notify.ok(result.stage === "RESERVE" ? (result.newReservation ? "حُجز مبلغ الرد لهذه النافذة" : "الحجز قائم؛ راجع نتيجة الجهاز دون رد جديد") : result.stage === "RELEASE" ? "حُرر الحجز دون صرف" : "حُفظ إثبات رد البطاقة؛ أكمل الاعتماد دون تكرار الرد على الجهاز");
+  }
 
   function done(msg: string, detail?: string) {
     void utils.digitalCards.sales.saleDetails.invalidate({ invoiceId });
@@ -150,7 +173,7 @@ function ReversalDialog({
   }
 
   const approveMut = trpc.digitalCards.reversal.approve.useMutation({
-    onSuccess: () => done("تمّ العكس المؤكَّد", "الإيراد والحصة زالا معاً — صافي أثر الفاتورة صفر."),
+    onSuccess: (result) => result.stage !== "EXECUTE" ? refundControlSaved(result) : done("تمّ العكس المؤكَّد", "الإيراد والحصة زالا معاً — صافي أثر الفاتورة صفر."),
     onError: (e) => notify.err(e),
   });
   const requestLossMut = trpc.digitalCards.reversal.requestLossRefund.useMutation({
@@ -161,7 +184,7 @@ function ReversalDialog({
     onError: (e) => notify.err(e),
   });
   const lossMut = trpc.digitalCards.reversal.lossRefund.useMutation({
-    onSuccess: () => done("اعتُمد ردّ الخسارة", "الإيراد زال وبقيت حصة المزوّد تكلفةً على المكتبة."),
+    onSuccess: (result) => result.stage !== "EXECUTE" ? refundControlSaved(result) : done("اعتُمد ردّ الخسارة", "الإيراد زال وبقيت حصة المزوّد تكلفةً على المكتبة."),
     onError: (e) => notify.err(e),
   });
   const rejectLossMut = trpc.digitalCards.reversal.rejectLossRefund.useMutation({
@@ -189,7 +212,7 @@ function ReversalDialog({
     if (!selectedIssued.length) return notify.err("اختر بطاقةً صادرة واحدة على الأقل");
     if (reason.trim().length < 3) return notify.err("اكتب سبباً واضحاً");
     const detailIds = selectedIssued.map((r) => r.id);
-    if (kind === "approve") approveMut.mutate({ invoiceId, detailIds, reason: reason.trim() });
+    if (kind === "approve") approveMut.mutate({ invoiceId, detailIds, reason: reason.trim(), refund: refundTender() });
     else requestLossMut.mutate({ invoiceId, detailIds, reason: reason.trim() });
   }
 
@@ -225,15 +248,18 @@ function ReversalDialog({
                       className="size-4"
                       aria-label={`اختيار البطاقة ${r.providerReference ?? r.id}`}
                       checked={selected.includes(r.id)}
-                      onChange={(e) =>
-                        setSelected((prev) =>
-                          e.target.checked ? [...prev, r.id] : prev.filter((x) => x !== r.id),
-                        )
-                      }
+                      onChange={(e) => {
+                        const kind = r.fulfillmentStatus === "LOSS_REFUND_PENDING" ? "LOSS_REFUND" : "REVERSED";
+                        setSelectedKind(kind);
+                        setSelected((prev) => !e.target.checked ? prev.filter((x) => x !== r.id) : r.pendingRefund?.detailIds ?? (kind === selectedKind ? [...prev, r.id] : [r.id]));
+                        setRefundConfirmed(false);
+                        setRefundReference(""); setRefundMethod(r.pendingRefund?.method ?? "CASH");
+                        if (r.pendingRefund) setReason(r.pendingRefund.reason);
+                      }}
                     />
                   </td>
                   <td className="p-2 tabular-nums font-medium">{fmtAr(r.sellPrice)}</td>
-                  <td className="p-2 font-mono text-xs" dir="ltr">{r.providerReference || "—"}</td>
+                  <td className="p-2 font-mono text-xs" dir="ltr">{r.providerReference || "—"}{r.pendingRefund && <span className="block font-sans" dir="rtl">{r.pendingRefund.status === "RESERVED" ? "حجز رد قائم" : "إثبات رد محفوظ"} — اختر لاستكماله</span>}</td>
                   <td className="p-2">{r.studentName || "—"}</td>
                   <td className="p-2 text-muted-foreground">{SETTLEMENT[r.settlementMode] ?? r.settlementMode}</td>
                   <td className="p-2 text-center">
@@ -254,6 +280,29 @@ function ReversalDialog({
             </tbody>
           </table>
         </ScrollTableShell>
+
+        {q.error && <p role="alert" className="text-sm text-destructive">{q.error.message}</p>}
+        {evidence?.status === "COMPLETED" && <p role="status" className="border p-3 text-sm">الرد واعتماده المالي مسجلان بالفعل؛ حدّث الفاتورة دون دفع جديد.</p>}
+        {quote && evidence?.status !== "COMPLETED" && <DigitalRefundTenderFields originalMethod={quote.originalMethod} amount={quote.amount} method={refundMethod}
+          onMethod={setRefundMethod} reference={refundReference} onReference={(value) => { setRefundReference(value); setRefundConfirmed(false); }}
+          confirmed={refundConfirmed} onConfirmed={setRefundConfirmed} reserved={!!evidence} evidenced={evidenced} busy={busy || q.isFetching || ownPendingSelected}
+          grantToken={grantToken} reservationExpiresAt={evidence?.reservationExpiresAt}
+          onReserve={() => {
+            if (selectedKind === "LOSS_REFUND") lossMut.mutate({ invoiceId, detailIds: selected, stage: "RESERVE", refund: { method: "CARD" }, expectedRefundAmount: quote.amount });
+            else if (reason.trim().length >= 3) approveMut.mutate({ invoiceId, detailIds: selected, reason: reason.trim(), stage: "RESERVE", refund: { method: "CARD" }, expectedRefundAmount: quote.amount });
+            else notify.err("اكتب سبب العكس قبل حجز الرد");
+          }}
+          onRelease={(releaseReason) => {
+            const control = { stage: "RELEASE" as const, refund: { method: "CARD" as const }, noRefundConfirmed: true as const, releaseReason, refundGrantToken: grantToken ?? undefined };
+            if (selectedKind === "LOSS_REFUND") lossMut.mutate({ invoiceId, detailIds: selected, ...control });
+            else approveMut.mutate({ invoiceId, detailIds: selected, reason: reason.trim(), ...control });
+          }}
+          onRecord={() => {
+            if (!refundConfirmed || !refundReference.trim()) return;
+            if (selectedKind === "LOSS_REFUND") lossMut.mutate({ invoiceId, detailIds: selected, stage: "EVIDENCE", refund: refundTender() });
+            else if (reason.trim().length >= 3) approveMut.mutate({ invoiceId, detailIds: selected, reason: reason.trim(), stage: "EVIDENCE", refund: refundTender() });
+            else notify.err("اكتب سبب العكس قبل حفظ إثبات الرد");
+          }} />}
 
         {selectedIssued.length > 0 && (
           <div className="space-y-1">
@@ -295,8 +344,8 @@ function ReversalDialog({
               </Button>
               <Button
                 size="sm"
-                disabled={!digitalAccess.can("digitalCards.reversal.lossRefund") || (busy || ownPendingSelected)}
-                onClick={() => lossMut.mutate({ invoiceId, detailIds: selectedPending.map((r) => r.id) })}
+                disabled={!digitalAccess.can("digitalCards.reversal.lossRefund") || (busy || ownPendingSelected) || !quote || (refundMethod === "CARD" && D(quote.amount).gt(0) && !evidenced)}
+                onClick={() => lossMut.mutate({ invoiceId, detailIds: selectedPending.map((r) => r.id), refund: refundTender() })}
               >
                 {busy ? "جارٍ التنفيذ…" : "اعتماد ردّ الخسارة"}
               </Button>
@@ -313,7 +362,7 @@ function ReversalDialog({
               </Button>
               <Button
                 size="sm"
-                disabled={!digitalAccess.can("digitalCards.reversal.approve") || busy || selectedIssued.length === 0}
+                disabled={!digitalAccess.can("digitalCards.reversal.approve") || busy || selectedIssued.length === 0 || !quote || (refundMethod === "CARD" && D(quote.amount).gt(0) && !evidenced)}
                 onClick={() => submit("approve")}
               >
                 {busy ? "جارٍ التنفيذ…" : "المزوّد أعاد الحصة (عكس مؤكَّد)"}

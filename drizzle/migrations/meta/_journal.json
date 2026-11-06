@@ -2675,6 +2675,13 @@
 			"when": 1788148883000,
 			"tag": "0425_delivery_company_statement_batches",
 			"breakpoints": true
+		},
+		{
+			"idx": 426,
+			"version": "5",
+			"when": 1788148884000,
+			"tag": "0426_digital_cycle_settlements",
+			"breakpoints": true
 		}
 	]
 }

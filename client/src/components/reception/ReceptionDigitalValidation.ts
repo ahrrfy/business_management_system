@@ -50,9 +50,9 @@ export function validateReceptionDigitalCart({
       );
       return false;
     }
-    if (method !== "CASH") {
+    if (method !== "CASH" && method !== "CARD") {
       notify.err(
-        "بيع الكروت من كاشير الاستقبال متاح نقداً فقط حالياً؛ الدفع بالبطاقة يحتاج إثبات جهاز دفع مرتبطاً بالعملية.",
+        "بيع الكروت من الاستقبال يقبل النقد أو البطاقة كاملَي السداد؛ أكّد قبض البطاقة واربط إثباتها بالعملية.",
       );
       return false;
     }

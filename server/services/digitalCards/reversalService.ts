@@ -18,7 +18,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { assertServiceOperationTx, loadOperationUserTx, type ServiceOperationActor, type StoredOperationSnapshot } from "../authorization/operationAuthority";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
@@ -28,19 +28,48 @@ import {
   digitalWalletTransactions,
   digitalWallets,
   invoices,
-  receipts,
+  invoiceItems,
 } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
-import { extractInsertId } from "../../lib/insertId";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
-import { assertCashOutAvailable, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { cancelContractsByInvoiceItems } from "./subscriptionService";
+import type { DigitalCardRefundControl, DigitalRefundTender } from "../../../shared/digitalPaymentSettlement";
+import { completeDigitalReturnItems, controlDigitalCardRefund, digitalRefundReplay, executeDigitalRefund, invoiceDigitalRefundContext, type DigitalRefundContext } from "./refundPayments";
+import { digitalRefundItems, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
 
 export type ReversalOutcome = "REVERSED" | "LOSS_REFUND";
+
+async function markDigitalInvoiceItemsReturned(tx: Tx, details: Array<{ invoiceItemId: number }>) {
+  // Financial completion only: no stock-return command or inventory movement for a code.
+  await tx.update(invoiceItems).set({ returnedBaseQuantity: sql`${invoiceItems.baseQuantity}` })
+    .where(inArray(invoiceItems.id, details.map((d) => Number(d.invoiceItemId))));
+}
+
+/** A separate committed stage preserves manual bank success across a later financial rollback. */
+export async function controlRefund(tx: Tx, input: {
+  invoiceId: number; detailIds: number[]; reason?: string;
+}, control: DigitalCardRefundControl, kind: ReversalOutcome, actor: Actor & ServiceOperationActor) {
+  await assertServiceOperationTx(tx, actor, kind === "REVERSED" ? "digitalCards.reversal.approve" : "digitalCards.reversal.lossRefund");
+  const context = await invoiceDigitalRefundContext(tx, { ...input, kind, reason: input.reason ?? "رد خسارة كروت" }, actor);
+  if (kind === "LOSS_REFUND") {
+    const authority = await loadOperationUserTx(tx, actor.userId);
+    const details = await tx.select({ requestedBy: digitalSaleDetails.lossRefundRequestedBy }).from(digitalSaleDetails)
+      .where(inArray(digitalSaleDetails.id, input.detailIds));
+    if (details.some((d) => Number(d.requestedBy) === actor.userId) && !authority.isOwner) {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({"what":"تعذّر اعتماد رد الخسارة","why":"لا يعتمد ردّ الخسارة من طلبه — يلزم مديرٌ آخر","doThis":"اطلب من مدير مستقل مراجعة الطلب واعتماد مصير حصة المزوّد"}) });
+    }
+  }
+  return controlDigitalCardRefund(tx, context, control, actor);
+}
+
+export async function evidenceForRefund(tx: Tx, input: { invoiceId: number; detailIds: number[]; reason?: string; refund: DigitalRefundTender }, kind: ReversalOutcome, actor: Actor & ServiceOperationActor) {
+  return controlRefund(tx, input, { stage: "EVIDENCE", tender: input.refund }, kind, actor);
+}
 
 async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, details: unknown): Promise<void> {
   try {
@@ -58,7 +87,7 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
 }
 async function prelockCashReversal(
   tx: Tx,
-  input: { invoiceId: number; detailIds: number[] },
+  input: { invoiceId: number; detailIds: number[]; refund?: DigitalRefundTender },
   actor: Actor,
   lockPrepaidWallets: boolean,
 ): Promise<{ branchId: number; customerId: number | null; walletIds: Set<number> }> {
@@ -94,7 +123,7 @@ async function prelockCashReversal(
     }
   }
 
-  await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY" });
+  if ((input.refund?.method ?? "CASH") === "CASH") await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY" });
   for (const walletId of Array.from(walletIds).sort((a, b) => a - b)) {
     const [wallet] = await tx
       .select({ id: digitalWallets.id })
@@ -182,6 +211,7 @@ function invoiceHeaderAfterDigitalRefund(
   inv: LockedInvoiceHeader,
   sell: ReturnType<typeof money>,
   cashRefund: ReturnType<typeof money>,
+  fullyReturned: boolean,
 ) {
   const total = money(inv.total);
   const paid = money(inv.paidAmount);
@@ -198,7 +228,9 @@ function invoiceHeaderAfterDigitalRefund(
       }),
     });
   }
-  if (total.lt(0) || paid.lt(0) || returned.lt(0) || returned.gt(total) || paid.gt(remainingReturnable)) {
+  // Customer-account returns may legitimately leave paid > net after returns.
+  // The physical source cap is validated against receipts by invoiceDigitalRefundContext.
+  if (total.lt(0) || paid.lt(0) || returned.lt(0) || returned.gt(total)) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -241,7 +273,7 @@ function invoiceHeaderAfterDigitalRefund(
 
   const paidAmount = paid.minus(cashRefund);
   const returnedTotal = returned.plus(sell);
-  const status = returnedTotal.eq(total)
+  const status = fullyReturned
     ? "RETURNED" as const
     : computeInvoiceStatus(inv.total, toDbMoney(paidAmount), toDbMoney(returnedTotal));
   return { paidAmount, returnedTotal, status };
@@ -252,8 +284,9 @@ async function persistInvoiceHeaderAfterDigitalRefund(
   inv: LockedInvoiceHeader,
   sell: ReturnType<typeof money>,
   cashRefund: ReturnType<typeof money>,
+  fullyReturned: boolean,
 ): Promise<{ paidAmount: string; returnedTotal: string; status: "PENDING" | "PARTIALLY_PAID" | "PAID" | "RETURNED" }> {
-  const next = invoiceHeaderAfterDigitalRefund(inv, sell, cashRefund);
+  const next = invoiceHeaderAfterDigitalRefund(inv, sell, cashRefund, fullyReturned);
   const paidAmount = toDbMoney(next.paidAmount);
   const returnedTotal = toDbMoney(next.returnedTotal);
   await tx
@@ -276,37 +309,14 @@ async function refundAndPostReturn(
     /** التكلفة المعكوسة: الحصة كاملةً في العكس المؤكَّد، وصفرٌ في ردّ الخسارة. */
     reversedCost: ReturnType<typeof money>;
     kind: ReversalOutcome;
+    context: DigitalRefundContext;
+    refund: DigitalRefundTender;
   },
   actor: Actor,
 ): Promise<number | null> {
-  let receiptId: number | null = null;
-  if (opts.cashRefund.gt(0)) {
-    assertTreasuryOutException("DIGITAL_CARD_REVERSAL_COMPENSATION");
-    await assertCashOutAvailable(tx, {
-      branchId: opts.branchId,
-      cashBucket: "TREASURY",
-      amount: opts.cashRefund,
-      operation: "استرداد بيع الكروت الرقمية",
-    });
-    const receiptRes = await tx.insert(receipts).values({
-      invoiceId: opts.invoiceId,
-      branchId: opts.branchId,
-      shiftId: null,
-      direction: "OUT",
-      amount: toDbMoney(opts.cashRefund),
-      paymentMethod: "CASH",
-      cashBucket: "TREASURY",
-      status: "COMPLETED",
-      partyType: opts.customerId != null ? "CUSTOMER" : "OTHER",
-      partyId: opts.customerId ?? null,
-      description:
-        opts.kind === "REVERSED"
-          ? "استرداد عكس بيع كروت رقمية"
-          : "ردّ خسارة — كروت رقمية لم يُعِد المزوّد حصتها",
-      createdBy: actor.userId,
-    });
-    receiptId = extractInsertId(receiptRes);
-  }
+  const payout = await executeDigitalRefund(tx, opts.context, opts.refund, actor);
+  const receiptId = payout?.receiptId ?? null;
+  const occurredAt = new Date();
 
   // RETURN بقيمٍ سالبة (اصطلاح الدفتر). الربح = الإيراد المعكوس − التكلفة المعكوسة:
   //   • مؤكَّد ⇒ −sell + share  = −margin  (يُلاشي ربح البيع تماماً)
@@ -325,6 +335,7 @@ async function refundAndPostReturn(
   };
   await postEntry(tx, {
     entryType: "RETURN",
+    entryDate: occurredAt,
     branchId: opts.branchId,
     invoiceId: opts.invoiceId,
     customerId: opts.customerId ?? null,
@@ -333,7 +344,7 @@ async function refundAndPostReturn(
     revenue,
     cost,
     profit: revenue.minus(cost),
-    dedupeKey: `DIGITAL:REV:${opts.invoiceId}:${opts.kind}:${actor.userId}:${receiptId ?? opts.operationKey}`,
+    dedupeKey: `DIGITAL:REV:${opts.invoiceId}:${opts.kind}:${actor.userId}:${receiptId ?? opts.operationKey.slice(-32)}`,
     notes: opts.kind === "REVERSED" ? "عكس بيع كروت" : "ردّ خسارة كروت",
     createdBy: actor.userId,
     postingSourceComponents: returnSourceComponents,
@@ -350,30 +361,12 @@ async function refundAndPostReturn(
       returnSourceComponents,
     ),
   });
-  if (receiptId != null) {
-    const refundSourceComponents = {
-      roleDebits: { AR: opts.cashRefund },
-      roleCredits: { TREASURY_CASH: opts.cashRefund },
-    };
-    await postEntry(tx, {
-      entryType: "PAYMENT_OUT",
-      branchId: opts.branchId,
-      invoiceId: opts.invoiceId,
-      customerId: opts.customerId ?? null,
-      receiptId,
-      amount: opts.cashRefund,
-      dedupeKey: `DIGITAL:REFUND:${opts.invoiceId}:${opts.kind}:${receiptId}`,
-      notes: opts.kind === "REVERSED" ? "دفع استرداد عكس بيع كروت" : "دفع ردّ خسارة كروت",
-      createdBy: actor.userId,
-      postingSourceComponents: refundSourceComponents,
-      postingIntent: createPostingIntent(
-        "PAYMENT_OUT_CUSTOMER_REFUND",
-        "PAYMENT_OUT",
-        [debitLine("AR", opts.cashRefund), creditLine("TREASURY_CASH", opts.cashRefund)],
-        refundSourceComponents,
-      ),
-    });
-  }
+  await completeDigitalReturnItems(tx, opts.context, payout?.refundId ?? null, occurredAt);
+  const rounding = money(opts.context.roundingAdjustment ?? "0");
+  if (!rounding.isZero()) await postEntry(tx, { entryType: "ADJUST", branchId: opts.branchId, invoiceId: opts.invoiceId,
+    customerId: opts.customerId, amount: rounding.neg(), revenue: rounding.neg(), profit: rounding.neg(), entryDate: occurredAt,
+    dedupeKey: `ADJUST:IQD:DIGITAL_RETURN:${opts.invoiceId}:${opts.context.operationKey.slice(-32)}`, createdBy: actor.userId,
+    notes: "عكس حصة تقريب IQD — مرتجع كروت", postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", rounding.neg())) });
   return receiptId;
 }
 
@@ -399,7 +392,7 @@ async function adjustReturnedReceivable(
  */
 export async function approveReversal(
   tx: Tx,
-  input: { invoiceId: number; detailIds: number[]; reason: string },
+  input: { invoiceId: number; detailIds: number[]; reason: string; refund?: DigitalRefundTender },
   actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; outcome: ReversalOutcome }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.reversal.approve");
@@ -407,6 +400,12 @@ export async function approveReversal(
   if (!reason) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب العكس مطلوب" });
 
   const prelocked = await prelockCashReversal(tx, input, actor, true);
+  const context = await invoiceDigitalRefundContext(tx, { ...input, kind: "REVERSED" }, actor);
+  const replay = await digitalRefundReplay(tx, context.operationKey);
+  if (replay || context.replayedZeroReturn) {
+    await executeDigitalRefund(tx, context, input.refund ?? { method: "CASH" }, actor);
+    return { invoiceId: input.invoiceId, reversed: input.detailIds.length, refunded: replay?.amount ?? "0.00", outcome: "REVERSED" };
+  }
 
   const [inv] = await tx
     .select({
@@ -433,9 +432,9 @@ export async function approveReversal(
   const details = await lockDetails(tx, input.invoiceId, input.detailIds);
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
-  const paid = money(inv.paidAmount);
-  const cashRefund = paid.lt(sell) ? paid : sell;
-  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, sell, cashRefund);
+  const cashRefund = money(context.amount);
+  const returnAmount = money(context.returnAmount ?? sell);
+  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, returnAmount, cashRefund, context.fullyReturned === true);
 
   const receiptId = await refundAndPostReturn(
     tx,
@@ -445,15 +444,17 @@ export async function approveReversal(
       customerId: inv.customerId != null ? Number(inv.customerId) : null,
       sell,
       cashRefund,
-      operationKey: details.map((detail) => Number(detail.id)).join("-"),
+      operationKey: context.operationKey,
       reversedCost: share,
       kind: "REVERSED",
+      context,
+      refund: input.refund ?? { method: "CASH" },
     },
     actor,
   );
   await adjustReturnedReceivable(tx, {
     customerId: inv.customerId != null ? Number(inv.customerId) : null,
-    sell,
+    sell: returnAmount,
     cashRefund,
   });
 
@@ -583,6 +584,7 @@ export async function approveReversal(
     .set({ fulfillmentStatus: "REVERSED" })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
   await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
+  await markDigitalInvoiceItemsReturned(tx, details);
 
   await auditLog(tx, actor, "digitalCards.reversal.approved", input.invoiceId, {
     details: details.length,
@@ -617,6 +619,9 @@ export async function requestLossRefund(
   const authority = await loadOperationUserTx(tx, actor.userId);
   await lockLossRefundInvoice(tx, input.invoiceId, authority);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds);
+  const claimedRefund = await tx.select({ id: digitalRefundItems.id }).from(digitalRefundItems)
+    .where(inArray(digitalRefundItems.detailId, input.detailIds)).limit(1);
+  if (claimedRefund.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّر تبديل مصير الكروت","why":"حجز أو إثبات رد محفوظ لهذه البنود؛ أكمل قرار الرد الأصلي","doThis":"افتح حجز الرد القائم وطابق سجل الجهاز قبل تنفيذ أي إجراء مالي"}) });
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
 
@@ -652,6 +657,9 @@ export async function rejectLossRefund(
   const authority = await loadOperationUserTx(tx, actor.userId);
   await lockLossRefundInvoice(tx, input.invoiceId, authority);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
+  const evidenced = await tx.select({ id: digitalRefundItems.id }).from(digitalRefundItems)
+    .where(inArray(digitalRefundItems.detailId, input.detailIds)).limit(1);
+  if (evidenced.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّر تبديل مصير الكروت","why":"يوجد حجز أو إثبات رد محفوظ لهذه البنود؛ أكمل اعتماده قبل تغيير القرار","doThis":"افتح حجز الرد القائم وطابق سجل الجهاز قبل تنفيذ أي إجراء مالي"}) });
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
   if (requesters.has(actor.userId) && !authority.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
@@ -685,13 +693,22 @@ export async function rejectLossRefund(
  */
 export async function lossRefund(
   tx: Tx,
-  input: { invoiceId: number; detailIds: number[] },
+  input: { invoiceId: number; detailIds: number[]; refund?: DigitalRefundTender },
   actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.reversal.lossRefund");
   const authority = await loadOperationUserTx(tx, actor.userId);
 
   const prelocked = await prelockCashReversal(tx, input, actor, false);
+  const context = await invoiceDigitalRefundContext(tx, { ...input, kind: "LOSS_REFUND", reason: "اعتماد رد خسارة كروت" }, actor);
+  const replay = await digitalRefundReplay(tx, context.operationKey);
+  if (replay || context.replayedZeroReturn) {
+    await executeDigitalRefund(tx, context, input.refund ?? { method: "CASH" }, actor);
+    const details = await tx.select({ share: digitalSaleDetails.providerShareSnapshot }).from(digitalSaleDetails)
+      .where(inArray(digitalSaleDetails.id, input.detailIds));
+    return { invoiceId: input.invoiceId, reversed: input.detailIds.length, refunded: replay?.amount ?? "0.00",
+      loss: toDbMoney(sumMoney(details.map((d) => d.share))), outcome: "LOSS_REFUND" };
+  }
 
   const [inv] = await tx
     .select({
@@ -725,9 +742,9 @@ export async function lossRefund(
   const reason = details[0]?.lossRefundReason ?? "";
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
-  const paid = money(inv.paidAmount);
-  const cashRefund = paid.lt(sell) ? paid : sell;
-  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, sell, cashRefund);
+  const cashRefund = money(context.amount);
+  const returnAmount = money(context.returnAmount ?? sell);
+  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, returnAmount, cashRefund, context.fullyReturned === true);
 
   await refundAndPostReturn(
     tx,
@@ -737,16 +754,18 @@ export async function lossRefund(
       customerId: inv.customerId != null ? Number(inv.customerId) : null,
       sell,
       cashRefund,
-      operationKey: details.map((detail) => Number(detail.id)).join("-"),
+      operationKey: context.operationKey,
       // **صفر**: الحصة لم تُستردّ ⇒ تبقى تكلفةً محمَّلة على المكتبة.
       reversedCost: money(0),
       kind: "LOSS_REFUND",
+      context,
+      refund: input.refund ?? { method: "CASH" },
     },
     actor,
   );
   await adjustReturnedReceivable(tx, {
     customerId: inv.customerId != null ? Number(inv.customerId) : null,
-    sell,
+    sell: returnAmount,
     cashRefund,
   });
 
@@ -759,6 +778,7 @@ export async function lossRefund(
     })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
   await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
+  await markDigitalInvoiceItemsReturned(tx, details);
 
   await auditLog(tx, actor, "digitalCards.reversal.lossRefund", input.invoiceId, {
     details: details.length,
@@ -782,7 +802,8 @@ export async function lossRefund(
 /* ────────── قراءات ────────── */
 
 /** بنود فاتورةٍ قابلة للعكس (ISSUED فقط) — تُغذّي شاشة القرار. */
-export async function reversibleDetails(db: DB, invoiceId: number, branchId?: number | null) {
+export async function reversibleDetails(db: DB, invoiceId: number, branchId?: number | null,
+  quote?: { detailIds: number[]; kind: ReversalOutcome; actor: Actor }) {
   if (branchId != null) {
     const [invoice] = await db
       .select({ branchId: invoices.branchId })
@@ -794,7 +815,7 @@ export async function reversibleDetails(db: DB, invoiceId: number, branchId?: nu
       throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخص فرعاً آخر" });
     }
   }
-  return db
+  const rows = await db
     .select({
       id: digitalSaleDetails.id,
       invoiceItemId: digitalSaleDetails.invoiceItemId,
@@ -805,6 +826,7 @@ export async function reversibleDetails(db: DB, invoiceId: number, branchId?: nu
       fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
       lossRefundRequestedBy: digitalSaleDetails.lossRefundRequestedBy,
       lossRefundReason: digitalSaleDetails.lossRefundReason,
+      originalPaymentMethod: invoices.paymentMethod,
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
@@ -813,6 +835,16 @@ export async function reversibleDetails(db: DB, invoiceId: number, branchId?: nu
       ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),
     ))
     .orderBy(asc(digitalSaleDetails.id));
+  const refundQuote = quote?.detailIds.length ? await db.transaction(async (tx) => {
+    const context = await invoiceDigitalRefundContext(tx, { invoiceId, detailIds: quote.detailIds, kind: quote.kind, reason: "استعلام تسوية الرد" }, quote.actor, "PREVIEW");
+    const [evidence] = await tx.select({ refundId: digitalRefundPayments.id, method: digitalRefundPayments.method, reference: digitalRefundPayments.normalizedReference,
+      status: digitalRefundPayments.status, reservationExpiresAt: digitalRefundPayments.reservationExpiresAt }).from(digitalRefundPayments).where(eq(digitalRefundPayments.operationKey, context.operationKey)).limit(1);
+    return { amount: context.amount, originalMethod: context.originalMethod, detailIds: context.detailIds, kind: quote.kind, evidence: evidence ?? null };
+  }) : null;
+  const pendingRefunds = await db.select({ status: digitalRefundPayments.status, detailIds: digitalRefundPayments.detailIds, method: digitalRefundPayments.method,
+    reference: digitalRefundPayments.normalizedReference, amount: digitalRefundPayments.amount, reason: digitalRefundPayments.reason }).from(digitalRefundPayments)
+    .where(and(eq(digitalRefundPayments.invoiceId, invoiceId), inArray(digitalRefundPayments.status, ["RESERVED", "EVIDENCED"])));
+  return rows.map((row) => ({ ...row, refundQuote, pendingRefund: pendingRefunds.find((refund) => refund.detailIds.includes(Number(row.id))) ?? null }));
 }
 
 /**

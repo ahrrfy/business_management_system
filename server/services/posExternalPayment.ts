@@ -1,4 +1,5 @@
 import { fulfillmentChargePayments, fulfillmentCharges } from "../../drizzle/fulfillmentSchema";
+import { digitalIntentSettlements } from "../../drizzle/digitalSettlementSchema";
 // posExternalPayment — إثباتُ القبض غير النقديّ: INITIATED ⇒ CONFIRMED ⇒ استهلاكٌ مرّةً واحدة.
 //
 // ⚠️ **قاعدةُ صياغةٍ حاكمة لكلّ رسالةٍ في هذا الملفّ:** رفضُه يقع **والزبون واقفٌ وبطاقتُه في
@@ -865,11 +866,17 @@ export async function assertExternalPaymentReplay(
     .from(externalPaymentAttempts)
     .where(eq(externalPaymentAttempts.id, input.attemptId))
     .limit(1))[0];
+  const [digitalSettlement] = row && input.digitalSaleIntentId != null ? await tx.select().from(digitalIntentSettlements)
+    .where(and(eq(digitalIntentSettlements.intentId, input.digitalSaleIntentId), eq(digitalIntentSettlements.invoiceId, invoiceId)))
+    .limit(1) : [];
+  const validDigitalSettlement = digitalSettlement?.status === "COMPLETED" && digitalSettlement.approvedBy != null
+    && digitalSettlement.collectionReceiptId === row?.receiptId && row?.invoiceId == null
+    && money(digitalSettlement.capturedAmount).eq(row.amount) && !input.allocationReceiptIds?.length;
   if (!row ||
     row.state !== "CONFIRMED" ||
     row.confirmedAt == null ||
     row.consumedAt == null ||
-    Number(row.invoiceId) !== invoiceId || row.receiptId == null) {
+    (!validDigitalSettlement && Number(row.invoiceId) !== invoiceId) || row.receiptId == null) {
     throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
       what: `تعذّر إعادة إرسال البيع (تعارض idempotency على الفاتورة ${invoiceId})`,
       why: "الإثبات المُرفَق ليس الذي قُبض به البيع الأصليّ، أو لم يُستهلَك عليه بعد",
@@ -932,7 +939,7 @@ export async function assertExternalPaymentReplay(
     allocated.some((r) => Number(r.id) === Number(row.receiptId));
   if (
     !receipt ||
-    Number(receipt.invoiceId) !== invoiceId ||
+    (validDigitalSettlement ? receipt.invoiceId != null : Number(receipt.invoiceId) !== invoiceId) ||
     receipt.paymentMethod !== row.paymentMethod ||
     !(allocated
       ? validAllocations && allocatedAmount!.eq(money(row.amount))
@@ -1050,6 +1057,20 @@ export async function bindExternalPaymentAttempt(
   const workOrder = invoiceId == null && receipt?.workOrderId != null
     ? (await tx.select({branchId:workOrders.branchId}).from(workOrders).where(eq(workOrders.id,Number(receipt.workOrderId))).limit(1))[0] : null;
   let realChargeCollection = false;
+  let realDigitalCollection = false;
+  if (invoiceId == null && receipt && proof) {
+    const [source] = await tx.select({ settlement: digitalIntentSettlements, intent: digitalSaleIntents })
+      .from(digitalIntentSettlements).innerJoin(digitalSaleIntents, eq(digitalSaleIntents.id, digitalIntentSettlements.intentId))
+      .where(eq(digitalIntentSettlements.collectionReceiptId, receiptId)).for("update").limit(1);
+    const [entry] = source ? await tx.select().from(accountingEntries).where(and(
+      eq(accountingEntries.receiptId, receiptId), eq(accountingEntries.entryType, "PAYMENT_IN"),
+      eq(accountingEntries.dedupeKey, `DIGITAL:HOLD:${source.intent.id}`))).limit(1) : [];
+    realDigitalCollection = source != null && source.settlement.approvedBy != null
+      && source.intent.externalPaymentAttemptId === attemptId && source.intent.branchId === receipt.branchId
+      && source.intent.paymentMethod === proof.paymentMethod && money(source.intent.expectedTotal).eq(receipt.amount)
+      && money(source.settlement.capturedAmount).eq(receipt.amount) && money(proof.amount).eq(receipt.amount)
+      && entry != null && entry.invoiceId == null && entry.customerId == null && money(entry.amount).eq(receipt.amount);
+  }
   if (invoiceId == null && receipt && receipt.workOrderId == null) {
     const allocations = await tx.select({payment:fulfillmentChargePayments,charge:fulfillmentCharges})
       .from(fulfillmentChargePayments).innerJoin(fulfillmentCharges,eq(fulfillmentCharges.id,fulfillmentChargePayments.chargeId))
@@ -1077,7 +1098,7 @@ export async function bindExternalPaymentAttempt(
   }
   if (!receipt || !proof || receipt.direction !== "IN" || receipt.status !== "COMPLETED" || receipt.approvalStatus !== "APPROVED"
     || receipt.paymentMethod !== proof.paymentMethod || Number(receipt.branchId) !== Number(proof.branchId)
-    || (invoiceId != null ? Number(receipt.invoiceId) !== invoiceId : receipt.invoiceId != null || (!realChargeCollection && (!workOrder || Number(workOrder.branchId) !== Number(proof.branchId))))) {
+    || (invoiceId != null ? Number(receipt.invoiceId) !== invoiceId : receipt.invoiceId != null || (!realDigitalCollection && !realChargeCollection && (!workOrder || Number(workOrder.branchId) !== Number(proof.branchId))))) {
     throw feeTenderError("رأس إثبات القبض يجب أن يرتبط بإيصال منفذ من نفس الفرع والوسيلة ومصدر فاتورة أو أمر شغل أو تخصيص أجور حقيقي");
   }
   const result: any = await tx
@@ -1495,7 +1516,15 @@ export async function createConfirmedPosSaleInTx(
   input: ConfirmedPosSaleInput,
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
+  externalChannel: "POS" | "PRINT_POS" = "POS",
 ): Promise<CreateSaleResult & Partial<CheckoutChargesResult>> {
+  if (externalChannel === "PRINT_POS" && (hasCheckoutCharges(input) || money(input.deliveryFeeHeld ?? "0").gt(0))) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تثبيت بيع الاستقبال الرقمي",
+      why: "الطلب يحمل أجوراً أو توصيلاً خارج عقد الكروت المباشر",
+      doThis: "افصل الأجور والتوصيل في عملية مستقلة قبل إصدار الكروت",
+    }) });
+  }
   if (hasCheckoutCharges(input)) {
     const composed = await composeCheckoutChargesInTx(
       tx,
@@ -1631,7 +1660,7 @@ export async function createConfirmedPosSaleInTx(
           replay.invoiceId,
           {
             branchId: input.branchId,
-            channel: "POS",
+            channel: externalChannel,
             method: leg.method,
             amount: leg.amount,
             attemptId: leg.externalPaymentAttemptId,
@@ -1657,7 +1686,7 @@ export async function createConfirmedPosSaleInTx(
         tx,
         {
           branchId: input.branchId,
-          channel: "POS",
+          channel: externalChannel,
           method: leg.method,
           amount: leg.amount,
           attemptId: leg.externalPaymentAttemptId,
@@ -1783,7 +1812,7 @@ export async function createConfirmedPosSaleInTx(
       replay.invoiceId,
       {
         branchId: input.branchId,
-        channel: "POS",
+        channel: externalChannel,
         method: payment.method,
         amount: payment.amount,
         attemptId: payment.externalPaymentAttemptId,
@@ -1799,7 +1828,7 @@ export async function createConfirmedPosSaleInTx(
     tx,
     {
       branchId: input.branchId,
-      channel: "POS",
+      channel: externalChannel,
       method: payment.method,
       amount: payment.amount,
       attemptId: payment.externalPaymentAttemptId,
@@ -1813,7 +1842,7 @@ export async function createConfirmedPosSaleInTx(
   if (sale.idempotentReplay) {
     await assertExternalPaymentReplay(tx, sale.invoiceId, {
       branchId: input.branchId,
-      channel: "POS",
+      channel: externalChannel,
       method: payment.method,
       amount: payment.amount,
       attemptId: payment.externalPaymentAttemptId,

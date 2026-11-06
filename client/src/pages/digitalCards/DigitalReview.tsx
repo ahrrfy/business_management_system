@@ -19,17 +19,24 @@ import { notify } from "@/lib/notify";
 import { RowActions } from "@/components/list/RowActions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { CheckCircle2, CircleAlert, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { DigitalRefundTenderFields } from "@/components/digitalCards/DigitalRefundTenderFields";
+import type { DigitalRefundMethod, DigitalRefundTender } from "@shared/digitalPaymentSettlement";
 
 type Reconciliation = RouterOutputs["digitalCards"]["wallets"]["reconciliations"][number];
 type QueueRow = RouterOutputs["digitalCards"]["sales"]["needsReview"][number];
 type ReviewDetails = RouterOutputs["digitalCards"]["sales"]["reviewDetails"];
-type Decision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
+type Decision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS" | "SETTLE_PARTIAL";
 type ItemOutcome = "ISSUED" | "NOT_ISSUED";
 
 type DecisionCopy = Record<Decision, { title: string; detail: string; effect: string }>;
 
 const PAID_DECISION_COPY: DecisionCopy = {
+  SETTLE_PARTIAL: {
+    title: "تسوية المبلغ المحصّل",
+    detail: "بعد المطابقة: فوتر الكروت الصادرة ورد قيمة غير الصادر. النتيجة المجهولة تبقى للمراجعة حتى تُثبت.",
+    effect: "يثبت القبض الأصلي كمال محتجز ثم يخصص للبيع والرد، دون قبض جديد أو إصدار بديل.",
+  },
   CANCEL_NO_ISSUE: {
     title: "لم يصدر أي كرت",
     detail: "استخدمه بعد مطابقة تقرير جهاز المزوّد والتأكد أن العملية لم تُنفّذ.",
@@ -455,9 +462,17 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
   const [decision, setDecision] = useState<Decision | "">("");
   const [reason, setReason] = useState("");
   const [verified, setVerified] = useState(false);
-  const [outcomes, setOutcomes] = useState<Record<number, ItemOutcome>>({});
+  const [outcomes, setOutcomes] = useState<Record<number, ItemOutcome | "">>({});
   const [references, setReferences] = useState<Record<number, string>>({});
   const [rejectReason, setRejectReason] = useState("");
+  const [postingShiftId,setPostingShiftId]=useState("");
+  const [cashCustodyReceiptId,setCashCustodyReceiptId]=useState("");
+  const [captureConfirmed, setCaptureConfirmed] = useState(false);
+  const [regularDisposition, setRegularDisposition] = useState<"SELL" | "RELEASE">("SELL");
+  const [refundMethod, setRefundMethod] = useState<DigitalRefundMethod>("CASH");
+  const [refundReference, setRefundReference] = useState("");
+  const [refundConfirmed, setRefundConfirmed] = useState(false);
+  const [bankGrant, setBankGrant] = useState<{ refundId: number; token: string } | null>(null);
 
   useEffect(() => {
     setDecision("");
@@ -466,13 +481,14 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
     setOutcomes({});
     setReferences({});
     setRejectReason("");
+    setPostingShiftId(""); setCashCustodyReceiptId(""); setCaptureConfirmed(false); setRefundMethod("CASH"); setRefundReference(""); setRefundConfirmed(false); setRegularDisposition("SELL"); setBankGrant(null);
   }, [row?.id]);
 
   useEffect(() => {
     if (!details.data) return;
     setOutcomes(Object.fromEntries(details.data.items.map((item) => [
       Number(item.id),
-      item.fulfillmentStatus === "SUCCESS" ? "ISSUED" : "NOT_ISSUED",
+      item.fulfillmentStatus === "SUCCESS" ? "ISSUED" : item.fulfillmentStatus === "FAILED" ? "NOT_ISSUED" : "",
     ])));
     setReferences(Object.fromEntries(details.data.items.map((item) => [Number(item.id), item.providerReference ?? ""])));
   }, [details.data]);
@@ -486,19 +502,29 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
   }
 
   const requestMut = trpc.digitalCards.sales.requestReviewResolution.useMutation({
-    onSuccess: () => {
-      notify.ok("أُرسل قرار المعالجة", "لم يتغير أي مبلغ بعد. ينتظر القرار اعتماد مدير آخر.");
+    onSuccess: (result) => {
+      notify.ok(result.autoApproved ? "اعتُمد قرار المعالجة" : "أُرسل قرار المعالجة", result.autoApproved
+        ? "نُفّذ القرار باعتماد مالك النظام. راجع نتيجة العملية المسجلة."
+        : "لم يتغير أي مبلغ بعد. ينتظر القرار الاعتماد.");
       refreshAndClose();
     },
     onError: (error) => notify.err(error),
   });
   const approveMut = trpc.digitalCards.sales.approveReviewResolution.useMutation({
     onSuccess: (result) => {
+      if (result.stage !== "EXECUTE") {
+        if (result.stage === "RESERVE" && "newReservation" in result && result.newReservation && result.grantToken && result.refundId) setBankGrant({ refundId: result.refundId, token: result.grantToken });
+        if (result.stage !== "RESERVE") setBankGrant(null);
+        notify.ok(result.stage === "RESERVE" ? "الحجز محفوظ؛ راجع حالة نافذة التنفيذ قبل تشغيل الجهاز" : result.stage === "RELEASE" ? "حُرر حجز لم يُنفّذ دون صرف" : "حُفظ إثبات رد البطاقة؛ أكمل الاعتماد دون رد جديد");
+        void utils.digitalCards.sales.reviewDetails.invalidate();
+        return;
+      }
       const message = result.decision === "CANCEL_NO_ISSUE"
         ? "أُلغيت العملية وعاد المبلغ المعلّق إلى المتاح."
         : result.decision === "FINALIZE_SALE"
           ? `اكتمل البيع وأُنشئت الفاتورة رقم ${result.invoiceId}.`
-          : `أُثبتت الخسارة بمبلغ ${fmtAr(result.loss ?? "0")} وأُغلقت العملية.`;
+          : result.decision === "SETTLE_PARTIAL" ? "سُوّي القبض الأصلي للبيع والرد دون قبض جديد."
+            : `أُثبتت الخسارة بمبلغ ${fmtAr(result.loss ?? "0")} وأُغلقت العملية.`;
       notify.ok("اكتملت المعالجة", message);
       refreshAndClose();
     },
@@ -513,6 +539,12 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
   });
 
   const data = details.data;
+  const settlement = data?.settlement;
+  const refundEvidence = settlement?.refundEvidence;
+  useEffect(() => { if (settlement) setRefundMethod(settlement.refundMethod);
+    if (refundEvidence) { setRefundReference(refundEvidence.reference ?? ""); setRefundConfirmed(refundEvidence.status !== "RESERVED"); }
+  }, [settlement?.id, settlement?.refundMethod, refundEvidence?.reference, refundEvidence?.status]);
+  function tender(): DigitalRefundTender { return refundMethod === "CARD" ? { method: "CARD", reference: refundReference.trim(), confirmed: true } : { method: "CASH" }; }
   const pending = data?.resolution?.status === "PENDING";
   const ownRequest = pending
     && !me.data?.isOwner
@@ -527,7 +559,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
       setOutcomes(Object.fromEntries(data.items.map((item) => [Number(item.id), "ISSUED"])));
     } else {
       setOutcomes(Object.fromEntries(data.items.map((item) => [
-        Number(item.id), item.fulfillmentStatus === "SUCCESS" ? "ISSUED" : "NOT_ISSUED",
+        Number(item.id), item.fulfillmentStatus === "SUCCESS" ? "ISSUED" : item.fulfillmentStatus === "FAILED" ? "NOT_ISSUED" : "",
       ])));
     }
   }
@@ -537,9 +569,11 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
     if (!data || !decision) return notify.err("اختر ما حدث للعملية");
     if (!verified) return notify.err("أكد أنك طابقت النتيجة مع تقرير جهاز المزوّد");
     if (reason.trim().length < 5) return notify.err("اكتب نتيجة المطابقة وسبب القرار بوضوح");
+    if (data.items.some((item) => !outcomes[Number(item.id)])) return notify.err("حدد نتيجة مثبتة لكل كرت؛ أبقِ المجهول للمراجعة دون رد أو إصدار بديل");
+    if (decision === "SETTLE_PARTIAL" && !captureConfirmed) return notify.err("أكد مطابقة القبض الأصلي قبل طلب التسوية");
     const items = data.items.map((item) => ({
       intentItemId: Number(item.id),
-      outcome: outcomes[Number(item.id)] ?? "NOT_ISSUED",
+      outcome: outcomes[Number(item.id)] === "ISSUED" ? "ISSUED" as const : "NOT_ISSUED" as const,
       providerReference: references[Number(item.id)]?.trim() || null,
     }));
     const missingReference = items.some((item) => item.outcome === "ISSUED" && !item.providerReference);
@@ -547,7 +581,8 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
     if (decision === "WRITEOFF_LOSS" && !items.some((item) => item.outcome === "ISSUED")) {
       return notify.err("حدد كرتاً صادراً واحداً على الأقل، أو اختر «لم يصدر أي كرت»");
     }
-    requestMut.mutate({ intentId: data.intent.id, decision, reason: reason.trim(), items });
+    requestMut.mutate({ intentId: data.intent.id, decision, reason: reason.trim(), items,
+      settlement: decision === "SETTLE_PARTIAL" ? { captureConfirmed: true, regularDisposition: data.intent.admissionFailure ? "RELEASE" : regularDisposition, refundMethod, ...(data.intent.shiftStatus!=="OPEN"?{recovery:{postingShiftId:Number(postingShiftId),cashCustodyReceiptId:cashCustodyReceiptId?Number(cashCustodyReceiptId):undefined,reason:reason.trim()}}:{}) } : undefined });
   }
 
   async function approve() {
@@ -560,7 +595,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
       description: `${copy.effect} هذا الإجراء موثق ولا يمكن التراجع عنه من هذه الشاشة. متابعة؟`,
       confirmText: "اعتماد وتنفيذ",
     }))) return;
-    approveMut.mutate({ intentId: data.intent.id });
+    approveMut.mutate({ intentId: data.intent.id, refund: settlement?.refundMethod === "CARD" && D(settlement.refundAmount).isZero() ? { method: "CARD" } : tender() });
   }
 
   return (
@@ -584,6 +619,8 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
               <div><span className="text-muted-foreground">الوردية</span><p className="font-medium">#{data.intent.shiftId} · {data.intent.shiftStatus === "OPEN" ? "مفتوحة" : "مغلقة"}</p><p className="text-xs text-muted-foreground">بدأت <span dir="ltr">{fmtDateTime(data.intent.shiftOpenedAt)}</span></p></div>
             </div>
 
+            {data.intent.recoveryPostingShiftId && <p className="rounded border p-3">الاستدراك المحفوظ: وردية #{data.intent.recoveryPostingShiftId}{data.intent.recoveryCustodyReceiptId && <> · سند عهدة الخزينة #{data.intent.recoveryCustodyReceiptId}</>} · {data.intent.recoveryReason}. يبقى القبض منسوباً للوردية الأصلية وموظفها.</p>}
+            {data.intent.admissionFailure && <p className="rounded border p-3">قُبض المبلغ قبل قبول السلة. لم يُصدر النظام أي كرت ولم يحجز بضاعة. سبب الرفض: {data.intent.admissionFailure}. طابق أصل القبض قبل طلب رده كاملاً. الطلب: <bdi>{data.intent.capturedRequestId}</bdi> · الجهاز: <bdi>{data.intent.capturedDevice}</bdi>{data.intent.capturedAttemptId && <> · إثبات #{data.intent.capturedAttemptId} · مرجع البنك: <bdi>{data.intent.capturedReference}</bdi></>}</p>}
             {pending ? (
               <PendingResolution
                 data={data}
@@ -593,6 +630,19 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                 approving={approveMut.isPending}
                 rejecting={rejectMut.isPending}
                 onApprove={() => void approve()}
+                approveDisabled={!!settlement && settlement.refundMethod === "CARD" && D(settlement.refundAmount).gt(0) && (!refundEvidence || refundEvidence.status === "RESERVED")}
+                refundFields={settlement ? <div className="space-y-3">
+                  <p className="text-sm">القبض الأصلي {fmtAr(settlement.capturedAmount)} · المخصص للبيع {fmtAr(settlement.saleAmount)} · الرد {fmtAr(settlement.refundAmount)} د.ع</p>
+                  <p className="text-sm">البضاعة العادية: {settlement.regularDisposition === "SELL" ? "تُفوتر مع الصادر" : "يُحرر حجزها دون بيع"}</p>
+                  <DigitalRefundTenderFields originalMethod={data.intent.paymentMethod} amount={settlement.refundAmount} method={settlement.refundMethod}
+                    onMethod={() => notify.warn("طريقة الرد مثبتة في قرار التسوية")} reference={refundReference} onReference={(value) => { setRefundReference(value); setRefundConfirmed(false); }}
+                    confirmed={refundConfirmed} onConfirmed={setRefundConfirmed} reserved={!!refundEvidence} evidenced={!!refundEvidence && refundEvidence.status !== "RESERVED"} busy={approveMut.isPending || ownRequest}
+                    methodLocked grantToken={refundEvidence && bankGrant?.refundId === refundEvidence.refundId ? bankGrant.token : null} reservationExpiresAt={refundEvidence?.reservationExpiresAt}
+                    onReserve={() => approveMut.mutate({ intentId: data.intent.id, stage: "RESERVE", refund: { method: "CARD" }, expectedRefundAmount: settlement.refundAmount })}
+                    onRelease={(releaseReason) => approveMut.mutate({ intentId: data.intent.id, stage: "RELEASE", refund: { method: "CARD" }, noRefundConfirmed: true, releaseReason,
+                      refundGrantToken: refundEvidence && bankGrant?.refundId === refundEvidence.refundId ? bankGrant.token : undefined })}
+                    onRecord={() => approveMut.mutate({ intentId: data.intent.id, stage: "EVIDENCE", refund: tender() })} />
+                </div> : null}
                 onReject={() => {
                   if (rejectReason.trim().length < 3) return notify.err("اكتب سبب رفض القرار");
                   rejectMut.mutate({ intentId: data.intent.id, reason: rejectReason.trim() });
@@ -603,7 +653,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                 <div className="space-y-2">
                   <p className="text-sm font-semibold">1. ما الذي أثبته تقرير جهاز المزوّد؟</p>
                   <div className="grid gap-2 md:grid-cols-3">
-                    {(Object.keys(PAID_DECISION_COPY) as Decision[]).map((key) => {
+                    {(Object.keys(PAID_DECISION_COPY) as Decision[]).filter((key) => !data.intent.admissionFailure || key === "SETTLE_PARTIAL").filter((key) => data.intent.paymentMethod !== "CREDIT" || key !== "SETTLE_PARTIAL").map((key) => {
                       const copy = decisionCopy(data.intent.paymentMethod)[key];
                       return (
                         <button
@@ -625,8 +675,8 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                     <p className="text-sm font-semibold">2. طابق كل كرت</p>
                     {data.items.map((item) => {
                       const id = Number(item.id);
-                      const outcome = outcomes[id] ?? "NOT_ISSUED";
-                      const fixed = decision !== "WRITEOFF_LOSS" || item.fulfillmentStatus === "SUCCESS";
+                      const outcome = outcomes[id] ?? "";
+                      const fixed = decision === "CANCEL_NO_ISSUE" || decision === "FINALIZE_SALE" || item.fulfillmentStatus === "SUCCESS";
                       return (
                         <div key={id} className="grid gap-3 rounded-lg border p-3 md:grid-cols-[1fr_150px_1fr] md:items-end">
                           <div>
@@ -658,6 +708,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                               disabled={fixed}
                               onValueChange={(next) => setOutcomes((current) => ({ ...current, [id]: next as ItemOutcome }))}
                             >
+                              <option value="">غير محسوم — طابق الجهاز</option>
                               <option value="ISSUED">صدر الكرت</option>
                               <option value="NOT_ISSUED">لم يصدر</option>
                             </AppSelect>
@@ -678,6 +729,16 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                   </div>
                 )}
 
+                {decision === "SETTLE_PARTIAL" && <div className="space-y-3 border p-3">
+                  <label className="flex gap-2 text-sm"><input type="checkbox" checked={captureConfirmed} onChange={(event) => setCaptureConfirmed(event.target.checked)} /> تحققت من قبض {fmtAr(data.intent.expectedTotal)} د.ع {paymentMethodLabel(data.intent.paymentMethod)} بالفعل</label>
+                  {data.intent.shiftStatus!=="OPEN"&&<div className="space-y-2 border p-3">
+                    <p>الوردية الأصلية مغلقة. اختر رقم ورديتك المفتوحة للاستدراك في الفترة الحالية. لا يُعدّل إقفال الأصل.</p>
+                    <Input aria-label="رقم وردية الاستدراك" inputMode="numeric" value={postingShiftId} onChange={e=>setPostingShiftId(e.target.value)} placeholder="رقم وردية الاستدراك"/>
+                    {data.intent.paymentMethod==="CASH"&&<><p>سلّم النقد للخزينة وطابق الزيادة عبر حالات فرق النقد بدليلها، واعتمدها بمدير مستقل. مرجع الدليل المطلوب: DIGITAL_CAPTURE:{data.intent.capturedRequestId}. أدخل سند الزيادة المعتمد بكامل مبلغ القبض؛ لن يُنشأ قبض آخر.</p><Input aria-label="سند عهدة النقد" inputMode="numeric" value={cashCustodyReceiptId} onChange={e=>setCashCustodyReceiptId(e.target.value)} placeholder="رقم سند زيادة الأمانات"/></>}
+                  </div>}
+                  <label className="block text-sm">البضاعة العادية<AppSelect disabled={!!data.intent.admissionFailure} value={data.intent.admissionFailure ? "RELEASE" : regularDisposition} onValueChange={(value) => setRegularDisposition(value as "SELL" | "RELEASE")}><option value="SELL">فوترة البضاعة مع الكروت الصادرة</option><option value="RELEASE">تحرير حجز البضاعة دون بيع</option></AppSelect></label>
+                  <label className="block text-sm">طريقة رد غير الصادر<AppSelect value={refundMethod} onValueChange={(value) => setRefundMethod(value as DigitalRefundMethod)}><option value="CASH">نقداً من خزينة الفرع باعتماد المعالجة</option>{data.intent.paymentMethod === "CARD" && <option value="CARD">إلى البطاقة الأصلية بإثبات نجاح الرد</option>}</AppSelect></label>
+                </div>}
                 {decision && (
                   <div className="space-y-3">
                     <div>
@@ -739,7 +800,7 @@ function OperationTimeline({ data }: { data: ReviewDetails }) {
 }
 
 function PendingResolution({
-  data, ownRequest, rejectReason, setRejectReason, approving, rejecting, onApprove, onReject,
+  data, ownRequest, rejectReason, setRejectReason, approving, rejecting, onApprove, onReject, approveDisabled, refundFields,
 }: {
   data: ReviewDetails;
   ownRequest: boolean;
@@ -749,6 +810,8 @@ function PendingResolution({
   rejecting: boolean;
   onApprove: () => void;
   onReject: () => void;
+  approveDisabled?: boolean;
+  refundFields?: ReactNode;
 }) {
   const digitalAccess = useDigitalGiftOperationAccess();
   const resolution = data.resolution!;
@@ -771,6 +834,7 @@ function PendingResolution({
           </div>
         </div>
       </div>
+      {refundFields}
       <div className="space-y-2">
         {data.items.map((item) => {
           const requested = requestItems.get(Number(item.id));
@@ -791,10 +855,10 @@ function PendingResolution({
         <div className="space-y-2">
           <Textarea value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="سبب الرفض عند عدم مطابقة التقرير…" rows={2} />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={!digitalAccess.can("digitalCards.sales.approveReviewResolution") || approving || rejecting} onClick={onApprove}>
+            <Button size="sm" disabled={!digitalAccess.can("digitalCards.sales.approveReviewResolution") || approving || rejecting || approveDisabled} onClick={onApprove}>
               <CheckCircle2 className="size-4" /> {approving ? "جارٍ التنفيذ…" : "اعتماد وتنفيذ"}
             </Button>
-            <Button size="sm" variant="destructive" disabled={!digitalAccess.can("digitalCards.sales.rejectReviewResolution") || approving || rejecting} onClick={onReject}>
+            <Button size="sm" variant="destructive" disabled={!digitalAccess.can("digitalCards.sales.rejectReviewResolution") || approving || rejecting || !!data.settlement?.refundEvidence} onClick={onReject}>
               {rejecting ? ACTION_LABELS.rejecting : "رفض القرار"}
             </Button>
           </div>

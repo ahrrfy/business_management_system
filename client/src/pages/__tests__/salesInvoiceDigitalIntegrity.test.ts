@@ -51,7 +51,7 @@ describe("SalesInvoiceNew digital invoice contract", () => {
     expect(fulfillmentEnd).toBeGreaterThan(fulfillmentStart);
     expect(fulfillmentSource).toContain("const { managerApproval, ...sourcePayload } = payload");
     expect(fulfillmentSource).toContain("sourcePayload,");
-    expect(fulfillmentSource).toContain("...(managerApproval ? { managerApproval } : {})");
+    expect(fulfillmentSource).toMatch(/\}\},\s*managerApproval\);/);
     expect(fulfillmentSource).not.toMatch(/sourcePayload\s*:\s*\{[^}]*managerApproval/s);
   });
 

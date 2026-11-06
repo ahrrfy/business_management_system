@@ -161,8 +161,8 @@ export default function DigitalDashboard() {
       {!validRange && <p role="alert" className="text-sm text-destructive">أدخل تاريخ بداية ونهاية صالحين، على أن تكون النهاية بعد البداية أو مساوية لها.</p>}
       {/* بطاقات الملخّص */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="كروت مُباعة" value={String(s?.cards ?? 0)} sub={`${s?.invoices ?? 0} فاتورة`} icon={CreditCard} />
-        <StatCard label="إجمالي المبيعات" value={fmtAr(s?.sales ?? "0")} icon={TrendingUp} />
+        <StatCard label="صافي حركة الكروت" value={String(s?.cards ?? 0)} sub={`${s?.grossCards ?? 0} مباعة · ${s?.refundedCards ?? 0} مردودة`} icon={CreditCard} />
+        <StatCard label="صافي المبيعات" value={fmtAr(s?.sales ?? "0")} sub={`بيع ${fmtAr(s?.grossSales ?? "0")} · ردود ${fmtAr(s?.refunds ?? "0")}`} icon={TrendingUp} />
         {showCost && (
           <>
             <StatCard label="تكلفة الكروت المباعة" value={fmtAr(s!.providerShare!)} />
@@ -173,6 +173,9 @@ export default function DigitalDashboard() {
           <StatCard label="أرصدة لدى المزوّدين" value={fmtAr(balances.data?.totalAsset ?? "0")} icon={Wallet} />
         )}
       </div>
+      {s?.countsComplete === false && <p role="status" className="border p-3 text-sm">
+        تتضمن الفترة تسوية ردود تاريخية بقيمة {fmtAr(s.legacyAdjustment.sales)} د.ع. دخلت في الصافي بتاريخ الحركة؛ تعذّر توزيعها الموثوق على عدد الكروت وأنماط التمويل، فتظهر منفصلة عن جداول التفصيل.
+      </p>}
 
       {/* تنبيهات تشغيلية */}
       {((pending.data?.needsReview ?? 0) > 0 || (health.data?.needsAttention.length ?? 0) > 0) && (

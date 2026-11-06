@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { digitalRefundItems, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
@@ -242,7 +243,7 @@ describe("digital provider transaction baskets", () => {
     expect(sale.printDetails.map((item) => item.studentName)).toEqual(["أحمد", "حسن"]);
   });
 
-  it.each(["PREPAID", "POSTPAID"] as const)("reverses only one %s basket card, rejects duplicate refund, and retains the shared reference", async (mode) => {
+  it.each(["PREPAID", "POSTPAID"] as const)("reverses only one %s basket card, replays its original refund once, and retains the shared reference", async (mode) => {
     const context = await setup(mode);
     await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "100000", paymentMethod: "CASH",
@@ -266,7 +267,10 @@ describe("digital provider transaction baskets", () => {
       const receipts = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
       const walletTransactions = await db().select().from(s.digitalWalletTransactions).where(eq(s.digitalWalletTransactions.invoiceId, sale.invoiceId));
       const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
-      return { details, supplierBalance: supplier.currentBalance, walletBalance: wallets[0]?.currentBalance ?? null,
+      const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId));
+      const refundPayments = await db().select().from(digitalRefundPayments).where(eq(digitalRefundPayments.invoiceId, sale.invoiceId));
+      const refundItems = await db().select().from(digitalRefundItems);
+      return { details, invoice, entries, refundPayments, refundItems, supplierBalance: supplier.currentBalance, walletBalance: wallets[0]?.currentBalance ?? null,
         refunds: receipts.filter((receipt) => receipt.direction === "OUT"),
         walletReversals: walletTransactions.filter((transaction) => transaction.type === "SALE_REVERSAL"),
         returns: entries.filter((entry) => entry.entryType === "RETURN"),
@@ -284,10 +288,19 @@ describe("digital provider transaction baskets", () => {
     expect(after.returns[0]).toMatchObject({ revenue: "-10000.00", cost: "-9500.00", profit: "-500.00" });
     expect(after.walletReversals).toHaveLength(mode === "PREPAID" ? 1 : 0);
     if (mode === "PREPAID") expect(after.walletReversals[0]).toMatchObject({ amount: "9500.00", direction: "IN" });
+    expect(after.refundPayments).toHaveLength(1);
+    expect(after.refundPayments[0]).toMatchObject({ status: "COMPLETED", amount: "10000.00", method: "CASH", receiptId: after.refunds[0].id, detailIds: reversal.detailIds });
+    expect(after.refundItems).toHaveLength(1);
+    expect(after.refundItems[0]).toMatchObject({ refundId: after.refundPayments[0].id, detailId: reversal.detailIds[0], outcome: "REVERSAL", revenue: "-10000.00", cost: "-9500.00", occurredAt: expect.any(Date) });
+    expect(after.entries.filter(entry => entry.entryType === "PAYMENT_OUT")).toHaveLength(1);
 
-    // The existing endpoint rejects a repeated detail rather than returning a replay;
-    // the financial effect must nevertheless remain exactly once.
-    await expect(withTx((tx) => reversalService.approveReversal(tx, reversal, manager))).rejects.toThrow(/لا يُعكس مرّتين/);
+    // The completed allocation returns its original result without another payment or provider credit.
+    expect(await withTx((tx) => reversalService.approveReversal(tx, reversal, manager))).toEqual(result);
+    expect(await financialState()).toEqual(after);
+    await expect(withTx(tx => reversalService.approveReversal(tx, { ...reversal,
+      refund: { method: "CARD", reference: "CHANGED-REFUND-METHOD", confirmed: true } }, manager))).rejects.toThrow(/طريقة الرد/);
+    await expect(withTx(tx => reversalService.approveReversal(tx, { ...reversal,
+      detailIds: [...reversal.detailIds, ...reversal.detailIds] }, manager))).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(await financialState()).toEqual(after);
     const [referenceOwner] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.id, Number(operation.items[0].id)));
     expect(referenceOwner.providerReference).toBe("OP-ONE");

@@ -1,6 +1,8 @@
 // نافذة «تم الدفع بنجاح» بعد البيع (الإيصال على الشاشة + الطباعة ومحاكاة درج النقود).
 // استُخرجت من client/src/pages/POS.tsx بلا تغيير سلوكيّ مع تحسين تجربة المستخدم والحركة المتزامنة.
 
+import { invoicePrintAmounts } from "@/lib/printing/receiptLayoutInvoiceAmounts";
+import { D } from "@/lib/money";
 import { useState, useEffect } from "react";
 import { Printer, Check, Vault, Truck, Package } from "lucide-react";
 import { Link } from "wouter";
@@ -33,6 +35,8 @@ export interface GenericReceipt {
   customerName?: string | null;
   lines: GenericReceiptLine[];
   total: number;
+  returnedTotal?: string;
+  status?: string;
   received: number;
   change: number;
   method: string;
@@ -63,6 +67,8 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
   const delivery = "delivery" in receipt ? receipt.delivery : null;
   // Codex #1012 P2: طلبُ توصيلٍ عليه متبقٍّ يُحصَّل عند التسليم ليس «مدفوعاً» — ختمُ الإيصال وعنوانُه
   // يجب ألّا يدّعيا الدفعَ الكامل بينما يظهر المتبقّي مستحقّاً أدناه (تناقضٌ يربك الكاشير والزبون).
+  const facts=receipt.status ? invoicePrintAmounts({total:receipt.total,paidAmount:receipt.received,returnedTotal:receipt.returnedTotal,status:receipt.status}) : null;
+  const revised=!!facts && (facts.dead || D(facts.returnedTotal).gt(0));
   const codOutstanding = !!delivery && receipt.total > receipt.received;
   const isCredit = "isCredit" in receipt ? receipt.isCredit : false;
   const credit = "credit" in receipt ? receipt.credit : 0;
@@ -117,7 +123,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
           ref={modalRef}
           role="dialog"
           aria-modal="true"
-          aria-label={codOutstanding ? "تم تسجيل طلب التوصيل" : "تم الدفع بنجاح"}
+          aria-label={facts?.statusLabel ?? (codOutstanding ? "تم تسجيل طلب التوصيل" : "تم الدفع بنجاح")}
           style={{
             display: "flex", flexDirection: "column", alignItems: "center",
             width: "100%", maxWidth: 440, maxHeight: "calc(100dvh - 2rem)", overflowY: "auto", cursor: "default", direction: "rtl",
@@ -212,7 +218,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
               }}
             >
               {codOutstanding ? <Truck size={14} strokeWidth={2.5} aria-hidden /> : <Check size={14} strokeWidth={3} />}
-              <span>{codOutstanding ? "طلب توصيل" : "مدفوع • PAID"}</span>
+              <span>{facts?.statusLabel ?? (codOutstanding ? "طلب توصيل" : "مدفوع • PAID")}</span>
             </motion.div>
 
             {/* ترويسة الإيصال */}
@@ -320,6 +326,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
                   {fmt(receipt.total)} <span style={{ fontSize: 12, fontWeight: 700 }}>د.ع</span>
                 </span>
               </div>
+              {revised && <div className="space-y-1 text-sm"><div className="flex justify-between"><span>المرتجع:</span><bdi>{fmt(D(facts!.returnedTotal).toNumber())} د.ع</bdi></div><div className="flex justify-between font-semibold"><span>القيمة الحالية للفاتورة:</span><bdi>{fmt(D(facts!.currentTotal).toNumber())} د.ع</bdi></div></div>}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, color: "#475569" }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                   <span>المبلغ المدفوع ({receipt.method}):</span>

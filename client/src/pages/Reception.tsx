@@ -44,6 +44,7 @@ import { notify } from "@/lib/notify";
 import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
 import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import { useReceptionDigitalCheckout } from "@/components/digitalCards/useReceptionDigitalCheckout";
 import { toDigitalPrepareLine } from "@/components/pos/digitalBasket";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -230,11 +231,10 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [channelHandle, setChannelHandle] = useState("");
   /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
   const [linkedConversationId, setLinkedConversationId] = useState<number | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [checkoutSubmitting, setSubmitting] = useState(false);
   const [cardsOpen, setCardsOpen] = useState(false);
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
-  const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  const digitalCheckoutRef = useRef<{ appliedPaidD: import("decimal.js").Decimal; customerId: number | null; customerName: string | null; shiftId: number } | null>(null);
+  const [digitalCaptureConfirmed, setDigitalCaptureConfirmed] = useState(false);
   const resetScreen = () => {
     draftResumeEpochRef.current += 1; if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     draftSyncQueueRef.current?.reset(); setDraftTransitionPending(false); setDraftPromotionPending(false); setDraftPromotionShiftId(null); setWorkspaceSafetyBlocked(false); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
@@ -250,32 +250,38 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     setCustomer({ customerId: null, name: "", phone: null, isNew: false }); setReceptionPhone(""); setCustomerCreditLimit("");
   };
 
-  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation();
-  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
-    onMutate: () => setDigitalFinalizeError(null),
-    onSuccess: (r) => {
-      const checkout = digitalCheckoutRef.current;
+  const digitalCheckout = useReceptionDigitalCheckout({
+    scope: me.data?.id && branchId > 0 ? { companyId: me.data.companyId ?? null, userId: me.data.id, branchId, operation: "DIGITAL_RECEPTION", target: "workspace" } : null,
+    onPrepared: setFulfillIntentId,
+    onCompleted: (r, command) => {
       const now = new Date();
-      const received = checkout ? round2(checkout.appliedPaidD).toNumber() : D(r.total).toNumber();
+      const received = D(r.paymentMethod === "CASH" && D(r.total).eq(command.amount) ? command.tenderedAmount ?? r.paidAmount : r.paidAmount).toNumber();
       const totalNum = D(r.total).toNumber();
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber, invoiceId: r.invoiceId, date: fmtDateTime(now), printDate: fmtDate(now), printTime: fmtTime(now),
-        cashierName: me.data?.name ?? undefined, shiftId: checkout?.shiftId ?? shift?.id ?? null, customerName: checkout?.customerName ?? undefined,
+        cashierName: me.data?.name ?? undefined, shiftId: r.shiftId, customerName: command.customerName ?? undefined,
         lines: digitalCheckoutReceiptLines(r.receiptLines), total: totalNum, received,
-        change: received > totalNum ? D(received).minus(totalNum).toNumber() : 0, credit: 0, method: "CASH", isCredit: false, digitalDetails: r.printDetails,
+        change: received > totalNum ? D(received).minus(totalNum).toNumber() : 0, credit: 0, method: r.paymentMethod === "CARD" ? "CARD" : "CASH", cashRounding: D(r.cashRoundingAdjustment).toNumber(), isCredit: false, digitalDetails: r.printDetails,
       };
       setFulfillIntentId(null);
-      digitalCheckoutRef.current = null;
       notify.ok("تم إتمام الطلب والبطاقات الرقمية واعتماد الفاتورة");
-      void printAuthorizedReceipt(rec).then((printed) => {
+      if (D(r.returnedTotal).gt(0)) notify.warn(`الفاتورة الأصلية ${r.invoiceNumber} مرتبطة بمرتجع؛ افتحها من المبيعات للطباعة بحالتها الحالية`);
+      else void printAuthorizedReceipt(rec).then((printed) => {
         if (!printed.ok) notify.warn("تعذّرت الطباعة التلقائية", "حجب المتصفح نافذة الطباعة — الفاتورة محفوظة ويمكن إعادة طباعتها.");
       }).catch(() => notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة التلقائية"));
       void utils.sales.list.invalidate();
       void utils.shifts.current.invalidate();
       resetAfterCommittedWorkspace();
     },
-    onError: (err) => { releaseReservedPrintWindow(); setDigitalFinalizeError(err.message); },
+    onRefunded: (amount) => { setFulfillIntentId(null); notify.ok(`سُوّي رد المبلغ الأصلي ${fmt(amount)} د.ع`); resetAfterCommittedWorkspace(); },
   });
+  const digitalWorkspaceLocked = !!me.data && (!digitalCheckout.ready || digitalCheckout.pending);
+  const submitting = checkoutSubmitting || digitalCheckout.busy || digitalWorkspaceLocked;
+  const guardedSetClosing: typeof setClosing = (next) => {
+    const value = typeof next === "function" ? next(closing) : next;
+    if (value && digitalWorkspaceLocked) { notify.warn("استكمل عملية الكروت المحفوظة أو حسم مراجعتها قبل إغلاق الوردية من هذه الشاشة"); return; }
+    setClosing(value);
+  };
 
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -344,6 +350,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const splitTender = useSplitTender({ branchId, ownerId: me.data?.id, sessionKey: reqIdRef.current, channel: "RECEPTION", additionalFirstPaymentAmount:cart.length?extraChargeAmount.toFixed(2):"0", canConfirm: canAction("reception.initiateExternalPayment") && canAction("reception.confirmExternalPayment"), disabled: offline || submitting || cart.some(line => line.digital) });
   const splitPayInput = splitTender.active ? splitTender.tendered : payInput;
   const { expectedNow, sumDirectNetD, sumCustomD, hasCustom, heldD, hasDigitalCards, rawInvoiceDiscountPctD, paidD, expectedNowD, mixedRoundEligible, effectiveGrandD, mixedDeltaD, cashRoundActive, regularSumRawD, invoiceDiscountAmountD, mixedCarrier, orderFeeHeldD, grandTotalD, heldDelivery, sumDirectD, cartCount, grandTotal, deferredAvailable, deferredDisabledReason, needPaymentRef, cashRoundingDelta, sumDirect, sumCustom, cashDueNow, deliveryDisclosure, paid, invoiceDiscountAmount, invoiceDiscountAllowed, CASHIER_INVOICE_DISCOUNT_MAX_PCT, change, remaining, isChange, isOwing } = useReceptionAmounts({ cart, orderDelivery, activeDraft, offline, invoiceDiscountPct, draftHeld, method, payInput: splitPayInput, splitPayment: splitTender.active ? { hasCash: splitTender.hasCash, hasNonCash: splitTender.hasNonCash } : undefined, customer, phoneResolution, deferred, setDeferred });
+  useEffect(() => { setDigitalCaptureConfirmed(false); }, [cart, method, paymentReference, payInput, branchId, customer.customerId, shift?.id]);
   const paymentPreview = receptionPaymentAmounts({ paid: paidD.toFixed(2), expectedNow: expectedNowD.toFixed(2), hasExplicitAmount: Boolean(splitPayInput), directNet: sumDirectNetD.toFixed(2), deferred, quickFullPay: false, isReservation: false, method: splitTender.active ? "CASH" : method });
   const feePayment = useDeliveryFeeTender({ branchId,ownerId:me.data?.id, method, goodsAmount: splitTender.active ? "0.00" : paymentPreview.appliedPaidD.toFixed(2), feeHeld: D(heldDelivery).plus(!splitTender.active?extraChargeAmount:0).toFixed(2), reference: paymentReference, clientRequestId: reqIdRef.current });
 
@@ -748,18 +755,19 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
       const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? (extraChargeAmount.gt(0)?[{amount:inputPaidD.toFixed(2),method:method as "CASH"|"CARD"|"TRANSFER"|"WALLET",externalPaymentAttemptId:feePayment.tender?.externalPaymentAttemptId,externalPaymentDeviceId:feePayment.tender?.externalPaymentDeviceId}]:undefined), checkoutCharges, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender:heldDelivery>0?feePayment.tender:null, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
       if (digitalLines.length > 0) {
+        if (!digitalCaptureConfirmed) { notify.err("تحقق من استلام النقد أو نجاح دفع البطاقة فعلاً، ثم أكد القبض قبل إصدار الكروت"); return; }
+        if (method !== "CASH" && method !== "CARD") return;
         try { receptionLabelWin?.close(); } catch { /* noop */ }
-        const prepared = await prepareIntent.mutateAsync({
+        await digitalCheckout.start({ prepare: {
           branchId,
           shiftId: shift.id,
           clientRequestId: reqIdRef.current,
-          paymentMethod: "CASH",
+          paymentMethod: method,
           cartFingerprint: reqIdRef.current,
           customerId: customerId ?? undefined,
           priceTier: effectiveTier,
           sourceType: "RECEPTION",
-          // لا نخزّن بيانات اعتماد المدير داخل لقطة النيّة. هذا المسار يمنع الخصومات أصلاً.
-          sourcePayload: { ...directCheckoutPayload, managerApproval: undefined, deferredDirect: false },
+          sourcePayload: { version: 1, contactName: customerName ?? null, contactPhone: receiptPhone ?? null, cashRoundIQD: method === "CASH" && cashRoundActive },
           regularLines: regularLines.map((line, index) => ({
             lineKey: `regular:${index}:${line.row.productUnitId}`,
             variantId: line.row.variantId,
@@ -767,10 +775,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
             quantity: String(line.qty),
           })),
           lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
-        });
-        digitalCheckoutRef.current = { appliedPaidD, customerId, customerName, shiftId: shift.id };
-        setDigitalFinalizeError(null);
-        setFulfillIntentId(prepared.intentId);
+        }, amount: round2(appliedPaidD).toFixed(2), tenderedAmount: round2(inputPaidD).toFixed(2), customerName,
+          captureConfirmed: true, reference: method === "CARD" ? paymentReference.trim() : null });
         return;
       }
 
@@ -905,7 +911,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد, فيفشل النقل
       // بلا كود tRPC. تدهورٌ سلس: نلتقط بدل أن نُعيد خطأً غامضاً والنقد بيد الموظّف.
       // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
-      const isTransportFailure = !checkoutCommitted && !hadActiveDraftAtSubmit
+      const isTransportFailure = !hasDigitalCards && !checkoutCommitted && !hadActiveDraftAtSubmit
         && (e as { data?: { code?: string } } | null)?.data?.code == null;
       if (isTransportFailure && !extraChargeAmount.gt(0) && (await captureOfflineReception())) {
         return;
@@ -1026,8 +1032,17 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         />
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
-      <ReceptionWorkspaceHeader compactHeader={compactHeader} customerSectionRef={customerSectionRef} canReadChannels={canReadChannels} setShowInbox={setShowInbox} channel={channel} setChannel={setChannel} setChannelHandle={setChannelHandle} channelHandle={channelHandle} phoneCustomer={phoneCustomer} canCreateCustomer={canCreateCustomer} canReadCustomerContext={canReadCustomerContext} effectiveTier={effectiveTier} tierOverride={tierOverride} setTierOverride={setTierOverride} setHydratedAutomaticTier={setHydratedAutomaticTier} setDeferred={setDeferred} clearCouponIfApplied={clearCouponIfApplied} setCustomerContextId={setCustomerContextId} searchWrapRef={searchWrapRef} searchRef={searchRef} search={search} setSearch={setSearch} setShowDrop={setShowDrop} handleSearchScan={handleSearchScan} searchSettled={searchSettled} results={results} addRow={addRow} showDrop={showDrop} debounced={debounced} resultsEmpty={resultsEmpty} addManualService={addManualService} canActionRef={canActionRef} setCardsOpen={setCardsOpen} offline={offline} canAction={canAction} headerActionsNode={headerActionsNode} bridge={bridge} testServerPrint={testServerPrint} connectPrinter={connectPrinter} printerReady={printerReady} lastSale={lastSale} setCashDropping={setCashDropping} setClosing={setClosing} shift={shift} branchId={branchId} me={me} activeDraft={activeDraft} cart={cart} hasDigitalCards={hasDigitalCards} draftPromotionPending={draftPromotionPending} saveDraft={saveDraft} resumeDraft={resumeDraft} printDraftTicketById={printDraftTicketById} />
+      <ReceptionWorkspaceHeader compactHeader={compactHeader} customerSectionRef={customerSectionRef} canReadChannels={canReadChannels} setShowInbox={setShowInbox} channel={channel} setChannel={setChannel} setChannelHandle={setChannelHandle} channelHandle={channelHandle} phoneCustomer={phoneCustomer} canCreateCustomer={canCreateCustomer} canReadCustomerContext={canReadCustomerContext} effectiveTier={effectiveTier} tierOverride={tierOverride} setTierOverride={setTierOverride} setHydratedAutomaticTier={setHydratedAutomaticTier} setDeferred={setDeferred} clearCouponIfApplied={clearCouponIfApplied} setCustomerContextId={setCustomerContextId} searchWrapRef={searchWrapRef} searchRef={searchRef} search={search} setSearch={setSearch} setShowDrop={setShowDrop} handleSearchScan={handleSearchScan} searchSettled={searchSettled} results={results} addRow={addRow} showDrop={showDrop} debounced={debounced} resultsEmpty={resultsEmpty} addManualService={addManualService} canActionRef={canActionRef} setCardsOpen={setCardsOpen} offline={offline} canAction={canAction} headerActionsNode={headerActionsNode} bridge={bridge} testServerPrint={testServerPrint} connectPrinter={connectPrinter} printerReady={printerReady} lastSale={lastSale} setCashDropping={setCashDropping} setClosing={guardedSetClosing} shift={shift} branchId={branchId} me={me} activeDraft={activeDraft} cart={cart} hasDigitalCards={hasDigitalCards} draftPromotionPending={draftPromotionPending} saveDraft={saveDraft} resumeDraft={resumeDraft} printDraftTicketById={printDraftTicketById} />
 
+      {(digitalCheckout.pending || digitalCheckout.error || !digitalCheckout.ready) && <div className="mx-2 border p-3 text-sm" role="status">
+        {digitalCheckout.error ?? (digitalCheckout.pending ? "عملية كروت محفوظة قيد الاستكمال. لا تقبض المبلغ ولا تصدر الكروت مرة ثانية." : "جارٍ التحقق من العمليات المحفوظة…")}
+        {digitalCheckout.pending && <Button type="button" size="sm" variant="outline" className="ms-3" disabled={digitalCheckout.busy} onClick={() => { reservePrintWindow(); void digitalCheckout.retry().catch(() => releaseReservedPrintWindow()); }}>استكمال العملية الأصلية</Button>}
+      </div>}
+      {hasDigitalCards && !digitalCheckout.pending && <label className="mx-2 flex items-start gap-2 border p-3 text-sm">
+        <input type="checkbox" checked={digitalCaptureConfirmed} disabled={!digitalCheckout.ready || checkoutSubmitting} onChange={(event) => setDigitalCaptureConfirmed(event.target.checked)} />
+        {method === "CARD" ? "تحققت من نجاح دفع كامل المبلغ على جهاز البطاقة ومن مرجع العملية المدخل" : "تحققت من استلام كامل المبلغ نقداً قبل إصدار الكروت"}
+      </label>}
+      <fieldset disabled={digitalWorkspaceLocked} className="contents">
       {/* ─── الجسم: عمود السلة يملأ العرض؛ لوحة الدفع شريطٌ مستقلّ أسفله (خارج الحشوة، حافّة-لحافّة) ─── */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-0">
         <ReceptionCartDuplicateAlert branchId={branchId} phone={receptionPhone || customer.phone || ""} customerId={customer.customerId}
@@ -1148,6 +1163,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         onSubmit={(opts) => void handleSubmit(opts)}
       />
 
+      </fieldset>
       {/* شارة المزامنة */}
       <OfflineSyncChip userRole={me.data?.role} />
 
@@ -1187,18 +1203,12 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       />
       <DigitalFulfillmentDialog
         intentId={fulfillIntentId}
-        finalizing={finalizeSale.isPending}
-        finalizeError={digitalFinalizeError}
-        onClose={() => { releaseReservedPrintWindow(); setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
+        finalizing={digitalCheckout.busy}
+        finalizeError={digitalCheckout.error}
+        onClose={() => { releaseReservedPrintWindow(); setFulfillIntentId(null); }}
         onAllExecuted={(id: number) => {
           if (!canActionRef.current("digitalCards.sales.finalize")) { notify.err("تثبيت البيع الرقمي غير مفوض لحسابك"); return; }
-          if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({
-            intentId: id,
-            clientRequestId: reqIdRef.current,
-            paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2),
-            paymentMethod: "CASH",
-            customerId: digitalCheckoutRef.current.customerId ?? undefined,
-          });
+          if (!digitalCheckout.busy) void digitalCheckout.finalizePrepared(id).catch(() => releaseReservedPrintWindow());
         }}
       />
     </div>

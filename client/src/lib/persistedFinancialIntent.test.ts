@@ -8,6 +8,7 @@ const store = vi.hoisted(() => ({
 vi.mock("./offline/db", () => ({
   offlineDb: {
     meta: {
+      where:()=>({startsWith:(prefix:string)=>({primaryKeys:async()=>Array.from(store.meta.keys()).filter(k=>k.startsWith(prefix))})}),
       get: async (key: string) => store.meta.get(key),
       add: async (row: { key: string; value: string }) => {
         if (store.fail) throw Error("quota");
@@ -45,7 +46,7 @@ vi.mock("./offline/db", () => ({
   },
 }));
 import {
-  financialIntentScopeKey,
+  digitalWorkspaceScopes, financialIntentScopeKey,
   isDefinitiveIntentRejection,
   loadFinancialIntent,
   reserveFinancialIntent,
@@ -75,6 +76,15 @@ beforeEach(() => {
   store.fail = false;
 });
 describe("durable financial command envelope", () => {
+  it("isolates POS tabs and discovers an invoice only in its original user, company and browser tab",async()=>{
+    const pos:FinancialIntentScope={...scope,operation:"DIGITAL_POS",target:"tab:1"};
+    const inv:FinancialIntentScope={...scope,operation:"DIGITAL_INVOICE",target:"tab:12345678-1234-5678-1234-567812345678"};
+    for(const s of [pos,{...pos,target:"tab:2"},inv,{...inv,userId:99},{...inv,companyId:3}]) await reserveFinancialIntent(s,command(s.target));
+    expect((await digitalWorkspaceScopes(pos)).map(s=>s.target).sort()).toEqual(["tab:1","tab:2"]);
+    expect(await digitalWorkspaceScopes({...inv,branchId:5})).toEqual([inv]);
+    expect(()=>financialIntentScopeKey({...pos,target:inv.target})).toThrow();
+    expect(()=>financialIntentScopeKey({...scope,target:pos.target})).toThrow();
+  });
   it("encrypts the original command, restores it, and never replaces it with changed input", async () => {
     const original = command();
     expect(await reserveFinancialIntent(scope, original)).toEqual(original);

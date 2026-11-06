@@ -11,6 +11,12 @@ import { describe, expect, it } from "vitest";
 const page = readFileSync(new URL("../Payroll.tsx", import.meta.url), "utf8");
 
 describe("بانر جاهزية العمولة في شاشة الرواتب", () => {
+  it("يبين حجز العمولة التاريخية قبل اقتراح إعادة التوليد ويحجب صرف المعتمد", () => {
+    expect(page.indexOf("if (r.digitalPayoutHold)")).toBeLessThan(page.indexOf('if (r.status === "approved")'));
+    expect(page).toContain("تسوية الاستحقاق التاريخي صراحةً");
+    expect(page).toContain("!!run && !isPaid && !!commissionReadiness");
+    expect(page).toContain('onClick={() => setPayOpen(true)} disabled={busy || commissionBlocking}');
+  });
   it("يستبدل انتظار فشل الاعتماد بجاهزيةٍ استباقية عبر commissionReadiness", () => {
     expect(page).toContain("trpc.payroll.commissionReadiness.useQuery");
     expect(page).toContain("commissionBlocking");

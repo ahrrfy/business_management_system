@@ -434,6 +434,9 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
       paidAmount: "17250.00",
       status: "PAID",
     }).where(eq(s.invoices.id, sale.invoiceId));
+    await db().insert(s.receipts).values({ invoiceId: sale.invoiceId, branchId: 1, shiftId: 1,
+      direction: "IN", amount: "3000.00", paymentMethod: "CASH", cashBucket: "DRAWER",
+      status: "COMPLETED", createdBy: 1, description: "قبض السطر الإضافي في التجربة المختلطة" });
 
     await withTx(async (tx) => reversalService.approveReversal(tx, {
       invoiceId: sale.invoiceId,
@@ -550,11 +553,13 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
     const { sale, ids } = await issued();
     await withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "أول" }, mgr));
     const headerAfterFirst = await invoiceHeader(sale.invoiceId);
+    const receiptsAfterFirst = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
     await expect(withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثانٍ" }, mgr)))
-      .rejects.toThrow(/عولِج مسبقاً/);
+      .resolves.toMatchObject({ invoiceId: sale.invoiceId, refunded: "14250.00", outcome: "REVERSED" });
     await expect(withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثالث" }, mgr)))
       .rejects.toThrow(/عولِج مسبقاً/);
     expect(await invoiceHeader(sale.invoiceId)).toEqual(headerAfterFirst);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toEqual(receiptsAfterFirst);
   });
 
   it("يفشل مغلقاً قبل أي أثر إذا تجاوز الرد المقبوض الفعلي", async () => {

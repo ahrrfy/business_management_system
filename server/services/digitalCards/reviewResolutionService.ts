@@ -33,12 +33,17 @@ import { extractInsertId } from "../../lib/insertId";
 import { redactAuditValue } from "../auditService";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
-import { recoverNeedsReview } from "./finalizeService";
+import { DIGITAL_SETTLEMENT_FINALIZATION, finalize, recoverNeedsReview } from "./finalizeService";
 import { approveWriteoff } from "./writeoffService";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { releaseIntentInventory } from "./inventoryReservationService";
+import { digitalIntentSettlements, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
+import { discardRejectedAllocation, completeDigitalSettlement, controlIntentRefund, materializeDigitalCapture, requestDigitalSettlement, type SettlementOptions } from "./settlementService";
+import { assertCaptureResolvedBeforeClosure } from "./captureDisposition";
+import type { DigitalCardRefundControl, DigitalRefundTender } from "../../../shared/digitalPaymentSettlement";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
-export type ReviewDecision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
+export type ReviewDecision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS" | "SETTLE_PARTIAL";
 export type ReviewItemOutcome = "ISSUED" | "NOT_ISSUED";
 
 export interface ReviewResolutionItemInput {
@@ -241,9 +246,9 @@ async function normalizeAndValidateItems(
 
 export async function requestResolution(
   tx: Tx,
-  input: { intentId: number; decision: ReviewDecision; reason: string; items: ReviewResolutionItemInput[] },
+  input: { intentId: number; decision: ReviewDecision; reason: string; items: ReviewResolutionItemInput[]; settlement?: SettlementOptions },
   actor: Actor & ServiceOperationActor,
-): Promise<{ resolutionId: number }> {
+): Promise<{ resolutionId: number; autoApproved: boolean }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.sales.requestReviewResolution");
   const reason = input.reason.trim();
   if (reason.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب نتيجة المطابقة وسبب القرار بوضوح" });
@@ -258,9 +263,13 @@ export async function requestResolution(
   }
 
   const actualItems = await intentItems(tx, input.intentId);
-  if (!actualItems.length) throw new TRPCError({ code: "BAD_REQUEST", message: "العملية بلا بنود" });
+  if (intent.checkoutSnapshot?.unadmittedCapture && (input.decision !== "SETTLE_PARTIAL" || input.settlement?.regularDisposition !== "RELEASE" || actualItems.length || input.items.length)) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({what:"تعذّر قبول قرار المعالجة",why:"القبض قبل قبول السلة يتيح فقط تسوية رد كامل بلا بيع أو إصدار",doThis:"اختر رد كامل القبض وتحرير البضاعة بعد مطابقة الإثبات الأصلي"}) });
+  if (!actualItems.length && !intent.checkoutSnapshot?.unadmittedCapture) throw new TRPCError({ code: "BAD_REQUEST", message: "العملية بلا بنود" });
   const items = await normalizeAndValidateItems(tx, actualItems, input.items);
   validateDecision(input.decision, items);
+  if (input.decision === "WRITEOFF_LOSS") await assertCaptureResolvedBeforeClosure(tx, intent);
+  if (input.decision === "CANCEL_NO_ISSUE") await assertCaptureResolvedBeforeClosure(tx, intent, "إلغاء");
+  if (input.decision !== "SETTLE_PARTIAL" && input.settlement) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"تخصيص القبض يخص قرار تسوية المبلغ المحصّل فقط","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
 
   const [existing] = await tx
     .select()
@@ -270,6 +279,7 @@ export async function requestResolution(
   if (existing?.status === "PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "يوجد قرار معالجة ينتظر اعتماد مدير آخر" });
   }
+  if (existing?.status === "APPROVED") throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"قرار المعالجة معتمد؛ لا يُستبدل سجل تسويته النهائية","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
 
   let resolutionId: number;
   if (existing) {
@@ -298,48 +308,84 @@ export async function requestResolution(
     resolutionId = extractInsertId(inserted);
   }
 
-  await tx.insert(digitalSaleReviewResolutionItems).values(items.map((item) => ({
+  if (items.length) await tx.insert(digitalSaleReviewResolutionItems).values(items.map((item) => ({
     resolutionId,
     intentItemId: item.intentItemId,
     outcome: item.outcome,
     providerReference: item.providerReference,
   })));
+  if (input.decision === "SETTLE_PARTIAL") await requestDigitalSettlement(tx, intent, resolutionId, items, input.settlement, actor);
   await auditLog(tx, actor, "digitalCards.review.resolutionRequested", input.intentId, {
     resolutionId,
     decision: input.decision,
     reason,
     issued: items.filter((item) => item.outcome === "ISSUED").length,
   });
-  const resolvedActor = await resolveApprovalActor(tx, actor);
-  if (resolvedActor.isOwner) {
+  const resolvedActor = await resolveApprovalActor(tx, actor, { current: true });
+  const autoApproved = resolvedActor.isOwner && input.decision !== "SETTLE_PARTIAL";
+  if (autoApproved) {
     await approveResolution(tx, { intentId: input.intentId }, {
       ...resolvedActor,
       role: "admin",
     });
   }
-  return { resolutionId };
+  return { resolutionId, autoApproved };
+}
+
+async function applyConfirmedOutcomes(tx: Tx, intentId: number, items: Awaited<ReturnType<typeof normalizeAndValidateItems>>, actor: Actor) {
+  for (const item of items) {
+    await tx
+      .update(digitalSaleIntentItems)
+      .set({
+        fulfillmentStatus: item.outcome === "ISSUED" ? "SUCCESS" : "FAILED",
+        providerReference: item.providerReference,
+        confirmedBy: actor.userId,
+        confirmedAt: new Date(),
+      })
+      .where(eq(digitalSaleIntentItems.id, item.intentItemId));
+  }
+  await deleteClaims(tx, intentId);
+}
+
+async function materializeRetainedSale(tx: Tx, intent: Awaited<ReturnType<typeof lockIntent>>, actor: Actor & ServiceOperationActor) {
+  const settlement = await materializeDigitalCapture(tx, intent, actor.userId, actor);
+  let invoiceId: number | null = null;
+  if (settlement.issuedItemIds.length > 0 || (settlement.regularDisposition === "SELL" && (intent.checkoutSnapshot?.regularLines.length ?? 0) > 0)) {
+    const [creator] = await tx.select({ role: users.role, isOwner: users.isOwner }).from(users).where(eq(users.id, Number(intent.createdBy))).limit(1);
+    if (!creator) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"حساب منفّذ العملية الأصلي غير موجود؛ أوقف التسوية","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
+    const sale = await finalize(tx, { intentId: Number(intent.id), clientRequestId: intent.clientRequestId,
+      paymentMethod: intent.paymentMethod as "CASH" | "CARD", paymentAmount: intent.expectedTotal,
+      externalPaymentAttemptId: intent.externalPaymentAttemptId, deviceId: intent.externalPaymentDeviceId,
+      customerId: intent.checkoutSnapshot?.customerId ?? null },
+    { userId: Number(intent.createdBy), branchId: Number(intent.branchId), ...creator }, actor,
+    { capability: DIGITAL_SETTLEMENT_FINALIZATION, settlementId: Number(settlement.id) });
+    invoiceId = sale.invoiceId;
+  } else {
+    await releaseReservations(tx, Number(intent.id));
+    await tx.update(digitalSaleIntents).set({ status: "CANCELLED" }).where(eq(digitalSaleIntents.id, Number(intent.id)));
+  }
+  return { settlement, invoiceId };
 }
 
 export async function approveResolution(
   tx: Tx,
-  input: { intentId: number },
+  input: { intentId: number; refund?: DigitalRefundTender },
   actor: Actor & ServiceOperationActor,
 ): Promise<{ decision: ReviewDecision; invoiceId?: number; loss?: string }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.sales.approveReviewResolution");
+  const approvalActor = await resolveApprovalActor(tx, actor, { current: true });
   const intent = await lockIntent(tx, input.intentId);
   assertBranch(Number(intent.branchId), actor);
-  if (intent.status !== "NEEDS_REVIEW") {
-    throw new TRPCError({ code: "CONFLICT", message: "هذه العملية لم تعد تنتظر معالجة" });
-  }
   const [resolution] = await tx
     .select()
     .from(digitalSaleReviewResolutions)
     .where(eq(digitalSaleReviewResolutions.intentId, input.intentId))
     .for("update");
-  if (!resolution || resolution.status !== "PENDING") {
+  if (resolution?.status === "APPROVED") return { decision: resolution.decision, ...(intent.invoiceId ? { invoiceId: Number(intent.invoiceId) } : {}) };
+  if (!resolution || resolution.status !== "PENDING" || intent.status !== "NEEDS_REVIEW") {
     throw new TRPCError({ code: "CONFLICT", message: "لا يوجد قرار معالجة ينتظر الاعتماد" });
   }
-  if (Number(resolution.requestedBy) === actor.userId && !actor.isOwner) {
+  if (Number(resolution.requestedBy) === actor.userId && !approvalActor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد القرار من طلبه — يلزم مدير آخر" });
   }
   if (await activeClaimCount(tx, input.intentId)) {
@@ -358,6 +404,10 @@ export async function approveResolution(
     providerReference: item.providerReference,
   })));
   validateDecision(resolution.decision, items);
+  if (resolution.decision === "CANCEL_NO_ISSUE") await assertCaptureResolvedBeforeClosure(tx, intent, "إلغاء");
+  if (resolution.decision === "SETTLE_PARTIAL" && (input.refund?.method ?? "CASH") === "CASH") {
+    await lockCashSourceForUpdate(tx, { branchId: Number(intent.branchId), cashBucket: "TREASURY" });
+  }
   if (
     resolution.decision === "CANCEL_NO_ISSUE" &&
     intent.externalPaymentAttemptId != null
@@ -379,24 +429,13 @@ export async function approveResolution(
         message: appErrorMessage({
           what: "تعذّر إلغاء نيّة البيع الرقمية",
           why: "قبضها الخارجي مؤكّد ولم يُثبت عكس العملية لدى مزوّد الدفع",
-          doThis: "أبقها للمراجعة، واعكس القبض لدى المزوّد، ولا تمرّر البطاقة ثانيةً",
+          doThis: "اختر تسوية المبلغ المحصّل وحدد طريقة رده بعد المطابقة، ولا تمرّر البطاقة ثانيةً",
         }),
       });
     }
   }
 
-  for (const item of items) {
-    await tx
-      .update(digitalSaleIntentItems)
-      .set({
-        fulfillmentStatus: item.outcome === "ISSUED" ? "SUCCESS" : "FAILED",
-        providerReference: item.providerReference,
-        confirmedBy: actor.userId,
-        confirmedAt: new Date(),
-      })
-      .where(eq(digitalSaleIntentItems.id, item.intentItemId));
-  }
-  await deleteClaims(tx, input.intentId);
+  await applyConfirmedOutcomes(tx, input.intentId, items, actor);
 
   let result: { decision: ReviewDecision; invoiceId?: number; loss?: string } = { decision: resolution.decision };
   if (resolution.decision === "CANCEL_NO_ISSUE") {
@@ -405,6 +444,12 @@ export async function approveResolution(
   } else if (resolution.decision === "FINALIZE_SALE") {
     const recovered = await recoverNeedsReview(tx, input.intentId, actor);
     result = { decision: resolution.decision, invoiceId: recovered.invoiceId };
+  } else if (resolution.decision === "SETTLE_PARTIAL") {
+    const { settlement, invoiceId } = await materializeRetainedSale(tx, intent, actor);
+    const refund = input.refund ?? (settlement.refundMethod === "CASH" ? { method: "CASH" as const } : undefined);
+    if (!money(settlement.refundAmount).isZero() && settlement.refundMethod !== refund?.method) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"طريقة الرد لا تطابق قرار التسوية","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
+    await completeDigitalSettlement(tx, input.intentId, invoiceId, refund, actor);
+    result = { decision: resolution.decision, ...(invoiceId ? { invoiceId } : {}) };
   } else {
     await tx
       .update(digitalSaleIntents)
@@ -432,6 +477,44 @@ export async function approveResolution(
   return result;
 }
 
+export async function controlResolutionRefund(tx: Tx, input: { intentId: number }, control: DigitalCardRefundControl, actor: Actor & ServiceOperationActor) {
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.approveReviewResolution");
+  const approvalActor = await resolveApprovalActor(tx, actor, { current: true });
+  const intent = await lockIntent(tx, input.intentId);
+  assertBranch(Number(intent.branchId), actor);
+  const [resolution] = await tx.select().from(digitalSaleReviewResolutions)
+    .where(eq(digitalSaleReviewResolutions.intentId, input.intentId)).for("update").limit(1);
+  if (!resolution || resolution.decision !== "SETTLE_PARTIAL" || resolution.status !== "PENDING" || intent.status !== "NEEDS_REVIEW") {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"لا يوجد قرار تسوية قبض ينتظر الاعتماد","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
+  }
+  if (Number(resolution.requestedBy) === actor.userId && !approvalActor.isOwner) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"يلزم اعتماد مدير آخر لرد القبض","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
+  if (await activeClaimCount(tx, input.intentId)) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({"what":"تعذّرت تسوية عملية الكروت","why":"نافذة الإصدار ما زالت نشطة","doThis":"راجع القرار المحفوظ وصلاحية الاعتماد وحالة الإصدار ثم أكمل المعالجة الأصلية دون قبض أو رد جديد"}) });
+  if (control.stage === "RESERVE") {
+    const [existing] = await tx.select({ id: digitalRefundPayments.id }).from(digitalRefundPayments)
+      .where(eq(digitalRefundPayments.intentId, input.intentId)).for("update").limit(1);
+    if (!existing) {
+      // Exercise the real sale, stock, period, rounding and provider postings BEFORE the sole terminal grant.
+      // The reserved/evidenced retry path never repeats this preflight or issues another grant.
+      const verified = new Error("verified reviewed sale");
+      try {
+        await tx.transaction(async inner => {
+          const pending = await inner.select().from(digitalSaleReviewResolutionItems)
+            .where(eq(digitalSaleReviewResolutionItems.resolutionId, resolution.id));
+          const confirmed = await normalizeAndValidateItems(inner, await intentItems(inner, input.intentId), pending);
+          await applyConfirmedOutcomes(inner, input.intentId, confirmed, actor);
+          await materializeRetainedSale(inner, intent, actor);
+          throw verified;
+        });
+      } catch (error) { if (error !== verified) throw error; }
+    }
+  }
+  return controlIntentRefund(tx, input.intentId, control, actor);
+}
+
+export async function evidenceForResolution(tx: Tx, input: { intentId: number; refund: DigitalRefundTender }, actor: Actor & ServiceOperationActor) {
+  return controlResolutionRefund(tx, input, { stage: "EVIDENCE", tender: input.refund }, actor);
+}
+
 export async function rejectResolution(
   tx: Tx,
   input: { intentId: number; reason: string },
@@ -450,9 +533,10 @@ export async function rejectResolution(
   if (!resolution || resolution.status !== "PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا يوجد قرار معالجة ينتظر الرفض" });
   }
-  if (Number(resolution.requestedBy) === actor.userId && !actor.isOwner) {
+  if (Number(resolution.requestedBy) === actor.userId && !(await resolveApprovalActor(tx, actor, { current: true })).isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يرفض القرار من طلبه — يلزم مدير آخر" });
   }
+  await discardRejectedAllocation(tx, input.intentId, Number(resolution.id));
   await tx
     .update(digitalSaleReviewResolutions)
     .set({ status: "REJECTED", reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason: reason })
@@ -477,6 +561,15 @@ export async function getReviewDetails(db: DB, intentId: number, branchId: numbe
       createdByName: users.name,
       createdByUsername: users.username,
       shiftId: digitalSaleIntents.shiftId,
+      capturedRequestId: digitalSaleIntents.clientRequestId,
+      capturedAttemptId: digitalSaleIntents.externalPaymentAttemptId,
+      capturedReference: externalPaymentAttempts.externalReference,
+      capturedAt: externalPaymentAttempts.confirmedAt,
+      recoveryPostingShiftId: sql<number | null>`JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.captureRecovery.postingShiftId')`,
+      recoveryCustodyReceiptId: sql<number | null>`JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.captureRecovery.cashCustodyReceiptId')`,
+      recoveryReason: sql<string | null>`JSON_UNQUOTE(JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.captureRecovery.reason'))`,
+      capturedDevice: sql<string | null>`JSON_UNQUOTE(JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.unadmittedCapture.deviceId'))`,
+      admissionFailure: sql<string | null>`JSON_UNQUOTE(JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.unadmittedCapture.reason'))`,
       shiftStatus: shifts.status,
       shiftOpenedAt: shifts.openedAt,
       shiftClosedAt: shifts.closedAt,
@@ -490,6 +583,7 @@ export async function getReviewDetails(db: DB, intentId: number, branchId: numbe
     .innerJoin(branches, eq(digitalSaleIntents.branchId, branches.id))
     .innerJoin(shifts, eq(digitalSaleIntents.shiftId, shifts.id))
     .leftJoin(users, eq(digitalSaleIntents.createdBy, users.id))
+    .leftJoin(externalPaymentAttempts, eq(digitalSaleIntents.externalPaymentAttemptId, externalPaymentAttempts.id))
     .where(eq(digitalSaleIntents.id, intentId))
     .limit(1);
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "عملية البيع غير موجودة" });
@@ -573,5 +667,11 @@ export async function getReviewDetails(db: DB, intentId: number, branchId: numbe
     .leftJoin(users, eq(auditLogs.userId, users.id))
     .where(and(eq(auditLogs.entityType, "digitalSaleIntent"), eq(auditLogs.entityId, String(intentId))))
     .orderBy(asc(auditLogs.id));
-  return { intent, items, timeline, resolution: resolution ? { ...resolution, items: resolutionItems } : null };
+  const [settlement] = await db.select({ id: digitalIntentSettlements.id, capturedAmount: digitalIntentSettlements.capturedAmount,
+    saleAmount: digitalIntentSettlements.saleAmount, refundAmount: digitalIntentSettlements.refundAmount,
+    regularDisposition: digitalIntentSettlements.regularDisposition, refundMethod: digitalIntentSettlements.refundMethod,
+    status: digitalIntentSettlements.status }).from(digitalIntentSettlements).where(eq(digitalIntentSettlements.intentId, intentId)).limit(1);
+  const [refundEvidence] = await db.select({ refundId: digitalRefundPayments.id, method: digitalRefundPayments.method, reference: digitalRefundPayments.normalizedReference,
+    status: digitalRefundPayments.status, reservationExpiresAt: digitalRefundPayments.reservationExpiresAt }).from(digitalRefundPayments).where(eq(digitalRefundPayments.intentId, intentId)).limit(1);
+  return { intent, items, timeline, settlement: settlement ? { ...settlement, refundEvidence: refundEvidence ?? null } : null, resolution: resolution ? { ...resolution, items: resolutionItems } : null };
 }

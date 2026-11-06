@@ -699,6 +699,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     "assets/dispose.ts", // متحصل بيع أصل
     "delivery/feeHeld.ts", // أمانة أجرة توصيل مقبوضة بوسيلتها الفعلية
     "delivery/settle.ts", // قبض تسوية من المندوب
+    "digitalCards/settlementService.ts", // توثيق القبض الأصلي المحتجز فقط
     "exchange/withdraw.ts", // نقد عائد من محفظة الصيرفة
     "printSaleService.ts", // قبض بيع
     "purchaseReturnsService.ts", // رد مورد داخل
@@ -788,7 +789,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["reversal/executors/invoiceRefund.ts", "SALE_CANCELLATION_COMPENSATION"],
       ["reversal/executors/invoiceRefund.ts", "SALE_RETURN_COMPENSATION"],
       ["returnService.ts", "SALE_RETURN_COMPENSATION"],
-      ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
+      ["digitalCards/refundPayments.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
       ["workOrder/cancel.ts", "WORK_ORDER_CANCELLATION_COMPENSATION"],
       // م٢ ق١٠ — المفتاح الناقص: عكسُ التسليم بلا وردية استقبال مفتوحة يصرف من الخزينة بصفة المعتمِد؛

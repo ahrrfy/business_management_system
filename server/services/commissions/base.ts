@@ -10,6 +10,7 @@
  *    إلى COALESCE(workOrders.createdBy, invoices.createdBy) بحصة 1.0000 (100%).
  *  - المرتجع يتبع الفاتورة الأصلية: يُخصَم من المساهمين الأصليين بنفس نسب مساهمتهم الأصلية.
  *  - بضاعة الأمانة: تُقتطع حصة المودع من الوعاء بنفس نسبة مساهمة البائع/الكاشير.
+ *  - الكروت الرقمية: صافي لقطات بنودها وحركات عكسها خارج الوعاء في نمطي تمويل المزوّد.
  *  - مجهزو طلبات المتجر وموظفو الاستقبال: احتساب عدادات التجهيز وأوامر الشغل لدعم
  *    الحوافز المقطوعة ومكافآت الـ SLA (مذكرة COORDINATION_STORE_ORDERS.md).
  * ========================================================================== */
@@ -17,6 +18,7 @@ import Decimal from "decimal.js";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import {
   accountingEntries,
+  digitalSaleDetails,
   invoiceAttributions,
   invoices,
   workOrders,
@@ -26,11 +28,11 @@ import { money, round2 } from "../money";
 import { periodDateRange } from "./period";
 
 export interface UserMonthBase {
-  /** Σ إيراد SALE (موجب) المسند للمستخدم بعد تطبيق نسبة التوزيع (sharePct). */
+  /** Σ إيراد SALE غير الرقمي المسند للمستخدم بعد تطبيق نسبة التوزيع (sharePct). */
   sales: Decimal;
   /** |Σ إيراد RETURN| (موجب — القيود مخزّنة سالبة) المخصوم من المستخدم بنسبة مساهمته الأصلية. */
   returns: Decimal;
-  /** بضاعة الأمانة (ش٣): Σ حصص المودِعين للمبيعات (قيود PURCHASE∧invoiceId∧supplierId) — تُخصَم من
+  /** بضاعة الأمانة (ش٣): Σ حصص المودِعين المثبتة (باستثناء استحقاق المزوّد الرقمي) — تُخصَم من
    *  الوعاء (قرار المالك ٤: العمولة على الهامش فقط) موزّعة بنفس نسبة الإسناد. */
   consigDeduction: Decimal;
   /** عدد فواتير/قيود البيع المسندة للمستخدم. */
@@ -53,6 +55,30 @@ export async function computeNetSalesByUser(
   const { from, toExclusive } = periodDateRange(period);
 
   const effectiveShare = sql`COALESCE(${invoiceAttributions.sharePct}, 1)`;
+  // Aggregate immutable net line snapshots before attribution: joining details
+  // directly would multiply the invoice revenue and every participant's share.
+  const digitalSales = runner
+    .select({
+      invoiceId: digitalSaleDetails.invoiceId,
+      revenue: sql<string>`SUM(${digitalSaleDetails.sellPriceSnapshot})`.as(
+        "digitalRevenue",
+      ),
+    })
+    .from(digitalSaleDetails)
+    .groupBy(digitalSaleDetails.invoiceId)
+    .as("commissionDigitalSales");
+  // Double entry can be OFF, leaving postingProfile NULL. Keep the established
+  // legacy consignment fallback, but DIGITAL supplier accruals are never consignment.
+  const isConsignment = sql`(${accountingEntries.postingProfile} = 'PURCHASE_CONSIGNMENT'
+    OR (${accountingEntries.postingProfile} IS NULL
+      AND COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'DIGITAL:%'
+      AND (${accountingEntries.dedupeKey} REGEXP '^CONSIG:[0-9]+:[0-9]+$'
+        OR ${accountingEntries.dedupeKey} LIKE 'CONSIG:DELIVERY_RETURN:%'
+        OR (${accountingEntries.invoiceId} IS NOT NULL AND ${accountingEntries.purchaseOrderId} IS NULL)
+        OR ${accountingEntries.notes} LIKE 'عكس استحقاق أمانة%'
+        OR ${accountingEntries.notes} LIKE 'استحقاق تلف مرتجع أمانة%')))`;
+  const isDigitalReturn = sql`(COALESCE(${accountingEntries.postingProfile}, '') = 'RETURN_SALE_DIGITAL'
+    OR COALESCE(${accountingEntries.dedupeKey}, '') LIKE 'DIGITAL:REV:%')`;
 
   const rows = await runner
     .select({
@@ -64,20 +90,20 @@ export async function computeNetSalesByUser(
       sales: sql<string>`CAST(COALESCE(SUM(
         CASE
           WHEN ${accountingEntries.entryType} = 'SALE'
-          THEN ${accountingEntries.revenue} * ${effectiveShare}
+          THEN (${accountingEntries.revenue} - COALESCE(${digitalSales.revenue}, 0)) * ${effectiveShare}
           ELSE 0
         END
       ), 0) AS CHAR)`,
       returnsNeg: sql<string>`CAST(COALESCE(SUM(
         CASE
-          WHEN ${accountingEntries.entryType} = 'RETURN'
+          WHEN ${accountingEntries.entryType} = 'RETURN' AND NOT ${isDigitalReturn}
           THEN ${accountingEntries.revenue} * ${effectiveShare}
           ELSE 0
         END
       ), 0) AS CHAR)`,
       consigDeduction: sql<string>`CAST(COALESCE(SUM(
         CASE
-          WHEN ${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL
+          WHEN ${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL AND ${isConsignment}
           THEN ${accountingEntries.amount} * ${effectiveShare}
           ELSE 0
         END
@@ -102,6 +128,7 @@ export async function computeNetSalesByUser(
     })
     .from(accountingEntries)
     .innerJoin(invoices, eq(invoices.id, accountingEntries.invoiceId))
+    .leftJoin(digitalSales, eq(digitalSales.invoiceId, invoices.id))
     .leftJoin(
       invoiceAttributions,
       eq(invoiceAttributions.invoiceId, invoices.id),
@@ -123,7 +150,7 @@ export async function computeNetSalesByUser(
         // SALE/RETURN للبائع (supplierId فارغ)، أو قيد أمانة أُسنِد لفاتورته (PURCHASE بـsupplierId).
         sql`(
           (${accountingEntries.entryType} IN ('SALE','RETURN') AND ${accountingEntries.supplierId} IS NULL)
-          OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL)
+          OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL AND ${isConsignment})
         )`,
       ),
     )
