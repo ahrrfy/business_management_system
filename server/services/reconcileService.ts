@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import {
@@ -911,8 +912,8 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     entity: "stock",
     id: Number(s.variantId),
     expected: ">=0",
-    actual: String(s.quantity),
-    drift: String(Math.abs(Number(s.quantity))),
+    actual: new Decimal(s.quantity).toFixed(),
+    drift: new Decimal(s.quantity).abs().toFixed(),
     ...(windowActive && s.openedAt == null ? { note: "متوقع — وضع الافتتاح (بانتظار الجرد الافتتاحي)" } : {}),
   }));
 
@@ -924,8 +925,8 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     SELECT
       bs.variantId AS variantId,
       bs.branchId AS branchId,
-      CAST(bs.quantity AS SIGNED) AS actual,
-      CAST(COALESCE(SUM(im.signedDelta), 0) AS SIGNED) AS expected,
+      CAST(bs.quantity AS DECIMAL(65,4)) AS actual,
+      CAST(COALESCE(SUM(im.signedDelta), 0) AS DECIMAL(65,4)) AS expected,
       CAST(SUM(CASE WHEN im.id IS NOT NULL AND im.signedDelta IS NULL THEN 1 ELSE 0 END) AS SIGNED) AS unknownDeltas
     FROM branchStock bs
     LEFT JOIN inventoryMovements im
@@ -940,10 +941,10 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
 
   const driftIssues: ReconcileResult[] = [];
   for (const r of driftRows ?? []) {
-    const actual = Number(r.actual);
-    const expected = Number(r.expected);
+    const actual = new Decimal(r.actual);
+    const expected = new Decimal(r.expected);
     const unknownDeltas = Number(r.unknownDeltas);
-    const drift = actual - expected;
+    const drift = actual.minus(expected).abs();
     const parts: string[] = [`فرع ${Number(r.branchId)}`];
     if (unknownDeltas > 0) {
       parts.push(`${unknownDeltas} حركة بلا signedDelta (قبل 0265) ⇒ المجموع غير حاسم`);
@@ -953,9 +954,9 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     driftIssues.push({
       entity: "movementDrift",
       id: Number(r.variantId),
-      expected: String(expected),
-      actual: String(actual),
-      drift: String(Math.abs(drift)),
+      expected: expected.toFixed(),
+      actual: actual.toFixed(),
+      drift: drift.toFixed(),
       note: parts.join(" · "),
     });
   }

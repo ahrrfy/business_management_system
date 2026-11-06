@@ -182,6 +182,24 @@ describe("تقرير السوالب — reports.negativeStock", () => {
 });
 
 describe("reconcileInventory — وسم «متوقع» أثناء نافذة الافتتاح", () => {
+  it("يحفظ الرصيد ومجموع الحركات والفرق الكسري دون تحويل صحيح أو انجراف", async () => {
+    await db().insert(s.branchStock).values([
+      { variantId: 1, branchId: 1, quantity: 0.1 },
+      { variantId: 2, branchId: 1, quantity: 0.3 },
+      { variantId: 1, branchId: 2, quantity: 0.0001 },
+    ]);
+    await db().insert(s.inventoryMovements).values([
+      { variantId: 1, branchId: 1, movementType: "IN", quantity: 0.2, signedDelta: 0.2, referenceType: "OPENING" },
+      { variantId: 2, branchId: 1, movementType: "IN", quantity: 0.1, signedDelta: 0.1, referenceType: "OPENING" },
+    ]);
+    const drifts = (await reconcileInventory()).filter((row) => row.entity === "movementDrift");
+    expect(drifts).toHaveLength(3);
+    expect(drifts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 1, actual: "0.1", expected: "0.2", drift: "0.1" }),
+      expect.objectContaining({ id: 2, actual: "0.3", expected: "0.1", drift: "0.2" }),
+      expect.objectContaining({ id: 1, actual: "0.0001", expected: "0", drift: "0.0001" }),
+    ]));
+  });
   it("النافذة فعّالة: السالب غير المُفتتَح يُوسَم؛ والمُفتتَح انحراف حقيقي بلا وسم؛ وبلا نافذة لا وسم لأحد", async () => {
     const d = db();
     await d.insert(s.branchStock).values([
