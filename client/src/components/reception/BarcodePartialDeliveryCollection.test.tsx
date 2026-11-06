@@ -84,6 +84,7 @@ describe("barcode partial delivery collection in the receiving shift", () => {
     source: { kind: "invoice", id: 33494, branchId: 1, version: "v1" },
     printSource: { number: "106208" },
     relations: { invoiceId: 33494, consignmentId: 1787 },
+    allowedActions: [{ action: "collect", allowed: true }],
     group: {
       key: "shipment:1787",
       leaderConsignmentId: 1787,
@@ -204,6 +205,53 @@ describe("barcode partial delivery collection in the receiving shift", () => {
     expect(action()).toBeUndefined();
     expect(state.partial).not.toHaveBeenCalled();
     expect(state.mutate).not.toHaveBeenCalled();
+  });
+  it("preserves normal goods-plus-charges collection when a scoped return cannot use the special settlement", async () => {
+    const scan = preview();
+    scan.returnState.members[0]!.received = false;
+    scan.money.codAmount = "9000.00";
+    const cn = timeline();
+    cn.consignment.parcelStatus = "OUT_FOR_DELIVERY";
+    cn.shipment.members[0]!.parcelStatus = "OUT_FOR_DELIVERY";
+    cn.shipment.members[0]!.operational = true;
+    state.scan.mockResolvedValue(scan);
+    state.timeline.mockResolvedValue(cn);
+    state.partial.mockResolvedValue({
+      ...partial(),
+      allowed: false,
+      blockedReason: "الأجور الإضافية تتطلب مسار التحصيل الأصلي",
+    });
+    await render();
+    expect(action()).toBeUndefined();
+    expect(host.textContent).toContain("9,000");
+    expect(
+      Array.from(host.querySelectorAll("button")).some((b) =>
+        b.textContent?.includes("إثبات التسليم وتحصيل العميل"),
+      ),
+    ).toBe(true);
+    expect(state.mutate).not.toHaveBeenCalled();
+  });
+  it("does not fall back to delivery confirmation for a failed parcel", async () => {
+    const scan = preview();
+    scan.returnState.members[0]!.received = false;
+    const cn = timeline();
+    cn.consignment.parcelStatus = "FAILED";
+    cn.shipment.members[0]!.parcelStatus = "FAILED";
+    cn.shipment.members[0]!.operational = true;
+    state.scan.mockResolvedValue(scan);
+    state.timeline.mockResolvedValue(cn);
+    state.partial.mockResolvedValue({
+      ...partial(),
+      allowed: false,
+      blockedReason: "راجع الحالة قبل التسوية",
+    });
+    await render();
+    expect(host.textContent).toContain("راجع الحالة قبل التسوية");
+    expect(
+      Array.from(host.querySelectorAll("button")).some((b) =>
+        b.textContent?.includes("إثبات التسليم وتحصيل العميل"),
+      ),
+    ).toBe(false);
   });
   it("shows the server block instead of enabling collection", async () => {
     state.partial.mockResolvedValue({

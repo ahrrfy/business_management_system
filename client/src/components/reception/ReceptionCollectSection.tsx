@@ -956,6 +956,11 @@ export function ReceptionCollectSection({
         const partyId = timeline.consignment.partyId;
         const pInfo = (partiesQ.data ?? []).find((p) => p.id === partyId);
         const groupKey = preview.group?.key ?? `consignment:${leaderId}`;
+        const heldIds = new Set(
+          preview.returnState?.members
+            .filter((row) => row.received)
+            .map((row) => row.consignmentId) ?? [],
+        );
         const cn = timeline.consignment;
         const partialLabel = partialDeliveryStatusLabel({
           ...cn,
@@ -965,13 +970,20 @@ export function ReceptionCollectSection({
         if (partialLabel && cn.parcelStatus !== "DELIVERED" && cn.returnDeclaredAt == null) {
           const partial = await utils.delivery.workflow.previewPartialOutcome.fetch({ consignmentId: leaderId });
           if (generation !== scanSequence.current || draftBusyRef.current) return;
-          switchCollectParty(partyId, pInfo?.partyType);
-          acceptedGroups.current.delete(groupKey);
-          setPendingCustomerCollection(null);
-          setPartialCollection(partial);
-          setCollectBarcodeInput("");
-          onBarcodeConsumed?.();
-          return;
+          const operational = timeline.shipment.members.filter(row => row.operational);
+          // Keep the original goods-and-charges flow when the narrower repair cannot own it.
+          const normalCollectionAllowed = heldIds.size === 0 && operational.length > 0 &&
+            operational.every(row => ["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"].includes(row.parcelStatus)) &&
+            preview.allowedActions.some(action => action.action === "collect" && action.allowed);
+          if (partial.allowed || !normalCollectionAllowed) {
+            switchCollectParty(partyId, pInfo?.partyType);
+            acceptedGroups.current.delete(groupKey);
+            setPendingCustomerCollection(null);
+            setPartialCollection(partial);
+            setCollectBarcodeInput("");
+            onBarcodeConsumed?.();
+            return;
+          }
         }
         if (acceptedGroups.current.has(groupKey)) {
           notify.info(
@@ -982,11 +994,6 @@ export function ReceptionCollectSection({
         }
         switchCollectParty(partyId, pInfo?.partyType);
         acceptedGroups.current.add(groupKey);
-        const heldIds = new Set(
-          preview.returnState?.members
-            .filter((row) => row.received)
-            .map((row) => row.consignmentId) ?? [],
-        );
         const groupMembers = timeline.shipment.members.filter(
           (row) => row.operational || heldIds.has(row.id),
         );
