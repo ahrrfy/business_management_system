@@ -44,6 +44,7 @@ export const DELIVERY_EVENT_TYPES = [
   "OUT_FOR_DELIVERY",
   /** `courier.ts` — وصل الزبون وانتقلت المسؤوليّة. */
   "DELIVERED",
+  "PARTIAL_DELIVERY_SCOPE_CORRECTED",
   /** بوّابة المندوب / `staffTransition.ts` — حاول فتعذّر. */
   "FAILED",
 
@@ -92,6 +93,7 @@ export const DELIVERY_EVENT_LABEL: Readonly<Record<DeliveryEventType, string>> =
   PICKED_UP: "التقط الطرد",
   OUT_FOR_DELIVERY: "خرج للتوصيل",
   DELIVERED: "سلم",
+  PARTIAL_DELIVERY_SCOPE_CORRECTED: "تسوية تسليم ومرتجع جزئي",
   FAILED: "تعذر التسليم",
   PARCEL_FAILED: "أرجع الطرد من عهدة السائق",
   RETURN_DECLARED: "أعلنت الشركة رجوعه",

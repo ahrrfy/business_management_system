@@ -1,5 +1,6 @@
 import { deliverySourceView } from "@shared/deliverySource";
 import { DeliverySourceLink } from "./DeliverySourceLink";
+import { PartialDeliverySettlementButton } from "./PartialDeliverySettlementButton";
 import React from "react";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { Ban, Wallet } from "lucide-react";
@@ -12,6 +13,7 @@ import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc, type RouterOutputs, type RouterInputs } from "@/lib/trpc";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
+import { partialDeliveryStatusLabel } from "@shared/consignmentView";
 type ConsignmentRow = RouterOutputs["delivery"]["consignments"]["rows"][number];
 export function moneyCol<T>(
   id: string,
@@ -84,6 +86,7 @@ export function CompanyConsignmentActions({
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
   const me = trpc.auth.me.useQuery();
   const isOpen = isOpenConsignmentStatus(c.status);
+  const partialLabel = partialDeliveryStatusLabel({ status: c.status, parcelStatus: c.parcelStatus, partialReturnReceived: c.partialReturnReceived, hasPartialReturn: D(c.invoiceReturnedTotal ?? 0).gt(0) && D(c.invoiceReturnedTotal ?? 0).lt(D(c.invoiceTotal ?? 0)) });
   const remaining = D(c.remainingDue);
   const canRemit =
     isOpen && c.returnDeclaredAt == null &&
@@ -101,6 +104,7 @@ export function CompanyConsignmentActions({
   if (c.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}>الشحنة · {c.shipmentInvoiceCount} فواتير</Button>;
   return (
     <div className="flex flex-wrap items-center gap-1">
+      {partialLabel && c.returnDeclaredAt == null && c.parcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={c.id} />}
       <Button
         size="sm"
         variant="outline"
@@ -327,8 +331,7 @@ export function companyConsignmentColumns(
                   : "info"
             }
           >
-            {PARCEL_STATUS[row.original.parcelStatus] ??
-              row.original.parcelStatus}
+            {partialDeliveryStatusLabel({ status: row.original.status, parcelStatus: row.original.parcelStatus, partialReturnReceived: row.original.partialReturnReceived, hasPartialReturn: D(row.original.invoiceReturnedTotal ?? 0).gt(0) && D(row.original.invoiceReturnedTotal ?? 0).lt(D(row.original.invoiceTotal ?? 0)) }) ?? PARCEL_STATUS[row.original.parcelStatus] ?? row.original.parcelStatus}
           </Badge>
           {row.original.courierDeliveredAt && (
             <div className="mt-1 text-money-positive">

@@ -9,6 +9,16 @@ import { effectiveDeliveryLedgerEntrySql } from "../legacyLedger";
 import { money } from "../../money";
 
 export const PHYSICAL_RETURN_RECEIVED = "WORKFLOW_RETURN_RECEIVED";
+
+/** Display-only evidence for the current attempt; never grants posting authority. */
+export function partialReturnReceivedSql() {
+  return sql<boolean>`EXISTS (SELECT 1 FROM deliveryEvents partial_receipt
+    WHERE partial_receipt.consignmentId = ${deliveryConsignments.id}
+      AND partial_receipt.eventType IN ('WORKFLOW_RETURN_RECEIVED','PARTIAL_DELIVERY_SCOPE_CORRECTED')
+      AND JSON_UNQUOTE(JSON_EXTRACT(partial_receipt.payload, '$.invoiceId')) = ${deliveryConsignments.invoiceId}
+      AND JSON_UNQUOTE(JSON_EXTRACT(partial_receipt.payload, '$.branchId')) = ${deliveryConsignments.branchId}
+      AND JSON_UNQUOTE(JSON_EXTRACT(partial_receipt.payload, '$.dispatchedAt')) = DATE_FORMAT(${deliveryConsignments.dispatchedAt}, '%Y-%m-%dT%H:%i:%s.000Z'))`;
+}
 type Consignment = typeof deliveryConsignments.$inferSelect;
 
 /** Receipt evidence is bound to the actual source and dispatch claim, never just a CN number. */

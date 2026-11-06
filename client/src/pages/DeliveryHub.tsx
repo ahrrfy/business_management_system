@@ -39,6 +39,7 @@ import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
+import { PartialDeliverySettlementButton } from "@/components/delivery/PartialDeliverySettlementButton";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { DeliverySettleTab } from "@/components/delivery/DeliverySettleTab";
@@ -71,6 +72,7 @@ import {
   CONSIGNMENT_VIEW_CLS,
   CONSIGNMENT_VIEW_ORDER,
   deriveConsignmentView,
+  partialDeliveryStatusLabel,
   type ConsignmentViewKey,
 } from "@shared/consignmentView";
 import {
@@ -412,7 +414,9 @@ function InTransitTab() {
       ...r,
       viewKey: deriveConsignmentView({
         parcelStatus: r.parcelStatus,
-        status: "DISPATCHED",
+        status: r.status,
+        hasPartialReturn: D(r.invoiceReturnedTotal ?? 0).gt(0) && D(r.invoiceReturnedTotal ?? 0).lt(D(r.invoiceTotal ?? 0)),
+        partialReturnReceived: r.partialReturnReceived,
         moneyStatus: r.moneyStatus,
         returnDeclaredAt: r.returnDeclaredAt,
         partyHasPortal: r.partyHasPortal,
@@ -607,11 +611,13 @@ function InTransitTab() {
         meta: { kind: "status", align: "start", width: "wide", wrap: true },
         cell: ({ row }) => {
           const r = row.original;
+          const partialLabel = partialDeliveryStatusLabel({ status: r.status, parcelStatus: r.parcelStatus, hasPartialReturn: D(r.invoiceReturnedTotal ?? 0).gt(0) && D(r.invoiceReturnedTotal ?? 0).lt(D(r.invoiceTotal ?? 0)), partialReturnReceived: r.partialReturnReceived });
           return (
             <>
               <span className={cn("rounded-md border px-1.5 py-0.5 text-[11px] font-extrabold", CONSIGNMENT_VIEW_CLS[r.viewKey])}>
                 {CONSIGNMENT_VIEW_AR[r.viewKey]}
               </span>
+              {r.viewKey === "DELIVERED_AWAITING_REMIT" && partialLabel && <div className="mt-1 text-[11px]">{partialLabel}</div>}
               {r.returnDeclaredAt != null && (
                 <div className="mt-0.5 max-w-56 text-[11px] font-bold text-[var(--sem-warn)]">{r.returnDeclaredReason ?? "بلا سبب"}</div>
               )}
@@ -622,7 +628,7 @@ function InTransitTab() {
       },
       {
         id: "codDue",
-        header: "المطلوب تحصيله",
+        header: "متبقي البضاعة للتسوية",
         accessorFn: (r) => fmt(r.codDue),
         meta: { kind: "money" },
         cell: ({ row }) => <span className="font-black">{fmt(row.original.codDue)}</span>,
@@ -687,6 +693,7 @@ function InTransitTab() {
                 يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند،
                 مع خيار الانتقال المباشر لتبويب التسوية.
               */}
+              {r.viewKey === "PARTIAL_RETURN_PENDING" && <PartialDeliverySettlementButton consignmentId={rowId} />}
               {canCollect && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
                 <>
                   <Button
