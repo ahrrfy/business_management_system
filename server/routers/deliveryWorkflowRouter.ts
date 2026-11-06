@@ -7,6 +7,7 @@ import { nonNegMoneyString } from "../lib/schemas";
 import {
   deliveryCashierProcedure,
   deliveryReadProcedure,
+  storeManagerProcedure,
   router,
 } from "../trpc";
 import {
@@ -22,6 +23,7 @@ import { confirmWorkflowDelivery } from "../services/delivery/workflow/collectio
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { receiveWorkflowReturn } from "../services/delivery/workflow/returns";
 import { SHORTFALL_REASONS } from "../../shared/shortfallReason";
+import { previewPartialDeliverySettlement, settlePartialDeliveryOutcome } from "../services/delivery/workflow/partialOutcome";
 
 const source = z.object({
   kind: z.enum(WORKFLOW_SOURCE_KINDS),
@@ -40,6 +42,14 @@ function actorOf(ctx: {
   };
 }
 export const deliveryWorkflowRouter = router({
+  previewPartialOutcome: deliveryReadProcedure
+    .input(z.object({ consignmentId: z.number().int().positive() }))
+    .query(({ input, ctx }) => previewPartialDeliverySettlement(input, actorOf(ctx))),
+  settlePartialOutcome: storeManagerProcedure
+    .input(z.object({ consignmentId: z.number().int().positive(), expectedVersion: z.string().min(1).max(128),
+      cashReceivedAmount: nonNegMoneyString, targetShiftId: z.number().int().positive().optional(),
+      evidence: z.string().trim().min(5).max(2000), clientRequestId }))
+    .mutation(({ input, ctx }) => retryOnDeadlock(() => settlePartialDeliveryOutcome(input, actorOf(ctx)))),
   receiveReturn: deliveryCashierProcedure
     .input(
       z.object({
@@ -47,6 +57,7 @@ export const deliveryWorkflowRouter = router({
         branchId,
         evidence: z.string().trim().min(5).max(2000),
         inspected: z.literal(true),
+        receivedLines: z.array(z.object({ consignmentId: z.number().int().positive(), invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1).max(500).optional(),
         receivedConsignmentIds: z
           .array(z.number().int().positive())
           .min(1)

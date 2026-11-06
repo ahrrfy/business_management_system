@@ -141,7 +141,14 @@ describe("تقرير السوالب — reports.negativeStock", () => {
     ]);
     const dead = await getDeadStockValue({ branchId: 1, limit: 1 });
     expect(dead.rows).toHaveLength(1);
+    expect(dead.rows[0].qtyInStock).toBe("2");
     expect(dead.summary).toEqual({ count: 2, totalValue: "1500.00" });
+    await db().update(s.branchStock).set({ quantity: 2.0001 }).where(
+      and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
+    );
+    const fractionalDead = await getDeadStockValue({ branchId: 1, limit: 1 });
+    expect(fractionalDead.rows[0].qtyInStock).toBe("2.0001");
+    expect(fractionalDead.rows[0].stockValue).toBe("1500.08");
     await db().update(s.productVariants).set({ minStock: 10 });
     await db().insert(s.invoices).values({ id: 1, branchId: 1, invoiceNumber: "INV-OPS-RISK", sourceType: "POS", subtotal: "200.00", total: "200.00", status: "PAID", invoiceDate: new Date() });
     await db().insert(s.invoiceItems).values([
@@ -150,6 +157,7 @@ describe("تقرير السوالب — reports.negativeStock", () => {
     ]);
     const risk = await getReorderRisk({ branchId: 1, limit: 1 });
     expect(risk.rows).toHaveLength(1);
+    expect(risk.rows[0].qtyInStock).toBe("2.0001");
     expect(risk.summary.count).toBe(2);
     await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(eq(s.invoices.id, 1));
     expect((await getReorderRisk({ branchId: 1 })).summary.count).toBe(0);

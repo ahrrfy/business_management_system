@@ -1,4 +1,5 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel"; import { consignmentCreditCollectionSql } from "../services/delivery/creditCollectionTerms";
+import { partialReturnReceivedSql } from "../services/delivery/workflow/returnReceipt";
 import {
   checkoutChargesFields,
   chargeOnlyCheckoutSchema,
@@ -1998,6 +1999,7 @@ export const saleRouter = router({
               consignmentCodAmount: deliveryConsignments.codAmount, collectCreditOnDelivery: consignmentCreditCollectionSql,
               consignmentId: deliveryConsignments.id,
               consignmentParcelStatus: deliveryConsignments.parcelStatus,
+              consignmentPartialReturnReceived: partialReturnReceivedSql(),
               // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
               consignmentNumber: sql<
                 string | null
@@ -2115,6 +2117,7 @@ export const saleRouter = router({
               consignmentCodAmount: deliveryConsignments.codAmount, collectCreditOnDelivery: consignmentCreditCollectionSql,
               consignmentId: deliveryConsignments.id,
               consignmentParcelStatus: deliveryConsignments.parcelStatus,
+              consignmentPartialReturnReceived: partialReturnReceivedSql(),
               // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
               consignmentNumber: sql<
                 string | null
@@ -2347,6 +2350,7 @@ export const saleRouter = router({
             consignmentId: deliveryConsignments.id,
             consignmentNumber: deliveryConsignments.consignmentNumber,
             consignmentParcelStatus: deliveryConsignments.parcelStatus,
+              consignmentPartialReturnReceived: partialReturnReceivedSql(),
             // ٩/٨: حالة الإرسالية وتوقيتاها — «وين طلبي؟» كان ينقطع خيطه هنا (الرقم بلا حالة).
             consignmentStatus: unifiedConsignmentStatus,
             consignmentDispatchedAt: deliveryConsignments.dispatchedAt,

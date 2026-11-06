@@ -7,7 +7,7 @@
 // مرساة «اليوم» UTC_DATE(). كل الأموال نصّاً decimal (§٥). تسمية المتغيّر: variantName → لون/قياس → sku.
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { quantityDecimal } from "@shared/quantity";
+import Decimal from "decimal.js";
 import { money, toDbMoney } from "./money";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 
@@ -91,7 +91,7 @@ export async function getDeadStockValue(
       productName: String(r.productName ?? ""),
       variantLabel: String(r.variantLabel ?? ""),
       categoryName: r.categoryName ?? null,
-      qtyInStock: String(r.qtyInStock ?? "0"),
+      qtyInStock: new Decimal(String(r.qtyInStock ?? "0")).toFixed(),
       costPrice: toDbMoney(money(r.costPrice ?? 0)),
       stockValue: toDbMoney(money(r.stockValue ?? 0)),
       lastSaleDate: r.lastSaleDate ?? null,
@@ -173,7 +173,7 @@ export async function getReorderRisk(
       productName: String(r.productName ?? ""),
       variantLabel: String(r.variantLabel ?? ""),
       categoryName: r.categoryName ?? null,
-      qtyInStock: String(r.qtyInStock ?? "0"),
+      qtyInStock: new Decimal(String(r.qtyInStock ?? "0")).toFixed(),
       threshold: Number(r.threshold ?? 0),
       qtySoldRecent: String(r.qtySoldRecent ?? "0"),
       coverDays,
@@ -371,7 +371,7 @@ export async function getNegativeStock(
       productName: String(r.productName ?? ""),
       variantLabel: String(r.variantLabel ?? ""),
       categoryName: r.categoryName ?? null,
-      quantity: quantityDecimal(r.quantity ?? "0").toString(),
+      quantity: new Decimal(String(r.quantity ?? "0")).toFixed(),
       costPrice: toDbMoney(money(r.costPrice ?? 0)),
       negValue: toDbMoney(money(r.negValue ?? 0)),
       costMissing,

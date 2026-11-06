@@ -11,6 +11,7 @@ import {
   CONSIGNMENT_VIEW_ORDER,
   consignmentViewLabel,
   deriveConsignmentView,
+  partialDeliveryStatusLabel,
   type ConsignmentViewInput,
 } from "./consignmentView";
 
@@ -25,57 +26,175 @@ const live = (over: Partial<ConsignmentViewInput>): ConsignmentViewInput => ({
 });
 
 describe("deriveConsignmentView", () => {
-  it("رجوعٌ مُعلَن (والإرسالية حيّة) ⇒ RETURN_DECLARED — يتقدّم على حالة الطرد أيّاً كانت", () => {
-    expect(deriveConsignmentView(live({ returnDeclaredAt: new Date() }))).toBe("RETURN_DECLARED");
+  it("إعلان الرجوع الكامل يبقي إجراء الاستلام ظاهراً مع وجود مرتجع جزئي", () => {
+    for (const parcelStatus of ["OUT_FOR_DELIVERY", "RETURNED"]) {
+      expect(
+        deriveConsignmentView(
+          live({
+            parcelStatus,
+            returnDeclaredAt: new Date(),
+            hasPartialReturn: true,
+            partialReturnReceived: true,
+          }),
+        ),
+      ).toBe("RETURN_DECLARED");
+    }
+  });
+  it("العهدة التاريخية المرتجعة تبقي التصحيح متاحاً بعد توريد النقد بالكامل", () => {
+    const row = live({
+      status: "DELIVERED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "SETTLED",
+      hasPartialReturn: true,
+      partialReturnReceived: true,
+    });
+    expect(deriveConsignmentView(row)).toBe("PARTIAL_RETURN_PENDING");
+    expect(partialDeliveryStatusLabel(row)).toBe(
+      "مرتجع جزئي مستلم — بانتظار التسوية",
+    );
+  });
+  it("استلام بنود مرتجعة يبقي التسوية ظاهرة قبل تأكيد تسليم الباقي", () => {
+    for (const parcelStatus of ["ASSIGNED", "OUT_FOR_DELIVERY"]) {
+      expect(
+        deriveConsignmentView(
+          live({
+            parcelStatus,
+            hasPartialReturn: true,
+            partialReturnReceived: true,
+          }),
+        ),
+      ).toBe("PARTIAL_RETURN_PENDING");
+    }
+  });
+  it("التوريد الجزئي يبقى في طابور النقد مع الاحتفاظ بوصف المرتجع", () => {
+    const row = live({
+      status: "PARTIAL",
+      parcelStatus: "DELIVERED",
+      moneyStatus: "PARTIAL",
+      hasPartialReturn: true,
+      partialReturnReceived: true,
+    });
+    expect(deriveConsignmentView(row)).toBe("DELIVERED_AWAITING_REMIT");
+    expect(partialDeliveryStatusLabel(row)).toBe(
+      "سلم المتبقي — مرتجع جزئي مستلم",
+    );
+  });
+  it("استلام مرتجع جزئي مع حقوق مفتوحة يظهر مسار التسوية بدلاً من مغلقة", () => {
     expect(
-      deriveConsignmentView(live({ returnDeclaredAt: "2026-08-20T10:00:00Z", parcelStatus: "OUT_FOR_DELIVERY" })),
+      deriveConsignmentView(
+        live({
+          parcelStatus: "RETURNED",
+          hasPartialReturn: true,
+          partialReturnReceived: true,
+        }),
+      ),
+    ).toBe("PARTIAL_RETURN_PENDING");
+  });
+  it("تسليم الباقي وتسوية النقد يحتفظان بدليل المرتجع الجزئي", () => {
+    expect(
+      deriveConsignmentView(
+        live({
+          status: "DELIVERED",
+          parcelStatus: "DELIVERED",
+          moneyStatus: "SETTLED",
+          hasPartialReturn: true,
+          partialReturnReceived: true,
+        }),
+      ),
+    ).toBe("DELIVERED_WITH_RETURN");
+  });
+  it("رجوعٌ مُعلَن (والإرسالية حيّة) ⇒ RETURN_DECLARED — يتقدّم على حالة الطرد أيّاً كانت", () => {
+    expect(deriveConsignmentView(live({ returnDeclaredAt: new Date() }))).toBe(
+      "RETURN_DECLARED",
+    );
+    expect(
+      deriveConsignmentView(
+        live({
+          returnDeclaredAt: "2026-08-20T10:00:00Z",
+          parcelStatus: "OUT_FOR_DELIVERY",
+        }),
+      ),
     ).toBe("RETURN_DECLARED");
   });
 
   it("المرتجع بعد استلامه (status=RETURNED وختمُ الإعلان باقٍ) ⇒ CLOSED لا «بانتظار المرتجع» الأبديّة", () => {
     // returnDeclaredAt أثرٌ تاريخيّ لا يُمسَح عند الاستلام — بلا حارس الحياة يكذب القاموس.
     expect(
-      deriveConsignmentView(live({ status: "RETURNED", parcelStatus: "RETURNED", returnDeclaredAt: new Date() })),
+      deriveConsignmentView(
+        live({
+          status: "RETURNED",
+          parcelStatus: "RETURNED",
+          returnDeclaredAt: new Date(),
+        }),
+      ),
     ).toBe("CLOSED");
   });
 
   it("تعذّر التسليم ⇒ FAILED (قرارٌ مطلوب: إعادة إسناد أو إرجاع)", () => {
-    expect(deriveConsignmentView(live({ parcelStatus: "FAILED" }))).toBe("FAILED");
+    expect(deriveConsignmentView(live({ parcelStatus: "FAILED" }))).toBe(
+      "FAILED",
+    );
   });
 
   it("سُلِّم والإغلاق لم يكتمل (DISPATCHED أو PARTIAL) ⇒ بانتظار التوريد — النقد بيد الجهة", () => {
-    expect(deriveConsignmentView(live({ parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED" }))).toBe("DELIVERED_AWAITING_REMIT");
-    expect(deriveConsignmentView(live({ parcelStatus: "DELIVERED", status: "PARTIAL", moneyStatus: "PARTIAL" }))).toBe("DELIVERED_AWAITING_REMIT");
+    expect(
+      deriveConsignmentView(
+        live({ parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED" }),
+      ),
+    ).toBe("DELIVERED_AWAITING_REMIT");
+    expect(
+      deriveConsignmentView(
+        live({
+          parcelStatus: "DELIVERED",
+          status: "PARTIAL",
+          moneyStatus: "PARTIAL",
+        }),
+      ),
+    ).toBe("DELIVERED_AWAITING_REMIT");
   });
 
   it("الحالات الثلاث الوسيطة كلّها «بالطريق»", () => {
     for (const p of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"]) {
-      expect(deriveConsignmentView(live({ parcelStatus: p }))).toBe("IN_TRANSIT");
+      expect(deriveConsignmentView(live({ parcelStatus: p }))).toBe(
+        "IN_TRANSIT",
+      );
     }
   });
 
   it("مُسنَد وللجهة بوّابة ⇒ ASSIGNED (التقدّم سيأتي من المندوب نفسه)", () => {
-    expect(deriveConsignmentView(live({ partyHasPortal: true }))).toBe("ASSIGNED");
+    expect(deriveConsignmentView(live({ partyHasPortal: true }))).toBe(
+      "ASSIGNED",
+    );
     // SQL يُرجع الأعلام أرقاماً أحياناً — 1 الصادقة تُقرأ بوّابةً.
     expect(deriveConsignmentView(live({ partyHasPortal: 1 }))).toBe("ASSIGNED");
   });
 
   it("مُسنَد وجهةٌ بلا بوّابة ⇒ AWAITING_STATEMENT — الكرة بملعب الموظّف (كشف الشركة) لا الجهة", () => {
-    expect(deriveConsignmentView(live({ partyHasPortal: false }))).toBe("AWAITING_STATEMENT");
-    expect(deriveConsignmentView(live({ partyHasPortal: 0 }))).toBe("AWAITING_STATEMENT");
-    expect(deriveConsignmentView(live({ partyHasPortal: null }))).toBe("AWAITING_STATEMENT");
+    expect(deriveConsignmentView(live({ partyHasPortal: false }))).toBe(
+      "AWAITING_STATEMENT",
+    );
+    expect(deriveConsignmentView(live({ partyHasPortal: 0 }))).toBe(
+      "AWAITING_STATEMENT",
+    );
+    expect(deriveConsignmentView(live({ partyHasPortal: null }))).toBe(
+      "AWAITING_STATEMENT",
+    );
   });
 
   it("الإرسالية غير الحيّة ⇒ CLOSED أيّاً كانت حالة طردها", () => {
     for (const s of ["DELIVERED", "CANCELLED", "RETURNED", "WRITTEN_OFF"]) {
       expect(deriveConsignmentView(live({ status: s }))).toBe("CLOSED");
-      expect(deriveConsignmentView(live({ status: s, parcelStatus: "DELIVERED" }))).toBe("CLOSED");
+      expect(
+        deriveConsignmentView(live({ status: s, parcelStatus: "DELIVERED" })),
+      ).toBe("CLOSED");
     }
     expect(deriveConsignmentView(live({ status: null }))).toBe("CLOSED");
   });
 
   it("حالة طردٍ خارج القاموس (CANCELLED/RETURNED على صفٍّ حيّ نظرياً) ⇒ CLOSED لا انفجار", () => {
-    expect(deriveConsignmentView(live({ parcelStatus: "CANCELLED" }))).toBe("CLOSED");
+    expect(deriveConsignmentView(live({ parcelStatus: "CANCELLED" }))).toBe(
+      "CLOSED",
+    );
     expect(deriveConsignmentView(live({ parcelStatus: null }))).toBe("CLOSED");
   });
 });
@@ -83,6 +202,8 @@ describe("deriveConsignmentView", () => {
 describe("القاموس نفسه", () => {
   it("التسميات المعتمدة (Slice DFP2 ٣١/٨/٢٦: بلا تشكيلٍ في الشارات — خطّ الواجهة يشوّهها بالحجم الصغير)", () => {
     expect(CONSIGNMENT_VIEW_AR).toEqual({
+      PARTIAL_RETURN_PENDING: "مرتجع جزئي مستلم — بانتظار التسوية",
+      DELIVERED_WITH_RETURN: "سلم المتبقي — مرتجع جزئي مستلم",
       RETURN_DECLARED: "بانتظار المرتجع",
       FAILED: "تعذر التسليم",
       DELIVERED_AWAITING_REMIT: "سلم — بانتظار التوريد",
@@ -98,7 +219,9 @@ describe("القاموس نفسه", () => {
     const keys = Object.keys(CONSIGNMENT_VIEW_AR).sort();
     expect(Object.keys(CONSIGNMENT_VIEW_CLS).sort()).toEqual(keys);
     expect([...CONSIGNMENT_VIEW_ORDER].sort()).toEqual(keys);
-    expect(new Set(CONSIGNMENT_VIEW_ORDER).size).toBe(CONSIGNMENT_VIEW_ORDER.length);
+    expect(new Set(CONSIGNMENT_VIEW_ORDER).size).toBe(
+      CONSIGNMENT_VIEW_ORDER.length,
+    );
   });
 
   it("توكنز دلالية لا ألوان خامّة: info للمنتظر فعلَنا، warn لما بيد الجهة، danger للمتعثّر، ok للمُسلَّم", () => {
@@ -112,6 +235,8 @@ describe("القاموس نفسه", () => {
 
   it("الترتيب يقدّم الأحوجَ لقرار: المتعثّر أوّلاً والمُغلق آخراً", () => {
     expect(CONSIGNMENT_VIEW_ORDER[0]).toBe("FAILED");
-    expect(CONSIGNMENT_VIEW_ORDER[CONSIGNMENT_VIEW_ORDER.length - 1]).toBe("CLOSED");
+    expect(CONSIGNMENT_VIEW_ORDER[CONSIGNMENT_VIEW_ORDER.length - 1]).toBe(
+      "CLOSED",
+    );
   });
 });

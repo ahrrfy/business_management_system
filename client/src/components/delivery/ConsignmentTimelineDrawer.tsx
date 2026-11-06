@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { EmptyState } from "@/components/EmptyState";
 import { trpc } from "@/lib/trpc";
-import { fmt } from "@/lib/money";
+import { fmt, D } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import {
@@ -31,6 +31,7 @@ import { deliveryEventLabel, deliveryEventSourceLabel, statementDifferenceEventD
 import { isShortfallReason, SHORTFALL_REASON_LABEL_AR } from "@shared/shortfallReason";
 import { deliveryLedgerEntryLabel, deliveryLedgerEntrySign } from "@shared/deliveryLedgerEntryType";
 import { ShipmentDetailsPanel } from "./ShipmentDetailsPanel";
+import { PartialDeliverySettlementButton } from "./PartialDeliverySettlementButton";
 import { CreditCollectionTermsEditor } from "./CreditCollectionTermsEditor";
 
 /** لون النقطة الزمنية بحسب نوع الحدث — يقود العين للأخطر. */
@@ -100,6 +101,8 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
         moneyStatus: cn_.moneyStatus,
         returnDeclaredAt: cn_.returnDeclaredAt,
         partyHasPortal: cn_.partyHasPortal,
+        hasPartialReturn: D(cn_.invoiceReturnedTotal ?? 0).gt(0) && D(cn_.invoiceReturnedTotal ?? 0).lt(D(cn_.invoiceTotal ?? 0)),
+        partialReturnReceived: cn_.partialReturnReceived,
       })
     : null;
   const phone = (cn_?.recipientPhone ?? "").trim();
@@ -140,6 +143,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
         ) : (
           <div className="space-y-6 px-4 pb-6">
             {q.data.shipment && q.data.shipment.memberCount > 1 && <ShipmentDetailsPanel key={q.data.shipment.leaderConsignmentId} shipment={q.data.shipment} />}
+            {(q.data.shipment?.memberCount ?? 1) === 1 && viewKey === "PARTIAL_RETURN_PENDING" && <PartialDeliverySettlementButton consignmentId={cn_.id} />}
             <CreditCollectionTermsEditor consignment={cn_} canEdit={canEditCollection} grouped={(q.data.shipment?.memberCount ?? 1) > 1} collectionStarted={q.data.ledger.some((entry) => ["COD_COLLECTED", "COD_REMITTED", "SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED", "COD_WRITTEN_OFF"].includes(entry.entryType))} />
             {/* بيانات المستلم والعنوان */}
             <section>

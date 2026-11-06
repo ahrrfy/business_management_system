@@ -117,6 +117,11 @@ function WorkflowReturnSourceCardContent({
     branchId,
   });
   const current = source.data ?? preview;
+  const needsItemScope = current.relations.consignmentId != null && (current.group?.consignmentIds.length ?? 1) === 1 && current.relations.invoiceId != null && current.relations.aftercareExecutionId == null;
+  const linePreview = trpc.delivery.workflow.previewPartialOutcome.useQuery({ consignmentId: current.relations.consignmentId ?? 0 }, { enabled: needsItemScope });
+  const [receivedItemIds, setReceivedItemIds] = useState<number[]>(initial?.action === "receive" ? initial.input.receivedLines?.map((line) => line.invoiceItemId) ?? [] : []);
+  const [wholeReceipt, setWholeReceipt] = useState(initial?.action === "receive" && initial.input.receivedLines == null);
+  const [receivedQuantities, setReceivedQuantities] = useState<Record<number, string>>(() => Object.fromEntries(initial?.action === "receive" ? initial.input.receivedLines?.map((line) => [line.invoiceItemId, String(line.baseQuantity)]) ?? [] : []));
   const declare = trpc.delivery.workflow.assignment.useMutation();
   const receive = trpc.delivery.workflow.receiveReturn.useMutation();
   const [receiptRights, setReceiptRights] = useState<{
@@ -246,6 +251,8 @@ function WorkflowReturnSourceCardContent({
           );
           return;
         }
+        if (action === "receive" && needsItemScope && !linePreview.data) { notify.err("تعذر تحميل بنود الطرد؛ أعد تحميل المعاينة قبل إثبات الاستلام"); return; }
+        if (action === "receive" && linePreview.data?.items.length && !wholeReceipt && !receivedItemIds.length) { notify.err("حدد البنود والكميات المستلمة أو أكد استلام كامل الطرد صراحةً"); return; }
         if (action === "receive" && (!physical || !canReceive?.allowed)) {
           notify.warn(
             canReceive?.reason ??
@@ -346,6 +353,7 @@ function WorkflowReturnSourceCardContent({
                   branchId,
                   evidence: reason.trim(),
                   inspected: true,
+                  ...(linePreview.data?.items.length && !wholeReceipt && receivedItemIds.length ? { receivedLines: linePreview.data.items.filter((item) => receivedItemIds.includes(item.invoiceItemId)).map((item) => ({ consignmentId: linePreview.data!.consignmentId, invoiceItemId: item.invoiceItemId, baseQuantity: Number(receivedQuantities[item.invoiceItemId] ?? (item.returnedBaseQuantity || item.baseQuantity)) })) } : {}),
                   receivedConsignmentIds:
                     (receiptPreview.group?.consignmentIds.length ?? 0) > 1
                       ? receivedIds
@@ -564,9 +572,12 @@ function WorkflowReturnSourceCardContent({
         </p>
       )}
       {current.returnState && (
+        <div className="space-y-2">
+          {linePreview.data?.items.length ? <div className="space-y-2 rounded border p-3"><p className="font-medium">حدد البنود والكميات التي وصلت فعلياً</p><label className="flex items-center gap-2"><Checkbox checked={wholeReceipt} disabled={locked} onCheckedChange={(value) => setWholeReceipt(value === true)} /><span>استلمت كامل الطرد بكل بنوده وكمياته</span></label>{!wholeReceipt && linePreview.data.items.map((item) => <div key={item.invoiceItemId} className="flex items-center gap-2 text-sm"><Checkbox checked={receivedItemIds.includes(item.invoiceItemId)} disabled={locked} onCheckedChange={(value) => setReceivedItemIds((previous) => value === true ? [...previous, item.invoiceItemId] : previous.filter((id) => id !== item.invoiceItemId))} /><span>{item.name}</span><Input type="number" min={1} max={item.baseQuantity} step={1} className="w-24" aria-label={`الكمية المستلمة من ${item.name}`} value={receivedQuantities[item.invoiceItemId] ?? String(item.returnedBaseQuantity || item.baseQuantity)} disabled={locked || !receivedItemIds.includes(item.invoiceItemId)} onChange={(event) => setReceivedQuantities((previous) => ({ ...previous, [item.invoiceItemId]: event.target.value }))} /></div>)}</div> : null}
         <p className="text-sm text-muted-foreground">
           {current.returnState.nextStep}
         </p>
+        </div>
       )}
       {receiptRights && (receiptRights.commercial || receiptRights.refund) && (
         <p role="status" className="text-sm text-muted-foreground">

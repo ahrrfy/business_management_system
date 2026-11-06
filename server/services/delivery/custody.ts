@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, or } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryEvents,
@@ -771,10 +771,7 @@ async function deliveryCustodyEventAppliedTx(
               deliveryCustodyEvents.operationId,
               `delivery.event:${input.eventId}`,
             ),
-            eq(
-              deliveryCustodyEvents.eventType,
-              `DELIVERY_${input.eventType}`,
-            ),
+            eq(deliveryCustodyEvents.eventType, `DELIVERY_${input.eventType}`),
           ),
         )
         .limit(1)
@@ -790,9 +787,7 @@ async function markDeliveryCustodyEventAppliedTx(
 ) {
   if (await deliveryCustodyEventAppliedTx(tx, Number(row.id), input)) return;
   const stateAtApplication = (
-    Object.entries(quantities(row)) as Array<
-      [DeliveryCustodyState, number]
-    >
+    Object.entries(quantities(row)) as Array<[DeliveryCustodyState, number]>
   ).find(([, baseQuantity]) => baseQuantity > 0)?.[0];
   await tx.insert(deliveryCustodyEvents).values({
     eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:APPLIED`,
@@ -837,12 +832,7 @@ async function reconcileCommercialReturnCustodyTx(
   );
   if (!itemIds.length) {
     for (const row of rows)
-      await markDeliveryCustodyEventAppliedTx(
-        tx,
-        row,
-        input,
-        "DAMAGED_CLOSED",
-      );
+      await markDeliveryCustodyEventAppliedTx(tx, row, input, "DAMAGED_CLOSED");
     return { initialized: rows.length, transitioned: 0 };
   }
   const counters = await tx
@@ -851,8 +841,7 @@ async function reconcileCommercialReturnCustodyTx(
       invoiceId: invoiceItems.invoiceId,
       baseQuantity: invoiceItems.baseQuantity,
       returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
-      returnedRestockedBaseQuantity:
-        invoiceItems.returnedRestockedBaseQuantity,
+      returnedRestockedBaseQuantity: invoiceItems.returnedRestockedBaseQuantity,
     })
     .from(invoiceItems)
     .where(inArray(invoiceItems.id, itemIds))
@@ -875,9 +864,7 @@ async function reconcileCommercialReturnCustodyTx(
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
-    if (
-      await deliveryCustodyEventAppliedTx(tx, Number(original.id), input)
-    )
+    if (await deliveryCustodyEventAppliedTx(tx, Number(original.id), input))
       continue;
     if (
       original.itemKind !== "STOCKED_ITEM" &&
@@ -979,9 +966,7 @@ async function reconcileCommercialReturnCustodyTx(
             deliveryEventId: input.eventId,
             deliveryEventKey: input.eventKey,
             invoiceItemId: Number(row.invoiceItemId),
-            returnedBaseQuantity: Number(
-              counter.returnedBaseQuantity ?? 0,
-            ),
+            returnedBaseQuantity: Number(counter.returnedBaseQuantity ?? 0),
             returnedRestockedBaseQuantity: Number(
               counter.returnedRestockedBaseQuantity ?? 0,
             ),
@@ -1064,9 +1049,7 @@ async function applyCustodyLifecycleRuleTx(
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
-    if (
-      await deliveryCustodyEventAppliedTx(tx, Number(original.id), input)
-    )
+    if (await deliveryCustodyEventAppliedTx(tx, Number(original.id), input))
       continue;
     let row = original;
     for (const fromState of rule.fromStates) {
@@ -1092,12 +1075,148 @@ async function applyCustodyLifecycleRuleTx(
       row = result.item;
       transitioned += result.replay ? 0 : 1;
     }
-    await markDeliveryCustodyEventAppliedTx(
-      tx,
-      row,
-      input,
-      rule.toState,
+    await markDeliveryCustodyEventAppliedTx(tx, row, input, rule.toState);
+  }
+  return { initialized: rows.length, transitioned };
+}
+
+function selectedCustodyLines(value: unknown) {
+  if (!Array.isArray(value) || !value.length)
+    throw fulfillmentError("محضر العهدة الجزئي بلا بنود محددة", "CONFLICT");
+  const lines = value.map(
+    (line: { invoiceItemId: number; baseQuantity: number }) => ({
+      invoiceItemId: line?.invoiceItemId,
+      baseQuantity: line?.baseQuantity,
+    }),
+  );
+  if (
+    lines.some(
+      (line) =>
+        !Number.isSafeInteger(line.invoiceItemId) ||
+        line.invoiceItemId <= 0 ||
+        !Number.isSafeInteger(line.baseQuantity) ||
+        line.baseQuantity <= 0,
+    ) ||
+    new Set(lines.map((line) => line.invoiceItemId)).size !== lines.length
+  )
+    throw fulfillmentError(
+      "بنود محضر العهدة الجزئي غير صالحة أو مكررة",
+      "CONFLICT",
     );
+  return lines;
+}
+
+/** Exact selected quantities only; closed commercial returns supply evidence, never stock again. */
+async function applySelectedCustodyTx(
+  tx: Tx,
+  input: DeliveryCustodyLifecycleEvent,
+  correction: boolean,
+) {
+  const lines = selectedCustodyLines(
+    correction ? input.payload?.deliveredLines : input.payload?.receivedLines,
+  );
+  const rows = await initializeConsignmentCustodyTx(tx, {
+    consignmentId: input.consignmentId,
+    actorUserId: input.actorUserId ?? null,
+    operationId: `delivery.event:${input.eventId}`,
+  });
+  const priorReceipts = correction
+    ? []
+    : await tx
+        .select({ payload: deliveryEvents.payload })
+        .from(deliveryEvents)
+        .where(
+          and(
+            eq(deliveryEvents.consignmentId, input.consignmentId),
+            eq(deliveryEvents.eventType, "WORKFLOW_RETURN_RECEIVED"),
+            lt(deliveryEvents.id, input.eventId),
+          ),
+        )
+        .for("share");
+  let transitioned = 0;
+  for (const line of lines) {
+    const matching = rows.filter(
+      (row) => Number(row.invoiceItemId) === line.invoiceItemId,
+    );
+    if (matching.length !== 1 || matching[0]!.itemKind !== "STOCKED_ITEM")
+      throw fulfillmentError(
+        "محضر العهدة الجزئي لا يطابق بنداً مخزنياً منفرداً",
+        "CONFLICT",
+      );
+    let row = matching[0]!;
+    if (await deliveryCustodyEventAppliedTx(tx, Number(row.id), input))
+      continue;
+    if (line.baseQuantity > Number(row.baseQuantity))
+      throw fulfillmentError("كمية محضر العهدة تتجاوز أصل البند", "CONFLICT");
+    let previousReceived = 0;
+    for (const prior of priorReceipts) {
+      const payload = prior.payload as Record<string, unknown> | null;
+      if (!payload || payload.dispatchedAt !== input.payload?.dispatchedAt) continue;
+      if (payload.scope !== "ITEMS") {
+        previousReceived = Number(row.baseQuantity);
+        break;
+      }
+      for (const selected of selectedCustodyLines(payload.receivedLines))
+        if (selected.invoiceItemId === line.invoiceItemId)
+          previousReceived += selected.baseQuantity;
+    }
+    if (
+      !correction &&
+      previousReceived + line.baseQuantity > Number(row.baseQuantity)
+    )
+      throw fulfillmentError(
+        "كمية الاستلام الفعلي مكررة أو تتجاوز أصل البند",
+        "CONFLICT",
+      );
+    const toState: DeliveryCustodyState = correction
+      ? "CUSTOMER_DELIVERED"
+      : "CUSTOMER_OWNED_HELD";
+    const closedCredit = Math.max(
+      0,
+      Number(row.restockedClosedBaseQuantity) +
+        Number(row.damagedClosedBaseQuantity) -
+        previousReceived,
+    );
+    let remaining = correction
+      ? line.baseQuantity - Number(row.customerDeliveredBaseQuantity)
+      : Math.max(0, line.baseQuantity - closedCredit);
+    if (remaining < 0)
+      throw fulfillmentError(
+        "كمية التسليم المصححة أقل من العهدة المسلمة المثبتة",
+        "CONFLICT",
+      );
+    const fromStates: DeliveryCustodyState[] = correction
+      ? ["CUSTOMER_OWNED_HELD", "CARRIER_CUSTODY", "PREPARED_HELD"]
+      : ["PREPARED_HELD", "CARRIER_CUSTODY", "CUSTOMER_DELIVERED"];
+    for (const fromState of fromStates) {
+      const baseQuantity = Math.min(remaining, quantities(row)[fromState]);
+      if (baseQuantity <= 0) continue;
+      const result = await transitionDeliveryCustodyTx(tx, {
+        custodyItemId: Number(row.id),
+        expectedVersion: Number(row.version),
+        fromState,
+        toState,
+        baseQuantity,
+        operationId: `delivery.event:${input.eventId}`,
+        eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:${fromState}:${toState}`,
+        eventType: `DELIVERY_${input.eventType}`,
+        actorUserId: input.actorUserId ?? null,
+        evidence: {
+          ...(input.payload ?? {}),
+          deliveryEventId: input.eventId,
+          deliveryEventKey: input.eventKey,
+        },
+      });
+      row = result.item;
+      remaining -= baseQuantity;
+      transitioned += result.replay ? 0 : 1;
+    }
+    if (remaining !== 0)
+      throw fulfillmentError(
+        "لا تكفي العهدة المفتوحة لكمية المحضر المحددة",
+        "CONFLICT",
+      );
+    await markDeliveryCustodyEventAppliedTx(tx, row, input, toState);
   }
   return { initialized: rows.length, transitioned };
 }
@@ -1106,6 +1225,13 @@ export async function applyDeliveryCustodyEventTx(
   tx: Tx,
   input: DeliveryCustodyLifecycleEvent,
 ) {
+  if (
+    input.eventType === "WORKFLOW_RETURN_RECEIVED" &&
+    input.payload?.scope === "ITEMS"
+  )
+    return applySelectedCustodyTx(tx, input, false);
+  if (input.eventType === "PARTIAL_DELIVERY_SCOPE_CORRECTED")
+    return applySelectedCustodyTx(tx, input, true);
   // إرجاع طرد أمر شغل إلى «جاهز للتسليم» (RETURN_TO_READY) يعيد المخرج المادي إلى عهدة المكتبة
   // الجاهزة للإسناد أو التسليم المباشر (PREPARED_HELD) دون عكس البيع التجاري.
   if (
@@ -1137,6 +1263,7 @@ const RECORDED_CUSTODY_EVENT_TYPES = [
   "DELIVERED",
   "AFTERCARE_DELIVERED",
   "WORKFLOW_RETURN_RECEIVED",
+  "PARTIAL_DELIVERY_SCOPE_CORRECTED",
   "AFTERCARE_RETURNED",
   "RETURNED",
   "PARCEL_RETURNED",
