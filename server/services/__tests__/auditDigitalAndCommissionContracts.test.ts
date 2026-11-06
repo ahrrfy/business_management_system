@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { digitalRefundItems, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
 import { getDb } from "../../db";
 import { reversalRouter } from "../../routers/digitalCards/reversalRouter";
 import { computeNetSalesByUser } from "../commissions/base";
@@ -250,6 +251,10 @@ async function requestParts(
 }
 async function digitalEffects(invoiceId: number) {
   return {
+    refundPayments: await db().select().from(digitalRefundPayments).where(eq(digitalRefundPayments.invoiceId, invoiceId)),
+    refundItems: await db().select().from(digitalRefundItems),
+    suppliers: await db().select().from(s.suppliers),
+    walletTransactions: await db().select().from(s.digitalWalletTransactions),
     invoice: (
       await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId))
     )[0],
@@ -326,25 +331,38 @@ describe("COM20-01 / COM20-02: digital loss decisions", () => {
     },
   );
 
-  it("allows an independent reviewer and refuses replay without another financial effect", async () => {
+  it("allows an independent reviewer and replays the original loss refund without another financial effect", async () => {
     const sale = await digitalSale();
     await requestParts(sale);
-    expect(await caller(admin).lossRefund(sale)).toMatchObject({
+    const result = await caller(admin).lossRefund(sale);
+    expect(result).toMatchObject({
+      stage: "EXECUTE",
+      invoiceId: sale.invoiceId,
       reversed: 2,
       refunded: "2000.00",
       loss: "1800.00",
+      outcome: "LOSS_REFUND",
     });
     const after = await digitalEffects(sale.invoiceId);
-    await expect(caller(admin).lossRefund(sale)).rejects.toMatchObject({
-      code: "CONFLICT",
-    });
+    expect(await caller(admin).lossRefund(sale)).toEqual(result);
+    await expect(caller(cashier).lossRefund(sale)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller(otherBranch).lossRefund(sale)).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await digitalEffects(sale.invoiceId)).toEqual(after);
+    expect(after.details.map(detail => detail.lossRefundRequestedBy)).toEqual([manager.userId, reviewer.userId]);
+    expect(after.details.every(detail => detail.lossRefundApprovedBy === admin.userId)).toBe(true);
+    expect(after.refundPayments).toHaveLength(1);
+    expect(after.refundPayments[0]).toMatchObject({ status: "COMPLETED", amount: "2000.00", method: "CASH", requestedBy: admin.userId, confirmedBy: admin.userId,
+      detailIds: sale.detailIds, receiptId: after.receipts.find(receipt => receipt.direction === "OUT")?.id });
+    expect(after.refundItems).toHaveLength(2);
+    expect(after.refundItems.map(item => item.detailId)).toEqual(sale.detailIds);
+    expect(after.refundItems.every(item => item.refundId === after.refundPayments[0].id && item.outcome === "LOSS_REFUND" && item.revenue === "-1000.00" && item.cost === "0.00" && item.occurredAt != null)).toBe(true);
     expect(
       after.receipts.filter((receipt) => receipt.direction === "OUT"),
     ).toHaveLength(1);
     expect(
       after.entries.filter((entry) => entry.entryType === "RETURN"),
     ).toHaveLength(1);
+    expect(after.entries.filter(entry => entry.entryType === "PAYMENT_OUT")).toHaveLength(1);
   });
 
   it.each(["lossRefund", "rejectLossRefund"] as const)(

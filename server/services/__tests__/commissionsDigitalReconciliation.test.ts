@@ -469,7 +469,10 @@ describe("frozen digital commission difference review", () => {
         digitalDetails: [{ id: sold.detailIds[0], settlementMode: mode }],
       });
       if (mode === "PREPAID") {
-        const database = new URL(process.env.DATABASE_URL!).pathname.slice(1);
+        const target = new URL(process.env.DATABASE_URL!);
+        const database = decodeURIComponent(target.pathname.slice(1));
+        const identity = await db().execute(sql`SELECT @@server_uuid AS serverUuid`);
+        const uuid = (identity[0] as unknown as { serverUuid: string }[])[0].serverUuid;
         const output = cli([
           "--period",
           PERIOD,
@@ -477,13 +480,19 @@ describe("frozen digital commission difference review", () => {
           "3",
           "--database",
           database,
+          "--mode",
+          "production-read-only",
+          "--server-uuid",
+          uuid,
         ]);
         expect(output.stderr).not.toContain("testpw");
         expect(output.status, output.stderr).toBe(0);
         expect(JSON.parse(output.stdout)).toMatchObject({
-          target: { host: "127.0.0.1", port: 3311, database },
+          target: { host: target.hostname, port: Number(target.port || "3306"), database },
+          readOnly: true,
           rows: [{ lineId: row.lineId }],
         });
+        expect(await frozenState()).toEqual(before);
       }
       await payRun(Number(payroll!.id), approver);
       expect(await frozenState()).toEqual(before);

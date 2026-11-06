@@ -208,6 +208,68 @@ describe("digital refund evidence and mixed return accounting", () => {
 });
 
 describe("preinvoice capture allocation", () => {
+  it.each([
+    ["CASH", "CLOSED"], ["CASH", "MATCHED"], ["CARD", "CLOSED"],
+  ] as const)("gates %s capture materialization against a %s cash day", async (method, dayStatus) => {
+    const f = await fixture(method);
+    const { intentId } = await withTx(tx => intentService.prepare(tx, f.input, actor));
+    await execute(intentId);
+    await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, intentId));
+    const [item] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, intentId));
+    await withTx(tx => reviewResolutionService.requestResolution(tx, {
+      intentId, decision: "SETTLE_PARTIAL", reason: "مطابقة القبض والكرت الصادر قبل تسجيل الأثر المالي",
+      settlement: { captureConfirmed: true, refundMethod: method, regularDisposition: "SELL" },
+      items: [{ intentItemId: item.id, outcome: "ISSUED", providerReference: item.providerReference }],
+    }, manager));
+    await db().insert(s.cashDailyReconciliations).values({
+      branchId: 1, businessDate: new Date().toISOString().slice(0, 10),
+      expectedTreasuryCash: "0", countedTreasuryCash: "0", variance: "0", status: dayStatus,
+      lastClientRequestId: "digital-capture-day", evidenceHash: "digital-capture-day-evidence", countedByUserId: manager.userId,
+    });
+    async function state() {
+      return Promise.all([
+        db().select().from(s.receipts), db().select().from(s.accountingEntries),
+        db().select().from(s.journalEntries), db().select().from(s.journalLines),
+        db().select().from(digitalIntentSettlements), db().select().from(digitalRefundPayments),
+        db().select().from(digitalRefundItems), db().execute(sql`SELECT * FROM digitalSaleExecutionClaims ORDER BY intentItemId`).then(result => result[0]),
+        db().select().from(s.digitalSaleIntents), db().select().from(s.digitalSaleIntentItems),
+        db().select().from(s.digitalWallets), db().select().from(s.digitalWalletTransactions),
+        db().select().from(s.digitalWalletReservations), db().select().from(s.digitalIntentInventoryReservations),
+        db().select().from(s.branchStock), db().select().from(s.inventoryMovements),
+        db().select().from(s.invoices), db().select().from(s.invoiceItems),
+        db().select().from(s.customers), db().select().from(s.suppliers),
+        db().select().from(s.externalPaymentAttempts), db().select().from(s.auditLogs),
+        db().select().from(s.shifts), db().select().from(s.cashDailyReconciliations),
+      ]);
+    }
+    const before = await state();
+    const materialize = () => withTx(async tx => {
+      const [intent] = await tx.select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, intentId)).for("update");
+      if (method === "CASH" && dayStatus === "MATCHED") {
+        // The real day-close holds branch → day while this transaction owns the shift.
+        // Its evidence must reject the open shift without waiting for that shift mutex.
+        await tx.select().from(s.shifts).where(eq(s.shifts.id, 1)).for("update");
+        const [day] = await tx.select().from(s.cashDailyReconciliations);
+        const { closeDailyCashReconciliation } = await import("../cashDailyReconciliationService");
+        await expect(closeDailyCashReconciliation({ reconciliationId: day.id, expectedVersion: day.version,
+          clientRequestId: "digital-capture-concurrent-close" }, approver,
+          { user: { id: approver.userId, branchId: 1, role: approver.role, name: "Approver" }, req: { headers: {} } } as never)).rejects.toThrow(/عوائق/);
+      }
+      return materializeDigitalCapture(tx, intent, approver.userId, approver);
+    });
+    if (method === "CASH" && dayStatus === "CLOSED") {
+      await expect(materialize()).rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: expect.stringMatching(/مطابقة نقد اليوم مغلقة/) });
+      expect(await state()).toEqual(before);
+    } else {
+      const result = await materialize();
+      expect(result).toMatchObject({ approvedBy: approver.userId, capturedAmount: method === "CASH" ? "10000.00" : "10100.00" });
+      const receipts = await db().select().from(s.receipts);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ id: result.collectionReceiptId, paymentMethod: method, cashBucket: method === "CASH" ? "DRAWER" : null, direction: "IN", amount: result.capturedAmount });
+      expect((await db().select().from(s.accountingEntries)).filter(entry => entry.dedupeKey === `DIGITAL:HOLD:${intentId}`)).toHaveLength(1);
+    }
+  });
+
   it.each(["CASH", "CARD"] as const)("refunds confirmed %s capture with no issue, then restores the resolved cancellation", async (method) => {
     const f = await fixture(method);
     const prepared = await withTx((tx) => intentService.prepare(tx, f.input, actor));

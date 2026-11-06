@@ -9,6 +9,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { debitLine, creditLine, createPostingIntent } from "../accounting/postingEngine";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { bindExternalPaymentAttempt, lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
 import type { Actor } from "../tx";
 import { digitalPaymentChannel, parseReceptionSource } from "./receptionSource";
@@ -129,7 +130,12 @@ export async function materializeDigitalCapture(tx: Tx, intent: typeof digitalSa
       attemptId: intent.externalPaymentAttemptId ?? undefined, deviceId: intent.externalPaymentDeviceId,
       digitalSaleIntentId: Number(intent.id) }, actor);
     reference = attempt.externalReference;
-  } else if (intent.paymentMethod !== "CASH") blocked("وسيلة القبض غير قابلة للتسوية");
+  } else if (intent.paymentMethod === "CASH") {
+    // The original shift is already locked; acquire its day gate before a new physical receipt.
+    // Closed-shift custody recovery reuses its approved receipt above, without collecting again.
+    await lockMaterializedCashReceiptSourceForWrite(tx, { branchId: Number(intent.branchId),
+      shiftId: postingShiftId, cashBucket: "DRAWER", paymentMethod: "CASH", status: "COMPLETED" });
+  } else blocked("وسيلة القبض غير قابلة للتسوية");
   const inserted = await tx.insert(receipts).values({ branchId: Number(intent.branchId), shiftId: postingShiftId,
     invoiceId: null, direction: "IN", amount: settlement.capturedAmount, paymentMethod: intent.paymentMethod as "CASH" | "CARD",
     cashBucket: intent.paymentMethod === "CASH" ? "DRAWER" : null, status: "COMPLETED", referenceNumber: reference,
