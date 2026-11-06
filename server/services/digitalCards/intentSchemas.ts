@@ -255,6 +255,11 @@ export function bindInvoiceDigitalLines(
   return indexed;
 }
 
+/** A reviewed sale contains only admitted line tokens selected by their persisted item outcomes. */
+export function retainedInvoicePayload(payload: InvoiceSourcePayload, retained: ReadonlySet<string>, sellRegular: boolean): InvoiceSourcePayload {
+  return { ...payload, lines: payload.lines.filter(line => line.internalLineToken == null ? sellRegular : retained.has(line.internalLineToken)) };
+}
+
 /** Exact mirror of the sale core: rounded line totals, then header discount/tax/delivery. */
 export function computeInvoiceIntentTotal(input: {
   regularSubtotal: string;

@@ -146,15 +146,17 @@ export function assertIncidentTarget(
   }
   if (url.protocol !== "mysql:")
     throw new Error("Expected MySQL database target");
+  // mysql2 accepts socketPath in URL parameters, independently of the checked TCP port.
+  if (url.search || url.hash)
+    throw new Error("Unsafe target: connection parameters and fragments are forbidden");
   const name = decodeURIComponent(url.pathname.slice(1));
-  const local =
-    url.hostname === "127.0.0.1" &&
-    url.port === "3311" &&
-    /^erp_digital_incident_[a-z0-9_]+_test$/.test(name);
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname.toLowerCase());
+  const isolatedTestPort = url.port === "3311" || ((url.port === "3306" || !url.port) && process.env.ALLOW_TEST_DB_PORT_3306 === "1");
+  const local = loopback && isolatedTestPort && /^erp_[a-z0-9_]*test$/i.test(name);
   if (!local && !production)
     throw new Error(
-      "Unsafe target: only the isolated incident _test database on 127.0.0.1:3311 is enabled by default",
+      "Unsafe target: require an isolated loopback erp_*test database on3311 (or the project's explicit3306 test opt-in)",
     );
-  if (url.port === "3306" || url.port === "3310" || !url.port)
+  if (url.port === "3310" || (!local && (!url.port || /_test$/i.test(name))))
     throw new Error("Forbidden database port");
 }

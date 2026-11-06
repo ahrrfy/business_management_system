@@ -27,6 +27,7 @@
 import Decimal from "decimal.js";
 import { sql, type SQL } from "drizzle-orm";
 import { receipts } from "../../../drizzle/schema";
+import { digitalIntentSettlements } from "../../../drizzle/digitalSettlementSchema";
 import { customerReceiptAllocationRowsSql, loadCustomerReceiptAllocationRows } from "../customerReceiptProjection";
 import { money } from "../money";
 import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
@@ -239,6 +240,17 @@ export async function loadRefundCaps(
       GROUP BY coll.orderPayMethod, pr.shiftId
     `),
   );
+  // The original capture remains an immutable liability receipt. Only this invoice's
+  // sold allocation enters its refund pool; the non-issued refund is a separate source.
+  applicationRows.push(...rowsOf(await exec.execute(sql`
+    SELECT ${receipts.paymentMethod} AS rail, ${receipts.shiftId} AS shiftId,
+           CAST(ds.saleAmount AS CHAR) AS amount
+    FROM ${digitalIntentSettlements} ds
+    JOIN ${receipts} ON ${receipts.id} = ds.collectionReceiptId
+    WHERE ds.invoiceId = ${invoiceId} AND ds.settlementStatus = 'COMPLETED'
+      AND ${receipts.status} = 'COMPLETED' AND ${receipts.approvalStatus} = 'APPROVED'
+      AND ${receipts.invoiceId} IS NULL
+  `)));
 
   // ③ ما ورّده المندوب فعلاً: إيصال التوريد مجمَّعٌ لعدّة فواتير بلا `invoiceId` فلا يراه ①.
   //    قرار المالك (٦/٨): مالٌ نقديّ وصلنا فعلاً ومُورَّد إلى صندوق الشركة ⇒ يدخل الوعاء برافدٍ نقديّ.

@@ -109,9 +109,9 @@ export function DigitalFulfillmentDialog({
   }, [current?.id]);
 
   useEffect(() => {
-    if (canFinalize && allSuccess && intentId != null) onAllExecuted(intentId);
+    if (canFinalize && allSuccess && intentId != null && !finalizing && !finalizeError) onAllExecuted(intentId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canFinalize, allSuccess, intentId]);
+  }, [canFinalize, allSuccess, intentId, finalizing, finalizeError]);
 
   function attemptClose() {
     if (finalizing) return;

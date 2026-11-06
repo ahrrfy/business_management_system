@@ -315,15 +315,41 @@ describe("strict incident recovery", () => {
     expect(() =>
       incidentManifestSchema.parse({ providerReference: 1172 }),
     ).toThrow();
-    expect(() =>
-      assertIncidentTarget("mysql://x@127.0.0.1:3306/erp_test", true, true),
-    ).toThrow(/Forbidden/);
+    const testPortOptIn = process.env.ALLOW_TEST_DB_PORT_3306;
+    try {
+      delete process.env.ALLOW_TEST_DB_PORT_3306;
+      expect(() =>
+        assertIncidentTarget("mysql://x@127.0.0.1:3306/erp_test", true, true),
+      ).toThrow(/Forbidden/);
+    } finally {
+      if (testPortOptIn == null) delete process.env.ALLOW_TEST_DB_PORT_3306;
+      else process.env.ALLOW_TEST_DB_PORT_3306 = testPortOptIn;
+    }
     expect(() =>
       assertIncidentTarget("mysql://x@127.0.0.1:3310/erp_test", false, false),
     ).toThrow();
     expect(() =>
       assertIncidentTarget("mysql://x@remote:3311/erp_test", false, false),
     ).toThrow(/Unsafe/);
+    for (const suffix of ["?socketPath=%2Fvar%2Frun%2Fmysqld.sock", "?host=remote", "#other-target"]) {
+      for (const production of [false, true]) {
+        expect(() => assertIncidentTarget(`mysql://x@127.0.0.1:3311/erp_test${suffix}`, false, production)).toThrow(/Unsafe/);
+      }
+    }
+    expect(() =>
+      assertIncidentTarget(
+        "mysql://x@production-db:3306/erp_production",
+        false,
+        false,
+      ),
+    ).toThrow(/Unsafe/);
+    expect(() =>
+      assertIncidentTarget(
+        "mysql://x@production-db:3306/erp_production",
+        true,
+        true,
+      ),
+    ).not.toThrow();
   });
   it("dry-run is stable and read-only, exposing only safe plan fields", async () => {
     await seed();
@@ -442,6 +468,106 @@ describe("strict incident recovery", () => {
     await expect(
       applyIncidentRecovery(manifestPath, plan.fingerprint),
     ).rejects.toThrow();
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+  });
+  it.each([false, true])(
+    "refuses adoption beside an unresolved legacy intent even with a valid unbound bank proof (exact intent also present: %s)",
+    async (withExactIntent) => {
+      await seed("POSTPAID", true, "RECEPTION");
+      await db()
+        .update(s.digitalSaleIntentItems)
+        .set({ providerReference: null })
+        .where(eq(s.digitalSaleIntentItems.intentId, intentId));
+      const proof = await withTx((tx) =>
+        createConfirmedExternalPaymentAttemptTx(
+          tx,
+          {
+            branchId: 1,
+            channel: "PRINT_POS",
+            method: "CARD",
+            amount: INCIDENT.amount,
+            reference: INCIDENT.bankReference,
+            requestId: "unbound-prior-charge",
+            deviceId: manifest.deviceId,
+          },
+          { userId: 2, branchId: 1, role: "cashier" },
+        ),
+      );
+      if (withExactIntent) {
+        const [original] = await db().select().from(s.digitalSaleIntents);
+        const [item] = await db().select().from(s.digitalSaleIntentItems);
+        const duplicate = await db()
+          .insert(s.digitalSaleIntents)
+          .values({
+            ...original,
+            id: undefined,
+            clientRequestId: "exact-incident-source",
+          });
+        await db()
+          .insert(s.digitalSaleIntentItems)
+          .values({
+            ...item,
+            id: undefined,
+            refKey: undefined,
+            intentId: Number(duplicate[0].insertId),
+            providerReference: INCIDENT.providerReference,
+          });
+      }
+      const originals = await db().select().from(s.digitalSaleIntents);
+      const plan = await planIncidentRecovery(manifestPath);
+      expect(plan.matches.bankAttemptIds).toEqual([proof.id]);
+      expect(plan.matches.intentIds).toEqual(
+        originals.map((intent) => intent.id),
+      );
+      expect(plan.conflicts).toContain(
+        "Unresolved contextual intent may be the original incident",
+      );
+      await expect(
+        applyIncidentRecovery(manifestPath, plan.fingerprint),
+      ).rejects.toThrow(/Unresolved contextual intent/);
+      expect(await db().select().from(s.digitalSaleIntents)).toEqual(originals);
+      expect(await db().select().from(s.invoices)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect(await db().select().from(s.digitalSaleDetails)).toHaveLength(0);
+      expect(await db().select().from(s.externalPaymentAttempts)).toEqual([
+        proof,
+      ]);
+    },
+  );
+  it("distinguishes a contextual sale with a known different provider reference from the exact incident", async () => {
+    await seed("POSTPAID", true, "RECEPTION");
+    const [original] = await db().select().from(s.digitalSaleIntents);
+    const [item] = await db().select().from(s.digitalSaleIntentItems);
+    const other = await db()
+      .insert(s.digitalSaleIntents)
+      .values({
+        ...original,
+        id: undefined,
+        clientRequestId: "different-issued-sale",
+      });
+    const otherId = Number(other[0].insertId);
+    await db()
+      .insert(s.digitalSaleIntentItems)
+      .values({
+        ...item,
+        id: undefined,
+        refKey: undefined,
+        intentId: otherId,
+        providerReference: "different-provider-reference",
+      });
+    const plan = await planIncidentRecovery(manifestPath);
+    expect(plan.matches.intentIds).toEqual([intentId]);
+    expect(plan.conflicts).toEqual([]);
+    await applyIncidentRecovery(manifestPath, plan.fingerprint);
+    const [unchanged] = await db()
+      .select()
+      .from(s.digitalSaleIntents)
+      .where(eq(s.digitalSaleIntents.id, otherId));
+    expect(unchanged).toEqual({
+      ...original,
+      id: otherId,
+      clientRequestId: "different-issued-sale",
+    });
     expect(await db().select().from(s.invoices)).toHaveLength(1);
   });
   it.each(["price", "balance", "shift", "period", "authority"])(
@@ -598,20 +724,171 @@ describe("strict incident recovery", () => {
     expect(wallet.currentBalance).toBe("1000000.00");
     expect(wallet.reservedBalance).toBe("240000.00");
   });
-  it("keeps absent-intent Reception adoption atomic at the base-contract integration gate", async () => {
+  it("attests a prior Reception issue once on the open shift without another charge or issue", async () => {
     await seed("PREPAID", false, "RECEPTION");
     const plan = await planIncidentRecovery(manifestPath);
     expect(plan.action).toBe("ATTEST_PRIOR_ISSUE");
     expect(plan.conflicts).toEqual([]);
-    await expect(
-      applyIncidentRecovery(manifestPath, plan.fingerprint),
-    ).rejects.toThrow(/استقبال رقمية قديمة/);
-    expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(0);
-    expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(0);
+    const [result, replay] = await Promise.all(
+      [1, 2].map(() => applyIncidentRecovery(manifestPath, plan.fingerprint)),
+    );
+    expect(result.invoiceId).toBe(replay.invoiceId);
+    expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(1);
+    expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(1);
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+    const [proof] = await db().select().from(s.externalPaymentAttempts);
+    expect(proof).toMatchObject({
+      channel: "PRINT_POS",
+      amount: "250000.00",
+      externalReference: "10324087",
+      state: "CONFIRMED",
+    });
+    const [detail] = await db().select().from(s.digitalSaleDetails);
+    expect(detail).toMatchObject({
+      providerReference: "001172",
+      settlementModeSnapshot: "PREPAID",
+      sellPriceSnapshot: "250000.00",
+      providerShareSnapshot: "240000.00",
+    });
     const [wallet] = await db()
       .select()
       .from(s.digitalWallets)
       .where(eq(s.digitalWallets.id, walletId));
     expect(wallet.reservedBalance).toBe("0.00");
+    expect(wallet.currentBalance).toBe("760000.00");
+    const [invoice] = await db().select().from(s.invoices);
+    expect(invoice).toMatchObject({
+      shiftId: 2,
+      paymentMethod: "CARD",
+      total: "250000.00",
+    });
+    const [closedShift] = await db()
+      .select()
+      .from(s.shifts)
+      .where(eq(s.shifts.id, 1));
+    expect(closedShift.status).toBe("CLOSED");
   });
+
+  it.each([
+    {
+      label: "trimmed contacts",
+      contactFields: {
+        contactName: "  Original customer  ",
+        contactPhone: "  07701234567  ",
+      },
+      expectedFields: {
+        contactName: "Original customer",
+        contactPhone: "07701234567",
+      },
+      invoiceFields: {
+        contactName: "Original customer",
+        contactPhone: "07701234567",
+      },
+    },
+    {
+      label: "null contacts",
+      contactFields: { contactName: null, contactPhone: null },
+      expectedFields: { contactName: null, contactPhone: null },
+      invoiceFields: { contactName: null, contactPhone: null },
+    },
+    {
+      label: "maximum valid contacts",
+      contactFields: {
+        contactName: "n".repeat(200),
+        contactPhone: "1".repeat(25),
+      },
+      expectedFields: {
+        contactName: "n".repeat(200),
+        contactPhone: "1".repeat(25),
+      },
+      invoiceFields: {
+        contactName: "n".repeat(200),
+        contactPhone: "1".repeat(25),
+      },
+    },
+    {
+      label: "invalid name and valid phone",
+      contactFields: {
+        contactName: "n".repeat(201),
+        contactPhone: "07701234567",
+      },
+      expectedFields: { contactPhone: "07701234567" },
+      invoiceFields: { contactName: null, contactPhone: "07701234567" },
+    },
+    {
+      label: "valid name and invalid phone",
+      contactFields: {
+        contactName: "Original customer",
+        contactPhone: "1".repeat(26),
+      },
+      expectedFields: { contactName: "Original customer" },
+      invoiceFields: { contactName: "Original customer", contactPhone: null },
+    },
+    {
+      label: "untyped contacts",
+      contactFields: {
+        contactName: { password: "untrusted" },
+        contactPhone: 123,
+      },
+      expectedFields: {},
+      invoiceFields: { contactName: null, contactPhone: null },
+    },
+  ])(
+    "normalizes only validated $label on the matched legacy Reception intent, preserving original evidence",
+    async ({ contactFields, expectedFields, invoiceFields }) => {
+      await seed("POSTPAID", true, "RECEPTION");
+      const [seeded] = await db().select().from(s.digitalSaleIntents);
+      if (!seeded.checkoutSnapshot) throw new Error("Missing fixture checkout");
+      await db()
+        .update(s.digitalSaleIntents)
+        .set({
+          checkoutSnapshot: {
+            ...seeded.checkoutSnapshot,
+            sourcePayload: {
+              legacy: true,
+              password: "untrusted",
+              ...contactFields,
+            },
+          },
+        })
+        .where(eq(s.digitalSaleIntents.id, intentId));
+      const [original] = await db().select().from(s.digitalSaleIntents);
+      const [issued] = await db().select().from(s.digitalSaleIntentItems);
+      const plan = await planIncidentRecovery(manifestPath);
+      expect(plan.conflicts).toEqual([]);
+      const result = await applyIncidentRecovery(
+        manifestPath,
+        plan.fingerprint,
+      );
+      expect(
+        await applyIncidentRecovery(manifestPath, plan.fingerprint),
+      ).toMatchObject({ invoiceId: result.invoiceId, idempotentReplay: true });
+      const [intent] = await db().select().from(s.digitalSaleIntents);
+      expect(intent.createdAt).toEqual(original.createdAt);
+      expect(intent.checkoutSnapshot?.sourcePayload).toEqual({
+        version: 1,
+        cashRoundIQD: false,
+        ...expectedFields,
+      });
+      expect((await db().select().from(s.digitalSaleIntentItems))[0]).toEqual(
+        issued,
+      );
+      const [invoice] = await db().select().from(s.invoices);
+      expect(invoice).toMatchObject(invoiceFields);
+      expect((await db().select().from(s.digitalSaleDetails))[0]).toMatchObject(
+        {
+          providerReference: "001172",
+          settlementModeSnapshot: "POSTPAID",
+          providerShareSnapshot: "240000.00",
+        },
+      );
+      const audit = (await db().select().from(s.auditLogs)).find(
+        (row) => row.action === "DIGITAL_INCIDENT_RECOVERED",
+      );
+      expect(audit).toBeDefined();
+      expect(await db().select().from(s.invoices)).toHaveLength(1);
+      expect(await db().select().from(s.receipts)).toHaveLength(1);
+    },
+  );
 });

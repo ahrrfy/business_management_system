@@ -66,6 +66,29 @@ export interface IncidentPlan {
 function refuse(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new Error(`Incident recovery refused: ${reason}`);
 }
+function normalizedReceptionPayload(value: unknown) {
+  const fields = z
+    .object({ contactName: z.unknown(), contactPhone: z.unknown() })
+    .safeParse(value);
+  const name = z
+    .string()
+    .trim()
+    .max(200)
+    .nullable()
+    .safeParse(fields.success ? fields.data.contactName : undefined);
+  const phone = z
+    .string()
+    .trim()
+    .max(25)
+    .nullable()
+    .safeParse(fields.success ? fields.data.contactPhone : undefined);
+  return {
+    version: 1,
+    cashRoundIQD: false,
+    ...(name.success ? { contactName: name.data } : {}),
+    ...(phone.success ? { contactPhone: phone.data } : {}),
+  };
+}
 function userSelection() {
   return {
     id: s.users.id,
@@ -232,31 +255,66 @@ async function snapshot(tx: Tx, m: IncidentManifest) {
           bank.map((b) => b.id),
         )
       : undefined,
-    references.length === 0 && bank.length === 0
-      ? and(
-          eq(s.digitalSaleIntents.branchId, m.branchId),
-          eq(s.digitalSaleIntents.shiftId, m.originalShiftId),
-          eq(s.digitalSaleIntents.createdBy, m.originalOperatorId),
-          eq(s.digitalSaleIntents.paymentMethod, "CARD"),
-          eq(s.digitalSaleIntents.expectedTotal, INCIDENT.amount),
-        )
-      : undefined,
+    and(
+      eq(s.digitalSaleIntents.branchId, m.branchId),
+      eq(s.digitalSaleIntents.shiftId, m.originalShiftId),
+      eq(s.digitalSaleIntents.createdBy, m.originalOperatorId),
+      eq(s.digitalSaleIntents.paymentMethod, "CARD"),
+      eq(s.digitalSaleIntents.expectedTotal, INCIDENT.amount),
+    ),
   );
-  const intents = await tx
+  const candidates = await tx
     .select()
     .from(s.digitalSaleIntents)
     .where(intentCondition)
     .orderBy(asc(s.digitalSaleIntents.id))
     .for("update");
-  const intentIds = intents.map((r) => r.id);
-  const items = intentIds.length
+  const candidateIntentIds = candidates.map((r) => r.id);
+  const candidateItems = candidateIntentIds.length
     ? await tx
         .select()
         .from(s.digitalSaleIntentItems)
-        .where(inArray(s.digitalSaleIntentItems.intentId, intentIds))
+        .where(inArray(s.digitalSaleIntentItems.intentId, candidateIntentIds))
         .orderBy(asc(s.digitalSaleIntentItems.id))
         .for("update")
     : [];
+  const exactIntentIds = new Set(
+    candidates
+      .filter(
+        (intent) =>
+          intent.clientRequestId === INCIDENT.key ||
+          candidateIds.includes(intent.id) ||
+          bank.some((proof) => proof.id === intent.externalPaymentAttemptId),
+      )
+      .map((intent) => intent.id),
+  );
+  // A known different reference/bank binding identifies another sale. An
+  // unbound contextual source with missing references cannot safely be ignored,
+  // even when an exact bank proof or another exact intent was found.
+  const unresolvedIntentIds = candidates
+    .filter((intent) => {
+      if (
+        exactIntentIds.has(intent.id) ||
+        intent.externalPaymentAttemptId != null
+      )
+        return false;
+      const lines = candidateItems.filter(
+        (item) => item.intentId === intent.id,
+      );
+      return (
+        lines.length === 0 ||
+        lines.some((item) => !item.providerReference?.trim())
+      );
+    })
+    .map((intent) => intent.id);
+  const intents = candidates.filter(
+    (intent) =>
+      exactIntentIds.has(intent.id) || unresolvedIntentIds.includes(intent.id),
+  );
+  const intentIds = intents.map((intent) => intent.id);
+  const items = candidateItems.filter((item) =>
+    intentIds.includes(item.intentId),
+  );
   const reservations = intentIds.length
     ? await tx
         .select()
@@ -396,6 +454,7 @@ async function snapshot(tx: Tx, m: IncidentManifest) {
     bank,
     references,
     intents,
+    unresolvedIntentIds,
     items,
     reservations,
     claims,
@@ -494,6 +553,10 @@ function conflicts(m: IncidentManifest, data: Snapshot): string[] {
       data.references.length <= 1 &&
       data.bank.length <= 1,
     "Ambiguous or duplicate source matches",
+  );
+  check(
+    data.unresolvedIntentIds.length === 0,
+    "Unresolved contextual intent may be the original incident",
   );
   check(
     data.invoices.length === 0 &&
@@ -974,7 +1037,9 @@ export async function applyIncidentRecovery(
               ? {
                   checkoutSnapshot: {
                     ...checkout,
-                    sourcePayload: { version: 1, cashRoundIQD: false },
+                    sourcePayload: normalizedReceptionPayload(
+                      checkout.sourcePayload,
+                    ),
                   },
                 }
               : {}),

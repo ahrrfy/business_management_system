@@ -1,3 +1,6 @@
+import { digitalRecoveredReceiptMoney } from "@/components/pos/posShared";
+import { DigitalWorkspaceRecovery, useDurableDigitalSale, type DigitalWorkspaceCommand } from "@/components/digitalCards/useDurableDigitalSale";
+import { digitalWorkspaceScopes, loadFinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 import { deliveryFeeTenderForGoods } from "@/components/pos/feeTenderUi";
 /**
  * نقطة البيع — الرؤية العربية
@@ -208,7 +211,7 @@ export default function POS() {
   });
 
   // ── Cart draft — عزل صريح بالفرع + المستخدم + الوردية ───────────────────
-  usePOSTabsDraft({
+  const {restoredDraftKey}=usePOSTabsDraft({
     shiftId: shift?.id,
     userId: me.data?.id ?? offlineBoot?.userId,
     branchId,
@@ -361,7 +364,6 @@ export default function POS() {
   // ── البطاقات الرقمية (ش٥) ─────────────────────────────────────────────────
   const [cardsOpen, setCardsOpen] = useState(false);
   /** النيّة قيد التنفيذ الخارجيّ (ش٧) — تُفتح بها نافذة خطوات إصدار الكروت. */
-  const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
 
 
   const digitalLines = cart.filter((c) => c.digital);
@@ -376,16 +378,21 @@ export default function POS() {
     return `dc${(h >>> 0).toString(16)}${basis.length.toString(16)}`;
   }
 
-  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
-    onSuccess: (r) => setFulfillIntentId(r.intentId),
-    onError: (e) => { releaseReservedPrintWindow(); digitalCheckoutRef.current = null; notify.err(e); },
-  });
-
-  /** ش٨: التثبيت المالي — الفاتورة والقبض والتسوية والتفاصيل في معاملة خادمية واحدة. */
-  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
-    onSuccess: (r) => {
-      const checkout = digitalCheckoutRef.current;
-      if (!checkout) return;
+  const digitalScope: FinancialIntentScope | null = me.data?.id && branchId > 0 ? {companyId:me.data.companyId??null,userId:me.data.id,branchId,operation:"DIGITAL_POS",target:`tab:${activeId}`} : null;
+  useEffect(()=>{
+    if(!digitalScope || !restoredDraftKey)return;
+    let live=true;
+    void digitalWorkspaceScopes(digitalScope).then(scopes=>{if(live)setTabs(old=>{
+      const missing=scopes.map(x=>Number(x.target.slice(4))).filter(id=>!old.some(tab=>tab.id===id));
+      return missing.length?[...old,...missing.map(id=>createTab(id,`طلب ${id}`))]:old;
+    });}).catch(notify.err);return()=>{live=false;};
+  },[restoredDraftKey,branchId,me.data?.id,me.data?.companyId]);
+  const durable=useDurableDigitalSale(digitalScope,{
+    onError:(err)=>{releaseReservedPrintWindow();notify.err(err);},
+    onNotAdmitted:()=>{patchTab(activeId,{clientRequestId:crypto.randomUUID()});notify.ok("أُغلق الطلب المرفوض بلا قبض؛ صحح السلة");},
+    onRefunded:()=>{digitalCheckoutRef.current=null;patchTab(activeId,{cart:[],clientRequestId:crypto.randomUUID(),externalPayment:null,paymentRef:""});notify.ok("أُغلق أمر البيع بعد رد كامل القبض");},
+    onCompleted:(r,c)=>{
+      const checkout={tabId:activeId,received:c.received,method:c.prepare.paymentMethod as "CARD"|"CASH",shiftId:c.prepare.shiftId,customerName:c.customerName};
       const now = new Date();
       // §١٢.٣: الإيصال يُبنى من استجابة الخادم (السعر والمرجع وبيانات الطالب) لا من حالة React.
       const rec: Receipt = {
@@ -395,18 +402,12 @@ export default function POS() {
         printDate: fmtDate(now),
         printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? undefined,
-        shiftId: checkout.shiftId,
+        shiftId: r.shiftId,
         customerName: checkout.customerName,
         lines: digitalCheckoutReceiptLines(r.receiptLines),
-        total: D(r.total).toNumber(),
-        received: D(checkout.received).toNumber(),
-        change: D(checkout.received).gt(r.total) ? D(checkout.received).minus(r.total).toNumber() : 0,
-        credit: 0,
-        method: checkout.method,
-        isCredit: false,
+        ...digitalRecoveredReceiptMoney(r,c.received),
         digitalDetails: r.printDetails,
       };
-      setFulfillIntentId(null);
       // مفتاح جديد للتبويب: الفاتورة التالية عمليةٌ مستقلّة (نفس اصطلاح البيع العادي).
       patchTab(checkout.tabId, { cart: [], selId: null, payInput: "", clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null, paymentRef: "", externalPayment: null, invoiceDiscountPct: "" });
       digitalCheckoutRef.current = null;
@@ -421,12 +422,13 @@ export default function POS() {
           notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة التلقائية", errMsg(cause));
         });
     },
-    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
   /** يبدأ مسار البيع الرقميّ: تحقّقٌ خادميّ + حجز رصيد، **قبل** لمس جهاز المزوّد. */
-  function startDigitalFulfillment() {
-    if (!shift || digitalCheckoutRef.current || prepareIntent.isPending || fulfillIntentId != null || finalizeSale.isPending) return;
+  async function startDigitalFulfillment(bankProof?:{requestId:string;reference:string;deviceId:string}) {
+    if (!shift || !durable.ready || durable.pending || durable.busy || !canSubmitSale) return;
+    const validation=validatePosSaleBeforeSubmit({activeTab,cart,codMode,isSplitPayment,splitInvalidLeg,splitNonCashOverpay,externalPaymentConfirmed:bankProof?true:externalPaymentConfirmed,isCredit});
+    if(validation || checkoutExtraTotal(activeTab.extraCharges).gt(0)){notify.err(validation??"أكمل الكروت قبل إضافة أجر خدمة مستقل");return;}
     // م١ PR-B (تدقيق Codex P1): نواةُ التثبيت الرقميّة لا تُنشئ إرساليّةَ توصيل — سلّةٌ رقميّة/مختلطة في
     // وضع التوصيل تُنتج فاتورةً ماديّةً بلا إسناد. نرفضها بدل إسقاط الإسناد صامتاً.
     if (codMode) { notify.err("التوصيل لا يشمل البطاقات الرقميّة", "أزِل البطاقات الرقميّة من السلّة، أو أوقِف وضع التوصيل لبيعها منفصلة."); return; }
@@ -435,7 +437,7 @@ export default function POS() {
       return;
     }
     if (activeTab.method !== "CASH" && activeTab.method !== "CARD") { notify.err("البيع الرقميّ نقداً أو ببطاقة فقط"); return; }
-    if (activeTab.method === "CARD" && !externalPaymentConfirmed) { notify.err("أكّد دفع البطاقة الخارجي قبل بدء إصدار الكروت."); return; }
+    if (activeTab.method === "CARD" && !bankProof) { notify.err("أكّد دفع البطاقة الخارجي قبل بدء إصدار الكروت."); return; }
     if (activeTab.payInput.trim() && paidD.lt(total)) {
       notify.err("فاتورة البطاقات تتطلب دفع المبلغ كاملاً؛ صحّح المقبوض أو امسح الحقل للدفع الكامل.");
       return;
@@ -446,12 +448,11 @@ export default function POS() {
       method: activeTab.method, customerId: activeTab.customerId ?? null, customerName: selectedCustomer?.name, shiftId: shift.id,
     };
     reservePrintWindow();
-    prepareIntent.mutate({
-      clientRequestId: activeTab.clientRequestId,
+    const command: DigitalWorkspaceCommand = {proof:bankProof,received:digitalCheckoutRef.current.received,amount:digitalCheckoutRef.current.total,customerName:selectedCustomer?.name,prepare:{
+      sourceType:"POS",clientRequestId: activeTab.clientRequestId,
       branchId,
       shiftId: shift.id,
       paymentMethod: activeTab.method,
-      ...(activeTab.method === "CARD" ? { externalPaymentAttemptId: activeTab.externalPayment!.attemptId!, externalPaymentDeviceId: activeTab.externalPayment?.deviceId } : {}),
       cartFingerprint: digitalCartFingerprint(),
       customerId: activeTab.customerId,
       priceTier: effectiveTier,
@@ -465,7 +466,8 @@ export default function POS() {
         providerBasketKey: c.digital!.providerBasketKey,
         student: c.digital!.student ?? null,
       })),
-    });
+    }};
+    await durable.start(command); digitalCheckoutRef.current=null;
   }
 
   /** إضافة السلة ذرّياً محلياً؛ كل بطاقة سطر مستقل مرتبط بعملية المزوّد. */
@@ -692,11 +694,17 @@ export default function POS() {
     const fingerprint = leg ? computeSplitLegFingerprint(leg, feeForLeg) : externalPaymentFingerprint;
     const curExt = leg ? leg.externalPayment : activeTab.externalPayment;
     const prior = curExt?.fingerprint === fingerprint ? curExt : null;
-    const requestId = prior?.requestId ?? newClientRequestId();
+    const requestId = cartHasDigital ? activeTab.clientRequestId+":card" : prior?.requestId ?? newClientRequestId();
     let deviceId = prior?.deviceId;
     if (!deviceId) {
       try { deviceId = await getDeviceCode(); }
       catch { notify.err("تعذّر تحديد جهاز الكاشير — لا يمكن تأكيد دفع خارجي بلا هوية جهاز."); return; }
+    }
+    if(cartHasDigital){
+      if(legId || isSplitPayment || activeTab.couponCode || checkoutExtraTotal(activeTab.extraCharges).gt(0) || !D(amountStr).eq(total)){
+        notify.err("قبض البطاقة الرقمية يتطلب كامل المبلغ دون دفعات مقسمة أو إضافات");return;
+      }
+      await startDigitalFulfillment({reference,requestId:activeTab.clientRequestId+":card",deviceId});return;
     }
     const writeExt = (state: "INITIATED" | "CONFIRMED", attemptId: number | null) => {
       const nextExt = { attemptId, requestId, fingerprint, state, deviceId: deviceId! };
@@ -912,6 +920,7 @@ export default function POS() {
   }
 
   async function submitSale(approval?: ManagerApprovalInput) {
+    if(durable.pending || durable.busy || (digitalScope && !durable.ready))return;
     if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift) return;
@@ -1005,6 +1014,7 @@ export default function POS() {
   }
 
   async function quickPay() {
+    if(durable.pending || durable.busy || (digitalScope && !durable.ready))return;
     if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
       await submitSale();
       return;
@@ -1063,7 +1073,7 @@ export default function POS() {
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
   usePOSKeyboardShortcuts({
-    isDigitalCheckoutPending: () => Boolean(digitalCheckoutRef.current),
+    isDigitalCheckoutPending: () => Boolean(digitalCheckoutRef.current || durable.pending || durable.busy),
     creditPrompt,
     setCreditPrompt,
     receipt,
@@ -1090,6 +1100,11 @@ export default function POS() {
   });
 
   // ── Shift open screen ─────────────────────────────────────────────────────
+  if(digitalScope && (!durable.ready || durable.pending || durable.busy)) return <>
+    <DigitalWorkspaceRecovery message={durable.error} busy={!durable.ready || durable.busy} retry={()=>void durable.retry()} closeRejected={durable.canCloseRejected?()=>void durable.closeRejected():undefined}/>
+    <DigitalFulfillmentDialog intentId={durable.intentId} finalizing={durable.busy} finalizeError={durable.error}
+      onClose={()=>{releaseReservedPrintWindow();durable.dismiss();}} onAllExecuted={id=>void durable.finish(id)}/>
+  </>;
   if (shiftQ.isLoading || !shift) {
     return (
       <POSShiftOpenScreen
@@ -1128,10 +1143,6 @@ export default function POS() {
 
   return (
     <div className="retail-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
-      {prepareIntent.isPending && (
-        <div role="status" aria-live="polite" style={{ position: "fixed", inset: 0, zIndex: 63, background: C.overlay, display: "grid", placeItems: "center" }}><div style={{ background: C.card, border: `1px solid ${C.border}`, padding: 24 }}>{ACTION_LABELS.verifying} تثبيت بنود الفاتورة قبل تأكيد عمليات المزوّد.</div></div>
-      )}
-
       {/* Header */}
       <POSHeader
         C={C}
@@ -1197,32 +1208,13 @@ export default function POS() {
       />
 
       {/* خطوات التنفيذ الخارجيّ (ش٧) — كل كرت يُسجَّل نجاحه لحظةَ إصداره. */}
-      <DigitalFulfillmentDialog
-        intentId={fulfillIntentId}
-        finalizing={finalizeSale.isPending} finalizeError={finalizeSale.error ? errMsg(finalizeSale.error) : null}
-        onClose={() => { releaseReservedPrintWindow(); setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
-        onAllExecuted={(intentId) => {
-          // كل الكروت صدرت ⇒ التثبيت المالي فوراً. المفتاح نفسه يجعل إعادة الإرسال تُعيد
-          // الفاتورة ذاتها بدل إنشاء ثانية (idempotency على مستوى الخادم).
-          const checkout = digitalCheckoutRef.current;
-          if (finalizeSale.isPending || !checkout) return;
-          finalizeSale.mutate({
-            intentId,
-            clientRequestId: checkout.requestId,
-            paymentAmount: checkout.total,
-            paymentMethod: checkout.method,
-            customerId: checkout.customerId,
-          });
-        }}
-      />
-
       <POSFundingBanner
         C={C} posFundingRequests={posFundingRequests} isPending={acceptFundingM.isPending}
         onAccept={(requestReceiptId) => { reservePrintWindow(); acceptFundingM.mutate({ requestReceiptId, decision: "ACCEPT" }); }}
       />
 
       {/* Tab Bar */}
-      <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
+      <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={id=>{if(!digitalScope){closeTab(id);return;}void loadFinancialIntent({...digitalScope,target:`tab:${id}`}).then(saved=>saved?notify.warn("استعد العملية الرقمية قبل إغلاق التبويب"):closeTab(id)).catch(notify.err);}} />
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>
@@ -1263,7 +1255,7 @@ export default function POS() {
           numPress={numPress}
           onPay={submitSale} onQuickPay={quickPay}
           cartLen={cart.length} selId={activeTab.selId}
-          isPending={sale.isPending || prepareIntent.isPending || finalizeSale.isPending}
+          isPending={sale.isPending || durable.busy}
           canPay={canPay}
           hasCustomer={selectedCustomer != null}
           saleError={saleError}

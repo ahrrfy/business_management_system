@@ -21,6 +21,7 @@ import {
 import { isDeadInvoice } from "@shared/predicates";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
 import Decimal from "decimal.js";
+import { allocatedReturnRounding, financialReturnItems, remainingInvoiceCashRounding } from "./returns/cashRounding";
 import {
   and,
   eq,
@@ -1460,6 +1461,7 @@ export async function returnSaleInTx(
     return { line: l, item };
   });
   work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
+  const allocatedRounding = digitalRows.length ? await allocatedReturnRounding(tx,inv,input.lines,actor) : money(0);
 
   /**
    * سقفُ الاسترداد والزبونُ العابر — **الحسابُ موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts`
@@ -1579,6 +1581,7 @@ export async function returnSaleInTx(
    */
   const fullyReturnedNow =
     !options.componentRights &&
+    digitalRows.length === 0 &&
     items.every((item) => {
       const requested =
         work.find((w) => Number(w.item.id) === Number(item.id))?.line
@@ -2175,14 +2178,7 @@ export async function returnSaleInTx(
   }
 
   // Completion is known now (returnedBaseQuantity was updated in the loop).
-  const refreshed = await tx
-    .select({
-      baseQuantity: invoiceItems.baseQuantity,
-      returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
-    })
-    .from(invoiceItems)
-    .where(eq(invoiceItems.invoiceId, input.invoiceId))
-    .for("share");
+  const refreshed = await financialReturnItems(tx,input.invoiceId);
   const fullyReturned =
     (!options.componentRights || options.componentRights.wholeItem === true) &&
     refreshed.every((r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity);
@@ -2203,7 +2199,6 @@ export async function returnSaleInTx(
     ).for("share");
   const priorRevenue = priorRows.reduce((sum, row) => sum.plus(row.rev ?? "0"), money(0)).neg();
   const priorTax = priorRows.reduce((sum, row) => sum.plus(row.tax ?? "0"), money(0)).neg();
-  const priorTotal = priorRows.reduce((sum, row) => sum.plus(row.amt ?? "0"), money(0)).neg();
 
   let returnedRevenue: Decimal;
   let returnedTax: Decimal;
@@ -2219,7 +2214,7 @@ export async function returnSaleInTx(
       .plus(money(inv.deliveryFee ?? "0"));
     returnedRevenue = round2(invoiceRevenue.minus(priorRevenue));
     returnedTax = round2(money(inv.taxAmount).minus(priorTax));
-    returnedTotal = round2(money(inv.total).minus(priorTotal));
+    returnedTotal = round2(money(inv.total).minus(money(inv.returnedTotal ?? "0")));
   } else {
     returnedRevenue = round2(
       returnedGrossNet.times(new Decimal(1).minus(discountRatio)),
@@ -2234,6 +2229,9 @@ export async function returnSaleInTx(
       returnedTax = returnedTotal.minus(returnedRevenue);
     }
   }
+  const roundingLeft = await remainingInvoiceCashRounding(tx, input.invoiceId, inv.cashRoundingAdjustment);
+  const cashRoundOriginal = digitalRows.length ? allocatedRounding : fullyReturned ? roundingLeft : money(0);
+  if (!fullyReturned && digitalRows.length) returnedTotal = returnedTotal.plus(cashRoundOriginal);
   returnedCost = round2(returnedCost);
   // عند restock=false (تالف/أمر شغل) البضاعة لا تعود للمخزون ⇒ تكلفتها خسارة فعلية،
   // فلا يصحّ عكس COGS (وإلا تبخّرت التكلفة من الدفتر = ربح مُبالَغ + نقص أصل بلا مصروف
@@ -2652,18 +2650,17 @@ export async function returnSaleInTx(
   // G10 (١٩/٦/٢٦): عكس تقريب النقد العراقي (cashRoundingAdjustment) عند المرتجع الكامل
   // — المرتجع الجزئي يترك التقريب على الفاتورة ويُصفّى عند المرتجع المُكمِل. كان عدم عكسه
   // يخلّف بقايا صامتة في الدفتر (دنانير قليلة لكنها تتراكم عبر آلاف الفواتير).
-  const cashRoundOriginal = money(inv.cashRoundingAdjustment ?? "0");
-  if (fullyReturned && !cashRoundOriginal.isZero()) {
+  if (!cashRoundOriginal.isZero()) {
     await postEntry(tx, {
       entryType: "ADJUST",
-      dedupeKey: `ADJUST:IQD:RETURN:${input.invoiceId}`,
+      dedupeKey: fullyReturned ? `ADJUST:IQD:RETURN:${input.invoiceId}` : `ADJUST:IQD:GOODS_RETURN:${input.invoiceId}:${priorRows.length}`,
       branchId: Number(inv.branchId),
       invoiceId: input.invoiceId,
       customerId: inv.customerId,
       revenue: cashRoundOriginal.neg(),
       profit: cashRoundOriginal.neg(),
       amount: cashRoundOriginal.neg(),
-      notes: "عكس تقريب نقدي IQD — مرتجع كامل",
+      notes: "عكس حصة التقريب النقدي IQD من المرتجع",
       postingIntent: createPostingIntent(
         "ADJUST_ROUNDING",
         "ADJUST",

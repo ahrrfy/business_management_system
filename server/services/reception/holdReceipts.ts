@@ -14,6 +14,7 @@
 // التثبيت/التسليم — الازدواج ينشأ فقط عند خلط القيود المستقلّة مع paidAmount.
 import { sql, type SQL } from "drizzle-orm";
 import { orderPayments, receipts } from "../../../drizzle/schema";
+import { digitalIntentSettlements, digitalRefundPayments } from "../../../drizzle/digitalSettlementSchema";
 
 /**
  * شرط SQL: «هذا الإيصال إيصالُ احتجازٍ سابقٌ للفاتورة» — يصدق على:
@@ -24,6 +25,10 @@ import { orderPayments, receipts } from "../../../drizzle/schema";
 export function isPreInvoiceHoldReceiptCond(): SQL {
   return sql`(${receipts.workOrderId} IS NOT NULL OR EXISTS (
     SELECT 1 FROM ${orderPayments} op WHERE op.receiptId = ${receipts.id}
+  ) OR EXISTS (
+    SELECT 1 FROM ${digitalIntentSettlements} ds WHERE ds.collectionReceiptId = ${receipts.id}
+  ) OR EXISTS (
+    SELECT 1 FROM ${digitalRefundPayments} dr WHERE dr.receiptId = ${receipts.id} AND dr.intentId IS NOT NULL
   ))`;
 }
 
@@ -38,5 +43,9 @@ export function entryNotHoldReceiptCond(receiptIdCol: SQL | unknown): SQL {
     SELECT ${receipts.id} FROM ${receipts} WHERE ${receipts.workOrderId} IS NOT NULL
     UNION
     SELECT op.receiptId FROM ${orderPayments} op WHERE op.receiptId IS NOT NULL
+    UNION
+    SELECT ds.collectionReceiptId FROM ${digitalIntentSettlements} ds WHERE ds.collectionReceiptId IS NOT NULL
+    UNION
+    SELECT dr.receiptId FROM ${digitalRefundPayments} dr WHERE dr.intentId IS NOT NULL AND dr.receiptId IS NOT NULL
   ))`;
 }

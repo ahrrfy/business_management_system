@@ -17615,6 +17615,7 @@ export const digitalSaleReviewResolutions = mysqlTable(
       "CANCEL_NO_ISSUE",
       "FINALIZE_SALE",
       "WRITEOFF_LOSS",
+      "SETTLE_PARTIAL",
     ]).notNull(),
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"])
       .default("PENDING")
@@ -19310,3 +19311,5 @@ export const shelfLookupLogs = mysqlTable(
 
 export type ShelfLookupLog = typeof shelfLookupLogs.$inferSelect;
 export type InsertShelfLookupLog = typeof shelfLookupLogs.$inferInsert;
+
+export * from "./digitalSettlementSchema";

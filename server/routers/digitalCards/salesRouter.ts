@@ -14,7 +14,7 @@ import {
   digitalCardsPosProcedure,
   router,
 } from "../../trpc";
-import { actorOf, requireDb, scopedBranchOf } from "./shared";
+import { actorOf, digitalRefundActionFields, digitalRefundControl, digitalRefundTender, requireDb, scopedBranchOf } from "./shared";
 import { verifyManagerApproval } from "../saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
 
@@ -38,6 +38,8 @@ export const salesRouter = router({
         paymentMethod: z.string().min(1).max(20),
         externalPaymentAttemptId: z.number().int().positive().optional(),
         externalPaymentDeviceId: z.string().trim().min(1).max(64).optional(),
+        closeRejectedWithoutPayment: z.literal(true).optional(),
+        capturedDigitalPayment: z.object({ confirmed: z.literal(true), amount: nonNegMoneyString, deviceId: z.string().trim().min(1).max(64) }).strict().optional(),
         cartFingerprint: z.string().min(1).max(64),
         customerId: z.number().int().positive().nullish(),
         priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
@@ -169,21 +171,27 @@ export const salesRouter = router({
   requestReviewResolution: digitalCardsManagerProcedure
     .input(z.object({
       intentId: z.number().int().positive(),
-      decision: z.enum(["CANCEL_NO_ISSUE", "FINALIZE_SALE", "WRITEOFF_LOSS"]),
+      decision: z.enum(["CANCEL_NO_ISSUE", "FINALIZE_SALE", "WRITEOFF_LOSS", "SETTLE_PARTIAL"]),
       reason: z.string().min(5).max(500),
+      settlement: z.object({ captureConfirmed: z.literal(true), refundMethod: z.enum(["CASH", "CARD"]), regularDisposition: z.enum(["SELL", "RELEASE"]), recovery: z.object({postingShiftId:z.number().int().positive(),cashCustodyReceiptId:z.number().int().positive().optional(),reason:z.string().trim().min(5).max(500)}).strict().optional() }).strict().optional(),
       items: z.array(z.object({
         intentItemId: z.number().int().positive(),
         outcome: z.enum(["ISSUED", "NOT_ISSUED"]),
         providerReference: z.string().max(120).nullish(),
-      })).min(1).max(50),
+      })).max(50),
     }))
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => reviewResolutionService.requestResolution(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.requestReviewResolution") }))),
 
   approveReviewResolution: digitalCardsManagerProcedure
-    .input(z.object({ intentId: z.number().int().positive() }))
-    .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reviewResolutionService.approveResolution(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.approveReviewResolution") }))),
+    .input(z.object({ intentId: z.number().int().positive(),
+      ...digitalRefundActionFields,
+    }))
+    .mutation(async ({ input, ctx }) => withTx(async (tx) => {
+      const actor = { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.approveReviewResolution") };
+      if (input.stage !== "EXECUTE") return { stage: input.stage, ...await reviewResolutionService.controlResolutionRefund(tx, input, digitalRefundControl(input), actor) };
+      return { stage: "EXECUTE" as const, ...await reviewResolutionService.approveResolution(tx, { ...input, refund: input.refund.method === "CARD" && !("reference" in input.refund) ? undefined : digitalRefundTender(input.refund) }, actor) };
+    })),
 
   rejectReviewResolution: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(500) }))

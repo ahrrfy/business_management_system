@@ -374,6 +374,41 @@ export async function closeShift(
       });
     }
 
+    // A recovery binding is written only while holding this same shift mutex.
+    // Authority checks may already have established an RR snapshot before that mutex:
+    // use a current read. NOWAIT avoids shift -> intent waiting against review's
+    // intent -> shift order; a busy source rejects close without changing evidence.
+    let blockingRecovery: { id: number } | undefined;
+    try {
+      [blockingRecovery] = await tx.select({ id: digitalSaleIntents.id })
+        .from(digitalSaleIntents, { forceIndex: "idx_dsi_branch" })
+        .where(and(
+          eq(digitalSaleIntents.branchId, Number(sh.branchId)),
+          inArray(digitalSaleIntents.status, ["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW", "WRITEOFF_PENDING"]),
+          sql`JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.captureRecovery.postingShiftId') = ${input.shiftId}`,
+        ))
+        .for("share", { noWait: true }).limit(1);
+    } catch (error) {
+      let cause: unknown = error;
+      let busy = false;
+      for (let depth = 0; depth < 5 && cause && typeof cause === "object"; depth++) {
+        const current = cause as { code?: unknown; errno?: unknown; cause?: unknown };
+        if (current.code === "ER_LOCK_NOWAIT" || current.errno === 3572) { busy = true; break; }
+        cause = current.cause;
+      }
+      if (!busy) throw error;
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذّر إغلاق الوردية الآن",
+        why: "تسوية قبض رقمي في الفرع تُحدّث حالياً؛ لم يتغير الإقفال أو إثبات الرد",
+        doThis: "انتظر اكتمال المعالجة ثم أعد الإغلاق؛ لا تكرر رد المال أو تغيّر إثباته",
+      }) });
+    }
+    if (blockingRecovery) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذّر إغلاق وردية الاستدراك",
+      why: `هذه الوردية مرتبطة بتسوية قبض رقمي رقم ${blockingRecovery.id} لم تكتمل`,
+      doThis: "أكمل اعتماد تسوية القبض والرد من مراجعة العمليات الرقمية ثم أعد الإغلاق دون إعادة رد المال",
+    }) });
+
     // Source mutex precedes purchase-document locks. A declared physical payment
     // is not yet in the ledger while its invoice is awaiting posting; never let
     // the cashier close using a fictitious higher count in that interval.

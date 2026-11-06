@@ -88,6 +88,10 @@ export interface DigitalCheckoutInventoryReservationSnapshot {
 export interface DigitalCheckoutSnapshot {
   version: 1;
   requestFingerprint: string;
+  /** Server-only: verified capture that failed admission before any provider execution. No priced items or stock. */
+  noAdmissionClosed?: { reason: string; confirmedNoPaymentBy: number; closedAt: string };
+  captureRecovery?: { postingShiftId: number; cashCustodyReceiptId?: number; reason: string; requestedBy: number };
+  unadmittedCapture?: { deviceId: string; reason: string; command: Record<string, unknown> };
   customerId: number | null;
   priceTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   regularLines: DigitalCheckoutRegularLineSnapshot[];
