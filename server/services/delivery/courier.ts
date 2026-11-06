@@ -964,10 +964,23 @@ export async function acknowledgeConsignmentClaim(
       hasClosedMembers = members.length !== activeMembers.length;
       isGroup = members.length > 1;
       if (!members.some((member) => Number(member.id) === Number(shipmentMembership.leaderConsignmentId)) ||
-          !activeMembers.length || Number(cn.partyId) !== membership.partyId ||
+          Number(cn.partyId) !== membership.partyId ||
           members.some((member) => Number(member.branchId) !== Number(cn.branchId)) ||
           shipmentCurrentPartyMembers(members).some((member) => Number(member.partyId) !== membership.partyId)) {
         throw fulfillmentError("روابط جهة الشحنة أو فرعها غير متسقة؛ راجع أعضاء الشحنة قبل إقرار المطالبة", "FORBIDDEN");
+      }
+      // The historical leader may belong to a previous driver. Authorize a
+      // closed member actually covered by this acknowledgement instead.
+      if (!activeMembers.length) {
+        const viewedIds = input.expectedConsignmentIds ?? input.expectedConsignmentClaims?.map((claim) => claim.consignmentId);
+        const authorizedMember = members.find((member) =>
+          (viewedIds == null || viewedIds.includes(Number(member.id))) &&
+          Number(member.partyId) === membership.partyId &&
+          (membership.memberRole !== "DRIVER" || member.assignedUserId == null || Number(member.assignedUserId) === actor.userId));
+        if (!authorizedMember)
+          throw fulfillmentError("لا توجد إرسالية مرتبطة بحسابك في هذه الشحنة؛ حدّث توصيلاتي", "FORBIDDEN");
+        await assertAftercareCourierTx(tx, authorizedMember, actor.userId);
+        assertMemberCanUseConsignment(membership, authorizedMember);
       }
       for (const member of activeMembers) {
         await assertAftercareCourierTx(tx, member, actor.userId);
@@ -985,12 +998,17 @@ export async function acknowledgeConsignmentClaim(
       hash,
       { requireStoredHash: true, forUpdate: true },
     );
-    if (replay != null)
+    if (replay != null) {
+      if (replay !== Number(cn.id))
+        throw fulfillmentError("معرّف الإقرار مرتبط بإرسالية أخرى؛ راجع الطلب", "CONFLICT");
       return {
         consignmentId: cn.id,
-        claimVersion: cn.courierAckClaimVersion,
-        acknowledgedAt: cn.courierAckAt,
+        claimVersion: input.expectedClaimVersion,
+        acknowledgedAt: cn.courierAckClaimVersion === input.expectedClaimVersion ? cn.courierAckAt : null,
       };
+    }
+    if (shipmentMembership && !viewedMembers.length)
+      throw fulfillmentError("روابط جهة الشحنة أو فرعها غير متسقة؛ راجع أعضاء الشحنة قبل إقرار المطالبة", "FORBIDDEN");
     if (input.expectedClaimVersion !== cn.codClaimVersion)
       throw fulfillmentError(
         "تغيرت المطالبة قبل الإقرار؛ حدّث تفاصيل الإرسالية ثم أقر النسخة الحالية",

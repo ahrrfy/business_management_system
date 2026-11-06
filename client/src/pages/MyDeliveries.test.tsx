@@ -4,11 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  mutate: vi.fn(), ackMutate: vi.fn(), invalidate: vi.fn(), warn: vi.fn(),
+  mutate: vi.fn(), ackMutate: vi.fn(), invalidate: vi.fn(), warn: vi.fn(), ok: vi.fn(),
   confirm: vi.fn(async (_options: { description: string }) => true),
   row: {} as Record<string, unknown>,
   onConfirmError: undefined as undefined | ((error: { data?: { code?: string } }) => void),
   onConfirmSettled: undefined as undefined | (() => void),
+  onAckSuccess: undefined as undefined | (() => void),
 }));
 vi.mock("@/lib/trpc", () => {
   const mutation = { useMutation: () => ({ mutate: vi.fn(), isPending: false }) };
@@ -17,7 +18,10 @@ vi.mock("@/lib/trpc", () => {
     courier: {
       myDeliveries: { useQuery: () => ({ data: { linked: true, memberRole: "DRIVER", custodyBalance: "0",
         financialSummary: {}, toDeliver: [state.row], delivered: [] }, isLoading: false, isError: false }) },
-      confirmDelivery: mutation, acknowledgeConsignmentClaim: { useMutation: () => ({ mutate: state.ackMutate, isPending: false }) },
+      confirmDelivery: mutation, acknowledgeConsignmentClaim: { useMutation: (options: { onSuccess: () => void }) => {
+        state.onAckSuccess = options.onSuccess;
+        return { mutate: state.ackMutate, isPending: false };
+      } },
       failDelivery: mutation, parcelTransition: mutation,
       confirmConsignmentDelivery: { useMutation: (options: { onError: (error: { data?: { code?: string } }) => void; onSettled: () => void }) => {
         state.onConfirmError = options.onError;
@@ -29,7 +33,7 @@ vi.mock("@/lib/trpc", () => {
 });
 vi.mock("@/lib/confirm", () => ({ confirm: state.confirm }));
 vi.mock("@/lib/realtime", () => ({ useRealtimeEvent: vi.fn() }));
-vi.mock("@/lib/notify", () => ({ notify: { ok: vi.fn(), warn: state.warn, err: vi.fn(), info: vi.fn() } }));
+vi.mock("@/lib/notify", () => ({ notify: { ok: state.ok, warn: state.warn, err: vi.fn(), info: vi.fn() } }));
 vi.mock("@/components/delivery/DeliverySourceLink", () => ({ DeliverySourceLink: () => null }));
 vi.mock("@/components/form/MoneyInput", () => ({ MoneyInput: ({ value, onChange, ariaLabel }: {
   value: string; onChange: (value: string) => void; ariaLabel: string;
@@ -41,7 +45,7 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(async () => {
   Object.assign(globalThis, { React, IS_REACT_ACT_ENVIRONMENT: true });
-  state.mutate.mockReset(); state.ackMutate.mockReset(); state.invalidate.mockReset(); state.warn.mockReset(); state.confirm.mockClear();
+  state.mutate.mockReset(); state.ackMutate.mockReset(); state.invalidate.mockReset(); state.warn.mockReset(); state.ok.mockReset(); state.confirm.mockClear();
   state.row = { kind: "consignment", id: 11, orderNumber: "CN-11", customerName: "عميل",
     status: "OUT_FOR_DELIVERY", sourceType: "INVOICE", codDue: "10000.00",
     consignmentClaims: [{ consignmentId: 11, amount: "10000.00", invoiceNumber: "INV-11" }],
@@ -173,6 +177,12 @@ it("acknowledges the displayed per-invoice snapshot and refuses a missing one", 
   expect(state.ackMutate).not.toHaveBeenCalled();
   expect(state.invalidate).toHaveBeenCalled();
   expect(state.warn).toHaveBeenCalledWith("تعذّر إقرار المطالبة", expect.stringContaining("مبالغ فواتيرها"));
+});
+
+it("reports a recorded acknowledgement without claiming that a replay is the current claim", async () => {
+  await act(async () => state.onAckSuccess?.());
+  expect(state.ok).toHaveBeenCalledWith("تم تسجيل إقرار مبلغ التحصيل");
+  expect(state.invalidate).toHaveBeenCalled();
 });
 
 it("requests a refresh instead of sending a confirmation without a displayed version", async () => {
