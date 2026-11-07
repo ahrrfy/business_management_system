@@ -4,6 +4,7 @@ import AftercareWorkspace from "./AftercareWorkspace";
 export type AftercareStationProps = {
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
+  onLookupReset?: () => void;
   branchId?: number;
   caseId?: number;
   executionId?: number;

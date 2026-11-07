@@ -3,7 +3,16 @@ import {
   deliveryDriverOptions,
   requiresDeliveryDriver,
 } from "@/components/delivery/driverOptions";
-import { useSearch } from "wouter";
+import { useSearch, useLocation } from "wouter";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { clearWorkflowLookupSearch } from "@/components/delivery/workflow/navigation";
+import {
+  WorkflowResetButton,
+  WorkflowScanResetScope,
+  useWorkflowResetBlocked,
+  useWorkflowResetGuard,
+  hasUnresolvedWorkflowError,
+} from "@/components/delivery/workflow/workflowScanReset";
 import {
   Plus,
   ShieldCheck,
@@ -60,12 +69,14 @@ function useAftercareActions(refresh: () => Promise<unknown>) {
   const keys = useRef(new Map<string, string>());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  useWorkflowResetGuard(pending || keys.current.size > 0);
   async function run<T extends object, R = unknown>(
     operation: string,
     payload: T,
     mutate: (input: T & { clientRequestId: string }) => Promise<R>,
   ): Promise<R | undefined> {
     const fingerprint = `${operation}:${JSON.stringify(payload)}`;
+    const recovering = keys.current.has(fingerprint);
     const key = keys.current.get(fingerprint) ?? crypto.randomUUID();
     keys.current.set(fingerprint, key);
     setPending(true);
@@ -76,6 +87,8 @@ function useAftercareActions(refresh: () => Promise<unknown>) {
       await refresh();
       return out;
     } catch (cause) {
+      if (!recovering && !hasUnresolvedWorkflowError(cause))
+        keys.current.delete(fingerprint);
       setError(
         cause instanceof Error
           ? cause.message
@@ -88,14 +101,30 @@ function useAftercareActions(refresh: () => Promise<unknown>) {
   return { run, pending, error };
 }
 
-export default function AftercareWorkspace({
+export default function AftercareWorkspace(props: AftercareStationProps = {}) {
+  return (
+    <WorkflowScanResetScope>
+      <AftercareWorkspaceContent {...props} />
+    </WorkflowScanResetScope>
+  );
+}
+
+function AftercareWorkspaceContent({
   scannedBarcode,
   onBarcodeConsumed,
+  onLookupReset,
   branchId,
   caseId,
   executionId,
 }: AftercareStationProps = {}) {
   const [search, setSearch] = useState("");
+  const [barcodeInput, setBarcodeInput] = useState("");
+  const [localBarcode, setLocalBarcode] = useState<string | null>(null);
+  const barcodeRef = useRef<HTMLInputElement>(null);
+  const dismissed = useRef<string | null>(null);
+  const resetBlocked = useWorkflowResetBlocked();
+  const [location, navigate] = useLocation();
+  const raw = scannedBarcode?.trim() || localBarcode || "";
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<number>();
   const [creating, setCreating] = useState(false);
@@ -105,11 +134,20 @@ export default function AftercareWorkspace({
   const [scannedSource, setScannedSource] = useState<ApiInput["preview"]>();
   const consumed = useRef<string | null>(null);
   const scan = trpc.delivery.workflow.preview.useQuery(
-    { raw: scannedBarcode ?? "", station: "aftercare", branchId },
-    { enabled: !!scannedBarcode, retry: false },
+    { raw, station: "aftercare", branchId },
+    {
+      enabled: !!raw && raw !== dismissed.current && !resetBlocked,
+      retry: false,
+    },
   );
   useEffect(() => {
-    if (!scannedBarcode || !scan.data || consumed.current === scannedBarcode)
+    if (
+      !raw ||
+      resetBlocked ||
+      raw === dismissed.current ||
+      !scan.data ||
+      consumed.current === raw
+    )
       return;
     const relations = scan.data.relations;
     if (relations.aftercareCaseId) {
@@ -124,15 +162,26 @@ export default function AftercareWorkspace({
       setSelected(undefined);
       setCreating(true);
     } else return;
-    consumed.current = scannedBarcode;
+    consumed.current = raw;
+    setBarcodeInput("");
+    setLocalBarcode(null);
     onBarcodeConsumed?.();
-  }, [scan.data, scannedBarcode, onBarcodeConsumed, canCreate]);
+  }, [scan.data, raw, onBarcodeConsumed, canCreate, resetBlocked]);
   useEffect(() => {
-    if (!scannedBarcode) consumed.current = null;
+    if (!scannedBarcode) {
+      consumed.current = null;
+      dismissed.current = null;
+    }
   }, [scannedBarcode]);
+  const consumedCaseLink = useRef<string | null>(null);
   useEffect(() => {
-    if (caseId) setSelected(caseId);
-  }, [caseId]);
+    if (!caseId) { consumedCaseLink.current = null; return; }
+    const key = `${branchId}:${caseId}`;
+    if (!resetBlocked && consumedCaseLink.current !== key) {
+      consumedCaseLink.current = key;
+      setSelected(caseId);
+    }
+  }, [caseId, branchId, resetBlocked]);
   const urlSearch = useSearch();
   const linkedExecutionId =
     executionId ?? Number(new URLSearchParams(urlSearch).get("executionId"));
@@ -144,25 +193,79 @@ export default function AftercareWorkspace({
           Number.isSafeInteger(linkedExecutionId) && linkedExecutionId > 0,
       },
     );
+  const consumedExecutionLink = useRef<string | null>(null);
   useEffect(() => {
-    if (linkedExecution.data) setSelected(linkedExecution.data.caseId);
-  }, [linkedExecution.data]);
+    if (!linkedExecutionId) { consumedExecutionLink.current = null; return; }
+    const key = `${branchId}:${linkedExecutionId}`;
+    if (linkedExecution.data && !resetBlocked && consumedExecutionLink.current !== key) {
+      consumedExecutionLink.current = key;
+      setSelected(linkedExecution.data.caseId);
+    }
+  }, [linkedExecution.data, linkedExecutionId, branchId, resetBlocked]);
+  const consumedSourceLink = useRef<string | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(urlSearch);
     const sourceId = Number(
       params.get("invoiceId") || params.get("workOrderId"),
     );
-    if (canCreate && Number.isSafeInteger(sourceId) && sourceId > 0)
+    if (!Number.isSafeInteger(sourceId) || sourceId <= 0) { consumedSourceLink.current = null; return; }
+    const key = `${branchId}:${params.has("invoiceId") ? "invoice" : "workOrder"}:${sourceId}`;
+    if (
+      !resetBlocked &&
+      canCreate &&
+      consumedSourceLink.current !== key
+    ) {
+      consumedSourceLink.current = key;
       setCreating(true);
-  }, [urlSearch, canCreate]);
+    }
+  }, [urlSearch, canCreate, branchId, resetBlocked]);
   const list = trpc.delivery.fulfillment.aftercare.list.useQuery({
     branchId,
     search,
     page: page + 1,
     pageSize: 20,
   });
+  function resetLookup() {
+    if (resetBlocked) return;
+    dismissed.current = raw;
+    consumed.current = null;
+    setSearch("");
+    setPage(0);
+    setSelected(undefined);
+    setCreating(false);
+    setScannedSource(undefined);
+    setLocalBarcode(null);
+    setBarcodeInput("");
+    onBarcodeConsumed?.();
+    if (onLookupReset) onLookupReset();
+    else {
+      const query = clearWorkflowLookupSearch(urlSearch);
+      navigate(location + (query ? "?" + query : ""), { replace: true });
+    }
+    requestAnimationFrame(() => barcodeRef.current?.focus());
+  }
+  function lookupBarcode(value: string) {
+    if (resetBlocked || !value.trim()) return;
+    dismissed.current = null;
+    consumed.current = null;
+    setLocalBarcode(value.trim());
+  }
   return (
     <section dir="rtl" className="space-y-4">
+      <div className="space-y-2 rounded-md border p-3">
+        <WorkflowResetButton onReset={resetLookup} disabled={resetBlocked} />
+        <UnifiedSearchInput
+          ref={barcodeRef}
+          value={barcodeInput}
+          onChange={setBarcodeInput}
+          onScan={lookupBarcode}
+          onSubmit={lookupBarcode}
+          barcode
+          disabled={resetBlocked}
+          aria-label="باركود أصل المعالجة"
+          placeholder="باركود الفاتورة أو أمر الشغل أو المعالجة"
+        />
+      </div>
       {scan.error && (
         <p role="alert" className="text-sm text-destructive">
           {scan.error.message}
@@ -189,7 +292,12 @@ export default function AftercareWorkspace({
           الأصليين محفوظين.
         </p>
         {canCreate && (
-          <Button onClick={() => setCreating(!creating)}>
+          <Button
+            disabled={resetBlocked}
+            onClick={() => {
+              if (!resetBlocked) setCreating(!creating);
+            }}
+          >
             <Plus className="size-4" />
             حالة معالجة
           </Button>
@@ -225,7 +333,9 @@ export default function AftercareWorkspace({
           message: list.error?.message,
           onRetry: () => void list.refetch(),
         }}
-        onRowClick={(row) => setSelected(row.id)}
+        onRowClick={(row) => {
+          if (!resetBlocked) setSelected(row.id);
+        }}
         serverPagination={{
           page,
           onPageChange: setPage,

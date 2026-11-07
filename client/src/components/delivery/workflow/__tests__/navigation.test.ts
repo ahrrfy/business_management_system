@@ -10,6 +10,22 @@ import {
   workflowSourceBarcode,
 } from "../navigation";
 import { WorkflowModeNavigation } from "../WorkflowModeNavigation";
+import { clearWorkflowLookupSearch } from "../navigation";
+
+it("clears every scanned identity while retaining the current station and branch", () => {
+  const result = new URLSearchParams(
+    clearWorkflowLookupSearch(
+      "?tab=workflow&section=collect&action=charges&branchId=3&invoiceId=1&workOrderId=2&consignmentId=4&onlineOrderId=5&requestId=6&caseId=7&executionId=8&chargeId=9&invoice=106208&barcode=CN-1&raw=old",
+    ),
+  );
+  expect(Object.fromEntries(result)).toEqual({
+    tab: "workflow",
+    section: "collect",
+    action: "charges",
+    branchId: "3",
+  });
+  expect(workflowSourceContext(result.toString())).toBeNull();
+});
 import {
   WORKFLOW_MODES,
   browserWorkflowModeStorage,

@@ -3,6 +3,10 @@ import { trpc } from "@/lib/trpc";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  WorkflowResetButton,
+  useWorkflowResetGuard,
+} from "./workflowScanReset";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { notify } from "@/lib/notify";
@@ -49,6 +53,7 @@ export function WorkflowReturnSourceCard(props: Props) {
   if (!me.data?.id)
     return (
       <Card className="mx-auto max-w-3xl p-3">
+        <WorkflowResetButton onReset={props.onClear} />
         <p className="text-sm text-muted-foreground">
           التحقق من جلسة الموظف قبل حركة العهدة
         </p>
@@ -138,6 +143,7 @@ function WorkflowReturnSourceCardContent({
     recovery.state === "LEGACY";
   const receiptLocked = busy || saved != null || blocked;
   const locked = receiptLocked || commercialRecoveryLocked;
+  useWorkflowResetGuard(locked);
   const aftercare = current.relations.aftercareExecutionId != null;
   const groupedIds = current.group?.consignmentIds ?? [];
   const canDeclare = current.actions.find(
@@ -481,6 +487,7 @@ function WorkflowReturnSourceCardContent({
 
   return (
     <Card className="mx-auto max-w-3xl gap-3 p-3">
+      <WorkflowResetButton onReset={onClear} disabled={locked} />
       <h2 className="break-words font-semibold">
         الطرد المرتبط: {current.printSource.number}
       </h2>
@@ -683,14 +690,7 @@ function WorkflowReturnSourceCardContent({
             مراجعة التحصيل والأمانة
           </Button>
         )}
-        <Button
-          type="button"
-          variant="outline"
-          disabled={locked}
-          onClick={onClear}
-        >
-          مسح طرد آخر
-        </Button>
+        <WorkflowResetButton onReset={onClear} disabled={locked} />
       </div>
       {!aftercare && (
         <WorkflowCommercialReturn

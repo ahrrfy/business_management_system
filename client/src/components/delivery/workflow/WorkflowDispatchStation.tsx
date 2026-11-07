@@ -30,6 +30,11 @@ import { CreditCollectionChoice } from "../CreditCollectionChoice";
 import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import {
+  WorkflowResetButton,
+  useWorkflowResetBlocked,
+  useWorkflowResetGuard,
+} from "./workflowScanReset";
 import type {
   WorkflowDispatchBatchInput,
   WorkflowDispatchBatchResult,
@@ -41,6 +46,7 @@ import {
   dispatchRestorePlan,
   readDispatchDraft,
   writeDispatchDraft,
+  emptyDispatchDraft,
   type WorkflowDispatchDraft,
 } from "./dispatchDraft";
 
@@ -62,6 +68,7 @@ export function WorkflowDispatchStation({
   parties,
   scannedBarcode,
   onBarcodeConsumed,
+  onLookupReset,
   onAftercare,
   onRefunds,
 }: {
@@ -70,6 +77,7 @@ export function WorkflowDispatchStation({
   parties: Party[];
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
+  onLookupReset?: () => void;
   onAftercare?: (raw: string) => void;
   onRefunds?: (codes: string[]) => void;
 }) {
@@ -109,6 +117,8 @@ export function WorkflowDispatchStation({
   );
   const frozen = draft.pending != null;
   const formFrozen = frozen || confirming || dispatch.isPending;
+  const resetBlocked = useWorkflowResetBlocked();
+  useWorkflowResetGuard(formFrozen || requestBusy);
   const references = rows.map(({ preview }) => ({
     kind: preview.source.kind,
     id: preview.source.id,
@@ -149,6 +159,38 @@ export function WorkflowDispatchStation({
     },
     [userId, branchId],
   );
+  function resetLookup() {
+    if (
+      resetBlocked ||
+      submitLock.current ||
+      confirming ||
+      dispatch.isPending ||
+      draftRef.current.pending ||
+      requestBusy
+    )
+      return;
+    generation.current++;
+    restored.current = generation.current;
+    queuedCodes.current.clear();
+    queue.current = Promise.resolve();
+    rowsRef.current = [];
+    setRows([]);
+    setPendingScans(0);
+    setInput("");
+    setMessage("");
+    setRequestContext(null);
+    setCommitted(null);
+    setPrintMessage("");
+    persistDraft((old) => ({
+      ...emptyDispatchDraft(),
+      partyId: old.partyId,
+      driverId: old.driverId,
+      lastCommitted: old.lastCommitted,
+    }));
+    onBarcodeConsumed?.();
+    onLookupReset?.();
+    inputRef.current?.focus();
+  }
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -542,7 +584,7 @@ export function WorkflowDispatchStation({
         embedded
         branchId={branchId}
         requestId={requestContext.requestId}
-        onClose={requestBusy ? undefined : () => setRequestContext(null)}
+        onClose={requestBusy || resetBlocked ? undefined : resetLookup}
         onChanged={(id) => {
           if (id) setRequestContext({ requestId: id });
           void refreshRows();
@@ -589,6 +631,10 @@ export function WorkflowDispatchStation({
         </Card>
       )}
       <Card className="gap-3 p-3">
+        <WorkflowResetButton
+          onReset={resetLookup}
+          disabled={formFrozen || requestBusy}
+        />
         <Button
           type="button"
           size="sm"

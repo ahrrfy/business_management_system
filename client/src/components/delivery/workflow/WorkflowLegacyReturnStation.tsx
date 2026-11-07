@@ -3,6 +3,10 @@ import { Ban, Package, RefreshCcw, ScanLine } from "lucide-react";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  WorkflowResetButton,
+  useWorkflowResetGuard,
+} from "./workflowScanReset";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
@@ -299,6 +303,7 @@ function LegacyReturnContext({
     cancelOnline.isPending ||
     retrying;
   const frozen = mutating || pending != null;
+  useWorkflowResetGuard(frozen);
   function run(action: PendingAction, existingWin?: Window | null) {
     if (action.kind === "DIRECT") {
       closeCancelPrintWindow();
@@ -478,6 +483,7 @@ function LegacyReturnContext({
   const cancelled = (order.data?.status ?? source?.status) === "CANCELLED";
   return (
     <div className="mx-auto max-w-2xl space-y-4">
+      {!source && <WorkflowResetButton onReset={onClear} disabled={frozen} />}
       <Card className="gap-0 p-4">
         <h2 className="mb-3 font-extrabold">نوع الإجراء</h2>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -556,9 +562,7 @@ function LegacyReturnContext({
                 {source.customerName}
               </p>
             </div>
-            <Button variant="ghost" disabled={frozen} onClick={onClear}>
-              مسح مستند آخر
-            </Button>
+            <WorkflowResetButton onReset={onClear} disabled={frozen} />
           </div>
           {activeShipment ? (
             <div role="status" className="space-y-2 rounded border p-3">

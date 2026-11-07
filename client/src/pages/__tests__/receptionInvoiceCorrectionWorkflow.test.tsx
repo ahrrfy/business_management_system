@@ -8,7 +8,7 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
   it("يوفر اختصاراً ثم مسحاً دقيقاً وزراً كبيراً إلى محرر الفاتورة الأصلي", () => {
     const reception = readClient("pages/Reception.tsx");
     const workflow = readClient("pages/reception/ReceptionWorkflowPage.tsx");
-    expect(reception).toContain('/reception/workflow?section=edit');
+    expect(reception).toContain("/reception/workflow?section=edit");
     expect(reception).toContain("تعديل فاتورة");
     for (const station of ["dispatch", "collect", "edit", "return", "cancelAssignment", "aftercare"]) expect(workflow).toContain(`"${station}"`);
     expect(workflow).toContain("lookupForCorrection.fetch");
@@ -34,7 +34,9 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
     expect(workflow).toContain("trpc.sales.lookupForCorrection.useQuery");
     expect(workflow).toContain("invoiceNumber: editInvoiceNumber");
     expect(workflow).toContain("setEditInvoiceNumber(invoiceNumber)");
-    expect(workflow).toContain("const editScanned = editPreview.data");
+    expect(workflow).toContain(
+      "const editScanned = editInvoiceNumber ? editPreview.data : undefined",
+    );
     expect(returns).toContain("trpc.returns.getInvoice.useQuery");
     expect(returns).toContain('source?.kind === "invoice" ? source.id : 0');
     expect(returns).toContain("invoiceStatusLabel(invoice.data.status)");

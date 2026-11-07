@@ -21,6 +21,7 @@ import {
   workflowSection,
   workflowSourceContext,
   workflowSourceBarcode,
+  clearWorkflowLookupSearch,
 } from "@/components/delivery/workflow/navigation";
 import { WorkflowModeNavigation } from "@/components/delivery/workflow/WorkflowModeNavigation";
 import {
@@ -94,6 +95,10 @@ import {
 } from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import {
+  WorkflowResetButton,
+  WorkflowScanResetScope,
+} from "@/components/delivery/workflow/workflowScanReset";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 type Section = ReturnType<typeof workflowSection>;
@@ -109,6 +114,11 @@ export default function DeliveryWorkflowPage() {
     return workflowDefaultSection(storedMode ?? "assignment");
   });
   const pendingMutations = useIsMutating();
+  const [stationLocked, setStationLocked] = useState(false);
+  const resetBlocked = pendingMutations > 0 || stationLocked;
+  const resetBlockedRef = useRef(resetBlocked);
+  resetBlockedRef.current = resetBlocked;
+  const lookupGeneration = useRef(0);
   const pageParams = new URLSearchParams(pageSearch);
   const [cancelScannedCode, setCancelScannedCode] = useState<string | null>(
     null,
@@ -146,7 +156,7 @@ export default function DeliveryWorkflowPage() {
     { invoiceNumber: editInvoiceNumber ?? "" },
     { enabled: editInvoiceNumber != null },
   );
-  const editScanned = editPreview.data;
+  const editScanned = editInvoiceNumber ? editPreview.data : undefined;
   const me = trpc.auth.me.useQuery();
   const branchContext = useSessionBranchInference();
   const [chosenBranch, setChosenBranch] = useState(() =>
@@ -169,6 +179,7 @@ export default function DeliveryWorkflowPage() {
   const lookupContext = useRef({ branchId, section: activeSection });
   lookupContext.current = { branchId, section: activeSection };
   useEffect(() => {
+    lookupGeneration.current++;
     const explicit = positiveWorkflowParam(
       new URLSearchParams(pageSearch),
       "branchId",
@@ -177,6 +188,7 @@ export default function DeliveryWorkflowPage() {
   }, [pageSearch, branchContext.canOverride]);
   useEffect(() => {
     setReturnScanned(null);
+    lookupGeneration.current++;
     setReturnWorkflow(null);
     setEditInvoiceNumber(null);
     setEditScanContext(null);
@@ -201,6 +213,8 @@ export default function DeliveryWorkflowPage() {
     editScanned?.blockReason ??
     (workflowEditAction?.allowed === false ? workflowEditAction.reason : null);
   function chooseSection(section: Section, extra?: Record<string, string>) {
+    if (resetBlocked) return;
+    lookupGeneration.current++;
     setActiveSection(section);
     const params = new URLSearchParams(pageSearch);
     for (const key of [
@@ -230,6 +244,7 @@ export default function DeliveryWorkflowPage() {
     caseId?: number;
     executionId?: number;
   }) {
+    if (resetBlockedRef.current) return;
     if (context.raw) setAftercareScannedCode(context.raw);
     const extra: Record<string, string> = {};
     if (context.caseId) extra.caseId = String(context.caseId);
@@ -262,8 +277,10 @@ export default function DeliveryWorkflowPage() {
   );
   const lookupWorkOrder = useCallback(
     async (raw: string) => {
+      if (resetBlockedRef.current) return;
       const orderNumber = resolveOrderLookupBarcode(raw);
       if (!orderNumber || !branchId) return;
+      const generation = ++lookupGeneration.current;
       try {
         const preview = await utils.delivery.workflow.preview.fetch({
           raw: orderNumber,
@@ -271,6 +288,7 @@ export default function DeliveryWorkflowPage() {
           branchId,
         });
         if (
+          generation !== lookupGeneration.current ||
           lookupContext.current.branchId !== branchId ||
           lookupContext.current.section !== "return"
         )
@@ -291,6 +309,7 @@ export default function DeliveryWorkflowPage() {
         }
         const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
         if (
+          generation !== lookupGeneration.current ||
           lookupContext.current.branchId !== branchId ||
           lookupContext.current.section !== "return"
         )
@@ -323,6 +342,7 @@ export default function DeliveryWorkflowPage() {
         setReturnWorkflow(null);
         setReturnBarcodeInput("");
       } catch (error) {
+        if (generation === lookupGeneration.current)
         notify.err(error, "تعذر قراءة مصدر المرتجع");
       }
     },
@@ -331,7 +351,9 @@ export default function DeliveryWorkflowPage() {
 
   const lookupInvoiceForEdit = useCallback(
     async (raw: string) => {
+      if (resetBlockedRef.current) return;
       if (!raw.trim() || !branchId) return;
+      const generation = ++lookupGeneration.current;
       try {
         const preview = await utils.delivery.workflow.preview.fetch({
           raw,
@@ -339,6 +361,7 @@ export default function DeliveryWorkflowPage() {
           branchId,
         });
         if (
+          generation !== lookupGeneration.current ||
           lookupContext.current.branchId !== branchId ||
           lookupContext.current.section !== "edit"
         )
@@ -369,6 +392,7 @@ export default function DeliveryWorkflowPage() {
           invoiceNumber,
         });
         if (
+          generation !== lookupGeneration.current ||
           lookupContext.current.branchId !== branchId ||
           lookupContext.current.section !== "edit"
         )
@@ -380,6 +404,7 @@ export default function DeliveryWorkflowPage() {
         setEditInvoiceNumber(invoiceNumber);
         setEditBarcodeInput("");
       } catch (error) {
+        if (generation === lookupGeneration.current)
         notify.err(error, "تعذّر جلب الفاتورة");
       }
     },
@@ -412,6 +437,7 @@ export default function DeliveryWorkflowPage() {
   useBarcodeScanner(
     useCallback(
       async (raw: string) => {
+        if (resetBlockedRef.current) return;
         if (cancelAssignmentEnabled) setCancelScannedCode(raw.trim());
         else if (returnEnabled) await lookupWorkOrder(raw);
         else if (collectEnabled) setCollectScannedCode(raw.trim());
@@ -430,7 +456,7 @@ export default function DeliveryWorkflowPage() {
     ),
     {
       enabled:
-        pendingMutations === 0 &&
+        !resetBlocked &&
         (cancelAssignmentEnabled ||
           returnEnabled ||
           collectEnabled ||
@@ -443,6 +469,28 @@ export default function DeliveryWorkflowPage() {
     else if (editEnabled) editRef.current?.focus();
   }, [returnEnabled, editEnabled]);
   const sourceContextKey = useRef<string | null>(null);
+  function clearLookup() {
+    if (resetBlocked) return;
+    lookupGeneration.current++;
+    sourceContextKey.current = null;
+    directInvoiceLookupRef.current = null;
+    setReturnWorkflow(null);
+    setReturnScanned(null);
+    setReturnBarcodeInput("");
+    setEditInvoiceNumber(null);
+    setEditScanContext(null);
+    setEditBarcodeInput("");
+    setDispatchScannedCode(null);
+    setCancelScannedCode(null);
+    setCollectScannedCode(null);
+    setAftercareScannedCode(null);
+    const search = clearWorkflowLookupSearch(pageSearch);
+    navigate(location + (search ? "?" + search : ""), { replace: true });
+    requestAnimationFrame(() => {
+      if (activeSection === "edit") editRef.current?.focus();
+      else if (activeSection === "return") returnRef.current?.focus();
+    });
+  }
   useEffect(() => {
     if (!branchId || activeSection === "aftercare") return;
     const source = workflowSourceContext(pageSearch);
@@ -451,10 +499,11 @@ export default function DeliveryWorkflowPage() {
       branchId + ":" + activeSection + ":" + source.kind + ":" + source.id;
     if (sourceContextKey.current === key) return;
     let current = true;
+    const generation = lookupGeneration.current;
     void utils.delivery.workflow.previewBySource
       .fetch({ source, station: activeSection, branchId })
       .then((preview) => {
-        if (!current) return;
+        if (!current || generation !== lookupGeneration.current) return;
         sourceContextKey.current = key;
         const raw = workflowSourceBarcode(preview.source);
         if (activeSection === "dispatch") setDispatchScannedCode(raw);
@@ -465,7 +514,7 @@ export default function DeliveryWorkflowPage() {
         else void lookupInvoiceForEdit(raw);
       })
       .catch((error) => {
-        if (current) {
+        if (current && generation === lookupGeneration.current) {
           sourceContextKey.current = null;
           notify.err(error, "تعذر فتح المستند المرتبط");
         }
@@ -483,6 +532,7 @@ export default function DeliveryWorkflowPage() {
   ]);
 
   return (
+    <WorkflowScanResetScope onBlockedChange={setStationLocked}>
     <div
       className="flex h-full min-h-0 flex-col overflow-hidden bg-background"
       dir="rtl"
@@ -533,7 +583,7 @@ export default function DeliveryWorkflowPage() {
             aria-label="فرع محطات سير العمل"
             value={branchId ? String(branchId) : ""}
             className="w-56"
-            disabled={pendingMutations > 0}
+              disabled={resetBlocked}
             onValueChange={async (value) => {
               if (!value || Number(value) === branchId) return;
               const ok = await confirm({
@@ -597,7 +647,7 @@ export default function DeliveryWorkflowPage() {
 
       <WorkflowModeNavigation
         activeSection={activeSection}
-        disabled={pendingMutations > 0}
+          disabled={resetBlocked}
         disabledReason="توجد عملية قيد الحفظ؛ منعنا تغيير المحطة حتى لا يفقد الموظف نتيجتها."
         nextStep="انتظر اكتمال الحفظ ثم تابع المسح من المحطة المختارة."
         onModeChange={chooseMode}
@@ -623,6 +673,7 @@ export default function DeliveryWorkflowPage() {
             parties={allParties}
             scannedBarcode={dispatchScannedCode}
             onBarcodeConsumed={() => setDispatchScannedCode(null)}
+              onLookupReset={clearLookup}
             onAftercare={(raw) => openAftercare({ raw })}
             onRefunds={(codes) => {
               setRefundCodes(codes);
@@ -636,6 +687,7 @@ export default function DeliveryWorkflowPage() {
             branchId={branchId}
             scannedBarcode={cancelScannedCode}
             onBarcodeConsumed={() => setCancelScannedCode(null)}
+              onLookupReset={clearLookup}
             onAssignmentCancelled={() => {
               void utils.delivery.invalidate();
             }}
@@ -652,6 +704,7 @@ export default function DeliveryWorkflowPage() {
             shift={shift}
             scannedBarcode={collectScannedCode}
             onBarcodeConsumed={() => setCollectScannedCode(null)}
+              onLookupReset={clearLookup}
             action={pageParams.get("action")}
             chargeId={positiveWorkflowParam(pageParams, "chargeId")}
             refundCodes={refundCodes}
@@ -683,12 +736,17 @@ export default function DeliveryWorkflowPage() {
               executionId={positiveWorkflowParam(pageParams, "executionId")}
               scannedBarcode={aftercareScannedCode}
               onBarcodeConsumed={() => setAftercareScannedCode(null)}
+                onLookupReset={clearLookup}
             />
           </React.Suspense>
         )}
 
         {activeSection === "edit" && (
           <div className="mx-auto max-w-2xl space-y-4">
+              <WorkflowResetButton
+                onReset={clearLookup}
+                disabled={resetBlocked}
+              />
             {!editInvoiceNumber && (
               <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
                 <ScanLine
@@ -738,10 +796,8 @@ export default function DeliveryWorkflowPage() {
                 </p>
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setEditInvoiceNumber(null);
-                    setEditBarcodeInput("");
-                  }}
+                    disabled={resetBlocked}
+                    onClick={clearLookup}
                 >
                   مسح فاتورة أخرى
                 </Button>
@@ -772,10 +828,8 @@ export default function DeliveryWorkflowPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      setEditInvoiceNumber(null);
-                      setEditBarcodeInput("");
-                    }}
+                      disabled={resetBlocked}
+                      onClick={clearLookup}
                   >
                     مسح فاتورة أخرى
                   </Button>
@@ -918,7 +972,7 @@ export default function DeliveryWorkflowPage() {
             branchId={branchId}
             shiftId={shift?.id}
             preview={returnWorkflow}
-            onClear={() => setReturnWorkflow(null)}
+              onClear={clearLookup}
             onAftercare={openAftercare}
             onChanged={(value) => setReturnWorkflow(value)}
             onCollect={(raw) => {
@@ -938,10 +992,7 @@ export default function DeliveryWorkflowPage() {
             onModeChange={setReturnType}
             onBarcodeChange={setReturnBarcodeInput}
             onLookup={lookupWorkOrder}
-            onClear={() => {
-              setReturnScanned(null);
-              setReturnBarcodeInput("");
-            }}
+              onClear={clearLookup}
           />
         )}
       </div>
@@ -959,5 +1010,6 @@ export default function DeliveryWorkflowPage() {
         }}
       />
     </div>
+    </WorkflowScanResetScope>
   );
 }

@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { useReturnComposer } from "./useReturnComposer";
 import type { ReturnComposerProps } from "./returnComposerTypes";
+import { useWorkflowResetGuard } from "@/components/delivery/workflow/workflowScanReset";
 
 import { ReturnComposerItemsTable } from "./ReturnComposerItemsTable";
 import { ReturnComposerDocumentation } from "./ReturnComposerDocumentation";
@@ -95,6 +96,12 @@ export function ReturnComposer(props: ReturnComposerProps) {
     submit,
     triggerExpressReturn,
   } = model;
+  useWorkflowResetGuard(
+    create.isPending ||
+      approve.isPending ||
+      withdrawing ||
+      model.unresolvedMutation,
+  );
   if (detail.isLoading)
     return <LoadingState message="جارٍ تحميل بنود الفاتورة…" />;
   if (detail.isError) {

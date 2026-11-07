@@ -1,6 +1,10 @@
 import React, { useRef, useState } from "react";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
+import {
+  useWorkflowResetGuard,
+  hasUnresolvedWorkflowError,
+} from "@/components/delivery/workflow/workflowScanReset";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -53,6 +57,7 @@ export function AftercareSettlementPanel({
   const keys = useRef(new Map<string, string>());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  useWorkflowResetGuard(pending || keys.current.size > 0);
   const request =
     trpc.delivery.fulfillment.aftercare.settlementRequest.useMutation();
   const approve =
@@ -148,6 +153,7 @@ export function AftercareSettlementPanel({
     mutate: (input: T & { clientRequestId: string }) => Promise<R>,
   ): Promise<R | undefined> {
     const fingerprint = `${operation}:${JSON.stringify(value)}`;
+    const recovering = keys.current.has(fingerprint);
     const key = keys.current.get(fingerprint) ?? crypto.randomUUID();
     keys.current.set(fingerprint, key);
     setPending(true);
@@ -158,6 +164,8 @@ export function AftercareSettlementPanel({
       await onChange();
       return out;
     } catch (cause) {
+      if (!recovering && !hasUnresolvedWorkflowError(cause))
+        keys.current.delete(fingerprint);
       setError(
         cause instanceof Error
           ? cause.message
@@ -567,8 +575,16 @@ function AftercareOriginalRights({
     >
   >({});
   const [proofs, setProofs] = useState<Record<number, string>>({});
+  const [unresolvedApprovals, setUnresolvedApprovals] = useState<ReadonlySet<number>>(new Set());
   const [error, setError] = useState("");
   const keys = useRef(new Map<string, string>());
+  useWorkflowResetGuard(
+    post.isPending ||
+      confirmRefund.isPending ||
+      approveRefund.isPending ||
+      keys.current.size > 0 ||
+      unresolvedApprovals.size > 0,
+  );
   const selected = query.data?.rights.find(
     (right) => right.rightIndex === Number(rightIndex),
   );
@@ -650,6 +666,7 @@ function AftercareOriginalRights({
                           reference: proofs[refund.receiptId],
                         };
                         const fingerprint = JSON.stringify(payload);
+                        const recovering = keys.current.has(fingerprint);
                         const key =
                           keys.current.get(fingerprint) ?? crypto.randomUUID();
                         keys.current.set(fingerprint, key);
@@ -674,7 +691,13 @@ function AftercareOriginalRights({
                           ).catch(() => {});
                           await refresh();
                         } catch (cause) {
-                          try { rfdWin?.close(); } catch { /* ignore */ }
+                          if (!recovering && !hasUnresolvedWorkflowError(cause))
+                            keys.current.delete(fingerprint);
+                          try {
+                            rfdWin?.close();
+                          } catch {
+                            /* ignore */
+                          }
                           setError(
                             cause instanceof Error
                               ? cause.message
@@ -706,6 +729,7 @@ function AftercareOriginalRights({
                           await approveRefund.mutateAsync({
                             receiptId: refund.receiptId,
                           });
+                          setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(refund.receiptId); return next; });
                           void printOverageRefundReceipt(
                             {
                               refundNumber: refund.voucherNumber ?? `RFD-${refund.receiptId}`,
@@ -720,7 +744,13 @@ function AftercareOriginalRights({
                           ).catch(() => {});
                           await refresh();
                         } catch (cause) {
-                          try { rfdWin?.close(); } catch { /* ignore */ }
+                          if (hasUnresolvedWorkflowError(cause))
+                            setUnresolvedApprovals(previous => new Set(previous).add(refund.receiptId));
+                          try {
+                            rfdWin?.close();
+                          } catch {
+                            /* ignore */
+                          }
                           setError(
                             cause instanceof Error
                               ? cause.message
@@ -877,6 +907,7 @@ function AftercareOriginalRights({
                     refunds: refunds.length ? refunds : undefined,
                   };
                   const fingerprint = JSON.stringify(payload);
+                  const recovering = keys.current.has(fingerprint);
                   const key =
                     keys.current.get(fingerprint) ?? crypto.randomUUID();
                   keys.current.set(fingerprint, key);
@@ -908,7 +939,13 @@ function AftercareOriginalRights({
                     }
                     await refresh();
                   } catch (cause) {
-                    try { rfdWin?.close(); } catch { /* ignore */ }
+                    if (!recovering && !hasUnresolvedWorkflowError(cause))
+                      keys.current.delete(fingerprint);
+                    try {
+                      rfdWin?.close();
+                    } catch {
+                      /* ignore */
+                    }
                     setError(
                       cause instanceof Error
                         ? cause.message

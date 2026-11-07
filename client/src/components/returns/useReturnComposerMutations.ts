@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { hasUnresolvedWorkflowError } from "@/components/delivery/workflow/workflowScanReset";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
@@ -29,6 +30,7 @@ export function useReturnComposerMutations(
     | "setError"
     | "setDone"
     | "setClientRequestId"
+    | "clientRequestId"
     | "inv"
     | "pending"
     | "canWithdrawPending"
@@ -45,6 +47,7 @@ export function useReturnComposerMutations(
     setError,
     setDone,
     setClientRequestId,
+    clientRequestId,
     inv,
     pending,
     canWithdrawPending,
@@ -52,6 +55,17 @@ export function useReturnComposerMutations(
   } = ctx;
 
   const printWinRef = useRef<Window | null>(null);
+  const [unresolvedRequests, setUnresolvedRequests] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [unresolvedApprovals, setUnresolvedApprovals] = useState<ReadonlySet<number>>(new Set());
+  function resolveRequest(requestId: string | undefined) {
+    setUnresolvedRequests((previous) => {
+      const next = new Set(previous);
+      next.delete(requestId ?? "current");
+      return next;
+    });
+  }
   function closePrintWin() {
     try {
       if (printWinRef.current && !printWinRef.current.closed) {
@@ -66,6 +80,7 @@ export function useReturnComposerMutations(
   // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
   const rawApprove = trpc.returns.approveRequest.useMutation({
     onSuccess: async (res, vars) => {
+      setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(vars.requestId); return next; });
       const win = printWinRef.current;
       printWinRef.current = null;
       setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
@@ -96,8 +111,6 @@ export function useReturnComposerMutations(
   
   
           }),
-
-
         },
         ...(win ? [{ into: win }] : []),
       ).catch(() => {});
@@ -107,7 +120,8 @@ export function useReturnComposerMutations(
         returnedTotal: String(res.returnedTotal ?? "0"),
       });
     },
-    onError: (e) => {
+    onError: (e, vars) => {
+      if (hasUnresolvedWorkflowError(e)) setUnresolvedApprovals(previous => new Set(previous).add(vars.requestId));
       closePrintWin();
       setError(e.message);
     },
@@ -197,6 +211,7 @@ export function useReturnComposerMutations(
       );
       return false;
     }
+    resolveRequest(submission.clientRequestId);
     setDone(
       `التُقط المرتجع دون اتصال برقم ${receiptNumber} — يُرحَّل تلقائياً عند عودة الشبكة.`,
     );
@@ -213,6 +228,7 @@ export function useReturnComposerMutations(
       isOwner: me.data?.isOwner === true,
     }),
     onSuccess: async (res, vars) => {
+      resolveRequest(vars.clientRequestId);
       const win = printWinRef.current;
       printWinRef.current = null;
       /**
@@ -241,14 +257,7 @@ export function useReturnComposerMutations(
       if (isExecuted) {
         void printOrderCancellationReceipt(
           {
-  
-  
-  
-  
             ...buildExecutedReturnReceiptPayload({
-    
-    
-    
               documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
               customerName: inv?.customerName ?? null,
               originalTotal: inv?.total ?? null,
@@ -261,8 +270,6 @@ export function useReturnComposerMutations(
               cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
     
             }),
-
-  
           },
           ...(win ? [{ into: win }] : []),
         ).catch(() => {});
@@ -276,6 +283,10 @@ export function useReturnComposerMutations(
       }
     },
     onError: (e, submission, snapshot) => {
+      if (hasUnresolvedWorkflowError(e))
+        setUnresolvedRequests((previous) =>
+          new Set(previous).add(submission.clientRequestId ?? "current"),
+        );
       closePrintWin();
       // انقطاعُ الشبكة ≠ رفضُ أعمال: الأوّل يُلتقَط، والثاني يُعرَض. الخلطُ بينهما يبتلع
       // رفضاً مشروعاً في طابورٍ أو يُفقد نقداً خرج فعلاً.
@@ -303,7 +314,10 @@ export function useReturnComposerMutations(
     },
   };
 
-  async function afterWithdrawal() {
+  async function afterWithdrawal(_result?: unknown, variables?: { requestId: number }) {
+    resolveRequest(clientRequestId);
+    const requestId = variables?.requestId ?? pending?.id;
+    if (requestId != null) setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(requestId); return next; });
     // Withdrawal starts a new intent; never reuse the bound key of the withdrawn request.
     setClientRequestId(crypto.randomUUID());
     setRailState(null);
@@ -348,6 +362,7 @@ export function useReturnComposerMutations(
 
   const withdrawing = withdrawControl.isPending || withdrawLegacy.isPending;
   return {
+    unresolvedMutation: unresolvedApprovals.size > 0 || unresolvedRequests.size > 0,
     approve,
     captureOfflineReturn,
     create,
