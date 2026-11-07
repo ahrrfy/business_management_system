@@ -124,7 +124,7 @@ function AftercareWorkspaceContent({
   const dismissed = useRef<string | null>(null);
   const resetBlocked = useWorkflowResetBlocked();
   const [location, navigate] = useLocation();
-  const raw = localBarcode ?? scannedBarcode ?? "";
+  const raw = scannedBarcode?.trim() || localBarcode || "";
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<number>();
   const [creating, setCreating] = useState(false);
@@ -164,6 +164,7 @@ function AftercareWorkspaceContent({
     } else return;
     consumed.current = raw;
     setBarcodeInput("");
+    setLocalBarcode(null);
     onBarcodeConsumed?.();
   }, [scan.data, raw, onBarcodeConsumed, canCreate, resetBlocked]);
   useEffect(() => {
@@ -172,9 +173,15 @@ function AftercareWorkspaceContent({
       dismissed.current = null;
     }
   }, [scannedBarcode]);
+  const consumedCaseLink = useRef<string | null>(null);
   useEffect(() => {
-    if (caseId && !resetBlocked) setSelected(caseId);
-  }, [caseId, resetBlocked]);
+    if (!caseId) { consumedCaseLink.current = null; return; }
+    const key = `${branchId}:${caseId}`;
+    if (!resetBlocked && consumedCaseLink.current !== key) {
+      consumedCaseLink.current = key;
+      setSelected(caseId);
+    }
+  }, [caseId, branchId, resetBlocked]);
   const urlSearch = useSearch();
   const linkedExecutionId =
     executionId ?? Number(new URLSearchParams(urlSearch).get("executionId"));
@@ -186,23 +193,32 @@ function AftercareWorkspaceContent({
           Number.isSafeInteger(linkedExecutionId) && linkedExecutionId > 0,
       },
     );
+  const consumedExecutionLink = useRef<string | null>(null);
   useEffect(() => {
-    if (linkedExecution.data && !resetBlocked)
+    if (!linkedExecutionId) { consumedExecutionLink.current = null; return; }
+    const key = `${branchId}:${linkedExecutionId}`;
+    if (linkedExecution.data && !resetBlocked && consumedExecutionLink.current !== key) {
+      consumedExecutionLink.current = key;
       setSelected(linkedExecution.data.caseId);
-  }, [linkedExecution.data, resetBlocked]);
+    }
+  }, [linkedExecution.data, linkedExecutionId, branchId, resetBlocked]);
+  const consumedSourceLink = useRef<string | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(urlSearch);
     const sourceId = Number(
       params.get("invoiceId") || params.get("workOrderId"),
     );
+    if (!Number.isSafeInteger(sourceId) || sourceId <= 0) { consumedSourceLink.current = null; return; }
+    const key = `${branchId}:${params.has("invoiceId") ? "invoice" : "workOrder"}:${sourceId}`;
     if (
       !resetBlocked &&
       canCreate &&
-      Number.isSafeInteger(sourceId) &&
-      sourceId > 0
-    )
+      consumedSourceLink.current !== key
+    ) {
+      consumedSourceLink.current = key;
       setCreating(true);
-  }, [urlSearch, canCreate, resetBlocked]);
+    }
+  }, [urlSearch, canCreate, branchId, resetBlocked]);
   const list = trpc.delivery.fulfillment.aftercare.list.useQuery({
     branchId,
     search,

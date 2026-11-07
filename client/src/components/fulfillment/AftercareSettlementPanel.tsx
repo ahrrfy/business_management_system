@@ -575,7 +575,7 @@ function AftercareOriginalRights({
     >
   >({});
   const [proofs, setProofs] = useState<Record<number, string>>({});
-  const [unresolvedApproval, setUnresolvedApproval] = useState(false);
+  const [unresolvedApprovals, setUnresolvedApprovals] = useState<ReadonlySet<number>>(new Set());
   const [error, setError] = useState("");
   const keys = useRef(new Map<string, string>());
   useWorkflowResetGuard(
@@ -583,7 +583,7 @@ function AftercareOriginalRights({
       confirmRefund.isPending ||
       approveRefund.isPending ||
       keys.current.size > 0 ||
-      unresolvedApproval,
+      unresolvedApprovals.size > 0,
   );
   const selected = query.data?.rights.find(
     (right) => right.rightIndex === Number(rightIndex),
@@ -729,7 +729,7 @@ function AftercareOriginalRights({
                           await approveRefund.mutateAsync({
                             receiptId: refund.receiptId,
                           });
-                          setUnresolvedApproval(false);
+                          setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(refund.receiptId); return next; });
                           void printOverageRefundReceipt(
                             {
                               refundNumber: refund.voucherNumber ?? `RFD-${refund.receiptId}`,
@@ -745,7 +745,7 @@ function AftercareOriginalRights({
                           await refresh();
                         } catch (cause) {
                           if (hasUnresolvedWorkflowError(cause))
-                            setUnresolvedApproval(true);
+                            setUnresolvedApprovals(previous => new Set(previous).add(refund.receiptId));
                           try {
                             rfdWin?.close();
                           } catch {

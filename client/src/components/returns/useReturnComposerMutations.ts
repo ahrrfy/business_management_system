@@ -30,6 +30,7 @@ export function useReturnComposerMutations(
     | "setError"
     | "setDone"
     | "setClientRequestId"
+    | "clientRequestId"
     | "inv"
     | "pending"
     | "canWithdrawPending"
@@ -46,6 +47,7 @@ export function useReturnComposerMutations(
     setError,
     setDone,
     setClientRequestId,
+    clientRequestId,
     inv,
     pending,
     canWithdrawPending,
@@ -56,7 +58,7 @@ export function useReturnComposerMutations(
   const [unresolvedRequests, setUnresolvedRequests] = useState<
     ReadonlySet<string>
   >(new Set());
-  const [unresolvedApproval, setUnresolvedApproval] = useState(false);
+  const [unresolvedApprovals, setUnresolvedApprovals] = useState<ReadonlySet<number>>(new Set());
   function resolveRequest(requestId: string | undefined) {
     setUnresolvedRequests((previous) => {
       const next = new Set(previous);
@@ -78,7 +80,7 @@ export function useReturnComposerMutations(
   // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
   const rawApprove = trpc.returns.approveRequest.useMutation({
     onSuccess: async (res, vars) => {
-      setUnresolvedApproval(false);
+      setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(vars.requestId); return next; });
       const win = printWinRef.current;
       printWinRef.current = null;
       setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
@@ -118,8 +120,8 @@ export function useReturnComposerMutations(
         returnedTotal: String(res.returnedTotal ?? "0"),
       });
     },
-    onError: (e) => {
-      if (hasUnresolvedWorkflowError(e)) setUnresolvedApproval(true);
+    onError: (e, vars) => {
+      if (hasUnresolvedWorkflowError(e)) setUnresolvedApprovals(previous => new Set(previous).add(vars.requestId));
       closePrintWin();
       setError(e.message);
     },
@@ -312,7 +314,10 @@ export function useReturnComposerMutations(
     },
   };
 
-  async function afterWithdrawal() {
+  async function afterWithdrawal(_result?: unknown, variables?: { requestId: number }) {
+    resolveRequest(clientRequestId);
+    const requestId = variables?.requestId ?? pending?.id;
+    if (requestId != null) setUnresolvedApprovals(previous => { const next = new Set(previous); next.delete(requestId); return next; });
     // Withdrawal starts a new intent; never reuse the bound key of the withdrawn request.
     setClientRequestId(crypto.randomUUID());
     setRailState(null);
@@ -357,7 +362,7 @@ export function useReturnComposerMutations(
 
   const withdrawing = withdrawControl.isPending || withdrawLegacy.isPending;
   return {
-    unresolvedMutation: unresolvedApproval || unresolvedRequests.size > 0,
+    unresolvedMutation: unresolvedApprovals.size > 0 || unresolvedRequests.size > 0,
     approve,
     captureOfflineReturn,
     create,

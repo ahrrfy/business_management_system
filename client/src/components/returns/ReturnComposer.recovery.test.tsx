@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   enqueue: vi.fn(async () => true),
   captureGate: vi.fn(async (_amount: number, _kind?: string) => ({ ok: true })),
   pending: false,
+  approvalOptions: undefined as any,
 }));
 vi.mock("@/hooks/useOperationPermission", () => ({
   useOperationPermission: (path: string) => ({
@@ -56,7 +57,7 @@ vi.mock("@/lib/trpc", () => ({
         }),
       },
       approveRequest: {
-        useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+        useMutation: (options: any) => { state.approvalOptions = options; return { isPending: false, mutate: vi.fn() }; },
       },
       withdrawRequest: {
         useMutation: (options: any) => ({
@@ -393,6 +394,24 @@ describe("return form recovery", () => {
     state.enqueue.mockResolvedValueOnce(false);
     await act(async () => options.onError(new Error("Failed to fetch"), submission, options.onMutate(submission)));
     expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+  });
+  it("does not release an unknown approval when a different request succeeds", async () => {
+    render();
+    await act(async () => state.approvalOptions.onError(new Error("response lost"), {requestId: 41}));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+    await act(async () => state.approvalOptions.onSuccess({fullyReturned: false, returnedTotal: "0"}, {requestId: 42}));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+    await act(async () => state.approvalOptions.onSuccess({fullyReturned: false, returnedTotal: "0"}, {requestId: 41}));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(false);
+  });
+  it("releases a lost creation response after the recovered owned request is withdrawn", async () => {
+    render(); await act(async () => button("تنفيذ المرتجع الآن")!.click());
+    const [submission, options] = state.mutation.mock.calls.at(-1)!;
+    await act(async () => options.onError(new Error("response lost"), submission, options.onMutate(submission)));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+    state.invoice = {...state.invoice, pendingRequest: {source: "CONTROL",id: 44,isMine: true,requestedBy: 7,reason: "طلب مستعاد"}};
+    render(); await act(async () => button("سحب طلبي")!.click());
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(false);
   });
   it("scans into an eligible duplicate line after an earlier line was fully returned", () => {
     const item = state.invoice.items[0];
