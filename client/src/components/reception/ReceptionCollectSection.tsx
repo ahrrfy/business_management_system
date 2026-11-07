@@ -41,6 +41,12 @@ import { PartialDeliverySettlementButton } from "@/components/delivery/PartialDe
 import { partialDeliveryStatusLabel } from "@shared/consignmentView";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
+  WorkflowResetButton,
+  useWorkflowResetBlocked,
+  useWorkflowResetGuard,
+  hasUnresolvedWorkflowError,
+} from "@/components/delivery/workflow/workflowScanReset";
+import {
   printCompanyStatementReceiptAsync,
   type CompanyStatementReceiptData,
 } from "@/lib/printing/printCompanyStatementReceipt";
@@ -102,12 +108,14 @@ function BarcodeCustomerCollection({
   preview,
   partyName,
   pending,
+  cancelDisabled,
   onConfirm,
   onCancel,
 }: {
   preview: WorkflowScanPreview;
   partyName?: string;
   pending: boolean;
+  cancelDisabled: boolean;
   onConfirm: (input: {
     collectedAmount: string;
     shortfallReason?: ShortfallReason;
@@ -131,7 +139,7 @@ function BarcodeCustomerCollection({
           type="button"
           size="sm"
           variant="ghost"
-          disabled={pending}
+          disabled={pending || cancelDisabled}
           onClick={onCancel}
         >
           تراجع
@@ -150,6 +158,7 @@ function BarcodeCustomerCollection({
 }
 
 export interface ReceptionCollectSectionProps {
+  onLookupReset?: () => void;
   branchId: number;
   shift: { id: number } | null;
   scannedBarcode?: string | null;
@@ -164,6 +173,7 @@ export interface ReceptionCollectSectionProps {
 }
 
 export function ReceptionCollectSection({
+  onLookupReset,
   branchId,
   shift,
   scannedBarcode,
@@ -173,6 +183,8 @@ export function ReceptionCollectSection({
   onOpenCharge,
 }: ReceptionCollectSectionProps) {
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
+  const [searchReset, setSearchReset] = useState(0);
+  const resetBlocked = useWorkflowResetBlocked();
   const [returnedCustodyOnly, setReturnedCustodyOnly] = useState(false);
   const [settleMode, setSettleMode] = useState<"courier" | "company">(
     "courier",
@@ -189,7 +201,8 @@ export function ReceptionCollectSection({
   >({});
   const [claimSnapshots, setClaimSnapshots] = useState<Record<number, string>>({});
   const [statementDecisions, setStatementDecisions] = useState<Record<number, StatementDecision>>({});
-  const [pendingCompanySelection, setPendingCompanySelection] = useState<{ partyId: number; ids: number[]; groupKey: string } | null>(null);
+  const [pendingCompanySelection, setPendingCompanySelection] = useState<{ partyId: number; ids: number[]; groupKey: string;
+  } | null>(null);
   const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
   const [selectedCourierShipments, setSelectedCourierShipments] = useState<SelectedCourierShipment[]>([]);
   const [pendingRemittance, setPendingRemittance] = useState<RouterInputs["delivery"]["recordRemittance"] | null>(null);
@@ -203,8 +216,10 @@ export function ReceptionCollectSection({
   const canProvePartial = useOperationPermission("delivery.manualProof").allowed;
   const canRemitPartial = useOperationPermission("delivery.recordRemittance").allowed;
   const canCompletePartial = canProvePartial && canRemitPartial;
-  const staffConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
-  const workflowConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
+  const staffConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null;
+  } | null>(null);
+  const workflowConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null;
+  } | null>(null);
   const remittancePrintContext = useRef<{
     partyName: string;
     branchId: number;
@@ -243,6 +258,7 @@ export function ReceptionCollectSection({
   const scanSequence = useRef(0);
   const acceptedGroups = useRef(new Set<string>());
   const confirmRetry = useRef<{ signature: string; key: string } | null>(null);
+  const [confirmationUnresolved, setConfirmationUnresolved] = useState(false);
   useEffect(() => {
     scanSequence.current++;
     acceptedGroups.current.clear();
@@ -453,6 +469,7 @@ export function ReceptionCollectSection({
   const workflowConfirmMut = trpc.delivery.workflow.confirmDelivery.useMutation(
     {
       onSuccess: () => {
+        setConfirmationUnresolved(false);
         const ctx = workflowConfirmPrintContext.current;
         workflowConfirmPrintContext.current = null;
         notify.ok(
@@ -467,6 +484,7 @@ export function ReceptionCollectSection({
         void openConsQ.refetch();
       },
       onError: (error) => {
+        if (hasUnresolvedWorkflowError(error)) setConfirmationUnresolved(true);
         const win = workflowConfirmPrintContext.current?.window;
         workflowConfirmPrintContext.current = null;
         try { if (win && !win.closed) win.close(); } catch { /* noop */ }
@@ -902,6 +920,7 @@ export function ReceptionCollectSection({
   }
 
   draftBusyRef.current =
+    confirmationUnresolved ||
     partialSettlementOpen ||
     companyStatementMut.isPending ||
     remitMut.isPending ||
@@ -909,6 +928,7 @@ export function ReceptionCollectSection({
     pendingStatement != null ||
     staffConfirmMut.isPending ||
     workflowConfirmMut.isPending;
+  useWorkflowResetGuard(draftBusyRef.current);
 
   const handleCollectBarcode = useCallback(
     async (raw: string) => {
@@ -1081,6 +1101,38 @@ export function ReceptionCollectSection({
     void handleCollectBarcode(scannedBarcode);
   }, [scannedBarcode, handleCollectBarcode]);
 
+  function resetLookup() {
+    if (draftBusyRef.current || resetBlocked) return;
+    scanSequence.current++;
+    acceptedGroups.current.clear();
+    setScanContext(null);
+    setPartialCollection(null);
+    setPendingCustomerCollection(null);
+    setPendingCompanySelection(null);
+    setSelectedPartyId(null);
+    setSelectedCourierShipments([]);
+    setSelectedStatementLines({});
+    setStatementAmounts({});
+    setClaimSnapshots({});
+    setStatementDecisions({});
+    setStatementQueueIds([]);
+    setStatementNumber("");
+    setAppendToStatement(false);
+    setStatementDeductions("");
+    setStatementNotes("");
+    setCollectBarcodeInput("");
+    setParcelFilter("");
+    setReturnedCustodyOnly(false);
+    setSettleMode("courier");
+    setIsSearchingCollect(false);
+    remittanceRetry.current = null;
+    statementRetry.current = null;
+    confirmRetry.current = null;
+    setSearchReset((value) => value + 1);
+    onBarcodeConsumed?.();
+    onLookupReset?.();
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       {lastCompanyStatement?.branchId === branchId && (
@@ -1143,6 +1195,10 @@ export function ReceptionCollectSection({
       )}
       {/* ─── حقل البحث التنبؤي الذكي ومسح الباركود للتحصيل ─── */}
       <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-3">
+        <WorkflowResetButton
+          onReset={resetLookup}
+          disabled={draftBusyRef.current}
+        />
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ScanLine className="size-5 text-primary shrink-0" />
@@ -1155,7 +1211,15 @@ export function ReceptionCollectSection({
           </span>
         </div>
         <PredictiveConsignmentSearchInput
-          disabled={companyStatementMut.isPending || remitMut.isPending || pendingStatement != null || pendingRemittance != null}
+          key={searchReset}
+          autoFocus
+          onClear={resetLookup}
+          disabled={
+            companyStatementMut.isPending ||
+            remitMut.isPending ||
+            pendingStatement != null ||
+            pendingRemittance != null
+          }
           onSelect={handleSelectPredictiveParcel}
           onBarcodeEnter={(raw) => void handleCollectBarcode(raw)}
           partyId={selectedPartyId}
@@ -1214,7 +1278,9 @@ export function ReceptionCollectSection({
                 preview={pendingCustomerCollection.preview}
                 partyName={pendingCustomerCollection.partyName}
                 pending={workflowConfirmMut.isPending}
+                cancelDisabled={confirmationUnresolved}
                 onCancel={() => {
+                  if (confirmationUnresolved) return;
                   acceptedGroups.current.delete(
                     pendingCustomerCollection.groupKey,
                   );
@@ -2071,9 +2137,16 @@ export function ReceptionCollectSection({
                                       </span>
                                     </span>
                                   )}
-                                  {row.orderTotal != null && <span>قيمة الفاتورة: <strong className="tabular-nums">{fmt(String(row.orderTotal))} د.ع</strong></span>}
+                                  {row.orderTotal != null && (
                                   <span>
-                                    المتبقي للتوريد: {" "}
+                                      قيمة الفاتورة:{" "}
+                                      <strong className="tabular-nums">
+                                        {fmt(String(row.orderTotal))} د.ع
+                                      </strong>
+                                    </span>
+                                  )}
+                                  <span>
+                                    المتبقي للتوريد:{" "}
                                     <strong className="text-foreground tabular-nums">
                                       {fmt(cod.toFixed(2))} د.ع
                                     </strong>

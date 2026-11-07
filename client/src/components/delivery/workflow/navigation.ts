@@ -5,6 +5,26 @@ import type {
 } from "@shared/deliveryWorkflow";
 import { docBarcode } from "@shared/documentNumber";
 
+/** Clear only the scanned document; retain the active station, branch and sub-action. */
+export function clearWorkflowLookupSearch(search: string): string {
+  const params = new URLSearchParams(search);
+  for (const key of [
+    "caseId",
+    "executionId",
+    "requestId",
+    "chargeId",
+    "invoiceId",
+    "workOrderId",
+    "consignmentId",
+    "onlineOrderId",
+    "invoice",
+    "barcode",
+    "raw",
+  ])
+    params.delete(key);
+  return params.toString();
+}
+
 export function explicitWorkflowSection(
   search: string,
 ): WorkflowStation | null {

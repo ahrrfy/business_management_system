@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { hasUnresolvedWorkflowError } from "@/components/delivery/workflow/workflowScanReset";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
@@ -52,6 +53,17 @@ export function useReturnComposerMutations(
   } = ctx;
 
   const printWinRef = useRef<Window | null>(null);
+  const [unresolvedRequests, setUnresolvedRequests] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [unresolvedApproval, setUnresolvedApproval] = useState(false);
+  function resolveRequest(requestId: string | undefined) {
+    setUnresolvedRequests((previous) => {
+      const next = new Set(previous);
+      next.delete(requestId ?? "current");
+      return next;
+    });
+  }
   function closePrintWin() {
     try {
       if (printWinRef.current && !printWinRef.current.closed) {
@@ -66,6 +78,7 @@ export function useReturnComposerMutations(
   // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
   const rawApprove = trpc.returns.approveRequest.useMutation({
     onSuccess: async (res, vars) => {
+      setUnresolvedApproval(false);
       const win = printWinRef.current;
       printWinRef.current = null;
       setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
@@ -96,8 +109,6 @@ export function useReturnComposerMutations(
   
   
           }),
-
-
         },
         ...(win ? [{ into: win }] : []),
       ).catch(() => {});
@@ -108,6 +119,7 @@ export function useReturnComposerMutations(
       });
     },
     onError: (e) => {
+      if (hasUnresolvedWorkflowError(e)) setUnresolvedApproval(true);
       closePrintWin();
       setError(e.message);
     },
@@ -197,6 +209,7 @@ export function useReturnComposerMutations(
       );
       return false;
     }
+    resolveRequest(submission.clientRequestId);
     setDone(
       `التُقط المرتجع دون اتصال برقم ${receiptNumber} — يُرحَّل تلقائياً عند عودة الشبكة.`,
     );
@@ -213,6 +226,7 @@ export function useReturnComposerMutations(
       isOwner: me.data?.isOwner === true,
     }),
     onSuccess: async (res, vars) => {
+      resolveRequest(vars.clientRequestId);
       const win = printWinRef.current;
       printWinRef.current = null;
       /**
@@ -241,14 +255,7 @@ export function useReturnComposerMutations(
       if (isExecuted) {
         void printOrderCancellationReceipt(
           {
-  
-  
-  
-  
             ...buildExecutedReturnReceiptPayload({
-    
-    
-    
               documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
               customerName: inv?.customerName ?? null,
               originalTotal: inv?.total ?? null,
@@ -261,8 +268,6 @@ export function useReturnComposerMutations(
               cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
     
             }),
-
-  
           },
           ...(win ? [{ into: win }] : []),
         ).catch(() => {});
@@ -276,6 +281,10 @@ export function useReturnComposerMutations(
       }
     },
     onError: (e, submission, snapshot) => {
+      if (hasUnresolvedWorkflowError(e))
+        setUnresolvedRequests((previous) =>
+          new Set(previous).add(submission.clientRequestId ?? "current"),
+        );
       closePrintWin();
       // انقطاعُ الشبكة ≠ رفضُ أعمال: الأوّل يُلتقَط، والثاني يُعرَض. الخلطُ بينهما يبتلع
       // رفضاً مشروعاً في طابورٍ أو يُفقد نقداً خرج فعلاً.
@@ -348,6 +357,7 @@ export function useReturnComposerMutations(
 
   const withdrawing = withdrawControl.isPending || withdrawLegacy.isPending;
   return {
+    unresolvedMutation: unresolvedApproval || unresolvedRequests.size > 0,
     approve,
     captureOfflineReturn,
     create,

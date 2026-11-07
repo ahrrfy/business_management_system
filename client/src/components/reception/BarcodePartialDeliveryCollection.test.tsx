@@ -8,9 +8,11 @@ const state = vi.hoisted(() => ({
   timeline: vi.fn(),
   partial: vi.fn(),
   mutate: vi.fn(),
+  confirmOptions: undefined as any,
   parties: [{ id: 2, name: "المندوب", partyType: "INDIVIDUAL", branchId: 1 }],
   obligations: [] as unknown[],
 }));
+vi.mock("@tanstack/react-query", () => ({ useIsMutating: () => 0 }));
 vi.mock("@/lib/trpc", () => {
   const mutation = {
     useMutation: () => ({ isPending: false, mutate: state.mutate }),
@@ -39,7 +41,7 @@ vi.mock("@/lib/trpc", () => {
         staffConfirm: mutation,
         recordRemittance: mutation,
         recordCompanyStatement: mutation,
-        workflow: { confirmDelivery: mutation },
+        workflow: { confirmDelivery: { useMutation: (options: any) => { state.confirmOptions = options; return { isPending: false, mutate: state.mutate }; } } },
       },
     },
   };
@@ -60,7 +62,9 @@ vi.mock("@/components/delivery/PartialDeliverySettlementButton", () => ({
   ),
 }));
 vi.mock("@/components/delivery/PredictiveConsignmentSearchInput", () => ({
-  PredictiveConsignmentSearchInput: () => <input aria-label="باركود" />,
+  PredictiveConsignmentSearchInput: (props: any) => (
+    <input aria-label="باركود" autoFocus={props.autoFocus} />
+  ),
 }));
 vi.mock("@/components/delivery/workflow/WorkflowPrintActions", () => ({
   WorkflowPrintActions: () => null,
@@ -83,6 +87,8 @@ describe("barcode partial delivery collection in the receiving shift", () => {
   const preview = () => ({
     source: { kind: "invoice", id: 33494, branchId: 1, version: "v1" },
     printSource: { number: "106208" },
+    summaries: { parcel: { shipmentNumber: "106208" } },
+    recipient: { name: "العميل", phone: null },
     relations: { invoiceId: 33494, consignmentId: 1787 },
     allowedActions: [{ action: "collect", allowed: true }],
     group: {
@@ -137,7 +143,7 @@ describe("barcode partial delivery collection in the receiving shift", () => {
       button.textContent?.includes("تحصيل التسليم الجزئي في الوردية"),
     );
   async function render(
-    raw = "106208",
+    raw: string | null = "106208",
     shift: { id: number } | null = { id: 22 },
   ) {
     await act(async () =>
@@ -152,6 +158,7 @@ describe("barcode partial delivery collection in the receiving shift", () => {
   }
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, "open").mockReturnValue(null);
     state.obligations = [
       { partyId: 2, codDueTotal: "7000.00", parcelsInTransitAmount: "0.00" },
     ];
@@ -165,6 +172,7 @@ describe("barcode partial delivery collection in the receiving shift", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     host.remove();
+    vi.restoreAllMocks();
   });
 
   it.each(["106208", "CN-106208", "FR-310"])(
@@ -287,5 +295,77 @@ describe("barcode partial delivery collection in the receiving shift", () => {
     await act(async () => resolve(partial()));
     expect(action()).toBeUndefined();
     expect(state.mutate).not.toHaveBeenCalled();
+  });
+  it("clears the current result and visible search before another barcode", async () => {
+    await render();
+    await render(null);
+    const oldInput = host.querySelector<HTMLInputElement>(
+      'input[aria-label="باركود"]',
+    )!;
+    oldInput.value = "106208";
+    const reset = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("مسح الاستعلام"),
+    );
+    expect(reset).toBeDefined();
+    await act(async () => reset!.click());
+    expect(action()).toBeUndefined();
+    expect(host.textContent).not.toContain("106208");
+    const freshInput = host.querySelector<HTMLInputElement>(
+      'input[aria-label="باركود"]',
+    )!;
+    expect(freshInput).not.toBe(oldInput);
+    expect(freshInput.value).toBe("");
+    expect(document.activeElement).toBe(freshInput);
+    state.scan.mockResolvedValue({
+      ...preview(),
+      printSource: { number: "106209" },
+});
+    await render("106209");
+    expect(host.textContent).toContain("106209");
+  });
+  it("clearing a lookup ignores its late response and permits scanning the same code again", async () => {
+    let resolve!: (value: ReturnType<typeof partial>) => void;
+    state.partial.mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    await render();
+    await render(null);
+    const reset = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("مسح الاستعلام"),
+    )!;
+    await act(async () => reset.click());
+    await act(async () => resolve(partial()));
+    expect(action()).toBeUndefined();
+    await render("106208");
+    expect(action()).toBeDefined();
+    expect(state.scan).toHaveBeenCalledTimes(2);
+  });
+  it("cannot clear a partial settlement while its dialog owns the request", async () => {
+    await render();
+    await act(async () => action()!.click());
+    const reset = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("مسح الاستعلام"),
+    )!;
+    expect(reset.disabled).toBe(true);
+    await act(async () => reset.click());
+    expect(action()).toBeDefined();
+  });
+  it("preserves the original customer confirmation identity after an ambiguous result and rejected retry", async () => {
+    const scan = preview(); scan.returnState.members[0]!.received = false;
+    const cn = timeline(); cn.consignment.parcelStatus = "OUT_FOR_DELIVERY"; cn.shipment.members[0]!.parcelStatus = "OUT_FOR_DELIVERY"; cn.shipment.members[0]!.operational = true;
+    state.scan.mockResolvedValue(scan); state.timeline.mockResolvedValue(cn); state.partial.mockResolvedValue({ ...partial(), allowed: false, blockedReason: "استخدم التحصيل الأصلي" });
+    await render();
+    const findButton = (text: string) => Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes(text))!;
+    await act(async () => findButton("إثبات التسليم وتحصيل العميل").click());
+    const requestId=state.mutate.mock.calls.at(-1)![0].clientRequestId;
+    await act(async () => state.confirmOptions.onError(new Error("response lost")));
+    expect(findButton("مسح الاستعلام").disabled).toBe(true);
+    expect(findButton("تراجع").disabled).toBe(true);
+    await act(async () => state.confirmOptions.onError({ data: { httpStatus: 403 } }));
+    expect(findButton("مسح الاستعلام").disabled).toBe(true);
+    await act(async () => findButton("إثبات التسليم وتحصيل العميل").click());
+    expect(state.mutate.mock.calls.at(-1)![0].clientRequestId).toBe(requestId);
   });
 });

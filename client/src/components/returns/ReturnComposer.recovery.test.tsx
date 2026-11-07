@@ -111,6 +111,7 @@ vi.mock("@/lib/offline/outbox", () => ({
   enqueueOfflineReturn: (...args: unknown[]) => state.enqueue(...args),
 }));
 import { ReturnComposer } from "./ReturnComposer";
+import { WorkflowResetButton, WorkflowScanResetScope } from "@/components/delivery/workflow/workflowScanReset";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, React });
 
 describe("return form recovery", () => {
@@ -177,7 +178,10 @@ describe("return form recovery", () => {
     act(() =>
       root.render(
         <QueryClientProvider client={client}>
+          <WorkflowScanResetScope>
+          <WorkflowResetButton onReset={() => {}} />
           <ReturnComposer invoiceId={11} initialMode="FULL" />
+          </WorkflowScanResetScope>
         </QueryClientProvider>,
       ),
     );
@@ -360,6 +364,35 @@ describe("return form recovery", () => {
         .querySelector('[aria-label="زد كمية الإرجاع"]')!
         .matches(":disabled"),
     ).toBe(true);
+  });
+  it("allows leaving a known server-side request belonging to another employee", () => {
+    state.invoice.pendingRequest = { source: "CONTROL", id: 44, isMine: false, requestedBy: 9 };
+    render();
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(false);
+  });
+  it("retains an ambiguous return across a rejected retry and unlocks only after durable capture of that request", async () => {
+    paidRegisteredInvoice();
+    render();
+    await act(async () => button("تنفيذ المرتجع الآن")!.click());
+    const [submission, options] = state.mutation.mock.calls.at(-1)!;
+    const snapshot = options.onMutate(submission);
+    await act(async () => options.onError(new Error("response lost"), submission, snapshot));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+    await act(async () => options.onError({ message: "session changed", data: { httpStatus: 403 } }, submission, snapshot));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+    await act(async () => options.onError(new Error("Failed to fetch"), submission, snapshot));
+    expect(state.enqueue).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({clientRequestId: submission.clientRequestId}) }));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(false);
+    await act(async () => options.onError(new Error("response lost"), { ...submission, clientRequestId: "another-attempt" }, snapshot));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
+  });
+  it("keeps an uncertain return protected when offline capture fails", async () => {
+    paidRegisteredInvoice(); render();
+    await act(async () => button("تنفيذ المرتجع الآن")!.click());
+    const [submission, options] = state.mutation.mock.calls.at(-1)!;
+    state.enqueue.mockResolvedValueOnce(false);
+    await act(async () => options.onError(new Error("Failed to fetch"), submission, options.onMutate(submission)));
+    expect(button("مسح الاستعلام")!.matches(":disabled")).toBe(true);
   });
   it("scans into an eligible duplicate line after an earlier line was fully returned", () => {
     const item = state.invoice.items[0];

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ScanLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  WorkflowResetButton,
+  useWorkflowResetBlocked,
+  useWorkflowResetGuard,
+  hasUnresolvedWorkflowError,
+} from "./workflow/workflowScanReset";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -55,6 +61,7 @@ export interface CancelDeliveryAssignmentSectionProps {
   branchId?: number | null;
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
+  onLookupReset?: () => void;
   onNavigateToDispatch?: (order: ScannedOrderForCancellation) => void;
   onNavigateToDispatchBarcode?: (raw: string) => void;
   onNavigateToAftercare?: (context: {
@@ -73,6 +80,7 @@ export function CancelDeliveryAssignmentSection({
   branchId,
   scannedBarcode,
   onBarcodeConsumed,
+  onLookupReset,
   onNavigateToDispatch,
   onNavigateToDispatchBarcode,
   onNavigateToAftercare,
@@ -99,6 +107,7 @@ export function CancelDeliveryAssignmentSection({
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const [physicalHeld, setPhysicalHeld] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [unresolvedMutation, setUnresolvedMutation] = useState(false);
   const sequence = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const retryIdentity = useRef<{ signature: string; key: string } | null>(null);
@@ -120,10 +129,14 @@ export function CancelDeliveryAssignmentSection({
   const workflowPrinter = useWorkflowDocumentPrinter(preview?.source.branchId ?? completed?.branchId ?? branchId);
   const busyRef = useRef(false);
   const mutation = trpc.delivery.workflow.assignment.useMutation({
-    onError: (error) =>
-      notify.err(error, "تعذر الإجراء؛ بقيت بياناته لإعادة المحاولة"),
+    onError: (error) => {
+      if (hasUnresolvedWorkflowError(error)) setUnresolvedMutation(true);
+      notify.err(error, "تعذر الإجراء؛ بقيت بياناته لإعادة المحاولة");
+    },
   });
-  busyRef.current = mutation.isPending;
+  busyRef.current = mutation.isPending || unresolvedMutation;
+  const resetBlocked = useWorkflowResetBlocked();
+  useWorkflowResetGuard(busyRef.current);
   useEffect(() => {
     sequence.current++;
     setPreview(null);
@@ -225,6 +238,7 @@ export function CancelDeliveryAssignmentSection({
     }
   };
   async function execute() {
+    const generation = sequence.current;
     if (
       !preview ||
       mutation.isPending ||
@@ -260,6 +274,7 @@ export function CancelDeliveryAssignmentSection({
       }))
     )
       return;
+    if (generation !== sequence.current) return;
     const payload = {
       source: {
         kind: preview.source.kind,
@@ -275,6 +290,10 @@ export function CancelDeliveryAssignmentSection({
       physicalHeldConfirmed: physicalHeld,
     };
     const signature = JSON.stringify(payload);
+    if (unresolvedMutation && retryIdentity.current?.signature !== signature) {
+      notify.err("استعد نتيجة الإجراء الأصلي بنفس البيانات قبل بدء إجراء آخر");
+      return;
+    }
     if (retryIdentity.current?.signature !== signature)
       retryIdentity.current = { signature, key: crypto.randomUUID() };
     const packWin = preopenDocumentWindow();
@@ -286,6 +305,7 @@ export function CancelDeliveryAssignmentSection({
         clientRequestId: retryIdentity.current.key,
       });
       committed = true;
+      setUnresolvedMutation(false);
       setCompleted({
         label,
         action: mode,
@@ -316,6 +336,7 @@ export function CancelDeliveryAssignmentSection({
         station: "cancelAssignment",
         branchId: preview.source.branchId,
       });
+      if (generation !== sequence.current) return;
       setPreview(fresh);
       if (fresh.actions.some((a) => a.action === "reassign" && a.allowed))
         setMode("reassign");
@@ -334,9 +355,27 @@ export function CancelDeliveryAssignmentSection({
       /* Mutation error preserves the same retry identity and draft. */
     }
   }
+  function resetLookup() {
+    if (busyRef.current || resetBlocked) return;
+    sequence.current++;
+    setPreview(null);
+    setBarcodeInput("");
+    setSourceRaw("");
+    setReason("");
+    setPartyId("");
+    setAssignedUserId("");
+    setExternalTrackingRef("");
+    setPhysicalHeld(false);
+    setIsSearching(false);
+    retryIdentity.current = null;
+    onBarcodeConsumed?.();
+    onLookupReset?.();
+    inputRef.current?.focus();
+  }
   return (
     <div className="mx-auto max-w-2xl space-y-4" dir="rtl">
       <div className="rounded-xl border border-dashed p-4 space-y-3">
+        <WorkflowResetButton onReset={resetLookup} disabled={busyRef.current} />
         <p className="flex items-center gap-2 font-bold">
           <ScanLine aria-hidden className="size-5" /> مسح مصدر التوصيل لإلغاء
           الإسناد أو إعلان الرجوع
@@ -373,19 +412,10 @@ export function CancelDeliveryAssignmentSection({
         <Card className="p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
             <strong dir="ltr">{preview.printSource.number}</strong>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={mutation.isPending}
-              onClick={() => {
-                sequence.current++;
-                setPreview(null);
-                retryIdentity.current = null;
-                inputRef.current?.focus();
-              }}
-            >
-              مسح آخر
-            </Button>
+            <WorkflowResetButton
+              onReset={resetLookup}
+              disabled={busyRef.current}
+            />
           </div>
           <p className="text-sm">
             {preview.recipient.name ?? "مستلم عابر"} —{" "}
