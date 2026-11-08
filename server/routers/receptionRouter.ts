@@ -544,6 +544,20 @@ export const receptionRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب",
         });
       }
+      if (
+        input.collectNow &&
+        input.collectNow.method !== "CASH" &&
+        !input.collectNow.externalPaymentAttemptId
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تثبيت دفعة البطاقة أو التحويل دون محاولة دفع خارجية مؤكدة",
+            why: "التحصيل الإلكتروني في الاستقبال يتطلب تسجيل وتأكيد محاولة الدفع الخارجي قبل التثبيت",
+            doThis: "أكّد عملية البطاقة أو التحويل من حقل مرجع الدفع أولاً ثم أعد التثبيت",
+          }),
+        });
+      }
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",

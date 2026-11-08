@@ -48,6 +48,7 @@ import {
   listAlternativeReconciliationScope,
   listAlternativeStockBreakdown,
   splitAliasToAlternative,
+  trySyncActiveFullStocktakeScopes,
 } from "../services/stocktakeService";
 import {
   adminProcedure,
@@ -306,6 +307,7 @@ export const stocktakeRouter = router({
         name: input.name,
         cost: input.cost ?? null,
       });
+      const syncRes = await trySyncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "stocktake.splitAlternative",
         entityType: "productVariant",
@@ -318,7 +320,7 @@ export const stocktakeRouter = router({
           name: input.name,
         },
       });
-      return res;
+      return { ...res, stocktakeSyncPending: syncRes.stocktakeSyncPending, warnings: syncRes.warnings };
     }),
 
   /* ─────────── القراءة ─────────── */

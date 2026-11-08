@@ -120,6 +120,13 @@ function SupervisorWorkOrderControlApprovals({
     onError: (error) => notify.err(error),
     onSettled: () => { void invalidate(); },
   });
+  const withdraw = trpc.workOrders.withdrawControl.useMutation({
+    onSuccess: (result) => {
+      notify.ok(result.replayed ? "الطلب مسحوب سابقاً" : "تم سحب طلب التحكم وإلغاء تعليقه");
+    },
+    onError: (error) => notify.err(error),
+    onSettled: () => { void invalidate(); },
+  });
 
   const openDecision = (row: PendingWorkOrderControl, mode: WorkOrderControlDecision["mode"]) => {
     setNote("");
@@ -147,6 +154,7 @@ function SupervisorWorkOrderControlApprovals({
         onRetry={() => { void queue.refetch(); }}
         onApprove={(row) => openDecision(row, "APPROVE")}
         onReject={(row) => openDecision(row, "REJECT")}
+        onWithdraw={(row) => withdraw.mutate({ id: Number(row.id) })}
         canApprove={canApprove}
         canReject={canReject}
       />
@@ -184,6 +192,7 @@ export function WorkOrderControlApprovalsView({
   onRetry,
   onApprove,
   onReject,
+  onWithdraw,
   canApprove = true,
   canReject = true,
 }: {
@@ -194,6 +203,7 @@ export function WorkOrderControlApprovalsView({
   onRetry: () => void;
   onApprove: (row: PendingWorkOrderControl) => void;
   onReject: (row: PendingWorkOrderControl) => void;
+  onWithdraw?: (row: PendingWorkOrderControl) => void;
   canApprove?: boolean;
   canReject?: boolean;
 }) {
@@ -234,6 +244,7 @@ export function WorkOrderControlApprovalsView({
             currentUserId={currentUserId}
             onApprove={onApprove}
             onReject={onReject}
+            onWithdraw={onWithdraw}
             canApprove={canApprove}
             canReject={canReject}
           />
@@ -248,6 +259,7 @@ export function WorkOrderControlApprovalRow({
   currentUserId,
   onApprove,
   onReject,
+  onWithdraw,
   canApprove = true,
   canReject = true,
 }: {
@@ -255,6 +267,7 @@ export function WorkOrderControlApprovalRow({
   currentUserId: number | null | undefined;
   onApprove: (row: PendingWorkOrderControl) => void;
   onReject: (row: PendingWorkOrderControl) => void;
+  onWithdraw?: (row: PendingWorkOrderControl) => void;
   canApprove?: boolean;
   canReject?: boolean;
 }) {
@@ -299,6 +312,11 @@ export function WorkOrderControlApprovalRow({
           {canReject && <Button size="sm" variant="destructive" onClick={() => onReject(row)} disabled={ownRequest}>
             <XCircle aria-hidden className="size-4" /> رفض
           </Button>}
+          {ownRequest && onWithdraw && (
+            <Button size="sm" variant="outline" onClick={() => onWithdraw(row)}>
+              سحب الطلب
+            </Button>
+          )}
         </div>
       </div>
       {ownRequest && (
@@ -351,16 +369,16 @@ export function WorkOrderControlDecisionDialog({
    * **الأرصدة الحيّة قبل الضغط.** حمولةُ الطلب تحمل اقتراحَ الطالب ساعةَ الطلب، وقد مضت
    * ساعات؛ فالتمهيدُ يُقرأ الآن لا من الحمولة (بلاغ المالك ٢/٩/٢٦).
    */
-  const cancelRequest = request?.requestType === "CANCEL" ? request : null;
+  const refundRequest = request?.requestType === "CANCEL" || request?.requestType === "REVERSE_DELIVERY" ? request : null;
   const refundPreflight = trpc.workOrders.refundPreflight.useQuery(
-    { workOrderId: Number(cancelRequest?.workOrderId ?? 0), operation: "CANCEL" },
-    { enabled: cancelRequest != null && decision?.mode === "APPROVE", staleTime: 0 },
+    { workOrderId: Number(refundRequest?.workOrderId ?? 0), operation: refundRequest?.requestType === "REVERSE_DELIVERY" ? "REVERSE_DELIVERY" : "CANCEL" },
+    { enabled: refundRequest != null && decision?.mode === "APPROVE", staleTime: 0 },
   );
-  const requestedPayload = (cancelRequest?.payload ?? null) as
+  const requestedPayload = (refundRequest?.payload ?? null) as
     | { refundRail?: RefundRail | null; refundShiftId?: number | null; refundReference?: string | null }
     | null;
   const refundChoice = useApprovalRefundChoice({
-    open: cancelRequest != null && decision?.mode === "APPROVE",
+    open: refundRequest != null && decision?.mode === "APPROVE",
     preflight: refundPreflight.data ?? null,
     requestedRail: requestedPayload?.refundRail ?? null,
     requestedShiftId: requestedPayload?.refundShiftId ?? null,
@@ -419,7 +437,7 @@ export function WorkOrderControlDecisionDialog({
               </div>
             )}
 
-            {!rejecting && cancelRequest && (
+            {!rejecting && refundRequest && (
               (refundPreflight.isLoading || refundPreflight.isFetching) ? (
                 <p className="rounded-md border p-3 text-sm text-muted-foreground">
                   جارٍ قراءة الأرصدة الحيّة…
@@ -432,7 +450,7 @@ export function WorkOrderControlDecisionDialog({
                   </Button>
                 </div>
               ) : (
-                <ApprovalRefundRailPicker preflight={refundPreflight.data ?? null} choice={refundChoice} workOrderId={Number(cancelRequest?.workOrderId ?? 0)} />
+                <ApprovalRefundRailPicker preflight={refundPreflight.data ?? null} choice={refundChoice} workOrderId={Number(refundRequest?.workOrderId ?? 0)} />
               )
             )}
 
@@ -470,7 +488,7 @@ export function WorkOrderControlDecisionDialog({
               // ⚠️ `isFetching` لا `isLoading` وحده (مراجعة Codex P2): مع بياناتٍ مخبّأة
               // و`staleTime: 0` تبدأ إعادةُ جلبٍ في الخلفية و`isLoading === false` — فيبقى
               // الزرُّ مفعَّلاً على **أرصدةٍ قديمة**، وهو عينُ ما بُني هذا الحوار ليمنعه.
-              || (!rejecting && cancelRequest != null && (refundPreflight.isLoading || refundPreflight.isFetching || refundPreflight.isError))
+              || (!rejecting && refundRequest != null && (refundPreflight.isLoading || refundPreflight.isFetching || refundPreflight.isError))
               || (!rejecting && refundChoice.blockReason != null)
             }
             onClick={() => onSubmit(refundChoice.changed

@@ -10,7 +10,8 @@
  *  - طباعة حرارية فورية 80مم/58مم
  */
 import { useEffect, useMemo } from "react";
-import { D, moneyInput } from "@/lib/money";
+import { D, moneyInput, round2 } from "@/lib/money";
+import Decimal from "decimal.js";
 import type { useSalesReturnState } from "./useSalesReturnState";
 export function useSalesReturnSettlement(
   ctx: Pick<
@@ -52,32 +53,31 @@ export function useSalesReturnSettlement(
         );
       });
     if (completesInvoice)
-      return D(inspectedInvoice!.remainingInvoiceTotal).toNumber();
-    return Number(
-      salesCart
-        .reduce((sum, item) => {
-          const matchedInvItem = inspectedInvoice?.items.find((it) =>
-            item.invoiceItemId
-              ? it.invoiceItemId === item.invoiceItemId
-              : it.variantId === item.variantId,
-          );
-          if (
-            matchedInvItem &&
-            item.quantity === matchedInvItem.remainingQuantity &&
-            matchedInvItem.remainingLineTotal != null &&
-            Number(item.unitPrice || 0) ===
-              Number(
-                matchedInvItem.effectiveUnitPrice ||
-                  matchedInvItem.unitPrice ||
-                  0,
-              )
-          ) {
-            return sum + Number(matchedInvItem.remainingLineTotal);
-          }
-          return sum + item.quantity * moneyInput(item.unitPrice).toNumber();
-        }, 0)
-        .toFixed(2),
-    );
+      return round2(D(inspectedInvoice!.remainingInvoiceTotal)).toNumber();
+    return round2(
+      salesCart.reduce((sum, item) => {
+        const matchedInvItem = inspectedInvoice?.items.find((it) =>
+          item.invoiceItemId
+            ? it.invoiceItemId === item.invoiceItemId
+            : it.variantId === item.variantId,
+        );
+        if (
+          matchedInvItem &&
+          item.quantity === matchedInvItem.remainingQuantity &&
+          matchedInvItem.remainingLineTotal != null &&
+          moneyInput(item.unitPrice || "0").eq(
+            D(
+              matchedInvItem.effectiveUnitPrice ||
+                matchedInvItem.unitPrice ||
+                0,
+            ),
+          )
+        ) {
+          return sum.plus(D(matchedInvItem.remainingLineTotal));
+        }
+        return sum.plus(round2(moneyInput(item.unitPrice).times(item.quantity)));
+      }, D(0)),
+    ).toNumber();
   }, [salesCart, inspectedInvoice]);
 
   const hasIncompletePrice = salesCart.some(
@@ -94,20 +94,20 @@ export function useSalesReturnSettlement(
 
   const autoDebtOffsetPortion = useMemo(() => {
     if (!inspectedInvoice) return 0;
-    const unpaid = Math.max(
+    const unpaidD = Decimal.max(
       0,
       D(
         inspectedInvoice.maxCreditOffsetAmount ??
           inspectedInvoice.unpaidAmount ??
           "0",
-      ).toNumber(),
+      ),
     );
-    return Number(Math.min(salesTotal, unpaid).toFixed(2));
+    return round2(Decimal.min(D(salesTotal), unpaidD)).toNumber();
   }, [inspectedInvoice, salesTotal]);
 
   const effectiveCashOrCardRefund = useMemo(() => {
     if (!inspectedInvoice) return salesTotal;
-    return Number(Math.max(0, salesTotal - autoDebtOffsetPortion).toFixed(2));
+    return round2(Decimal.max(0, D(salesTotal).minus(autoDebtOffsetPortion))).toNumber();
   }, [inspectedInvoice, salesTotal, autoDebtOffsetPortion]);
 
   const sourcePaidAmount =
@@ -138,27 +138,27 @@ export function useSalesReturnSettlement(
     return (
       salesRefundMethod === "CASH" &&
       selectedDrawer != null &&
-      Number(selectedDrawer.expectedCash || 0) < effectiveCashOrCardRefund
+      D(selectedDrawer.expectedCash || 0).lt(effectiveCashOrCardRefund)
     );
   }, [salesRefundMethod, selectedDrawer, effectiveCashOrCardRefund]);
 
   const isOverInvoiceLimit = useMemo(() => {
     if (!inspectedInvoice) return false;
     if (salesRefundMethod === "STORE_CREDIT") {
-      return salesTotal > Number(inspectedInvoice.remainingInvoiceTotal || 0);
+      return D(salesTotal).gt(D(inspectedInvoice.remainingInvoiceTotal || 0));
     }
     if (noCashRequired) {
       return D(salesTotal).gt(creditOffsetCap);
     }
-    if (Number(inspectedInvoice.paidAmount || 0) <= 0) {
+    if (D(inspectedInvoice.paidAmount || 0).lte(0)) {
       return salesTotal > 0;
     }
     if (salesTotal > 0 && effectiveCashOrCardRefund <= 0) {
       return true;
     }
     return (
-      salesTotal > Number(inspectedInvoice.remainingInvoiceTotal || 0) ||
-      effectiveCashOrCardRefund > Number(inspectedInvoice.maxRefundable || 0)
+      D(salesTotal).gt(D(inspectedInvoice.remainingInvoiceTotal || 0)) ||
+      D(effectiveCashOrCardRefund).gt(D(inspectedInvoice.maxRefundable || 0))
     );
   }, [
     inspectedInvoice,

@@ -176,10 +176,10 @@ export function HeldOrdersDrawer({
     },
   });
 
-  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
-  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+  const initiateExternal = trpc.printPos.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.printPos.confirmExternalPayment.useMutation();
 
-  const collectMut = trpc.reception.collectOnInvoice.useMutation({
+  const collectMut = trpc.printPos.collectHeldSale.useMutation({
     onSuccess: async (_, vars) => {
       const order = collectCtxRef.current ?? selectedForCollect;
       collectCtxRef.current = null;
@@ -283,7 +283,7 @@ export function HeldOrdersDrawer({
       const requestId = crypto.randomUUID();
       const initiated = await initiateExternal.mutateAsync({
         branchId,
-        channel: "POS",
+        channel: "SALES_COLLECTION",
         method: collectMethod as any,
         amount: selectedForCollect.remainingAmount,
         reference: trimmed,
@@ -292,7 +292,7 @@ export function HeldOrdersDrawer({
       });
       await confirmExternal.mutateAsync({
         branchId,
-        channel: "POS",
+        channel: "SALES_COLLECTION",
         attemptId: initiated.attemptId,
         deviceId,
       });

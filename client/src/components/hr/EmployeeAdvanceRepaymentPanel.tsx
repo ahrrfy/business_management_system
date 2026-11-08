@@ -227,7 +227,7 @@ export function EmployeeAdvanceRepaymentPanel() {
       {(advancesQ.isError || requestsQ.isError || ledgerQ.isError) && <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">تعذر تحميل أرصدة السلف أو سجل السداد ضمن نطاقك. أعد المحاولة أو تحقق من صلاحية الموارد البشرية.</p>}
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">موظفون برصيد قائم</div><div className="mt-1 text-lg font-bold" dir="ltr">{employeeBalances.length}</div></div>
-        <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">إجمالي الرصيد ضمن النطاق</div><div className="mt-1 text-lg font-bold tabular-nums" dir="ltr">{iqd(employeeBalances.reduce((sum, row) => sum.plus(D(row.remaining)), D(0)).toFixed(2))} د.ع</div></div>
+        <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">إجمالي الرصيد ضمن النطاق</div><div className="mt-1 text-lg font-bold"><bdi dir="ltr" className="tabular-nums">{iqd(employeeBalances.reduce((sum, row) => sum.plus(D(row.remaining)), D(0)).toFixed(2))}</bdi> د.ع</div></div>
         <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">طلبات معلّقة بلا أثر</div><div className="mt-1 text-lg font-bold" dir="ltr">{pendingCount}</div></div>
       </div>
       <ScrollTableShell>
@@ -242,7 +242,7 @@ export function EmployeeAdvanceRepaymentPanel() {
               const canRequestReturn = !owner && request.requestKind === "REPAYMENT" && request.status === "APPROVED" && !activeReturnOf.has(Number(request.id));
               return <tr key={request.id} className="border-t align-top">
                 <td className="p-2"><div className="font-medium">{requestKindLabel(request.requestKind)}</div><div>{request.employeeName || `موظف #${request.employeeId}`}</div><div className="text-muted-foreground">طلب #{request.id}{request.originalRequestId ? ` ← أصل #${request.originalRequestId}` : ""} · {String(request.transactionDate).slice(0, 10)}</div></td>
-                <td className="p-2 font-bold tabular-nums" dir="ltr">{iqd(request.amount)} د.ع</td>
+                <td className="p-2 font-bold"><bdi dir="ltr" className="tabular-nums">{iqd(request.amount)}</bdi> د.ع</td>
                 <td className="p-2"><div>{paymentMethodLabel(request.paymentMethod)}</div><div dir="ltr">{request.referenceNumber ?? (request.cardLastFour ? `**** ${request.cardLastFour}` : "—")}</div><div className="max-w-56 text-muted-foreground">{request.evidenceNote}</div></td>
                 <td className="p-2 font-mono text-[11px]" dir="ltr"><div>{request.receiptId ? `REC-${request.receiptId}` : "PENDING"}</div><div>{request.accountingEntryId ? `AE-${request.accountingEntryId}` : "NO-ENTRY"}</div>{allocations.length ? allocations.map((allocation) => <div key={allocation.id} className="mt-1 border-t pt-1">ADV-{allocation.advanceId} · {allocation.direction} · {iqd(allocation.amount)} IQD<br />REC-{allocation.receiptId} · AE-{allocation.accountingEntryId}</div>) : <div>NO-ALLOC</div>}</td>
                 <td className="p-2 tabular-nums" dir="ltr"><div>USER-{request.createdBy}</div><div>{request.reviewedBy ? `USER-${request.reviewedBy}` : "—"}</div></td>

@@ -896,7 +896,7 @@ function applyCashRouting(
   payload: SalesReturnControlPayload,
   routing: SalesControlCashRouting | null | undefined,
 ): SalesReturnControlPayload {
-  if (!routing || (routing.shiftId == null && routing.reference == null && !routing.clearShift)) {
+  if (!routing || (routing.shiftId == null && routing.reference === undefined && !routing.clearShift)) {
     return payload;
   }
   // المسحُ يغلب: `clearShift` يعني «أعِد اشتقاق المصدر الآن» فيُمرَّر `null` صراحةً.
@@ -906,11 +906,15 @@ function applyCashRouting(
     next.refund = {
       ...next.refund,
       ...(nextShiftId !== undefined ? { shiftId: nextShiftId } : {}),
-      ...(routing.reference != null ? { reference: routing.reference } : {}),
+      ...(routing.reference !== undefined ? { reference: routing.reference } : {}),
     };
   }
-  if (next.resolution && nextShiftId !== undefined) {
-    next.resolution = { ...next.resolution, shiftId: nextShiftId };
+  if (next.resolution && (nextShiftId !== undefined || routing.reference !== undefined)) {
+    next.resolution = {
+      ...next.resolution,
+      ...(nextShiftId !== undefined ? { shiftId: nextShiftId } : {}),
+      ...(routing.reference !== undefined ? { reference: routing.reference } : {}),
+    };
   }
   return next;
 }

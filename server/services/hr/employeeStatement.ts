@@ -24,7 +24,7 @@ import {
   payrollItems,
   payrollRuns,
 } from "../../../drizzle/schema";
-import { fullEmployeeName } from "@shared/hr";
+import { baghdadTodayYmd, fullEmployeeName } from "@shared/hr";
 import {
   attendanceHoursViolation,
   computeSessionsSummary,
@@ -136,14 +136,21 @@ async function loadPayrollSnapshot(
       paidAt: payrollRuns.paidAt,
     })
     .from(payrollRuns)
-    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])));
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["draft", "approved", "paid"])))
+    .orderBy(
+      sql`CASE WHEN ${payrollRuns.status} IN ('approved', 'paid') THEN 0 ELSE 1 END`,
+      desc(payrollRuns.id),
+    );
   const runRows = options.runSnapshot !== undefined
     ? null
     : options.lockFinancialInputs
       ? await runQuery.for("share", { noWait: true }).limit(1)
       : await runQuery.limit(1);
   const run = options.runSnapshot !== undefined ? options.runSnapshot : (runRows?.[0] ?? null);
-  if (!run || (run.status !== "approved" && run.status !== "paid")) return null;
+  const hasDraftRun = run?.status === "draft";
+  if (!run || (run.status !== "approved" && run.status !== "paid")) {
+    return { snapshot: null, hasDraftRun };
+  }
 
   const itemQuery = db
     .select({
@@ -167,24 +174,27 @@ async function loadPayrollSnapshot(
     : await itemQuery;
   const item = items.find((i) => Number(i.revisionNo) === Number(run.revisionNo)) ?? items[0];
   // موظفٌ خارج المسيّر (عُيّن بعد اعتماده مثلاً) ⇒ لا لقطة له، والاشتقاق الحيّ هو الصحيح.
-  if (!item) return null;
+  if (!item) return { snapshot: null, hasDraftRun: false };
 
   return {
-    runId: Number(run.id),
-    status: String(run.status) as "approved" | "paid",
-    revisionNo: Number(item.revisionNo),
-    approvedAt: run.approvedAt ?? null,
-    paidAt: run.paidAt ?? null,
-    payType: item.payType,
-    hours: item.hours ?? null,
-    gross: item.gross,
-    allowances: item.allowances,
-    overtime: item.overtime,
-    commission: item.commission,
-    deductions: item.deductions,
-    advanceDeduction: item.advanceDeduction,
-    net: item.net,
-    note: item.note ?? null,
+    hasDraftRun: false,
+    snapshot: {
+      runId: Number(run.id),
+      status: String(run.status) as "approved" | "paid",
+      revisionNo: Number(item.revisionNo),
+      approvedAt: run.approvedAt ?? null,
+      paidAt: run.paidAt ?? null,
+      payType: item.payType,
+      hours: item.hours ?? null,
+      gross: item.gross,
+      allowances: item.allowances,
+      overtime: item.overtime,
+      commission: item.commission,
+      deductions: item.deductions,
+      advanceDeduction: item.advanceDeduction,
+      net: item.net,
+      note: item.note ?? null,
+    },
   };
 }
 
@@ -216,6 +226,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     db
       .select({
         id: employees.id,
+        userId: employees.userId,
         firstName: employees.firstName,
         fatherName: employees.fatherName,
         grandfatherName: employees.grandfatherName,
@@ -295,10 +306,12 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const attRows = input.lockFinancialInputs
     ? await selectAttRows().for("share", { noWait: true })
     : await selectAttRows();
+  const todayYmd = baghdadTodayYmd();
+  const todayPeriod = todayYmd.slice(0, 7);
   const rowNeedsLegacyHealing = (r: (typeof attRows)[number]) =>
       isLegacyAutoLateDeduction(r, emp.workSchedule) ||
       (r.source === "fingerprint" &&
-        ((r.checkIn != null && r.checkOut == null) ||
+        ((r.checkIn != null && r.checkOut == null && String(r.date).slice(0, 10) !== todayYmd) ||
           (r.checkIn instanceof Date && r.checkIn.getUTCHours() < 6) ||
           (!String(r.notes ?? "").includes("[فترات الدوام:") &&
             ((r.needsReview && String(r.reviewReason ?? "").includes("فرديّ")) ||
@@ -321,20 +334,26 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const hasOwnSchedule = !!(emp.workSchedule && typeof emp.workSchedule === "object");
 
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
-  let actualPaid = 0;
+  let actualPaid = money(0);
   let confirmedActualPaid = money(0);
+  let maxAttDate: string | null = null;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
   const confirmedAttendedHoursByDate = new Map<string, ReturnType<typeof money>>();
   const openDates = new Set<string>();
+  const manualLeaveDates = new Set<string>();
   const meta = new Map<string, (typeof attRows)[number]>();
   const excludedAttendanceDates = new Map<string, Set<string>>();
   const confirmedAttendanceBlockers: string[] = [];
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
+    if (!maxAttDate || d > maxAttDate) maxAttDate = d;
     meta.set(d, r);
+    if (r.status === "LEAVE") {
+      manualLeaveDates.add(d);
+    }
     if (r.status === "PRESENT" || r.status === "LATE") {
       attendedHoursByDate.set(d, money(r.hours ?? 0));
-      actualPaid += Number(r.amount ?? 0);
+      actualPaid = actualPaid.plus(money(r.amount ?? 0));
       // دخولٌ بلا انصراف (أو فترة دوام ثانية مفتوحة) ⇒ يومٌ مفتوح لا غائب.
       if (hasUnclosedAttendancePunch(r)) openDates.add(d);
 
@@ -426,6 +445,20 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const unpaidSpans = leaves.filter((l) => !l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
   const paidLeaveDates = expand(paidSpans, employmentStart, employmentEnd);
   const unpaidLeaveDates = expand(unpaidSpans, employmentStart, employmentEnd);
+  for (const d of Array.from(manualLeaveDates)) {
+    if (!unpaidLeaveDates.has(d)) paidLeaveDates.add(d);
+  }
+
+  const asOfDate =
+    !input.employmentEndOverride &&
+    ((p === todayPeriod && (!maxAttDate || maxAttDate <= todayYmd)) ||
+      (p > todayPeriod && attRows.length === 0))
+      ? todayYmd
+      : null;
+  const inProgressDates = new Set<string>();
+  if (!input.confirmedAttendanceOnly && openDates.has(todayYmd)) {
+    inProgressDates.add(todayYmd);
+  }
 
   const pay = computeAttendancePay({
     salary: money(emp.salary ?? 0),
@@ -443,6 +476,9 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     monthStart,
     monthEnd,
     maxDailyHours: Number(settings?.maxDailyHours ?? 12),
+    asOfDate,
+    includeRestDays: !input.confirmedAttendanceOnly,
+    inProgressDates,
   });
   const confirmedPay = input.confirmedAttendanceOnly
     ? computeAttendancePay({
@@ -461,6 +497,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         monthStart,
         monthEnd,
         maxDailyHours: Number(settings?.maxDailyHours ?? 12),
+        asOfDate,
       })
     : null;
 
@@ -483,6 +520,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       notes: m?.notes ?? null,
       reviewReason: m?.reviewReason ?? null,
     });
+    const rowNeedsReview = d.state === "inProgress" ? false : !!m?.needsReview;
     return {
       ...d,
       checkIn,
@@ -499,8 +537,9 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       hasOpenSession: dayDetails.hasOpenSession,
       openSessionCheckIn: dayDetails.openSessionCheckIn,
       source: m?.source ?? null,
-      needsReview: !!m?.needsReview,
-      reviewReason: m?.needsReview || m?.reviewReason === "manual_late_override" ? (m?.reviewReason ?? null) : null,
+      needsReview: rowNeedsReview,
+      reviewReason:
+        rowNeedsReview || m?.reviewReason === "manual_late_override" ? (m?.reviewReason ?? null) : null,
     };
   });
 
@@ -569,18 +608,18 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       overtime: "0.00",
     };
   };
-  const livePayrollComponents = payrollComponentsFor(pay, money(actualPaid));
+  const livePayrollComponents = payrollComponentsFor(pay, actualPaid);
   const confirmedPayrollComponents = confirmedPay
     ? payrollComponentsFor(confirmedPay, confirmedActualPaid)
     : null;
   const liveAmountDue =
     liveBasis === "hourly"
-      ? actualPaid.toFixed(2)
+      ? round2(actualPaid).toFixed(2)
       : liveBasis === "attendance"
         ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
         : fixedPay.toFixed(2);
 
-  const snapshot = await loadPayrollSnapshot(db, input.employeeId, p, {
+  const { snapshot, hasDraftRun } = await loadPayrollSnapshot(db, input.employeeId, p, {
     runSnapshot: input.payrollRunSnapshot,
     lockFinancialInputs: input.lockFinancialInputs,
   });
@@ -598,6 +637,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   return {
     employee: {
       id: Number(emp.id),
+      userId: emp.userId != null ? Number(emp.userId) : null,
       name: fullEmployeeName(emp),
       position: emp.position,
       department: emp.department,
@@ -618,7 +658,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       to: String(leave.toDate),
     })),
     /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
-    actualPaidAmount: actualPaid.toFixed(2),
+    actualPaidAmount: round2(actualPaid).toFixed(2),
     /** (الراتب + البدلات) × تناسب أيام العمل — ما يدفعه المسيّر لغير الخاضع للحضور. */
     fixedPay: fixedPay.toFixed(2),
     /** المستحقّ الفعليّ عن الشهر وأساسُه — يُعرَض ويُطبَع ويُشارَك بدل حساب الحضور دائماً. */
@@ -664,9 +704,11 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
      */
     liveAmountDue,
     liveBasis,
-    needsHealing: !snapshot && hasUnhealedLateOrOpen,
+    needsHealing: !snapshot && !hasDraftRun && hasUnhealedLateOrOpen,
     totals: {
       scheduledHours: pay.scheduledHours,
+      scheduledHoursToDate: pay.scheduledHoursToDate,
+      isPartialMonth: pay.isPartialMonth,
       standardHours: pay.standardHours,
       shortMonthHours: pay.shortMonthHours,
       payableHours: pay.payableHours,

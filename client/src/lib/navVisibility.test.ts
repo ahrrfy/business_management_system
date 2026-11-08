@@ -115,6 +115,13 @@ describe("canonical operation navigation", () => {
     expect(hrefs).not.toContain("/");
     expect(hrefs).not.toContain("/my-work");
   });
+  it("does not let a read-only query open a FULL module gate without explicit operation paths", () => {
+    const readOnlyCrm = policy({ "operation.customers.list": true });
+    expect(canSeeGate({ module: "crm", level: "READ" }, "user", null, readOnlyCrm)).toBe(true);
+    expect(canSeeGate({ module: "crm", level: "FULL" }, "user", null, readOnlyCrm)).toBe(false);
+    const writeCrm = policy({ "operation.customers.create": true });
+    expect(canSeeGate({ module: "crm", level: "FULL" }, "user", null, writeCrm)).toBe(true);
+  });
 });
 
 function mobileHrefs(

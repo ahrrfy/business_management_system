@@ -344,10 +344,12 @@ export async function generatePayroll(period: string, actor: Actor) {
      * (الشهريين والساعيين) حتى حين يكون `attendancePayOn` معطّلاً للشهريّ.
      */
     const openAttendance = new Map<number, Set<string>>();
+    const manualLeaveAttendance: Array<{ employeeId: number; date: string }> = [];
     const rows = await tx
       .select({
         employeeId: attendance.employeeId,
         date: attendance.attendanceDate,
+        status: attendance.status,
         hours: attendance.hours,
         checkIn: attendance.checkIn,
         checkOut: attendance.checkOut,
@@ -356,10 +358,14 @@ export async function generatePayroll(period: string, actor: Actor) {
         notes: attendance.notes,
       })
       .from(attendance)
-      .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
+      .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE', 'LEAVE')`);
     for (const r of rows) {
       const k = Number(r.employeeId);
       const ymd = String(r.date).slice(0, 10);
+      if (r.status === "LEAVE") {
+        manualLeaveAttendance.push({ employeeId: k, date: ymd });
+        continue;
+      }
       if (attendancePayOn) {
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
         m.set(ymd, money(r.hours ?? 0));
@@ -390,6 +396,11 @@ export async function generatePayroll(period: string, actor: Actor) {
         const arr = paidLeaveSpans.get(k) ?? [];
         arr.push({ from: String(r.fromDate), to: String(r.toDate) });
         paidLeaveSpans.set(k, arr);
+      }
+      for (const ml of manualLeaveAttendance) {
+        const arr = paidLeaveSpans.get(ml.employeeId) ?? [];
+        arr.push({ from: ml.date, to: ml.date });
+        paidLeaveSpans.set(ml.employeeId, arr);
       }
     }
     /*

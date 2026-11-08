@@ -6,6 +6,7 @@
 // بوحدته وباركوده وسعره، ثم يُفصَل الرصيد المدمج ميدانياً بجردٍ يدويّ على الصنفين (لا تعرف القاعدة
 // توزيعه). قرار المالك #4: تكلفة البديل = المُمرَّرة (آخر شراء معروف) وإلا تكلفة الوحدة المدمجة.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   products,
@@ -16,7 +17,7 @@ import {
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
-import { normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
+import { acquireCatalogBarcodeWriteLock, findBarcodeClashes, normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 
@@ -184,6 +185,8 @@ export async function splitAliasToAlternative(
   if (!aliasBarcode) throw new TRPCError({ code: "BAD_REQUEST", message: "الباركود المُفصَل مطلوب." });
 
   return withTx(async (tx) => {
+    // (٠) قفل ملكية الباركود الموحّد عبر الكتالوج قبل أقفال المنتج/الوحدات (ترتيب أقفال حاكم خالٍ من الدورات).
+    await acquireCatalogBarcodeWriteLock(tx);
     // (١) الوحدة المصدر + متغيّرها + منتجها، تحت قفل الصفّ.
     const srcUnit = (
       await tx
@@ -267,6 +270,21 @@ export async function splitAliasToAlternative(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "هذا الباركود ليس بديلاً لهذه الوحدة — حدّث القائمة.",
+      });
+    }
+
+    const splitClashes = await findBarcodeClashes(tx, [aliasRow.barcode ?? aliasBarcode], {
+      ignoreAliasIds: [Number(aliasRow.id)],
+      forShare: true,
+    });
+    if (splitClashes[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `تعذّر فصل الباركود ${aliasBarcode} إلى بديل مستقل`,
+          why: `للباركود ${aliasBarcode} تعارض ملكية قائم مع «${splitClashes[0].takenBy}»`,
+          doThis: "صحّح تعارض ملكية الباركود في شاشة تعديل الصنف أولاً ثم أعد الفصل",
+        }),
       });
     }
 

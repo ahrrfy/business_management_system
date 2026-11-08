@@ -14,6 +14,7 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
+import { shiftTypeLabel } from "@/lib/labels";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -201,7 +202,7 @@ export default function ExpenseNew() {
       me.data?.permissionsOverride ?? null,
       "expenses",
       "FULL",
-      ["cashier", "manager", "accountant"],
+      ["cashier", "retail_cashier", "print_cashier", "reception_clerk", "manager", "accountant"],
     ),
   );
   const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
@@ -252,9 +253,33 @@ export default function ExpenseNew() {
   // ⛔ لا `?? 1` هنا: قبل استنتاج الفرعِ من الجلسة، القيمةُ `null` وتقف الاستعلاماتُ التي
   //    تحتاجها. `<InferredBranchField>` أدناه يُسند `branchId` أوّل ما يصل الاستنتاج.
   const effectiveBranch: number | null = branchId;
-  const openShift = trpc.shifts.current.useQuery(
+  const canListOpenDrawers = treasuryOperationAllowed(
+    me.data,
+    "expenses.openDrawers",
+    canCreateExpense,
+  );
+  const openDrawers = trpc.expenses.openDrawers.useQuery(
     { branchId: effectiveBranch ?? 0 },
-    { enabled: effectiveBranch != null },
+    { enabled: effectiveBranch != null && canListOpenDrawers },
+  );
+  const [selectedShiftId, setSelectedShiftId] = useState<string>("");
+  useEffect(() => {
+    const list = openDrawers.data ?? [];
+    if (list.length === 0) {
+      if (selectedShiftId !== "") setSelectedShiftId("");
+      if (!openDrawers.isLoading) setCashSource("TREASURY");
+      return;
+    }
+    if (!list.some((s) => String(s.id) === selectedShiftId)) {
+      setSelectedShiftId(String(list[0]!.id));
+    }
+  }, [effectiveBranch, openDrawers.data, openDrawers.isLoading, selectedShiftId]);
+  const selectedDrawer = useMemo(
+    () =>
+      (openDrawers.data ?? []).find((s) => String(s.id) === selectedShiftId) ??
+      (openDrawers.data ?? [])[0] ??
+      null,
+    [openDrawers.data, selectedShiftId],
   );
   const executionMode = expenseExecutionMode({
     source,
@@ -262,11 +287,6 @@ export default function ExpenseNew() {
     paymentMethod,
     cashSource,
   });
-
-  // مصدر النقد قرار صريح. عند غياب وردية للفاعل لا نترك اختيار درج غير صالح معلّقاً.
-  useEffect(() => {
-    if (!openShift.isLoading && !openShift.data) setCashSource("TREASURY");
-  }, [effectiveBranch, openShift.data, openShift.isLoading]);
 
   const expWinRef = useRef<Window | null>(null);
   const create = trpc.expenses.create.useMutation({
@@ -382,9 +402,18 @@ export default function ExpenseNew() {
     if (category === "OTHER" && !description.trim())
       return setError("وصف المصروف مطلوب لفئة «أخرى».");
 
-    if (executionMode === "DRAWER_IMMEDIATE" && !openShift.data) {
+    if (executionMode === "DRAWER_IMMEDIATE" && !selectedDrawer) {
       return setError(
-        "النثرية النقدية الصغيرة تُصرف من درج ورديتك فقط. افتح وردية ممولة أو حوّلها إلى طلب اعتماد خزينة.",
+        "النثرية النقدية الصغيرة تُصرف من درج ورديتك النشطة في نفس الفرع فقط. افتح وردية ممولة أو حوّلها إلى طلب اعتماد خزينة.",
+      );
+    }
+    if (
+      executionMode === "DRAWER_IMMEDIATE" &&
+      selectedDrawer &&
+      D(amount).gt(D(selectedDrawer.availableCash))
+    ) {
+      return setError(
+        `رصيد الوردية #${selectedDrawer.id} المتاح (${fmt(selectedDrawer.availableCash)} د.ع) لا يكفي لصرف ${fmt(D(amount).toFixed(2))} د.ع. موّل الوردية أولاً أو ارفع طلب اعتماد الخزينة.`,
       );
     }
     if (executionMode === "PENDING_OWNER_APPROVAL") {
@@ -396,11 +425,11 @@ export default function ExpenseNew() {
         cancelText: "تراجع",
       });
       if (!ok) return;
-    } else if (executionMode === "DRAWER_IMMEDIATE") {
+    } else if (executionMode === "DRAWER_IMMEDIATE" && selectedDrawer) {
       const ok = await confirm({
         variant: "warning",
         title: "تأكيد تسجيل المصروف",
-        description: `سيُصرف مبلغ ${fmt(D(amount).toFixed(2))} د.ع نقداً من درج الوردية الحالية ويُسجَّل قيد مصروف فوري. هل تؤكد العملية؟`,
+        description: `سيُصرف مبلغ ${fmt(D(amount).toFixed(2))} د.ع نقداً من درج ورديتك #${selectedDrawer.id} (${shiftTypeLabel(selectedDrawer.shiftType)}) ويُسجَّل قيد مصروف فوري. هل تؤكد العملية؟`,
         confirmText: "تأكيد وصرف المصروف",
         cancelText: "تراجع",
       });
@@ -413,8 +442,8 @@ export default function ExpenseNew() {
     create.mutate({
       branchId: Number(effectiveBranch),
       shiftId:
-        executionMode === "DRAWER_IMMEDIATE" && openShift.data?.id
-          ? Number(openShift.data.id)
+        executionMode === "DRAWER_IMMEDIATE" && selectedDrawer
+          ? Number(selectedDrawer.id)
           : null,
       cashSource: paymentMethod === "CASH" ? cashSource : null,
       expenseDate: expenseDate || undefined,
@@ -498,11 +527,10 @@ export default function ExpenseNew() {
               disabled={create.isPending}
             />
             {(() => {
-              if (openShift.data) {
+              if (selectedDrawer) {
                 return (
                   <p className="text-xs text-money-positive">
-                    لديك وردية مفتوحة #{Number(openShift.data.id)} — المصروف
-                    النقدي دون 500,000 د.ع يمكن تنفيذه فوراً من درجها.
+                    لديك وردية نشطة #{Number(selectedDrawer.id)} ({shiftTypeLabel(selectedDrawer.shiftType)}) — المتاح {fmt(selectedDrawer.availableCash)} د.ع.
                   </p>
                 );
               }
@@ -598,23 +626,25 @@ export default function ExpenseNew() {
                       type="button"
                       role="radio"
                       aria-checked={cashSource === "OWN_DRAWER"}
-                      disabled={!openShift.data}
+                      disabled={!selectedDrawer}
                       onClick={() => setCashSource("OWN_DRAWER")}
                       className={cn(
                         "rounded-xl border p-3 text-start transition",
                         cashSource === "OWN_DRAWER"
                           ? "border-primary bg-primary/5 ring-1 ring-primary"
                           : "hover:bg-muted/50",
-                        !openShift.data && "cursor-not-allowed opacity-50",
+                        !selectedDrawer && "cursor-not-allowed opacity-50",
                       )}
                     >
                       <span className="block text-sm font-bold">
                         درج ورديتي
-                        {openShift.data ? ` #${Number(openShift.data.id)}` : ""}
+                        {selectedDrawer
+                          ? ` #${Number(selectedDrawer.id)} (${shiftTypeLabel(selectedDrawer.shiftType)}) — المتاح ${fmt(selectedDrawer.availableCash)} د.ع`
+                          : ""}
                       </span>
                       <span className="mt-1 block text-xs text-muted-foreground">
-                        يظهر المصروف في معادلة إغلاق ورديتك ويُنقص النقد المتوقع
-                        فيها.
+                        يظهر المصروف في معادلة إغلاق ورديتك المحددة ويُنقص النقد المتوقع
+                        فيها أياً كان نوع الوردية.
                       </span>
                     </button>
                     <button
@@ -639,6 +669,34 @@ export default function ExpenseNew() {
                       </span>
                     </button>
                   </div>
+                  {cashSource === "OWN_DRAWER" && (openDrawers.data?.length ?? 0) > 1 ? (
+                    <div className="max-w-sm space-y-1">
+                      <Label htmlFor="expense-shift-select" className="text-xs">
+                        اختر ورديتك النشطة للصرف
+                      </Label>
+                      <AppSelect
+                        id="expense-shift-select"
+                        className="h-9"
+                        value={selectedShiftId}
+                        onValueChange={setSelectedShiftId}
+                        aria-label="اختر ورديتك النشطة للصرف"
+                      >
+                        {(openDrawers.data ?? []).map((s) => (
+                          <option key={s.id} value={String(s.id)}>
+                            وردية #{s.id} ({shiftTypeLabel(s.shiftType)}) — المتاح {fmt(s.availableCash)} د.ع
+                          </option>
+                        ))}
+                      </AppSelect>
+                    </div>
+                  ) : null}
+                  {cashSource === "OWN_DRAWER" &&
+                  selectedDrawer &&
+                  amount.trim() !== "" &&
+                  D(amount).gt(D(selectedDrawer.availableCash)) ? (
+                    <p className="text-xs text-[var(--sem-warn)]" role="alert">
+                      المبلغ المطلوب يتجاوز الرصيد النقدي المتاح في الوردية #{selectedDrawer.id} ({fmt(selectedDrawer.availableCash)} د.ع).
+                    </p>
+                  ) : null}
                   <p className="text-xs text-muted-foreground">
                     مسجّل العملية:{" "}
                     <strong className="text-foreground">
@@ -695,7 +753,8 @@ export default function ExpenseNew() {
           <CardContent className="space-y-3">
             <ProductSearchPicker
               branchId={Number(effectiveBranch)}
-              placeholder="ابحث عن منتج…"
+              stockExpenseOnly={true}
+              placeholder="ابحث عن مستلزم تشغيل من المخزون…"
               onPick={(v, u) => setItems((p) => [...p, mkStockLine(v, u)])}
             />
             {items.map((l) => {
@@ -901,8 +960,8 @@ export default function ExpenseNew() {
         const cashNeedsShift =
           !isStock &&
           executionMode === "DRAWER_IMMEDIATE" &&
-          !openShift.data &&
-          !openShift.isLoading;
+          !selectedDrawer &&
+          !openDrawers.isLoading;
         return (
           <div className="flex gap-2">
             <Button

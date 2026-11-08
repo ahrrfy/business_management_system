@@ -78,7 +78,7 @@ function scopeActor(
   return {
     canApprove,
     effectiveBranchId,
-    actor: { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role },
+    actor: { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role, isOwner: Boolean(ctx.user.isOwner) },
   };
 }
 
@@ -237,7 +237,7 @@ export const offlineRouter = router({
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع — مرآة saleRouter.create (منع IDOR): غير العابر يُجبَر على فرعه. **فصلٌ عن السلطة** (P2 Codex):
       // عبور الفروع للمالك/الأدمن فقط؛ سلطة اعتماد التسعير تحت التكلفة (canApprove) تبقى للمدير.
-      const crossBranch = ctx.user.role === "admin";
+      const crossBranch = canCrossBranches(ctx.user);
       let effectiveBranchId = input.branchId;
       if (!crossBranch) {
         if (ctx.user.branchId == null) {
@@ -245,9 +245,9 @@ export const offlineRouter = router({
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
-      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
-      // سلطة تحت-التكلفة: المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval مُتحقَّق.
-      const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role, isOwner: Boolean(ctx.user.isOwner) };
+      // سلطة تحت-التكلفة: المالك/المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval مُتحقَّق.
+      const canApprove = Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
       const { managerApproval, ...replayInput } = input;
       let approvedBy: number | null = null;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
@@ -547,6 +547,7 @@ export const offlineRouter = router({
       userId: ctx.user.id,
       branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
       role: ctx.user.role,
+      isOwner: Boolean(ctx.user.isOwner),
     });
   }),
 
@@ -557,7 +558,12 @@ export const offlineRouter = router({
       return postRecoveryItem(
         input.id,
         input.targetShiftId,
-        { userId: ctx.user.id, branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId), role: ctx.user.role },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+          isOwner: Boolean(ctx.user.isOwner),
+        },
         ctx,
       );
     }),
@@ -569,7 +575,12 @@ export const offlineRouter = router({
       return discardRecoveryItem(
         input.id,
         input.reason,
-        { userId: ctx.user.id, branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId), role: ctx.user.role },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+          isOwner: Boolean(ctx.user.isOwner),
+        },
         ctx,
       );
     }),

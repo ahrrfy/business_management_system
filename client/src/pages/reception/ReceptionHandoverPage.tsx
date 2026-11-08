@@ -893,10 +893,37 @@ export default function ReceptionHandoverPage() {
                     type="button"
                     variant="outline"
                     className="w-full text-xs font-bold border-[var(--sem-warn)] text-[var(--sem-warn)] hover:bg-[var(--sem-warn-bg)]"
-                    onClick={() => setShowDebtApproval(true)}
-                    disabled={deliverMut.isPending || !shift}
+                    onClick={async () => {
+                      const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+                      if (!isElevated) {
+                        setShowDebtApproval(true);
+                        return;
+                      }
+                      const ok = await confirm({
+                        variant: "warning",
+                        title: "تسليم الطلب وتحويل المتبقي لذمة العميل",
+                        description: `سيُسلَّم الطلب #${scanned.orderNumber} ويُسجَّل المتبقي (${fmt(remainingDue.toFixed(2))} د.ع) في ذمة العميل بصلاحيتك الإدارية. هل تريد المتابعة؟`,
+                        confirmText: "تأكيد التسليم الآجل",
+                      });
+                      if (!ok) return;
+                      deliverPrintRef.current = {
+                        win: preopenDocumentWindow(),
+                        order: scanned,
+                        amountPaid: "0.00",
+                        method: "CASH",
+                        reference: null,
+                      };
+                      deliverMut.mutate({
+                        workOrderId: scanned.id,
+                        addToCustomerDebt: true,
+                        clientRequestId: crypto.randomUUID(),
+                      });
+                    }}
+                    disabled={deliverMut.isPending}
                   >
-                    إضافة المتبقي ({fmt(remainingDue.toFixed(2))} د.ع) لذمة العميل (اعتماد مسؤول)
+                    {me.data?.role === "admin" || me.data?.role === "manager"
+                      ? `إضافة المتبقي (${fmt(remainingDue.toFixed(2))} د.ع) لذمة العميل (بصلاحيتي الإدارية)`
+                      : `إضافة المتبقي (${fmt(remainingDue.toFixed(2))} د.ع) لذمة العميل (اعتماد مسؤول)`}
                   </Button>
                 )}
               </div>

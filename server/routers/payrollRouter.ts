@@ -129,6 +129,8 @@ export const payrollRouter = router({
           .select({
             id: employees.id,
             firstName: employees.firstName,
+            fatherName: employees.fatherName,
+            grandfatherName: employees.grandfatherName,
             lastName: employees.lastName,
             position: employees.position,
             department: employees.department,
@@ -191,6 +193,7 @@ export const payrollRouter = router({
             and(
               eq(payrollItems.runId, input.runId),
               eq(payrollItems.employeeId, emp.id),
+              eq(payrollItems.revisionNo, payrollRuns.revisionNo),
             ),
           )
           .limit(1);

@@ -463,6 +463,9 @@ async function loadOwnedReplay(
       deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
       governorate: onlineOrders.governorate,
       shippingAddress: onlineOrders.shippingAddress,
+      customerNotes: onlineOrders.customerNotes,
+      latitude: onlineOrders.latitude,
+      longitude: onlineOrders.longitude,
       guestTrackingPublicId: onlineOrders.guestTrackingPublicId,
       guestTrackingTokenHash: onlineOrders.guestTrackingTokenHash,
       guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
@@ -557,9 +560,22 @@ async function loadOwnedReplay(
   const existingCouponCode = existing.couponCode
     ? normalizeCouponCode(existing.couponCode)
     : null;
+  const requestedNotes = input.notes?.trim() ? input.notes.trim() : null;
+  const existingNotes = existing.customerNotes?.trim() ? existing.customerNotes.trim() : null;
+  const sameCoord = (
+    a: string | number | null | undefined,
+    b: string | number | null | undefined,
+  ): boolean => {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    return Math.abs(Number(a) - Number(b)) < 1e-6;
+  };
   if (
     existing.governorate !== input.governorate ||
     existing.shippingAddress !== requestedShippingAddress ||
+    existingNotes !== requestedNotes ||
+    !sameCoord(existing.latitude, input.latitude) ||
+    !sameCoord(existing.longitude, input.longitude) ||
     existingCouponCode !== requestedCouponCode ||
     !sameLines
   ) {
@@ -1187,6 +1203,7 @@ export async function priceOnlineOrderLines(
       isService: products.isService,
       isBundle: products.isBundle,
       isCustomizable: products.isCustomizable,
+      stockUsage: products.stockUsage,
       price: productPrices.price,
       wholesalePrice: wholesalePrices.price,
     })
@@ -1260,6 +1277,7 @@ export async function priceOnlineOrderLines(
       !row.productActive ||
       !row.variantActive ||
       !row.unitActive ||
+      (!row.isService && row.stockUsage != null && row.stockUsage !== "SALE_ONLY" && row.stockUsage !== "SALE_AND_MATERIAL") ||
       row.price == null ||
       storefrontVisibilityFailed
     ) {

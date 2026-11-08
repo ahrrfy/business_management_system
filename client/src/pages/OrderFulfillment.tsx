@@ -82,6 +82,7 @@ const FILTERS: { value: OnlineOrderStatus | null; label: string }[] = [
   { value: "PROCESSING", label: "قيد التجهيز" },
   { value: "SHIPPED", label: "مع المندوب" },
   { value: "DELIVERED", label: "سُلّم" },
+  { value: "CANCELLED", label: "ملغى" },
 ];
 
 function money(v: string | number | null | undefined): string {
@@ -689,7 +690,7 @@ export default function OrderFulfillment() {
                 label: "إرسال لمندوب",
                 icon: Truck,
                 hidden: !canDispatch || (st !== "CONFIRMED" && st !== "PROCESSING"),
-                gate: { roles: ["manager"], module: "store", level: "FULL" },
+                gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
                 disabled: isBusy || dispatchM.isPending,
                 disabledReason: "هناك عملية جارية على الطلب",
                 onSelect: () => setDispatchTarget({

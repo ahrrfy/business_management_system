@@ -846,8 +846,25 @@ describe("الكتالوج: تعديل المنتج", () => {
   });
 });
 
-describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", () => {
-  it("createProduct يُنشئ منتجاً + متغيّراً + وحدات + أسعاراً + مخزوناً افتتاحياً", async () => {
+describe("الكتالوج: إنشاء منتج برصيد صفري إلزامي", () => {
+  it("createProduct يرفض الرصيد الافتتاحي غير الصفري ويُنشئ الصنف برصيد صفري", async () => {
+    await expect(
+      createProduct(
+        {
+          name: "منتج مرفوض برصيد افتتاحي",
+          variants: [
+            {
+              sku: "TST-REJECT",
+              costPrice: "100.00",
+              openingStock: 50,
+              units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/رصيد/);
+
     const r = await createProduct(
       {
         name: "منتج اختبار",
@@ -855,7 +872,7 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
           {
             sku: "TST-1",
             costPrice: "100.00",
-            openingStock: 50,
+            openingStock: 0,
             units: [
               { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "TSTBC1", prices: [{ priceTier: "RETAIL", price: "150.00" }, { priceTier: "WHOLESALE", price: "130.00" }] },
               { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "1700.00" }] },
@@ -868,7 +885,7 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
     expect(r.productId).toBeGreaterThan(0);
     const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "TST-1")))[0];
     expect(v).toBeTruthy();
-    expect(await stockOf(Number(v.id), 1)).toBe(50); // المخزون الافتتاحي
+    expect(await stockOf(Number(v.id), 1)).toBe(0);
     const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
     expect(units).toHaveLength(2);
     const baseUnit = units.find((u) => u.isBaseUnit)!;

@@ -31,6 +31,9 @@ interface WorkOrderDeliveryPaymentCardProps {
   payReference: string;
   setPayReference: (val: string) => void;
   deliveryMgrApproval: ManagerApprovalInput | null;
+  canSelfApproveDebt?: boolean;
+  deliveryAddToDebt?: boolean;
+  onToggleSelfDebt?: (next: boolean) => void;
   onClearMgrApproval: () => void;
   onRequestMgrApproval: () => void;
 }
@@ -46,6 +49,9 @@ export function WorkOrderDeliveryPaymentCard({
   payReference,
   setPayReference,
   deliveryMgrApproval,
+  canSelfApproveDebt = false,
+  deliveryAddToDebt = false,
+  onToggleSelfDebt,
   onClearMgrApproval,
   onRequestMgrApproval,
 }: WorkOrderDeliveryPaymentCardProps) {
@@ -120,22 +126,34 @@ export function WorkOrderDeliveryPaymentCard({
             <p className="text-muted-foreground text-[11px] leading-relaxed">
               وفقاً لسياسة الرقابة المالية، يُمنع تسليم الطلب بمتبقٍ غير مستحصل إلا بعد استيفاء المبلغ كاملاً أو الحصول على اعتماد المسؤول لتحويله إلى ذمة العميل.
             </p>
-            {deliveryMgrApproval ? (
+            {deliveryMgrApproval || (canSelfApproveDebt && deliveryAddToDebt) ? (
               <div className="flex items-center justify-between rounded bg-card/80 p-2 border border-border">
                 <span className="flex items-center gap-1.5 text-[var(--sem-pos)] font-semibold text-xs">
                   <ShieldCheck aria-hidden className="size-4 shrink-0" />
-                  تم اعتماد إضافة المتبقي لذمة العميل
+                  {canSelfApproveDebt && !deliveryMgrApproval
+                    ? "تم تفعيل إضافة المتبقي لذمة العميل بصلاحيتك الإدارية"
+                    : "تم اعتماد إضافة المتبقي لذمة العميل"}
                 </span>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="h-6 text-xs text-muted-foreground"
-                  onClick={onClearMgrApproval}
+                  onClick={canSelfApproveDebt && !deliveryMgrApproval ? () => onToggleSelfDebt?.(false) : onClearMgrApproval}
                 >
                   إلغاء الاعتماد
                 </Button>
               </div>
+            ) : canSelfApproveDebt ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full text-xs font-semibold"
+                onClick={() => onToggleSelfDebt?.(true)}
+              >
+                إضافة المتبقي لذمة العميل (بصلاحيتي الإدارية)
+              </Button>
             ) : (
               <Button
                 type="button"

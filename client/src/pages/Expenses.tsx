@@ -13,7 +13,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { expenseOperationAccess } from "@/lib/expenseOperationAccess";
@@ -609,18 +609,39 @@ export default function Expenses() {
         disabledReason: "توجد عملية تنفيذ قيد المعالجة",
         onSelect: () =>
           void (async () => {
+            let drawers: Array<{ id: number; shiftType: string; availableCash: string }> = [];
+            try {
+              drawers = await utils.expenses.openDrawers.fetch({
+                branchId: Number(r.branchId),
+              });
+            } catch (e) {
+              notify.err(e);
+              return;
+            }
+            if (drawers.length === 0) {
+              notify.err(
+                "لا توجد وردية نشطة باسمك في هذا الفرع؛ افتح وردية ممولة أولاً أو استخدم الدفع المباشر من الخزينة.",
+              );
+              return;
+            }
+            const chosenShift =
+              drawers.find((d) => D(d.availableCash).gte(D(r.amount))) ?? drawers[0]!;
+            const shiftKind = SHIFT_TYPE_LABEL[chosenShift.shiftType] ?? chosenShift.shiftType;
             if (
               !(await confirm({
                 variant: "warning",
                 title: "تنفيذ المصروف من درج الوردية",
-                description: `سيُخصم ${fmt(r.amount)} د.ع من ورديتك أنت، وتُسجل أنت منفذَ التسليم. إذا لم يكفِ الرصيد فموّل الوردية أو اختر الصرف المباشر من الخزينة.`,
+                description: `سيُخصم ${fmt(r.amount)} د.ع من ورديتك #${chosenShift.id} (${shiftKind} — المتاح ${fmt(chosenShift.availableCash)} د.ع)، وتُسجل أنت منفذَ التسليم.`,
                 confirmText: "تنفيذ من ورديتي",
                 cancelText: "تراجع",
               }))
             )
               return;
             execWinRef.current = { win: preopenDocumentWindow("width=420,height=760"), row: r };
-            executeFromOwnDrawer.mutate({ expenseId: Number(r.id) });
+            executeFromOwnDrawer.mutate({
+              expenseId: Number(r.id),
+              shiftId: Number(chosenShift.id),
+            });
           })(),
       },
       {

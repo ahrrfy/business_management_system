@@ -29,6 +29,7 @@ type ProductMetadata = Pick<
   | "isConsignment"
   | "consignorId"
   | "productType"
+  | "stockUsage"
 >;
 export interface EconomicInventoryScope {
   readonly variantIds: readonly number[];
@@ -133,6 +134,7 @@ export async function lockEconomicInventoryScope(
         isConsignment: products.isConsignment,
         consignorId: products.consignorId,
         productType: products.productType,
+        stockUsage: products.stockUsage,
       })
       .from(products)
       .where(eq(products.id, productId))

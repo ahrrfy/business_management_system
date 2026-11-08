@@ -12,8 +12,9 @@ import {
   usdRateStr,
   type ImportSummary,
 } from "../services/importService";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { managerProcedure, router } from "../trpc";
-import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
+import { trySyncActiveFullStocktakeScopes } from "../services/stocktakeService";
 
 const optionsSchema = z
   .object({
@@ -36,6 +37,7 @@ const productOptionsSchema = z
     onExisting: z.enum(["skip", "error"]).default("skip"),
     fileName: z.string().max(255).optional(),
     skipFailed: z.boolean().default(false),
+    branchId: z.number().int().positive().optional(),
   })
   .optional();
 
@@ -71,11 +73,24 @@ export const importRouter = router({
   products: managerProcedure
     .input(z.object({ rows: z.array(productImportRow).min(1).max(5000), options: productOptionsSchema }))
     .mutation(async ({ input, ctx }) => {
-      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 };
-      const summary = await importProducts(input.rows, input.options ?? {}, actor);
-      if (summary.committed) await syncActiveFullStocktakeScopes();
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      };
+      const options = {
+        ...(input.options ?? {}),
+        ...(input.options?.branchId != null
+          ? { branchId: input.options.branchId }
+          : !canCrossBranches(ctx.user) && ctx.user.branchId != null
+            ? { branchId: Number(ctx.user.branchId) }
+            : {}),
+      };
+      const summary = await importProducts(input.rows, options, actor);
+      const syncRes = summary.committed ? await trySyncActiveFullStocktakeScopes() : {};
       if (summary.committed)
         await logAudit(ctx, { action: "import.products", entityType: "import", newValue: auditCounts(summary) });
-      return summary;
+      return { ...summary, ...syncRes };
     }),
 });

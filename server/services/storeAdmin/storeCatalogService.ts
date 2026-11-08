@@ -4,11 +4,12 @@
  * الذرّي — لا كتابة branchStock عارية). الصورة على مستوى المنتج (primary). كلّه بوّابة store.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import {
   categories,
   productImages,
+  productPrices,
   productUnitBarcodes,
   productUnits,
   productVariants,
@@ -295,14 +296,77 @@ export async function setProductFeatured(input: { productId: number; isFeatured:
   return { productId: input.productId, isFeatured: input.isFeatured };
 }
 
-/** إظهار/إخفاء منتج من واجهة المتجر (لا يمسّ تفعيله في الـERP/الكاشير). */
-export async function setProductStoreVisible(input: { productId: number; showInStore: boolean }) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-  const cur = (await db.select({ id: products.id }).from(products).where(eq(products.id, input.productId)).limit(1))[0];
-  if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
-  await db.update(products).set({ showInStore: input.showInStore }).where(eq(products.id, input.productId));
-  return { productId: input.productId, showInStore: input.showInStore };
+/** إظهار/إخفاء منتج من واجهة المتجر (لا يمسّ تفعيله في الـERP/الكاشير). النشر الصريح يتحقّق من الصلاحية والجاهزية تحت القفل. */
+export async function setProductStoreVisible(
+  input: { productId: number; showInStore: boolean },
+  actor?: { role?: string; isOwner?: boolean | null; permissionsOverride?: unknown },
+) {
+  const { assertStorefrontPublishReadyTx } = await import("../catalog/productUpdateGuards");
+  return withTx(async (tx) => {
+    const [cur] = await tx
+      .select({
+        id: products.id,
+        isActive: products.isActive,
+        isService: products.isService,
+        stockUsage: products.stockUsage,
+        categoryId: products.categoryId,
+      })
+      .from(products)
+      .where(eq(products.id, input.productId))
+      .for("update")
+      .limit(1);
+    if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    if (input.showInStore) {
+      const vars = await tx
+        .select({ id: productVariants.id, isActive: productVariants.isActive })
+        .from(productVariants)
+        .where(eq(productVariants.productId, input.productId));
+      const varIds = vars.map((v) => Number(v.id));
+      const unitRows = varIds.length
+        ? await tx
+            .select({
+              id: productUnits.id,
+              variantId: productUnits.variantId,
+              isActive: productUnits.isActive,
+              isStoreSaleUnit: productUnits.isStoreSaleUnit,
+              conversionFactor: productUnits.conversionFactor,
+              retailPrice: productPrices.price,
+            })
+            .from(productUnits)
+            .leftJoin(
+              productPrices,
+              and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")),
+            )
+            .where(inArray(productUnits.variantId, varIds))
+        : [];
+      const unitsByVar = new Map<number, typeof unitRows>();
+      for (const u of unitRows) {
+        const vid = Number(u.variantId);
+        const list = unitsByVar.get(vid) ?? [];
+        list.push(u);
+        unitsByVar.set(vid, list);
+      }
+      await assertStorefrontPublishReadyTx(tx, {
+        actor: actor as any,
+        requirePermission: actor != null,
+        isActive: cur.isActive === true,
+        isService: !!cur.isService,
+        stockUsage: cur.stockUsage ?? null,
+        categoryId: cur.categoryId ?? null,
+        variants: vars.map((v) => ({
+          isActive: v.isActive === true,
+          units: (unitsByVar.get(Number(v.id)) ?? []).map((u) => ({
+            isActive: u.isActive === true,
+            isStoreSaleUnit: !!u.isStoreSaleUnit,
+            conversionFactor: u.conversionFactor,
+            retailPrice: u.retailPrice ?? null,
+          })),
+        })),
+      });
+    }
+    await tx.update(products).set({ showInStore: input.showInStore }).where(eq(products.id, input.productId));
+    return { productId: input.productId, showInStore: input.showInStore };
+  });
 }
 
 /** إزالة الصورة الرئيسية القديمة فقط؛ نشر/استبدال الصور الجديدة حصراً عبر Product Studio/R2. */

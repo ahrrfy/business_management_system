@@ -2689,6 +2689,13 @@
 			"when": 1788148885000,
 			"tag": "0427_fractional_recipe_inventory",
 			"breakpoints": true
+		},
+		{
+			"idx": 428,
+			"version": "5",
+			"when": 1788148886000,
+			"tag": "0428_catalog_stock_usage_and_locks",
+			"breakpoints": true
 		}
 	]
 }

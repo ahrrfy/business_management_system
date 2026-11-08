@@ -531,6 +531,7 @@ export async function createSaleInTx(
       isService: products.isService,
       isBundle: products.isBundle,
       productType: products.productType,
+      stockUsage: products.stockUsage,
       productName: products.name,
       invoiceLabel: products.invoiceLabel,
       shortTitle: products.shortTitle,
@@ -548,6 +549,7 @@ export async function createSaleInTx(
       costPrice: string;
       isActive: boolean | null;
       productType: string | null;
+      stockUsage: typeof products.$inferSelect.stockUsage;
       productActive: boolean | null;
       productName: string;
       invoiceLabel: string | null;
@@ -560,6 +562,7 @@ export async function createSaleInTx(
       costPrice: "0",
       isActive: r.isActive,
       productType: r.productType ?? null,
+      stockUsage: r.stockUsage ?? null,
       productActive: r.productActive,
       productName: r.productName,
       invoiceLabel: r.invoiceLabel ?? null,
@@ -639,6 +642,7 @@ export async function createSaleInTx(
           isService: products.isService,
           isBundle: products.isBundle,
           productType: products.productType,
+          stockUsage: products.stockUsage,
           name: products.name,
           invoiceLabel: products.invoiceLabel,
           shortTitle: products.shortTitle,
@@ -666,6 +670,7 @@ export async function createSaleInTx(
     }
     variant.productActive = product.isActive;
     variant.productType = product.productType ?? null;
+    variant.stockUsage = product.stockUsage ?? null;
     variant.productName = product.name;
     variant.invoiceLabel = product.invoiceLabel ?? null;
     variant.shortTitle = product.shortTitle ?? null;
@@ -834,6 +839,12 @@ export async function createSaleInTx(
     tx,
     Array.from(bundleComponentIds),
     "مكوّن البكج",
+    { usageCheck: "sellable" },
+  );
+  const remainingGrandfathered = new Map<string, number>(
+    input.grandfatheredRestrictedLineCaps
+      ? Array.from(input.grandfatheredRestrictedLineCaps.entries())
+      : [],
   );
   const serviceRecipe = new Map(
     Array.from(serviceDefinitions.entries()).map(([variantId, definition]) => [
@@ -991,6 +1002,30 @@ export async function createSaleInTx(
       l.quantity,
       l.variantId,
     );
+    const lineVariantMeta = variantById.get(l.variantId);
+    const lineKind = kindByVariant.get(l.variantId) ?? "STOCKED";
+    if (
+      lineKind === "STOCKED" &&
+      lineVariantMeta &&
+      lineVariantMeta.stockUsage != null &&
+      lineVariantMeta.stockUsage !== "SALE_ONLY" &&
+      lineVariantMeta.stockUsage !== "SALE_AND_MATERIAL"
+    ) {
+      const capKey = `${l.variantId}:${l.productUnitId}`;
+      const allowedCap = remainingGrandfathered.get(capKey) ?? 0;
+      if (baseQuantity <= allowedCap) {
+        remainingGrandfathered.set(capKey, allowedCap - baseQuantity);
+      } else {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر بيع الصنف «${lineVariantMeta.productName}»`,
+            why: "تصنيف استخدام الصنف المخزني لا يسمح بالبيع المباشر (مادة خام أو مستلزم تشغيل)، أو تجاوز التصحيحُ الوحدةَ أو الكميةَ الأصلية للفاتورة",
+            doThis: "أزل الصنف غير المخصّص للبيع من الفاتورة أو التزم بوحدته وكميته الأصلية عند التصحيح",
+          }),
+        });
+      }
+    }
     const contractPrice = contractPrices.get(l.productUnitId);
     const hasOverride =
       l.unitPriceOverride != null && l.unitPriceOverride !== "";

@@ -9,6 +9,7 @@ import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage"
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
+import type { StockUsage } from "@shared/stockUsage";
 import { loadVariantAvailability, type BundleCapacity } from "./variantAvailability";
 import { assertNoActiveDigitalInventoryBinding } from "../digitalCards/inventoryBindingGuard";
 
@@ -34,6 +35,7 @@ export interface AdminProductRow {
   parentProductName: string | null;
   isCustomizable: boolean;
   isService: boolean;
+  stockUsage: StockUsage | null;
   showInReception: boolean;
   // ٢٤/٨ — إكمال شريحة PR #755/#757: وسم رؤية شبكة كاشير الطباعة يخرج من `products.showInPrintPos`،
   // ويظهر في التصدير الإداريّ ليعرف المدير أيّ منتجاته تظهر هناك دون فتح كل واحد.
@@ -113,6 +115,7 @@ export interface ListProductsAdminInput {
    *   غياب ⇒ الكلّ (السلوك القائم بلا تراجع)
    */
   showInPrintPos?: boolean;
+  stockUsage?: StockUsage;
   showInQuotations?: boolean;
   showInAdvancedSales?: boolean;
   /** فلترة بحالة الصورة: HAS_IMAGE = يحتوي صورة، NO_IMAGE = بلا صورة إطلاقاً، VARIANT_NO_IMAGE = متغيّر يفتقر لصورة خاصّة به. */
@@ -164,6 +167,9 @@ export async function listProductsAdmin(
   if (input.showInQuotations != null) {
     conds.push(eq(products.showInQuotations, input.showInQuotations));
   }
+  if (input.stockUsage != null) {
+    conds.push(eq(products.stockUsage, input.stockUsage));
+  }
   if (input.showInAdvancedSales != null) {
     conds.push(eq(products.showInAdvancedSales, input.showInAdvancedSales));
   }
@@ -203,6 +209,7 @@ export async function listProductsAdmin(
       parentProductName: parentProducts.name,
       isCustomizable: products.isCustomizable,
       isService: products.isService,
+      stockUsage: products.stockUsage,
       showInReception: products.showInReception,
       showInPrintPos: products.showInPrintPos,
       showInQuotations: products.showInQuotations,
@@ -386,6 +393,7 @@ export async function listProductsAdmin(
         parentProductName: r.parentProductName ?? null,
         isCustomizable: !!r.isCustomizable,
         isService: !!r.isService,
+        stockUsage: (r.stockUsage as StockUsage | null) ?? null,
         showInReception: !!r.showInReception,
         showInPrintPos: !!r.showInPrintPos,
         showInQuotations: !!r.showInQuotations,
@@ -460,22 +468,39 @@ export async function setProductActive(productId: number, isActive: boolean, _ac
   return withTx(async (tx) => {
     const p = (await tx.select().from(products).where(eq(products.id, productId)).for("update").limit(1))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    const variants = await tx
+      .select({
+        id: productVariants.id,
+        variantKind: productVariants.variantKind,
+        color: productVariants.color,
+        size: productVariants.size,
+      })
+      .from(productVariants)
+      .where(eq(productVariants.productId, productId))
+      .orderBy(asc(productVariants.id))
+      .for("update");
     if (!isActive && p.isActive !== false) {
-      // نفس ترتيب أقفال حجز السلة الرقمية: product ثم variants بترتيب المعرّف. إن سبقنا
-      // الحجز سيراه الحارس؛ وإن سبقناه نحن فسيرى الحاجز المنتج معطّلاً بعد انتظار القفل.
-      const variants = await tx
-        .select({ id: productVariants.id })
-        .from(productVariants)
-        .where(eq(productVariants.productId, productId))
-        .orderBy(asc(productVariants.id))
-        .for("update");
       await assertNoActiveDigitalInventoryBinding(
         tx,
         variants.map((variant) => Number(variant.id)),
         "تعطيل المنتج أثناء إصدار سلة رقمية",
       );
     }
-    await tx.update(products).set({ isActive }).where(eq(products.id, productId));
+    const isSingleSimple =
+      variants.length === 1 &&
+      variants[0].variantKind !== "ALTERNATIVE" &&
+      !variants[0].color &&
+      !variants[0].size;
+    if (isSingleSimple) {
+      await tx
+        .update(productVariants)
+        .set({ isActive })
+        .where(eq(productVariants.id, Number(variants[0].id)));
+    }
+    await tx
+      .update(products)
+      .set(isActive ? { isActive } : { isActive: false, showInStore: false })
+      .where(eq(products.id, productId));
     return { productId, isActive };
   });
 }

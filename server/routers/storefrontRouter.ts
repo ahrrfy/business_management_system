@@ -66,6 +66,10 @@ import {
   uploadStorefrontCustomizationAsset,
 } from "../services/storefrontCustomizationAssetService";
 import { barcodeString } from "../lib/schemas";
+import {
+  isAllowedGoogleMapsResolveUrl,
+  parseGeoCoordinates,
+} from "@shared/geoCoordinates";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -661,6 +665,76 @@ export const storefrontRouter = router({
   cancelOrderByToken: storefrontPublicWriteProcedure
     .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
     .mutation(({ input }) => cancelOnlineOrderByGuestToken(input.trackingToken)),
+
+  /** فك روابط خرائط Google المختصرة خادمياً بحماية SSRF لاستخراج إحداثيات التوصيل الدقيقة. */
+  resolveLocationUrl: storefrontPublicReadProcedure
+    .input(z.object({ url: z.string().trim().min(10).max(2048) }))
+    .mutation(async ({ input }) => {
+      const direct = parseGeoCoordinates(input.url);
+      if (direct) {
+        return { lat: direct.lat, lng: direct.lng, resolvedUrl: input.url };
+      }
+      if (!isAllowedGoogleMapsResolveUrl(input.url)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر قراءة رابط الموقع",
+            why: "الرابط المُدخَل ليس رابط خرائط Google آمناً ومعتمداً",
+            doThis: "انسخ رابط الموقع من تطبيق خرائط Google أو أدخل خط العرض وخط الطول مباشرةً",
+          }),
+        });
+      }
+      let currentUrl = input.url.trim();
+      for (let hop = 0; hop < 5; hop++) {
+        const hopCoords = parseGeoCoordinates(currentUrl);
+        if (hopCoords) {
+          return { lat: hopCoords.lat, lng: hopCoords.lng, resolvedUrl: currentUrl };
+        }
+        if (!isAllowedGoogleMapsResolveUrl(currentUrl)) {
+          break;
+        }
+        let response: Response;
+        try {
+          response = await fetch(currentUrl, {
+            method: "GET",
+            redirect: "manual",
+            signal: AbortSignal.timeout(4000),
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; AlArabiyaStoreLocationResolver/1.0)",
+              Accept: "text/html,application/xhtml+xml",
+            },
+          });
+        } catch {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر فك رابط خرائط Google المختصر",
+              why: "انتهت مهلة الاتصال بخدمة الخرائط قبل قراءة الإحداثيات",
+              doThis: "افتح الرابط في تطبيق خرائط Google ثم انسخ الإحداثيات أو الرابط الكامل وأعد المحاولة",
+            }),
+          });
+        }
+        const locationHeader = response.headers.get("location");
+        if (locationHeader && response.status >= 300 && response.status < 400) {
+          const nextUrl = new URL(locationHeader, currentUrl).toString();
+          const redirectCoords = parseGeoCoordinates(nextUrl);
+          if (redirectCoords) {
+            return { lat: redirectCoords.lat, lng: redirectCoords.lng, resolvedUrl: nextUrl };
+          }
+          currentUrl = nextUrl;
+          continue;
+        }
+        break;
+      }
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استخراج الإحداثيات من الرابط",
+          why: "لا يحتوي هذا الرابط المختصر على إحداثيات دبوس صريحة يمكن قراءتها تلقائياً",
+          doThis: "افتح الرابط في خرائط Google واضغط مطولاً على الموقع لنسخ الإحداثيات الرقمية ثم الصقها هنا",
+        }),
+      });
+    }),
 
   /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
   labelSummary: labelSummaryProcedure

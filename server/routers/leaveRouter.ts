@@ -4,7 +4,7 @@
  * يُركَّب من قائد التكامل تحت المسار trpc.leaves.
  * ========================================================================== */
 import { z } from "zod";
-import { LEAVE_TYPES } from "@shared/hr";
+import { baghdadCurrentMonth, baghdadCurrentYear, LEAVE_TYPES } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/leaveService";
 import * as leaveAccrualSvc from "../services/hr/leaveAccrual";
@@ -77,7 +77,7 @@ export const leaveRouter = router({
       const filtered =
         from || to ? all.filter((l) => (!from || l.toDate >= from) && (!to || l.fromDate <= to)) : all;
 
-      const monthPrefix = new Date().toISOString().slice(0, 7);
+      const monthPrefix = baghdadCurrentMonth();
       const counts = {
         pending: filtered.filter((l) => l.status === "pending").length,
         approved: filtered.filter((l) => l.status === "approved").length,
@@ -109,7 +109,7 @@ export const leaveRouter = router({
   balanceReport: hrRead
     .input(z.object({ year: z.number().int().min(2000).max(2100).optional() }).optional())
     .query(async ({ input, ctx }) => {
-      const year = input?.year ?? new Date().getUTCFullYear();
+      const year = input?.year ?? baghdadCurrentYear();
       const yearFrom = `${year}-01-01`;
       const yearTo = `${year}-12-31`;
       // الطرفان مُقيَّدان بالفرع معاً — تقييد أحدهما وحده يُنتج صفوفاً بأرصدةٍ بلا أيامها.

@@ -2,9 +2,16 @@ import { PurchasePaymentEvidence, purchasePaymentEvidencePrintMeta } from "@/com
 import { useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "@/components/purchases/purchaseGovernanceUiPolicy";
 import { PurchaseShippingRefund } from "@/components/purchases/PurchaseShippingRefund";
+import {
+  PurchaseTenderField,
+  usePurchaseTenderState,
+} from "@/components/purchases/PurchaseTenderField";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
@@ -12,6 +19,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { hasModuleAccess } from "@shared/permissions";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
@@ -210,9 +218,60 @@ export default function PurchaseOrderDetail() {
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
   const canAutoSettle = canLifecycleOperation(me.data, "purchases.reconcileSettlement", legacyEdit);
   const canReverseReceipt = canLifecycleOperation(me.data, "goodsReceiptReversal.requestReversal", legacyEdit);
+  const canRevisePaymentSource = canLifecycleOperation(
+    me.data,
+    "purchases.revisePaymentSource",
+    legacyEdit,
+  );
 
   const [isSettleShippingOpen, setIsSettleShippingOpen] = useState(false);
+  const [isRevisePaymentOpen, setIsRevisePaymentOpen] = useState(false);
+  const [revisePaymentReason, setRevisePaymentReason] = useState("");
+  const [reviseRequestId, setReviseRequestId] = useState(() =>
+    crypto.randomUUID(),
+  );
   const utils = trpc.useUtils();
+  const poData = po.data;
+  const reviseGoodsTotal =
+    poData && poData.subtotal != null
+      ? D(poData.subtotal).plus(D(poData.taxAmount ?? 0)).toFixed(2)
+      : "0";
+  const reviseTenderState = usePurchaseTenderState({
+    branchId: poData?.branchId ?? null,
+    supplierId: poData?.supplierId ?? null,
+    enabled:
+      isRevisePaymentOpen &&
+      poData != null &&
+      poData.settlementType === "CASH" &&
+      poData.agreedCurrency !== "USD",
+    context: "edit",
+    isCreator: poData != null && me.data?.id === poData.createdBy,
+    total: reviseGoodsTotal,
+  });
+  const revisePaymentMut = trpc.purchases.revisePaymentSource.useMutation({
+    onSuccess: async (res) => {
+      setIsRevisePaymentOpen(false);
+      setRevisePaymentReason("");
+      setReviseRequestId(crypto.randomUUID());
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
+        utils.purchases.revisions.invalidate({ purchaseOrderId }),
+        utils.purchases.events.invalidate({ purchaseOrderId }),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+      if (
+        res.shortageWarning?.hasShortage &&
+        res.shortageWarning.warningMessage
+      ) {
+        notify.warn(res.shortageWarning.warningMessage);
+      }
+      notify.ok(
+        `تم إنشاء المراجعة المحكومة #${res.revisionNo ?? res.revisionId} لتصحيح مصدر السداد بعد التحقق من عدم وجود صرف فعلي سابق`,
+      );
+    },
+    onError: (err) => notify.err(err),
+  });
   const autoSettleSupplierMut = trpc.purchases.reconcileSettlement.useMutation({
     onSuccess: async (res) => {
       await Promise.all([
@@ -504,6 +563,108 @@ export default function PurchaseOrderDetail() {
 
       {!costHidden ? <PurchasePaymentEvidence tender={d.tender} paymentReceipts={d.paymentReceipts ?? []} /> : null}
 
+      {!costHidden && d.goodsPaymentSummary ? (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 py-2.5 px-4">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Banknote aria-hidden className="size-4 text-primary" />
+              سداد البضاعة ومصدر الدفع (منفصل عن الشحن)
+            </CardTitle>
+            {canRevisePaymentSource &&
+            (d.status === "DRAFT" || d.status === "SENT") &&
+            (d.paymentReceipts ?? []).length === 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  reviseTenderState.reset(
+                    d.tender ?? null,
+                    `${d.branchId ?? ""}:${d.supplierId ?? ""}`,
+                    d.legacyCashSource ?? null,
+                    false,
+                  );
+                  setRevisePaymentReason("");
+                  setReviseRequestId(crypto.randomUUID());
+                  setIsRevisePaymentOpen(true);
+                }}
+              >
+                <Pencil aria-hidden className="size-3.5" />
+                تصحيح مصدر السداد
+              </Button>
+            ) : null}
+          </CardHeader>
+          <CardContent className="space-y-2.5 px-4 pb-3.5 pt-0 text-xs">
+            <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+              <Field label="إجمالي البضاعة">
+                <span className="font-semibold">{fmtAr(d.goodsPaymentSummary.goodsTotal)} د.ع</span>
+              </Field>
+              <Field label="مصدر سداد البضاعة">
+                {d.goodsPaymentSummary.sourceMode === "DRAWER"
+                  ? `درج وردية المنشئ${d.goodsPaymentSummary.shiftId ? ` #${d.goodsPaymentSummary.shiftId}` : ""}`
+                  : d.goodsPaymentSummary.sourceMode === "TREASURY"
+                    ? "خزينة الفرع الرئيسية"
+                    : d.goodsPaymentSummary.sourceMode === "CARD"
+                      ? `بطاقة الشركة${d.goodsPaymentSummary.cardLastFour ? ` (${d.goodsPaymentSummary.cardLastFour})` : ""}`
+                      : "غير محدّد"}
+              </Field>
+              <Field label="دفعة المورد السابقة المحتسبة">
+                {fmtAr(d.goodsPaymentSummary.priorAppliedAmount)} د.ع
+                {d.goodsPaymentSummary.priorVoucherNumber
+                  ? ` (${d.goodsPaymentSummary.priorVoucherNumber})`
+                  : ""}
+              </Field>
+              <Field label="المتبقي للصرف على البضاعة">
+                <span className="font-semibold">{fmtAr(d.goodsPaymentSummary.remainingPayable)} د.ع</span>
+              </Field>
+              <Field label="الرصيد المتاح في المصدر">
+                {d.goodsPaymentSummary.availableCash != null
+                  ? `${fmtAr(d.goodsPaymentSummary.availableCash)} د.ع`
+                  : "—"}
+              </Field>
+              <Field label="العجز النقدي للبضاعة">
+                {d.goodsPaymentSummary.hasShortage ? (
+                  <Badge variant="destructive">
+                    {fmtAr(d.goodsPaymentSummary.shortageAmount)} د.ع
+                  </Badge>
+                ) : (
+                  <span className="text-[var(--sem-pos)]">0.00 د.ع (مغطّى)</span>
+                )}
+              </Field>
+              <Field label="مصدر الشحن والكمرك (مستقل)">
+                {D(d.goodsPaymentSummary.shipping.shippingTotal).gt(0)
+                  ? `${fmtAr(d.goodsPaymentSummary.shipping.shippingTotal)} د.ع — ${
+                      d.goodsPaymentSummary.shipping.fundingSource === "DRAWER"
+                        ? "درج الوردية"
+                        : d.goodsPaymentSummary.shipping.fundingSource === "TREASURY"
+                          ? "الخزينة"
+                          : "استحقاق شحن"
+                    }`
+                  : "لا يوجد شحن"}
+              </Field>
+              <Field label="حالة سند الشحن">
+                {d.goodsPaymentSummary.shipping.voucherStatus === "RECORDED"
+                  ? `مثبّت بسند #${d.goodsPaymentSummary.shipping.recordedReceiptId ?? "—"}`
+                  : d.goodsPaymentSummary.shipping.voucherStatus === "PENDING_DISBURSEMENT"
+                    ? "بانتظار الصرف الفعلي"
+                    : d.goodsPaymentSummary.shipping.voucherStatus === "CONFLICT"
+                      ? "تعارض مستندات شحن"
+                      : "لا سند شحن"}
+              </Field>
+            </div>
+            {d.goodsPaymentSummary.hasShortage && d.goodsPaymentSummary.warningMessage ? (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]"
+              >
+                <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                <span>{d.goodsPaymentSummary.warningMessage}</span>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
       {settlement.requiresReview ? (
         <p role="alert" className="border border-money-negative p-2.5 text-xs text-money-negative">
@@ -786,8 +947,78 @@ export default function PurchaseOrderDetail() {
 
       {!costHidden ? <PurchaseOrderGovernance purchaseOrderId={purchaseOrderId} /> : null}
 
+      <Dialog open={isRevisePaymentOpen} onOpenChange={setIsRevisePaymentOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>تصحيح مصدر سداد البضاعة بمراجعة محكومة</DialogTitle>
+            <DialogDescription className="text-right text-xs leading-relaxed">
+              يتحقق الخادم ذرياً من عدم وجود سند دفع فعلي مسجّل على الأمر {d.poNumber} قبل إنشاء مراجعة جديدة لمصدر السداد.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <PurchaseTenderField
+              idPrefix="po-revise-payment"
+              state={reviseTenderState}
+              paymentTerms="CASH"
+              currency={d.agreedCurrency ?? "IQD"}
+            />
+            <div className="space-y-1">
+              <Label htmlFor="po-revise-reason" className="text-xs">
+                سبب تصحيح مصدر السداد *
+              </Label>
+              <Textarea
+                id="po-revise-reason"
+                rows={2}
+                value={revisePaymentReason}
+                onChange={(e) => setRevisePaymentReason(e.target.value)}
+                placeholder="اشرح سبب تغيير مصدر السداد (3 أحرف على الأقل)…"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsRevisePaymentOpen(false)}
+              disabled={revisePaymentMut.isPending}
+            >
+              إلغاء
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                revisePaymentMut.isPending ||
+                reviseTenderState.isActionBlocked ||
+                revisePaymentReason.trim().length < 3
+              }
+              onClick={() => {
+                if (!reviseTenderState.payload) return;
+                revisePaymentMut.mutate({
+                  purchaseOrderId: d.id,
+                  expectedVersion: d.version,
+                  reason: revisePaymentReason.trim(),
+                  tender: reviseTenderState.payload,
+                  cashSource:
+                    reviseTenderState.payload.mode === "DRAWER"
+                      ? {
+                          mode: "DRAWER",
+                          shiftId: reviseTenderState.payload.shiftId ?? null,
+                        }
+                      : reviseTenderState.payload.mode === "TREASURY"
+                        ? { mode: "TREASURY", shiftId: null }
+                        : null,
+                  clientRequestId: reviseRequestId,
+                });
+              }}
+            >
+              {revisePaymentMut.isPending ? ACTION_LABELS.saving : "حفظ المراجعة الجديدة"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={isSettleShippingOpen} onOpenChange={setIsSettleShippingOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <HandCoins className="size-5 text-primary" aria-hidden />

@@ -33,10 +33,12 @@ export interface BulkPickerProps {
    */
   purchaseCurrency?: Currency;
   purchaseAgreedRate?: string;
+  catalogMode?: "sale" | "warehouse";
 }
 
-export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, customerId, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
+export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, customerId, purchaseCurrency = "IQD", purchaseAgreedRate = "", catalogMode = "sale" }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  const isWarehouse = !isPurchase && catalogMode === "warehouse";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   // فاتورة بيع متقدّمة (١٢/٨/٢٦): خدمات الطباعة المفعّل عليها showInAdvancedSales تُعرض هنا.
@@ -62,7 +64,11 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       includeQuotationServices: isQuotation,
       customerId,
     },
-    { enabled: open && !isPurchase }
+    { enabled: open && !isPurchase && !isWarehouse }
+  );
+  const whQ = trpc.catalog.warehouseList.useQuery(
+    { branchId, tier, query: searchQ.trim(), limit, includeBundles: true },
+    { enabled: open && isWarehouse }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(
     { branchId, query: searchQ.trim(), limit },
@@ -113,7 +119,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         costBase: r.costPriceBase,
       }));
     }
-    return (posQ.data ?? []).map((r) => ({
+    return ((isWarehouse ? whQ.data : posQ.data) ?? []).map((r) => ({
       productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
       name: variantDisplayName(r),
       variantName: r.variantName,

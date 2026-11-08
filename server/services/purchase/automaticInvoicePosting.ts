@@ -158,7 +158,6 @@ export async function recognizeShippingAndCustomsInTx(
       tx,
       creatorActor.userId,
       input.branchId,
-      "RETAIL",
     );
   }
 

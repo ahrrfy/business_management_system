@@ -120,10 +120,14 @@ function CustomerComplaintsView() {
   } | null>(null);
 
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role;
-  const permsOverride = (me.data?.permissionsOverride ?? null) as
+  const role = me.data?.isOwner ? "admin" : me.data?.role;
+  const permsOverride = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
+  const operationPolicy =
+    me.data?.operationPolicyEnabled && !me.data.isOwner
+      ? me.data.resolvedOperationPolicy
+      : null;
   const canManageComplaints = canSeeGate(
     {
       roles: ["cashier", "manager", "sales_rep", "print_operator"],
@@ -132,6 +136,7 @@ function CustomerComplaintsView() {
     },
     role,
     permsOverride,
+    operationPolicy,
   );
 
   const feedbackQuery = trpc.customers.feedbackList.useQuery({ limit: 100 });
@@ -658,12 +663,24 @@ function CrmWingTabs({
   onSelectTab: (tab: string) => void;
 }) {
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role;
-  const permsOverride = (me.data?.permissionsOverride ?? null) as
+  const role = me.data?.isOwner ? "admin" : me.data?.role;
+  const permsOverride = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
+  const operationPolicy =
+    me.data?.operationPolicyEnabled && !me.data.isOwner
+      ? me.data.resolvedOperationPolicy
+      : null;
+  const canSeeOverview = OVERVIEW_TABS.some((t) =>
+    canSeeGate(t.gate, role, permsOverride, operationPolicy),
+  );
+  const canSeeCare = CARE_TABS.some((t) =>
+    canSeeGate(t.gate, role, permsOverride, operationPolicy),
+  );
 
-  const visible = tabs.filter((t) => canSeeGate(t.gate, role, permsOverride));
+  const visible = tabs.filter((t) =>
+    canSeeGate(t.gate, role, permsOverride, operationPolicy),
+  );
   const active = visible.find((t) => t.value === currentTab) ?? visible[0];
   const activeTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -690,24 +707,28 @@ function CrmWingTabs({
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-            <Button
-              type="button"
-              variant="default"
-              onClick={() => onSelectWing("care")}
-              className="flex items-center gap-2 text-xs"
-            >
-              <HeartHandshake className="size-3.5" aria-hidden />
-              <span>خدمة ورعاية الزبائن</span>
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onSelectWing("overview")}
-              className="flex items-center gap-2 text-xs"
-            >
-              <LayoutDashboard className="size-3.5" aria-hidden />
-              <span>لوحة المتابعة</span>
-            </Button>
+            {canSeeCare && (
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => onSelectWing("care")}
+                className="flex items-center gap-2 text-xs"
+              >
+                <HeartHandshake className="size-3.5" aria-hidden />
+                <span>خدمة ورعاية الزبائن</span>
+              </Button>
+            )}
+            {canSeeOverview && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onSelectWing("overview")}
+                className="flex items-center gap-2 text-xs"
+              >
+                <LayoutDashboard className="size-3.5" aria-hidden />
+                <span>لوحة المتابعة</span>
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -757,6 +778,49 @@ function CrmWingTabs({
 export default function CrmHub() {
   const [loc, navigate] = useLocation();
   const search = useSearch();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.isOwner ? "admin" : me.data?.role;
+  const permsOverride = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
+  const operationPolicy =
+    me.data?.operationPolicyEnabled && !me.data.isOwner
+      ? me.data.resolvedOperationPolicy
+      : null;
+
+  const wingTabsFor = (wingId: CrmWingId): HubTab[] => {
+    switch (wingId) {
+      case "care":
+        return CARE_TABS;
+      case "sales":
+        return SALES_TABS;
+      case "marketing":
+        return MARKETING_TABS;
+      case "finance":
+        return FINANCE_TABS;
+      default:
+        return OVERVIEW_TABS;
+    }
+  };
+
+  const visibleWingConfigs = useMemo(() => {
+    if (!me.data) return WING_CONFIGS;
+    const filtered = WING_CONFIGS.filter((w) =>
+      wingTabsFor(w.id).some((t) =>
+        canSeeGate(t.gate, role, permsOverride, operationPolicy),
+      ),
+    );
+    return filtered.length > 0 ? filtered : WING_CONFIGS;
+  }, [me.data, role, permsOverride, operationPolicy]);
+
+  const canSeeOverview = useMemo(
+    () =>
+      Boolean(me.data) &&
+      OVERVIEW_TABS.some((t) =>
+        canSeeGate(t.gate, role, permsOverride, operationPolicy),
+      ),
+    [me.data, role, permsOverride, operationPolicy],
+  );
 
   const queryParams = useMemo(() => new URLSearchParams(search), [search]);
   const rawWing = queryParams.get("wing") as CrmWingId | null;
@@ -770,8 +834,11 @@ export default function CrmHub() {
     if (rawWing && (WING_CONFIGS.some((w) => w.id === rawWing))) {
       return rawWing;
     }
+    if (me.data && !canSeeOverview) {
+      return visibleWingConfigs[0]?.id ?? "care";
+    }
     return "overview";
-  }, [rawWing, rawTab]);
+  }, [rawWing, rawTab, me.data, canSeeOverview, visibleWingConfigs]);
 
   const activeWingConfig =
     WING_CONFIGS.find((w) => w.id === activeWing) ?? WING_CONFIGS[0];
@@ -797,20 +864,7 @@ export default function CrmHub() {
     navigate(qs ? `${loc}?${qs}` : loc);
   };
 
-  const activeWingTabs = useMemo(() => {
-    switch (activeWing) {
-      case "care":
-        return CARE_TABS;
-      case "sales":
-        return SALES_TABS;
-      case "marketing":
-        return MARKETING_TABS;
-      case "finance":
-        return FINANCE_TABS;
-      default:
-        return OVERVIEW_TABS;
-    }
-  }, [activeWing]);
+  const activeWingTabs = useMemo(() => wingTabsFor(activeWing), [activeWing]);
 
   return (
     <div className="space-y-2.5">
@@ -821,7 +875,7 @@ export default function CrmHub() {
           aria-label="أجنحة إدارة العملاء والعمليات"
           className="flex flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-card/60 p-1 shadow-xs backdrop-blur-sm"
         >
-          {WING_CONFIGS.map((wing) => {
+          {visibleWingConfigs.map((wing) => {
             const WingIcon = wing.icon;
             const isSelected = activeWing === wing.id;
             return (
@@ -849,9 +903,24 @@ export default function CrmHub() {
 
       {/* المستوى الثاني: التبويبات المتخصصة الحصرية للجناح المختار */}
       {activeWing === "overview" ? (
-        <EmbeddedPageHeaderProvider>
-          <CrmOverview />
-        </EmbeddedPageHeaderProvider>
+        me.isLoading ? (
+          <TabFallback />
+        ) : canSeeOverview ? (
+          <EmbeddedPageHeaderProvider>
+            <CrmOverview />
+          </EmbeddedPageHeaderProvider>
+        ) : (
+          <CrmWingTabs
+            key="overview-denied"
+            tabs={OVERVIEW_TABS}
+            ariaLabel={`أقسام ${activeWingConfig.label}`}
+            activeWing={activeWing}
+            activeWingLabel={activeWingConfig.label}
+            currentTab={rawTab}
+            onSelectWing={handleSelectWing}
+            onSelectTab={handleSelectTab}
+          />
+        )
       ) : (
         <CrmWingTabs
           key={activeWing}

@@ -4,10 +4,13 @@
 // استثناء واحد (ذهاب-إياب البدائل): المنتج الموجود تُدمَج عليه بدائل الباركود الجديدة من عمود
 // «بدائل الباركود» دمجاً إضافياً غير متلف (لا حذف ولا تعديل لبدائل قائمة) — يجعل «تصدير ← تعديل
 // في Excel ← إعادة استيراد» دورة كاملة، وإعادة استيراد الملف نفسه لا-عملية (idempotent).
+import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { appErrorMessage } from "@shared/errors";
 import { checkVariantSanity } from "../../../shared/priceSanity";
 import {
+  branches,
   categories,
   productPrices,
   productUnitBarcodes,
@@ -16,12 +19,19 @@ import {
   products,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { canCrossBranches } from "../../lib/branchAuthority";
 import { logger } from "../../logger";
 import { setStock } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
-import { canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "../../../shared/barcodeNormalize";
-import { normalizedMatchAny } from "../catalog/barcodeAliases";
+import {
+  barcodeComparisonKey,
+  barcodeIdentityCandidates,
+  barcodesEquivalent,
+  canonicalizeBarcodeInput,
+  canonicalizeBarcodeForStorage,
+} from "../../../shared/barcodeNormalize";
+import { acquireCatalogBarcodeWriteLock, findBarcodeClashes, normalizedMatchAny } from "../catalog/barcodeAliases";
 import { priceTier, type ProductImportRow } from "./schemas";
 import type { ImportOptions, ImportRowResult, ImportSummary } from "./types";
 import {
@@ -93,6 +103,51 @@ export async function importProducts(
   const onExisting = options.onExisting ?? "skip";
   const skipFailed = options.skipFailed ?? false;
   const db = requireDb();
+
+  // بوابة الفرع للرصيد الافتتاحي الموجب (الدفعة ١): لا هبوط صامت على الفرع ١، ولا استيراد لفرع غير مخوّل.
+  const hasPositiveOpeningStock = rows.some((r) => (r.openingStock ?? 0) > 0);
+  if (options.branchId != null && actor.role !== undefined && !canCrossBranches(actor)) {
+    if (!actor.branchId || actor.branchId <= 0 || actor.branchId !== options.branchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "غير مخوّل باستيراد رصيد افتتاحي لفرع آخر",
+          why: "صلاحية حسابك محصورة بفرعك المسند فقط",
+          doThis: "اختر فرعك المسند أو تواصل مع المدير العام",
+        }),
+      });
+    }
+  }
+  const targetBranchId =
+    options.branchId ?? (actor.branchId > 0 ? actor.branchId : null);
+  if (hasPositiveOpeningStock) {
+    if (!targetBranchId || targetBranchId <= 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "يجب تحديد الفرع المستهدف للرصيد الافتتاحي",
+          why: "يتضمّن ملف الاستيراد أرصدة افتتاحية موجبة ولا يوجد فرع مسند أو مختار صراحةً",
+          doThis: "اختر الفرع المخوّل قبل تنفيذ الاستيراد",
+        }),
+      });
+    }
+    const [branchRow] = await db
+      .select({ id: branches.id, isActive: branches.isActive })
+      .from(branches)
+      .where(eq(branches.id, targetBranchId))
+      .limit(1);
+    if (!branchRow || branchRow.isActive === false) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الفرع المستهدف للرصيد الافتتاحي غير موجود أو معطّل",
+          why: `تعذّر التحقّق من الفرع #${targetBranchId} لاستقبال الرصيد الافتتاحي`,
+          doThis: "اختر فرعاً نشطاً وصالحاً ثم أعد الاستيراد",
+        }),
+      });
+    }
+  }
+
   const failures = new Map<number, string>(); // rowNumber → سبب الفشل
 
   // ١) التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة.
@@ -140,7 +195,31 @@ export async function importProducts(
   // كله داخل معاملة واحدة (القيد الفريد uq_unit_barcode_alias يمسك سباق إدراج متزامن ⇒ ER_DUP_ENTRY).
   try {
     await withTx(async (tx) => {
-      await persistProductsInTx(tx, toCreate, actor);
+      await acquireCatalogBarcodeWriteLock(tx);
+      const codesToCommit: string[] = [];
+      for (const p of toCreate) {
+        for (const v of Array.from(p.variants.values())) {
+          for (const u of Array.from(v.units.values())) {
+            if (u.barcode) codesToCommit.push(u.barcode);
+            codesToCommit.push(...u.aliases);
+          }
+        }
+      }
+      for (const a of aliasInserts) codesToCommit.push(a.barcode);
+      if (codesToCommit.length) {
+        const freshClashes = await findBarcodeClashes(tx, codesToCommit, { forShare: true });
+        if (freshClashes[0]) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: `تعذّر إتمام استيراد الأصناف لتعارض الباركود «${freshClashes[0].code}»`,
+              why: `الباركود «${freshClashes[0].code}» أُدرج للتوّ في «${freshClashes[0].takenBy}» أثناء الاستيراد`,
+              doThis: "صحّح الباركود المتعارض في ملف الاستيراد ثم أعد تشغيل الاستيراد",
+            }),
+          });
+        }
+      }
+      await persistProductsInTx(tx, toCreate, actor, targetBranchId);
       if (aliasInserts.length) {
         await tx
           .insert(productUnitBarcodes)
@@ -321,7 +400,8 @@ function validateProductGroups(
         v.costPrice,
         Array.from(v.units.values()).map((u) => ({
           unitName: u.unitName,
-          conversionFactor: Number(u.conversionFactor),
+          conversionFactor: u.conversionFactor,
+          isBaseUnit: !!u.isBaseUnit,
           retail: u.prices.get("RETAIL") ?? null,
           wholesale: u.prices.get("WHOLESALE") ?? null,
           government: u.prices.get("GOVERNMENT") ?? null,
@@ -341,39 +421,32 @@ function validateProductGroups(
               `وحدة الأساس «${u.unitName}» يجب أن يكون معامل تحويلها ١`,
             );
         }
-        if (!u.isBaseUnit && (!Number.isInteger(f) || f < 1)) {
+        if (!u.isBaseUnit && (!/^[1-9]\d*$/.test(u.conversionFactor.trim()) || !Number.isInteger(f) || f <= 1)) {
           for (const rn of v.rowNumbers)
             failures.set(
               rn,
-              `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً ≥ ١`,
+              `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً أكبر من ١`,
             );
         }
         if (u.barcode) {
-          // ⚠️ يُفتَح على الهوية المُطبَّعة (canonicalizeBarcodeInput + صغيرة) لا الصيغة المخزَّنة:
-          // بعد حفظِ صيغة المصنع حرفيّاً (١٥/٩) صار «1  0172» و«10172» صيغتين مخزّنتين مختلفتين لكن
-          // هويةً واحدة ⇒ لو فُتِح على المخزَّن لَمرّا كصنفين ثمّ تصادما على barcodeNormalized فصار
-          // كلاهما غامضاً غيرَ قابلٍ للمسح. الفتحُ على الهوية يُمسك التكرارَ هنا (الرسالة بالصيغة المرئية).
-          const key = canonicalizeBarcodeInput(u.barcode).toLowerCase();
-          const prevRows = batchBarcodes.get(key);
+          const keys = barcodeIdentityCandidates(u.barcode).map(barcodeComparisonKey);
+          const prevRows = keys.map((k) => batchBarcodes.get(k)).find(Boolean);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(key, v.rowNumbers);
+            for (const k of keys) batchBarcodes.set(k, v.rowNumbers);
           }
         }
-        // البدائل تدخل نفس فضاء التفرّد (أساسيّ + بديل = فضاء واحد — قاعدة PR #179):
-        // بديل مكرّر مع أي باركود آخر في الملف (أساسياً كان أو بديلاً) = فشل الصفوف المالكة.
         for (const alias of u.aliases) {
           if (alias.length > 64) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `البديل «${alias}» أطول من ٦٤ خانة`);
             continue;
           }
-          const aliasKey = canonicalizeBarcodeInput(alias).toLowerCase(); // الهوية (كما الأساسيّ أعلاه)
-          if (u.barcode && aliasKey === canonicalizeBarcodeInput(u.barcode).toLowerCase()) {
+          if (u.barcode && barcodesEquivalent(alias, u.barcode)) {
             for (const rn of v.rowNumbers)
               failures.set(
                 rn,
@@ -381,14 +454,15 @@ function validateProductGroups(
               );
             continue;
           }
-          const prevRows = batchBarcodes.get(aliasKey);
+          const aliasKeys = barcodeIdentityCandidates(alias).map(barcodeComparisonKey);
+          const prevRows = aliasKeys.map((k) => batchBarcodes.get(k)).find(Boolean);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(aliasKey, v.rowNumbers);
+            for (const k of aliasKeys) batchBarcodes.set(k, v.rowNumbers);
           }
         }
       }
@@ -485,12 +559,15 @@ async function detectExistingProducts(
     // مسافة المصنع صار باركود الملف «1  0172» يحمل مسافةً، فلو فُهرِس بـ`toLowerCase()` وحده (يُبقيها)
     // لَفشل الاستعلامُ المُطبَّع أدناه (يُسقط المسافة) في إيجاده ⇒ مالكٌ في القاعدة على «10172» لا يُنسَب
     // لصفّ الملف «1  0172» فيُدرَج ازدواجٌ صامتٌ لهويةٍ واحدة. المفتاح canonicalizeBarcodeInput(b) يوحّدهما.
-    const importByLowerCanon = new Map<string, string>();
-    for (const b of allBarcodes) importByLowerCanon.set(canonicalizeBarcodeInput(b).toLowerCase(), b);
     const registerNormalizedOwner = (barcode: string | null, productName: string, sku: string) => {
       if (!barcode) return;
-      const key = importByLowerCanon.get(canonicalizeBarcodeInput(barcode).toLowerCase());
-      if (key && !existingBarcodeOwner.has(key)) existingBarcodeOwner.set(key, productSkuKey(productName, sku));
+      const ownerVal = productSkuKey(productName, sku);
+      for (const cand of barcodeIdentityCandidates(barcode)) {
+        const key = barcodeComparisonKey(cand);
+        if (batchBarcodes.has(key) && !existingBarcodeOwner.has(key)) {
+          existingBarcodeOwner.set(key, ownerVal);
+        }
+      }
     };
     const primClause = normalizedMatchAny(productUnits.barcode, allBarcodes);
     if (primClause)
@@ -544,12 +621,18 @@ function classifyProductGroups(
     // skus المنتج) — أمّا المملوك لأحد متغيّراته نفسها (إعادة استيراد) فيُحسم «موجود مسبقاً» أدناه.
     const barcodeClash = Array.from(p.variants.values()).some((v) =>
       Array.from(v.units.values()).some((u) => {
-        if (!u.barcode) return false;
-        const ownerKey = existingBarcodeOwner.get(u.barcode);
-        return (
-          ownerKey != null &&
-          !skus.some((sku) => ownerKey === productSkuKey(p.productName, sku))
-        );
+        const codesToCheck = [...(u.barcode ? [u.barcode] : []), ...u.aliases];
+        return codesToCheck.some((code) => {
+          const ownerKey =
+            existingBarcodeOwner.get(code) ??
+            barcodeIdentityCandidates(code)
+              .map((cand) => existingBarcodeOwner.get(barcodeComparisonKey(cand)))
+              .find((val) => val != null);
+          return (
+            ownerKey != null &&
+            !skus.some((sku) => ownerKey === productSkuKey(p.productName, sku))
+          );
+        });
       }),
     );
 
@@ -695,8 +778,12 @@ async function planAliasMergeForExisting(
   // وحدةٍ بينما يملكه إرثٌ ملوَّثٌ لوحدةٍ أخرى (يقلبه فحص السطر ٦٩٩ إلى فشلٍ صريح بدل ازدواجٍ صامت).
   // ⚠️ (١٥/٩، مراجعة Codex P1) بمفتاح الهوية المُطبَّعة لا صيغة الملف (نظيرُ `importByLowerCanon` أعلاه):
   // البديلُ المصون بمسافةٍ «1  0172» يجب أن يُطابَق ضدّ مالكٍ في القاعدة على «10172» فلا يُدرَج مالكاً ثانياً.
-  const candidateByLowerCanon = new Map<string, string>();
-  for (const c of candidateCodes) candidateByLowerCanon.set(canonicalizeBarcodeInput(c).toLowerCase(), c);
+  const candidateByCompKey = new Map<string, string>();
+  for (const c of candidateCodes) {
+    for (const cand of barcodeIdentityCandidates(c)) {
+      candidateByCompKey.set(barcodeComparisonKey(cand), c);
+    }
+  }
   const primClause = normalizedMatchAny(productUnits.barcode, candidateCodes);
   if (primClause)
     for (const r of await db
@@ -704,8 +791,10 @@ async function planAliasMergeForExisting(
       .from(productUnits)
       .where(primClause)) {
       if (!r.barcode) continue;
-      const key = candidateByLowerCanon.get(canonicalizeBarcodeInput(r.barcode).toLowerCase());
-      if (key && !primaryOwner.has(key)) primaryOwner.set(key, Number(r.id));
+      for (const cand of barcodeIdentityCandidates(r.barcode)) {
+        const key = candidateByCompKey.get(barcodeComparisonKey(cand));
+        if (key && !primaryOwner.has(key)) primaryOwner.set(key, Number(r.id));
+      }
     }
   const aliClause = normalizedMatchAny(productUnitBarcodes.barcode, candidateCodes);
   if (aliClause)
@@ -713,8 +802,10 @@ async function planAliasMergeForExisting(
       .select({ unitId: productUnitBarcodes.productUnitId, barcode: productUnitBarcodes.barcode })
       .from(productUnitBarcodes)
       .where(aliClause)) {
-      const key = candidateByLowerCanon.get(canonicalizeBarcodeInput(r.barcode).toLowerCase());
-      if (key && !aliasOwner.has(key)) aliasOwner.set(key, Number(r.unitId));
+      for (const cand of barcodeIdentityCandidates(r.barcode)) {
+        const key = candidateByCompKey.get(barcodeComparisonKey(cand));
+        if (key && !aliasOwner.has(key)) aliasOwner.set(key, Number(r.unitId));
+      }
     }
 
   const inserts: Array<{ productUnitId: number; barcode: string }> = [];
@@ -732,7 +823,7 @@ async function planAliasMergeForExisting(
         break;
       }
       for (const alias of u.aliases) {
-        if (target.primary === alias) continue; // هو الأساسيّ نفسه — لا حاجة لبديل.
+        if (target.primary && barcodesEquivalent(target.primary, alias)) continue; // هو الأساسيّ نفسه — لا حاجة لبديل.
         if (aliasOwner.get(alias) === target.unitId) continue; // موجود بديلاً لنفس الوحدة — إعادة استيراد لا-عملية.
         if (primaryOwner.has(alias) || aliasOwner.has(alias)) {
           failMsg = `البديل «${alias}» مستعمل مسبقاً في النظام — غيّره أو احذفه من هناك أولاً`;
@@ -762,6 +853,7 @@ async function persistProductsInTx(
   tx: Tx,
   toCreate: ProductAgg[],
   actor: Actor,
+  targetBranchId: number | null,
 ): Promise<void> {
   const catNames = uniq(toCreate.map((p) => p.categoryName));
   const catMap = new Map<string, number>(); // المفتاح: الاسم بحالة موحّدة (تفادي تصادم «X»/«x» على القيد الفريد)
@@ -835,10 +927,10 @@ async function persistProductsInTx(
       }
 
       // المخزون الافتتاحي (§٥.٣): حركة تسوية بمرجع OPENING داخل نفس المعاملة — ذرّيةُ الشجرة ورصيدها معاً.
-      if (v.openingStock !== undefined && v.openingStock > 0) {
+      if (v.openingStock !== undefined && v.openingStock > 0 && targetBranchId != null) {
         await setStock(tx, {
           variantId,
-          branchId: actor.branchId,
+          branchId: targetBranchId,
           targetQuantity: v.openingStock,
           referenceType: "OPENING",
           documentNumber: `OPEN-${variantId}`,

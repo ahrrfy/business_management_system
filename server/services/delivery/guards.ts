@@ -12,6 +12,7 @@ import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
 import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 
 /**
  * الحجب يقيس **الواقع الفيزيائيّ** لا حالة الدفتر (٢٢/٨): يُرفض القبض الكاونتريّ فقط
@@ -225,13 +226,15 @@ export async function consignmentBackedBalance(
   const row = (
     await tx
       .select({
-        v: sql<string>`COALESCE(SUM(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2))), 0)`,
+        v: sql<string>`COALESCE(SUM(GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)) - ${consignmentShortfallAssignedSql}, 0)), 0)`,
       })
       .from(deliveryConsignments)
       .where(
         and(
           eq(deliveryConsignments.partyId, partyId),
           sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
+          sql`${deliveryConsignments.parcelStatus} NOT IN ('RETURNED','CANCELLED')`,
+          sql`${deliveryConsignments.returnDeclaredAt} IS NULL`,
         ),
       )
   )[0];

@@ -504,7 +504,7 @@ async function loadReviewCore(
     const pctRaw =
       diff == null || it.expectedQty === 0
         ? null
-        : money(Math.abs(diff)).div(it.expectedQty).times(100);
+        : money(Math.abs(diff)).div(Math.abs(it.expectedQty)).times(100);
     const pct = pctRaw == null ? null : pctRaw.toDecimalPlaces(2).toNumber();
     // «ضمن الحد»: pct≤حد النسبة (يُعفى إن تعذّر حسابه expectedQty=0 — كنموذج jrd-data) و|القيمة|≤حد القيمة.
     const pctOk = pctRaw == null || pctRaw.lte(thresholdPct);

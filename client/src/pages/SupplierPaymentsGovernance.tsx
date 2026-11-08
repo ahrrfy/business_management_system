@@ -28,15 +28,31 @@ export default function SupplierPaymentsGovernance() {
   const suppliers = trpc.suppliers.list.useQuery();
   const [pickedBranchId, setPickedBranchId] = useState("");
 
+  const canSwitchBranch =
+    me.data?.branchId == null ||
+    me.data?.role === "admin" ||
+    Boolean(me.data?.isOwner);
+
   useEffect(() => {
-    if (me.data?.branchId != null) setPickedBranchId(String(me.data.branchId));
-  }, [me.data?.branchId]);
-  const branchId =
-    me.data?.branchId != null
+    if (!canSwitchBranch && me.data?.branchId != null) {
+      setPickedBranchId(String(me.data.branchId));
+    } else if (!pickedBranchId) {
+      if (me.data?.branchId != null) {
+        setPickedBranchId(String(me.data.branchId));
+      } else if ((branches.data?.length ?? 0) > 0) {
+        setPickedBranchId(String(branches.data![0].id));
+      }
+    }
+  }, [canSwitchBranch, me.data?.branchId, branches.data, pickedBranchId]);
+  const branchId = canSwitchBranch
+    ? pickedBranchId
+      ? Number(pickedBranchId)
+      : me.data?.branchId != null
+        ? Number(me.data.branchId)
+        : null
+    : me.data?.branchId != null
       ? Number(me.data.branchId)
-      : pickedBranchId
-        ? Number(pickedBranchId)
-        : null;
+      : null;
   const legacyDecide =
     me.data != null &&
     moduleAccessAllowed(
@@ -209,7 +225,7 @@ export default function SupplierPaymentsGovernance() {
         backHref="/purchases"
         backLabel="المشتريات"
         actions={
-          me.data?.branchId == null ? (
+          canSwitchBranch ? (
             <AppSelect
               value={pickedBranchId}
               onValueChange={setPickedBranchId}

@@ -28,6 +28,11 @@ import {
   type ParsedVariantRow,
 } from "@/lib/variants";
 import { checkVariantSanity } from "@shared/priceSanity";
+import {
+  canCarryStockUsage,
+  isSellableStockUsage,
+  type StockUsage,
+} from "@shared/stockUsage";
 
 export type ProductFormMode = "create" | "edit";
 
@@ -59,6 +64,8 @@ export type ProductFormModel = {
   isService: boolean;
   allowBackorder: boolean;
   isActive: boolean;
+  stockUsage: StockUsage;
+  showInStore: boolean;
   showInReception: boolean;
   showInPrintPos: boolean;
   showInQuotations: boolean;
@@ -91,6 +98,8 @@ export function emptyProductFormModel(): ProductFormModel {
     isService: false,
     allowBackorder: false,
     isActive: true,
+    stockUsage: "SALE_ONLY",
+    showInStore: false,
     showInReception: false,
     showInPrintPos: false,
     showInQuotations: false,
@@ -164,6 +173,8 @@ export function productFormModelFromDocument(d: ProductEditDocument): ProductFor
     isService: d.isService,
     allowBackorder: d.allowBackorder,
     isActive: d.isActive,
+    stockUsage: ((d as { stockUsage?: StockUsage | null }).stockUsage ?? "SALE_ONLY"),
+    showInStore: Boolean((d as { showInStore?: boolean }).showInStore),
     showInReception: d.showInReception,
     showInPrintPos: d.showInPrintPos,
     showInQuotations: d.showInQuotations,
@@ -282,8 +293,19 @@ function unitPrices(retail: string, wholesale: string, government: string): Arra
   ];
 }
 
-export function buildCreateProductPayload(m: ProductFormModel, branches: ReadonlyArray<{ id: number }>): CreatePayload {
+export function buildCreateProductPayload(
+  m: ProductFormModel,
+  branches: ReadonlyArray<{ id: number }>,
+  clientRequestId?: string,
+): CreatePayload {
+  const ownedStock = canCarryStockUsage({
+    isService: m.isService,
+    isBundle: false,
+    isConsignment: m.consignment.isConsignment,
+  });
+  const effectiveStockUsage = ownedStock ? m.stockUsage : null;
   return {
+    ...(clientRequestId ? { clientRequestId } : {}),
     name: finalName(m) || undefined,
     productType: m.productType.trim() || null,
     brand: m.brand.trim() || null,
@@ -301,6 +323,11 @@ export function buildCreateProductPayload(m: ProductFormModel, branches: Readonl
     showInAdvancedSales: m.showInAdvancedSales,
     allowAutoCartRecommendations: m.allowAutoCartRecommendations,
     isActive: m.isActive,
+    stockUsage: effectiveStockUsage,
+    showInStore:
+      isSellableStockUsage(effectiveStockUsage) && !m.isService
+        ? m.showInStore
+        : false,
     isConsignment: m.isService ? false : m.consignment.isConsignment,
     consignorId: !m.isService && m.consignment.isConsignment ? m.consignment.consignorId : null,
     variants: m.variants.map((v) => {
@@ -342,6 +369,12 @@ export function buildCreateProductPayload(m: ProductFormModel, branches: Readonl
 }
 
 export function buildUpdateProductPayload(m: ProductFormModel, productId: number, updateReason?: string | null): UpdatePayload {
+  const ownedStock = canCarryStockUsage({
+    isService: m.isService,
+    isBundle: false,
+    isConsignment: m.consignment.isConsignment,
+  });
+  const effectiveStockUsage = ownedStock ? m.stockUsage : undefined;
   return {
     productId,
     updateReason: updateReason ?? undefined,
@@ -358,6 +391,11 @@ export function buildUpdateProductPayload(m: ProductFormModel, productId: number
     // Codex #1010: الأمانةُ أيضاً تمنع «يُباع بالطلب»، والخدمةُ تمنع الأمانة — نُصفّر المرفوضَ (نظير حمولة الإنشاء).
     allowBackorder: m.isService || m.consignment.isConsignment ? false : m.allowBackorder,
     isActive: m.isActive,
+    ...(effectiveStockUsage !== undefined ? { stockUsage: effectiveStockUsage } : {}),
+    showInStore:
+      isSellableStockUsage(effectiveStockUsage ?? null) && !m.isService
+        ? m.showInStore
+        : false,
     showInReception: m.showInReception,
     showInPrintPos: m.showInPrintPos,
     showInQuotations: m.showInQuotations,

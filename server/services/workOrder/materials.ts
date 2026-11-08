@@ -31,12 +31,18 @@ import { splitWorkOrderMaterialValue } from "@shared/workOrderMaterialCost";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
+  branchStock,
+  productUnits,
+  productVariants,
+  products,
   workOrderMaterials,
   workOrders,
 } from "../../../drizzle/schema";
-import type { Tx } from "../../db";
+import { getDb, type Tx } from "../../db";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "../catalog/barcodeAliases";
+import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "../catalog/search";
 import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
 import { applyMovement, applyValuedInboundMovement, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
@@ -481,4 +487,174 @@ export async function setWorkOrderMaterials(
   actor: Actor & { role?: string },
 ): Promise<SetWorkOrderMaterialsResult> {
   return withTx((tx) => setWorkOrderMaterialsInTx(tx, input, actor));
+}
+
+export interface WorkOrderMaterialCandidateRow {
+  variantId: number;
+  productId: number;
+  productName: string;
+  variantName: string | null;
+  color: string | null;
+  size: string | null;
+  sku: string;
+  productUnitId: number;
+  unitName: string;
+  conversionFactor: string;
+  isBaseUnit: boolean;
+  stockBase: number;
+}
+
+const workOrderMaterialEligibleSql = and(
+  eq(products.isActive, true),
+  eq(productVariants.isActive, true),
+  eq(productUnits.isActive, true),
+  eq(products.isService, false),
+  eq(products.isBundle, false),
+  eq(products.isConsignment, false),
+  sql`(${products.productType} IS NULL OR ${products.productType} <> 'DIGITAL_CARD')`,
+  sql`(${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('MATERIAL_ONLY', 'SALE_AND_MATERIAL'))`,
+)!;
+
+export async function searchWorkOrderMaterials(
+  input: { workOrderId: number; query: string; limit?: number },
+  actor: Actor & { role?: string },
+): Promise<WorkOrderMaterialCandidateRow[]> {
+  const db = getDb();
+  if (!db) return [];
+  const [wo] = await db
+    .select({ id: workOrders.id, branchId: workOrders.branchId })
+    .from(workOrders)
+    .where(eq(workOrders.id, input.workOrderId))
+    .limit(1);
+  if (!wo) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر الوصول إلى مواد أمر الشغل",
+        why: "طلب الخدمة المطلوب غير موجود",
+        doThis: "تحقّق من رقم أمر الشغل وحدّث الصفحة ثم أعد المحاولة",
+      }),
+    });
+  }
+  assertWorkOrderBranch(wo as any, actor);
+  const trimmed = input.query.trim();
+  if (trimmed.length < 2) return [];
+  const search = buildCatalogSearchWhere(trimmed);
+  const where = search ? and(workOrderMaterialEligibleSql, search) : workOrderMaterialEligibleSql;
+  const order = search ? buildCatalogSearchOrder(trimmed) : [desc(products.id)];
+  const branchId = Number(wo.branchId);
+  const rows = await db
+    .select({
+      variantId: productVariants.id,
+      productId: products.id,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      productUnitId: productUnits.id,
+      unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
+      stockBase: branchStock.quantity,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
+    .where(where)
+    .orderBy(...order)
+    .limit(Math.min(Math.max(input.limit ?? 20, 1), 100));
+  return rows.map((r) => ({
+    variantId: Number(r.variantId),
+    productId: Number(r.productId),
+    productName: r.productName,
+    variantName: r.variantName,
+    color: r.color,
+    size: r.size,
+    sku: r.sku,
+    productUnitId: Number(r.productUnitId),
+    unitName: r.unitName,
+    conversionFactor: String(r.conversionFactor ?? "1"),
+    isBaseUnit: !!r.isBaseUnit,
+    stockBase: Number(r.stockBase ?? 0),
+  }));
+}
+
+export async function lookupWorkOrderMaterialByBarcode(
+  input: { workOrderId: number; barcode: string },
+  actor: Actor & { role?: string },
+): Promise<WorkOrderMaterialCandidateRow | null> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const [wo] = await db
+    .select({ id: workOrders.id, branchId: workOrders.branchId })
+    .from(workOrders)
+    .where(eq(workOrders.id, input.workOrderId))
+    .limit(1);
+  if (!wo) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر الوصول إلى مواد أمر الشغل",
+        why: "طلب الخدمة المطلوب غير موجود",
+        doThis: "تحقّق من رقم أمر الشغل وحدّث الصفحة ثم أعد المحاولة",
+      }),
+    });
+  }
+  assertWorkOrderBranch(wo as any, actor);
+  const resolution = await resolveBarcodeOwnerResult(db, input.barcode);
+  if (resolution.status === "NOT_FOUND") return null;
+  if (resolution.status === "AMBIGUOUS") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: barcodeAmbiguityMessage("تعذّر إضافة المادة الممسوحة إلى أمر الشغل"),
+    });
+  }
+  const branchId = Number(wo.branchId);
+  const [row] = await db
+    .select({
+      variantId: productVariants.id,
+      productId: products.id,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      productUnitId: productUnits.id,
+      unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
+      stockBase: branchStock.quantity,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
+    .where(and(workOrderMaterialEligibleSql, eq(productUnits.id, resolution.owner.productUnitId)))
+    .limit(1);
+  if (!row) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر إضافة المادة الممسوحة إلى أمر الشغل",
+        why: "الصنف الممسوح معطّل أو غير مخصّص كمادة إنتاج مخزنية مملوكة",
+        doThis: "اختر مادة خاماً أو صنفاً مزدوج الاستخدام نشطاً ومملوكاً ثم أعد المسح",
+      }),
+    });
+  }
+  return {
+    variantId: Number(row.variantId),
+    productId: Number(row.productId),
+    productName: row.productName,
+    variantName: row.variantName,
+    color: row.color,
+    size: row.size,
+    sku: row.sku,
+    productUnitId: Number(row.productUnitId),
+    unitName: row.unitName,
+    conversionFactor: String(row.conversionFactor ?? "1"),
+    isBaseUnit: !!row.isBaseUnit,
+    stockBase: Number(row.stockBase ?? 0),
+  };
 }

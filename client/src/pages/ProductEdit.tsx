@@ -122,6 +122,9 @@ export default function ProductEdit() {
       isConsignment: Boolean(product.data.isConsignment),
       bundleVariantId: product.data.variants?.[0]?.id ?? null,
       totalStock,
+      savedStockUsage:
+        (product.data as { stockUsage?: ProductFormModel["stockUsage"] | null })
+          .stockUsage ?? null,
     };
   }, [product.data]);
 
@@ -204,7 +207,8 @@ export default function ProductEdit() {
     product.data.variants.length === 1 &&
     !product.data.variants[0].color &&
     !product.data.variants[0].size &&
-    !product.data.isService;
+    !product.data.isService &&
+    !product.data.isBundle;
 
   if (isSimple && !advanced) {
     return (

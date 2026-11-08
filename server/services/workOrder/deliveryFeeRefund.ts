@@ -139,9 +139,9 @@ export async function requestNoncashWorkOrderFeeRefundTx(
 export async function refundWorkOrderDeliveryFeeHeld(
   tx: Tx,
   opts: RefundWorkOrderFeeHeldOpts,
-): Promise<{ refunded: string }> {
+): Promise<{ refunded: string; pendingRefundRequested?: boolean }> {
   const feeHeldNet = await workOrderFeeHeldNet(tx, opts.workOrderId);
-  if (!feeHeldNet.gt(0)) return { refunded: "0.00" };
+  if (!feeHeldNet.gt(0)) return { refunded: "0.00", pendingRefundRequested: false };
 
   // حوكمة الردّ النقديّ (نظير refundDeposit، قرار المالك ب/٨/٨): الأمانة نقديّةٌ دائماً. الردّ
   // ذاتيٌّ فقط ضمن وردية القبض نفسها وهي مفتوحة بيد القابض؛ غير ذلك ⇒ مدير ثانٍ
@@ -165,7 +165,7 @@ export async function refundWorkOrderDeliveryFeeHeld(
   )[0];
   if (collReceipt && collReceipt.paymentMethod !== "CASH") {
     await requestNoncashWorkOrderFeeRefundTx(tx, opts);
-    return { refunded: "0.00" };
+    return { refunded: "0.00", pendingRefundRequested: true };
   }
   const collShiftId =
     collReceipt?.shiftId != null ? Number(collReceipt.shiftId) : null;

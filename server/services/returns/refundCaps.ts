@@ -353,6 +353,18 @@ export async function loadRefundCapsByInvoiceIds(
             CASE WHEN app.orderPayAppliedKind = 'INVOICE' THEN app.appliedId ELSE wo.invoiceId END
         )
       GROUP BY invoiceId, coll.orderPayMethod, pr.shiftId
+      UNION ALL
+      SELECT ds.invoiceId AS invoiceId,
+             ${receipts.paymentMethod} AS rail,
+             ${receipts.shiftId} AS shiftId,
+             CAST(ds.saleAmount AS CHAR) AS amount
+      FROM ${digitalIntentSettlements} ds
+      JOIN ${receipts} ON ${receipts.id} = ds.collectionReceiptId
+      WHERE ds.invoiceId IN (${idList})
+        AND ds.settlementStatus = 'COMPLETED'
+        AND ${receipts.status} = 'COMPLETED'
+        AND ${receipts.approvalStatus} = 'APPROVED'
+        AND ${receipts.invoiceId} IS NULL
     `),
     exec.execute(sql`
       SELECT x.invoiceId,

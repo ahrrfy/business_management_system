@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
+import { isSellableStockUsage } from "@shared/stockUsage";
+import { and, asc, desc, eq, gte, inArray, like, lt, or, sql } from "drizzle-orm";
 import {
   customers,
   invoices,
@@ -253,6 +254,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    await assertQuotationLinesEligibleTx(tx, input.lines);
     const contractPrices = input.customerId
       ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
       : new Map<number, string>();
@@ -392,6 +394,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    await assertQuotationLinesEligibleTx(tx, input.lines);
     const contractPrices = input.customerId
       ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
       : new Map<number, string>();
@@ -473,6 +476,63 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
       total: totals.total,
     };
   });
+}
+
+async function assertQuotationLinesEligibleTx(
+  tx: Tx,
+  lines: ReadonlyArray<{ variantId: number; productUnitId: number }>,
+): Promise<void> {
+  const variantIds = Array.from(new Set(lines.map((l) => Number(l.variantId)))).sort((a, b) => a - b);
+  if (!variantIds.length) return;
+  const rows = await tx
+    .select({
+      variantId: productVariants.id,
+      variantActive: productVariants.isActive,
+      productName: products.name,
+      productActive: products.isActive,
+      isService: products.isService,
+      productType: products.productType,
+      stockUsage: products.stockUsage,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productVariants.id, variantIds))
+    .orderBy(asc(products.id), asc(productVariants.id))
+    .for("update");
+  const byVariant = new Map(rows.map((r) => [Number(r.variantId), r]));
+  for (const vid of variantIds) {
+    const r = byVariant.get(vid);
+    if (!r) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر حفظ عرض السعر",
+          why: `المتغيّر #${vid} غير موجود`,
+          doThis: "حدّث قائمة الأصناف واختر صنفاً موجوداً",
+        }),
+      });
+    }
+    if (!r.productActive || !r.variantActive || r.productType === "DIGITAL_CARD") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إدراج الصنف «${r.productName}» في عرض السعر`,
+          why: "الصنف أو متغيّره معطّل أو غير مسموح به في عروض الأسعار",
+          doThis: "أزل الصنف غير النشط من عرض السعر ثم أعد الحفظ",
+        }),
+      });
+    }
+    if (!r.isService && !isSellableStockUsage(r.stockUsage)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إدراج الصنف «${r.productName}» في عرض السعر`,
+          why: "تصنيف استخدام الصنف المخزني (مادة خام أو مستلزم تشغيل) لا يسمح بعرضه للبيع",
+          doThis: "اختر صنفاً قابلاً للبيع أو حدّث تصنيف استخدام الصنف أولاً",
+        }),
+      });
+    }
+  }
 }
 
 type QuoteStatus =

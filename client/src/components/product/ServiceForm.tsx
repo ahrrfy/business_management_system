@@ -2,9 +2,15 @@ import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAcc
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertCircle, FileSpreadsheet, Plus, Printer, ReceiptText, ShoppingCart, Users, X, Search } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { RecordForm } from "@/components/form/RecordForm";
+import {
+  PostSaveProductBanner,
+  type PostSaveProductSummary,
+} from "@/components/product/PostSaveProductBanner";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { NumberInput } from "@/components/form/NumberInput";
@@ -152,6 +158,33 @@ export default function ServiceForm() {
   const [lineSeq, setLineSeq] = useState(2);
   const [lines, setLines] = useState<RecipeLine[]>([{ key: 1, variantId: "", qty: "1", picked: null }]);
   const [error, setError] = useState("");
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
+  const formSignature = JSON.stringify({
+    name,
+    categoryId,
+    unitName,
+    sku,
+    retail,
+    wholesale,
+    government,
+    directCost,
+    isStockedOutput,
+    allowBackorder,
+    showInPrintPos,
+    showInReception,
+    showInQuotations,
+    showInAdvancedSales,
+    consumesMaterials,
+    lines: lines.map((l) => ({ variantId: l.variantId, qty: l.qty })),
+  });
+  const [initialSig] = useState(formSignature);
+  const [savedSig, setSavedSig] = useState<string | null>(null);
+  const isDirty = formSignature !== (savedSig ?? initialSig);
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (leaveTo && !isDirty) navigate(leaveTo);
+  }, [leaveTo, isDirty, navigate]);
 
   // كلفة المواد المُقدَّرة لكل وحدة خدمة (مجموع كلفة كل مادة × كميتها).
   // مصدرها اللقطة الملتقَطة (`picked`) لأن كل سطرٍ يبحث بمعزل ⇒ لا قائمة موحّدة.
@@ -165,18 +198,7 @@ export default function ServiceForm() {
   }, [consumesMaterials, lines]);
   const totalCost = (parseFloat(directCost) || 0) + materialsCost;
 
-  const create = trpc.catalog.createProduct.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.catalog.posList.invalidate(),
-        utils.catalog.adminList.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-        utils.printPos.services.invalidate(),
-      ]);
-      navigate("/products");
-    },
-    onError: (e) => setError(e.message),
-  });
+  const create = trpc.catalog.createProduct.useMutation();
 
   const addLine = () => {
     setLines((ls) => [...ls, { key: lineSeq, variantId: "", qty: "1", picked: null }]);
@@ -207,12 +229,13 @@ export default function ServiceForm() {
     return null;
   }
 
-  function save() {
+  async function submitService(): Promise<{ res: unknown; usedSku: string }> {
+    if (!can("catalog.createProduct")) throw new Error("العملية غير مفوضة لحسابك");
     setError("");
     const err = validate();
     if (err) {
       setError(err);
-      return;
+      throw new Error(err);
     }
     const prices = [
       ...(retail.trim() ? [{ priceTier: "RETAIL" as const, price: retail.trim() }] : []),
@@ -224,20 +247,21 @@ export default function ServiceForm() {
           .filter((l) => l.variantId !== "" && parseFloat(l.qty) > 0)
           .map((l) => ({ inputVariantId: l.variantId as number, qtyPerOutputBase: l.qty.trim() }))
       : undefined;
-    // قيمة ابتدائية للكلفة. للناتج المخزني ستتحدّث لاحقاً بالمتوسط المرجّح عند الشراء أو الإنتاج؛
-    // وللبند بلا مخزون تُحسب كلفة البيع من مواد الوصفة الفعلية.
-    const variantCost = directCost.trim()
-      ? directCost.trim()
-      : materialsCost > 0
-        ? materialsCost.toFixed(2)
-        : "0";
-    create.mutate({
+    // للبند غير المخزني (isService=true) كلفة مواد الوصفة تُحتسب ذرياً عند البيع؛ حفظها في costPrice يضاعف COGS.
+    const variantCost = isStockedOutput
+      ? directCost.trim() || (materialsCost > 0 ? materialsCost.toFixed(2) : "0")
+      : directCost.trim() || "0";
+    const usedSku = autoSku();
+    const submitted = formSignature;
+    const res = await create.mutateAsync({
+      clientRequestId,
       name: name.trim(),
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isService: !isStockedOutput,
+      showInStore: false,
       // خاصّةٌ بالناتج المخزنيّ وحده — الخدمة بلا رصيد فلا معنى لبيعٍ بالطلب عليها.
       allowBackorder: isStockedOutput && allowBackorder,
-      printService: showInPrintPos,
+      printService: !isStockedOutput && showInPrintPos,
       showInPrintPos,
       showInReception,
       showInQuotations,
@@ -245,19 +269,107 @@ export default function ServiceForm() {
       recipe,
       variants: [
         {
-          sku: autoSku(),
+          sku: usedSku,
           costPrice: variantCost,
           isActive: true,
           units: [{ unitName: unitName.trim(), conversionFactor: "1", isBaseUnit: true, prices }],
         },
       ],
     });
+    setClientRequestId(crypto.randomUUID());
+    setSavedSig(submitted);
+    await Promise.all([
+      utils.catalog.posList.invalidate(),
+      utils.catalog.adminList.invalidate(),
+      utils.catalog.forPurchase.invalidate(),
+      utils.printPos.services.invalidate(),
+    ]);
+    return { res, usedSku };
+  }
+
+  async function save(): Promise<unknown> {
+    const { res } = await submitService();
+    setLeaveTo("/products");
+    return res;
+  }
+
+  async function saveAndNew(): Promise<unknown> {
+    const savedName = name.trim();
+    const { res, usedSku } = await submitService();
+    const createdId = Number(
+      (res as { productId?: number; id?: number })?.productId ??
+        (res as { id?: number })?.id ??
+        0,
+    );
+    if (createdId > 0) {
+      setLastSaved({
+        productId: createdId,
+        name: savedName,
+        sku: usedSku,
+      });
+    }
+    setName("");
+    setCategoryId("");
+    setUnitName("خدمة");
+    setSku("");
+    setRetail("");
+    setWholesale("");
+    setGovernment("");
+    setDirectCost("");
+    setIsStockedOutput(false);
+    setAllowBackorder(false);
+    setShowInPrintPos(true);
+    setShowInReception(false);
+    setShowInQuotations(false);
+    setShowInAdvancedSales(true);
+    setConsumesMaterials(false);
+    setLines([{ key: 1, variantId: "", qty: "1", picked: null }]);
+    setLineSeq(2);
+    setSavedSig(initialSig);
+    return res;
   }
 
   const anyMaterialPicked = lines.some((l) => l.variantId !== "");
+  const validationReason = validate();
 
   return (
     <div className="space-y-4">
+      <PostSaveProductBanner saved={lastSaved} onDismiss={() => setLastSaved(null)} />
+      <RecordForm
+        mode="create"
+        isDirty={isDirty}
+        blockedBy={
+          !can("catalog.createProduct")
+            ? ["العملية غير مفوضة لحسابك"]
+            : validationReason
+              ? [validationReason]
+              : []
+        }
+        isPending={create.isPending}
+        onSave={save}
+        onSaveAndNew={saveAndNew}
+        onCancel={() => navigate("/products")}
+        saveLabel="حفظ البند"
+        savedMessage="تم حفظ البند"
+        barHint={
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <span>سيُحفظ بند واحد</span>
+            {isStockedOutput && <Badge variant="secondary">مخزني: شراء أو إنتاج</Badge>}
+            {isStockedOutput && allowBackorder && (
+              <Badge variant="secondary" className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">يُباع بالطلب</Badge>
+            )}
+            {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
+            {showInReception && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">الاستقبال</Badge>}
+            {showInQuotations && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">عروض الأسعار</Badge>}
+            {showInAdvancedSales && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">المبيعات المتقدمة</Badge>}
+            {consumesMaterials && anyMaterialPicked && (
+              <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
+                {toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة
+              </Badge>
+            )}
+          </span>
+        }
+      >
       {/* ── بيانات الخدمة ── */}
       <Card>
         <CardHeader>
@@ -273,14 +385,14 @@ export default function ServiceForm() {
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="تصوير A4 أبيض/أسود" dir="auto" />
           </Field>
           <Field label="الفئة / التبويب" hint="تُجمَّع الخدمات بتبويبات حسب الفئة في الشاشة.">
-            <select
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+            <AppSelect
+              value={String(categoryId)}
+              onValueChange={(val) => setCategoryId(val === "" ? "" : Number(val))}
+              aria-label="الفئة / التبويب"
             >
               <option value="">— بلا فئة —</option>
               <CategoryOptionList categories={categoriesQ.data ?? []} />
-            </select>
+            </AppSelect>
           </Field>
           <Field label="الوحدة" required hint="ورقة / صورة / نسخة / خدمة…">
             <Input value={unitName} onChange={(e) => setUnitName(e.target.value)} placeholder="ورقة" dir="auto" />
@@ -497,28 +609,7 @@ export default function ServiceForm() {
         </div>
       )}
 
-      {/* ── شريط الحفظ ── */}
-      <div className="flex items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
-        <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-2">
-          سيُحفظ بند واحد
-          {isStockedOutput && <Badge variant="secondary">مخزني: شراء أو إنتاج</Badge>}
-          {isStockedOutput && allowBackorder && (
-            <Badge variant="secondary" className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">يُباع بالطلب</Badge>
-          )}
-          {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
-          {showInReception && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">الاستقبال</Badge>}
-          {showInQuotations && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">عروض الأسعار</Badge>}
-          {showInAdvancedSales && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">المبيعات المتقدمة</Badge>}
-          {consumesMaterials && anyMaterialPicked && (
-            <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
-              {toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة
-            </Badge>
-          )}
-        </div>
-        <Button type="button" size="sm" onClick={save} disabled={!can("catalog.createProduct") || (create.isPending)}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ البند"}
-        </Button>
-      </div>
+      </RecordForm>
     </div>
   );
 }

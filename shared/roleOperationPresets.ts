@@ -16,6 +16,7 @@ import {
 
 export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string[]>> = {
   cashier: [
+    "expenses.openDrawers", "expenses.create", "expenses.executeFromOwnDrawer", "expenses.list",
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel", "printPos.cancelHeldSale",
     "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
@@ -24,6 +25,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   retail_cashier: [
+    "expenses.openDrawers", "expenses.create", "expenses.executeFromOwnDrawer", "expenses.list",
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
     "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
@@ -32,6 +34,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
+    "expenses.openDrawers", "expenses.create", "expenses.executeFromOwnDrawer", "expenses.list",
     "shifts.current", "shifts.open", "printPos.createSale", "printPos.cancelHeldSale", "sales.cancel", "returns.create", "returns.withdrawRequest",
     "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
     "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
@@ -40,6 +43,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [
+    "expenses.openDrawers", "expenses.create", "expenses.executeFromOwnDrawer", "expenses.list",
     "shifts.current", "shifts.open", "workOrders.list", "workOrders.counts",
     "workOrders.get", "workOrders.getByNumber", "workOrders.assignableStaff", "workOrders.assign",
     "workOrders.receptionCheckout", "workOrders.create", "workOrders.claim", "workOrders.release",
@@ -63,7 +67,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "quotations.update", "quotations.convert", "quotations.setStatus",
   ],
   purchasing: [
-    "purchases.list", "purchases.createOrder", "purchases.updateOrder", "purchases.confirmOrder",
+    "purchases.list", "purchases.createOrder", "purchases.updateOrder", "purchases.confirmOrder", "purchases.revisePaymentSource",
     "purchaseReturnGovernance.requestReturn", "purchaseReturns.list",
   ],
   warehouse: [
@@ -83,7 +87,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "delivery.staffMarkFailed", "delivery.declareReturn",
   ],
   accountant: [
-    "vouchers.list", "vouchers.create", "expenses.list", "expenses.create",
+    "vouchers.list", "vouchers.create", "expenses.list", "expenses.openDrawers", "expenses.create",
     "reports.monthCloseReadiness", "reports.monthlyClosePack",
   ],
   manager: [

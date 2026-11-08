@@ -15,6 +15,10 @@ import { Check, AlertTriangle } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { POS_STATION_LABEL, type PosStation } from "@shared/permissions";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
+import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
+import { ShieldCheck } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   SHIFT_VARIANCE_CODES,
@@ -111,12 +115,14 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
 
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
   const [varianceReason, setVarianceReason] = useState("");
-  const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
+  const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
+  const [showManagerApproval, setShowManagerApproval] = useState(false);
 
   useEffect(() => {
     setVarianceReasonCode("");
     setVarianceReason("");
-    setManagerApprovedByUserId("");
+    setManagerApproval(null);
+    setShowManagerApproval(false);
   }, [shift?.id]);
 
   // النقد المتوقع يأتي من نفس مصدر حقيقة closeShift على الخادم (DRAWER حصراً).
@@ -131,13 +137,9 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
   const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
 
-  const approversQ = trpc.shifts.eligibleVarianceApprovers.useQuery(undefined, {
-    enabled: hasVariance && !isElevatedRole,
-  });
-
   const canCloseWithVariance = isElevatedRole
     ? !!(varianceReasonCode && varianceReason.trim())
-    : !!(varianceReasonCode && varianceReason.trim() && managerApprovedByUserId);
+    : !!(varianceReasonCode && varianceReason.trim() && managerApproval);
 
   const closeDisabled = !counted || closeShift.isPending || closeBlocked || (hasVariance && !canCloseWithVariance);
   const closeLabel = closeShift.isPending
@@ -268,31 +270,34 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
                   {!isElevatedRole && (
                     <div>
                       <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
-                        المدير المعتمد للفرق:
+                        اعتماد المدير للفرق:
                       </label>
-                      <select
-                        value={managerApprovedByUserId}
-                        onChange={(e) => setManagerApprovedByUserId(e.target.value ? Number(e.target.value) : "")}
-                        style={{ width: "100%", height: 36, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: C.fg, padding: "0 8px", fontSize: 12.5 }}
-                      >
-                        <option value="">-- اختر مديراً للاعتماد --</option>
-                        {(approversQ.data ?? []).map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} ({m.role === "admin" ? "إدارة عامة" : "مدير فرع"})
-                          </option>
-                        ))}
-                      </select>
+                      {managerApproval ? (
+                        <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-xs">
+                          <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
+                            <ShieldCheck aria-hidden className="size-4 shrink-0" />
+                            تم التحقق من اعتماد المدير
+                          </span>
+                          <Button type="button" variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setManagerApproval(null)}>
+                            إلغاء
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button type="button" variant="outline" size="sm" className="w-full text-xs font-bold" onClick={() => setShowManagerApproval(true)}>
+                          طلب مصادقة المدير لاعتماد فرق الوردية
+                        </Button>
+                      )}
                     </div>
                   )}
 
                   <div>
-                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
+                    <label htmlFor="pos-variance-reason-code" style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
                       سبب الفرق:
                     </label>
-                    <select
+                    <AppSelect
+                      id="pos-variance-reason-code"
                       value={varianceReasonCode}
-                      onChange={(e) => setVarianceReasonCode(e.target.value as ShiftVarianceCode)}
-                      style={{ width: "100%", height: 36, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: C.fg, padding: "0 8px", fontSize: 12.5 }}
+                      onValueChange={(val) => setVarianceReasonCode((val || "") as ShiftVarianceCode | "")}
                     >
                       <option value="">-- اختر سبب الفرق --</option>
                       {SHIFT_VARIANCE_CODES.map((code) => (
@@ -300,7 +305,7 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
                           {SHIFT_VARIANCE_LABELS[code]}
                         </option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
 
                   <div>
@@ -349,7 +354,7 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
                     countedCash: counted,
                     varianceReasonCode: hasVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
                     varianceReason: hasVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
-                    managerApprovedByUserId: hasVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
+                    managerApproval: hasVariance && !isElevatedRole && managerApproval ? managerApproval : undefined,
                   });
                 }}
                 style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
@@ -359,6 +364,18 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
           </>
         )}
       </div>
+      {showManagerApproval && (
+        <ManagerApprovalDialog
+          zIndexClass="z-[120]"
+          title="اعتماد مدير — فرق نقدية الوردية"
+          description="إغلاق الوردية بفرق نقدي يتطلب مصادقة مدير الفرع أو الإدارة العامة برمز PIN أو الشارة أو كلمة المرور."
+          onCancel={() => setShowManagerApproval(false)}
+          onApprove={(approval) => {
+            setManagerApproval(approval);
+            setShowManagerApproval(false);
+          }}
+        />
+      )}
     </div>
   );
 }

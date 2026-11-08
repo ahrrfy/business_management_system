@@ -18,7 +18,7 @@ import {
   payrollItems,
   payrollRuns,
 } from "../../../drizzle/schema";
-import { fullEmployeeName } from "@shared/hr";
+import { baghdadTodayYmd, fullEmployeeName } from "@shared/hr";
 import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { money, round2 } from "../money";
 import { requireDb } from "../tx";
@@ -40,6 +40,8 @@ export interface ReportRow {
   payType: string;
   hasOwnSchedule: boolean;
   scheduledHours: string;
+  scheduledHoursToDate: string;
+  isPartialMonth: boolean;
   standardHours: string;
   payableHours: string;
   unpaidHours: string;
@@ -237,6 +239,17 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
   const attendancePayEnabled = !!settings?.attendancePayEnabled;
   const payFrom = settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null;
   const maxDailyHours = Number(settings?.maxDailyHours ?? 12);
+  const todayYmd = baghdadTodayYmd();
+  const todayPeriod = todayYmd.slice(0, 7);
+  const globalMaxAttDate = allAttendance.reduce<string | null>((mx, r) => {
+    const d = String(r.date).slice(0, 10);
+    return !mx || d > mx ? d : mx;
+  }, null);
+  const asOfDate =
+    (p === todayPeriod && (!globalMaxAttDate || globalMaxAttDate <= todayYmd)) ||
+    (p > todayPeriod && allAttendance.length === 0)
+      ? todayYmd
+      : null;
 
   const rows: ReportRow[] = [];
 
@@ -258,28 +271,39 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       .reduce((a, b) => (b < a ? b : a));
     const employmentEnd = hardEnd;
 
-    let actualPaid = 0;
+    let actualPaid = money(0);
     const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
     const openDates = new Set<string>();
+    const manualLeaveDates = new Set<string>();
     const meta = new Map<string, (typeof empAtt)[number]>();
 
     for (const r of empAtt) {
       const d = String(r.date).slice(0, 10);
       meta.set(d, r);
+      if (r.status === "LEAVE") {
+        manualLeaveDates.add(d);
+      }
       if (r.status === "PRESENT" || r.status === "LATE") {
         attendedHoursByDate.set(d, money(r.hours ?? 0));
-        actualPaid += Number(r.amount ?? 0);
+        actualPaid = actualPaid.plus(money(r.amount ?? 0));
         if (hasUnclosedAttendancePunch(r)) openDates.add(d);
       }
     }
 
     const paidSpans = empLeaves.filter((l) => l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
     const unpaidSpans = empLeaves.filter((l) => !l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
+    const paidLeaveDates = expand(paidSpans, employmentStart, employmentEnd);
+    const unpaidLeaveDates = expand(unpaidSpans, employmentStart, employmentEnd);
+    for (const d of Array.from(manualLeaveDates)) {
+      if (!unpaidLeaveDates.has(d)) paidLeaveDates.add(d);
+    }
 
     const dayRates =
       emp.dayRates && typeof emp.dayRates === "object"
         ? (emp.dayRates as Record<string, number>)
         : null;
+
+    const inProgressDates = openDates.has(todayYmd) ? new Set([todayYmd]) : undefined;
 
     const pay = computeAttendancePay({
       salary: money(emp.salary ?? 0),
@@ -290,12 +314,14 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       payType: emp.payType,
       attendedHoursByDate,
       openDates,
-      paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),
-      unpaidLeaveDates: expand(unpaidSpans, employmentStart, employmentEnd),
+      paidLeaveDates,
+      unpaidLeaveDates,
       payFrom,
       monthStart,
       monthEnd,
       maxDailyHours,
+      asOfDate,
+      inProgressDates,
     });
 
     const activeDays =
@@ -318,7 +344,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
 
     const liveAmountDue =
       liveBasis === "hourly"
-        ? actualPaid.toFixed(2)
+        ? round2(actualPaid).toFixed(2)
         : liveBasis === "attendance"
           ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
           : fixedPay.toFixed(2);
@@ -328,8 +354,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       ? round2(money(empItem.gross).plus(money(empItem.overtime))).toFixed(2)
       : liveAmountDue;
 
-    const reviewDays = pay.days.filter((d) => !!meta.get(d.date)?.needsReview).length;
-    const due = Number(amountDue);
+    const reviewDays = pay.days.filter((d) => d.state !== "inProgress" && !!meta.get(d.date)?.needsReview).length;
 
     rows.push({
       employeeId: empId,
@@ -340,6 +365,8 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       payType: emp.payType,
       hasOwnSchedule,
       scheduledHours: pay.scheduledHours,
+      scheduledHoursToDate: pay.scheduledHoursToDate,
+      isPartialMonth: pay.isPartialMonth,
       standardHours: pay.standardHours,
       payableHours: pay.payableHours,
       unpaidHours: pay.unpaidHours,
@@ -352,26 +379,28 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       unpaidLeaveDays: pay.unpaidLeaveDays,
       reviewDays,
       basePay: pay.basePay,
-      totalDue: due.toFixed(2),
+      totalDue: round2(money(amountDue)).toFixed(2),
       attendanceExempt: exempt,
       dueBasis,
       frozen: empItem != null,
     });
   }
 
-  const sum = (f: (r: ReportRow) => number) => rows.reduce((t, r) => t + f(r), 0);
+  const sumInt = (f: (r: ReportRow) => number) => rows.reduce((t, r) => t + f(r), 0);
+  const sumMoney = (f: (r: ReportRow) => string) =>
+    round2(rows.reduce((t, r) => t.plus(money(f(r))), money(0))).toFixed(2);
 
   return {
     period: p,
     rows,
     totals: {
       employees: rows.length,
-      payableHours: sum((r) => Number(r.payableHours)).toFixed(2),
-      overtimeHours: sum((r) => Number(r.overtimeHours)).toFixed(2),
-      restWorkedHours: sum((r) => Number(r.restWorkedHours)).toFixed(2),
-      absentDays: sum((r) => r.absentDays),
-      reviewDays: sum((r) => r.reviewDays),
-      totalDue: sum((r) => Number(r.totalDue)).toFixed(2),
+      payableHours: sumMoney((r) => r.payableHours),
+      overtimeHours: sumMoney((r) => r.overtimeHours),
+      restWorkedHours: sumMoney((r) => r.restWorkedHours),
+      absentDays: sumInt((r) => r.absentDays),
+      reviewDays: sumInt((r) => r.reviewDays),
+      totalDue: sumMoney((r) => r.totalDue),
       withoutSchedule: rows.filter((r) => !r.hasOwnSchedule && !r.attendanceExempt).length,
       exempt: rows.filter((r) => r.attendanceExempt).length,
     },

@@ -644,7 +644,11 @@ const catalogRouter = router({
   setVisible: storeGlobalAdminProcedure
     .input(z.object({ productId: z.number().int().positive(), showInStore: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
-      const r = await setProductStoreVisible(input);
+      const r = await setProductStoreVisible(input, {
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        permissionsOverride: ctx.user.permissionsOverride,
+      });
       await logAudit(ctx, { action: "store.catalog.visibility", entityType: "product", entityId: input.productId, newValue: { showInStore: input.showInStore } });
       return r;
     }),

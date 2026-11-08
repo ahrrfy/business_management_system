@@ -686,6 +686,16 @@ export async function createWorkOrderInTx(
     const newDepositD = round2(money(depositLeg.amount));
     if (newDepositD.lte(0)) continue;
     const depositMethod = depositLeg.method;
+    if (depositMethod !== "CASH" && !depositLeg.reference?.trim()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل عربون غير نقدي لأمر الشغل",
+          why: "الدفعة الإلكترونية لا تحمل رقم مرجع قابل للمطابقة",
+          doThis: "أدخل رقم مرجع البطاقة أو التحويل أو الكود ثم أعد حفظ أمر الشغل",
+        }),
+      });
+    }
     // ش٥ (§٩.٤): عربون زين على الإنشاء المفرد المباشر (بلا shiftId من سلة الاستقبال) يمرّ
     // بضوابطه هنا — مسار السلة/المسوّدة أُسقط عنه (checkoutReceptionInTx فحص مبلغ القبض كله
     // سلفاً؛ إعادة الفحص لكل أمرٍ كانت سترفض سلّةً بأمرين على كودٍ واحدٍ مشروع).

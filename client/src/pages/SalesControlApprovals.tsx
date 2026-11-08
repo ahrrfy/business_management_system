@@ -592,12 +592,14 @@ export default function SalesControlApprovals() {
       return;
     }
     const deviceId = needsExternalCorrectionPayment ? routingDeviceId : undefined;
+    const clearShift = editingThis && type === "SALES_RETURN" && routingUseTreasury ? true : undefined;
     const cashBucket = editingThis && type === "SALES_CANCEL"
       ? routingUseTreasury ? "TREASURY" as const : shiftId != null ? "DRAWER" as const : undefined
       : undefined;
-    const cashRouting = shiftId != null || referenceOverride !== undefined || deviceId != null || cashBucket != null
+    const cashRouting = shiftId != null || clearShift || referenceOverride !== undefined || deviceId != null || cashBucket != null
       ? {
           ...(shiftId != null ? { shiftId } : {}),
+          ...(clearShift ? { clearShift: true } : {}),
           ...(cashBucket != null ? { cashBucket } : {}),
           ...(referenceOverride !== undefined ? { reference: referenceOverride } : {}),
           ...(deviceId != null ? { deviceId } : {}),
@@ -825,13 +827,16 @@ export default function SalesControlApprovals() {
             && correctionPayload.additionalPayment != null
             && correctionPayload.additionalPayment.method !== "CASH";
           const returnPayload = request.payload as {
-            refund?: { amount?: string; method?: string } | null;
-            resolution?: { amount?: string; method?: string } | null;
+            refund?: { amount?: string; method?: string; reference?: string | null } | null;
+            resolution?: { amount?: string; method?: string; reference?: string | null } | null;
           } | null;
           const returnMoney = returnPayload?.resolution ?? returnPayload?.refund;
           const returnNeedsCashRouting = request.requestType === "SALES_RETURN"
             && returnMoney?.method === "CASH"
             && D(returnMoney.amount ?? "0").gt(0);
+          const returnNeedsCardReference = request.requestType === "SALES_RETURN"
+            && Boolean(returnMoney?.method && ["CARD", "TRANSFER", "CHECK", "WALLET"].includes(returnMoney.method))
+            && D(returnMoney?.amount ?? "0").gt(0);
           const cancelPayload = request.payload as {
             refundPaymentMethod?: string;
             reference?: string;
@@ -979,7 +984,7 @@ export default function SalesControlApprovals() {
                   <Label htmlFor={`routing-${request.id}`} className="text-xs">
                     مصدر خروج النقد المعتمد
                   </Label>
-                  {cancelNeedsCashRouting ? (
+                  {cancelNeedsCashRouting || returnNeedsCashRouting ? (
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant={!useTreasuryForThisRequest ? "default" : "outline"} onClick={() => {
                         beginRouting(Number(request.id));
@@ -992,7 +997,7 @@ export default function SalesControlApprovals() {
                       }}>خزينة الفرع</Button>
                     </div>
                   ) : null}
-                  {!cancelNeedsCashRouting || !useTreasuryForThisRequest ? (
+                  {!useTreasuryForThisRequest ? (
                     <Input
                       id={`routing-${request.id}`}
                       dir="ltr"
@@ -1012,11 +1017,11 @@ export default function SalesControlApprovals() {
                   </p>
                 </div>
               )}
-              {canReview && cancelNeedsCardReference && !reviewerConflict && (
+              {canReview && (cancelNeedsCardReference || returnNeedsCardReference) && !reviewerConflict && (
                 <div className="space-y-1 rounded-md border border-dashed p-3">
                   <Label htmlFor={`cancel-ref-${request.id}`} className="inline-flex items-center gap-1.5 text-xs">
                     <CardBrandLogos size="xs" />
-                    <span>مرجع استرداد البطاقة — نفّذه على الجهاز ثمّ أدخِله هنا قبل الاعتماد</span>
+                    <span>مرجع الاسترداد الإلكتروني — نفّذه على الجهاز/التحويل ثمّ أدخِله هنا قبل الاعتماد</span>
                   </Label>
                   <Input
                     id={`cancel-ref-${request.id}`}
@@ -1025,7 +1030,11 @@ export default function SalesControlApprovals() {
                     placeholder="رقم العملية / كود الموافقة"
                     value={routingFor === Number(request.id)
                       ? routingReference
-                      : String(cancelPayload?.reference ?? cancelPayload?.refunds?.find((r) => r.method === "CARD")?.reference ?? "")}
+                      : String(
+                          request.requestType === "SALES_RETURN"
+                            ? (returnMoney?.reference ?? "")
+                            : (cancelPayload?.reference ?? cancelPayload?.refunds?.find((r) => r.method === "CARD")?.reference ?? ""),
+                        )}
                     onChange={(event) => {
                       beginRouting(Number(request.id));
                       setRoutingReference(event.target.value);

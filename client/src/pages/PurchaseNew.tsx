@@ -166,11 +166,11 @@ export default function PurchaseNew() {
       ),
     [requisition.data?.items],
   );
-  const requisitionCatalog = trpc.catalog.byUnitIds.useQuery(
+  const requisitionCatalog = trpc.catalog.forPurchase.useQuery(
     {
       branchId: Number(requisition.data?.branchId ?? me.data?.branchId ?? 0),
-      tier: "RETAIL",
-      productUnitIds: requisitionUnitIds,
+      unitIds: requisitionUnitIds,
+      limit: 500,
     },
     { enabled: requisition.data != null && requisitionUnitIds.length > 0 },
   );
@@ -203,11 +203,17 @@ export default function PurchaseNew() {
         row,
       ]),
     );
+    const missingUnits: number[] = [];
+    const reqBranchId = Number(requisition.data.branchId);
     const lines = requisition.data.items.flatMap((item): InvoiceLine[] => {
       const availableBase =
         Number(item.approvedBaseQuantity) - Number(item.orderedBaseQuantity);
+      if (availableBase <= 0) return [];
       const row = catalogByUnit.get(Number(item.productUnitId));
-      if (!row || availableBase <= 0) return [];
+      if (!row) {
+        missingUnits.push(Number(item.productUnitId));
+        return [];
+      }
       const conversionFactor = String(row.conversionFactor || "1");
       return [
         {
@@ -222,15 +228,15 @@ export default function PurchaseNew() {
             sku: row.sku,
           }),
           sku: row.sku ?? "",
-          barcode: row.barcode ?? null,
+          barcode: null,
           unit: row.unitName ?? "",
           qty: D(availableBase).dividedBy(D(conversionFactor)).toNumber(),
           conversionFactor,
           stockBase: row.stockBase ?? 0,
-          stockBranchId: row.branchId,
-          reservedBase: row.reservedBase ?? 0,
-          availableBase: row.availableBase ?? 0,
-          isService: row.isService ?? false,
+          stockBranchId: reqBranchId,
+          reservedBase: 0,
+          availableBase: row.stockBase ?? 0,
+          isService: false,
           // Codex #980 (٤/٩/٢٦) — Finding 4: مسار الاستحضار من طلب شراء يتخطّى ProductSearchBar
           // و`BulkPicker`. `estimatedUnitPrice` القادم مُخزَّنٌ بالدينار (عمود `decimal(15,2)`
           // بلا عمود عملة على `purchaseRequisitionItems`) وقد يكون **مصاباً** بعطب PUR-UNIT-01
@@ -272,6 +278,12 @@ export default function PurchaseNew() {
       value: `تحويل من طلب الشراء ${requisition.data.requisitionNumber}: ${requisition.data.purpose}`,
     });
     if (lines.length) dispatch({ type: "ADD_ITEMS", items: lines });
+    if (missingUnits.length > 0) {
+      notify.warn(
+        "تعذّر تحميل بعض سطور طلب الشراء",
+        `تُخطِّي ${missingUnits.length} سطر من الطلب لأن الصنف أو وحدته معطّل أو غير قابل للشراء (الوحدات: ${missingUnits.map((id) => `#${id}`).join("، ")}).`,
+      );
+    }
     requisitionHydratedRef.current = true;
   }, [
     requisitionId,
@@ -331,7 +343,11 @@ export default function PurchaseNew() {
         reservedBase: 0,
         availableBase: row.stockBase ?? 0,
         isService: false,
-        price: row.costPriceBase ?? "0",
+        price: derivePurchaseLinePriceFromRequisition(
+          null,
+          row.costPriceBase,
+          String(row.conversionFactor || "1"),
+        ),
         costBase: row.costPriceBase ?? "0",
         discount: "0",
         discountType: "percent",
@@ -762,10 +778,23 @@ export default function PurchaseNew() {
       notify.warn("أضف منتجاً واحداً على الأقل لطلب التأمين.");
       return;
     }
+    if (!state.branchId) {
+      notify.warn("اختر الفرع قبل حفظ طلب التأمين.");
+      return;
+    }
+    if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
+      notify.warn("أدخل سعر الصرف المثبت لتحويل الأسعار التقديرية إلى الدينار العراقي.");
+      return;
+    }
     for (const l of state.items) {
       const qty = D(l.qty);
       if (!qty.gt(0)) {
         notify.warn(`الكمية في «${l.name}» يجب أن تكون موجبة.`);
+        return;
+      }
+      const base = toBase(l.qty, l.conversionFactor);
+      if (!base.isInteger()) {
+        notify.warn(`الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`);
         return;
       }
     }
@@ -784,11 +813,18 @@ export default function PurchaseNew() {
           1,
           Math.round(toBase(l.qty, l.conversionFactor).toNumber()),
         );
+        const iqdEstimatedPrice =
+          state.currency === "USD"
+            ? toUnitPriceStr(
+                D(l.price || "0").times(safeMoney(state.agreedRate)).toString(),
+                "IQD",
+              )
+            : toUnitPriceStr(l.price, "IQD");
         return {
           variantId: l.variantId,
           productUnitId: l.productUnitId > 0 ? l.productUnitId : null,
           requestedBaseQuantity: baseQty,
-          estimatedUnitPrice: toUnitPriceStr(l.price, state.currency),
+          estimatedUnitPrice: iqdEstimatedPrice,
           preferredSupplierId: null,
           justification: (l.note || "تأمين احتياج السوق وتفاوض الموردين")
             .trim()
@@ -845,6 +881,7 @@ export default function PurchaseNew() {
       confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
       invalidateAll: invalidatePurchaseWorkflowQueries,
       onSuccessToast: (msg) => notify.ok(msg),
+      onWarnToast: (msg) => notify.warn(msg),
       onErrorToast: (e) => notify.err(e),
       onNavigate: navigate,
       setPending: setWorkflowPending,

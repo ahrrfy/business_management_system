@@ -68,9 +68,17 @@ export function AttendanceStatementTable({
             return (
               <tr
                 key={x.date}
-                className={`border-t ${x.needsReview ? "bg-[var(--sem-warn-bg)]/50" : ""}`}
+                className={`border-t ${
+                  x.needsReview
+                    ? "bg-[var(--sem-warn-bg)]/50"
+                    : x.state === "inProgress"
+                      ? "bg-emerald-500/[0.04]"
+                      : x.state === "restDay"
+                        ? "bg-muted/20 text-muted-foreground"
+                        : ""
+                }`}
               >
-                <td className="p-2 tabular-nums" dir="ltr">
+                <td className="p-2 tabular-nums whitespace-nowrap" dir="ltr">
                   {x.date}
                 </td>
                 <td className="p-2">{x.dayName}</td>
@@ -120,9 +128,19 @@ export function AttendanceStatementTable({
                 </td>
                 <td className="p-2 text-start">
                   <div className="flex flex-wrap items-center gap-1">
-                    <span className="font-medium">
-                      {STATE_LABEL[x.state] ?? x.state}
-                    </span>
+                    {x.state === "inProgress" ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                        {STATE_LABEL[x.state] ?? x.state}
+                      </span>
+                    ) : x.state === "restDay" ? (
+                      <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        {STATE_LABEL[x.state] ?? x.state}
+                      </span>
+                    ) : (
+                      <span className="font-medium">
+                        {STATE_LABEL[x.state] ?? x.state}
+                      </span>
+                    )}
                     {x.source === "manual" ? (
                       <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         تعديل يدوي
@@ -148,15 +166,19 @@ export function AttendanceStatementTable({
                       {sessionsList.map((s: any, idx: number) => (
                         <span
                           key={idx}
-                          dir="ltr"
                           className={`rounded border px-1 py-0.5 tabular-nums ${
                             s.checkOut == null
                               ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] font-medium"
                               : "bg-background"
                           }`}
                         >
-                          {s.checkIn}→{s.checkOut ?? "بلا انصراف"}
-                          {s.crossMidnight ? "(+1)" : ""}
+                          <bdi dir="ltr">{s.checkIn}</bdi> ←{" "}
+                          {s.checkOut ? (
+                            <bdi dir="ltr">{s.checkOut}</bdi>
+                          ) : (
+                            "بلا انصراف"
+                          )}
+                          {s.crossMidnight ? <bdi dir="ltr"> (+1)</bdi> : ""}
                         </span>
                       ))}
                     </div>

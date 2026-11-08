@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
+import { createConsignmentNote } from "../consignment/noteService";
 import { createPurchaseOrder } from "../purchaseService";
 import { replaceBundleComponents } from "../bundleService";
 import { withTx } from "../tx";
@@ -19,6 +20,7 @@ const actor = { userId: 1, branchId: 1 };
 const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements",
   "invoiceItems", "invoices", "idempotencyKeys",
+  "consignmentNoteLines", "consignmentNotes",
   "branchStock", "bundleComponents", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "productImages", "products",
   "purchaseOrderItems", "purchaseOrders",
   "auditLogs", "customers", "suppliers", "categories",
@@ -196,7 +198,18 @@ describe("بضاعة الأمانة ش١ — قفل نوع الحساب وحار
 
   it("تعطيل مودِع له بضاعة متبقية على الرف يُرفض", async () => {
     const cid = await mkConsignor();
-    await createProduct(consignProductInput(cid, "4000", 10), actor); // رصيد افتتاحي ١٠
+    const created = await createProduct(consignProductInput(cid, "4000"), actor);
+    const sku = (await db().select({ sku: s.productVariants.sku }).from(s.productVariants).where(eq(s.productVariants.productId, created.productId)))[0].sku!;
+    const { variantId, productUnitId } = await baseVariantId(sku);
+    await createConsignmentNote(
+      {
+        noteType: "DEPOSIT",
+        consignorId: cid,
+        branchId: 1,
+        lines: [{ lineDirection: "IN", variantId, productUnitId, quantity: "10" }],
+      },
+      actor,
+    );
     await expect(deactivateSupplier(cid, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 

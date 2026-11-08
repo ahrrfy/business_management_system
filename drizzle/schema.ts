@@ -827,6 +827,14 @@ export const products = mysqlTable(
     consignorId: bigint("consignorId", { mode: "number" }).references(
       () => suppliers.id,
     ),
+    // CATALOG-SURGICAL-20261107 (هجرة 0428): تصنيف الاستخدام للصنف المخزني المملوك.
+    // NULL = صنف تاريخي غير مصنّف يتبع قواعده القائمة بلا تعديل رجعي.
+    stockUsage: mysqlEnum("stockUsage", [
+      "SALE_ONLY",
+      "MATERIAL_ONLY",
+      "SALE_AND_MATERIAL",
+      "OPERATING_SUPPLY",
+    ]),
     isActive: boolean("isActive").default(true),
     // لوحة hPanel للمتجر (١٢/٧، هجرة 0072): تمييز المنتج (يتصدّر) + إظهاره/إخفاؤه من واجهة المتجر.
     isFeatured: boolean("isFeatured").default(false).notNull(),
@@ -855,11 +863,16 @@ export const products = mysqlTable(
     consignorIdx: index("idx_product_consignor").on(table.consignorId),
     // شاشة «المطلوب توريده» تصفّي بها قبل ضمّ الرصيد السالب.
     backorderIdx: index("idx_product_allow_backorder").on(table.allowBackorder),
+    stockUsageIdx: index("idx_product_stock_usage").on(table.stockUsage),
     // الاستثناءات بنيويّةً لا بالنيّة: الوسم بلا معنى على خدمة/بكج (لا رصيد ذاتيّ لهما)،
     // وخطِرٌ على الأمانة (بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع).
     backorderStockedOnlyCheck: check(
       "chk_product_backorder_stocked_only",
       sql`(${table.allowBackorder} = 0 OR (${table.isService} = 0 AND ${table.isBundle} = 0 AND ${table.isConsignment} = 0))`,
+    ),
+    stockUsageOwnedStockedOnlyCheck: check(
+      "chk_product_stock_usage_owned_stocked_only",
+      sql`(${table.stockUsage} IS NULL OR (${table.isService} = 0 AND ${table.isBundle} = 0 AND ${table.isConsignment} = 0))`,
     ),
   }),
 );
@@ -1134,6 +1147,21 @@ export const inventoryProjectionState = mysqlTable(
   },
   (table) => ({
     singleton: check("chk_inventory_projection_singleton", sql`${table.id} = 1`),
+  }),
+);
+
+/** قفل صفّ كتابة موحّد لملكية الباركود المطبع (الأساسي والبديل) عبر كتّاب الكتالوج (هجرة 0428). */
+export const catalogBarcodeWriteLock = mysqlTable(
+  "catalogBarcodeWriteLock",
+  {
+    id: tinyint("id").primaryKey(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    singleton: check(
+      "chk_catalog_barcode_write_lock_singleton",
+      sql`${table.id} = 1`,
+    ),
   }),
 );
 

@@ -265,6 +265,7 @@ export function MaterialSubstitutionDialog({
             {activeBranchId != null ? (
               <ProductSearchPicker
                 branchId={activeBranchId}
+                materialOnly={true}
                 placeholder="ابحث عن المادة البديلة بالاسم أو SKU أو الباركود…"
                 onPick={handlePickSubstitute}
               />

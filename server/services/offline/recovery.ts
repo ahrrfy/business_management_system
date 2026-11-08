@@ -33,6 +33,7 @@ import {
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { appErrorMessage } from "@shared/errors";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
+import { canCrossBranches } from "../../lib/branchAuthority";
 
 type AuditContext = Pick<TrpcContext, "user" | "req">;
 
@@ -104,7 +105,7 @@ export interface RecoveryQueueRow {
 export async function listRecoveryQueue(
   actor: Actor,
 ): Promise<RecoveryQueueRow[]> {
-  const elevated = actor.role === "admin";
+  const elevated = canCrossBranches(actor);
   const rows = await requireDb()
     .select()
     .from(offlineRecoveryItems)
@@ -224,7 +225,7 @@ export async function postRecoveryItem(
         message: "العنصر غير موجود في طابور الاسترداد",
       });
     if (
-      actor.role !== "admin" &&
+      !canCrossBranches(actor) &&
       Number(item.branchId) !== Number(actor.branchId)
     ) {
       throw new TRPCError({
@@ -514,7 +515,7 @@ export async function discardRecoveryItem(
       });
     }
     if (
-      actor.role !== "admin" &&
+      !canCrossBranches(actor) &&
       Number(item.branchId) !== Number(actor.branchId)
     ) {
       throw new TRPCError({

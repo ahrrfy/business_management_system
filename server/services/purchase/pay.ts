@@ -370,7 +370,7 @@ export async function settlePurchaseShippingFromShiftTx(
   // حل وتحديد وردية الكاشير المفتوحة في الفرع
   const resolvedShiftId =
     input.shiftId ??
-    (await openShiftIdTx(tx, creatorUserId, Number(po.branchId), "RETAIL")) ??
+    (await openShiftIdTx(tx, creatorUserId, Number(po.branchId))) ??
     null;
 
   if (!resolvedShiftId) {

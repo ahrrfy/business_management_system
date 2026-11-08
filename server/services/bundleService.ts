@@ -31,6 +31,7 @@ import { money, toDbMoney } from "./money";
 import { assertNoActiveOnlineOrderBundleChange } from "./catalog/variantAvailability";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
 import { appErrorMessage } from "@shared/errors";
+import { isSellableStockUsage } from "@shared/stockUsage";
 
 function bundleChangeError(why: string): string {
   return appErrorMessage({
@@ -81,6 +82,7 @@ interface LockedBundleVariant {
   productIsBundle: boolean | null;
   productIsService: boolean | null;
   productIsConsignment: boolean | null;
+  productStockUsage: typeof products.$inferSelect.stockUsage;
   costPrice: string;
   productName: string;
   variantSku: string;
@@ -124,6 +126,7 @@ async function lockBundleVariantScope(
       isBundle: products.isBundle,
       isService: products.isService,
       isConsignment: products.isConsignment,
+      stockUsage: products.stockUsage,
     })
     .from(products)
     .where(inArray(products.id, productIds))
@@ -171,6 +174,7 @@ async function lockBundleVariantScope(
       productIsBundle: product.isBundle,
       productIsService: product.isService,
       productIsConsignment: product.isConsignment,
+      productStockUsage: product.stockUsage ?? null,
       costPrice: String(variant.costPrice ?? "0"),
       productName: product.name,
       variantSku: variant.sku,
@@ -335,6 +339,16 @@ export async function validateBundleComponents(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `«${r.productName}» بضاعة أمانة — لا تُضمَّن في بكج (تُباع مباشرةً)`,
+      });
+    }
+    if (!isSellableStockUsage(r.productStockUsage)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `«${r.productName}» غير مؤهّل كمكوّن في بكج بيع`,
+          why: "تصنيف استخدام المكوّن (مادة خام أو مستلزم تشغيل) لا يسمح ببيعه ضمن بكج",
+          doThis: "اختر مكوّناً مخصّصاً للبيع أو مزدوج الاستخدام",
+        }),
       });
     }
     validated.push({

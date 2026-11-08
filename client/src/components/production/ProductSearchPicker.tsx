@@ -25,11 +25,17 @@ export function ProductSearchPicker({
   label,
   placeholder,
   onPick,
+  materialOnly,
+  stockExpenseOnly,
+  excludeOperatingSupply,
 }: {
   branchId: number;
   label?: string;
   placeholder?: string;
   onPick: (variant: PurchaseRow, units: PurchaseRow[]) => void;
+  materialOnly?: boolean;
+  stockExpenseOnly?: boolean;
+  excludeOperatingSupply?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -38,7 +44,7 @@ export function ProductSearchPicker({
   const utils = trpc.useUtils();
 
   const res = trpc.catalog.forPurchase.useQuery(
-    { branchId, query: q, limit: 16 },
+    { branchId, query: q, limit: 16, materialOnly, stockExpenseOnly, excludeOperatingSupply },
     { enabled: q.trim().length > 0 }
   );
 
@@ -72,7 +78,24 @@ export function ProductSearchPicker({
     const code = rawCode.trim();
     if (!code) return;
     try {
-      const rows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 16 });
+      const exactBarcode = await utils.catalog.warehouseByBarcode
+        .fetch({ barcode: code, branchId, tier: "RETAIL", includeBundles: false })
+        .catch(() => null);
+      const rows = await utils.catalog.forPurchase.fetch({
+        branchId,
+        query: exactBarcode?.sku ?? code,
+        limit: 32,
+        materialOnly,
+        stockExpenseOnly,
+        excludeOperatingSupply,
+      });
+      if (exactBarcode) {
+        const exactUnitRow = rows.find((r) => r.productUnitId === exactBarcode.productUnitId);
+        if (exactUnitRow) {
+          selectVariant(exactUnitRow, rows);
+          return;
+        }
+      }
       const matchedVariants = uniqueVariantsFromRows(rows);
       const exactSku = matchedVariants.find(
         (v) => v.sku?.toLowerCase() === code.toLowerCase()

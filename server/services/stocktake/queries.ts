@@ -585,6 +585,10 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
               ),
             ),
           ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
+          ),
           scopeCond,
         ),
       );
@@ -615,6 +619,10 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
                 eq(products.allowBackorder, false),
               ),
             ),
+          ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
           ),
           scopeCond,
         ),
@@ -655,6 +663,10 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
                 eq(products.allowBackorder, false),
               ),
             ),
+          ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
           ),
           scopeCond,
         ),

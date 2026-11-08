@@ -535,6 +535,31 @@ function storefrontRequestError(message: string, httpStatus?: number, payload?: 
   });
 }
 
+function detectStorefrontPlatform(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const rn = require("react-native") as { Platform?: { OS?: string } };
+    if (typeof rn?.Platform?.OS === "string" && rn.Platform.OS.length > 0) {
+      return rn.Platform.OS;
+    }
+  } catch {
+    // Node/Vitest environment without react-native
+  }
+  if (typeof window !== "undefined" && typeof document !== "undefined") {
+    return "web";
+  }
+  return "android";
+}
+
+export async function resolveStorefrontLocationUrl(
+  url: string,
+): Promise<{ lat: number; lng: number; resolvedUrl: string }> {
+  return storefrontMutation<{ lat: number; lng: number; resolvedUrl: string }>(
+    "storefront.resolveLocationUrl",
+    { url },
+  );
+}
+
 async function storefrontMutation<T>(
   procedure: string,
   input: unknown,
@@ -544,7 +569,7 @@ async function storefrontMutation<T>(
   try {
     const response = await fetch(`${API_BASE}/${procedure}`, {
       method: "POST",
-      headers: storefrontMutationHeaders(),
+      headers: storefrontMutationHeaders(detectStorefrontPlatform()),
       body: JSON.stringify({ json: input }),
       signal: controller.signal,
     });

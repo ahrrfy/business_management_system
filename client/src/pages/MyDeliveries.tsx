@@ -175,11 +175,10 @@ export default function MyDeliveries() {
   });
 
   function transitionParcel(row: DeliveryRow, toStatus: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY" | "FAILED", reason?: string) {
+    const payload = { consignmentId: row.id, toStatus, reason: reason ?? null };
     transitionM.mutate({
-      consignmentId: row.id,
-      toStatus,
-      reason: reason ?? null,
-      clientRequestId: crypto.randomUUID(),
+      ...payload,
+      clientRequestId: requestKey("parcelTransition", payload),
     });
   }
 
@@ -328,7 +327,7 @@ export default function MyDeliveries() {
                 <DeliveryCard
                   key={rowKey(row)}
                   row={row}
-                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending || claimAckM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending || transitionM.isPending || claimAckM.isPending}
                   onConfirm={() => doConfirm(row)}
                   onAcknowledge={() => acknowledgeClaim(row)}
                   onPartial={() => setPartialTarget(row)}
@@ -419,8 +418,8 @@ export default function MyDeliveries() {
       {failTarget && (
         <FailModal
           row={failTarget}
-          pending={failM.isPending}
-          onCancel={() => !failM.isPending && setFailTarget(null)}
+          pending={failM.isPending || transitionM.isPending}
+          onCancel={() => !(failM.isPending || transitionM.isPending) && setFailTarget(null)}
           onConfirm={(reason) => failTarget.kind === "consignment"
             ? transitionParcel(failTarget, "FAILED", reason)
             : failM.mutate({ onlineOrderId: failTarget.id, reason })}

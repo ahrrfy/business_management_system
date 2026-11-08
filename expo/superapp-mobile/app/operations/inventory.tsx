@@ -195,10 +195,13 @@ export default function InventoryScreen() {
           <View style={styles.itemsList}>
             {filteredItems.map((item, idx) => {
               const cfg = statusBadgeConfig[item.status];
+              const primaryBranchQty = item.secondBranchName
+                ? item.branchMansourQty
+                : item.branchMansourQty + item.branchKarradaQty;
               return (
                 <AnimatedReveal delay={idx * 25} key={item.id}>
                   <Pressable
-                    accessibilityLabel={`${item.name}، الكمية المتاحة ${formatQuantity(item.branchMansourQty)}`}
+                    accessibilityLabel={`${item.name}، الكمية المتاحة ${formatQuantity(primaryBranchQty)}`}
                     accessibilityRole="button"
                     onPress={() => handleSelectItem(item)}
                     style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}
@@ -227,23 +230,37 @@ export default function InventoryScreen() {
 
                     <View style={styles.stockRow}>
                       <View style={styles.branchStock}>
-                        <Text style={styles.branchLabel}>فرع المنصور:</Text>
+                        <Text style={styles.branchLabel}>{item.mainBranchName}:</Text>
                         <Text
                           style={[
                             styles.branchQty,
-                            item.branchMansourQty <= 0 && styles.qtyOut,
-                            item.branchMansourQty > 0 &&
-                              item.branchMansourQty <= item.reorderLevel &&
+                            primaryBranchQty <= 0 && styles.qtyOut,
+                            primaryBranchQty > 0 &&
+                              primaryBranchQty <= item.reorderLevel &&
                               styles.qtyLow,
                           ]}
                         >
-                          {formatQuantity(item.branchMansourQty)} {item.unit}
+                          {formatQuantity(primaryBranchQty)} {item.unit}
                         </Text>
                       </View>
-                      <View style={styles.branchStock}>
-                        <Text style={styles.branchLabel}>حد الطلب:</Text>
-                        <Text style={styles.branchSubQty}>{formatQuantity(item.reorderLevel)} {item.unit}</Text>
-                      </View>
+                      {item.secondBranchName ? (
+                        <View style={styles.branchStock}>
+                          <Text style={styles.branchLabel}>{item.secondBranchName}:</Text>
+                          <Text
+                            style={[
+                              styles.branchQty,
+                              item.branchKarradaQty <= 0 && styles.qtyOut,
+                            ]}
+                          >
+                            {formatQuantity(item.branchKarradaQty)} {item.unit}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.branchStock}>
+                          <Text style={styles.branchLabel}>حد الطلب:</Text>
+                          <Text style={styles.branchSubQty}>{formatQuantity(item.reorderLevel)} {item.unit}</Text>
+                        </View>
+                      )}
                     </View>
                   </Pressable>
                 </AnimatedReveal>
@@ -298,21 +315,47 @@ export default function InventoryScreen() {
                   <View style={styles.branchList}>
                     <View style={styles.branchCard}>
                       <View style={styles.branchCardInfo}>
-                        <Text style={styles.branchCardName}>الفرع الرئيسي - المنصور</Text>
-                        <Text style={styles.branchCardSub}>مخزن المعرض ومستودع الطابق الأرضي</Text>
+                        <Text style={styles.branchCardName}>{selectedItem.mainBranchName}</Text>
+                        <Text style={styles.branchCardSub}>الرصيد المتاح للبيع حالياً</Text>
                       </View>
                       <Text
                         style={[
                           styles.branchCardQty,
-                          selectedItem.branchMansourQty <= 0 && styles.qtyOut,
-                          selectedItem.branchMansourQty > 0 &&
-                            selectedItem.branchMansourQty <= selectedItem.reorderLevel &&
+                          (selectedItem.secondBranchName
+                            ? selectedItem.branchMansourQty
+                            : selectedItem.branchMansourQty + selectedItem.branchKarradaQty) <= 0 && styles.qtyOut,
+                          (selectedItem.secondBranchName
+                            ? selectedItem.branchMansourQty
+                            : selectedItem.branchMansourQty + selectedItem.branchKarradaQty) > 0 &&
+                            (selectedItem.secondBranchName
+                              ? selectedItem.branchMansourQty
+                              : selectedItem.branchMansourQty + selectedItem.branchKarradaQty) <= selectedItem.reorderLevel &&
                             styles.qtyLow,
                         ]}
                       >
-                        {formatQuantity(selectedItem.branchMansourQty)} {selectedItem.unit}
+                        {formatQuantity(
+                          selectedItem.secondBranchName
+                            ? selectedItem.branchMansourQty
+                            : selectedItem.branchMansourQty + selectedItem.branchKarradaQty,
+                        )} {selectedItem.unit}
                       </Text>
                     </View>
+                    {selectedItem.secondBranchName ? (
+                      <View style={styles.branchCard}>
+                        <View style={styles.branchCardInfo}>
+                          <Text style={styles.branchCardName}>{selectedItem.secondBranchName}</Text>
+                          <Text style={styles.branchCardSub}>الرصيد المتاح للبيع حالياً</Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.branchCardQty,
+                            selectedItem.branchKarradaQty <= 0 && styles.qtyOut,
+                          ]}
+                        >
+                          {formatQuantity(selectedItem.branchKarradaQty)} {selectedItem.unit}
+                        </Text>
+                      </View>
+                    ) : null}
 
                     <View style={styles.branchCard}>
                       <View style={styles.branchCardInfo}>

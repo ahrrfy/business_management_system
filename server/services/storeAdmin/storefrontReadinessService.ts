@@ -84,6 +84,11 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
       .where(and(
         eq(products.isActive, true),
         eq(products.showInStore, true),
+        or(
+          eq(products.isService, true),
+          isNull(products.stockUsage),
+          inArray(products.stockUsage, ["SALE_ONLY", "SALE_AND_MATERIAL"]),
+        ),
         eq(productVariants.isActive, true),
         eq(productUnits.isActive, true),
         eq(productUnits.isStoreSaleUnit, true),
@@ -132,6 +137,7 @@ interface MutableProduct {
   isActive: boolean;
   isService: boolean;
   showInStore: boolean;
+  stockUsage: typeof products.$inferSelect.stockUsage;
   categoryVisible: boolean;
   variants: Map<number, MutableVariant>;
 }
@@ -160,6 +166,7 @@ export async function loadStorefrontReadiness(input: {
       productActive: products.isActive,
       isService: products.isService,
       showInStore: products.showInStore,
+      stockUsage: products.stockUsage,
       categoryId: products.categoryId,
       categoryActive: categories.isActive,
       categoryShowInStore: categories.showInStore,
@@ -204,6 +211,7 @@ export async function loadStorefrontReadiness(input: {
         isActive: row.productActive === true,
         isService: !!row.isService,
         showInStore: row.showInStore === true,
+        stockUsage: row.stockUsage ?? null,
         categoryVisible: row.categoryId == null
           || (row.categoryActive === true && row.categoryShowInStore === true),
         variants: new Map(),
@@ -271,6 +279,7 @@ export async function loadStorefrontReadiness(input: {
         isActive: true,
         isService: product.isService,
         showInStore: true,
+        stockUsage: product.stockUsage,
         categoryVisible: true,
         variants: [{
           isActive: variant.isActive,
@@ -302,6 +311,7 @@ export async function loadStorefrontReadiness(input: {
       isActive: product.isActive,
       isService: product.isService,
       showInStore: product.showInStore,
+      stockUsage: product.stockUsage,
       categoryVisible: product.categoryVisible,
       variants: variants.map((variant) => ({
         isActive: variant.isActive,

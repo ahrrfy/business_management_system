@@ -556,4 +556,77 @@ describe("توحيد تسعير dayRates لموظفي الساعة والجدو�
     expect(sun?.rate).toBe("6000.00");
     expect(sun?.amount).toBe("48000.00");
   });
+
+  it("الموظف الساعي (hourly) يُحاسَب بسعر الساعة الفعلي 1.0× بلا مضاعف 1.5× مع تقريب دينار صحيح", () => {
+    const att = new Map<string, ReturnType<typeof D>>([["2026-07-05", D(10)]]);
+    const r = base({
+      salary: D(0),
+      payType: "hourly",
+      dayRates: { الأحد: 3333.33, الاثنين: 3333.33, الثلاثاء: 3333.33, الأربعاء: 3333.33, الخميس: 3333.33, السبت: 3333.33 },
+      attendedHoursByDate: att,
+    });
+    const sun = r.days.find((d) => d.date === "2026-07-05")!;
+    expect(sun.overtimeHours).toBe("0.00");
+    expect(sun.overtimeAmount).toBe("0.00");
+    expect(sun.amount).toBe("33333.00");
+    expect(sun.totalAmount).toBe("33333.00");
+    expect(r.basePay).toBe("33333.00");
+    expect(r.overtimePay).toBe("0.00");
+  });
+});
+
+describe("الشهر الجاري وأيام الاستراحة والنوبة المفتوحة اليوم (BUG-001, BUG-002, BUG-025)", () => {
+  it("يقصّ الأيام المستقبلية بـ asOfDate ويُظهر الاستراحة الأسبوعية والنوبة الجارية دون تضخيم الغياب", () => {
+    // محاكاة تشرين الثاني ٢٠٢٦ حتى يوم السبت 2026-11-07 (كما في لقطة المالك تماماً)
+    const att = new Map<string, ReturnType<typeof D>>([
+      ["2026-11-01", D(8)],
+      ["2026-11-02", D(8.68)],
+      ["2026-11-03", D(11.36)],
+      ["2026-11-04", D(9.11)],
+      ["2026-11-05", D(10.14)],
+      ["2026-11-07", D(0)], // بصمة دخول 14:05 قيد الدوام الآن
+    ]);
+    const r = computeAttendancePay({
+      salary: D(600000),
+      employmentStart: "2026-11-01",
+      employmentEnd: "2026-11-30",
+      monthStart: "2026-11-01",
+      monthEnd: "2026-11-30",
+      schedule: {
+        الأحد: { hours: 8 },
+        الاثنين: { hours: 8 },
+        الثلاثاء: { hours: 8 },
+        الأربعاء: { hours: 8 },
+        الخميس: { hours: 8 },
+        الجمعة: { hours: 0 },
+        السبت: { hours: 8 },
+      },
+      attendedHoursByDate: att,
+      paidLeaveDates: new Set(),
+      unpaidLeaveDates: new Set(),
+      openDates: new Set(["2026-11-07"]),
+      inProgressDates: new Set(["2026-11-07"]),
+      asOfDate: "2026-11-07",
+      includeRestDays: true,
+      payFrom: "2026-01-01",
+    });
+
+    expect(r.isPartialMonth).toBe(true);
+    expect(r.scheduledHours).toBe("208.00");
+    expect(r.scheduledHoursToDate).toBe("48.00"); // 6 أيام عمل (الأحد..الخميس + السبت) × 8
+    expect(r.absentDays).toBe(0);
+    expect(r.openDays).toBe(0);
+    expect(r.unpaidHours).toBe("0.00");
+    expect(r.days.map((d) => d.date)).toEqual([
+      "2026-11-01",
+      "2026-11-02",
+      "2026-11-03",
+      "2026-11-04",
+      "2026-11-05",
+      "2026-11-06",
+      "2026-11-07",
+    ]);
+    expect(r.days.find((d) => d.date === "2026-11-06")?.state).toBe("restDay");
+    expect(r.days.find((d) => d.date === "2026-11-07")?.state).toBe("inProgress");
+  });
 });

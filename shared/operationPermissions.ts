@@ -323,7 +323,6 @@ const CASHIER_OPERATIONAL_FINANCE_PATHS = new Set([
   "shifts.list",
   "shifts.report",
   "shifts.handoverRecipients",
-  "shifts.eligibleVarianceApprovers",
   "treasury.getOpenShifts",
   "treasury.getRecentMovements",
   "refundRails.preflight",

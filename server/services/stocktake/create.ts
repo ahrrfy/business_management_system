@@ -149,6 +149,10 @@ async function resolveScope(
               ),
             ),
           ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
+          ),
           stockableProductCond
         )
       );
@@ -181,6 +185,10 @@ async function resolveScope(
                 eq(products.allowBackorder, false),
               ),
             ),
+          ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
           ),
           stockableProductCond
         )
@@ -220,6 +228,10 @@ async function resolveScope(
                 eq(products.allowBackorder, false),
               ),
             ),
+          ),
+          or(
+            eq(products.allowBackorder, false),
+            sql`COALESCE(${branchStock.quantity}, 0) >= 0`,
           ),
           stockableProductCond
         )

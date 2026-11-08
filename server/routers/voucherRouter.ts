@@ -48,6 +48,7 @@ import {
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 import { positiveMoneyString } from "../lib/schemas";
 import { listSupplierAdvanceRefundSources } from "../services/purchase/advanceRefund";
+import { canCrossBranches } from "../lib/branchAuthority";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -83,7 +84,10 @@ export const voucherRouter = router({
   supplierAdvanceRefundSources: treasuryManagerReadProcedure
     .input(z.object({ supplierId: z.number().int().positive(), branchId: z.number().int().positive() }))
     .query(({ input, ctx }) => listSupplierAdvanceRefundSources(input, {
-      userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+      userId: ctx.user.id,
+      branchId: canCrossBranches(ctx.user) ? input.branchId : Number(ctx.user.branchId ?? 0),
+      role: ctx.user.role,
+      isOwner: Boolean(ctx.user.isOwner),
     })),
   /** معلومات حوكمة الواجهة. العتبة تخص سياسة القبض القائمة؛ كل سند صرف يحتاج اعتماداً. */
   thresholds: treasuryManagerReadProcedure.query(() => ({
@@ -117,6 +121,7 @@ export const voucherRouter = router({
         // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
         invoiceId: z.number().int().positive().nullish(),
         supplierAllocations: z.array(z.object({ supplierInvoiceId: z.number().int().positive(), invoiceVersion: z.number().int().positive(), amount: positiveMoneyString })).min(1).max(500).optional(),
+        supplierCashSource: z.object({ mode: z.enum(["DRAWER", "TREASURY"]), shiftId: z.number().int().positive().nullish() }).optional(),
         supplierAdvanceRefundReceiptId: z.number().int().positive().optional(),
         clientRequestId: z.string().min(1).max(80),
       }),
@@ -130,7 +135,7 @@ export const voucherRouter = router({
       // وأدمنٌ بلا فرعٍ مُسنَد يعمل على ما اختاره من القائمة الخادميّة (`<InferredBranchField>`)
       // — ولا يخترع أحدٌ فرعاً: غيابُ الاثنين معاً رفضٌ صريح لا «الفرع ١».
       const voucherBranchId =
-        ctx.user.role === "admin" ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+        canCrossBranches(ctx.user) ? (input.branchId ?? assignedBranchId) : assignedBranchId;
       if (voucherBranchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إصدار سند" });
       }
@@ -179,13 +184,14 @@ export const voucherRouter = router({
   approve: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد سند" });
       }
       const res = await approveVoucher(input.receiptId, {
         userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
+        branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        isOwner: Boolean(ctx.user.isOwner),
       });
       if (!res.replayed) {
         await logAudit(ctx, {
@@ -212,13 +218,14 @@ export const voucherRouter = router({
   reject: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive(), reason: z.string().min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن رفض سند" });
       }
       const res = await rejectVoucher(input.receiptId, {
         userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
+        branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        isOwner: Boolean(ctx.user.isOwner),
       }, input.reason);
       await logAudit(ctx, {
         action: "voucher.reject",
@@ -249,12 +256,12 @@ export const voucherRouter = router({
       note: z.string().trim().max(500).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
       const res = await resubmitRejectedExpensePayment(input.receiptId, {
         userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
+        branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       }, {
@@ -285,13 +292,14 @@ export const voucherRouter = router({
   cancel: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء سند" });
       }
       const res = await cancelVoucher(input.receiptId, {
         userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
+        branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        isOwner: Boolean(ctx.user.isOwner),
       });
       await logAudit(ctx, {
         action: "voucher.cancel",
@@ -319,7 +327,7 @@ export const voucherRouter = router({
       // IDOR (تدقيق ٢/٧): list كان يمرّر branchId العميل بلا عزل ⇒ مدير فرع يقرأ سندات كل الفروع
       // (بخلاف get الذي يفرض العزل). نُقيّد المدير المُسنَد لفرع بفرعه؛ الأدمن ومدير بلا فرع (عابر
       // الفروع) يمرّان كما هما — مطابقٌ لمنطق get.
-      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const restrict = !canCrossBranches(ctx.user) && ctx.user.branchId != null;
       const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
       return listVouchers(scoped);
     }),
@@ -329,7 +337,7 @@ export const voucherRouter = router({
   aggregate: treasuryManagerReadProcedure
     .input(voucherListFilters.optional())
     .query(async ({ input, ctx }) => {
-      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const restrict = !canCrossBranches(ctx.user) && ctx.user.branchId != null;
       const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
       return aggregateVouchers(scoped);
     }),
@@ -338,7 +346,7 @@ export const voucherRouter = router({
     .input(z.object({ receiptId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const voucher = await getVoucher(input.receiptId);
-      if (voucher && ctx.user.role !== "admin" && ctx.user.branchId != null && Number(voucher.branchId) !== Number(ctx.user.branchId)) {
+      if (voucher && !canCrossBranches(ctx.user) && ctx.user.branchId != null && Number(voucher.branchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "هذا السند لفرع آخر" });
       }
       return voucher;
@@ -358,7 +366,7 @@ export const voucherRouter = router({
       // IDOR (مراجعة أمنية): كان يمرّر input.branchId بلا عزل ⇒ مدير فرع يقرأ سندات فرع آخر
       // (بخلاف list/get اللذين يفرضان العزل). نُطبّق نفس منطق list: نُقيّد المدير المُسنَد لفرع
       // بفرعه (نتجاهل input.branchId)؛ الأدمن ومدير بلا فرع (عابر الفروع) يمرّان كما هما.
-      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const restrict = !canCrossBranches(ctx.user) && ctx.user.branchId != null;
       const branchId = restrict ? Number(ctx.user.branchId) : (input.branchId ?? null);
       return recentVouchersForParty({
         partyType: input.partyType,
@@ -374,15 +382,16 @@ export const voucherRouter = router({
   deliveryParties: treasuryManagerReadProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
-      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const restrict = !canCrossBranches(ctx.user) && ctx.user.branchId != null;
       const branchId = restrict ? Number(ctx.user.branchId) : (input?.branchId ?? undefined);
       return listVoucherDeliveryParties({ branchId });
     }),
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
-import { and, asc, eq, gte, isNotNull, lt, ne, or, sql } from "drizzle-orm";
-import { invoices, receipts, voucherCategories } from "../../drizzle/schema";
+import { and, asc, eq, gte, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
+import { customers, deliveryParties, invoices, receipts, suppliers, users, voucherCategories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -395,16 +404,18 @@ async function aggregateVouchers(input: VoucherListFilters) {
   const empty = { count: 0, totalIn: "0.00", totalOut: "0.00", pendingTotal: "0.00", pendingCount: 0, reversedCount: 0 };
   const db = getDb();
   if (!db) return empty;
+  const creator = alias(users, "voucherAggCreator");
+  const partyCustomer = alias(customers, "voucherAggCustomer");
+  const partySupplier = alias(suppliers, "voucherAggSupplier");
+  const partyDelivery = alias(deliveryParties, "voucherAggDeliveryParty");
   const wheres: any[] = [isNotNull(receipts.voucherNumber)];
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
   if (input.partyType === "DELIVERY_PARTY") {
-    wheres.push(eq(receipts.partyType, "OTHER"));
-    wheres.push(sql`${receipts.internalNote} LIKE 'DELIVERY_PARTY:%'`);
+    wheres.push(eq(receipts.partyType, "OTHER"), isNotNull(receipts.partyId), isNotNull(partyDelivery.id));
   } else if (input.partyType === "OTHER") {
-    wheres.push(eq(receipts.partyType, "OTHER"));
-    wheres.push(sql`(${receipts.internalNote} NOT LIKE 'DELIVERY_PARTY:%' OR ${receipts.internalNote} IS NULL)`);
+    wheres.push(eq(receipts.partyType, "OTHER"), or(isNull(receipts.partyId), isNull(partyDelivery.id)));
   } else if (input.partyType) {
     wheres.push(eq(receipts.partyType, input.partyType));
   }
@@ -421,12 +432,15 @@ async function aggregateVouchers(input: VoucherListFilters) {
       sql`coalesce(${receipts.referenceNumber}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${receipts.checkNumber}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${invoices.invoiceNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${creator.name}, ${creator.username}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partyCustomer.name}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partySupplier.name}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partyDelivery.name}, '') LIKE ${like} ESCAPE '!'`,
     ));
   }
   if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
   if (input.to) wheres.push(lt(receipts.createdAt, localNextDayStart(input.to)));
 
-  // leftJoin الفواتير لا يُضاعف الصفوف (invoiceId → فاتورة واحدة)، وهو لازم لبحث q برقم الفاتورة.
   const row = (
     await db
       .select({
@@ -438,7 +452,11 @@ async function aggregateVouchers(input: VoucherListFilters) {
         reversedCount: sql<number>`COALESCE(SUM(CASE WHEN ${receipts.status} = 'REVERSED' THEN 1 ELSE 0 END), 0)`,
       })
       .from(receipts)
+      .leftJoin(creator, eq(receipts.createdBy, creator.id))
       .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+      .leftJoin(partyCustomer, and(eq(receipts.partyType, "CUSTOMER"), eq(receipts.partyId, partyCustomer.id)))
+      .leftJoin(partySupplier, and(eq(receipts.partyType, "SUPPLIER"), eq(receipts.partyId, partySupplier.id)))
+      .leftJoin(partyDelivery, and(eq(receipts.partyType, "OTHER"), eq(receipts.partyId, partyDelivery.id)))
       .where(and(...wheres))
   )[0];
   if (!row) return empty;

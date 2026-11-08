@@ -10,6 +10,8 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/reception/BarcodePartialDeliveryCollection.test.tsx",
       "client/src/components/delivery/PartialDeliverySettlementDialog.test.tsx",
       "shared/quantity.test.ts",
+      "shared/geoCoordinates.test.ts",
+      "server/services/__tests__/comprehensiveBugFixCampaign.unit.test.ts",
       "shared/workOrderMaterialCost.test.ts",
       "server/services/__tests__/fractionalInventory.unit.test.ts",
       "server/services/inventory/transitProjection.fractions.test.ts",

@@ -98,6 +98,9 @@ export function PurchaseTenderField({
                   {state.drawers.map((row) => (
                     <option key={row.id} value={String(row.id)}>
                       {shiftTypeLabel(row.shiftType)} — درج #{row.id}
+                      {row.availableCash != null
+                        ? ` — المتاح ${fmtAr(row.availableCash)} د.ع`
+                        : ""}
                     </option>
                   ))}
                 </AppSelect>
@@ -105,7 +108,11 @@ export function PurchaseTenderField({
             ) : (
               <p>
                 {draft.shiftId
-                  ? `وردية الدافع المحفوظة / الحالية #${draft.shiftId}`
+                  ? `وردية الدافع المحفوظة / الحالية #${draft.shiftId}${
+                      state.sourceAvailableCash != null
+                        ? ` — المتاح ${fmtAr(state.sourceAvailableCash)} د.ع`
+                        : ""
+                    }`
                   : "لا توجد وردية محددة للدافع"}
               </p>
             )}
@@ -185,12 +192,17 @@ export function PurchaseTenderField({
         className="flex flex-wrap gap-x-5 gap-y-1 border-t pt-2 text-xs"
         aria-label="معاينة السداد"
       >
-        <span>قيمة الفاتورة: {fmtAr(amounts.amount.toFixed(2))} د.ع</span>
+        <span>قيمة البضاعة: {fmtAr(amounts.amount.toFixed(2))} د.ع</span>
         <span>من الدفعة السابقة: {fmtAr(amounts.applied.toFixed(2))} د.ع</span>
+        {state.sourceAvailableCash != null ? (
+          <span>
+            الرصيد المتاح في المصدر: {fmtAr(state.sourceAvailableCash)} د.ع
+          </span>
+        ) : null}
         <span>
           {amounts.remainder.gt(0)
-            ? `الصرف الجديد (${state.sourceSummaryLabel}): ${fmtAr(amounts.remainder.toFixed(2))} د.ع`
-            : "لا يوجد صرف جديد"}
+            ? `المتبقي للصرف على البضاعة (${state.sourceSummaryLabel}): ${fmtAr(amounts.remainder.toFixed(2))} د.ع`
+            : "لا يوجد صرف جديد للبضاعة"}
         </span>
         {amounts.unused.gt(0) ? (
           <span>
@@ -200,9 +212,16 @@ export function PurchaseTenderField({
         ) : null}
         <span>المتبقي على الفاتورة بعد الاعتماد والسداد: 0.00 د.ع</span>
       </div>
+      {state.hasShortage ? (
+        <div
+          role="status"
+          className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-xs text-[var(--sem-warn)]"
+        >
+          العجز النقدي في مصدر السداد: {fmtAr(state.shortageAmount.toFixed(2))} د.ع — يُسمح بإرسال الأمر للاعتماد مع التنبيه، وسيُعاد فحص الرصيد ذرياً داخل المعاملة عند الاعتماد.
+        </div>
+      ) : null}
       <p className="text-[10px] text-muted-foreground">
-        هذه نية سداد تحفظ مع المراجعة؛ لا تتحرك الأموال قبل الاعتماد. دفعات
-        المورد الأخرى مستقلة ولا تُستنتج من رصيده.
+        نية سداد البضاعة مستقلة عن مصدر أجور الشحن والكمرك؛ لا تتحرك الأموال قبل الاعتماد، ويُعاد التحقق من الرصيد ذرياً عند الاعتماد.
       </p>
       {state.validationError ? (
         <div

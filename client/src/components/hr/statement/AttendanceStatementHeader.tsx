@@ -1,4 +1,4 @@
-import { recentAttendanceMonths as recentMonths } from "@shared/hr";
+import { recentBaghdadMonths } from "@shared/hr";
 import { ATTENDANCE_STATE_LABELS as STATE_LABEL } from "@shared/hr";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,9 @@ export function AttendanceStatementHeader({
     manualRecomputeRef,
   } = model;
   const d = model.d!;
+  const baseMonths = recentBaghdadMonths();
+  const monthChoices =
+    period && !baseMonths.includes(period) ? [period, ...baseMonths] : baseMonths;
   return (
     <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2 flex-wrap">
       <CardTitle className="text-base flex items-center gap-2">
@@ -56,7 +59,7 @@ export function AttendanceStatementHeader({
           disabled={correct.isPending || recompute.isPending}
           aria-label="الشهر"
         >
-          {recentMonths().map((m) => (
+          {monthChoices.map((m) => (
             <option key={m} value={m}>
               {m}
             </option>

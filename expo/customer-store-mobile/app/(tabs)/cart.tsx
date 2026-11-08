@@ -21,69 +21,8 @@ import {
   useStorefrontSettings,
 } from "@/lib/storefront-api";
 import { storefrontDesign } from "@/lib/storefront-design";
-import type { Product } from "@/shared/storefront";
-
-const IMPULSE_ADDONS: Product[] = [
-  {
-    id: "addon-highlighters",
-    productId: 9901,
-    productUnitId: 9901,
-    title: "طقم أقلام تظليل باستيل",
-    subtitle: "4 ألوان ناعمة",
-    categoryId: "stationery",
-    description: "أقلام تظليل لطيفة على الورق وسريعة الجفاف",
-    icon: "brush",
-    accent: "#FEF3C7",
-    availability: "متوفر",
-    price: "2500",
-    inStock: true,
-  },
-  {
-    id: "addon-stickynotes",
-    productId: 9902,
-    productUnitId: 9902,
-    title: "أوراق ملاحظات لاصقة",
-    subtitle: "100 ورقة ملونة",
-    categoryId: "stationery",
-    description: "مثالية لتنظيم الملاحظات وتحديد الصفحات",
-    icon: "note",
-    accent: "#E0F2FE",
-    availability: "متوفر",
-    price: "1500",
-    inStock: true,
-  },
-  {
-    id: "addon-correction",
-    productId: 9903,
-    productUnitId: 9903,
-    title: "شريط تصحيح ياباني 12م",
-    subtitle: "شريط أبيض فوري",
-    categoryId: "stationery",
-    description: "تغطية كاملة وجافة فورية بدون تلطيخ",
-    icon: "edit",
-    accent: "#FCE7F3",
-    availability: "متوفر",
-    price: "2000",
-    inStock: true,
-  },
-  {
-    id: "addon-pocketbook",
-    productId: 9904,
-    productUnitId: 9904,
-    title: "دفتر جيب شبكي فاخر",
-    subtitle: "80 ورقة مقوى",
-    categoryId: "stationery",
-    description: "غلاف مرن أنيق وورق عالي الجودة للتدوين السريع",
-    icon: "menu-book",
-    accent: "#DCFCE7",
-    availability: "متوفر",
-    price: "3000",
-    inStock: true,
-  },
-];
-
 export default function CartScreen() {
-  const { addProduct, decrement, increment, isRestoring, lines, remove } = useCart();
+  const { decrement, increment, isRestoring, lines, remove } = useCart();
   const settings = useStorefrontSettings();
   const estimatedSubtotal = lines.reduce(
     (sum, line) =>
@@ -241,7 +180,7 @@ export default function CartScreen() {
           </View>
         )}
 
-        {/* سد فجوة التوصيل المجاني إذا كان الفارق 5000 دينار أو أقل */}
+        {/* عند الاقتراب من عتبة الشحن المجاني نوجّه الزبون للكتالوج الحقيقي بدل أصناف ثابتة غير مخزنية */}
         {freeShippingThreshold > 0 && shippingRemaining > 0 && shippingRemaining <= 5000 && (
           <View style={styles.gapFillerCard}>
             <View style={styles.gapFillerHeader}>
@@ -254,46 +193,20 @@ export default function CartScreen() {
               </Text>
             </View>
             <Text style={styles.gapFillerTitle}>
-              سد فجوة التوصيل المجاني بأصناف مفيدة
+              أضف صنفاً من المتجر واحصل على شحن مجاني
             </Text>
             <Text style={styles.gapFillerSubtitle}>
-              بدلاً من دفع أجور التوصيل، أضف أحد هذه الأصناف واحصل على شحن مجاني
+              تصفح الأصناف المتوفرة فعلياً في الكتالوج لإكمال عتبة التوصيل المجاني.
             </Text>
-
-            <ScrollView
-              contentContainerStyle={styles.gapFillerList}
-              horizontal
-              showsHorizontalScrollIndicator={false}
+            <TouchableOpacity
+              accessibilityRole="button"
+              activeOpacity={0.82}
+              onPress={() => router.push("/categories" as never)}
+              style={styles.gapFillerAddBtn}
             >
-              {IMPULSE_ADDONS.map((addon) => (
-                <View key={addon.id} style={styles.gapFillerItem}>
-                  <View style={[styles.gapFillerIconBox, { backgroundColor: addon.accent }]}>
-                    <MaterialIcons
-                      color={storefrontDesign.semantic.brandStrong}
-                      name={addon.icon}
-                      size={22}
-                    />
-                  </View>
-                  <Text numberOfLines={1} style={styles.gapFillerItemTitle}>
-                    {addon.title}
-                  </Text>
-                  <Text style={styles.gapFillerItemPrice}>
-                    {formatIqd(Number(addon.price ?? 0))}
-                  </Text>
-                  <TouchableOpacity
-                    accessibilityHint="يضيف الصنف فورياً لسلتك للتأهل للشحن المجاني"
-                    accessibilityLabel={`أضف ${addon.title} للسلة`}
-                    accessibilityRole="button"
-                    activeOpacity={0.82}
-                    onPress={() => addProduct(addon)}
-                    style={styles.gapFillerAddBtn}
-                  >
-                    <MaterialIcons color="#FFFFFF" name="add" size={16} />
-                    <Text style={styles.gapFillerAddBtnText}>أضف</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
+              <MaterialIcons color="#FFFFFF" name="storefront" size={16} />
+              <Text style={styles.gapFillerAddBtnText}>تصفح أصناف المتجر</Text>
+            </TouchableOpacity>
           </View>
         )}
 

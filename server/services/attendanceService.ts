@@ -1151,13 +1151,20 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     } as const;
 
     const [existing] = await tx
-      .select({ id: attendance.id })
+      .select({ id: attendance.id, branchId: attendance.branchId })
       .from(attendance)
       .where(and(eq(attendance.employeeId, input.employeeId), eq(attendance.attendanceDate, input.attendanceDate)))
       .limit(1);
 
     let savedId: number;
     if (existing) {
+      if (
+        input.scopedBranchId != null &&
+        existing.branchId != null &&
+        Number(existing.branchId) !== Number(input.scopedBranchId)
+      ) {
+        throw new Error("سجلّ حضور هذا اليوم مُثبَت في فرعٍ آخر — لا صلاحية لتعديله");
+      }
       await tx.update(attendance).set(values).where(eq(attendance.id, existing.id));
       savedId = existing.id;
     } else {

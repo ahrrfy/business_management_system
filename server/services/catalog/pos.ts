@@ -11,7 +11,7 @@ import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotionService";
 import { withTx } from "../tx";
 import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "./barcodeAliases";
-import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
+import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility, warehouseVisibility } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
 import { loadVariantAvailability } from "./variantAvailability";
 import { titleForChannel } from "@shared/productChannelTitles";
@@ -500,10 +500,99 @@ export async function listUnitsForVariant(
   const db = getDb();
   if (!db) return [];
   const rows = await baseSelect(db, branchId, tier)
-    .where(and(eq(productUnits.variantId, variantId), eq(productUnits.isActive, true)))
+    .where(and(posVisibility("advancedSale"), eq(productUnits.variantId, variantId)))
     .orderBy(asc(productUnits.conversionFactor));
   if (!rows.length) return [];
   const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
+  return applyPromotions(withAvail, branchId, tier);
+}
+
+/**
+ * قراءات المخزن والملصقات ودفتر الصنف — مفصولة عن بحث الكاشير كي تشمل المواد الخام
+ * ومستلزمات التشغيل دون تسريبها إلى قنوات البيع.
+ */
+export async function listForWarehouse(
+  branchId: number,
+  tier: PriceTier,
+  query?: string,
+  limit = 200,
+  opts?: { includeBundles?: boolean; includeServices?: boolean },
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db) return [];
+  const active = warehouseVisibility(opts);
+  const search = buildCatalogSearchWhere(query);
+  const where = search ? and(active, search) : active;
+  const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
+  const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
+  return applyPromotions(withAvail, branchId, tier);
+}
+
+export async function lookupWarehouseByBarcode(
+  barcode: string,
+  branchId: number,
+  tier: PriceTier,
+  opts?: { includeBundles?: boolean; includeServices?: boolean },
+): Promise<PosRow | null> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const resolution = await resolveBarcodeOwnerResult(db, barcode);
+  if (resolution.status === "NOT_FOUND") return null;
+  if (resolution.status === "AMBIGUOUS") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: barcodeAmbiguityMessage("تعذّر قراءة الصنف الممسوح"),
+    });
+  }
+  const owner = resolution.owner;
+  const rows = await baseSelect(db, branchId, tier)
+    .where(and(warehouseVisibility(opts), eq(productUnits.id, owner.productUnitId)))
+    .limit(1);
+  if (!rows.length) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر قراءة الصنف الممسوح",
+        why: "المنتج أو متغيّره أو وحدة الباركود معطّلة أو خارج نطاق هذا السند",
+        doThis: "راجع تفعيل المنتج والمتغيّر والوحدة ثم أعد المسح",
+      }),
+    });
+  }
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
+  const [row] = await applyPromotions(withAvail, branchId, tier);
+  return row ?? null;
+}
+
+export async function listLabelsByUnitIds(
+  productUnitIds: number[],
+  branchId: number,
+  tier: PriceTier,
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db || !productUnitIds.length) return [];
+  const rows = await baseSelect(db, branchId, tier).where(
+    and(warehouseVisibility({ includeBundles: true, includeServices: true }), inArray(productUnits.id, productUnitIds)),
+  );
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
+  return applyPromotions(withAvail, branchId, tier);
+}
+
+export async function listLabelsByProductIds(
+  productIds: number[],
+  branchId: number,
+  tier: PriceTier,
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db || !productIds.length) return [];
+  const rows = await baseSelect(db, branchId, tier)
+    .where(and(warehouseVisibility({ includeBundles: true, includeServices: true }), inArray(products.id, productIds)))
+    .orderBy(products.id, productVariants.id, desc(productUnits.isBaseUnit));
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
   const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }

@@ -327,6 +327,7 @@ export function computeSessionsSummary(rawSessions: AttendanceSessionInput[]): S
   let breakMinutes = 0;
   let violation: string | null = null;
   let prevOutAbsMinutes: number | null = null;
+  let prevOutClockMinutes: number | null = null;
   let prevCheckOutStr: string | null = null;
   let dayOffsetMinutes = 0;
 
@@ -342,6 +343,18 @@ export function computeSessionsSummary(rawSessions: AttendanceSessionInput[]): S
     if (inMin == null) {
       violation = violation ?? `حدد وقت دخول صالحاً للفترة رقم ${i + 1}`;
       continue;
+    }
+
+    if (
+      prevOutAbsMinutes != null &&
+      prevOutClockMinutes != null &&
+      dayOffsetMinutes === 0 &&
+      inMin < prevOutAbsMinutes &&
+      prevOutClockMinutes >= 12 * 60 &&
+      inMin < 12 * 60
+    ) {
+      // استراحة عبرت منتصف الليل بين فترتي دوام ليليّ (مثل 20:00→23:00 ثم 00:00→03:00).
+      dayOffsetMinutes += 24 * 60;
     }
 
     const absInMin = dayOffsetMinutes + inMin;
@@ -375,6 +388,7 @@ export function computeSessionsSummary(rawSessions: AttendanceSessionInput[]): S
         hours: "0.00",
       });
       prevOutAbsMinutes = null;
+      prevOutClockMinutes = null;
       prevCheckOutStr = null;
       continue;
     }
@@ -411,6 +425,7 @@ export function computeSessionsSummary(rawSessions: AttendanceSessionInput[]): S
       dayOffsetMinutes += 24 * 60;
     }
     prevOutAbsMinutes = dayOffsetMinutes + outMin;
+    prevOutClockMinutes = outMin;
     prevCheckOutStr = outStr;
   }
 
@@ -541,7 +556,9 @@ export function parseAttendanceDayDetails(input: ManualAttendanceEditSource): Pa
   const grossHours =
     validStored > 0
       ? Math.round((validStored + lateDeductionMinutes / 60) * 100) / 100
-      : 0;
+      : lateDeductionMinutes > 0
+        ? Math.round((lateDeductionMinutes / 60) * 100) / 100
+        : 0;
 
   const sessionsTag = readAttendanceSessionsTag(notesText);
   if (sessionsTag.inputs.length > 0) {

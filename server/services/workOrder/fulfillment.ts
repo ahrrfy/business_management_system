@@ -63,6 +63,7 @@ export async function updateWorkOrderDeliveryMethod(
     // (اعتماد مدير للردّ عبر-الوردية)، (٣) إعادة الوسم COURIER كي لا يرفض مسارُ الإرسال الطلبَ إن
     // أُعيد توصيلاً (dispatchToDelivery يرفض COUNTER بصافي أمانةٍ صفر). idempotent بصافي الأمانة.
     let refundedFee = "0.00";
+    let pendingFeeRefundRequested = false;
     if (!input.hasDelivery) {
       const feeHeldNet = await workOrderFeeHeldNet(tx, Number(wo.id));
       if (feeHeldNet.gt(0)) {
@@ -81,6 +82,7 @@ export async function updateWorkOrderDeliveryMethod(
           reason: "ردّ أمانة أجرة توصيل (تحوّل لاستلام مباشر)",
         });
         refundedFee = r.refunded;
+        pendingFeeRefundRequested = Boolean(r.pendingRefundRequested);
       }
     }
 
@@ -91,12 +93,12 @@ export async function updateWorkOrderDeliveryMethod(
         deliveryAddress: input.deliveryAddress?.trim() || null,
         deliveryPhone: input.deliveryPhone?.trim() || null,
         deliveryCost,
-        // بعد ردّ أمانة COUNTER: أعِد وسم التحصيل إلى COURIER (المندوب يقبض من الزبون) كي لا يتوقّع
+        // بعد ردّ أمانة COUNTER (أو فتح طلب ردّها غير النقدي): أعِد وسم التحصيل إلى COURIER كي لا يتوقّع
         // مسارُ الإرسال أمانةً محتجزةً إن أُعيد الطلب توصيلاً لاحقاً.
-        ...(money(refundedFee).gt(0) ? { deliveryFeeCollection: "COURIER" as const } : {}),
+        ...(money(refundedFee).gt(0) || pendingFeeRefundRequested ? { deliveryFeeCollection: "COURIER" as const } : {}),
       })
       .where(eq(workOrders.id, Number(wo.id)));
 
-    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery, refundedFee };
+    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery, refundedFee, pendingFeeRefundRequested };
   });
 }

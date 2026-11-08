@@ -12,7 +12,7 @@ export async function loadWorkOrderDepositReceiptSet(tx: Tx, order: Source, expe
     .where(and(eq(accountingEntries.entryType, "PAYMENT_IN"), eq(accountingEntries.notes, `[WO_DEPOSIT:${order.id}]`)));
   const ids = new Set(entries.flatMap(r => r.receiptId == null ? [] : [Number(r.receiptId)]));
   if (order.depositReceiptId != null) ids.add(Number(order.depositReceiptId));
-  if (ids.size === 0 && expected != null && money(expected).eq(0)) return [];
+  if ((ids.size === 0 || order.depositReceiptId == null) && expected != null && money(expected).eq(0)) return [];
   const source = tx.select().from(receipts).where(ids.size
     ? inArray(receipts.id, Array.from(ids))
     : and(eq(receipts.workOrderId, order.id), eq(receipts.direction, "IN"), eq(receipts.status, "COMPLETED"), eq(receipts.approvalStatus, "APPROVED"), or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%"))));

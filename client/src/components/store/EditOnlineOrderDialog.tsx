@@ -12,7 +12,12 @@ import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtInt } from "@/lib/money";
-import { Loader2, Trash2, ShoppingCart, AlertCircle, Package } from "lucide-react";
+import { Loader2, Trash2, ShoppingCart, AlertCircle, Package, MapPin } from "lucide-react";
+import {
+  buildGoogleMapsUrl,
+  extractShortMapUrl,
+  parseGeoCoordinates,
+} from "@shared/geoCoordinates";
 import {
   OrderCustomizationAssets,
   resolveOrderShippingAddressAndNotes,
@@ -243,6 +248,18 @@ export function EditOnlineOrderDialog({
   const [governorate, setGovernorate] = useState("baghdad");
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
+  const [mapLinkDraft, setMapLinkDraft] = useState("");
+  const [resolvingMapLink, setResolvingMapLink] = useState(false);
+  const resolveUrlHook = (trpc as unknown as {
+    storefront?: {
+      resolveLocationUrl?: {
+        useMutation?: () => { mutateAsync: (input: { url: string }) => Promise<{ lat: number; lng: number }> };
+      };
+    };
+  }).storefront?.resolveLocationUrl?.useMutation;
+  const resolveUrlM = resolveUrlHook ? resolveUrlHook() : null;
   const [items, setItems] = useState<EditableLineItem[]>([]);
   const [itemsModified, setItemsModified] = useState(false);
   const [qtyDrafts, setQtyDrafts] = useState<Record<number, string>>({});
@@ -270,6 +287,11 @@ export function EditOnlineOrderDialog({
       setGovernorate(next.governorate);
       setShippingAddress(next.shippingAddress);
       setNotes(next.notes);
+      const rawLat = (detailQ.data as { latitude?: string | number | null }).latitude;
+      const rawLng = (detailQ.data as { longitude?: string | number | null }).longitude;
+      setLatitude(rawLat != null && rawLat !== "" ? Number(rawLat) : null);
+      setLongitude(rawLng != null && rawLng !== "" ? Number(rawLng) : null);
+      setMapLinkDraft("");
       setItems(next.items);
       setItemsModified(next.itemsModified);
       setQtyDrafts(next.qtyDrafts);
@@ -468,6 +490,8 @@ export function EditOnlineOrderDialog({
       governorate,
       shippingAddress: shippingAddress.trim() || null,
       notes: notes.trim() || null,
+      latitude: latitude != null ? String(latitude) : null,
+      longitude: longitude != null ? String(longitude) : null,
       items:
         itemsLocked || !itemsModified
           ? undefined
@@ -502,6 +526,11 @@ export function EditOnlineOrderDialog({
     setGovernorate(next.governorate);
     setShippingAddress(next.shippingAddress);
     setNotes(next.notes);
+    const reviewedLat = (latestReview as { latitude?: string | number | null }).latitude;
+    const reviewedLng = (latestReview as { longitude?: string | number | null }).longitude;
+    setLatitude(reviewedLat != null && reviewedLat !== "" ? Number(reviewedLat) : null);
+    setLongitude(reviewedLng != null && reviewedLng !== "" ? Number(reviewedLng) : null);
+    setMapLinkDraft("");
     setItems(next.items);
     setItemsModified(false);
     setQtyDrafts({});
@@ -591,6 +620,84 @@ export function EditOnlineOrderDialog({
                     placeholder="الشارع، المحلة، أقرب نقطة دالة"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="order-map-link" className="flex items-center gap-1.5">
+                  <MapPin className="size-3.5 text-primary" />
+                  إحداثيات الخريطة (GPS / رابط خرائط Google)
+                </Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    id="order-map-link"
+                    dir="ltr"
+                    value={mapLinkDraft}
+                    onChange={(e) => setMapLinkDraft(e.target.value)}
+                    placeholder="الصق رابط خرائط Google أو 33.315241, 44.366067"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!mapLinkDraft.trim() || resolvingMapLink}
+                    onClick={async () => {
+                      const direct = parseGeoCoordinates(mapLinkDraft);
+                      if (direct) {
+                        setLatitude(direct.lat);
+                        setLongitude(direct.lng);
+                        setMapLinkDraft("");
+                        notify.ok("تم تثبيت إحداثيات الموقع");
+                        return;
+                      }
+                      const shortUrl = extractShortMapUrl(mapLinkDraft);
+                      if (shortUrl && resolveUrlM) {
+                        setResolvingMapLink(true);
+                        try {
+                          const resolved = await resolveUrlM.mutateAsync({ url: shortUrl });
+                          setLatitude(resolved.lat);
+                          setLongitude(resolved.lng);
+                          setMapLinkDraft("");
+                          notify.ok("تم فك الرابط المختصر وتثبيت الإحداثيات");
+                        } catch (err) {
+                          notify.err(err);
+                        } finally {
+                          setResolvingMapLink(false);
+                        }
+                        return;
+                      }
+                      notify.err("تعذّر استخراج إحداثيات صحيحة من النص المُدخل");
+                    }}
+                  >
+                    تثبيت الإحداثيات
+                  </Button>
+                  {latitude != null && longitude != null && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setLatitude(null);
+                        setLongitude(null);
+                      }}
+                    >
+                      مسح الموقع
+                    </Button>
+                  )}
+                </div>
+                {latitude != null && longitude != null && (
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground" dir="ltr">
+                    <span>GPS: {latitude}, {longitude}</span>
+                    {buildGoogleMapsUrl(latitude, longitude) && (
+                      <a
+                        href={buildGoogleMapsUrl(latitude, longitude)!}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-primary underline"
+                      >
+                        معاينة على الخريطة
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">

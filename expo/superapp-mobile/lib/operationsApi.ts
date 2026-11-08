@@ -338,6 +338,8 @@ export type RealInventoryItem = {
   category: string;
   branchMansourQty: number;
   branchKarradaQty: number;
+  mainBranchName: string;
+  secondBranchName: string | null;
   reorderLevel: number;
   unitPrice: number;
   unit: string;
@@ -355,6 +357,8 @@ function mapCatalogRowToInventoryItem(
   row: Record<string, unknown>,
   branchMansourQty: number,
   branchKarradaQty: number,
+  mainBranchName = "الفرع الرئيسي",
+  secondBranchName: string | null = null,
 ): RealInventoryItem {
   const reorder = Number(row.reorderPoint ?? row.minStock ?? 5);
   const totalAvailable = branchMansourQty + branchKarradaQty;
@@ -369,6 +373,8 @@ function mapCatalogRowToInventoryItem(
     category: typeof row.categoryName === "string" && row.categoryName ? row.categoryName : "عام",
     branchMansourQty,
     branchKarradaQty,
+    mainBranchName,
+    secondBranchName,
     reorderLevel: reorder,
     unitPrice: centsToMoneyNumber(parseMoneyToCents(row.price)),
     unit: typeof row.unitName === "string" && row.unitName ? row.unitName : "قطعة",
@@ -400,11 +406,11 @@ export async function fetchRealInventory(options?: {
         branches.find((b) => b.id === 2);
       const mainBranchId = mainBranch?.id ?? 1;
       const salesBranchId = salesBranch?.id ?? 2;
+      const mainBranchLabel = mainBranch?.name ?? "الفرع الرئيسي";
+      const secondBranchLabel = salesBranch && salesBranch.id !== mainBranchId ? salesBranch.name : null;
 
-      // Matches server/routers/catalogRouter.ts `scopeBranch`: ONLY `role === "admin"`
-      // crosses branches on `catalog.adminList`; non-admin actors are clamped to
-      // `ctx.user.branchId`, so querying two branchIds for non-admins would return
-      // the same branch twice and 2× double stock!
+      // Matches server/routers/catalogRouter.ts `scopeBranch`: admin/owner cross branches
+      // on `catalog.adminList`; branch-scoped actors are clamped to `ctx.user.branchId`.
       if (actor.role === "admin") {
         const [mansourRes, karradaRes] = await Promise.all([
           listNativeAdminCatalog({ branchId: mainBranchId, limit, q }),
@@ -428,7 +434,13 @@ export async function fetchRealInventory(options?: {
         return mansourRes.rows.map((row) => {
           const mansourQty = rowUnitStock(row);
           const karradaQty = karradaStockMap.get(Number(row.productId)) ?? 0;
-          return mapCatalogRowToInventoryItem(row, mansourQty, karradaQty);
+          return mapCatalogRowToInventoryItem(
+            row,
+            mansourQty,
+            karradaQty,
+            mainBranchLabel,
+            secondBranchLabel,
+          );
         });
       }
 
@@ -443,12 +455,18 @@ export async function fetchRealInventory(options?: {
       });
       if (!Array.isArray(scopedRes?.rows)) return [];
 
-      const isKarradaScoped = actor.branchId === salesBranchId && salesBranchId !== mainBranchId;
+      const scopedBranchName =
+        branches.find((b) => b.id === actor.branchId)?.name ?? mainBranchLabel;
+      const isMainBranch = actor.branchId === mainBranchId;
       return scopedRes.rows.map((row) => {
         const stock = rowUnitStock(row);
-        return isKarradaScoped
-          ? mapCatalogRowToInventoryItem(row, 0, stock)
-          : mapCatalogRowToInventoryItem(row, stock, 0);
+        return mapCatalogRowToInventoryItem(
+          row,
+          isMainBranch ? stock : 0,
+          isMainBranch ? 0 : stock,
+          scopedBranchName,
+          null,
+        );
       });
     });
   } catch (error) {
@@ -632,7 +650,7 @@ export type RealTreasuryOverview = {
   netTodayCashFlow: number;
   openShiftsCount: number;
   branchTreasuries: { branchId: number; branchName: string; balance: number }[];
-  activeDrawers: { shiftId: number; cashierName: string; branchName: string; expectedCash: number }[];
+  activeDrawers: { branchId: number; shiftId: number; openShiftsCount: number; cashierName: string; branchName: string; expectedCash: number }[];
   recentMovements: { id: string; type: "RECEIPT" | "EXPENSE"; amount: number; description: string; branchName: string; createdAt: string }[];
 };
 
@@ -672,27 +690,42 @@ export async function fetchRealTreasuryOverview(): Promise<RealTreasuryOverview>
       balance: centsToMoneyNumber(parseMoneyToCents(b.balance)),
     }));
 
-    const activeDrawers = rawDrawers.map((d) => ({
-      shiftId: Number(d.shiftId || 1),
-      cashierName: typeof d.cashierName === "string" && d.cashierName ? d.cashierName : "كاشير مناوب",
-      branchName: resolveBranchLabel(d.branchId, d.branchName, branchMap, "الفرع الرئيسي"),
-      expectedCash: centsToMoneyNumber(parseMoneyToCents(d.expectedCash)),
-    }));
+    const activeDrawers = rawDrawers.map((d, idx) => {
+      const resolvedBranchId = Number(d.branchId || idx + 1);
+      const openShiftsCount = Number(d.openShiftsCount ?? 0);
+      const resolvedBranchName = resolveBranchLabel(d.branchId, d.branchName, branchMap, "الفرع الرئيسي");
+      return {
+        branchId: resolvedBranchId,
+        shiftId: Number(d.shiftId || resolvedBranchId),
+        openShiftsCount,
+        cashierName:
+          typeof d.cashierName === "string" && d.cashierName
+            ? d.cashierName
+            : `أدراج ${resolvedBranchName}`,
+        branchName: resolvedBranchName,
+        expectedCash: centsToMoneyNumber(parseMoneyToCents(d.expectedCash)),
+      };
+    });
 
     let recentMovements: RealTreasuryOverview["recentMovements"] = [];
     try {
       const rows = await getNativeTreasuryRecentMovements(10);
-      recentMovements = rows.map((m, idx) => ({
-        id: String(m.id ?? `mov-${idx + 1}`),
-        type: m.type === "EXPENSE" ? "EXPENSE" : "RECEIPT",
-        amount: centsToMoneyNumber(parseMoneyToCents(m.amount)),
-        description:
-          (typeof m.description === "string" && m.description) ||
-          (typeof m.categoryName === "string" && m.categoryName) ||
-          (m.type === "EXPENSE" ? "صرف مصاريف تشغيلية" : "مقبوضات مبيعات"),
-        branchName: resolveBranchLabel(m.branchId, m.branchName, branchMap, "الفرع الرئيسي"),
-        createdAt: formatOptionalBaghdadTime(m.createdAt ?? new Date().toISOString(), "اليوم"),
-      }));
+      recentMovements = rows.map((m, idx) => {
+        const isOutflow =
+          m.direction === "OUT" || m.source === "EXPENSE" || m.type === "EXPENSE";
+        return {
+          id: String(m.id ?? `mov-${idx + 1}`),
+          type: isOutflow ? "EXPENSE" : "RECEIPT",
+          amount: centsToMoneyNumber(parseMoneyToCents(m.amount)),
+          description:
+            (typeof m.description === "string" && m.description) ||
+            (typeof m.expenseCategory === "string" && m.expenseCategory) ||
+            (typeof m.categoryName === "string" && m.categoryName) ||
+            (isOutflow ? "سند صرف / مصاريف تشغيلية" : "سند قبض / مقبوضات"),
+          branchName: resolveBranchLabel(m.branchId, m.branchName, branchMap, "الفرع الرئيسي"),
+          createdAt: formatOptionalBaghdadTime(m.createdAt ?? new Date().toISOString(), "اليوم"),
+        };
+      });
     } catch (err) {
       if (isSessionLockedError(err)) throw err;
       recentMovements = [];

@@ -5,6 +5,7 @@ import { Layers, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -40,6 +41,15 @@ import {
 } from "@/lib/productBarcodeOwnership";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { normalizeConversionFactor } from "@shared/productContentAi";
+import { ProductOpenCommitmentsNotice } from "@/components/product/ProductOpenCommitmentsNotice";
+import {
+  STOCK_USAGES,
+  STOCK_USAGE_DESCRIPTIONS,
+  STOCK_USAGE_LABELS,
+  canCarryStockUsage,
+  isSellableStockUsage,
+  type StockUsage,
+} from "@shared/stockUsage";
 
 /**
  * SimpleProductEditForm — تحرير «سلعة بسيطة» (متغيّر واحد بلا لون/قياس) بنفس نظافة شاشة الإضافة.
@@ -139,11 +149,14 @@ export default function SimpleProductEditForm({
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [sku, setSku] = useState("");
   const [costPrice, setCostPrice] = useState("");
+  const [costChangeReason, setCostChangeReason] = useState("");
   const [minStock, setMinStock] = useState("0");
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isActive, setIsActive] = useState(true);
+  const [stockUsage, setStockUsage] = useState<StockUsage>("SALE_ONLY");
+  const [showInStore, setShowInStore] = useState(false);
   // «يُباع بالطلب» (0318): يجب أن يكون هنا لا في المحرّر المتقدّم وحده — الصنف أحاديّ المتغيّر
   // (وهو حالة البند المُجهَّز خارجياً بالضبط) يفتح **هذا** المحرّر افتراضياً، فوجودُ التبديل
   // في المتقدّم فقط يعني ميزةً مبنيّةً لا يجدها من يحتاجها.
@@ -179,6 +192,8 @@ export default function SimpleProductEditForm({
     setIsCustomizable(d.isCustomizable);
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsActive(d.isActive);
+    setStockUsage(((d as { stockUsage?: StockUsage | null }).stockUsage ?? "SALE_ONLY"));
+    setShowInStore(Boolean((d as { showInStore?: boolean }).showInStore));
     setAllowBackorder(d.allowBackorder);
     if (v) {
       variantId.current = v.id;
@@ -241,8 +256,8 @@ export default function SimpleProductEditForm({
   const formSig = useMemo(
     // Codex #1010: هويّةُ الأمانة (الوسم + المودِع) جزءٌ من الحالة القابلة للتحرير — بلا إدراجها كان تغييرُها
     // وحده يُبقي `dirty=false` فتضيع بلا تحذيرٍ عند المغادرة. (`consignorName` عرضٌ فلا يدخل البصمة.)
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, isConsignment: consignment.isConsignment, consignorId: consignment.consignorId, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, consignment.isConsignment, consignment.consignorId, units, imagesSig]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, stockUsage, showInStore, allowBackorder, isConsignment: consignment.isConsignment, consignorId: consignment.consignorId, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, stockUsage, showInStore, allowBackorder, consignment.isConsignment, consignment.consignorId, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
@@ -389,6 +404,26 @@ export default function SimpleProductEditForm({
       isCustomizable,
       allowAutoCartRecommendations,
       isActive,
+      ...(canCarryStockUsage({
+        isService: product.data?.isService,
+        isBundle: product.data?.isBundle,
+        isConsignment: consignment.isConsignment,
+      })
+        ? { stockUsage }
+        : {}),
+      showInStore:
+        !product.data?.isService &&
+        isSellableStockUsage(
+          canCarryStockUsage({
+            isService: product.data?.isService,
+            isBundle: product.data?.isBundle,
+            isConsignment: consignment.isConsignment,
+          })
+            ? stockUsage
+            : null,
+        )
+          ? showInStore
+          : false,
       allowBackorder,
       unitTemplate,
       variants: [
@@ -398,6 +433,10 @@ export default function SimpleProductEditForm({
           color: null,
           size: null,
           costPrice: costPrice.trim(),
+          costChangeReason:
+            Number(costPrice.trim() || 0) !== Number(product.data?.variants[0]?.costPrice ?? 0)
+              ? costChangeReason.trim() || "تعديل تكلفة من محرر السلعة البسيطة"
+              : undefined,
           minStock: clampInt(minStock),
           reorderPoint: clampInt(reorderPoint),
           isActive,
@@ -465,7 +504,10 @@ export default function SimpleProductEditForm({
       {!product.data?.isService && !product.data?.isBundle && (
         <ConsignmentField
           value={consignment}
-          onChange={setConsignment}
+          onChange={(val) => {
+            setConsignment(val);
+            if (val.isConsignment) setAllowBackorder(false);
+          }}
           disabled={totalStock !== 0}
           disabledHint="لا يمكن تغيير وسم الأمانة والرصيد غير صفري — صفِّر المخزون أولاً."
         />
@@ -491,14 +533,14 @@ export default function SimpleProductEditForm({
           <Field label="الماركة/الناشر (اختياري)"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="دار المعارف" dir="auto" /></Field>
           <Field label="الموديل/الطبعة (اختياري)"><Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="ط. ٢٠٢٦" dir="auto" /></Field>
           <Field label="الفئة / التصنيف">
-            <select
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+            <AppSelect
+              value={String(categoryId)}
+              onValueChange={(v) => setCategoryId(v === "" ? "" : Number(v))}
+              aria-label="الفئة / التصنيف"
             >
               <option value="">— بلا فئة —</option>
               <CategoryOptionList categories={categoriesQ.data ?? []} />
-            </select>
+            </AppSelect>
           </Field>
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">
             <Input id="simpleedit-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
@@ -678,6 +720,17 @@ export default function SimpleProductEditForm({
                 مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
               </p>
             )}
+            {!isCostLocked &&
+              hydrated &&
+              Number(costPrice.trim() || 0) !== Number(product.data?.variants[0]?.costPrice ?? 0) && (
+                <Input
+                  value={costChangeReason}
+                  onChange={(e) => setCostChangeReason(e.target.value)}
+                  placeholder="سبب تعديل التكلفة (اختياري — للتدقيق)"
+                  className="mt-1.5 h-8 text-xs"
+                  dir="auto"
+                />
+              )}
             {!isCostLocked && (
               <SimpleEditCostCoach
                 costPrice={costPrice}
@@ -708,6 +761,59 @@ export default function SimpleProductEditForm({
             <div className="flex items-center gap-2 h-9">
               <Switch checked={isActive} onCheckedChange={setIsActive} />
               <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span>
+            </div>
+          </Field>
+          {!product.data?.isService && !product.data?.isBundle && !consignment.isConsignment && (
+            <Field
+              label="تصنيف الاستخدام المخزني"
+              hint={STOCK_USAGE_DESCRIPTIONS[stockUsage]}
+            >
+              <AppSelect
+                value={stockUsage}
+                onValueChange={(val) => {
+                  const next = val as StockUsage;
+                  setStockUsage(next);
+                  if (!isSellableStockUsage(next)) setShowInStore(false);
+                }}
+                aria-label="تصنيف الاستخدام المخزني"
+              >
+                {STOCK_USAGES.map((u) => (
+                  <option key={u} value={u}>
+                    {STOCK_USAGE_LABELS[u]}
+                  </option>
+                ))}
+              </AppSelect>
+              <ProductOpenCommitmentsNotice
+                productId={productId}
+                savedStockUsage={
+                  product.data
+                    ? ((product.data as { stockUsage?: StockUsage | null })
+                        .stockUsage ?? null)
+                    : undefined
+                }
+                nextStockUsage={stockUsage}
+              />
+            </Field>
+          )}
+          <Field
+            label="النشر في المتجر الإلكتروني"
+            hint={
+              product.data?.isService || !isSellableStockUsage(!product.data?.isBundle && !consignment.isConsignment ? stockUsage : null)
+                ? "غير متاح للخدمات أو الأصناف غير المخصّصة للبيع."
+                : showInStore
+                  ? "معروض في المتجر عند استيفاء جاهزية السعر والصورة."
+                  : "مخفيّ عن المتجر افتراضياً حتى يُفعَّل صراحةً."
+            }
+          >
+            <div className="flex items-center gap-2 h-9">
+              <Switch
+                checked={showInStore && !product.data?.isService && isSellableStockUsage(!product.data?.isBundle && !consignment.isConsignment ? stockUsage : null)}
+                onCheckedChange={setShowInStore}
+                disabled={Boolean(product.data?.isService) || !isSellableStockUsage(!product.data?.isBundle && !consignment.isConsignment ? stockUsage : null)}
+              />
+              <span className="text-xs text-muted-foreground">
+                {showInStore && !product.data?.isService && isSellableStockUsage(!product.data?.isBundle && !consignment.isConsignment ? stockUsage : null) ? "منشور" : "مخفيّ"}
+              </span>
             </div>
           </Field>
           <Field

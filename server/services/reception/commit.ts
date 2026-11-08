@@ -34,6 +34,7 @@ import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { mixedAwarePaymentMethod } from "../sale/payment";
 import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "../deposits";
+import { assertReceptionLinesEligibleTx } from "./draft";
 
 /**
  * صدق طريقة الدفع (١٨/٨) — يختم على كل فاتورة **مموَّلة من عربونٍ محتجَز** طريقةَ قبضها
@@ -443,6 +444,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     if (Number(draft.version) !== input.version) {
       throw new TRPCError({ code: "CONFLICT", message: "حُدِّثت المسوّدة بعد عرضك — أُعيد تحميلها، راجع ثم ثبّت" });
     }
+    await assertReceptionLinesEligibleTx(tx, lines);
     // expectedTotal: يُعاد الحساب من الأسطر (لا من عمود الرأس — ذاكرة عرض).
     const recomputed = round2(lines.reduce((s, l) => s.plus(money(l.lineTotal)), money("0")));
     if (!recomputed.eq(round2(money(input.expectedTotal)))) {

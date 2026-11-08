@@ -368,11 +368,17 @@ export default function Purchases() {
   });
 
   const confirmMut = trpc.purchases.confirmOrder.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       await Promise.all([
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
       ]);
+      if (
+        res.shortageWarning?.hasShortage &&
+        res.shortageWarning.warningMessage
+      ) {
+        notify.warn(res.shortageWarning.warningMessage);
+      }
       notify.ok(
         "أُرسلت الفاتورة للاعتماد المستقل؛ الاعتماد النهائي سيضيف كامل الكميات إلى المخزون",
       );

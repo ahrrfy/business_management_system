@@ -637,10 +637,22 @@ export async function readOutboxSummary(): Promise<OutboxSummary> {
 export async function readShiftOutboxSummary(shiftId?: number | null): Promise<{ queued: number; queuedTotal: number }> {
   try {
     const items = await offlineDb.outbox.where("status").anyOf("QUEUED", "SENDING").toArray();
-    const shiftItems = shiftId != null ? items.filter((i) => (i.payload as { shiftId?: number }).shiftId === shiftId) : items;
+    const shiftItems =
+      shiftId != null
+        ? items.filter((i) => {
+            const payloadShiftId =
+              (i.payload as { shiftId?: number | null; refund?: { shiftId?: number | null } } | null)?.shiftId ??
+              (i.payload as { refund?: { shiftId?: number | null } } | null)?.refund?.shiftId;
+            const resolvedShiftId = i.shiftId ?? payloadShiftId;
+            return resolvedShiftId != null && Number(resolvedShiftId) === Number(shiftId);
+          })
+        : items;
     return {
       queued: shiftItems.length,
-      queuedTotal: shiftItems.reduce((sum, i) => sum + Number(i.total || 0), 0),
+      queuedTotal: shiftItems.reduce(
+        (sum, i) => sum + (i.kind === "RETURN" ? -Number(i.total || 0) : Number(i.total || 0)),
+        0,
+      ),
     };
   } catch {
     return { queued: 0, queuedTotal: 0 };

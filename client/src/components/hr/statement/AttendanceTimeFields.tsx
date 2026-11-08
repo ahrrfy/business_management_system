@@ -155,11 +155,11 @@ export function AttendanceTimeFields({
                   </span>
                   <div className="flex items-center gap-2">
                     {sSpan != null && (
-                      <span
-                        className="text-[11px] text-primary font-medium"
-                        dir="ltr"
-                      >
-                        {sSpan.toFixed(2)} س
+                      <span className="text-[11px] text-primary font-medium">
+                        <bdi dir="ltr" className="tabular-nums">
+                          {sSpan.toFixed(2)}
+                        </bdi>{" "}
+                        س
                       </span>
                     )}
                     {fix.sessions.length > 2 && (

@@ -12,15 +12,19 @@ import type { WorkOrderChannel } from "@shared/receptionChannel";
 import type {CheckoutChargesInput} from "../../../shared/checkoutCharges";
 import {normalizeCheckoutChargesIntent} from "../checkoutCharges";
 import { appErrorMessage } from "@shared/errors";
+import { isMaterialStockUsage, isSellableStockUsage } from "@shared/stockUsage";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
   auditLogs,
   orderPayments,
+  productVariants,
+  products,
   receptionDraftLines,
   receptionDrafts,
   users,
 } from "../../../drizzle/schema";
+import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { getDb, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { paginateKeyset } from "../../lib/paginateKeyset";
@@ -120,6 +124,95 @@ function auditLineSummary(lines: Array<{ title: string | null; unitPrice: string
   return lines.map((l) => ({ title: l.title, unitPrice: l.unitPrice, quantity: l.quantity, lineTotal: l.lineTotal }));
 }
 
+export async function assertReceptionLinesEligibleTx(
+  tx: Tx,
+  lines: ReadonlyArray<{ lineKind: "GOODS" | "PRINT" | "CUSTOM"; variantId?: number | null }>,
+): Promise<void> {
+  const variantIds = Array.from(
+    new Set(lines.map((l) => (l.variantId != null ? Number(l.variantId) : 0)).filter((n) => n > 0)),
+  ).sort((a, b) => a - b);
+  if (!variantIds.length) return;
+  const rows = await tx
+    .select({
+      variantId: productVariants.id,
+      variantActive: productVariants.isActive,
+      productName: products.name,
+      productActive: products.isActive,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
+      productType: products.productType,
+      showInPrintPos: products.showInPrintPos,
+      showInReception: products.showInReception,
+      stockUsage: products.stockUsage,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productVariants.id, variantIds))
+    .orderBy(asc(products.id), asc(productVariants.id))
+    .for("update");
+  const byVariant = new Map(rows.map((r) => [Number(r.variantId), r]));
+  for (const line of lines) {
+    if (line.variantId == null) continue;
+    const r = byVariant.get(Number(line.variantId));
+    if (!r) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت بنود الاستقبال",
+          why: `الصنف #${line.variantId} غير موجود`,
+          doThis: "حدّث شاشة الاستقبال واختر الصنف مجدداً",
+        }),
+      });
+    }
+    if (!r.productActive || !r.variantActive || r.productType === "DIGITAL_CARD") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إضافة «${r.productName}» في الاستقبال`,
+          why: "الصنف أو متغيّره معطّل أو غير مدعوم في شاشة الاستقبال",
+          doThis: "أزل الصنف غير النشط من السلة ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (line.lineKind === "GOODS") {
+      if (!r.isService && !isSellableStockUsage(r.stockUsage)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر بيع «${r.productName}» كبضاعة في الاستقبال`,
+            why: "تصنيف استخدام الصنف (مادة خام أو مستلزم تشغيل) يمنع بيعه المباشر",
+            doThis: "أزل الصنف من سلة الاستقبال أو حدّث تصنيف استخدامه",
+          }),
+        });
+      }
+    } else if (line.lineKind === "PRINT") {
+      const printAllowed = r.productType === PRINT_SERVICE_TYPE || r.showInPrintPos === true || r.showInReception === true;
+      if (r.isBundle || !printAllowed || (!r.isService && !isSellableStockUsage(r.stockUsage))) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر تمرير «${r.productName}» كبند طباعة فورية`,
+            why: "الصنف غير مفعّل لقناة الطباعة/الاستقبال أو غير مؤهّل للبيع المخزني",
+            doThis: "اختر خدمة طباعة مفعّلة للاستقبال أو صنفاً مؤهّلاً للبيع",
+          }),
+        });
+      }
+    } else if (line.lineKind === "CUSTOM" && !r.isService) {
+      if (r.isBundle || r.isConsignment || !isMaterialStockUsage(r.stockUsage)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر ربط «${r.productName}» كمادة لأمر الشغل`,
+            why: "مادة أمر الشغل يجب أن تكون صنفاً مخزنياً مملوكاً مخصّصاً للإنتاج (خام أو مزدوج الاستخدام)",
+            doThis: "اختر مادة خاماً أو صنفاً مزدوج الاستخدام لبند التخصيص",
+          }),
+        });
+      }
+    }
+  }
+}
+
 export async function promoteDraft(
   input: { branchId: number; shiftId?: number | null; clientRequestId?: string; header: DraftHeaderInput; lines: DraftLineInput[] },
   actor: Actor & { role?: string },
@@ -131,6 +224,7 @@ export async function promoteDraft(
       clientRequestId: input.clientRequestId,
       payload: { branchId: input.branchId, shiftId: input.shiftId ?? null, header: input.header, lines: input.lines },
     }, async () => {
+      await assertReceptionLinesEligibleTx(tx, input.lines);
       const draftNumber = await nextDraftNumber(tx, input.branchId);
       const totals = computeTotals(input.lines);
       const res = await tx.insert(receptionDrafts).values({
@@ -208,6 +302,7 @@ export async function syncDraft(
         message: "حدّث المسوّدةَ زميلٌ آخر للتوّ — أُعيد تحميلها، راجعها ثم تابع",
       });
     }
+    await assertReceptionLinesEligibleTx(tx, input.lines);
     const totals = computeTotals(input.lines);
     // I3 (ش٤ — بالجمع الفعليّ): مسوّدة مموّلة (أ) لا يُحذف بندٌ منها (المال قُبض على سلةٍ
     // بعينها — الحذف بابُ «اقبض ٣٠٠ﻙ ثم صفّر السلة») و(ب) لا يهبط إجماليها دون صافي المقبوض.

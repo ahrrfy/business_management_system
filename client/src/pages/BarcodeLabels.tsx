@@ -304,8 +304,8 @@ export default function BarcodeLabels() {
     else setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة لهذا الموقع.");
   }
 
-  const results = trpc.catalog.posList.useQuery(
-    { branchId: branchId ?? 0, tier, query: term, limit: searchLimit },
+  const results = trpc.catalog.warehouseList.useQuery(
+    { branchId: branchId ?? 0, tier, query: term, limit: searchLimit, includeBundles: true, includeServices: true },
     { enabled: canSearch && branchId != null, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
   const maybeMoreSearch = (results.data?.length ?? 0) >= searchLimit;
@@ -337,7 +337,7 @@ export default function BarcodeLabels() {
     let cancelled = false;
     void (async () => {
       try {
-        const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: ids });
+        const rows = await utils.catalog.labelsByUnitIds.fetch({ branchId: bId, tier, productUnitIds: ids });
         if (cancelled) return;
         const byUnit = new Map(rows.map((r) => [r.productUnitId, r]));
         setQueue((prev) =>
@@ -419,7 +419,7 @@ export default function BarcodeLabels() {
         let total = 0;
         for (let i = 0; i < ids.length; i += 200) {
           const part = ids.slice(i, i + 200);
-          const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: part });
+          const rows = await utils.catalog.labelsByUnitIds.fetch({ branchId: bId, tier, productUnitIds: part });
           total += addRows(rows, tier);
         }
         setInfo(
@@ -452,7 +452,7 @@ export default function BarcodeLabels() {
     if (seed.tier && seed.tier !== fetchTier) setTier(seed.tier);
     void (async () => {
       try {
-        const rows = await utils.catalog.byUnitIds.fetch(
+        const rows = await utils.catalog.labelsByUnitIds.fetch(
           { branchId: bId, tier: fetchTier, productUnitIds: seed.productUnitIds },
           // البذرة تصل بعد موجةٍ غيّرت الأسعار للتوّ ⇒ لا نقبل نسخةً مخزَّنة مسبقاً،
           // وإلّا طبعنا بالضبط الأسعار القديمة التي جاء هذا الجسر ليستبدلها.
@@ -489,7 +489,7 @@ export default function BarcodeLabels() {
     // فيلتقطها أثر إعادة التسعير لاحقاً بدل وسمها بفئةٍ لم تُسعَّر بها.
     const fetchTier = tier;
     try {
-      const rows = await utils.catalog.byProductIds.fetch({ branchId, tier: fetchTier, productIds: [row.productId] });
+      const rows = await utils.catalog.labelsByProductIds.fetch({ branchId, tier: fetchTier, productIds: [row.productId] });
       const added = addRows(rows, fetchTier);
       setInfo(added ? `أُضيف ${added} صفّاً من «${row.productName}» (كلّ الألوان والوحدات).` : "كلّ صفوف هذا المنتج مضافة أصلاً.");
     } catch {
@@ -507,7 +507,7 @@ export default function BarcodeLabels() {
     if (!clean || clean.length > 64) return false;
     if (branchId == null) { setError("اختر الفرع أولاً."); return false; }
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: clean, branchId, tier });
+      const row = await utils.catalog.warehouseByBarcode.fetch({ barcode: clean, branchId, tier, includeBundles: true, includeServices: true });
       if (row) { addRow(row); return true; }
       setError(`الباركود غير معروف: ${clean}`);
     } catch {
@@ -596,7 +596,16 @@ export default function BarcodeLabels() {
       await assign.mutateAsync({ productUnitId: item.productUnitId, barcode: item.barcode });
       // الحفظ يجعله الأساسيّ فعلاً ⇒ نُحدّث الأساسيّ المحلّي وإلّا بقي منتقي الباركود يعرض حالةً قديمة.
       patch(item.key, { saved: true, primaryBarcode: item.barcode });
-      await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.byBarcode.invalidate()]);
+      await Promise.all([
+        utils.catalog.posList.invalidate(),
+        utils.catalog.byBarcode.invalidate(),
+        utils.catalog.byProductIds.invalidate(),
+        utils.catalog.labelsByProductIds.invalidate(),
+        utils.catalog.byUnitIds.invalidate(),
+        utils.catalog.labelsByUnitIds.invalidate(),
+        utils.catalog.warehouseList.invalidate(),
+        utils.catalog.warehouseByBarcode.invalidate(),
+      ]);
     } catch {
       /* الخطأ يُعرض عبر onError */
     }

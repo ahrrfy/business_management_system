@@ -8,6 +8,7 @@ import { fmtAr, D, positiveDiff, round2 } from "@/lib/money";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
+import { trpc } from "@/lib/trpc";
 import type { DeliverTarget } from "./workOrderTypes";
 
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -34,6 +35,8 @@ export function WorkOrderDeliverDialog({
   const [amount, setAmount] = useState("");
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
   const [reference, setReference] = useState("");
+  const me = trpc.auth.me.useQuery();
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const [showManagerApproval, setShowManagerApproval] = useState(false);
   const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
   const [addToCustomerDebt, setAddToCustomerDebt] = useState(false);
@@ -108,11 +111,13 @@ export function WorkOrderDeliverDialog({
                 <p className="text-muted-foreground text-[11px] leading-relaxed">
                   يُمنع تسليم الطلب بمتبقٍ غير مستحصل إلا بعد استيفاء المبلغ كاملاً أو الحصول على اعتماد المسؤول لتحويله إلى ذمة العميل.
                 </p>
-                {managerApproval ? (
+                {managerApproval || (isElevated && addToCustomerDebt) ? (
                   <div className="flex items-center justify-between rounded bg-card/80 p-2 border border-border">
                     <span className="flex items-center gap-1.5 text-[var(--sem-pos)] font-semibold text-xs">
                       <ShieldCheck aria-hidden className="size-4 shrink-0" />
-                      تم اعتماد إضافة المتبقي لذمة العميل
+                      {isElevated && !managerApproval
+                        ? "تم تفعيل إضافة المتبقي لذمة العميل بصلاحيتك الإدارية"
+                        : "تم اعتماد إضافة المتبقي لذمة العميل"}
                     </span>
                     <Button
                       type="button"
@@ -124,6 +129,16 @@ export function WorkOrderDeliverDialog({
                       إلغاء
                     </Button>
                   </div>
+                ) : isElevated ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full text-xs font-semibold"
+                    onClick={() => { setAddToCustomerDebt(true); setError(""); }}
+                  >
+                    إضافة المتبقي لذمة العميل (بصلاحيتي الإدارية)
+                  </Button>
                 ) : (
                   <Button
                     type="button"
@@ -143,10 +158,10 @@ export function WorkOrderDeliverDialog({
             <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
             <button
               className="wob-btn wob-btn-primary"
-              disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim()) || (hasUnpaidRemainder && !managerApproval)}
+              disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim()) || (hasUnpaidRemainder && (!addToCustomerDebt || (!isElevated && !managerApproval)))}
               onClick={() => {
                 if (!isPosPaymentMethodEnabled(methodV)) return;
-                if (hasUnpaidRemainder && (!addToCustomerDebt || !managerApproval)) {
+                if (hasUnpaidRemainder && (!addToCustomerDebt || (!isElevated && !managerApproval))) {
                   setError(`لا يمكن تسليم الطلب بمتبقٍ غير مستحصل (${fmtAr(unpaidRemainder.toFixed(2))} د.ع) دون اعتماد المسؤول لإضافته إلى ذمة العميل.`);
                   return;
                 }

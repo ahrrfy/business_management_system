@@ -167,11 +167,41 @@ export interface AttendancePayInput {
   dayRates?: Record<string, number> | null;
   /** نوع الأجر لتوحيد أولوية التسعير مع attendanceService.rateForDayDetailed. */
   payType?: "monthly" | "hourly" | string | null;
+  /**
+   * سقف «حتى اليوم» (YYYY-MM-DD) للشهر الجاري: يخفي الأيام المستقبلية التي لم تحلّ بعد
+   * ولا يحسبها غياباً أو ساعات غير مستحقّة. غيابه أو null ⇒ الشهر كاملاً (مسيّر/أشهر ماضية).
+   */
+  asOfDate?: string | null;
+  /**
+   * إظهار أيام الاستراحة الأسبوعية (hours === 0) في مصفوفة `days` بتسلسلها الزمنيّ بحالة `restDay`
+   * لتمكين المراجعة والتصحيح اليدويّ في كشف الموظف (افتراضياً false للحفاظ على سلوك النواة الخام).
+   */
+  includeRestDays?: boolean;
+  /**
+   * تواريخ دوام جارٍ الآن (بصمة دخول اليوم في نوبة لم تنتهِ بعد): تُعرَض بحالة `inProgress`
+   * ولا تُعدّ غياباً ولا بصمة ناقصة معلّقة في الكشف الحيّ.
+   */
+  inProgressDates?: ReadonlySet<string>;
 }
+
+export type AttendanceDayRowState =
+  | "present"
+  | "absent"
+  | "open"
+  | "inProgress"
+  | "paidLeave"
+  | "unpaidLeave"
+  | "beforeStart"
+  | "restDay"
+  | "restWorked";
 
 export interface AttendancePayResult {
   /** ساعات الدوام المقرَّرة في نافذة العمل فعلياً (تتبع طول الشهر). */
   scheduledHours: string;
+  /** ساعات الدوام المقرَّرة حتى `asOfDate` عند عرض شهرٍ جارٍ لم يكتمل بعد. */
+  scheduledHoursToDate: string;
+  /** هل الكشف مقصوصٌ بحدّ `asOfDate` قبل نهاية نافذة عمل الشهر؟ */
+  isPartialMonth: boolean;
   /** ساعات الشهر المعياريّ (٣٠ يوماً) — **مقام سعر الساعة**، ثابتٌ لا يتبع طول الشهر. */
   standardHours: string;
   /** الساعات المستحقّة الأجر (حضورٌ فعليّ + إجازة مدفوعة + ما قبل السريان). */
@@ -216,7 +246,7 @@ export interface AttendancePayResult {
     overtimeAmount: string;
     /** إجمالي أجر اليوم = الأساس + الإضافي. ما كان عمود «أجر اليوم» يعرضه هو `amount` وحده. */
     totalAmount: string;
-    state: "present" | "absent" | "open" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
+    state: AttendanceDayRowState;
   }>;
 }
 
@@ -240,20 +270,37 @@ export function isBrowserRoundedScheduleRate(
  * يُحتسب الإضافيّ مرّتين.
  */
 export function computeAttendancePay(input: AttendancePayInput): AttendancePayResult {
-  // أيام الدوام = ما له ساعاتٌ موجبة في الجدول؛ وصفرُ الساعات راحةٌ لا تُطالَب ولا تُخصَم.
-  const workDays = daysBetween(input.employmentStart, input.employmentEnd).filter((d) =>
+  // أيام الدوام الكاملة للشهر = ما له ساعاتٌ موجبة في الجدول؛ وصفرُ الساعات راحةٌ لا تُطالَب ولا تُخصَم.
+  const fullWorkDays = daysBetween(input.employmentStart, input.employmentEnd).filter((d) =>
     hoursForDay(input.schedule, d).gt(0),
   );
 
   // ساعات هذا الشهر فعلياً (للعرض والمقارنة) — قد تفوق المعيار في شهرٍ ٣١ يوماً.
   let scheduled = new Decimal(0);
-  for (const d of workDays) scheduled = scheduled.plus(hoursForDay(input.schedule, d));
+  for (const d of fullWorkDays) scheduled = scheduled.plus(hoursForDay(input.schedule, d));
+
+  const isPartialMonth = input.asOfDate != null && input.asOfDate < input.employmentEnd;
+  const effectiveEnd =
+    input.asOfDate != null
+      ? input.asOfDate < input.employmentEnd
+        ? input.asOfDate
+        : input.employmentEnd
+      : input.employmentEnd;
+  const workDays =
+    effectiveEnd < input.employmentStart
+      ? []
+      : daysBetween(input.employmentStart, effectiveEnd).filter((d) =>
+          hoursForDay(input.schedule, d).gt(0),
+        );
+  let scheduledToDate = new Decimal(0);
+  for (const d of workDays) scheduledToDate = scheduledToDate.plus(hoursForDay(input.schedule, d));
 
   // مقام السعر **ثابتٌ على ٣٠ يوماً** لا على طول الشهر (قرار المالك) ⇒ اليوم ٣١ إضافيّ.
   const stdHours = standardMonthlyHours(input.schedule, input.monthStart ?? input.employmentStart);
   const derivedRate = stdHours.gt(0) ? input.salary.div(stdHours) : new Decimal(0);
+  const isHourly = input.payType === "hourly";
   const ignoreBrowserRoundedScheduleRate =
-    input.payType !== "hourly" && isBrowserRoundedScheduleRate(input.schedule, input.salary.toNumber());
+    !isHourly && isBrowserRoundedScheduleRate(input.schedule, input.salary.toNumber());
 
   let payable = new Decimal(0);
   let basePay = new Decimal(0);
@@ -264,6 +311,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   const openDates: string[] = [];
   let shortHours = new Decimal(0);
   let restWorked = new Decimal(0);
+  let inProgressScheduledHours = new Decimal(0);
   const days: AttendancePayResult["days"] = [];
 
   /*
@@ -273,7 +321,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   const rateOf = (day: DaySchedule, ymd: string): Decimal => {
     const dName = dayNameOf(ymd);
     const fromDayRates = input.dayRates?.[dName];
-    if (input.payType === "hourly") {
+    if (isHourly) {
       if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
         return new Decimal(fromDayRates);
       }
@@ -300,14 +348,15 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     const rate = rateOf(day, d);
 
     const push = (
-      state: AttendancePayResult["days"][number]["state"],
+      state: AttendanceDayRowState,
       attended: Decimal,
       counted: Decimal,
       ot: Decimal,
       amount: Decimal,
     ) => {
-      // Tier-2 #2 (٢٥/٨): OT بمضاعف ١.٥× — قانون العمل العراقي 37/2015 المادة ٦٨.
-      const otAmount = round2(rate.times(OVERTIME_MULTIPLIER).times(ot));
+      // Tier-2 #2 (٢٥/٨): OT بمضاعف ١.٥× للراتب الشهري — قانون العمل العراقي 37/2015 المادة ٦٨.
+      // أمّا موظف الساعة فيُحاسب بسعر الساعة الفعليّ 1.0× مطابقاً لـ projectAttendanceWage والمسيّر.
+      const otAmount = isHourly ? new Decimal(0) : round2(rate.times(OVERTIME_MULTIPLIER).times(ot));
       days.push({
         date: d,
         dayName: dayNameOf(d),
@@ -349,6 +398,11 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     }
     const attended = input.attendedHoursByDate.get(d) ?? new Decimal(0);
     if (attended.lte(0)) {
+      if (input.inProgressDates?.has(d)) {
+        inProgressScheduledHours = inProgressScheduledHours.plus(daily);
+        push("inProgress", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
+        continue;
+      }
       /*
        * يومٌ **مفتوح** لا غائب: له دخولٌ مسجَّل بلا انصراف، فساعاته صفرٌ لأنها لا تُخمَّن.
        * تمييزُه ضرورةٌ ماليّة لا تجميل: خلطُه بالغياب كان يمرّره إلى المسيّر بأجر صفرٍ
@@ -372,7 +426,25 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
      * لبيانات الطيّ هذا لا-عمل (قُصّت سلفاً عند السقف نفسه) ⇒ صفر انحدار.
      */
     const capped = Decimal.min(attended, new Decimal(input.maxDailyHours ?? 12));
-    if (input.openDates?.has(d)) openDates.push(d);
+    const isTodayInProgress = Boolean(input.inProgressDates?.has(d));
+    if (!isTodayInProgress && input.openDates?.has(d)) openDates.push(d);
+
+    if (isHourly) {
+      const countedBase = Decimal.min(capped, daily);
+      payable = payable.plus(countedBase);
+      const hourlyDayAmount = round2(rate.times(capped)).toDecimalPlaces(0);
+      basePay = basePay.plus(hourlyDayAmount);
+      if (countedBase.lt(daily)) {
+        if (isTodayInProgress) {
+          inProgressScheduledHours = inProgressScheduledHours.plus(daily.minus(countedBase));
+        } else {
+          shortHours = shortHours.plus(daily.minus(countedBase));
+        }
+      }
+      push(isTodayInProgress ? "inProgress" : "present", attended, capped, new Decimal(0), hourlyDayAmount);
+      continue;
+    }
+
     // الزائد عن المقرَّر أوفر تايم ببندٍ مستقلّ (قرار المالك) — لا يتضخّم به الأساس.
     const counted = Decimal.min(capped, daily);
     const ot = Decimal.max(0, capped.minus(daily));
@@ -381,8 +453,14 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     otHours = otHours.plus(ot);
     // مطابقٌ لخانة اليوم في `push` — نفس المضاعف ١.٥× (قانون العراق 37/2015 م٦٨).
     otPay = otPay.plus(rate.times(OVERTIME_MULTIPLIER).times(ot));
-    if (counted.lt(daily)) shortHours = shortHours.plus(daily.minus(counted));
-    push("present", attended, counted, ot, rate.times(counted));
+    if (counted.lt(daily)) {
+      if (isTodayInProgress) {
+        inProgressScheduledHours = inProgressScheduledHours.plus(daily.minus(counted));
+      } else {
+        shortHours = shortHours.plus(daily.minus(counted));
+      }
+    }
+    push(isTodayInProgress ? "inProgress" : "present", attended, counted, ot, rate.times(counted));
   }
 
   /*
@@ -395,8 +473,9 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
    * ولا يُلغي الغياب: التعويض يجبر نقصَ التقويم لا نقصَ الحضور.
    */
   // متحفّظ عمداً: التعويض منفعةٌ للموظف، فلا يُمنح إلا بإثباتٍ صريح أنه عمل الشهر كلَّه.
-  // غيابُ حدود الشهر ⇒ لا تعويض (لا نُفرِط في الدفع بافتراضٍ ضمنيّ).
+  // غيابُ حدود الشهر أو الشهر الجاري الجزئيّ ⇒ لا تعويض مبكّر.
   const wholeMonth =
+    !isPartialMonth &&
     input.monthStart != null &&
     input.monthEnd != null &&
     input.employmentStart <= input.monthStart &&
@@ -421,16 +500,48 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
    * ثغرةٌ صامتة. الآن تُدفع ساعاته الفعلية بالسعر المُشتقّ (لا مضاعف، بقراره).
    * ولا تدخل مقام السعر: هي عملٌ فوق الجدول لا جزءٌ منه.
    */
-  for (const d of daysBetween(input.employmentStart, input.employmentEnd)) {
+  const calendarSpan =
+    effectiveEnd < input.employmentStart ? [] : daysBetween(input.employmentStart, effectiveEnd);
+  for (const d of calendarSpan) {
     if (hoursForDay(input.schedule, d).gt(0)) continue; // يوم دوام — عولج أعلاه
-    if (input.payFrom != null && d < input.payFrom) continue;
+    const beforePayFrom = input.payFrom != null && d < input.payFrom;
     const att = input.attendedHoursByDate.get(d);
-    if (att == null || att.lte(0)) continue;
+    if (beforePayFrom || att == null || att.lte(0)) {
+      if (input.includeRestDays) {
+        const restRate = rateOf(dayOf(input.schedule, d), d);
+        const restState: AttendanceDayRowState =
+          !beforePayFrom && input.inProgressDates?.has(d)
+            ? "inProgress"
+            : !beforePayFrom && input.openDates?.has(d)
+              ? "open"
+              : "restDay";
+        if (restState === "open") openDates.push(d);
+        days.push({
+          date: d,
+          dayName: dayNameOf(d),
+          scheduledHours: "0.00",
+          attendedHours: "0.00",
+          countedHours: "0.00",
+          overtimeHours: "0.00",
+          rate: round2(restRate).toFixed(2),
+          amount: "0.00",
+          overtimeAmount: "0.00",
+          totalAmount: "0.00",
+          state: restState,
+        });
+      }
+      continue;
+    }
     const counted = Decimal.min(att, new Decimal(input.maxDailyHours ?? 12));
     // السعر الصريح لهذا اليوم إن ضبطه المالك — لا المُشتقّ خامّاً (تدقيق ١٧/٨).
     const restRate = rateOf(dayOf(input.schedule, d), d);
+    const restDayPay = isHourly
+      ? round2(restRate.times(counted)).toDecimalPlaces(0)
+      : restRate.times(counted);
     restWorked = restWorked.plus(counted);
-    basePay = basePay.plus(restRate.times(counted));
+    basePay = basePay.plus(restDayPay);
+    const isTodayInProgress = Boolean(input.inProgressDates?.has(d));
+    if (!isTodayInProgress && input.openDates?.has(d)) openDates.push(d);
     days.push({
       date: d,
       dayName: dayNameOf(d),
@@ -439,23 +550,29 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       countedHours: counted.toFixed(2),
       overtimeHours: "0.00",
       rate: round2(restRate).toFixed(2),
-      amount: round2(restRate.times(counted)).toFixed(2),
+      amount: round2(restDayPay).toFixed(2),
       // عمل يوم الراحة يُدفع بالسعر العاديّ كاملاً في الأساس ⇒ لا شقّ إضافيّ له.
       overtimeAmount: "0.00",
-      totalAmount: round2(restRate.times(counted)).toFixed(2),
-      state: "restWorked",
+      totalAmount: round2(restDayPay).toFixed(2),
+      state: isTodayInProgress ? "inProgress" : "restWorked",
     });
   }
   days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   const displayHourlyRate = derivedRate.gt(0)
     ? derivedRate
-    : workDays.length > 0
-      ? rateOf(dayOf(input.schedule, workDays[0]), workDays[0])
+    : fullWorkDays.length > 0
+      ? rateOf(dayOf(input.schedule, fullWorkDays[0]), fullWorkDays[0])
       : derivedRate;
+  const unpaidTarget = Decimal.max(
+    0,
+    (isPartialMonth ? scheduledToDate : scheduled).minus(inProgressScheduledHours),
+  );
 
   return {
     scheduledHours: scheduled.toFixed(2),
+    scheduledHoursToDate: (isPartialMonth ? scheduledToDate : scheduled).toFixed(2),
+    isPartialMonth,
     restWorkedHours: restWorked.toFixed(2),
     standardHours: stdHours.toFixed(2),
     payableHours: paidHours.toFixed(2),
@@ -464,9 +581,9 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
      * الساعات غير المستحقّة تُقاس على **التزام هذا الموظف** لا على الشهر كلِّه (تدقيق ١٧/٨):
      * المقام كان `max(scheduled, stdHours)` — أي ساعات الشهر المعياريّ — فالمعيَّن في منتصف
      * تموز يُحمَّل ١٠٤ ساعةٍ «غير مستحقّة» عن أيامٍ لم يكن فيها موظفاً أصلاً، وكذلك المفصول.
-     * و`max(0, …)` يمنع سالباً بلا معنى (شهرٌ فيه عملُ يوم راحةٍ يتجاوز المقرَّر).
+     * وفي الشهر الجاري تُقاس حتى `asOfDate` مع استثناء النوبة الجارية الآن.
      */
-    unpaidHours: Decimal.max(0, scheduled.minus(payable)).toFixed(2),
+    unpaidHours: Decimal.max(0, unpaidTarget.minus(payable)).toFixed(2),
     hourlyRate: round2(displayHourlyRate).toFixed(2),
     basePay: round2(basePay).toFixed(2),
     overtimeHours: otHours.toFixed(2),

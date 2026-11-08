@@ -379,9 +379,13 @@ export default function App() {
       <Route path="/print-pos">
         <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
-      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
+      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION مع حفظ معاملات الاستعلام (مثل draftId) */}
       <Route path="/reception">
-        <Redirect to="/pos?mode=RECEPTION" />
+        {() => {
+          const qs = typeof window !== "undefined" ? window.location.search.replace(/^\?/, "") : "";
+          const extra = qs ? `&${qs}` : "";
+          return <Redirect to={`/pos?mode=RECEPTION${extra}`} />;
+        }}
       </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">

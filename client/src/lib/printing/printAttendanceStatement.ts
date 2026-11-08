@@ -36,7 +36,16 @@ export interface StatementDay {
   amount: string;
   overtimeAmount?: string;
   totalAmount?: string;
-  state: "present" | "absent" | "open" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
+  state:
+    | "present"
+    | "absent"
+    | "open"
+    | "inProgress"
+    | "paidLeave"
+    | "unpaidLeave"
+    | "beforeStart"
+    | "restDay"
+    | "restWorked";
   checkIn?: string | null;
   checkOut?: string | null;
   checkOutNextDay?: boolean;
@@ -57,6 +66,8 @@ export interface AttendanceStatementData {
   to: string;
   totals: {
     scheduledHours: string;
+    scheduledHoursToDate?: string;
+    isPartialMonth?: boolean;
     payableHours: string;
     unpaidHours: string;
     basePay: string;
@@ -121,7 +132,12 @@ export function printAttendanceStatement(d: AttendanceStatementData, days: State
       title: "ملخّص دوام الشهر",
       variant: "gray",
       fields: [
-        { label: "ساعات الدوام المطلوبة", value: `${fmt(d.totals.scheduledHours)} ساعة` },
+        d.totals.isPartialMonth && d.totals.scheduledHoursToDate
+          ? {
+              label: "ساعات الدوام المطلوبة حتى اليوم",
+              value: `${fmt(d.totals.scheduledHoursToDate)} ساعة (من ${fmt(d.totals.scheduledHours)} للشهر)`,
+            }
+          : { label: "ساعات الدوام المطلوبة", value: `${fmt(d.totals.scheduledHours)} ساعة` },
         { label: "الساعات المدفوعة المستحقّة", value: `${fmt(d.totals.payableHours)} ساعة` },
         { label: "أيام الغياب", value: `${d.totals.absentDays} يوم` },
         { label: "إجازة بلا راتب", value: `${d.totals.unpaidLeaveDays} يوم` },

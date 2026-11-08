@@ -33,7 +33,7 @@ import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check, PanelRightClose, PanelRightOpen,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
-import { hasModuleAccess } from "@shared/permissions";
+import { canSeeGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
 import { visibleApplicationModules } from "@/lib/moduleRegistry";
 import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
@@ -172,16 +172,42 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   // Codex P1 (٢٩/٨) — للـsupervisors (workorders:FULL): تمرير `branchQueue: true` كي يُلغى
   // `scopedOwnerId` ⇒ الشارة تعدّ طابور الفرع كاملاً (الأمر الجاهز الذي أنشأه زميل يظهر أيضاً،
   // وهو سيناريو تسليم الوردية الذي صُمّمت له الشارة أصلاً).
-  const roleForGate = me.data?.role ?? "";
-  const overrideForGate = (me.data?.permissionsOverride ?? null) as
+  const roleForGate = me.data?.isOwner ? "admin" : (me.data?.role ?? "");
+  const overrideForGate = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
+  const policyForGate =
+    me.data?.operationPolicyEnabled && !me.data.isOwner
+      ? me.data.resolvedOperationPolicy
+      : null;
   const canReadWorkOrders = !coldStudio && Boolean(me.data)
-    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "READ");
+    && canSeeGate(
+      { operations: ["workOrders.counts"], module: "workorders", level: "READ" },
+      roleForGate,
+      overrideForGate,
+      policyForGate,
+    );
   const canReadDelivery = !coldStudio && Boolean(me.data)
-    && hasModuleAccess(roleForGate, overrideForGate, "store", "READ");
+    && canSeeGate(
+      { operations: ["delivery.readyForDispatchCount"], module: "store", level: "READ" },
+      roleForGate,
+      overrideForGate,
+      policyForGate,
+    );
+  const canReadStoreOrders = !coldStudio && Boolean(me.data)
+    && canSeeGate(
+      { operations: ["storeAdmin.orders.counts"], module: "store", level: "READ" },
+      roleForGate,
+      overrideForGate,
+      policyForGate,
+    );
   const canBranchQueueWorkOrders = canReadWorkOrders
-    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "FULL");
+    && canSeeGate(
+      { module: "workorders", level: "FULL" },
+      roleForGate,
+      overrideForGate,
+      policyForGate,
+    );
   const woCounts = trpc.workOrders.counts.useQuery(
     canBranchQueueWorkOrders ? { branchQueue: true } : {},
     {
@@ -195,7 +221,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     refetchOnWindowFocus: true,
   });
   const storeOrderCountsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
-    enabled: canReadDelivery,
+    enabled: canReadStoreOrders,
     refetchOnWindowFocus: true,
   });
   const storeOrdersPendingCount =
@@ -531,8 +557,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           </Button>
         </aside>
       ) : (
-        <aside className="hidden lg:flex w-60 shrink-0 flex-col app-sidebar">
-          <div className="sb-header px-3 py-2.5 flex items-center justify-between gap-1">
+        <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
+          <div className="sb-header px-2.5 py-2.5 flex items-center justify-between gap-1">
             <div className="flex items-center gap-1 min-w-0">
               <button
                 type="button"
@@ -543,9 +569,9 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
               >
                 <PanelRightClose className="size-3.5" aria-hidden />
               </button>
-              <span className="font-extrabold text-sm leading-tight truncate">الرؤية العربية</span>
+              <span className="font-extrabold text-[13px] leading-tight whitespace-nowrap truncate" title="الرؤية العربية">الرؤية العربية</span>
             </div>
-            <div className="flex items-center gap-0.5 shrink-0">
+            <div className="flex items-center gap-0 shrink-0 [&_button]:size-7">
               <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
               <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
               <DisplayScaleControl />

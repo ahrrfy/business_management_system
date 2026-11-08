@@ -41,9 +41,6 @@ export function ShiftHandoverCard() {
   });
   const [closedReceipt, setClosedReceipt] = useState<{
     countedTotal: number;
-    expectedTotal: number;
-    variance: number;
-    handoverNumber: string;
     timestamp: string;
   } | null>(null);
 
@@ -70,19 +67,9 @@ export function ShiftHandoverCard() {
 
   const handleFinalizeClose = () => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    // Baseline expected balance for shift verification (blind comparison)
-    const expectedMock = countedTotal;
-    const variance = countedTotal - expectedMock;
     const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
-    const randSuffix = Math.floor(1000 + Math.random() * 9000);
-    const handoverNumber = `HND-${dateStr}-${randSuffix}`;
-
     setClosedReceipt({
       countedTotal,
-      expectedTotal: expectedMock,
-      variance,
-      handoverNumber,
       timestamp: new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
         hour: "numeric",
         minute: "2-digit",
@@ -114,9 +101,9 @@ export function ShiftHandoverCard() {
           <Ionicons color={colors.brand} name="wallet-outline" size={24} />
         </View>
         <View style={styles.headerText}>
-          <Text style={styles.title}>تسوية الصندوق وتسليم الوردية</Text>
+          <Text style={styles.title}>حاسبة عدّ الفئات النقدية</Text>
           <Text style={styles.subtitle}>
-            عدّ الفئات النقدية بالدينار العراقي واستخراج سند التسليم الرسمي
+            حاسبة مساعدة لفرز الفئات النقدية محلياً — إغلاق الوردية الرسمي يتم من شاشة الورديات
           </Text>
         </View>
       </View>
@@ -125,40 +112,26 @@ export function ShiftHandoverCard() {
         <View style={styles.receiptContainer}>
           <View style={styles.receiptTop}>
             <View style={styles.receiptBadge}>
-              <Ionicons color={colors.success} name="checkmark-circle" size={18} />
-              <Text style={styles.receiptBadgeText}>تمت تسوية الوردية بنجاح</Text>
+              <Ionicons color={colors.success} name="calculator-outline" size={18} />
+              <Text style={styles.receiptBadgeText}>ملخص العدّ المحلي (غير مرحّل للخادم)</Text>
             </View>
-            <Text style={styles.receiptHandoverNumber}>
-              {closedReceipt.handoverNumber}
-            </Text>
           </View>
 
           <View style={styles.receiptDetails}>
             <View style={styles.receiptRow}>
-              <Text style={styles.receiptLabel}>النقد المسلم فعلياً</Text>
+              <Text style={styles.receiptLabel}>إجمالي النقد المعدود</Text>
               <Text style={styles.receiptValueBold}>
                 {formatIqd(closedReceipt.countedTotal)}
               </Text>
             </View>
             <View style={styles.receiptRow}>
-              <Text style={styles.receiptLabel}>فرق الصندوق (العجز/الزيادة)</Text>
-              <Text
-                style={[
-                  styles.receiptValue,
-                  closedReceipt.variance === 0
-                    ? styles.varianceMatch
-                    : closedReceipt.variance > 0
-                    ? styles.varianceSurplus
-                    : styles.varianceDeficit,
-                ]}
-              >
-                {closedReceipt.variance === 0
-                  ? "مطابق تماماً (صفر عجز)"
-                  : formatIqd(closedReceipt.variance)}
+              <Text style={styles.receiptLabel}>الحالة المحاسبية</Text>
+              <Text style={styles.receiptValue}>
+                أدخل هذا الرقم في شاشة إغلاق الوردية لإصدار السند الرسمي
               </Text>
             </View>
             <View style={styles.receiptRow}>
-              <Text style={styles.receiptLabel}>وقت التوثيق ببغداد</Text>
+              <Text style={styles.receiptLabel}>وقت العدّ ببغداد</Text>
               <Text style={styles.receiptValue}>{closedReceipt.timestamp}</Text>
             </View>
           </View>
@@ -187,7 +160,7 @@ export function ShiftHandoverCard() {
             style={({ pressed }) => [styles.openModalButton, pressed && styles.pressed]}
           >
             <Text style={styles.openModalButtonText}>
-              بدء عد الفئات النقدية وإغلاق الصندوق
+              فتح حاسبة الفئات النقدية
             </Text>
             <Ionicons color={colors.surface} name="cash-outline" size={20} />
           </Pressable>
@@ -268,12 +241,12 @@ export function ShiftHandoverCard() {
               </Pressable>
 
               <Pressable
-                accessibilityLabel="تأكيد وإصدار سند تسليم الوردية"
+                accessibilityLabel="حفظ ملخص العد المحلي"
                 accessibilityRole="button"
                 onPress={handleFinalizeClose}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed]}
               >
-                <Text style={styles.confirmButtonText}>تأكيد وإصدار السند</Text>
+                <Text style={styles.confirmButtonText}>تثبيت مجموع العدّ</Text>
                 <Ionicons color={colors.surface} name="checkmark" size={18} />
               </Pressable>
             </View>

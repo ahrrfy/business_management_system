@@ -9,11 +9,15 @@
  * هذه الوحدة تُشارَك بين العميل (منع الحفظ + التنبيه المرئيّ) والخادم (رفض قاطع بـzod refinement) —
  * دفاعاً في العمق: نفس القاعدة، تُطبَّق في الطبقتين. **لا تكرّرها** في مكانٍ آخر.
  *
+ * CATALOG-SURGICAL-20261107: جميع الحسابات والمقارنات المالية تتم عبر `Decimal` (`decimal.js`)
+ * لمنع انحراف الفاصلة العائمة مع الحفاظ على واجهة العقد المشترك للعميل والخادم.
+ *
  * **المستويات الثلاثة:**
  *  - `blocker`  ⇒ رفض قاطع (لا يُحفَظ حتى بتأكيد). قيم فلكية بيّنة الخطأ.
  *  - `warning`  ⇒ يتطلّب تأكيداً صريحاً «أؤكد رغم الشذوذ». تكلفة > سعر البيع مثلاً — نادرة لكن ممكنة.
  *  - `info`     ⇒ ملاحظة مرئية غير حاجزة. معلومات مفيدة (هامش ضيق جداً).
  */
+import Decimal from "decimal.js";
 
 /** الحدّ الأقصى المطلق لأيّ حقلٍ ماليّ في IQD — عشرة مليارات تفوق أيّ عمليةٍ معقولة في المكتبة. */
 export const ABS_MAX_MONEY_IQD = 10_000_000_000;
@@ -45,14 +49,30 @@ export interface SanityIssue {
 }
 
 /**
- * يحوّل نصّ الحقل إلى `number` بحذر — بلا رمي: قيمة فارغة/غير رقمية ⇒ `null` (تُهمَل بلا رفض).
+ * يحوّل نصّ أو رقم الحقل إلى `Decimal` بحذر — بلا رمي: قيمة فارغة/غير رقمية ⇒ `null`.
+ */
+export function parseMoneyDecimal(raw: string | number | null | undefined): Decimal | null {
+  if (raw == null) return null;
+  if (typeof raw === "number" && !Number.isFinite(raw)) return null;
+  const s = String(raw).trim();
+  if (s === "" || s === "-") return null;
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(s)) return null;
+  try {
+    const d = new Decimal(s);
+    return d.isFinite() ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * يحوّل نصّ الحقل إلى `number` بحذر عبر `Decimal` — بلا رمي: قيمة فارغة/غير رقمية ⇒ `null` (تُهمَل بلا رفض).
  * التنقية النهائية للأصفار الزائدة تُطبَّق في `MoneyInput`/`NumberInput` قبل الوصول هنا.
  */
 export function parseMoneyStr(raw: string | null | undefined): number | null {
-  if (raw == null) return null;
-  const s = String(raw).trim();
-  if (s === "" || s === "-") return null;
-  const n = Number(s);
+  const d = parseMoneyDecimal(raw);
+  if (!d) return null;
+  const n = d.toNumber();
   return Number.isFinite(n) ? n : null;
 }
 
@@ -62,34 +82,38 @@ export function parseMoneyStr(raw: string | null | undefined): number | null {
  */
 export function checkMoneyBounds(raw: string | null | undefined, field: SanityIssue["field"], labelAr: string): SanityIssue[] {
   const issues: SanityIssue[] = [];
-  const v = parseMoneyStr(raw);
-  if (v == null) return issues;
-  if (v < 0) {
+  const d = parseMoneyDecimal(raw);
+  if (!d) return issues;
+  if (d.lt(0)) {
     issues.push({ level: "blocker", code: "money_negative", field, message: `${labelAr} لا يصحّ أن يكون سالباً.` });
   }
-  if (v > ABS_MAX_MONEY_IQD) {
+  if (d.gt(ABS_MAX_MONEY_IQD)) {
     issues.push({ level: "blocker", code: "money_over_absmax", field, message: `${labelAr} تجاوز الحدّ الأقصى المعقول (${ABS_MAX_MONEY_IQD.toLocaleString("en-US")} د.ع) — راجع الرقم.` });
   }
   return issues;
 }
 
 /**
- * فحص معامل التحويل — يجب أن يكون > 1 لغير الأساس، وأقلّ من الحدّ المطلق. أرقام غير معقولة
+ * فحص معامل التحويل — يجب أن يكون عدداً صحيحاً > 1 لغير الأساس، وأقلّ من الحدّ المطلق. أرقام غير معقولة
  * (مثلاً 100000 قطعة في كارتون) خطأ إدخال شبه مؤكّد.
  */
 export function checkConversionFactor(raw: string | null | undefined, isBase: boolean): SanityIssue[] {
   const issues: SanityIssue[] = [];
   if (isBase) return issues; // وحدة الأساس دائماً ١.
-  const v = parseMoneyStr(raw);
-  if (v == null || v <= 0) {
+  const d = parseMoneyDecimal(raw);
+  if (!d || d.lte(0)) {
     issues.push({ level: "blocker", code: "factor_missing", field: "conversionFactor", message: "معامل التحويل لغير الوحدة الأساس مطلوب ويكون أكبر من صفر." });
     return issues;
   }
-  if (v <= 1) {
+  if (!d.isInteger()) {
+    issues.push({ level: "blocker", code: "factor_not_integer", field: "conversionFactor", message: "معامل التحويل يجب أن يكون عدداً صحيحاً موجباً." });
+    return issues;
+  }
+  if (d.lte(1)) {
     issues.push({ level: "blocker", code: "factor_le_one", field: "conversionFactor", message: "معامل التحويل لغير الأساس يجب أن يكون أكبر من ١ (درزن = ١٢، كرتون = …)." });
   }
-  if (v > ABS_MAX_CONVERSION_FACTOR) {
-    issues.push({ level: "warning", code: "factor_over_max", field: "conversionFactor", message: `معامل التحويل (${v.toLocaleString("en-US")}) أكبر من ${ABS_MAX_CONVERSION_FACTOR.toLocaleString("en-US")} — راجع الرقم أو أكّد رغم الشذوذ.` });
+  if (d.gt(ABS_MAX_CONVERSION_FACTOR)) {
+    issues.push({ level: "warning", code: "factor_over_max", field: "conversionFactor", message: `معامل التحويل (${d.toNumber().toLocaleString("en-US")}) أكبر من ${ABS_MAX_CONVERSION_FACTOR.toLocaleString("en-US")} — راجع الرقم أو أكّد رغم الشذوذ.` });
   }
   return issues;
 }
@@ -102,25 +126,26 @@ export function checkConversionFactor(raw: string | null | undefined, isBase: bo
  */
 export function checkCostVsRetail(costRaw: string | null | undefined, retailRaw: string | null | undefined, tierLabelAr: string): SanityIssue[] {
   const issues: SanityIssue[] = [];
-  const cost = parseMoneyStr(costRaw);
-  const retail = parseMoneyStr(retailRaw);
-  if (cost == null || retail == null || cost <= 0 || retail <= 0) return issues;
-  const ratio = cost / retail;
-  if (ratio >= COST_ABOVE_RETAIL_HARD_RATIO) {
+  const cost = parseMoneyDecimal(costRaw);
+  const retail = parseMoneyDecimal(retailRaw);
+  if (!cost || !retail || cost.lte(0) || retail.lte(0)) return issues;
+  const ratio = cost.div(retail);
+  const narrowThreshold = new Decimal(1).div(NARROW_MARGIN_RATIO);
+  if (ratio.gte(COST_ABOVE_RETAIL_HARD_RATIO)) {
     issues.push({
       level: "blocker",
       code: "cost_over_retail_hard",
       field: "costPrice",
-      message: `التكلفة (${cost.toLocaleString("en-US")}) أكبر من سعر ${tierLabelAr} (${retail.toLocaleString("en-US")}) بـ${ratio.toFixed(1)}× — خطأ إدخال محتمل. راجع الرقم (نقطة عشرية/أصفار زائدة؟).`,
+      message: `التكلفة (${cost.toNumber().toLocaleString("en-US")}) أكبر من سعر ${tierLabelAr} (${retail.toNumber().toLocaleString("en-US")}) بـ${ratio.toDecimalPlaces(1, Decimal.ROUND_HALF_UP).toFixed(1)}× — خطأ إدخال محتمل. راجع الرقم (نقطة عشرية/أصفار زائدة؟).`,
     });
-  } else if (ratio > COST_ABOVE_RETAIL_RATIO) {
+  } else if (ratio.gt(COST_ABOVE_RETAIL_RATIO)) {
     issues.push({
       level: "warning",
       code: "cost_over_retail",
       field: "costPrice",
-      message: `التكلفة (${cost.toLocaleString("en-US")}) أكبر من سعر ${tierLabelAr} (${retail.toLocaleString("en-US")}) ⇒ بيعٌ بخسارة. أكّد إن كان مقصوداً.`,
+      message: `التكلفة (${cost.toNumber().toLocaleString("en-US")}) أكبر من سعر ${tierLabelAr} (${retail.toNumber().toLocaleString("en-US")}) ⇒ بيعٌ بخسارة. أكّد إن كان مقصوداً.`,
     });
-  } else if (ratio > 1 / NARROW_MARGIN_RATIO) {
+  } else if (ratio.gt(narrowThreshold)) {
     // ratio بين COST_ABOVE_RETAIL_RATIO و NARROW_MARGIN_RATIO ⇒ هامشٌ ضيّق جداً.
     issues.push({
       level: "info",
@@ -139,7 +164,9 @@ export interface UnitPricing {
   /** اسم الوحدة للرسالة (قطعة/درزن/كارتون…). */
   unitName: string;
   /** معامل التحويل عن وحدة الأساس (١ للأساس). */
-  conversionFactor: number;
+  conversionFactor: number | string;
+  /** هل هذه هي وحدة الأساس؟ إن لم تُمرَّر تُستنتج للتوافق الخلفي من المعامل ١. */
+  isBaseUnit?: boolean;
   /** سعر البيع بهذه الوحدة (المفرد بحدّ أدنى، وقد يشمل الجملة/الحكومي). */
   retail: string | null;
   wholesale?: string | null;
@@ -156,16 +183,18 @@ export function checkVariantSanity(baseUnitCost: string | null | undefined, unit
   const issues: SanityIssue[] = [];
   // ١) حدود التكلفة الأساس نفسها.
   issues.push(...checkMoneyBounds(baseUnitCost, "costPrice", "التكلفة"));
-  const baseCost = parseMoneyStr(baseUnitCost);
-  // ٢) لكل وحدة: حدود الأسعار + مقارنة كلّ فئة بتكلفة الوحدة (baseCost × factor).
+  const baseCost = parseMoneyDecimal(baseUnitCost);
+  // ٢) لكل وحدة: حدود الأسعار + مقارنة كلّ فئة بتكلفة الوحدة (baseCost × factor) بدقّة Decimal.
   for (const u of units) {
-    const factorIssues = checkConversionFactor(String(u.conversionFactor), u.conversionFactor === 1);
+    const factorDec = parseMoneyDecimal(u.conversionFactor);
+    const isBase = u.isBaseUnit !== undefined ? u.isBaseUnit : Boolean(factorDec && factorDec.eq(1));
+    const factorIssues = checkConversionFactor(String(u.conversionFactor ?? ""), isBase);
     for (const it of factorIssues) issues.push({ ...it, message: `[${u.unitName}] ${it.message}` });
     issues.push(...checkMoneyBounds(u.retail, "retail", `سعر المفرد (${u.unitName})`));
     if (u.wholesale != null) issues.push(...checkMoneyBounds(u.wholesale, "wholesale", `سعر الجملة (${u.unitName})`));
     if (u.government != null) issues.push(...checkMoneyBounds(u.government, "government", `سعر الحكومي (${u.unitName})`));
-    if (baseCost != null && baseCost > 0 && Number.isFinite(u.conversionFactor) && u.conversionFactor > 0) {
-      const unitCost = (baseCost * u.conversionFactor).toString();
+    if (baseCost && baseCost.gt(0) && factorDec && factorDec.gt(0)) {
+      const unitCost = baseCost.times(factorDec).toString();
       const tierChecks: Array<[string | null | undefined, string]> = [
         [u.retail, `المفرد (${u.unitName})`],
         [u.wholesale, `الجملة (${u.unitName})`],
@@ -198,24 +227,22 @@ export type CostChangeSeverity = "ok" | "info" | "warning" | "blocker" | "catast
 
 /**
  * صنّف حدّة التكلفة بمقاييسٍ ثنائية: النسبة إلى `retail` والنسبة إلى `oldCost` (إن أُعطيت). النتيجة
- * هي الأشدّ بين المقياسَين. يُستدعى في الطبقات الثلاث:
- *   - الطبقة ١: حين يكتب المستخدم قيمة (بلا oldCost فقط retail).
- *   - الطبقة ٢: حين يفحص الكاشف قيمةً موجودة (retail موجود، oldCost يأتي من auditLog).
- *   - الطبقة ٣: حين يقارن Trigger القيمة الجديدة بالقديمة قبل الحفظ (oldCost موجود، retail قد يغيب).
+ * هي الأشدّ بين المقياسَين.
  */
 export function classifySeverity(cost: string | number | null | undefined, refs: { retail?: string | number | null; oldCost?: string | number | null } = {}): CostChangeSeverity {
-  const c = parseMoneyStr(cost as string | null | undefined);
-  if (c == null || c <= 0) return "ok";
-  const r = parseMoneyStr((refs.retail ?? null) as string | null | undefined);
-  const o = parseMoneyStr((refs.oldCost ?? null) as string | null | undefined);
+  const c = parseMoneyDecimal(cost);
+  if (!c || c.lte(0)) return "ok";
+  const r = parseMoneyDecimal(refs.retail ?? null);
+  const o = parseMoneyDecimal(refs.oldCost ?? null);
+  const narrowThreshold = new Decimal(1).div(NARROW_MARGIN_RATIO);
   const cats: CostChangeSeverity[] = [];
   for (const ref of [r, o]) {
-    if (ref == null || ref <= 0) continue;
-    const ratio = c / ref;
-    if (ratio >= COST_CATASTROPHIC_RATIO) cats.push("catastrophic");
-    else if (ratio >= COST_ABOVE_RETAIL_HARD_RATIO) cats.push("blocker");
-    else if (ratio > COST_ABOVE_RETAIL_RATIO) cats.push("warning");
-    else if (ratio > 1 / NARROW_MARGIN_RATIO) cats.push("info");
+    if (!ref || ref.lte(0)) continue;
+    const ratio = c.div(ref);
+    if (ratio.gte(COST_CATASTROPHIC_RATIO)) cats.push("catastrophic");
+    else if (ratio.gte(COST_ABOVE_RETAIL_HARD_RATIO)) cats.push("blocker");
+    else if (ratio.gt(COST_ABOVE_RETAIL_RATIO)) cats.push("warning");
+    else if (ratio.gt(narrowThreshold)) cats.push("info");
     else cats.push("ok");
   }
   if (cats.includes("catastrophic")) return "catastrophic";
@@ -236,72 +263,61 @@ export interface CostSuggestion {
 }
 
 /**
- * يقترح تصحيحاتٍ محتملة لقيمة تكلفةٍ شاذّة، بأنماط أخطاء الإدخال الشائعة:
- *   ١) إزالة رقمٍ من المقدّمة (يعالج «16162» بدل «1162.5»: ١ متلصق).
- *   ٢) إزالة صفرٍ (يعالج «8000» بدل «800»: صفر زائد ذيليّ).
- *   ٣) نقل الفاصلة (`1616.2` كنسخة أخرى من «16162»).
- *   ٤) إدخال فاصلة (يعالج «16162» → «161.62» أو «1616.2» أو «16.162»).
- *
- * الترتيب بالمسافة من `retail` أو `medianCategoryCost` — الأقرب إليهما أوّلاً. تُعاد إلى ٣ اقتراحات كحدّ أقصى.
+ * يقترح تصحيحاتٍ محتملة لقيمة تكلفةٍ شاذّة، بأنماط أخطاء الإدخال الشائعة.
  */
 export function suggestCostCorrections(cost: string | number, retail?: string | number | null, medianCategoryCost?: number | null): CostSuggestion[] {
-  const c = parseMoneyStr(typeof cost === "number" ? String(cost) : cost);
-  if (c == null || c <= 0) return [];
-  const r = parseMoneyStr((retail ?? null) as string | null | undefined);
-  const m = medianCategoryCost != null && Number.isFinite(medianCategoryCost) && medianCategoryCost > 0 ? medianCategoryCost : null;
-  // نقطة الاستهداف: نصف سعر البيع (هامش ٥٠٪ كأول تخمين) أو الوسيط.
-  const target = m ?? (r != null && r > 0 ? r * 0.5 : c);
+  const cDec = parseMoneyDecimal(cost);
+  if (!cDec || cDec.lte(0)) return [];
+  const c = cDec.toNumber();
+  const rDec = parseMoneyDecimal(retail ?? null);
+  const mDec = medianCategoryCost != null ? parseMoneyDecimal(medianCategoryCost) : null;
+  const targetDec = mDec && mDec.gt(0) ? mDec : rDec && rDec.gt(0) ? rDec.times("0.5") : cDec;
+  const target = targetDec.toNumber();
 
   const candidates: CostSuggestion[] = [];
-  const seen = new Set<number>();
-  const push = (value: number, description: string) => {
-    if (!Number.isFinite(value) || value <= 0) return;
-    // نستثني الاقتراحات التي تُنتج نفس القيمة الحالية أو قيمة أكبر منها (لا نقترح جعل الخطأ أكبر).
-    if (value >= c) return;
-    // تقريب لخانتَين — قيم المال في نظامنا.
-    const rounded = Math.round(value * 100) / 100;
-    if (seen.has(rounded)) return;
-    seen.add(rounded);
+  const seen = new Set<string>();
+  const push = (valDec: Decimal, description: string) => {
+    if (!valDec.isFinite() || valDec.lte(0)) return;
+    if (valDec.gte(cDec)) return;
+    const roundedDec = valDec.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const key = roundedDec.toFixed(2);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const rounded = roundedDec.toNumber();
     const score = Math.abs(Math.log10(rounded / target));
     candidates.push({ value: rounded, description, score });
   };
 
-  const s = String(c);
+  const s = cDec.toString();
   const digits = s.replace(/[.-]/g, "");
   const decPart = s.includes(".") ? s.split(".")[1] : "";
   const decLen = decPart.length;
 
-  // ١) إزالة رقمٍ أوّل (16162 → 6162 مثلاً — لكن هذا لا يفيد. الأنفع «إزالة رقمٍ ثاني/ثالث»).
-  //    نجرّب حذف كلّ رقمٍ في الجزء الصحيح واحداً تلو الآخر ونحسب المسافة.
   const intPart = s.includes(".") ? s.split(".")[0] : s;
   if (intPart.length >= 2) {
     for (let i = 0; i < intPart.length; i++) {
       const trimmedInt = intPart.slice(0, i) + intPart.slice(i + 1);
-      if (trimmedInt === "" || trimmedInt === "0") continue;
-      const val = Number(trimmedInt + (decPart ? "." + decPart : ""));
-      push(val, `إزالة الرقم ${intPart[i]} في الموضع ${i + 1}`);
+      if (trimmedInt === "" || /^0+$/.test(trimmedInt)) continue;
+      const val = parseMoneyDecimal(trimmedInt + (decPart ? "." + decPart : ""));
+      if (val) push(val, `إزالة الرقم ${intPart[i]} في الموضع ${i + 1}`);
     }
   }
 
-  // ٢) نقل الفاصلة يميناً/يساراً بمكانٍ واحد (تكون العشرة بديلاً واقعياً):
-  push(c / 10, "قسمة على ١٠ (نقل الفاصلة يساراً موضعاً واحداً)");
-  push(c / 100, "قسمة على ١٠٠");
-  push(c / 1000, "قسمة على ١٠٠٠");
+  push(cDec.div(10), "قسمة على ١٠ (نقل الفاصلة يساراً موضعاً واحداً)");
+  push(cDec.div(100), "قسمة على ١٠٠");
+  push(cDec.div(1000), "قسمة على ١٠٠٠");
 
-  // ٣) إدخال فاصلة عشريّة داخل الجزء الصحيح (16162 → 1616.2 أو 161.62 أو 16.162).
   if (decLen === 0 && digits.length >= 3) {
     for (let i = 1; i < digits.length; i++) {
-      const inserted = Number(digits.slice(0, i) + "." + digits.slice(i));
-      push(inserted, `إدراج فاصلة عشريّة قبل الرقم ${digits[i]}`);
+      const inserted = parseMoneyDecimal(digits.slice(0, i) + "." + digits.slice(i));
+      if (inserted) push(inserted, `إدراج فاصلة عشريّة قبل الرقم ${digits[i]}`);
     }
   }
 
-  // فرز واقتصاص بالأقرب إلى الهدف.
   candidates.sort((a, b) => a.score - b.score);
   const top: CostSuggestion[] = [];
   for (const cand of candidates) {
     if (top.length >= 3) break;
-    // لا نُدرج قيمتَين متقاربتَين جداً (فارقهما < ٥٪) — تنويعٌ أفضل للمستخدم.
     if (top.some((t) => Math.abs(t.value - cand.value) / Math.max(t.value, cand.value) < 0.05)) continue;
     top.push(cand);
   }

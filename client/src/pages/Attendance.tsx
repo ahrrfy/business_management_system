@@ -16,7 +16,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { WEEK_DAYS } from "@shared/hr";
+import { baghdadCurrentMonth, baghdadTodayYmd, recentBaghdadMonths, WEEK_DAYS } from "@shared/hr";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   attendanceHoursViolation,
@@ -40,9 +40,9 @@ type DayStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";
 const PAGE_SIZE = 50;
 
 
-/** الشهر الحالي بصيغة "YYYY-MM". */
-const currentMonth = () => new Date().toISOString().slice(0, 7);
-const today = () => new Date().toISOString().slice(0, 10);
+/** الشهر الحالي بصيغة "YYYY-MM" بتوقيت بغداد. */
+const currentMonth = () => baghdadCurrentMonth();
+const today = () => baghdadTodayYmd();
 
 /** اليوم التالي بصيغة YYYY-MM-DD (لأوقات الانصراف بعد منتصف الليل). */
 function nextDateStr(ymd: string): string {
@@ -57,16 +57,9 @@ function monthLabel(period: string): string {
   const [y, m] = period.split("-").map(Number);
   return `${MONTH_NAMES[(m || 1) - 1]} ${y}`;
 }
-/** آخر ١٢ شهراً كخيارات. */
+/** آخر ١٢ شهراً كخيارات بتوقيت بغداد. */
 function recentMonths(count = 12): string[] {
-  const out: string[] = [];
-  const d = new Date();
-  d.setDate(1);
-  for (let i = 0; i < count; i++) {
-    out.push(d.toISOString().slice(0, 7));
-    d.setMonth(d.getMonth() - 1);
-  }
-  return out;
+  return recentBaghdadMonths(count);
 }
 
 function StatCard({ label, value, sub, icon, accent }: { label: string; value: string; sub?: string; icon: React.ReactNode; accent?: string }) {

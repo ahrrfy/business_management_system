@@ -23,8 +23,8 @@ export type PosProductRow = RouterOutputs["catalog"]["posList"][number];
 
 export interface UnifiedProductSearchProps {
   branchId: number;
-  /** وضع الاستعلام: sale (كاشير/مبيعات posList) أو purchase (شراء/تصنيع forPurchase) */
-  mode?: "sale" | "purchase";
+  /** وضع الاستعلام: sale (كاشير/مبيعات posList) أو warehouse (مخزن/تحويلات warehouseList) أو purchase */
+  mode?: "sale" | "warehouse" | "purchase";
   /** فئة السعر (لجانب البيع): RETAIL / WHOLESALE / etc. */
   tier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   /** عند اختيار أو إضافة صنف */
@@ -71,6 +71,13 @@ export function UnifiedProductSearch({
       staleTime: 5_000,
     },
   );
+  const warehouseQuery = trpc.catalog.warehouseList.useQuery(
+    { branchId, tier, query: debouncedSearch, limit: 20, includeBundles: true },
+    {
+      enabled: mode === "warehouse" && isSearchActive,
+      staleTime: 5_000,
+    },
+  );
 
   const utils = trpc.useUtils();
 
@@ -79,10 +86,13 @@ export function UnifiedProductSearch({
     if (mode === "sale") {
       return (posQuery.data ?? []) as PosProductRow[];
     }
+    if (mode === "warehouse") {
+      return (warehouseQuery.data ?? []) as PosProductRow[];
+    }
     return [];
-  }, [mode, posQuery.data]);
+  }, [mode, posQuery.data, warehouseQuery.data]);
 
-  const searching = posQuery.isFetching;
+  const searching = mode === "warehouse" ? warehouseQuery.isFetching : posQuery.isFetching;
   const searchSettled = search.trim() === debouncedSearch.trim() && !searching;
 
   // إغلاق القائمة المنسدلة عند النقر خارج المكون
@@ -107,24 +117,41 @@ export function UnifiedProductSearch({
       const trimmed = code.trim();
       if (!trimmed) return;
       try {
-        const item = await utils.catalog.byBarcode.fetch({
-          barcode: trimmed,
-          branchId,
-          tier,
-        });
+        const item =
+          mode === "warehouse"
+            ? await utils.catalog.warehouseByBarcode.fetch({
+                barcode: trimmed,
+                branchId,
+                tier,
+                includeBundles: true,
+              })
+            : await utils.catalog.byBarcode.fetch({
+                barcode: trimmed,
+                branchId,
+                tier,
+              });
         if (item) {
           onSelect(item as PosProductRow);
           setSearch("");
           setShowDrop(false);
           return;
         }
-        if (mode === "sale" && trimmed.length >= 2) {
-          const list = await utils.catalog.posList.fetch({
-            branchId,
-            tier,
-            query: trimmed,
-            limit: 20,
-          });
+        if ((mode === "sale" || mode === "warehouse") && trimmed.length >= 2) {
+          const list =
+            mode === "warehouse"
+              ? await utils.catalog.warehouseList.fetch({
+                  branchId,
+                  tier,
+                  query: trimmed,
+                  limit: 20,
+                  includeBundles: true,
+                })
+              : await utils.catalog.posList.fetch({
+                  branchId,
+                  tier,
+                  query: trimmed,
+                  limit: 20,
+                });
           if (list.length === 1) {
             onSelect(list[0] as PosProductRow);
             setSearch("");

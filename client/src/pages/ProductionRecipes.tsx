@@ -309,7 +309,7 @@ export default function ProductionRecipes() {
                         </div>
                       </div>
                     ) : (
-                      <ProductSearchPicker branchId={branchId} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOut({ variantId: v.variantId, productName: v.productName, sku: v.sku, costPriceBase: String(v.costPriceBase ?? "0"), units: u.length ? u : [v], unitId: v.productUnitId, unitName: v.unitName })} />
+                      <ProductSearchPicker branchId={branchId} excludeOperatingSupply={true} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOut({ variantId: v.variantId, productName: v.productName, sku: v.sku, costPriceBase: String(v.costPriceBase ?? "0"), units: u.length ? u : [v], unitId: v.productUnitId, unitName: v.unitName })} />
                     )}
                   </div>
                 </div>
@@ -338,7 +338,7 @@ export default function ProductionRecipes() {
                 <p className="text-xs text-muted-foreground">الكمية لكل وحدة ناتج واحدة. اختر وحدة المكوّن (ورقة / ربطة / غرام…).</p>
               </CardHeader>
               <CardContent className="space-y-2">
-                <ProductSearchPicker branchId={branchId} placeholder="أضِف مكوّناً (ورق، غلاف، غراء…)…" onPick={pickComp} />
+                <ProductSearchPicker branchId={branchId} materialOnly={true} placeholder="أضِف مكوّناً (ورق، غلاف، غراء…)…" onPick={pickComp} />
                 {comps.map((c) => (
                   <div key={c.key} className="grid grid-cols-12 gap-2 items-center border rounded-md p-2">
                     <div className="col-span-12 md:col-span-4">

@@ -1,7 +1,9 @@
 // إنشاء الحجز — حجز ناعم تحت قفل ATP. الإنفاذ ناعم (قرار المالك): يُسمح بالحجز حتى فوق المتاح
 // مع وسم الأصناف المتجاوِزة (overbookedVariantIds) — تحذير لا منع. الكميات تُحوَّل لوحدة الأساس خادمياً.
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { isSellableStockUsage } from "@shared/stockUsage";
+import { asc, eq, inArray } from "drizzle-orm";
 import { products, productVariants, reservationEvents, reservationLines, reservations } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { convertToBaseQuantity } from "../inventoryService";
@@ -50,15 +52,57 @@ export async function createReservation(input: CreateReservationInput, actor: Ac
 
     // حارس (مراجعة Codex P1): لا يُحجز منتج مركّب (bundle) أو خدميّ — لا رصيد branchStock ذاتيّ له
     // (bundle مخزونه مشتقّ من مكوّناته؛ الحجز الناعم يعمل على reservationStock لكل variant مخزونيّ).
-    const variantIds = Array.from(new Set(converted.map((c) => c.variantId)));
+    const variantIds = Array.from(new Set(converted.map((c) => c.variantId))).sort((a, b) => a - b);
     const kinds = await tx
-      .select({ variantId: productVariants.id, isBundle: products.isBundle, isService: products.isService })
+      .select({
+        variantId: productVariants.id,
+        productId: products.id,
+        productName: products.name,
+        productActive: products.isActive,
+        variantActive: productVariants.isActive,
+        isBundle: products.isBundle,
+        isService: products.isService,
+        productType: products.productType,
+        stockUsage: products.stockUsage,
+      })
       .from(productVariants)
       .innerJoin(products, eq(products.id, productVariants.productId))
-      .where(inArray(productVariants.id, variantIds));
+      .where(inArray(productVariants.id, variantIds))
+      .orderBy(asc(products.id), asc(productVariants.id))
+      .for("update");
+    if (kinds.length !== variantIds.length) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء الحجز",
+          why: "أحد الأصناف المختارة في الحجز غير موجود في الكتالوج",
+          doThis: "حدّث قائمة الأصناف وأزل البند المفقود ثم أعد إنشاء الحجز",
+        }),
+      });
+    }
     for (const k of kinds) {
       if (k.isBundle || k.isService) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُحجز منتج مركّب (بكج) أو خدميّ — احجز أصنافاً مخزونية." });
+      }
+      if (!k.productActive || !k.variantActive || k.productType === "DIGITAL_CARD") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر حجز الصنف «${k.productName}»`,
+            why: "الصنف أو متغيّره معطّل أو لا يقبل الحجز المخزني",
+            doThis: "أزل الصنف غير المتاح من الحجز أو فعّله أولاً",
+          }),
+        });
+      }
+      if (!isSellableStockUsage(k.stockUsage)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر حجز الصنف «${k.productName}»`,
+            why: "تصنيف استخدام الصنف (مادة خام أو مستلزم تشغيل) لا يسمح بحجزه للبيع",
+            doThis: "احجز أصنافاً مخصّصة للبيع فقط أو حدّث تصنيف استخدام الصنف",
+          }),
+        });
       }
     }
 

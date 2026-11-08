@@ -21,6 +21,8 @@ import {
 import { assertSupplierAdvanceInboundHistory } from "./advanceRefundEvidence";
 import { money } from "../money";
 import { sha256 } from "./grniAccounting";
+import { openShiftIdTx } from "../shiftService";
+import { isPurchaseTreasuryAllowedTx } from "./supplierPayments";
 
 export function purchaseTenderError(what: string, why: string) {
   return new TRPCError({
@@ -132,32 +134,78 @@ export async function capturePurchaseTenderTx(
       input.branchId,
     );
   }
-  if (tender.mode === "CARD") {
-    await assertPurchaseCardAccountTx(tx, tender.accountId);
-  } else if (
-    tender.mode === "DRAWER" &&
-    tender.shiftId != null &&
-    tender.previousReceiptId == null
-  ) {
-    const [shift] = await tx
-      .select()
-      .from(shifts)
-      .where(eq(shifts.id, tender.shiftId))
-      .limit(1);
-    const creatorId = input.previous?.createdBy ?? actor.userId;
+  let normalizedTender: PurchaseTenderInput = tender;
+  if (normalizedTender.mode === "CARD") {
+    await assertPurchaseCardAccountTx(tx, normalizedTender.accountId);
+  } else if (normalizedTender.mode === "TREASURY") {
+    const prevTender =
+      input.previous && input.previous.settlementType === "CASH"
+        ? await readPurchaseTenderTx(
+            tx,
+            input.previous.id,
+            input.previous.currentRevisionId,
+          )
+        : null;
     if (
-      !shift ||
-      shift.status !== "OPEN" ||
-      Number(shift.branchId) !== input.branchId ||
-      Number(shift.userId) !== creatorId
+      prevTender?.mode !== "TREASURY" &&
+      !(await isPurchaseTreasuryAllowedTx(tx, actor))
     ) {
-      throw purchaseTenderError(
-        "تعذر اختيار وردية السداد",
-        "الوردية ليست مفتوحة لمنشئ الفاتورة في الفرع المحدد",
-      );
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر اختيار الخزينة الرئيسية لسداد الشراء",
+          why: "اختيار الخزينة يتطلب صلاحية الخزينة الكاملة أو حساب مالك نشط",
+          doThis:
+            "اختر درج ورديتك المفتوحة أو اطلب من مخول الخزينة حفظ مصدر السداد",
+        }),
+      });
+    }
+  } else if (normalizedTender.mode === "DRAWER") {
+    const creatorId = Number(input.previous?.createdBy ?? actor.userId);
+    let resolvedShiftId: number | undefined = normalizedTender.shiftId;
+    if (resolvedShiftId == null) {
+      const openId = await openShiftIdTx(tx, creatorId, input.branchId);
+      if (openId != null) {
+        resolvedShiftId = openId;
+      } else if (normalizedTender.previousReceiptId == null) {
+        throw purchaseTenderError(
+          "تعذر اختيار وردية السداد",
+          "لا توجد وردية مفتوحة لمنشئ الفاتورة في الفرع المحدد",
+        );
+      }
+    }
+    if (resolvedShiftId != null) {
+      const [shift] = await tx
+        .select()
+        .from(shifts)
+        .where(eq(shifts.id, resolvedShiftId))
+        .limit(1);
+      if (!shift) {
+        throw purchaseTenderError(
+          "تعذر اختيار وردية السداد",
+          "الوردية المحددة غير موجودة",
+        );
+      }
+      if (Number(shift.userId) !== creatorId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر اختيار وردية السداد",
+            why: "درج السداد في فاتورة الشراء النقدية يجب أن يخص منشئ الأمر حصراً",
+            doThis: "اختر وردية المنشئ المفتوحة أو الخزينة الرئيسية وفق صلاحياتها",
+          }),
+        });
+      }
+      if (shift.status !== "OPEN" || Number(shift.branchId) !== input.branchId) {
+        throw purchaseTenderError(
+          "تعذر اختيار وردية السداد",
+          "الوردية ليست مفتوحة لمنشئ الفاتورة في الفرع المحدد",
+        );
+      }
+      normalizedTender = { ...normalizedTender, shiftId: Number(shift.id) };
     }
   }
-  return purchaseTenderSchema.parse(tender);
+  return purchaseTenderSchema.parse(normalizedTender);
 }
 
 export async function assertPurchaseCardAccountTx(

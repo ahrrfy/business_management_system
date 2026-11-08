@@ -96,6 +96,7 @@ export function useVoucherFormQueries(
 
   const customerInvoices = trpc.sales.list.useQuery(
     {
+      branchId: branchId ?? undefined,
       customerId: customerId ?? undefined,
       q: debouncedInvoiceQ || undefined,
       balanceState: isReceipt ? "OUTSTANDING" : undefined,

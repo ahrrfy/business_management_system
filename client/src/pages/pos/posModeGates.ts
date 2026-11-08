@@ -19,6 +19,8 @@ import {
   type PosStation,
   type RoleKey,
 } from "@shared/permissions";
+import type { OperationPolicy } from "@shared/operationPermissions";
+import { canSeeGate } from "@/lib/navVisibility";
 
 // طبقة الشفافية (ش١ RBAC): بوّابات أقسام POS صارت مصدرَ حقيقةٍ واحداً في shared/permissions.ts
 // (POS_STATION_GATES) يستهلكه الخادم (users.effectivePermissions) والعميل معاً — فلا تعريفان متباينان.
@@ -38,6 +40,16 @@ export function canSeeMode(
   mode: Mode,
   role: RoleKey | undefined,
   override?: PermissionMap | null,
+  operationPolicy?: OperationPolicy | null,
 ): boolean {
+  if (operationPolicy) {
+    const g = POS_STATION_GATES[mode];
+    return canSeeGate(
+      { roles: [...g.allowedRoles], module: g.module, level: "FULL" },
+      role,
+      override,
+      operationPolicy,
+    );
+  }
   return canUseStation(mode, role, override);
 }

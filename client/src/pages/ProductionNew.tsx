@@ -703,14 +703,14 @@ export default function ProductionNew() {
             <Card>
               <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                {branchId != null && <ProductSearchPicker branchId={branchId} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />}
+                {branchId != null && <ProductSearchPicker branchId={branchId} materialOnly={true} placeholder="ابحث عن مادة خام أو مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />}
                 {inputs.length > 0 ? renderLines(inputs, setInputs, "in") : <p className="text-xs text-muted-foreground">لم تُضف مدخلات بعد.</p>}
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                {branchId != null && <ProductSearchPicker branchId={branchId} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />}
+                {branchId != null && <ProductSearchPicker branchId={branchId} excludeOperatingSupply={true} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />}
                 {outputs.length > 0 ? renderLines(outputs, setOutputs, "out") : <p className="text-xs text-muted-foreground">لم تُضف مخرجات بعد.</p>}
               </CardContent>
             </Card>

@@ -7,6 +7,7 @@ import { printPayslip } from "@/lib/printing/printPayslip";
 import { iqd } from "@/lib/hr/ui";
 import { fmtDate } from "@/lib/date";
 import { buildPayrollPayslipBreakdown, type PayrollPenaltyProjection } from "@/lib/payrollPayslipBreakdown";
+import { fullEmployeeName } from "@shared/hr";
 import { AlertCircle, CheckCircle2, Clock, FileText, Printer } from "lucide-react";
 
 export default function HrPayslip() {
@@ -60,15 +61,21 @@ export default function HrPayslip() {
   });
   const hasAmount = (value: string) => value !== "0.00";
   const isPaid = item.paidAt != null;
-  const statusLabel =
-    isPaid ? "مدفوع" : item.runStatus === "draft" ? "مسودّة" : "معتمد";
+  const empFullName = fullEmployeeName(employee);
+  const statusLabel = isPaid
+    ? "مدفوع"
+    : item.runStatus === "draft"
+      ? "مسودّة"
+      : item.runStatus === "cancelled"
+        ? "ملغى"
+        : "معتمد";
 
   const handlePrint = () => {
     printPayslip({
       runId: item.runId,
       period: item.period,
       statusLabel,
-      employeeName: `${employee.firstName} ${employee.lastName}`,
+      employeeName: empFullName,
       employeeId: employee.id,
       position: employee.position,
       department: employee.department,
@@ -107,6 +114,8 @@ export default function HrPayslip() {
               className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
                 isPaid
                   ? "badge-status-active"
+                  : item.runStatus === "cancelled"
+                  ? "badge-status-cancelled"
                   : item.runStatus === "approved"
                   ? "bg-primary/10 text-primary"
                   : "badge-status-pending"
@@ -144,7 +153,7 @@ export default function HrPayslip() {
           <div>
             <span className="text-muted-foreground block mb-0.5">اسم الموظف</span>
             <span className="font-semibold text-sm">
-              {employee.firstName} {employee.lastName}
+              {empFullName}
             </span>
           </div>
           <div>

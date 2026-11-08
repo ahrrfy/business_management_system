@@ -73,7 +73,14 @@ export const decisionsRouter = router({
         action: `decisions.${input.action.toLowerCase()}`,
         entityType: input.kind,
         entityId: input.id,
-        newValue: { outcome: res.outcome, reason: input.reason?.slice(0, 200) ?? null, clientRequestId: input.clientRequestId, variant: input.variant ?? null },
+        newValue: {
+          outcome: res.outcome,
+          reason: input.reason?.slice(0, 200) ?? null,
+          clientRequestId: input.clientRequestId,
+          variant: input.variant ?? null,
+          decidedBy: ctx.user.id,
+          approvedBy: input.action === "APPROVE" ? ctx.user.id : null,
+        },
       });
       return res;
     }),

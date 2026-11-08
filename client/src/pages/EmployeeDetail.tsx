@@ -84,7 +84,7 @@ export default function EmployeeDetail() {
   const isTerminated = e.employmentStatus === "terminated";
 
   return (
-    <div className="space-y-3 max-w-5xl">
+    <div className="space-y-3 max-w-7xl">
       <PageHeader
         title="بطاقة الموظف"
         backHref="/hr/employees"

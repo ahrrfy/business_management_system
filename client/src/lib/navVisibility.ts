@@ -221,6 +221,7 @@ export function canSeeGate(
       (operation) =>
         operation.delegable &&
         (operation.navigationModule ?? operation.module)?.split("|").includes(gate.module!) &&
+        (gate.level !== "FULL" || operation.level === "FULL" || operation.kind === "mutation") &&
         // A cashier's shift helpers share treasury, but do not authorize its financial pages.
         (gate.module !== "treasury" || operation.domain === "treasury" ||
           ["cashTransfers.list", "cashTransfers.send", "vouchers.list", "vouchers.create", "voucherCategories.list", "shifts.list"].includes(operation.path)) &&

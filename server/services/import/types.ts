@@ -12,6 +12,8 @@ export type ImportOptions = {
   skipFailed?: boolean;
   /** اتجاه الرصيد الافتتاحي: «كما في الملف» أو «اعكس الإشارة» (افتراض الموردين في الواجهة: اعكس). */
   balanceSign?: BalanceSign;
+  /** الفرع المستهدف عند استيراد مخزون افتتاحي موجب (يُشترط صراحةً أو من فرع الفاعل المخوَّل). */
+  branchId?: number;
 };
 
 export type ImportRowResult = {

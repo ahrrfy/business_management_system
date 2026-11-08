@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   counterValue: 0,
 }));
 vi.mock("../../services/tx", () => ({
+  assertFinancialWriterGateHeld: () => {},
   withTx: async (run: (tx: unknown) => Promise<unknown>) => {
     // Route and transaction checks share one persisted actor, independently of
     // domain result ordering; the real scope assertion below owns the decision.
@@ -1264,8 +1265,82 @@ describe("purchase-return fresh transaction authority", () => {
         { id: 2, costPrice: "0.00" },
         { id: 5, costPrice: "99.00" },
       ], // variantCostRows (historical lineCost 5.00 and 20.00 must win over live 99.00)
-      [{ id: 9, variantId: 1, branchId: 2, quantity: 10 }], // applyMovement branchStock lock item 601
-      [{ id: 10, variantId: 5, branchId: 2, quantity: 10 }], // applyMovement branchStock lock item 603
+      [{ id: 1, readyVersion: 1 }], // lockEconomicInventoryScope: inventoryProjectionState
+      [
+        { id: 1, productId: 101 },
+        { id: 5, productId: 105 },
+      ], // lockEconomicInventoryScope: productVariants refs
+      [
+        {
+          id: 101,
+          name: "دفتر مملوك",
+          isActive: true,
+          isService: false,
+          isBundle: false,
+          isConsignment: false,
+          consignorId: null,
+          productType: "STANDARD",
+        },
+      ], // lockEconomicInventoryScope: products #101
+      [
+        {
+          id: 105,
+          name: "ملزمة أمانة",
+          isActive: true,
+          isService: false,
+          isBundle: false,
+          isConsignment: true,
+          consignorId: 77,
+          productType: "STANDARD",
+        },
+      ], // lockEconomicInventoryScope: products #105
+      [{ id: 1 }], // lockInventoryVariants #1
+      [{ id: 5 }], // lockInventoryVariants #5
+      [
+        {
+          id: 1,
+          productId: 101,
+          costPrice: "99.00",
+          transitBaseBySourceBranch: {},
+        },
+      ], // lockEconomicInventoryScope: productVariants #1 for update
+      [
+        {
+          id: 5,
+          productId: 105,
+          costPrice: "99.00",
+          transitBaseBySourceBranch: {},
+        },
+      ], // lockEconomicInventoryScope: productVariants #5 for update
+      [
+        {
+          id: 1,
+          productId: 101,
+          costPrice: "99.00",
+          transitBaseBySourceBranch: {},
+        },
+      ], // readEconomicOwnedPositions: readEconomicVariant #1
+      [{ branchId: 2, quantity: 10 }], // readEconomicOwnedPositions: shelf branchStock #1
+      [
+        {
+          id: 1,
+          productId: 101,
+          costPrice: "99.00",
+          transitBaseBySourceBranch: {},
+        },
+      ], // applyMovement: readEconomicVariant #1
+      [{ id: 1 }], // applyMovement: lockInventoryVariants #1
+      [{ id: 9, variantId: 1, branchId: 2, quantity: 10 }], // applyMovement: branchStock lock item 601
+      [
+        {
+          id: 5,
+          productId: 105,
+          costPrice: "99.00",
+          transitBaseBySourceBranch: {},
+        },
+      ], // applyMovement: readEconomicVariant #5
+      [{ id: 5 }], // applyMovement: lockInventoryVariants #5
+      [{ id: 10, variantId: 5, branchId: 2, quantity: 10 }], // applyMovement: branchStock lock item 603
       [], // reconcileDeliveryOnReturnTx
     ];
     const result = await api
@@ -1353,5 +1428,6 @@ describe("purchase-return fresh transaction authority", () => {
     ];
     expect(cIdArg).toBe(77);
     expect(deltaArg.toFixed(2)).toBe("-20.00");
+    expect(state.updates).toContainEqual({ costPrice: "90.45" });
   });
 });

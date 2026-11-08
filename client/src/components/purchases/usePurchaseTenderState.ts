@@ -160,6 +160,20 @@ export function usePurchaseTenderState({
     total,
     selectedPrevious?.availableAmount,
   );
+  const selectedDrawer =
+    drawers.find((row) => String(row.id) === draft.shiftId) ?? null;
+  const sourceAvailableCash =
+    !preservingLegacy && draft.mode === "DRAWER"
+      ? (selectedDrawer?.availableCash ?? null)
+      : !preservingLegacy && draft.mode === "TREASURY"
+        ? (cash.data?.treasuryAvailableCash ?? null)
+        : null;
+  const shortageAmount =
+    sourceAvailableCash != null &&
+    amounts.remainder.gt(moneyInput(sourceAvailableCash))
+      ? amounts.remainder.minus(moneyInput(sourceAvailableCash))
+      : D(0);
+  const hasShortage = shortageAmount.gt(0);
   const saved = savedRef.current;
   const retainsDrawer =
     context === "edit" &&
@@ -302,6 +316,9 @@ export function usePurchaseTenderState({
     cardAccount,
     previousPayments,
     amounts,
+    sourceAvailableCash,
+    shortageAmount,
+    hasShortage,
     showRetry:
       sources.isError ||
       cash.isError ||

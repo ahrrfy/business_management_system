@@ -8,26 +8,39 @@
  * الوحدات قالبٌ مشترك (اسم/معامل/سعر) تُطابَق بالاسم لكل متغيّر، **والباركود مستقل لكل
  * (متغيّر×وحدة)**. لا يلمس المخزون — أرصدة الفروع تُدار عبر شاشات الجرد/الحركات.
  */
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
-import { branchStock, bundleComponents, invoiceItems, inventoryMovements, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
+import { branchStock, bundleComponents, invoiceItems, inventoryMovements, productImages, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
+import type { PermissionMap } from "@shared/permissions";
+import { canCarryStockUsage, isSellableStockUsage, type StockUsage } from "@shared/stockUsage";
 import { getDb } from "../db";
 import type { Tx } from "../db";
-import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import {
+  acquireCatalogBarcodeWriteLock,
+  addUnitBarcodeAliasTx,
+  findBarcodeClashes,
+  migrateAliases,
+  removeUnitBarcodeAliasTx,
+} from "./catalog/barcodeAliases";
 import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
-// م٦ (D5): الحرّاس السبعة مصدرُها الواحد `./catalog/productUpdateGuards` — يتشاركها هذا المسار (القالب
-// المشترك) ومسارُ معرّف الوحدة في `catalog/productUpdate.ts`. لا حارسَ يُكتب هنا بيدٍ بعد اليوم.
+// م٦ (D5): الحرّاس المشتركة مصدرُها الواحد `./catalog/productUpdateGuards`.
 import {
   assertBaseUnitStableAndRevalueCost,
   assertBundleEditShape,
   assertHasVariants,
   assertNoActiveStocktakeFactorChange,
   assertNoActiveStocktakeUnitFreeze,
+  assertStorefrontPublishReadyTx,
+  assertUniqueNormalizedVariantCombos,
+  assertUniqueUnitNamesAndTiers,
+  assertUnitFactorImmutableIfUsed,
+  assertVariantIdentityImmutableIfUsed,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -86,6 +99,8 @@ export interface UpdateVariantRow {
   image?: string | null;
   /** باركود لكل وحدة بمفتاح اسم الوحدة. */
   unitBarcodes: Record<string, string>;
+  /** بدائل الباركود المرغوبة لكل وحدة بمفتاح اسم الوحدة — تُوفَّق ذرّياً داخل نفس المعاملة. */
+  barcodeAliases?: Record<string, Array<{ barcode: string; note?: string | null }>>;
 }
 
 /** صورة منتج عامّة في حمولة التعديل — metadata لصورة مملوكة فقط.
@@ -118,6 +133,8 @@ export interface UpdateProductVariantsInput {
   /** «يُباع بالطلب» — نمط PATCH: `undefined` ⇒ لا تُمَسّ. */
   allowBackorder?: boolean;
   isActive?: boolean;
+  stockUsage?: StockUsage | null;
+  showInStore?: boolean;
   // ٢٤/٨ — متابعةُ PR #755: تحرير التوجيه بعد الإنشاء. اختياريّان بلا افتراض — نمط PATCH.
   showInReception?: boolean;
   showInPrintPos?: boolean;
@@ -145,23 +162,71 @@ function composeName(input: UpdateProductVariantsInput, fallback: string): strin
   return explicit || composed || fallback;
 }
 
-/** يرفض الباركود المكرّر ضدّ منتجات أخرى، ويرفض SKU المكرّر داخل نفس المنتج فقط. */
+export type UpdateProductVariantsActor = Actor & {
+  permissionsOverride?: PermissionMap | null;
+};
+
+function assertNonNegativeMoneyDecimal(raw: string, label: string): void {
+  const trimmed = (raw ?? "").trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${label}»`,
+        why: "المبالغ المالية بالدينار العراقي يجب أن تكون غير سالبة وبمنزلتين عشريتين كحدّ أقصى",
+        doThis: "صحّح القيمة المالية ثم أعد الحفظ",
+      }),
+    });
+  }
+  const dec = new Decimal(trimmed);
+  if (!dec.isFinite() || dec.isNegative() || dec.decimalPlaces() > 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${label}»`,
+        why: "المبلغ المالي خارج النطاق المسموح",
+        doThis: "صحّح القيمة المالية ثم أعد الحفظ",
+      }),
+    });
+  }
+}
+
+/** يرفض الباركود المكرّر (أساسياً أو بديلاً) داخل المنتج أو ضدّ منتجات أخرى، ويرفض SKU المكرّر. */
 async function assertEditUniqueness(tx: Tx, input: UpdateProductVariantsInput) {
   const unitNames = input.unitTemplate.map((u) => u.unitName.trim());
   const codes: string[] = [];
-  for (const v of input.variants) for (const n of unitNames) {
-    const b = canonicalizeBarcodeInput(v.unitBarcodes[n] ?? "");
-    if (b) codes.push(b);
+  for (const v of input.variants) {
+    for (const n of unitNames) {
+      const b = canonicalizeBarcodeInput(v.unitBarcodes[n] ?? "");
+      if (b) codes.push(b);
+      for (const alias of v.barcodeAliases?.[n] ?? []) {
+        const ab = canonicalizeBarcodeInput(alias.barcode ?? "");
+        if (ab) codes.push(ab);
+      }
+    }
   }
   const seen = new Set<string>();
   for (const c of codes) {
     const identities = barcodeIdentityCandidates(c).map(barcodeComparisonKey);
-    if (identities.some((identity) => seen.has(identity))) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.` });
+    if (identities.some((identity) => seen.has(identity))) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.`,
+      });
+    }
     identities.forEach((identity) => seen.add(identity));
   }
   if (seen.size) {
-    const taken = await findBarcodeClashes(tx, codes, { ignoreProductIds: [input.productId] });
-    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}».` });
+    const taken = await findBarcodeClashes(tx, codes, {
+      ignoreProductIds: [input.productId],
+      forShare: true,
+    });
+    if (taken[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}».`,
+      });
+    }
   }
 
   const skus = input.variants.map((v) => v.sku.trim()).filter(Boolean);
@@ -179,6 +244,7 @@ async function upsertVariantUnits(
   variantId: number,
   template: UpdateUnitTemplate[],
   unitBarcodes: Record<string, string>,
+  barcodeAliases: Record<string, Array<{ barcode: string; note?: string | null }>> | undefined,
   baseRetailOverride: string | undefined,
   actor: Actor,
 ) {
@@ -193,16 +259,40 @@ async function upsertVariantUnits(
       barcode: (unitBarcodes[t.unitName.trim()] ?? "").trim() || null,
     })),
   );
+
+  // إن أرسل المستدعي بدائل الباركود المرغوبة، نزيل البدائل المُسقطة قبل فحص/كتابة الأساسيات داخل نفس المعاملة
+  // حتى تنجح ترقية بديلٍ إلى باركود أساسيّ لنفس الوحدة ذرّياً.
+  if (barcodeAliases !== undefined && existing.length > 0) {
+    const existingUnitIds = existing.map((u) => Number(u.id));
+    const currentAliases = await tx
+      .select({
+        id: productUnitBarcodes.id,
+        productUnitId: productUnitBarcodes.productUnitId,
+        barcode: productUnitBarcodes.barcode,
+      })
+      .from(productUnitBarcodes)
+      .where(inArray(productUnitBarcodes.productUnitId, existingUnitIds))
+      .for("update");
+    const unitNameById = new Map(existing.map((u) => [Number(u.id), u.unitName.trim()]));
+    for (const aliasRow of currentAliases) {
+      const uName = unitNameById.get(Number(aliasRow.productUnitId));
+      if (!uName || !(uName in barcodeAliases)) continue;
+      const desiredList = barcodeAliases[uName] ?? [];
+      const stillDesired = desiredList.some((d) => barcodesEquivalent(d.barcode ?? "", aliasRow.barcode));
+      if (!stillDesired) {
+        await removeUnitBarcodeAliasTx(tx, Number(aliasRow.id), { lockAlreadyHeld: true });
+      }
+    }
+  }
+
   const keep = new Set<number>();
-  // فحص التفرّد للباركودات الأساسيّة على مستوى (الأساسيّ + البديل) قبل أيّ كتابة — نمنع
-  // كتابة باركود أساسيّ يطابق بديلاً لسلعة أخرى (Codex P1). نتجاهل وحدات المتغيّر الحاليّة
-  // (تحديث ذاتيّ مقبول).
   const codesToWrite = template
     .map((t) => (unitBarcodes[t.unitName.trim()] ?? "").trim())
     .filter(Boolean);
   if (codesToWrite.length) {
     const clashes = await findBarcodeClashes(tx, codesToWrite, {
       ignorePrimaryUnitIds: existing.map((u) => Number(u.id)),
+      forShare: true,
     });
     if (clashes[0]) {
       throw new TRPCError({
@@ -212,10 +302,9 @@ async function upsertVariantUnits(
     }
   }
   const override = (baseRetailOverride ?? "").trim();
-  // نَجمع كل صفوف الأسعار ثم نُدرجها دفعةً واحدة (بدل INSERT لكل سعر) — أقلّ ذهاباً للقاعدة.
   const priceRows: { productUnitId: number; priceTier: PriceTier; price: string }[] = [];
-  // نتتبّع الوحدات المُنشأة حديثاً (لنَنقل بدائل الوحدات المُعطَّلة إليها لدى إعادة التسمية).
   const inserted: Array<{ unitId: number; barcode: string | null }> = [];
+  const unitIdByName = new Map<string, number>();
   for (const t of template) {
     const name = t.unitName.trim();
     // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)؛ المطابقة أدناه عبر `barcodesEquivalent`
@@ -270,6 +359,13 @@ async function upsertVariantUnits(
     let previousByTier: Map<string, string> | null = null;
     if (match) {
       unitId = Number(match.id);
+      await assertUnitFactorImmutableIfUsed(
+        tx,
+        unitId,
+        match.conversionFactor,
+        t.isBaseUnit ? "1" : t.conversionFactor,
+        name,
+      );
       if (!t.isBaseUnit) {
         await assertNoActiveStocktakeFactorChange(tx, variantId, [
           { unitName: name, oldFactor: match.conversionFactor, newFactor: t.conversionFactor },
@@ -321,6 +417,7 @@ async function upsertVariantUnits(
       } as (typeof existing)[number]);
     }
     keep.add(unitId);
+    unitIdByName.set(name, unitId);
     const nextPrices: Array<{ priceTier: PriceTier; price: string }> = [];
     for (const pr of t.prices) {
       // سعر خاص لمفرد وحدة الأساس يَجُبّ سعر القالب لهذا المتغيّر.
@@ -354,6 +451,40 @@ async function upsertVariantUnits(
   }
   if (drop.length) {
     await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
+  }
+
+  // توفيق بدائل الباركود ذرّياً داخل المعاملة نفسها (أي تعارض باركود يُسقط التعديل كلّه).
+  if (barcodeAliases !== undefined) {
+    for (const [rawUnitName, desired] of Object.entries(barcodeAliases)) {
+      const targetUnitId = unitIdByName.get(rawUnitName.trim());
+      if (!targetUnitId) continue;
+      const currentRows = await tx
+        .select({
+          id: productUnitBarcodes.id,
+          barcode: productUnitBarcodes.barcode,
+        })
+        .from(productUnitBarcodes)
+        .where(eq(productUnitBarcodes.productUnitId, targetUnitId))
+        .for("update");
+      for (const cur of currentRows) {
+        const stillDesired = desired.some((d) => barcodesEquivalent(d.barcode ?? "", cur.barcode));
+        if (!stillDesired) {
+          await removeUnitBarcodeAliasTx(tx, Number(cur.id), { lockAlreadyHeld: true });
+        }
+      }
+      const remainingCodes = currentRows
+        .filter((cur) => desired.some((d) => barcodesEquivalent(d.barcode ?? "", cur.barcode)))
+        .map((cur) => cur.barcode);
+      for (const d of desired) {
+        const trimmed = (d.barcode ?? "").trim();
+        if (!trimmed) continue;
+        if (remainingCodes.some((c) => barcodesEquivalent(c, trimmed))) continue;
+        await addUnitBarcodeAliasTx(tx, targetUnitId, trimmed, d.note ?? null, actor.userId, {
+          lockAlreadyHeld: true,
+        });
+        remainingCodes.push(trimmed);
+      }
+    }
   }
 }
 
@@ -401,7 +532,7 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
 }
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
-export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: Actor) {
+export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: UpdateProductVariantsActor) {
   return withTx((tx) => updateProductWithVariantsTx(tx, input, actor),
     input.recipeChange ? { isolationLevel: "read committed" } : undefined);
 }
@@ -410,7 +541,8 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
  * الجسم داخل معاملةٍ يملكها المستدعي — كي يضمّه مسارُ **الاستعادة** (`catalog/productVersioning.ts`) إلى
  * معاملته فتمرّ الاستعادةُ بالحرّاس نفسها وتكتب لقطتها في نفس المعاملة. لا تستدعِه من راوترٍ مباشرةً.
  */
-export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVariantsInput, actor: Actor) {
+export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVariantsInput, actor: UpdateProductVariantsActor) {
+    await acquireCatalogBarcodeWriteLock(tx);
     // Lock the union before the product's own row: recipe writers use products→variants.
     const saveRecipe = input.recipeChange
       ? await prepareProductRecipeChangeTx(tx, input.productId, input.recipeChange, actor)
@@ -419,16 +551,25 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     assertHasVariants(input.variants.length);
     const baseUnits = input.unitTemplate.filter((u) => u.isBaseUnit).length;
     if (baseUnits !== 1) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد وحدة أساس واحدة فقط في قالب الوحدات" });
-    // gstack B12: بكج = متغيّرٌ واحد + وحدةُ أساسٍ واحدة — كان في مسار المعرّف وحده، فكان هذا المسار ثقباً.
-    assertBundleEditShape(p, input.variants.length, baseUnits);
+    assertBundleEditShape(p, input.variants.length, baseUnits, {
+      isService: input.isService,
+      showInPrintPos: input.showInPrintPos,
+    });
     if (input.unitTemplate.some((u) => !u.unitName.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل وحدة في القالب تحتاج اسماً" });
-    // Codex جولة٧ P1: ارفض اسمَ وحدةٍ مكرّراً في القالب — `upsertVariantUnits` يطابق بالاسم فيُعالج المكرّر
-    // مرّتين (يُدرِج/يُحدِّث الصفّ نفسه) فقد يُفقَد الأساس أو يلتبس، متجاوزاً حارس ثبات الأساس.
-    const tplNames = input.unitTemplate.map((u) => u.unitName.trim());
-    if (new Set(tplNames).size !== tplNames.length) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم وحدةٍ مكرّرٌ في قالب الوحدات" });
-    // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١ (كان الحارس واجهياً فقط).
+    assertUniqueUnitNamesAndTiers("قالب الوحدات", input.unitTemplate);
     assertValidUnitFactors(input.unitTemplate);
+    for (const tplUnit of input.unitTemplate) {
+      for (const pr of tplUnit.prices) {
+        assertNonNegativeMoneyDecimal(pr.price, `سعر ${pr.priceTier} للوحدة ${tplUnit.unitName}`);
+      }
+    }
     if (input.variants.some((v) => !v.sku.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل متغيّر يحتاج SKU" });
+    for (const v of input.variants) {
+      assertNonNegativeMoneyDecimal(v.costPrice, `تكلفة المتغيّر ${v.sku}`);
+      if (v.baseRetail && v.baseRetail.trim()) {
+        assertNonNegativeMoneyDecimal(v.baseRetail, `السعر الخاص للمتغيّر ${v.sku}`);
+      }
+    }
 
     await assertEditUniqueness(tx, input);
 
@@ -594,16 +735,44 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     const name = composeName(input, p.name);
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
 
-    // نقفل الوحدات قبل productVariant، وهو نفس ترتيب إنشاء/إرسال طلب المتجر. ثم
-    // نشتق التغيير من الصفوف المقفلة لا من لقطة قديمة، ونفحص الطلبات النشطة Current Read.
-    const existingVariantIds = input.variants
-      .filter((variant) => variant.id != null)
-      .map((variant) => Number(variant.id));
-    const existingUnitIds = existingVariantIds.length
+    const canHaveStockUsage = canCarryStockUsage({
+      isService: willBeService,
+      isBundle: !!p.isBundle,
+      isConsignment: willBeConsignment,
+    });
+    if (!canHaveStockUsage && input.stockUsage != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تصنيف الاستخدام المخزني يخصّ الأصناف المخزنية المملوكة فقط",
+          why: "الخدمات والبكجات وبضاعة الأمانة لا تحمل تصنيف stockUsage",
+          doThis: "أزل تصنيف الاستخدام المخزني لهذا الصنف ثم أعد الحفظ",
+        }),
+      });
+    }
+    const effectiveStockUsage: StockUsage | null = !canHaveStockUsage
+      ? null
+      : input.stockUsage !== undefined
+        ? input.stockUsage
+        : ((p.stockUsage as StockUsage | null) ?? null);
+
+    // نقفل جميع وحدات ومتغيّرات المنتج بترتيب الأقفال الحاكم: units → variants.
+    const allDbVariants = await tx
+      .select()
+      .from(productVariants)
+      .where(eq(productVariants.productId, input.productId));
+    const dbVariantById = new Map(allDbVariants.map((row) => [Number(row.id), row]));
+    for (const v of input.variants) {
+      if (v.id != null && !dbVariantById.has(Number(v.id))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
+      }
+    }
+    const allVariantIds = allDbVariants.map((variant) => Number(variant.id));
+    const existingUnitIds = allVariantIds.length
       ? (await tx
           .select({ id: productUnits.id })
           .from(productUnits)
-          .where(inArray(productUnits.variantId, existingVariantIds)))
+          .where(inArray(productUnits.variantId, allVariantIds)))
           .map((unit) => Number(unit.id))
       : [];
     const desiredTemplateByName = new Map(input.unitTemplate.map((unit) => [unit.unitName.trim(), unit] as const));
@@ -613,14 +782,133 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       const desiredFactor = desired.isBaseUnit ? 1 : Number(desired.conversionFactor);
       return desiredFactor !== Number(unit.conversionFactor);
     });
+    await lockVariantsForUpdate(tx, allVariantIds);
 
-    // Codex P1 (٢٤/٨ على PR #757): تفعيلُ `showInPrintPos` بلا مزامنة `productType` كان يجعل البند
-    // يظهر في شبكة كاشير الطباعة عبر `listPrintServices` لكنّ `createPrintSale` يرفضه بـ«هذه
-    // الشاشة تبيع خدمات الطباعة فقط» ([`printSaleService.ts:290`](server/services/printSaleService.ts#L290))
-    // — تجربةٌ منكسرة يعِد فيها التبديلُ بمخرَجٍ عاجزٍ عنه. نُزامِن ذرّياً في نفس UPDATE:
-    // عند تفعيل التبديل، نضمن `productType='PRINT_SERVICE'` (لا نغيّر عند التعطيل — قد يبقى نوعاً
-    // مشروعاً وقد يعنيه المدير لاحقاً).
-    await lockVariantsForUpdate(tx, existingVariantIds);
+    // دمج حقول الهوية مع الموجود (نمط PATCH) وفحص فريدية التركيبات + ثبات الهوية المستخدمة.
+    const sentVariantIds = new Set(
+      input.variants.filter((v) => v.id != null).map((v) => Number(v.id)),
+    );
+    const resolvedComboCandidates = [
+      ...input.variants.map((v) => {
+        const existingRow = v.id != null ? dbVariantById.get(Number(v.id)) : undefined;
+        const kind: VariantKind =
+          v.variantKind !== undefined
+            ? v.variantKind
+            : ((existingRow?.variantKind as VariantKind | undefined) ?? "VARIANT");
+        const vName =
+          v.variantName !== undefined ? (v.variantName?.trim() || null) : (existingRow?.variantName ?? null);
+        const color = v.color !== undefined ? (v.color?.trim() || null) : (existingRow?.color ?? null);
+        const size = v.size !== undefined ? (v.size?.trim() || null) : (existingRow?.size ?? null);
+        return { id: v.id, sku: v.sku, variantKind: kind, variantName: vName, color, size };
+      }),
+      ...allDbVariants
+        .filter((row) => !sentVariantIds.has(Number(row.id)))
+        .map((row) => ({
+          id: Number(row.id),
+          sku: row.sku,
+          variantKind: (row.variantKind as VariantKind) ?? "VARIANT",
+          variantName: row.variantName ?? null,
+          color: row.color ?? null,
+          size: row.size ?? null,
+        })),
+    ];
+    assertUniqueNormalizedVariantCombos(resolvedComboCandidates);
+
+    for (const v of input.variants) {
+      if (v.id == null) continue;
+      const existingRow = dbVariantById.get(Number(v.id))!;
+      const kind: VariantKind =
+        v.variantKind !== undefined
+          ? v.variantKind
+          : ((existingRow.variantKind as VariantKind | undefined) ?? "VARIANT");
+      const vName =
+        v.variantName !== undefined ? (v.variantName?.trim() || null) : (existingRow.variantName ?? null);
+      const color = v.color !== undefined ? (v.color?.trim() || null) : (existingRow.color ?? null);
+      const size = v.size !== undefined ? (v.size?.trim() || null) : (existingRow.size ?? null);
+      await assertVariantIdentityImmutableIfUsed(
+        tx,
+        Number(existingRow.id),
+        {
+          variantKind: existingRow.variantKind,
+          variantName: existingRow.variantName,
+          color: existingRow.color,
+          size: existingRow.size,
+        },
+        { variantKind: kind, variantName: vName, color, size },
+        existingRow.sku || vName || `#${existingRow.id}`,
+      );
+    }
+
+    // اتّساق التفعيل للصنف البسيط أحاديّ المتغيّر عديم الأبعاد.
+    const firstCombo = resolvedComboCandidates[0];
+    const isSingleSimpleProduct =
+      allDbVariants.length <= 1 &&
+      input.variants.length === 1 &&
+      firstCombo?.variantKind !== "ALTERNATIVE" &&
+      !firstCombo?.color &&
+      !firstCombo?.size;
+    let syncedSimpleActive: boolean | undefined;
+    if (isSingleSimpleProduct) {
+      const v0 = input.variants[0];
+      if (input.isActive !== undefined && v0.isActive !== undefined && input.isActive !== v0.isActive) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعارض في حالة تفعيل الصنف البسيط ومتغيّره الوحيد",
+            why: "لا يجوز تفعيل أحدهما وتعطيل الآخر في صنف بسيط ذي متغيّر واحد بلا أبعاد",
+            doThis: "وحّد حالة التفعيل للصنف ومتغيّره ثم أعد الحفظ",
+          }),
+        });
+      }
+      if (input.isActive !== undefined) syncedSimpleActive = input.isActive;
+      else if (v0.isActive !== undefined) syncedSimpleActive = v0.isActive;
+    }
+    const effectiveProductIsActive = syncedSimpleActive ?? (input.isActive ?? !!p.isActive);
+
+    const effectiveCategoryId =
+      input.categoryId !== undefined
+        ? (input.categoryId ?? null)
+        : (p.categoryId != null ? Number(p.categoryId) : null);
+    const eligibleForStore =
+      !willBeService && isSellableStockUsage(effectiveStockUsage) && effectiveProductIsActive;
+    let nextShowInStore: boolean | undefined;
+    if (input.showInStore !== undefined) {
+      if (input.showInStore) {
+        await assertStorefrontPublishReadyTx(tx, {
+          actor,
+          requirePermission: Boolean(actor.role),
+          isActive: effectiveProductIsActive,
+          isService: willBeService,
+          stockUsage: effectiveStockUsage,
+          categoryId: effectiveCategoryId,
+          variants: input.variants.map((v, idx) => {
+            const existingRow = v.id != null ? dbVariantById.get(Number(v.id)) : undefined;
+            const vActive =
+              idx === 0 && syncedSimpleActive !== undefined
+                ? syncedSimpleActive
+                : (v.isActive ?? existingRow?.isActive ?? true);
+            return {
+              isActive: !!vActive,
+              units: input.unitTemplate.map((u) => {
+                const tplRetail = u.prices.find((pr) => pr.priceTier === "RETAIL")?.price ?? null;
+                const retailPrice =
+                  u.isBaseUnit && v.baseRetail && v.baseRetail.trim() ? v.baseRetail : tplRetail;
+                return {
+                  isActive: true,
+                  isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit,
+                  conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+                  retailPrice,
+                };
+              }),
+            };
+          }),
+        });
+      }
+      nextShowInStore = input.showInStore;
+    } else if (!eligibleForStore && p.showInStore) {
+      nextShowInStore = false;
+    }
+
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
 
@@ -647,12 +935,18 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
-        categoryId: input.categoryId ?? null,
+        categoryId: effectiveCategoryId,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
         allowAutoCartRecommendations: input.allowAutoCartRecommendations ?? p.allowAutoCartRecommendations !== false,
-        isService: input.isService ?? !!p.isService,
+        isService: willBeService,
+        ...(!canHaveStockUsage
+          ? { stockUsage: null }
+          : input.stockUsage !== undefined
+            ? { stockUsage: input.stockUsage }
+            : {}),
+        ...(nextShowInStore !== undefined ? { showInStore: nextShowInStore } : {}),
         ...(input.allowBackorder !== undefined ? { allowBackorder: input.allowBackorder } : {}),
-        ...(input.isActive != null ? { isActive: input.isActive } : {}),
+        isActive: effectiveProductIsActive,
         ...(input.showInReception !== undefined ? { showInReception: input.showInReception } : {}),
         ...(input.showInPrintPos !== undefined ? { showInPrintPos: input.showInPrintPos } : {}),
         ...(input.showInQuotations !== undefined ? { showInQuotations: input.showInQuotations } : {}),
@@ -666,17 +960,6 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     // تدقيق ١١/٨ (#2): اسم وحدة الأساس الجديدة (القالب مشترك) — الحارس يفحص كل متغيّرٍ قائمٍ به رصيد/حركة.
     const newBaseName = input.unitTemplate.find((u) => u.isBaseUnit)!.unitName;
 
-    // م٣ (هوية البدائل): أسماء البدائل فريدةٌ داخل المنتج — بديلان بالاسم نفسه يلبسان هويةً واحدة.
-    const altNames = input.variants
-      .filter((v) => v.variantKind === "ALTERNATIVE")
-      .map((v) => (v.variantName ?? "").trim().toLowerCase())
-      .filter(Boolean);
-    if (new Set(altNames).size !== altNames.length) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم بديلٍ مكرَّر داخل المنتج — لكلّ بديلٍ اسمٌ مميّز." });
-    }
-
-    // المتغيّرات القائمة أولاً وبترتيب المعرّف الحاكم لأقفال WAVG؛ الجديدة لا تتشارك
-    // صفوفاً بعد، ونرتبها بالـSKU لتبقى الكتابة حتمية.
     const variantsInLockOrder = [...input.variants].sort((a, b) => {
       if (a.id != null && b.id != null) return Number(a.id) - Number(b.id);
       if (a.id != null) return -1;
@@ -684,9 +967,15 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       return a.sku.localeCompare(b.sku);
     });
     for (const v of variantsInLockOrder) {
-      const variantKind: VariantKind = v.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
-      const variantName = v.variantName?.trim() || null;
-      // م٣: البديل منتجٌ حقيقيٌّ مستقلّ ⇒ يلزمه اسمٌ مميّز، ولا بديلَ بلا باركود (يُهدم الجرد بالمسح).
+      const existingRow = v.id != null ? dbVariantById.get(Number(v.id)) : undefined;
+      const variantKind: VariantKind =
+        v.variantKind !== undefined
+          ? v.variantKind
+          : ((existingRow?.variantKind as VariantKind | undefined) ?? "VARIANT");
+      const variantName =
+        v.variantName !== undefined ? (v.variantName?.trim() || null) : (existingRow?.variantName ?? null);
+      const resolvedColor = v.color !== undefined ? (v.color?.trim() || null) : (existingRow?.color ?? null);
+      const resolvedSize = v.size !== undefined ? (v.size?.trim() || null) : (existingRow?.size ?? null);
       if (variantKind === "ALTERNATIVE") {
         if (!variantName) {
           throw new TRPCError({ code: "BAD_REQUEST", message: `البديل «${v.sku}» يلزمه اسمٌ مميّز (الماركة/المنشأ).` });
@@ -699,31 +988,27 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
           });
         }
       }
+      const resolvedVariantActive =
+        syncedSimpleActive !== undefined
+          ? syncedSimpleActive
+          : (v.isActive ?? existingRow?.isActive ?? true);
       const vals = {
         sku: v.sku.trim(),
         variantKind,
         variantName,
-        color: v.color?.trim() || null,
-        size: v.size?.trim() || null,
+        color: resolvedColor,
+        size: resolvedSize,
         costPrice: toDbMoney(v.costPrice),
         minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
         reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
-        isActive: v.isActive ?? true,
+        isActive: !!resolvedVariantActive,
       };
-      // colorHex بدلالة الصورة (أدناه): undefined ⇒ **لا نلمسها** فيُصان اللون الصريح المخزَّن — تعديلٌ لا
-      // يرسل colorHex (كشاشة «السلعة البسيطة» SimpleProductEditForm) كان يمسحه إلى null صامتاً؛ null/"" ⇒
-      // تُزال (المستخدم أعادها للتلقائي)؛ hex ⇒ تُعيَّن. عند الإدراج نُثبّتها (لا قيمة محفوظة لنصونها).
       const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
-        // الحارس أدناه يملك ترتيب القفل الحاكم variant→branchStock ويتحقّق أن هذه اللقطة
-        // ما زالت حيّة، فلا «قبل» بائت ولا طمس لـWAVG متزامن.
         const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
-        // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
-        // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
-        // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
         await assertBaseUnitStableAndRevalueCost(
           tx, variantId, { by: "name", unitName: newBaseName }, owned.costPrice, vals.costPrice, actor, v.costChangeReason,
         );
@@ -733,7 +1018,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         variantId = extractInsertId(res);
         added++;
       }
-      await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail, actor);
+      await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.barcodeAliases, v.baseRetail, actor);
 
       // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
       if (v.image !== undefined) {

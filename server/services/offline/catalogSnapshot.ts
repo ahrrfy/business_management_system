@@ -49,7 +49,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, coalesce(${products.posLabel}, ''), coalesce(${products.shortTitle}, ''), ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, coalesce(${products.posLabel}, ''), coalesce(${products.shortTitle}, ''), ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), coalesce(${products.stockUsage}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -93,7 +93,8 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     // الخامّ فلا يتغيّر بتطبيع القيمة المُصدَّرة وحده — بلا رفعها يبقى الجهاز على باركوداتٍ خام لا تُطابَق.
     // v6: اعتماد عنوان القناة (titleForChannel مع قناة "pos" / posLabel / shortTitle) في productName
     // وsearchText للقطة، لتتطابق تسمية الكاشير أوفلاين مع الكاشير أونلاين تماماً + تضمين الحقلين في الـCRC.
-    "v6",
+    // v7: فلترة لقطة الأوفلاين ومخزونها وفق stockUsage القابل للبيع فقط + إدخال stockUsage في CRC.
+    "v7",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
@@ -161,6 +162,8 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
           eq(products.isActive, true),
           eq(productVariants.isActive, true),
           eq(productUnits.isActive, true),
+          sql`(${products.productType} IS NULL OR ${products.productType} <> 'DIGITAL_CARD')`,
+          sql`(${products.isService} = TRUE OR ${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL'))`,
         ),
       ),
     db
@@ -279,7 +282,13 @@ export async function buildStockSnapshot(branchId: number): Promise<OfflineStock
     .select({ variantId: productVariants.id })
     .from(productVariants)
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(and(eq(products.isActive, true), eq(productVariants.isActive, true)));
+    .where(
+      and(
+        eq(products.isActive, true),
+        eq(productVariants.isActive, true),
+        sql`(${products.isService} = TRUE OR ${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL'))`,
+      ),
+    );
   const variantIds = allVariantRows.map((r) => Number(r.variantId));
   if (variantIds.length === 0) return [];
 
