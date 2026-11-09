@@ -165,7 +165,7 @@ describe("company consignment operational eligibility", () => {
     expect(host.textContent).toContain("سجّل التحصيل");
     expect(host.querySelector("select")).toBeNull();
   });
-  it("exposes grouped shipment remittance action only when delivered with proven custody", () => {
+  it("exposes grouped shipment collection for collectible in-transit and delivered cash shipments while hiding credit-only delivered shipments", () => {
     const groupedInTransit = {
       ...healthy,
       shipmentLeaderConsignmentId: 10,
@@ -173,7 +173,15 @@ describe("company consignment operational eligibility", () => {
     } as Row;
     render(groupedInTransit);
     expect(host.textContent).toContain("الشحنة · 2 فواتير");
-    expect(host.textContent).not.toContain("سجّل التحصيل");
+    expect(host.textContent).toContain("سجّل التحصيل");
+
+    const groupedZeroLeaderWithSiblingCod = {
+      ...groupedInTransit,
+      remainingDue: "0.00",
+      shipmentCollectibleDue: "25000.00",
+    } as Row;
+    render(groupedZeroLeaderWithSiblingCod);
+    expect(host.textContent).toContain("سجّل التحصيل");
 
     const groupedDeliveredCredit = {
       ...groupedInTransit,

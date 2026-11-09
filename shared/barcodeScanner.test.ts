@@ -50,8 +50,17 @@ describe("barcodeScanner", () => {
     expect(normalizeKnownSystemBarcode("]A0ORD-2026-0001")).toBe("ORD-2026-0001");
   });
 
+  it("normalizes FC/AC/TRK/SHP, shifted Arabic ASCII prefixes ([}-12 -> FC-12), space-separated prefixes, and physicalBurst waybills", () => {
+    expect(normalizeKnownSystemBarcode("[}-12")).toBe("FC-12");
+    expect(normalizeKnownSystemBarcode("ِ}-55")).toBe("AC-55");
+    expect(normalizeKnownSystemBarcode("inv 10023")).toBe("INV-10023");
+    expect(normalizeKnownSystemBarcode("cn 2026-0042")).toBe("CN-2026-0042");
+    expect(normalizeKnownSystemBarcode("شقف-9988", { physicalBurst: true })).toBe("art-9988");
+    expect(normalizeKnownSystemBarcode("محمد أحمد")).toBe("محمد أحمد");
+  });
+
   it("includes all known system prefixes", () => {
-    for (const p of ["ORD", "CN", "INV", "WO", "RES", "PO", "QUO"]) {
+    for (const p of ["ORD", "CN", "INV", "WO", "RES", "PO", "QUO", "FR", "AE", "CHG", "FC", "AC", "TRK", "SHP"]) {
       expect(KNOWN_SYSTEM_PREFIXES).toContain(p);
     }
   });

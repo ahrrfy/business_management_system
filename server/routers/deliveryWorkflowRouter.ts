@@ -57,6 +57,7 @@ export const deliveryWorkflowRouter = router({
         branchId,
         evidence: z.string().trim().min(5).max(2000),
         inspected: z.literal(true),
+        feeEarned: z.boolean().optional(),
         receivedLines: z.array(z.object({ consignmentId: z.number().int().positive(), invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1).max(500).optional(),
         receivedConsignmentIds: z
           .array(z.number().int().positive())

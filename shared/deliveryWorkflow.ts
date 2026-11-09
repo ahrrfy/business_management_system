@@ -101,6 +101,7 @@ export interface WorkflowScanPreview {
     paidAmount: string;
     remainingAmount: string;
     codAmount: string;
+    sourceCodAmount?: string;
     cashInCourierCustody: string;
     heldDeliveryFee: string;
     serviceCharges: string;
@@ -189,6 +190,7 @@ export interface WorkflowScanPreview {
     received: boolean;
     heldCustomerOwned: boolean;
     commercialActionRequired: boolean;
+    postDeliveryCommercialEligible?: boolean;
     sourceClosureRequired: boolean;
     refundActionRequired: boolean;
     nextStep: string;
@@ -210,6 +212,7 @@ export interface WorkflowScanPreview {
       heldCustomerOwned: boolean;
       commercialActionRequired: boolean;
       sourceClosureRequired: boolean;
+      postDeliveryCommercialEligible?: boolean;
     }[];
   };
   group?: {
@@ -220,6 +223,15 @@ export interface WorkflowScanPreview {
     invoiceIds: number[];
     fulfillmentRequestId: number | null;
     partyId: number | null;
+    members?: {
+      consignmentId: number;
+      consignmentNumber: string;
+      invoiceId: number | null;
+      invoiceNumber: string | null;
+      workOrderId: number | null;
+      workOrderNumber: string | null;
+      codAmount: string;
+    }[];
   };
 }
 export interface WorkflowDispatchSource {
@@ -267,6 +279,7 @@ export interface WorkflowBatchPreview {
     paidAmount: string;
     remainingAmount: string;
     codAmount: string;
+    sourceCodAmount?: string;
     heldDeliveryFee: string;
     serviceCharges: string;
     goodsCodAmount: string;

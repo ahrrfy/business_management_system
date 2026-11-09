@@ -29,6 +29,8 @@ export interface PredictiveConsignmentSearchInputProps {
   onBarcodeEnter?: (raw: string) => void;
   /** تقييد البحث بجهة محددة (اختياري) */
   partyId?: number | null;
+  /** تقييد البحث بفرع العمل النشط (اختياري) */
+  branchId?: number | null;
   /** طرود محملة مسبقاً في الذاكرة لتصفيتها فورياً (اختياري) */
   localCandidates?: readonly any[];
   /** نص التلميح */
@@ -64,6 +66,7 @@ export function PredictiveConsignmentSearchInput({
   onSelect,
   onBarcodeEnter,
   partyId,
+  branchId,
   localCandidates,
   placeholder = "بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…",
   autoFocus = false,
@@ -89,6 +92,7 @@ export function PredictiveConsignmentSearchInput({
     {
       query: debouncedQuery.trim(),
       partyId: partyId ? Number(partyId) : undefined,
+      branchId: branchId ? Number(branchId) : undefined,
       limit: 12,
     },
     {

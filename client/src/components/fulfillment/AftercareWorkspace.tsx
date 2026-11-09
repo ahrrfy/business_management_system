@@ -121,6 +121,8 @@ function AftercareWorkspaceContent({
   const [barcodeInput, setBarcodeInput] = useState("");
   const [localBarcode, setLocalBarcode] = useState<string | null>(null);
   const barcodeRef = useRef<HTMLInputElement>(null);
+  const detailPanelRef = useRef<HTMLDivElement>(null);
+  const [shipmentMemberChoices, setShipmentMemberChoices] = useState<NonNullable<NonNullable<typeof scan.data>["group"]>["members"]>([]);
   const dismissed = useRef<string | null>(null);
   const resetBlocked = useWorkflowResetBlocked();
   const [location, navigate] = useLocation();
@@ -150,10 +152,34 @@ function AftercareWorkspaceContent({
     )
       return;
     const relations = scan.data.relations;
+    const eligibleMembers = (scan.data.group?.members ?? []).filter(
+      (m) => m.invoiceId != null || m.workOrderId != null,
+    );
     if (relations.aftercareCaseId) {
+      setShipmentMemberChoices([]);
       setSelected(relations.aftercareCaseId);
       setCreating(false);
+      requestAnimationFrame(() =>
+        detailPanelRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" }),
+      );
+    } else if (
+      scan.data.source.kind !== "invoice" &&
+      scan.data.source.kind !== "workOrder" &&
+      eligibleMembers.length > 1 &&
+      canCreate
+    ) {
+      setShipmentMemberChoices(eligibleMembers);
+      setScannedSource(
+        relations.workOrderId
+          ? { workOrderId: relations.workOrderId }
+          : relations.invoiceId
+            ? { invoiceId: relations.invoiceId }
+            : undefined,
+      );
+      setSelected(undefined);
+      setCreating(true);
     } else if ((relations.workOrderId || relations.invoiceId) && canCreate) {
+      setShipmentMemberChoices([]);
       setScannedSource(
         relations.workOrderId
           ? { workOrderId: relations.workOrderId }
@@ -233,6 +259,7 @@ function AftercareWorkspaceContent({
     setPage(0);
     setSelected(undefined);
     setCreating(false);
+    setShipmentMemberChoices([]);
     setScannedSource(undefined);
     setLocalBarcode(null);
     setBarcodeInput("");
@@ -303,6 +330,46 @@ function AftercareWorkspaceContent({
           </Button>
         )}
       </div>
+      {creating && shipmentMemberChoices && shipmentMemberChoices.length > 1 && (
+        <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-sm">
+          <p className="font-bold text-muted-foreground">
+            شحنة متعددة المستندات — اختر المستند صاحب النقص أو الاستبدال:
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {shipmentMemberChoices.map((m) => {
+              const active = m.workOrderId
+                ? scannedSource?.workOrderId === m.workOrderId
+                : scannedSource?.invoiceId === m.invoiceId;
+              const label = m.workOrderNumber
+                ? m.workOrderNumber
+                : m.invoiceNumber
+                  ? `INV-${m.invoiceNumber}`
+                  : m.consignmentNumber;
+              return (
+                <Button
+                  key={m.consignmentId}
+                  type="button"
+                  size="sm"
+                  variant={active ? "default" : "outline"}
+                  className="h-7 px-2 font-mono text-xs"
+                  dir="ltr"
+                  onClick={() =>
+                    setScannedSource(
+                      m.workOrderId
+                        ? { workOrderId: m.workOrderId }
+                        : m.invoiceId
+                          ? { invoiceId: m.invoiceId }
+                          : undefined,
+                    )
+                  }
+                >
+                  {label} ({fmt(m.codAmount)} د.ع)
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {creating && (
         <NewAftercare
           sourceInput={scannedSource}
@@ -352,13 +419,15 @@ function AftercareWorkspaceContent({
         }}
       />
       {selected && (
-        <AftercareDetail
-          id={selected}
-          branchId={branchId}
-          onChange={async () => {
-            await list.refetch();
-          }}
-        />
+        <div ref={detailPanelRef}>
+          <AftercareDetail
+            id={selected}
+            branchId={branchId}
+            onChange={async () => {
+              await list.refetch();
+            }}
+          />
+        </div>
       )}
     </section>
   );

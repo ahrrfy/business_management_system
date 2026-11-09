@@ -230,7 +230,7 @@ export function ConsignmentsTab({
   const exportRecord = (row: ConsignmentRow): Record<string, string> => ({
     consignment: row.consignmentNumber,
     invoice: deliverySourceView(row).reference,
-    tracking: row.externalTrackingRef ?? "",
+    tracking: row.externalTrackingRef ?? row.shipmentTrackingRef ?? "",
     customer: row.customerName ?? row.recipientName ?? "",
     phone: row.customerPhone ?? "",
     cod: row.codAmount,
@@ -399,6 +399,7 @@ export function ConsignmentsTab({
         جهازك.
       </p>
       <DataTable<ConsignmentRow, number>
+        maxHeightClass="max-h-[52dvh]"
         columns={columns}
         defaultColumnVisibility={{
           cod: false,
@@ -473,9 +474,12 @@ export function ConsignmentsTab({
                 </a>
               )}
               <DeliverySourceLink source={row} />
-              {row.externalTrackingRef && (
+              {(row.externalTrackingRef ?? row.shipmentTrackingRef) && (
                 <span>
-                  التتبع: <b dir="ltr">{row.externalTrackingRef}</b>
+                  التتبع:{" "}
+                  <b dir="ltr">
+                    {row.externalTrackingRef ?? row.shipmentTrackingRef}
+                  </b>
                 </span>
               )}
             </div>
@@ -547,6 +551,10 @@ export function ConsignmentsTab({
             codAmount: collectConsignmentTarget.codAmount,
             collectedAmount: collectConsignmentTarget.collectedAmount,
             parcelStatus: collectConsignmentTarget.parcelStatus,
+            shipmentLeaderConsignmentId: collectConsignmentTarget.shipmentLeaderConsignmentId,
+            shipmentInvoiceCount: collectConsignmentTarget.shipmentInvoiceCount,
+            shipmentNumber: collectConsignmentTarget.shipmentNumber,
+            shipmentTrackingRef: collectConsignmentTarget.shipmentTrackingRef,
           }}
           open={collectConsignmentTarget != null}
           onOpenChange={(open) => {

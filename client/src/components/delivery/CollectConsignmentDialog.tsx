@@ -28,6 +28,7 @@ import { trpc, type RouterInputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt, round2 } from "@/lib/money";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import {
   SHORTFALL_REASONS,
@@ -48,6 +49,10 @@ export interface TargetConsignment {
   codAmount?: string | number | null;
   collectedAmount?: string | number | null;
   parcelStatus?: string | null;
+  shipmentLeaderConsignmentId?: number | null;
+  shipmentInvoiceCount?: number | null;
+  shipmentNumber?: string | null;
+  shipmentTrackingRef?: string | null;
 }
 
 export interface CollectConsignmentDialogProps {
@@ -59,10 +64,17 @@ export interface CollectConsignmentDialogProps {
   onCompleted?: () => void;
 }
 
-type SubmittedRemittance = {
-  payload: RouterInputs["delivery"]["recordRemittance"];
-  partyLabel: string;
-};
+type SubmittedRemittance =
+  | {
+      kind: "REMITTANCE";
+      payload: RouterInputs["delivery"]["recordRemittance"];
+      partyLabel: string;
+    }
+  | {
+      kind: "COMPANY_STATEMENT";
+      payload: RouterInputs["delivery"]["recordCompanyStatement"];
+      partyLabel: string;
+    };
 
 type ShiftTypeOption = "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
 
@@ -124,6 +136,7 @@ export function CollectConsignmentDialog({
   // استعلام بيانات الفاعل
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
   const canRemit = lifecycleActionAllowed(me.data, "delivery.recordRemittance", true);
+  const canRecordStatement = lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canRemit);
   const canConfirmDelivery = lifecycleActionAllowed(me.data, "delivery.staffConfirm", true);
   const isAdmin = me.data?.role === "admin";
   const isManager = me.data?.role === "manager" || isAdmin;
@@ -136,8 +149,9 @@ export function CollectConsignmentDialog({
   // هل نؤكد التسليم أولاً إن لم يكن الطرد مختوماً DELIVERED؟
   const [confirmDeliveryFirst, setConfirmDeliveryFirst] = useState(false);
 
-  // النقد المعدود
+  // النقد المعدود ورقم كشف شركة التوصيل (عند التحصيل الفوري من شركة توصيل)
   const [countedCash, setCountedCash] = useState("0");
+  const [statementNumber, setStatementNumber] = useState("");
   const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
   const [shortfallNotes, setShortfallNotes] = useState("");
   const [shiftType, setShiftType] = useState<ShiftTypeOption>("RECEPTION");
@@ -318,14 +332,58 @@ export function CollectConsignmentDialog({
     });
   }, [allOpenRows, remittableRows]);
 
-  const rowNetExpectedDec = (row: (typeof remittableRows)[number]) => {
-    const fee = Decimal.min(row.remainingDec, Decimal.max(0, D(row.feeWithholdingCash ?? 0)));
-    return round2(row.remainingDec.minus(fee));
-  };
+  const isCompanyParty = partyQ.data?.partyType === "COMPANY";
 
-  // حساب المتبقي وصافي التوريد للطرد/الشحنة المستهدفة
+  // طرود شركة التوصيل المفتوحة القابلة للتسوية بكشف الشركة في خطوة واحدة
+  const companyOpenReadyRows = useMemo(() => {
+    if (!isCompanyParty) return [];
+    return allOpenRows.filter((row) => {
+      if (
+        row.feeWithholdingBlocked ||
+        Boolean((row as { returnDeclaredAt?: unknown }).returnDeclaredAt) ||
+        Boolean(row.physicalReturnReceived)
+      ) {
+        return false;
+      }
+      if (row.shipmentLeaderConsignmentId == null) return true;
+      const allShipmentOpen = allOpenRows.filter(
+        (sibling) => sibling.shipmentLeaderConsignmentId === row.shipmentLeaderConsignmentId,
+      );
+      return allShipmentOpen.every(
+        (sibling) =>
+          !sibling.feeWithholdingBlocked &&
+          !Boolean((sibling as { returnDeclaredAt?: unknown }).returnDeclaredAt) &&
+          !Boolean(sibling.physicalReturnReceived),
+      );
+    });
+  }, [allOpenRows, isCompanyParty]);
+
+  const companyAllPartyTargetRows = useMemo(
+    () => companyOpenReadyRows.filter((row) => row.remainingDec.gt(0)),
+    [companyOpenReadyRows],
+  );
+
+  const effectiveAllPartyRows =
+    isCompanyParty && deliveredRows.length === 0 ? companyAllPartyTargetRows : deliveredRows;
+
+  const useCompanyStatement =
+    isCompanyParty &&
+    ((settleScope === "SINGLE" && singleNeedsConfirmFirst) ||
+      (settleScope === "ALL_PARTY" && deliveredRows.length === 0 && companyAllPartyTargetRows.length > 0));
+
+  const rowFeeExpectedDec = (row: (typeof remittableRows)[number]) =>
+    Decimal.min(row.remainingDec, Decimal.max(0, D(row.feeWithholdingCash ?? 0)));
+
+  const rowNetExpectedDec = (row: (typeof remittableRows)[number]) =>
+    round2(row.remainingDec.minus(rowFeeExpectedDec(row)));
+
+  // حساب المتبقي والأجرة وصافي التوريد للطرد/الشحنة المستهدفة
   const singleGrossDueDec = useMemo(
     () => round2(singleTargetRows.reduce((sum, r) => sum.plus(r.remainingDec), D(0))),
+    [singleTargetRows],
+  );
+  const singleFeeExpectedDec = useMemo(
+    () => round2(singleTargetRows.reduce((sum, r) => sum.plus(rowFeeExpectedDec(r)), D(0))),
     [singleTargetRows],
   );
   const singleNetExpectedDec = useMemo(
@@ -334,9 +392,13 @@ export function CollectConsignmentDialog({
   );
 
   // صافي التوريد لجميع طرود الجهة الجاهزة
+  const allPartyFeeExpectedDec = useMemo(
+    () => round2(effectiveAllPartyRows.reduce((sum, r) => sum.plus(rowFeeExpectedDec(r)), D(0))),
+    [effectiveAllPartyRows],
+  );
   const allPartyNetExpectedDec = useMemo(
-    () => round2(deliveredRows.reduce((sum, r) => sum.plus(rowNetExpectedDec(r)), D(0))),
-    [deliveredRows],
+    () => round2(effectiveAllPartyRows.reduce((sum, r) => sum.plus(rowNetExpectedDec(r)), D(0))),
+    [effectiveAllPartyRows],
   );
 
   // المبلغ الصافي المتوقع توريده بناءً على النطاق المختار
@@ -349,6 +411,7 @@ export function CollectConsignmentDialog({
     const initialScope = consignment ? "SINGLE" : "ALL_PARTY";
     setSettleScope(initialScope);
     setConfirmDeliveryFirst(Boolean(consignment && consignment.parcelStatus !== "DELIVERED"));
+    setStatementNumber("");
     setShortfallReason("");
     setShortfallNotes("");
     setClientRequestId(crypto.randomUUID());
@@ -357,10 +420,10 @@ export function CollectConsignmentDialog({
   // إذا اتضح بعد جلب القائمة أن الشحنة غير مختومة بالتسليم بعد، نفعل خيار التأكيد المسبق تلقائياً
   useEffect(() => {
     if (!open || submittedRemittance) return;
-    if (singleNeedsConfirmFirst && canConfirmDelivery) {
+    if (singleNeedsConfirmFirst && (canConfirmDelivery || isCompanyParty)) {
       setConfirmDeliveryFirst(true);
     }
-  }, [open, singleNeedsConfirmFirst, canConfirmDelivery, submittedRemittance]);
+  }, [open, singleNeedsConfirmFirst, canConfirmDelivery, isCompanyParty, submittedRemittance]);
 
   // تحديث النقد المعدود تلقائياً ليتطابق مع المبلغ المتوقع بدقة Decimal
   useEffect(() => {
@@ -386,8 +449,16 @@ export function CollectConsignmentDialog({
   // طفرة تسجيل التوريد المالي
   const recordRemittance = trpc.delivery.recordRemittance.useMutation();
 
-  const isPending = staffConfirm.isPending || recordRemittance.isPending || submittingRemittance;
+  // طفرة تسجيل كشف شركة التوصيل في خطوة واحدة
+  const recordCompanyStatement = trpc.delivery.recordCompanyStatement.useMutation();
+
+  const isPending =
+    staffConfirm.isPending ||
+    recordRemittance.isPending ||
+    recordCompanyStatement.isPending ||
+    submittingRemittance;
   const intentLocked = isPending || submittedRemittance != null;
+  const canExecuteCurrentMode = useCompanyStatement ? canRecordStatement : canRemit;
 
   // A committed remittance can disappear from the live obligations before its response arrives.
   // Recovery must replay this exact payload/key, without delivery confirmation or fresh amounts.
@@ -401,18 +472,43 @@ export function CollectConsignmentDialog({
     const remitWin = remitWinRef.current;
     remitWinRef.current = null;
     try {
-      const res = await recordRemittance.mutateAsync(submitted.payload);
-      notify.ok(
-        "تم تسجيل التوريد وقبض النقد بنجاح",
-        `سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع${
-          D(res.shortfallTotal ?? 0).gt(0) ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
-        }`,
-      );
-      try {
-        if (remitWin) printRemittanceReceipt(submitted.partyLabel, res, { into: remitWin });
-        else printRemittanceReceipt(submitted.partyLabel, res);
-      } catch {
-        // Printing does not change the acknowledged financial result.
+      if (submitted.kind === "COMPANY_STATEMENT") {
+        const res = await recordCompanyStatement.mutateAsync(submitted.payload);
+        notify.ok(
+          "تم تسجيل كشف الشركة وقبض النقد بنجاح",
+          `كشف ${res.statementNumber} — سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع`,
+        );
+        try {
+          void printCompanyStatementReceipt(
+            {
+              companyName: submitted.partyLabel,
+              statementNumber: res.statementNumber,
+              remittanceNumber: res.remittanceNumber,
+              deliveriesConfirmed: res.deliveriesConfirmed,
+              statementConsignmentCount: submitted.payload.lines.length,
+              collectedTotal: res.collectedTotal,
+              deductionsTotal: submitted.payload.deductionsTotal ?? "0",
+              netRemitted: res.netRemitted,
+            },
+            remitWin ? { into: remitWin } : undefined,
+          );
+        } catch {
+          // Printing does not change the acknowledged financial result.
+        }
+      } else {
+        const res = await recordRemittance.mutateAsync(submitted.payload);
+        notify.ok(
+          "تم تسجيل التوريد وقبض النقد بنجاح",
+          `سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع${
+            D(res.shortfallTotal ?? 0).gt(0) ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
+          }`,
+        );
+        try {
+          if (remitWin) printRemittanceReceipt(submitted.partyLabel, res, { into: remitWin });
+          else printRemittanceReceipt(submitted.partyLabel, res);
+        } catch {
+          // Printing does not change the acknowledged financial result.
+        }
       }
       setSubmittedRemittance(null);
       setClientRequestId(crypto.randomUUID());
@@ -447,10 +543,17 @@ export function CollectConsignmentDialog({
       return;
     }
     if (
-      !canRemit ||
-      (settleScope === "SINGLE" && singleNeedsConfirmFirst && (!confirmDeliveryFirst || !canConfirmDelivery))
+      !canExecuteCurrentMode ||
+      (!useCompanyStatement &&
+        settleScope === "SINGLE" &&
+        singleNeedsConfirmFirst &&
+        (!confirmDeliveryFirst || !canConfirmDelivery))
     ) {
       notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك");
+      return;
+    }
+    if (useCompanyStatement && statementNumber.trim().length < 2) {
+      notify.err("أدخل رقم كشف شركة التوصيل (حرفان أو رقمان على الأقل)");
       return;
     }
     if (effectivePartyId == null || effectivePartyId <= 0) {
@@ -472,7 +575,49 @@ export function CollectConsignmentDialog({
 
     remitWinRef.current = preopenDocumentWindow();
     try {
-      // 1. إذا كان الطرد أو الشحنة المجمعة غير مسلّمة وطُلب تأكيد تسليمها أولاً:
+      const partyLabel = consignment?.partyName ?? partyName ?? partyQ.data?.name ?? "جهة التوصيل";
+
+      if (useCompanyStatement) {
+        const scopedOpenRows = settleScope === "SINGLE" ? shipmentOpenRows : companyOpenReadyRows;
+        const scopedPositiveRows = settleScope === "SINGLE" ? singleTargetRows : companyAllPartyTargetRows;
+        if (scopedPositiveRows.length === 0) throw new Error("لم يتم تحديد الإرساليات القابلة للتسوية");
+        const scopedZeroInTransitRows = scopedOpenRows.filter(
+          (r) => r.remainingDec.isZero() && r.parcelStatus !== "DELIVERED",
+        );
+        const statementLines = [
+          ...scopedPositiveRows.map((r) => ({
+            consignmentId: r.id,
+            collectedAmount: cleanMoneyStr(r.remainingDec),
+            expectedDue: r.remainingDec.toFixed(2),
+            expectedProven: round2(D(r.cashInCourierCustody ?? 0)).toFixed(2),
+          })),
+          ...scopedZeroInTransitRows.map((r) => ({
+            consignmentId: r.id,
+            collectedAmount: "0.00",
+            expectedDue: "0.00",
+            expectedProven: "0.00",
+            zeroDeliveryConfirmed: true,
+          })),
+        ];
+        const feeDec = settleScope === "SINGLE" ? singleFeeExpectedDec : allPartyFeeExpectedDec;
+        await submitRemittance({
+          kind: "COMPANY_STATEMENT",
+          payload: {
+            partyId: effectivePartyId,
+            shiftType,
+            ...(activeShift.data?.id ? { targetShiftId: activeShift.data.id } : {}),
+            statementNumber: statementNumber.trim(),
+            deductionsTotal: feeDec.gt(0) ? cleanMoneyStr(feeDec) : null,
+            lines: statementLines,
+            countedCash: cleanMoneyStr(countedDec),
+            clientRequestId,
+          },
+          partyLabel,
+        });
+        return;
+      }
+
+      // 1. إذا كان الطرد أو الشحنة المجمعة غير مسلّمة وطُلب تأكيد تسليمها أولاً (للمندوب):
       if (settleScope === "SINGLE" && currentConsignment && singleNeedsConfirmFirst && confirmDeliveryFirst) {
         await staffConfirm.mutateAsync({
           ...(isGroupedShipment
@@ -520,6 +665,7 @@ export function CollectConsignmentDialog({
 
       // 3. تنفيذ التوريد المالي الذري
       await submitRemittance({
+        kind: "REMITTANCE",
         payload: {
           partyId: effectivePartyId,
           shiftType,
@@ -529,7 +675,7 @@ export function CollectConsignmentDialog({
           shortfall: null,
           clientRequestId,
         },
-        partyLabel: consignment?.partyName ?? partyName ?? partyQ.data?.name ?? "جهة التوصيل",
+        partyLabel,
       });
     } catch (err: unknown) {
       try { remitWinRef.current?.close(); } catch { /* noop */ }
@@ -539,50 +685,64 @@ export function CollectConsignmentDialog({
   };
 
   const displayName = consignment?.partyName ?? partyName ?? partyQ.data?.name ?? "المندوب";
-  const isCompanyParty = partyQ.data?.partyType === "COMPANY";
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && intentLocked) return; onOpenChange(next); }}>
-      <DialogContent dir="rtl" className="sm:max-w-xl" showCloseButton={!intentLocked}>
-        <DialogHeader>
+      <DialogContent dir="rtl" className="sm:max-w-xl max-h-[92dvh] flex flex-col overflow-hidden p-0 gap-0" showCloseButton={!intentLocked}>
+        <DialogHeader className="px-6 pt-6 pb-3 shrink-0 border-b bg-background">
           <DialogTitle className="flex items-center gap-2 text-xl font-black">
             <Wallet aria-hidden className="size-6 text-emerald-600" />
-            قبض النقد وتوريد عهدة المندوب
+            {isCompanyParty ? "قبض النقد وتوريد شحنات شركة التوصيل" : "قبض النقد وتوريد عهدة المندوب"}
           </DialogTitle>
           <DialogDescription className="text-start leading-6">
-            تسجيل استلام المبالغ المحصلة من المندوب وإدخالها فوراً في درج الوردية وتصفير الذمة المرتبطة بالسند.
+            تسجيل استلام المبالغ المحصلة من جهة التوصيل وإدخال الصافي فوراً في درج الوردية بعد حسم الأجور المستحقة وتصفير الذمة المرتبطة بالسند.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
           {submittedRemittance && (
             <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 text-sm">
               أُرسل طلب توريد بقيمة {fmt(submittedRemittance.payload.countedCash)} د.ع. استعد نتيجته بنفس الطلب قبل إجراء تحصيل آخر؛ قد تكون الذمة الحالية تغيّرت بعد تسجيله.
             </div>
           )}
 
-          {isCompanyParty && deliveredRows.length === 0 && effectivePartyId != null && (
-            <div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs space-y-2">
-              <p className="font-bold text-foreground">
-                هذه شركة توصيل خارجية — طرودها المفتوحة ({remittableRows.length}) تُختَم وتُورَّد عبر «كشف شركة التوصيل» برقم الكشف واستقطاعاته.
+          {isCompanyParty && useCompanyStatement && effectivePartyId != null && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label htmlFor="company-statement-number" className="font-bold text-foreground">
+                  رقم كشف شركة التوصيل *
+                </Label>
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" asChild onClick={() => onOpenChange(false)}>
+                  <Link href={`/delivery?tab=settlement&party=${effectivePartyId}`}>
+                    فتح كشف التسوية التفصيلي
+                  </Link>
+                </Button>
+              </div>
+              <Input
+                id="company-statement-number"
+                value={statementNumber}
+                disabled={intentLocked}
+                onChange={(e) => setStatementNumber(e.target.value)}
+                placeholder="أدخل رقم كشف شركة التوصيل (مثال: STMT-2026-01)"
+                className="h-9 text-sm bg-background font-mono placeholder:font-sans"
+                dir={statementNumber ? "ltr" : "rtl"}
+                maxLength={64}
+              />
+              <p className="text-[11px] text-muted-foreground leading-5">
+                سيُختَم تسليم جميع فواتير الشحنة وتُحسَم أجرة التوصيل المستحقة تلقائياً ويدخل الصافي في الدرج بخطوة واحدة.
               </p>
-              <Button size="sm" variant="outline" asChild onClick={() => onOpenChange(false)}>
-                <Link href={`/delivery?tab=settlement&party=${effectivePartyId}`}>
-                  فتح شاشة تسجيل كشف الشركة
-                </Link>
-              </Button>
             </div>
           )}
 
-          {/* بطاقة معلومات المندوب */}
+          {/* بطاقة معلومات جهة التوصيل */}
           <div className="rounded-xl border bg-muted/40 p-3.5 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Truck className="size-4 text-primary" />
                 <span className="font-extrabold text-base">{displayName}</span>
               </div>
-              <Badge variant="outline" className="font-mono text-xs">
-                {deliveredRows.length} طرد مسلم بانتظار التوريد
+              <Badge variant="outline" className="text-xs tabular-nums">
+                {effectiveAllPartyRows.length} طرد جاهز للتوريد
               </Badge>
             </div>
 
@@ -591,10 +751,10 @@ export function CollectConsignmentDialog({
                 <div>
                   الإرسالية:{" "}
                   <span className="font-mono font-bold text-foreground">
-                    {consignment.consignmentNumber ?? `#${consignment.id}`}
+                    {currentConsignment?.shipmentNumber ?? consignment.shipmentNumber ?? consignment.consignmentNumber ?? `#${consignment.id}`}
                   </span>
                   {isGroupedShipment && (
-                    <span className="ms-1 text-[11px] font-bold text-primary">
+                    <span className="ms-1 text-[11px] font-bold text-primary tabular-nums">
                       (شحنة {shipmentInvoiceCount} فواتير)
                     </span>
                   )}
@@ -637,7 +797,7 @@ export function CollectConsignmentDialog({
                 </span>
                 <span className="text-[10px] text-muted-foreground mt-0.5">
                   {isGroupedShipment
-                    ? `إجمالي فواتير الشحنة: ${fmt(cleanMoneyStr(singleGrossDueDec))} د.ع`
+                    ? `إجمالي الفواتير: ${fmt(cleanMoneyStr(singleGrossDueDec))} د.ع${singleFeeExpectedDec.gt(0) ? ` · أجرة: ${fmt(cleanMoneyStr(singleFeeExpectedDec))} د.ع` : ""}`
                     : `طرد #${consignment.consignmentNumber ?? consignment.id}`}
                 </span>
               </button>
@@ -652,19 +812,50 @@ export function CollectConsignmentDialog({
                 }`}
                 onClick={() => setSettleScope("ALL_PARTY")}
               >
-                <span className="text-xs font-bold text-muted-foreground">تصفير كامل ذمة المندوب</span>
+                <span className="text-xs font-bold text-muted-foreground">
+                  {isCompanyParty ? "تصفير كامل ذمة الشركة الجاهزة" : "تصفير كامل ذمة المندوب"}
+                </span>
                 <span className="text-lg font-black text-foreground mt-1 tabular-nums" dir="ltr">
                   {fmt(cleanMoneyStr(allPartyNetExpectedDec))} د.ع
                 </span>
                 <span className="text-[10px] text-muted-foreground mt-0.5">
-                  جميع الطرود المسلمة ({deliveredRows.length} طرد)
+                  جميع الطرود الجاهزة ({effectiveAllPartyRows.length} طرد)
                 </span>
               </button>
             </div>
           )}
 
-          {/* تأكيد التسليم المسبق إذا لم يكن مسلماً بعد */}
-          {settleScope === "SINGLE" && singleNeedsConfirmFirst && (
+          {/* تفصيل فواتير الشحنة متعددة الفواتير */}
+          {settleScope === "SINGLE" && isGroupedShipment && shipmentOpenRows.length > 0 && (
+            <div className="rounded-xl border bg-muted/20 p-3 space-y-2 text-xs">
+              <div className="flex items-center justify-between font-bold text-foreground">
+                <span>فواتير الشحنة المشمولة بالتحصيل ({shipmentOpenRows.length})</span>
+                {singleFeeExpectedDec.gt(0) && (
+                  <span className="text-muted-foreground tabular-nums" dir="ltr">
+                    حسم أجرة الشحنة: -{fmt(cleanMoneyStr(singleFeeExpectedDec))} د.ع
+                  </span>
+                )}
+              </div>
+              <div className="divide-y">
+                {shipmentOpenRows.map((member) => (
+                  <div key={member.id} className="flex items-center justify-between gap-2 py-1.5">
+                    <span className="font-mono font-semibold text-foreground" dir="ltr">
+                      {(member as { invoiceNumber?: string | null }).invoiceNumber ??
+                        (member as { orderNumber?: string | null }).orderNumber ??
+                        member.consignmentNumber ??
+                        `#${member.id}`}
+                    </span>
+                    <span className="tabular-nums font-bold" dir="ltr">
+                      {member.remainingDec.gt(0) ? `${fmt(cleanMoneyStr(member.remainingDec))} د.ع` : "مسددة / آجل (0 د.ع)"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* تأكيد التسليم المسبق للمندوب إذا لم يكن مسلماً بعد */}
+          {settleScope === "SINGLE" && singleNeedsConfirmFirst && !useCompanyStatement && (
             <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs">
               <input
                 type="checkbox"
@@ -676,7 +867,7 @@ export function CollectConsignmentDialog({
               />
               <label htmlFor="confirm-first-check" className="cursor-pointer font-bold leading-5">
                 {isGroupedShipment
-                  ? `تأكيد تسليم جميع فواتير الشحنة (${singleTargetRows.length}) للعميل وقبض ثمنها ثم توريدها فوراً`
+                  ? `تأكيد تسليم جميع فواتير الشحنة (${shipmentOpenRows.length}) للعميل وقبض ثمنها ثم توريدها فوراً`
                   : "تأكيد وصول الطرد للعميل وقبض ثمنه أولاً (تأكيد تسليم + توريد فوري في خطوة واحدة)"}
               </label>
             </div>
@@ -785,7 +976,7 @@ export function CollectConsignmentDialog({
           </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:justify-start pt-2">
+        <DialogFooter className="gap-2 sm:justify-start px-6 py-3.5 shrink-0 border-t bg-muted/20">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={intentLocked}>
             إلغاء
           </Button>
@@ -793,10 +984,14 @@ export function CollectConsignmentDialog({
           <Button
             className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black px-6"
             disabled={
-              !canRemit ||
+              !canExecuteCurrentMode ||
               submittedRemittance != null ||
               obligationsLoading ||
-              (settleScope === "SINGLE" && singleNeedsConfirmFirst && (!confirmDeliveryFirst || !canConfirmDelivery)) ||
+              (useCompanyStatement && statementNumber.trim().length < 2) ||
+              (!useCompanyStatement &&
+                settleScope === "SINGLE" &&
+                singleNeedsConfirmFirst &&
+                (!confirmDeliveryFirst || !canConfirmDelivery)) ||
               isPending ||
               countedDec.lte(0) ||
               isExcess ||
@@ -816,7 +1011,7 @@ export function CollectConsignmentDialog({
             )}
           </Button>
           {submittedRemittance && (
-            <Button disabled={!canRemit || isPending} onClick={() => void submitRemittance(submittedRemittance)}>
+            <Button disabled={!canExecuteCurrentMode || isPending} onClick={() => void submitRemittance(submittedRemittance)}>
               {isPending ? "جارٍ التحقق من نتيجة التوريد…" : "استعادة نتيجة التوريد"}
             </Button>
           )}

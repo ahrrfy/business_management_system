@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryLedgerEntries, deliveryShipmentMembers } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryLedgerEntries, deliveryShipmentMembers, invoices } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
 import { createFeeWithholdingPolicy, verifiedFeeBalance } from "./fees";
@@ -20,10 +20,14 @@ export async function planDetachedShipmentFees(
   db: Pick<Tx, "select">,
   input: { partyId: number; branchId?: number | null; consignmentIds: number[];
     useCommission: boolean; includePending: boolean; currentRead?: boolean; requireComplete?: boolean;
-    allowBlockedPreview?: boolean; feePolicy?: Awaited<ReturnType<typeof createFeeWithholdingPolicy>> },
-): Promise<{ sources: FeeSource[]; allocations: Map<number, Decimal>; blocked: boolean; uncovered: boolean; incomplete: boolean;
+    allowBlockedPreview?: boolean; includeTargetOverflow?: boolean;
+    capacityOverrides?: ReadonlyMap<number, Decimal>;
+    feePolicy?: Awaited<ReturnType<typeof createFeeWithholdingPolicy>> },
+): Promise<{ sources: FeeSource[]; allocations: Map<number, Decimal>; projectedFromSource: Map<number, Decimal>;
+  blocked: boolean; uncovered: boolean; incomplete: boolean;
   blockedIds: Set<number>; uncoveredIds: Set<number> }> {
-  const result = { sources: [] as FeeSource[], allocations: new Map<number, Decimal>(), blocked: false, uncovered: false,
+  const result = { sources: [] as FeeSource[], allocations: new Map<number, Decimal>(),
+    projectedFromSource: new Map<number, Decimal>(), blocked: false, uncovered: false,
     incomplete: false, blockedIds: new Set<number>(), uncoveredIds: new Set<number>() };
   if (!input.consignmentIds.length) return result;
   const membershipQuery = db.select().from(deliveryShipmentMembers)
@@ -45,6 +49,12 @@ export async function planDetachedShipmentFees(
   const feeMembers = [...members.map(({ cn }) => cn), ...standalone]
     .filter((cn) => cn.sourceType === "ONLINE_ORDER" && cn.feeCollection === "SHOP");
   const feeMemberIds = Array.from(new Set(feeMembers.map((cn) => Number(cn.id))));
+  const feeInvoiceIds = Array.from(new Set(feeMembers.flatMap((cn) => (cn.invoiceId == null ? [] : [Number(cn.invoiceId)]))));
+  const invQuery = feeInvoiceIds.length ? db.select({
+    id: invoices.id, total: invoices.total, returnedTotal: invoices.returnedTotal, status: invoices.status,
+  }).from(invoices).where(inArray(invoices.id, feeInvoiceIds)) : null;
+  const invRows = invQuery ? await (input.currentRead ? invQuery.for("share") : invQuery) : [];
+  const invoiceById = new Map(invRows.map((inv) => [Number(inv.id), inv]));
   const feeQuery = feeMemberIds.length ? db.select().from(deliveryLedgerEntries).where(and(
     inArray(deliveryLedgerEntries.consignmentId, feeMemberIds),
     inArray(deliveryLedgerEntries.entryType, ["FEE_EARNED", "FEE_REFUNDED", "FEE_PAID", "FEE_OFFSET"]),
@@ -96,14 +106,63 @@ export async function planDetachedShipmentFees(
     const targets = live.filter((row) => dueFor(row).gt(0));
     if (!targets.some((row) => input.consignmentIds.includes(Number(row.cn.id)))) continue;
     if (input.requireComplete && targets.some((row) => !input.consignmentIds.includes(Number(row.cn.id)))) result.incomplete = true;
+    const orderTotalFor = (cn: Consignment) => {
+      const inv = cn.invoiceId == null ? undefined : invoiceById.get(Number(cn.invoiceId));
+      return inv ? Decimal.max(0, money(inv.total).minus(money(inv.returnedTotal ?? "0"))) : money(0);
+    };
     const remainingCapacity = new Map(targets.map((row) => {
-      const balance = feeBalances.get(Number(row.cn.id));
+      const id = Number(row.cn.id);
+      if (input.capacityOverrides) {
+        return [id, round2(Decimal.max(0, input.capacityOverrides.get(id) ?? money(0)))] as const;
+      }
+      const balance = feeBalances.get(id);
       const ownDue = row.cn.sourceType === "ONLINE_ORDER" && row.cn.feeCollection === "SHOP"
         ? (balance?.active ? balance.due : input.includePending && !row.cn.feeSettledAt ? money(row.cn.deliveryFee) : money(0))
         : money(0);
-      const ownFee = quoteFee(ownDue, money(0));
-      return [Number(row.cn.id), Decimal.max(0, dueFor(row).minus(ownFee))] as const;
+      const ownFee = quoteFee(ownDue, orderTotalFor(row.cn));
+      return [id, round2(Decimal.max(0, dueFor(row).minus(ownFee)))] as const;
     }));
+    if (input.includeTargetOverflow !== false) {
+      for (const source of targets) {
+        if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP") continue;
+        const sourceId = Number(source.cn.id);
+        const balance = feeBalances.get(sourceId);
+        const ownDue = balance?.active
+          ? balance.due
+          : input.includePending && !source.cn.feeSettledAt
+            ? round2(money(source.cn.deliveryFee))
+            : money(0);
+        if (ownDue.lte(0)) continue;
+        const inv = source.cn.invoiceId == null ? undefined : invoiceById.get(Number(source.cn.invoiceId));
+        if (hasOrderBasedCommission && (!inv || ["CANCELLED", "RETURNED", "SUPERSEDED"].includes(inv.status))) {
+          result.blocked = true;
+          targets.forEach((target) => result.blockedIds.add(Number(target.cn.id)));
+          continue;
+        }
+        const ownFee = quoteFee(ownDue, orderTotalFor(source.cn));
+        const sourceDue = dueFor(source);
+        if (ownFee.lte(sourceDue)) continue;
+        let left = round2(ownFee.minus(sourceDue));
+        let projected = money(0);
+        for (const target of targets) {
+          const id = Number(target.cn.id);
+          if (id === sourceId) continue;
+          const take = Decimal.min(left, remainingCapacity.get(id) ?? 0);
+          if (take.gt(0)) {
+            result.allocations.set(id, round2((result.allocations.get(id) ?? money(0)).plus(take)));
+            remainingCapacity.set(id, round2((remainingCapacity.get(id) ?? money(0)).minus(take)));
+            projected = round2(projected.plus(take));
+            left = round2(left.minus(take));
+          }
+          if (left.isZero()) break;
+        }
+        if (projected.gt(0)) result.projectedFromSource.set(sourceId, projected);
+        if (left.gt(0)) {
+          result.uncovered = true;
+          targets.forEach((target) => result.uncoveredIds.add(Number(target.cn.id)));
+        }
+      }
+    }
     for (const source of group) {
       if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP" ||
           targets.some((row) => Number(row.cn.id) === Number(source.cn.id))) continue;

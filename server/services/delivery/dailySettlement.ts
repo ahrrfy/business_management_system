@@ -126,7 +126,12 @@ async function loadSettlementLines(
     useCommission,
   );
   const { quoteFee } = feePolicy;
-  const lines: SettlementPreviewLine[] = [];
+  const candidates: Array<{
+    r: (typeof rows)[number];
+    cod: Decimal;
+    collected: Decimal;
+    remaining: Decimal;
+  }> = [];
   const unremittableDeliveredIds: number[] = [];
   for (const r of rows) {
     const cod = round2(money(r.codAmount));
@@ -142,28 +147,7 @@ async function loadSettlementLines(
       unremittableDeliveredIds.push(Number(r.id));
       continue;
     }
-    let feeWithholding = money(0);
-    if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
-      const due = money(r.feeDue);
-      const quotedCash = quoteFee(due, money(r.orderTotal));
-      assertFeeWithholdingCapacity(due, quotedCash, remaining);
-      feeWithholding = Decimal.min(remaining, quotedCash);
-    }
-    lines.push({
-      consignmentId: Number(r.id),
-      consignmentNumber: r.consignmentNumber,
-      invoiceNumber: r.invoiceNumber,
-      customerName:
-        r.customerName ??
-        r.invoiceContactName ??
-        r.recipientName ??
-        "زبون عابر",
-      codAmount: cod.toFixed(2),
-      collectedAmount: collected.toFixed(2),
-      remaining: remaining.toFixed(2),
-      parcelStatus: r.parcelStatus,
-      feeWithholding: feeWithholding.toFixed(2),
-    });
+    candidates.push({ r, cod, collected, remaining });
   }
   if (unremittableDeliveredIds.length > 0) {
     const unremittableMemberships = await tx
@@ -174,7 +158,7 @@ async function loadSettlementLines(
       new Set(unremittableMemberships.map((m) => Number(m.leaderId))),
     );
     if (unremittableLeaders.length > 0) {
-      const lineIdSet = new Set(lines.map((line) => line.consignmentId));
+      const lineIdSet = new Set(candidates.map((item) => Number(item.r.id)));
       const shipmentRows = await tx
         .select({
           leaderId: deliveryShipmentMembers.leaderConsignmentId,
@@ -226,15 +210,41 @@ async function loadSettlementLines(
     }
   }
   const detached = await planDetachedShipmentFees(tx, { partyId: scope.partyId, branchId: scope.branchId,
-    consignmentIds: lines.map((line) => line.consignmentId), useCommission, includePending: false, requireComplete: true, feePolicy });
+    consignmentIds: candidates.map((item) => Number(item.r.id)), useCommission, includePending: false, requireComplete: true, feePolicy });
   if (detached.blocked || detached.uncovered || detached.incomplete) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
       what: "تعذر معاينة تسوية الشحنة", why: detached.incomplete ? "توجد فواتير أخرى للشحنة لم تُدرج في التسوية" : detached.blocked ? "أجرة على فاتورة مغلقة تحتاج مطابقة قاعدة العمولة" : "نقد الشحنة لا يغطي أجرتها كاملة",
       doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
     }) });
   }
-  for (const line of lines) line.feeWithholding = round2(money(line.feeWithholding ?? "0")
-    .plus(detached.allocations.get(line.consignmentId) ?? 0)).toFixed(2);
+  const lines: SettlementPreviewLine[] = [];
+  for (const { r, cod, collected, remaining } of candidates) {
+    const id = Number(r.id);
+    let ownFee = money(0);
+    if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
+      const due = money(r.feeDue);
+      const quotedCash = quoteFee(due, money(r.orderTotal));
+      const projected = detached.projectedFromSource.get(id) ?? money(0);
+      assertFeeWithholdingCapacity(due, quotedCash, remaining.plus(projected));
+      ownFee = Decimal.min(remaining, Decimal.max(0, quotedCash.minus(projected)));
+    }
+    const feeWithholding = round2(ownFee.plus(detached.allocations.get(id) ?? 0));
+    lines.push({
+      consignmentId: id,
+      consignmentNumber: r.consignmentNumber,
+      invoiceNumber: r.invoiceNumber,
+      customerName:
+        r.customerName ??
+        r.invoiceContactName ??
+        r.recipientName ??
+        "زبون عابر",
+      codAmount: cod.toFixed(2),
+      collectedAmount: collected.toFixed(2),
+      remaining: remaining.toFixed(2),
+      parcelStatus: r.parcelStatus,
+      feeWithholding: feeWithholding.toFixed(2),
+    });
+  }
   return lines;
 }
 

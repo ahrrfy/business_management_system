@@ -88,12 +88,24 @@ export function CompanyConsignmentActions({
   const isOpen = isOpenConsignmentStatus(c.status);
   const partialLabel = partialDeliveryStatusLabel({ status: c.status, parcelStatus: c.parcelStatus, partialReturnReceived: c.partialReturnReceived, hasPartialReturn: D(c.invoiceReturnedTotal ?? 0).gt(0) && D(c.invoiceReturnedTotal ?? 0).lt(D(c.invoiceTotal ?? 0)) });
   const remaining = D(c.remainingDue);
+  const shipmentCollectible = D((c as { shipmentCollectibleDue?: string | number | null }).shipmentCollectibleDue ?? c.remainingDue);
   const canRemit =
     isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
     (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
     (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0)) &&
     remaining.gt(0);
+  const canCollectGrouped =
+    isOpen &&
+    c.returnDeclaredAt == null &&
+    !["RETURNED", "CANCELLED"].includes(c.parcelStatus) &&
+    shipmentCollectible.gt(0) &&
+    (c.parcelStatus !== "DELIVERED" ||
+      ((c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
+        (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0))));
+  const canExecuteCollect =
+    lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) ||
+    lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canSettle);
   const canCancel =
     isOpen && c.returnDeclaredAt == null &&
     (c.parcelStatus === "ASSIGNED" ||
@@ -113,8 +125,8 @@ export function CompanyConsignmentActions({
         >
           الشحنة · {c.shipmentInvoiceCount} فواتير
         </Button>
-        {lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) &&
-          canRemit && (
+        {canExecuteCollect &&
+          canCollectGrouped && (
             <Button
               size="sm"
               variant="default"
@@ -307,7 +319,7 @@ export function companyConsignmentColumns(
     {
       id: "tracking",
       header: "التتبع",
-      accessorFn: (c) => c.externalTrackingRef ?? "—",
+      accessorFn: (c) => c.externalTrackingRef ?? c.shipmentTrackingRef ?? "—",
       meta: { kind: "code" },
     },
     {

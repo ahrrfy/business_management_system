@@ -40,7 +40,8 @@ describe("role operation presets", () => {
     const role = SECTION_CASHIER_ROLES.find((item) => item.key === "reception_clerk")!;
     const policy = buildDefaultRoleOperationPolicy(role.key, role.baseRole, role.permissions);
     for (const path of [
-      "workOrders.assign", "delivery.dispatchInvoice", "delivery.settleDaily",
+      "workOrders.assign", "delivery.dispatchInvoice", "delivery.recordRemittance",
+      "delivery.recordCompanyStatement", "delivery.workflow.confirmDelivery", "delivery.settleDaily",
       "reception.collectDeposit", "reception.refundDeposit", "sales.cancel",
       "returns.executeSalesReturnCart", "invoicePrinting.requestPrint",
     ]) expect(policy.grants[`operation.${path}`], path).toBe(true);

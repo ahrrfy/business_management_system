@@ -45,6 +45,14 @@ export const RECEPTION_STATION_GATE: RoleGate = {
   level: "FULL",
 };
 
+/** بوابة محطة مسار العمل بالباركود — متاحة لموظفي الاستقبال ولكاشير ومشرفي ومراجعي التوصيل والمخزن. */
+export const BARCODE_WORKFLOW_STATION_GATE: RoleGate = {
+  anyOf: [
+    RECEPTION_STATION_GATE,
+    { roles: ["cashier", "manager", "accountant", "auditor"], module: "store", level: "READ" },
+  ],
+};
+
 /** The credit screen initially creates approvals and loads its customer selectors. */
 export const CREDIT_APPROVAL_CREATE_GATE: RoleGate = {
   allOf: ["creditApproval.create", "creditApproval.customerOptions", "creditApproval.listForCustomer"]

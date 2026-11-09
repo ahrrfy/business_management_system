@@ -1,6 +1,8 @@
 import type { DeliverySourceReference } from "@shared/deliverySource";
+import { docBarcode } from "@shared/documentNumber";
 import {
   normalizeBarcodeScannerInput,
+  normalizeKnownSystemBarcode,
   trackingRefsEquivalent,
 } from "@/lib/barcodeScannerInput";
 import { D, fmt, round2 } from "@/lib/money";
@@ -11,6 +13,7 @@ import Decimal from "decimal.js";
 export interface CompanyStatementQueueCandidate extends DeliverySourceReference {
   id: number;
   consignmentNumber: string;
+  shipmentNumber?: string | null;
   externalTrackingRef?: string | null;
   shipmentTrackingRef?: string | null;
   shipmentLeaderConsignmentId?: number | null;
@@ -144,8 +147,6 @@ export function statementShipmentFees(
       // fee onto a sibling. Without source-level attribution, ask for the document's
       // explicit deduction rather than guess whether those quotes are distinct.
       if (statementQueueRemaining(row).isZero() && fee.gt(0)) group.uncertain = true;
-      // The server settles a positive owner's own fee from that owner's cash first.
-      if (cash.gt(0) && row.sourceType === "ONLINE_ORDER" && row.feeCollection === "SHOP" && fee.gt(cash)) group.insufficient = true;
     }
     group.cash = group.cash.plus(cash);
     groups.set(key, group);
@@ -238,13 +239,42 @@ export function resolveCompanyStatementBarcode(
     [candidate.externalTrackingRef, candidate.shipmentTrackingRef].filter(
       (reference): reference is string => !!reference,
     );
+  const documentReferences = (candidate: CompanyStatementQueueCandidate) =>
+    [
+      candidate.consignmentNumber,
+      candidate.consignmentNumber ? docBarcode("CN", candidate.consignmentNumber) : null,
+      candidate.shipmentNumber,
+      candidate.shipmentNumber ? docBarcode("SHP", candidate.shipmentNumber) : null,
+      candidate.invoiceNumber,
+      candidate.invoiceNumber ? docBarcode("INV", candidate.invoiceNumber) : null,
+      candidate.orderNumber,
+      candidate.orderNumber
+        ? docBarcode(
+            candidate.sourceType === "WORK_ORDER" || candidate.workOrderId != null ? "WO" : "ORD",
+            candidate.orderNumber,
+          )
+        : null,
+    ].filter((reference): reference is string => !!reference);
+
   // Exact matches retain priority over the leading-zero fallback.
   const exactMatches = candidates.filter((candidate) =>
     references(candidate).some((reference) => normalizeBarcodeScannerInput(reference) === trackingRef),
   );
-  const matches = exactMatches.length > 0 ? exactMatches : candidates.filter((candidate) =>
+  const trackingMatches = exactMatches.length > 0 ? exactMatches : candidates.filter((candidate) =>
     references(candidate).some((reference) => trackingRefsEquivalent(reference, trackingRef)),
   );
+  const systemRef = normalizeKnownSystemBarcode(trackingRef);
+  const upperRef = systemRef.toUpperCase();
+  const matches =
+    trackingMatches.length > 0
+      ? trackingMatches
+      : /^(?:CNS?|SHP|INV|WO|ORD)-/i.test(systemRef)
+        ? candidates.filter((candidate) =>
+            documentReferences(candidate).some(
+              (reference) => normalizeBarcodeScannerInput(reference).toUpperCase() === upperRef,
+            ),
+          )
+        : [];
   if (matches.length === 0) return { kind: "NOT_FOUND", trackingRef };
 
   const groups = new Map<number, CompanyStatementQueueCandidate[]>();

@@ -9,6 +9,7 @@ const nativeInput = z
     wholeShipment: z.boolean(),
     returnReason: z.string().min(3).max(255),
     refundShiftId: id.optional(),
+    workOrderDisposition: z.enum(["RETURN_TO_READY", "CANCEL_FINAL"]).optional(),
     clientRequestId: z.string().min(8).max(64),
   })
   .strict();
@@ -56,6 +57,7 @@ const snapshotSchema = z.union([
           barcode: z.string().trim().min(1).max(200),
           returnReason: z.string().min(3).max(255),
           refundShiftId: id.optional(),
+          workOrderDisposition: z.enum(["RETURN_TO_READY", "CANCEL_FINAL"]).optional(),
           clientRequestId: z.string().min(8).max(64),
         })
         .strict(),

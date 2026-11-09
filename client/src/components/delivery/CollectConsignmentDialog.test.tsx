@@ -2,9 +2,10 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const state = vi.hoisted(() => ({ rows: [] as any[], timeline: undefined as any, fetching: false, hasNextPage: false, remit: vi.fn(), next: vi.fn(), staff: vi.fn(), invalidate: vi.fn(), print: vi.fn(), close: vi.fn(), completed: vi.fn() }));
+const state = vi.hoisted(() => ({ rows: [] as any[], timeline: undefined as any, partyType: "INDIVIDUAL" as "INDIVIDUAL" | "COMPANY", fetching: false, hasNextPage: false, remit: vi.fn(), statement: vi.fn(), next: vi.fn(), staff: vi.fn(), invalidate: vi.fn(), print: vi.fn(), printStmt: vi.fn(), close: vi.fn(), completed: vi.fn() }));
 vi.mock("@/lib/lifecycleActionPermission", () => ({ lifecycleActionAllowed: () => true }));
 vi.mock("./printRemittanceReceipt", () => ({ printRemittanceReceipt: state.print }));
+vi.mock("@/lib/printing/printCompanyStatementReceipt", () => ({ printCompanyStatementReceipt: state.printStmt }));
 vi.mock("@/lib/notify", () => ({ notify: { ok: vi.fn(), err: vi.fn() } }));
 vi.mock("@/lib/trpc", () => ({ trpc: {
   useUtils: () => ({ delivery: { invalidate: state.invalidate }, shifts: { invalidate: state.invalidate }, treasury: { invalidate: state.invalidate }, sales: { invalidate: state.invalidate }, workOrders: { invalidate: state.invalidate } }),
@@ -16,9 +17,10 @@ vi.mock("@/lib/trpc", () => ({ trpc: {
       useQuery: () => ({ data: { rows: state.rows }, isFetching: state.fetching }),
       useInfiniteQuery: () => ({ data: { pages: [{ rows: state.rows }] }, isFetching: state.fetching, hasNextPage: state.hasNextPage, fetchNextPage: state.next }),
     },
-    getParty: { useQuery: () => ({ data: { branchId: 2 } }) },
+    getParty: { useQuery: () => ({ data: { branchId: 2, partyType: state.partyType, name: "جهة التوصيل" } }) },
     staffConfirm: { useMutation: () => ({ isPending: false, mutateAsync: state.staff }) },
     recordRemittance: { useMutation: () => ({ isPending: false, mutateAsync: state.remit }) },
+    recordCompanyStatement: { useMutation: () => ({ isPending: false, mutateAsync: state.statement }) },
   },
 } }));
 vi.mock("@/components/ui/dialog", () => ({ useDialogComposition: () => ({ justEndedComposing: () => false, setComposing: vi.fn(), markCompositionEnd: vi.fn() }), Dialog: ({ children }: any) => <div>{children}</div>, DialogContent: ({ children }: any) => <div>{children}</div>, DialogHeader: ({ children }: any) => <div>{children}</div>, DialogTitle: ({ children }: any) => <div>{children}</div>, DialogDescription: ({ children }: any) => <div>{children}</div>, DialogFooter: ({ children }: any) => <div>{children}</div> }));
@@ -34,10 +36,11 @@ describe("current collection obligation", () => {
   beforeEach(() => {
     state.rows = [{ id: 1, codAmount: "20000", collectedAmount: "0", counterSettledAmount: "5000", shortfallAssigned: "2000", parcelStatus: "DELIVERED" }];
     state.timeline = undefined;
-    state.fetching = false; state.hasNextPage = false; state.next.mockClear(); state.remit.mockReset();
+    state.partyType = "INDIVIDUAL";
+    state.fetching = false; state.hasNextPage = false; state.next.mockClear(); state.remit.mockReset(); state.statement.mockReset();
     state.staff.mockReset(); state.staff.mockResolvedValue({});
     state.invalidate.mockReset(); state.invalidate.mockResolvedValue(undefined);
-    state.print.mockClear(); state.close.mockClear(); state.completed.mockClear();
+    state.print.mockClear(); state.printStmt.mockClear(); state.close.mockClear(); state.completed.mockClear();
     host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
   });
   afterEach(() => { act(() => root.unmount()); host.remove(); });
@@ -197,5 +200,54 @@ describe("current collection obligation", () => {
     await render({ id: 11, partyId: 2, codDue: "25000.00", codAmount: "25000.00", parcelStatus: "DELIVERED" } as any);
     expect(confirm().disabled).toBe(true);
     expect(host.textContent).toContain("قيود على أجرة هذه الشحنة");
+  });
+
+  it("settles a delivery company multi-invoice shipment in 1 step via recordCompanyStatement with overflow fee and zero-COD sibling", async () => {
+    state.partyType = "COMPANY";
+    state.rows = [
+      { id: 20, shipmentLeaderConsignmentId: 20, shipmentInvoiceCount: 3, invoiceNumber: "INV-20", codAmount: "2000.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", feeWithholdingCash: "2000.00", parcelStatus: "OUT_FOR_DELIVERY" },
+      { id: 21, shipmentLeaderConsignmentId: 20, shipmentInvoiceCount: 3, invoiceNumber: "INV-21", codAmount: "25000.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", feeWithholdingCash: "3000.00", parcelStatus: "OUT_FOR_DELIVERY" },
+      { id: 22, shipmentLeaderConsignmentId: 20, shipmentInvoiceCount: 3, invoiceNumber: "INV-22", codAmount: "0.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", feeWithholdingCash: "0.00", parcelStatus: "OUT_FOR_DELIVERY" },
+    ];
+    state.statement.mockResolvedValueOnce({
+      remittanceId: 205,
+      remittanceNumber: "REM-205",
+      statementNumber: "STMT-900",
+      deliveriesConfirmed: 3,
+      collectedTotal: "27000.00",
+      netRemitted: "22000.00",
+    });
+    await render({ id: 20, partyId: 2, shipmentLeaderConsignmentId: 20, shipmentInvoiceCount: 3, codDue: "2000.00", codAmount: "2000.00", parcelStatus: "OUT_FOR_DELIVERY" });
+    expect(host.textContent).toContain("فواتير الشحنة المشمولة بالتحصيل (3)");
+    expect(host.textContent).toContain("INV-20");
+    expect(host.textContent).toContain("INV-21");
+    expect(host.textContent).toContain("INV-22");
+    expect(confirm().textContent).toContain("22,000");
+    // Requires statementNumber before enabling submit
+    expect(confirm().disabled).toBe(true);
+    await act(async () => {
+      const stmtInput = host.querySelector<HTMLInputElement>("#company-statement-number")!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(stmtInput, "STMT-900");
+      stmtInput.dispatchEvent(new Event("input", { bubbles: true }));
+      stmtInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(confirm().disabled).toBe(false);
+    await act(async () => confirm().click());
+    expect(state.staff).not.toHaveBeenCalled();
+    expect(state.statement).toHaveBeenCalledWith(expect.objectContaining({
+      partyId: 2,
+      targetShiftId: 22,
+      statementNumber: "STMT-900",
+      deductionsTotal: "5000",
+      countedCash: "22000",
+      lines: [
+        { consignmentId: 20, collectedAmount: "2000", expectedDue: "2000.00", expectedProven: "0.00" },
+        { consignmentId: 21, collectedAmount: "25000", expectedDue: "25000.00", expectedProven: "0.00" },
+        { consignmentId: 22, collectedAmount: "0.00", expectedDue: "0.00", expectedProven: "0.00", zeroDeliveryConfirmed: true },
+      ],
+    }));
+    expect(state.printStmt).toHaveBeenCalledTimes(1);
+    expect(state.close).toHaveBeenCalledWith(false);
+    expect(state.completed).toHaveBeenCalledTimes(1);
   });
 });

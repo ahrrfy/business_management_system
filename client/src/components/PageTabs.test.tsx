@@ -58,6 +58,26 @@ describe("PageTabs nested deep-link compatibility", () => {
   it("preserves direct tab precedence over an alias collision", () => {
     state.search = "tab=workflow"; render({ workflow: "dispatch" }); expect(active()).toBe("سير العمل");
   });
+  it("preserves branchId in query string when switching between non-default and default tabs", () => {
+    state.search = "branchId=2";
+    render();
+    const triggers = host.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    act(() => {
+      triggers[1]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      triggers[1]?.click();
+    });
+    expect(state.navigate).toHaveBeenCalledWith("/delivery?tab=dispatch&branchId=2");
+
+    state.navigate.mockClear();
+    state.search = "tab=dispatch&branchId=2";
+    render();
+    const updatedTriggers = host.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    act(() => {
+      updatedTriggers[0]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      updatedTriggers[0]?.click();
+    });
+    expect(state.navigate).toHaveBeenCalledWith("/delivery?branchId=2");
+  });
   it("wires the legacy DeliveryHub and administrative deep links to the three daily entries", () => {
     const source = readFileSync("client/src/pages/DeliveryCenter.tsx", "utf8");
     for (const alias of ["dispatch", "transit", "board"])

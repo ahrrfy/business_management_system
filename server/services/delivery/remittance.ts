@@ -3,7 +3,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { recordAssignedChargeRemittanceTx } from "../fulfillment/chargeDelivery";
-import { and, asc, eq, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   isShortfallReason,
@@ -17,6 +17,7 @@ import {
   deliveryParties,
   deliveryRemittanceLines,
   deliveryRemittances,
+  deliveryShipmentMembers,
   invoices,
   receipts,
 } from "../../../drizzle/schema";
@@ -775,7 +776,7 @@ export async function recordDeliveryRemittanceInTx(
   let fullFeesTotal = new Decimal(0);
   const offsets = new Map<
     number,
-    { amount: Decimal; cash: Decimal; due: Decimal }
+    { amount: Decimal; cash: Decimal; totalCash: Decimal; due: Decimal }
   >();
   const feePolicy = await createFeeWithholdingPolicy(
     tx,
@@ -784,6 +785,19 @@ export async function recordDeliveryRemittanceInTx(
     true,
   );
   const { quoteFee } = feePolicy;
+  const workMemberships = work.length
+    ? await tx
+        .select()
+        .from(deliveryShipmentMembers)
+        .where(inArray(deliveryShipmentMembers.consignmentId, work.map((w) => w.id)))
+        .for("share")
+    : [];
+  const shipmentLeaderByConsignment = new Map(
+    workMemberships.map((row) => [Number(row.consignmentId), Number(row.leaderConsignmentId)]),
+  );
+  const shipmentKeyOf = (id: number) => shipmentLeaderByConsignment.get(id) ?? id;
+  const remainingWorkCash = new Map<number, Decimal>(work.map((w) => [w.id, w.collected]));
+  const siblingAllocations = new Map<number, Decimal>();
   for (const w of work) {
     if (
       w.cn.sourceType !== "ONLINE_ORDER" ||
@@ -795,22 +809,45 @@ export async function recordDeliveryRemittanceInTx(
     if (due.lte(0)) continue;
     const quotedCash = quoteFee(due, w.orderTotal);
     fullFeesTotal = fullFeesTotal.plus(quotedCash);
-    const cap = Decimal.min(w.collected, feeBudget);
+    const key = shipmentKeyOf(w.id);
+    const orderedTargets = [w, ...work.filter((item) => item.id !== w.id && shipmentKeyOf(item.id) === key)];
+    const shipmentAvailable = round2(
+      orderedTargets.reduce((sum, item) => sum.plus(remainingWorkCash.get(item.id) ?? 0), money(0)),
+    );
+    const cap = Decimal.min(shipmentAvailable, feeBudget);
     // A commission replaces the whole fee. Defer a split quote instead of inventing a rate.
     assertFeeWithholdingCapacity(due, quotedCash, cap);
-    const cash = Decimal.min(quotedCash, cap);
-    const amount = quotedCash.lt(due) ? due : cash;
+    const totalCash = Decimal.min(quotedCash, cap);
+    const amount = quotedCash.lt(due) ? due : totalCash;
     if (amount.lte(0)) continue;
-    offsets.set(w.id, { amount, cash, due });
-    feeBudget = feeBudget.minus(cash);
-    feesTotal = feesTotal.plus(cash);
+    const ownAvail = remainingWorkCash.get(w.id) ?? money(0);
+    const ownCash = Decimal.min(totalCash, ownAvail);
+    remainingWorkCash.set(w.id, round2(ownAvail.minus(ownCash)));
+    let left = round2(totalCash.minus(ownCash));
+    for (const sibling of orderedTargets.slice(1)) {
+      if (left.lte(0)) break;
+      const avail = remainingWorkCash.get(sibling.id) ?? money(0);
+      const take = Decimal.min(left, avail);
+      if (take.gt(0)) {
+        siblingAllocations.set(sibling.id, round2((siblingAllocations.get(sibling.id) ?? money(0)).plus(take)));
+        remainingWorkCash.set(sibling.id, round2(avail.minus(take)));
+        left = round2(left.minus(take));
+      }
+    }
+    offsets.set(w.id, { amount, cash: ownCash, totalCash, due });
+    feeBudget = round2(feeBudget.minus(totalCash));
+    feesTotal = round2(feesTotal.plus(totalCash));
   }
   const detached = input.requireFullShipment
     ? await planDetachedShipmentFees(tx, { partyId: input.partyId, branchId: input.branchId,
         consignmentIds: work.map((w) => w.id), useCommission: party.useCommissionForSettlement === true,
-        includePending: false, currentRead: true, requireComplete: !partialStatement, feePolicy })
-    : { sources: [], allocations: new Map<number, Decimal>(), blocked: false, uncovered: false,
-        incomplete: false, blockedIds: new Set<number>(), uncoveredIds: new Set<number>() };
+        includePending: false, currentRead: true, requireComplete: !partialStatement,
+        includeTargetOverflow: false, capacityOverrides: remainingWorkCash, feePolicy })
+    : { sources: [], allocations: new Map<number, Decimal>(), projectedFromSource: new Map<number, Decimal>(),
+        blocked: false, uncovered: false, incomplete: false, blockedIds: new Set<number>(), uncoveredIds: new Set<number>() };
+  siblingAllocations.forEach((alloc, id) => {
+    detached.allocations.set(id, round2((detached.allocations.get(id) ?? money(0)).plus(alloc)));
+  });
   if (detached.blocked || detached.uncovered || detached.incomplete) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
       what: "تعذر حسم أجرة الشحنة", why: detached.incomplete
@@ -1281,7 +1318,7 @@ export async function recordDeliveryRemittanceInTx(
         receiptOutId,
         `REMIT:${remittanceId}`,
         actor,
-        offset.cash,
+        offset.totalCash,
         { cashBucket, remittanceId },
       );
     }

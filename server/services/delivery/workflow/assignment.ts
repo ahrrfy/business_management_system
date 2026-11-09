@@ -278,6 +278,27 @@ export async function mutateWorkflowAssignment(
             "لا تنقل حقوق الناقل القديمة إلى محاولة جديدة؛ افتح تسويته من محطة التحصيل ثم معالجة MISSING_HELD المرتبطة بالمصدر لإعادة إرسال عهدة العميل دون مخزون جديد",
           );
         const changesParty = partyId !== leader.partyId;
+        const effectiveTrackingRef =
+          targetParty.partyType === "COMPANY"
+            ? (input.externalTrackingRef?.trim() ||
+                (!changesParty ? leader.externalTrackingRef?.trim() : "")) ||
+              undefined
+            : undefined;
+        if (targetParty.partyType === "COMPANY" && !effectiveTrackingRef)
+          throw fulfillmentError(
+            "اكتب رقم بوليصة الشركة الجديدة صراحةً قبل إعادة الإسناد",
+          );
+        const samePartyTrackingPatch =
+          input.externalTrackingRef?.trim() && effectiveTrackingRef
+            ? { externalTrackingRef: effectiveTrackingRef }
+            : {};
+        const physicalHandoverIds =
+          changesParty && leader.status !== "CANCELLED" && !heldReturnReissue
+            ? await physicalHandoverConsignmentIdsTx(
+                tx,
+                members.map((member) => Number(member.id)),
+              )
+            : new Set<number>();
         if (
           changesParty &&
           targetParty.partyType === "COMPANY" &&
@@ -295,8 +316,11 @@ export async function mutateWorkflowAssignment(
             members.some(
               (member) =>
                 member.pickedUpAt != null ||
-                member.outForDeliveryAt != null ||
-                !["ASSIGNED", "ACCEPTED", "FAILED"].includes(
+                physicalHandoverIds.has(Number(member.id)) ||
+                member.returnDeclaredAt != null ||
+                !money(member.collectedAmount).isZero() ||
+                member.remittanceId != null ||
+                !["ASSIGNED", "ACCEPTED", "OUT_FOR_DELIVERY", "FAILED"].includes(
                   member.parcelStatus,
                 ),
             )
@@ -386,8 +410,9 @@ export async function mutateWorkflowAssignment(
                 expectedVersion: request.version,
                 consignmentId,
                 partyId,
+                ...samePartyTrackingPatch,
                 assignedUserId: input.assignedUserId,
-                externalTrackingRef: input.externalTrackingRef,
+                externalTrackingRef: effectiveTrackingRef,
                 clientRequestId: input.clientRequestId,
               },
               auth.actor,
@@ -419,7 +444,7 @@ export async function mutateWorkflowAssignment(
               partyId,
               collectCreditOnDelivery: await preservedCreditCollectionChoiceTx(tx, members),
               assignedUserId: input.assignedUserId,
-              externalTrackingRef: input.externalTrackingRef,
+              externalTrackingRef: effectiveTrackingRef,
               clientRequestId: input.clientRequestId,
               deliveryFee: leader.deliveryFee,
               feeCollection: leader.feeCollection,
@@ -460,6 +485,7 @@ export async function mutateWorkflowAssignment(
               {
                 consignmentId: member.id,
                 partyId,
+                ...samePartyTrackingPatch,
                 assignedUserId: input.assignedUserId,
                 clientRequestId: `${input.clientRequestId}:${member.id}`,
               },

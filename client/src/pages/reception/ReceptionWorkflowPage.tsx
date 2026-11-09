@@ -135,6 +135,10 @@ export default function DeliveryWorkflowPage() {
   const [collectScannedCode, setCollectScannedCode] = useState<string | null>(
     null,
   );
+  const [returnScannedCode, setReturnScannedCode] = useState<string | null>(
+    null,
+  );
+  const [editScannedCode, setEditScannedCode] = useState<string | null>(null);
   const [editInvoiceNumber, setEditInvoiceNumber] = useState<string | null>(
     null,
   );
@@ -195,6 +199,8 @@ export default function DeliveryWorkflowPage() {
     setDispatchScannedCode(null);
     setCancelScannedCode(null);
     setCollectScannedCode(null);
+    setReturnScannedCode(null);
+    setEditScannedCode(null);
     setAftercareScannedCode(null);
   }, [branchId]);
   const editWorkflow = trpc.delivery.workflow.previewBySource.useQuery(
@@ -215,6 +221,8 @@ export default function DeliveryWorkflowPage() {
   function chooseSection(section: Section, extra?: Record<string, string>) {
     if (resetBlocked) return;
     lookupGeneration.current++;
+    lookupGeneration.current++;
+    lookupContext.current = { branchId, section };
     setActiveSection(section);
     const params = new URLSearchParams(pageSearch);
     for (const key of [
@@ -250,6 +258,41 @@ export default function DeliveryWorkflowPage() {
     if (context.caseId) extra.caseId = String(context.caseId);
     if (context.executionId) extra.executionId = String(context.executionId);
     chooseSection("aftercare", extra);
+  }
+  function setCollectAction(action: string | null, chargeId?: number) {
+    const params = new URLSearchParams(pageSearch);
+    params.set("section", "collect");
+    if (isDeliveryModule) params.set("tab", "workflow");
+    if (action) params.set("action", action);
+    else params.delete("action");
+    if (chargeId) params.set("chargeId", String(chargeId));
+    else params.delete("chargeId");
+    if (branchId) params.set("branchId", String(branchId));
+    navigate(location + "?" + params.toString(), { replace: true });
+  }
+  function navigateToStationWithBarcode(
+    target: "dispatch" | "cancelAssignment" | "collect" | "return" | "edit",
+    raw: string,
+  ) {
+    if (resetBlockedRef.current) return;
+    const cleaned = raw.trim();
+    if (!cleaned) return;
+    if (target === "dispatch") {
+      setDispatchScannedCode(cleaned);
+      chooseSection("dispatch");
+    } else if (target === "cancelAssignment") {
+      setCancelScannedCode(cleaned);
+      chooseSection("cancelAssignment");
+    } else if (target === "collect") {
+      setCollectScannedCode(cleaned);
+      chooseSection("collect");
+    } else if (target === "return") {
+      setReturnScannedCode(cleaned);
+      chooseSection("return");
+    } else if (target === "edit") {
+      setEditScannedCode(cleaned);
+      chooseSection("edit");
+    }
   }
   useEffect(() => {
     const explicitSection = explicitWorkflowSection(pageSearch);
@@ -304,6 +347,29 @@ export default function DeliveryWorkflowPage() {
         ) {
           setReturnWorkflow(preview);
           setReturnScanned(null);
+          setReturnBarcodeInput("");
+          return;
+        }
+        if (preview.source.kind === "invoice") {
+          setReturnScanned({
+            id: preview.source.id,
+            kind: "invoice",
+            orderNumber: preview.source.number,
+            title: null,
+            status: preview.status ?? null,
+            branchId: preview.source.branchId,
+            customerName: preview.recipient.name,
+            customerPhone: preview.recipient.phone,
+            salePrice: preview.money.currentTotal,
+            deposit: preview.money.paidAmount,
+            deliveryAddress: preview.recipient.address,
+            deliveryPhone: preview.recipient.phone,
+            deliveryCost: preview.money.deliveryFee,
+            version: 1,
+            invoiceId: preview.source.id,
+            activeConsignment: null,
+          });
+          setReturnWorkflow(null);
           setReturnBarcodeInput("");
           return;
         }
@@ -427,12 +493,29 @@ export default function DeliveryWorkflowPage() {
     void lookupInvoiceForEdit(invoiceNumber);
   }, [activeSection, branchId, lookupInvoiceForEdit, pageSearch]);
 
+  useEffect(() => {
+    if (activeSection !== "return" || !returnScannedCode || !branchId) return;
+    const explicit = explicitWorkflowSection(pageSearch);
+    if (explicit && explicit !== "return") return;
+    const code = returnScannedCode;
+    setReturnScannedCode(null);
+    void lookupWorkOrder(code);
+  }, [activeSection, returnScannedCode, branchId, pageSearch, lookupWorkOrder]);
+
+  useEffect(() => {
+    if (activeSection !== "edit" || !editScannedCode || !branchId) return;
+    const explicit = explicitWorkflowSection(pageSearch);
+    if (explicit && explicit !== "edit") return;
+    const code = editScannedCode;
+    setEditScannedCode(null);
+    void lookupInvoiceForEdit(code);
+  }, [activeSection, editScannedCode, branchId, pageSearch, lookupInvoiceForEdit]);
+
   const cancelAssignmentEnabled = activeSection === "cancelAssignment";
-  const returnEnabled =
-    activeSection === "return" && !returnScanned && !returnWorkflow;
+  const returnEnabled = activeSection === "return";
   const collectEnabled =
     activeSection === "collect" && !pageParams.get("action");
-  const editEnabled = activeSection === "edit" && !editInvoiceNumber;
+  const editEnabled = activeSection === "edit";
   const aftercareEnabled = activeSection === "aftercare";
   useBarcodeScanner(
     useCallback(
@@ -462,12 +545,13 @@ export default function DeliveryWorkflowPage() {
           collectEnabled ||
           editEnabled ||
           aftercareEnabled),
+      ignoreInputFields: true,
     },
   );
   useEffect(() => {
-    if (returnEnabled) returnRef.current?.focus();
-    else if (editEnabled) editRef.current?.focus();
-  }, [returnEnabled, editEnabled]);
+    if (returnEnabled && !returnScanned && !returnWorkflow) returnRef.current?.focus();
+    else if (editEnabled && !editInvoiceNumber) editRef.current?.focus();
+  }, [returnEnabled, returnScanned, returnWorkflow, editEnabled, editInvoiceNumber]);
   const sourceContextKey = useRef<string | null>(null);
   function clearLookup() {
     if (resetBlocked) return;
@@ -483,6 +567,8 @@ export default function DeliveryWorkflowPage() {
     setDispatchScannedCode(null);
     setCancelScannedCode(null);
     setCollectScannedCode(null);
+    setReturnScannedCode(null);
+    setEditScannedCode(null);
     setAftercareScannedCode(null);
     const search = clearWorkflowLookupSearch(pageSearch);
     navigate(location + (search ? "?" + search : ""), { replace: true });
@@ -568,7 +654,15 @@ export default function DeliveryWorkflowPage() {
                   asChild
                   className="gap-1.5 font-bold text-xs"
                 >
-                  <Link href="/delivery?tab=dispatch">لوحة وجداول التوصيل</Link>
+                  <Link
+                    href={
+                      branchId
+                        ? `/delivery?tab=dispatch&branchId=${branchId}`
+                        : "/delivery?tab=dispatch"
+                    }
+                  >
+                    لوحة وجداول التوصيل
+                  </Link>
                 </Button>
               )}
             </div>
@@ -652,6 +746,8 @@ export default function DeliveryWorkflowPage() {
         nextStep="انتظر اكتمال الحفظ ثم تابع المسح من المحطة المختارة."
         onModeChange={chooseMode}
         onSectionChange={chooseSection}
+        activeCollectAction={pageParams.get("action")}
+        onCollectActionChange={(action) => setCollectAction(action)}
       />
 
       <div
@@ -675,6 +771,7 @@ export default function DeliveryWorkflowPage() {
             onBarcodeConsumed={() => setDispatchScannedCode(null)}
               onLookupReset={clearLookup}
             onAftercare={(raw) => openAftercare({ raw })}
+            onNavigateToStation={navigateToStationWithBarcode}
             onRefunds={(codes) => {
               setRefundCodes(codes);
               chooseSection("collect", { action: "refunds" });
@@ -684,6 +781,7 @@ export default function DeliveryWorkflowPage() {
 
         {activeSection === "cancelAssignment" && branchId && (
           <CancelDeliveryAssignmentSection
+            key={(me.data?.id ?? 0) + ":" + branchId}
             branchId={branchId}
             scannedBarcode={cancelScannedCode}
             onBarcodeConsumed={() => setCancelScannedCode(null)}
@@ -696,29 +794,38 @@ export default function DeliveryWorkflowPage() {
               chooseSection("dispatch");
             }}
             onNavigateToAftercare={openAftercare}
+            onNavigateToReturnBarcode={(raw) =>
+              navigateToStationWithBarcode("return", raw)
+            }
+            onNavigateToCollectBarcode={(raw) =>
+              navigateToStationWithBarcode("collect", raw)
+            }
+            onOpenCharge={(chargeId) => setCollectAction("charges", chargeId)}
           />
         )}
         {activeSection === "collect" && branchId && (
           <WorkflowCollectStation
+            key={(me.data?.id ?? 0) + ":" + branchId}
             branchId={branchId}
             shift={shift}
             scannedBarcode={collectScannedCode}
             onBarcodeConsumed={() => setCollectScannedCode(null)}
-              onLookupReset={clearLookup}
+            onLookupReset={clearLookup}
             action={pageParams.get("action")}
+            hideActionSwitch
             chargeId={positiveWorkflowParam(pageParams, "chargeId")}
             refundCodes={refundCodes}
             onNavigateToAftercare={openAftercare}
-            onAction={(action, chargeId) => {
-              const params = new URLSearchParams(pageSearch);
-              params.set("section", "collect");
-              if (action) params.set("action", action);
-              else params.delete("action");
-              if (chargeId) params.set("chargeId", String(chargeId));
-              else params.delete("chargeId");
-              if (branchId) params.set("branchId", String(branchId));
-              navigate(location + "?" + params.toString(), { replace: true });
-            }}
+            onNavigateToDispatchBarcode={(raw) =>
+              navigateToStationWithBarcode("dispatch", raw)
+            }
+            onNavigateToReturnBarcode={(raw) =>
+              navigateToStationWithBarcode("return", raw)
+            }
+            onNavigateToCancelAssignmentBarcode={(raw) =>
+              navigateToStationWithBarcode("cancelAssignment", raw)
+            }
+            onAction={setCollectAction}
           />
         )}
         {activeSection === "aftercare" && branchId && (
@@ -768,8 +875,9 @@ export default function DeliveryWorkflowPage() {
                     onSubmit={(val: string) => {
                       if (val.trim()) void lookupInvoiceForEdit(val.trim());
                     }}
-                    placeholder="رقم الفاتورة (Enter)"
-                    className="flex-1 text-center font-bold"
+                    placeholder="امسح أو أدخل رقم الفاتورة"
+                    className="flex-1"
+                    inputClassName="text-center font-mono font-bold placeholder:font-sans placeholder:font-normal"
                     dir="ltr"
                     barcode={true}
                   />
@@ -885,8 +993,52 @@ export default function DeliveryWorkflowPage() {
                       <p className="text-xs text-muted-foreground">
                         {editScanned.consignmentStatus ?? "لا توجد عهدة توصيل"}
                       </p>
+                      {currentEditContext?.money?.sourceCodAmount != null &&
+                        currentEditContext.money.sourceCodAmount !==
+                          currentEditContext.money.codAmount && (
+                          <p className="mt-1 text-xs font-semibold text-primary">
+                            متبقي هذه الفاتورة:{" "}
+                            {fmt(currentEditContext.money.sourceCodAmount)} د.ع
+                            {" · "}إجمالي الشحنة:{" "}
+                            {fmt(currentEditContext.money.codAmount)} د.ع
+                          </p>
+                        )}
                     </div>
                   </div>
+                  {(currentEditContext?.group?.members ?? []).filter(
+                    (member) => member.invoiceId != null,
+                  ).length > 1 && (
+                    <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+                      <p className="text-xs font-bold text-muted-foreground">
+                        شحنة متعددة الفواتير — اختر الفاتورة المراد تصحيحها:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(currentEditContext?.group?.members ?? [])
+                          .filter((member) => member.invoiceId != null)
+                          .map((member) => {
+                            const selected = member.invoiceId === editScanned.id;
+                            return (
+                              <Button
+                                key={member.consignmentId}
+                                type="button"
+                                size="sm"
+                                variant={selected ? "default" : "outline"}
+                                className="h-7 px-2 font-mono text-xs"
+                                dir="ltr"
+                                onClick={() => {
+                                  if (!selected && member.invoiceNumber)
+                                    void lookupInvoiceForEdit(
+                                      `INV-${member.invoiceNumber}`,
+                                    );
+                                }}
+                              >
+                                INV-{member.invoiceNumber} ({fmt(member.codAmount)} د.ع)
+                              </Button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
 
                   {editBlockReason && (
                     <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm">
@@ -947,11 +1099,18 @@ export default function DeliveryWorkflowPage() {
                       editWorkflow.isFetching ||
                       !!editWorkflow.error
                     }
-                    onClick={() =>
+                    onClick={() => {
+                      const returnParams = new URLSearchParams();
+                      if (isDeliveryModule) returnParams.set("tab", "workflow");
+                      returnParams.set("section", "edit");
+                      if (branchId) returnParams.set("branchId", String(branchId));
+                      const returnTo = encodeURIComponent(
+                        `${location}?${returnParams.toString()}`,
+                      );
                       navigate(
-                        `/invoices/${editScanned.id}/correct?from=reception-edit`,
-                      )
-                    }
+                        `/invoices/${editScanned.id}/correct?from=reception-edit&returnTo=${returnTo}`,
+                      );
+                    }}
                   >
                     <FilePenLine aria-hidden className="size-5" />
                     تعديل الفاتورة

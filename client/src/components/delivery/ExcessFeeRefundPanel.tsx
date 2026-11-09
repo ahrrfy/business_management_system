@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   ManagerApprovalDialog,
   type ManagerApprovalInput,
@@ -15,19 +16,32 @@ import { paymentMethodCompact } from "@shared/terms";
 
 export function ExcessFeeRefundPanel({
   branchId,
+  initialDocumentNumber,
+  defaultShiftId,
   onChanged,
 }: {
   branchId: number;
+  initialDocumentNumber?: string | null;
+  defaultShiftId?: number | null;
   onChanged: () => Promise<unknown>;
 }) {
-  const [number, setNumber] = useState(""),
-    [lookup, setLookup] = useState(""),
+  const [number, setNumber] = useState(() => initialDocumentNumber?.trim() ?? ""),
+    [lookup, setLookup] = useState(() => initialDocumentNumber?.trim() ?? ""),
     [reason, setReason] = useState("");
   const [requestId, setRequestId] = useState(() => crypto.randomUUID()),
     [receiptId, setReceiptId] = useState<number | null>(null);
   const [shiftId, setShiftId] = useState(""),
     [manager, setManager] = useState(false),
     [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const cleaned = initialDocumentNumber?.trim() ?? "";
+    if (!cleaned) return;
+    setNumber(cleaned);
+    setLookup(cleaned);
+    setReceiptId(null);
+    setError(null);
+    setRequestId(crypto.randomUUID());
+  }, [initialDocumentNumber]);
   const preview = trpc.delivery.paymentRefunds.previewExcess.useQuery(
     { branchId, documentNumber: lookup },
     { enabled: lookup.length > 0, retry: false, refetchOnWindowFocus: false },
@@ -41,9 +55,11 @@ export function ExcessFeeRefundPanel({
   const request = trpc.delivery.paymentRefunds.requestExcess.useMutation();
   const selectedShift = shiftId
     ? Number(shiftId)
-    : open.data?.length === 1
-      ? open.data[0].shiftId
-      : undefined;
+    : defaultShiftId && open.data?.some((s) => s.shiftId === defaultShiftId)
+      ? defaultShiftId
+      : open.data?.length === 1
+        ? open.data[0].shiftId
+        : undefined;
   const needsApproval =
     source?.receipt.method === "CASH" &&
     (source.needsManagerApproval ||
@@ -96,24 +112,36 @@ export function ExcessFeeRefundPanel({
         مطابقة لأجرة الشحنة الجديدة.
       </p>
       <div className="flex gap-2">
-        <Input
+        <UnifiedSearchInput
           aria-label="رقم مصدر الأجرة المطبوع أو الباركود"
           value={number}
-          onChange={(e) => {
-            setNumber(e.target.value);
+          onChange={(val) => {
+            setNumber(val);
             setReceiptId(null);
             setRequestId(crypto.randomUUID());
           }}
+          onScan={(code) => {
+            const cleaned = code.trim();
+            if (!cleaned) return;
+            setNumber(cleaned);
+            setLookup(cleaned);
+            setReceiptId(null);
+            setError(null);
+            setRequestId(crypto.randomUUID());
+          }}
+          onSubmit={(val) => {
+            const cleaned = val.trim();
+            if (!cleaned) return;
+            setNumber(cleaned);
+            setLookup(cleaned);
+            setReceiptId(null);
+            setError(null);
+          }}
           placeholder="INV-… أو WO-…"
           dir="ltr"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              setLookup(number.trim());
-              setReceiptId(null);
-              setError(null);
-            }
-          }}
+          barcode
+          debounceMs={0}
+          className="flex-1"
         />
         <Button
           variant="outline"

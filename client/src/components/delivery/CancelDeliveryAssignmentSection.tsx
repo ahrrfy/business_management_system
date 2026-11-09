@@ -8,7 +8,6 @@ import {
   hasUnresolvedWorkflowError,
 } from "./workflow/workflowScanReset";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -16,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { docBarcode } from "@shared/documentNumber";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
+import { workflowSourceBarcode } from "./workflow/navigation";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -64,6 +64,8 @@ export interface CancelDeliveryAssignmentSectionProps {
   onLookupReset?: () => void;
   onNavigateToDispatch?: (order: ScannedOrderForCancellation) => void;
   onNavigateToDispatchBarcode?: (raw: string) => void;
+  onNavigateToReturnBarcode?: (raw: string) => void;
+  onNavigateToCollectBarcode?: (raw: string) => void;
   onNavigateToAftercare?: (context: {
     caseId?: number;
     executionId?: number;
@@ -83,6 +85,8 @@ export function CancelDeliveryAssignmentSection({
   onLookupReset,
   onNavigateToDispatch,
   onNavigateToDispatchBarcode,
+  onNavigateToReturnBarcode,
+  onNavigateToCollectBarcode,
   onNavigateToAftercare,
   onOpenCharge,
   onAssignmentCancelled,
@@ -96,6 +100,7 @@ export function CancelDeliveryAssignmentSection({
     branchId: number;
     source: { kind: WorkflowScanPreview["source"]["kind"]; id: number };
     consignmentId: number;
+    raw: string;
   } | null>(null);
   const [sourceRaw, setSourceRaw] = useState("");
   const [reason, setReason] = useState("");
@@ -120,13 +125,32 @@ export function CancelDeliveryAssignmentSection({
     { enabled: !!partyId, staleTime: 30_000 },
   );
   const target = parties.data?.find((p) => String(p.id) === partyId);
-  const drivers = (members.data ?? []).filter(
-    (m) => m.isActive && m.memberRole === "DRIVER",
-  );
+  const effectiveBranchId = preview?.source.branchId ?? branchId ?? null;
+  const drivers = (members.data ?? []).filter((m) => {
+    if (!m.isActive || m.memberRole !== "DRIVER") return false;
+    const memberBranchId = (m as { branchId?: number | null }).branchId;
+    return (
+      effectiveBranchId == null ||
+      memberBranchId == null ||
+      memberBranchId === effectiveBranchId
+    );
+  });
+  const targetDefaultUserInBranch =
+    target?.userId != null &&
+    (target.branchId == null ||
+      effectiveBranchId == null ||
+      target.branchId === effectiveBranchId);
   const internalDriverRequired =
     target?.partyType === "INDIVIDUAL" &&
-    (target.userId != null || drivers.length > 0);
-  const workflowPrinter = useWorkflowDocumentPrinter(preview?.source.branchId ?? completed?.branchId ?? branchId);
+    (targetDefaultUserInBranch || drivers.length > 0);
+  const companyTrackingRequired =
+    mode === "reassign" &&
+    target?.partyType === "COMPANY" &&
+    !externalTrackingRef.trim() &&
+    Number(partyId) !== (preview?.group?.partyId ?? 0);
+  const workflowPrinter = useWorkflowDocumentPrinter(
+    preview?.source.branchId ?? completed?.branchId ?? branchId,
+  );
   const busyRef = useRef(false);
   const mutation = trpc.delivery.workflow.assignment.useMutation({
     onError: (error) => {
@@ -179,12 +203,14 @@ export function CancelDeliveryAssignmentSection({
               : "reassign",
         );
         setBarcodeInput("");
-        onBarcodeConsumed?.();
       } catch (error) {
         if (generation === sequence.current)
           notify.err(error, "تعذر قراءة المصدر الحالي");
       } finally {
-        if (generation === sequence.current) setIsSearching(false);
+        if (generation === sequence.current) {
+          setIsSearching(false);
+          onBarcodeConsumed?.();
+        }
       }
     },
     [utils, branchId, onBarcodeConsumed],
@@ -211,7 +237,9 @@ export function CancelDeliveryAssignmentSection({
   const goDispatch = async () => {
     if (!preview) return;
     if (onNavigateToDispatchBarcode) {
-      onNavigateToDispatchBarcode(sourceRaw);
+      onNavigateToDispatchBarcode(
+        sourceRaw || workflowSourceBarcode(preview.source),
+      );
       return;
     }
     if (
@@ -253,6 +281,10 @@ export function CancelDeliveryAssignmentSection({
       notify.err("اختر جهة التوصيل والمندوب الموظف المرتبط بها صراحةً");
       return;
     }
+    if (!isAftercare && companyTrackingRequired) {
+      notify.err("أدخل أو امسح رقم بوليصة شركة التوصيل الجديدة");
+      return;
+    }
     if (mode === "cancelAssignment" && !physicalHeld) {
       notify.err(
         "تحقق أولاً أن كامل الشحنة عادت فعلياً إلى عهدة المكتبة",
@@ -286,7 +318,10 @@ export function CancelDeliveryAssignmentSection({
       reason: reason.trim(),
       partyId: mode === "reassign" ? Number(partyId) : undefined,
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
-      externalTrackingRef: externalTrackingRef.trim() || undefined,
+      externalTrackingRef:
+        target?.partyType === "COMPANY"
+          ? externalTrackingRef.trim() || undefined
+          : undefined,
       physicalHeldConfirmed: physicalHeld,
     };
     const signature = JSON.stringify(payload);
@@ -312,13 +347,24 @@ export function CancelDeliveryAssignmentSection({
         branchId: preview.source.branchId,
         source: { kind: preview.source.kind, id: preview.source.id },
         consignmentId: result.consignmentId,
+        raw: sourceRaw || workflowSourceBarcode(preview.source),
       });
       retryIdentity.current = null;
       notify.ok(`تم ${label}`);
       if (mode === "reassign") {
-        void workflowPrinter.printShipmentAndLabel(result.consignmentId, packWin, labelWin, preview.source.branchId);
+        void workflowPrinter.printShipmentAndLabel(
+          result.consignmentId,
+          packWin,
+          labelWin,
+          preview.source.branchId,
+        );
       } else {
-        void workflowPrinter.printLatestByType(result.consignmentId, "PHYSICAL_RETURN_RECEIPT", packWin, preview.source.branchId);
+        void workflowPrinter.printLatestByType(
+          result.consignmentId,
+          "PHYSICAL_RETURN_RECEIPT",
+          packWin,
+          preview.source.branchId,
+        );
       }
       if (mode === "cancelAssignment")
         onAssignmentCancelled?.(
@@ -386,7 +432,9 @@ export function CancelDeliveryAssignmentSection({
           onChange={setBarcodeInput}
           onScan={(raw) => void lookup(raw)}
           onSubmit={(raw) => void lookup(raw)}
-          placeholder="باركود الفاتورة أو الطلب أو CN أو AE"
+          placeholder="امسح باركود الفاتورة أو الطلب أو الشحنة"
+          aria-label="باركود الفاتورة أو الطلب أو CN أو AE"
+          inputClassName="font-mono placeholder:font-sans"
           barcode
           dir="ltr"
           disabled={mutation.isPending}
@@ -400,12 +448,24 @@ export function CancelDeliveryAssignmentSection({
           <p className="font-medium">
             تم {completed.label}؛ مستندات الإجراء محفوظة.
           </p>
-          <WorkflowPrintActions
-            branchId={completed.branchId}
-            source={completed.source}
-            consignmentId={completed.consignmentId}
-            mode={completed.action === "reassign" ? "dispatch" : "cancel"}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <WorkflowPrintActions
+              branchId={completed.branchId}
+              source={completed.source}
+              consignmentId={completed.consignmentId}
+              mode={completed.action === "reassign" ? "dispatch" : "cancel"}
+            />
+            {completed.action === "declareReturn" &&
+              onNavigateToReturnBarcode && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => onNavigateToReturnBarcode(completed.raw)}
+                >
+                  استلام المرتجع المادي الآن
+                </Button>
+              )}
+          </div>
         </Card>
       )}
       {preview && (
@@ -430,19 +490,56 @@ export function CancelDeliveryAssignmentSection({
             preview={preview}
             mode="cancel"
           />
-          {preview.relations.chargeId != null && (
-            <Button
-              variant="outline"
-              onClick={() => onOpenCharge?.(preview.relations.chargeId!)}
-            >
-              فتح مستند الأجور
-            </Button>
-          )}
-          {isAftercare && (
-            <Button variant="outline" onClick={openAftercare}>
-              فتح المعالجة وإثبات العهدة أو تجهيز إعادة الإصدار
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {preview.relations.chargeId != null && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onOpenCharge?.(preview.relations.chargeId!)}
+              >
+                فتح مستند الأجور
+              </Button>
+            )}
+            {isAftercare && (
+              <Button variant="outline" size="sm" onClick={openAftercare}>
+                فتح المعالجة وإثبات العهدة أو تجهيز إعادة الإصدار
+              </Button>
+            )}
+            {onNavigateToReturnBarcode &&
+              (preview.returnState?.members.some((m) => m.canReceive) ||
+                preview.returnState?.postDeliveryCommercialEligible ||
+                preview.actions.some(
+                  (a) => a.action === "return" && a.allowed,
+                )) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    onNavigateToReturnBarcode(
+                      sourceRaw || workflowSourceBarcode(preview.source),
+                    )
+                  }
+                >
+                  استلام المرتجع في المحطة
+                </Button>
+              )}
+            {onNavigateToCollectBarcode &&
+              preview.actions.some(
+                (a) => a.action === "collect" && a.allowed,
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    onNavigateToCollectBarcode(
+                      sourceRaw || workflowSourceBarcode(preview.source),
+                    )
+                  }
+                >
+                  الانتقال للتحصيل والتوريد
+                </Button>
+              )}
+          </div>
           {preview.relations.consignmentId == null ? (
             <div className="space-y-2">
               <p className="text-sm">
@@ -524,6 +621,7 @@ export function CancelDeliveryAssignmentSection({
                     onValueChange={(value) => {
                       setPartyId(value);
                       setAssignedUserId("");
+                      setExternalTrackingRef("");
                     }}
                     disabled={mutation.isPending}
                   >
@@ -545,26 +643,29 @@ export function CancelDeliveryAssignmentSection({
                       <Label htmlFor="workflow-reassign-tracking">
                         رقم بوليصة الشركة
                       </Label>
-                      <Input
+                      <UnifiedSearchInput
                         id="workflow-reassign-tracking"
                         value={externalTrackingRef}
-                        onChange={(event) =>
-                          setExternalTrackingRef(event.target.value)
-                        }
+                        onChange={setExternalTrackingRef}
+                        onScan={(val) => setExternalTrackingRef(val.trim())}
+                        onSubmit={(val) => setExternalTrackingRef(val.trim())}
+                        placeholder="امسح أو أدخل رقم البوليصة"
+                        barcode
+                        debounceMs={0}
                         dir="ltr"
                         disabled={mutation.isPending}
-                        maxLength={100}
                       />
                     </div>
                   )}
-                  {(drivers.length > 0 || target?.userId != null) && (
+                  {(drivers.length > 0 || targetDefaultUserInBranch) && (
                     <AppSelect
                       value={assignedUserId}
                       onValueChange={setAssignedUserId}
                       disabled={mutation.isPending || members.isLoading}
                     >
                       <option value="">اختر المندوب الموظف صراحةً</option>
-                      {target?.userId != null &&
+                      {targetDefaultUserInBranch &&
+                        target?.userId != null &&
                         !drivers.some((d) => d.userId === target.userId) && (
                           <option value={String(target.userId)}>
                             {target.name}
@@ -587,7 +688,9 @@ export function CancelDeliveryAssignmentSection({
                     mutation.isPending ||
                     (mode === "cancelAssignment" && !physicalHeld) ||
                     (mode === "reassign" &&
-                      (!partyId || (internalDriverRequired && !assignedUserId)))
+                      (!partyId ||
+                        (internalDriverRequired && !assignedUserId) ||
+                        (!isAftercare && companyTrackingRequired)))
                   }
                   onClick={() => void execute()}
                 >

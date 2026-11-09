@@ -100,6 +100,9 @@ function WorkflowReturnSourceCardContent({
       : (initial?.input.evidence ?? ""),
   );
   const [physical, setPhysical] = useState(initial?.action === "receive");
+  const [feeEarned, setFeeEarned] = useState(() =>
+    initial?.action === "receive" ? Boolean(initial.input.feeEarned) : false,
+  );
   const [receivedIds, setReceivedIds] = useState<number[]>(
     initial?.action === "receive"
       ? (initial.input.receivedConsignmentIds ?? [])
@@ -359,6 +362,7 @@ function WorkflowReturnSourceCardContent({
                   branchId,
                   evidence: reason.trim(),
                   inspected: true,
+                  ...(aftercare ? { feeEarned } : {}),
                   ...(linePreview.data?.items.length && !wholeReceipt && receivedItemIds.length ? { receivedLines: linePreview.data.items.filter((item) => receivedItemIds.includes(item.invoiceItemId)).map((item) => ({ consignmentId: linePreview.data!.consignmentId, invoiceItemId: item.invoiceItemId, baseQuantity: Number(receivedQuantities[item.invoiceItemId] ?? (item.returnedBaseQuantity || item.baseQuantity)) })) } : {}),
                   receivedConsignmentIds:
                     (receiptPreview.group?.consignmentIds.length ?? 0) > 1
@@ -476,6 +480,8 @@ function WorkflowReturnSourceCardContent({
             : "ثبت الاستلام والفحص الفعلي؛ حقوق البيع والأمانة ورد المال تبقى على مساراتها المرتبطة",
         );
       }
+      void utils.returns.invalidate().catch(() => {});
+      void utils.sales.invalidate().catch(() => {});
       void utils.delivery.invalidate().catch(() => {});
       void utils.workOrders.invalidate().catch(() => {});
       await refreshSettled(committed);
@@ -606,6 +612,16 @@ function WorkflowReturnSourceCardContent({
             إعلان رجوع الطرد
           </SubmitButton>
         )}
+        {canReceive?.allowed && aftercare && (
+          <label className="flex min-h-10 items-center gap-2 text-sm">
+            <Checkbox
+              checked={feeEarned}
+              disabled={locked}
+              onCheckedChange={(value) => setFeeEarned(value === true)}
+            />
+            استحق الناقل أجرة التوصيل عن هذه المحاولة
+          </label>
+        )}
         {canReceive?.allowed && (
           <label className="flex min-h-10 items-center gap-2 text-sm">
             <Checkbox
@@ -680,6 +696,21 @@ function WorkflowReturnSourceCardContent({
             متابعة المعالجة والتسوية
           </Button>
         )}
+        {!aftercare &&
+          current.relations.aftercareCaseId == null &&
+          (current.relations.invoiceId != null ||
+            current.relations.workOrderId != null) && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={locked}
+              onClick={() =>
+                onAftercare({ raw: workflowSourceBarcode(current.source) })
+              }
+            >
+              فتح معالجة نقص أو استبدال
+            </Button>
+          )}
         {current.relations.consignmentId && onCollect && (
           <Button
             type="button"

@@ -600,6 +600,7 @@ export function resolveOperationPolicy(
       ["delivery.workflow.preview", deliveryStationSources],
       ["delivery.workflow.previewBySource", deliveryStationSources],
       ["delivery.workflow.previewBatch", deliveryStationSources],
+      ["delivery.workflow.previewPartialOutcome", deliveryStationSources],
       [
         "delivery.workflow.dispatchBatch",
         [

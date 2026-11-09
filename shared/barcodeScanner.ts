@@ -27,6 +27,7 @@ const ARABIC_INDIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
 const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
 const MULTI_CHAR_KEYS = ["لإ", "لأ", "لآ", "لا"] as const;
 const HAS_ARABIC_LAYOUT_OUTPUT = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff÷×‘’]/;
+const HAS_ARABIC_SHIFT_ASCII_PREFIX = /^[{}[\]/]{1,4}[-|]\d/;
 
 function latinDigit(char: string): string | null {
   const arabicIndex = ARABIC_INDIC_DIGITS.indexOf(char);
@@ -43,13 +44,13 @@ const INVISIBLE_FORMAT_MARKS = /[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u
  */
 const AIM_CODE_IDENTIFIER = /^\][A-Za-z][A-Za-z0-9]/;
 
-export function normalizeBarcodeScannerInput(raw: string): string {
+export function normalizeBarcodeScannerInput(raw: string, options?: { forcePhysicalBurstLayout?: boolean }): string {
   if (!raw) return "";
   const cleaned = raw.replace(INVISIBLE_FORMAT_MARKS, "").trim();
   // جرّد AIM المرسل حرفياً قبل كشف التخطيط: الأرقام العربية/الفارسية تقع ضمن مجال Unicode
   // العربي، فلا ينبغي أن تجعل `]C1` نفسها تتحوّل إلى `DC1` قبل أن نستطيع التعرّف عليها.
   const scannerPayload = cleaned.replace(AIM_CODE_IDENTIFIER, "").trim();
-  const translateLayout = HAS_ARABIC_LAYOUT_OUTPUT.test(scannerPayload);
+  const translateLayout = Boolean(options?.forcePhysicalBurstLayout) || HAS_ARABIC_LAYOUT_OUTPUT.test(scannerPayload) || HAS_ARABIC_SHIFT_ASCII_PREFIX.test(scannerPayload);
   let normalized = "";
   for (let index = 0; index < scannerPayload.length;) {
     const multi = translateLayout
@@ -82,13 +83,13 @@ export function normalizeBarcodeScannerInput(raw: string): string {
  * - بطاقات وتراخيص: CUST-, EMP-, USER-, ALR-
  */
 export const KNOWN_SYSTEM_PREFIXES = [
-  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "RV", "PV", "CUST", "EMP", "USER", "ALR", "FR", "AE", "CHG",
+  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "RV", "PV", "CUST", "EMP", "USER", "ALR", "FR", "AE", "CHG", "FC", "AC", "TRK", "SHP", "DR", "STMT",
 ] as const;
 
 export function looksLikeSystemBarcode(raw: string): boolean {
   if (!raw) return false;
   const normalized = normalizeBarcodeScannerInput(raw);
-  return new RegExp(`^(?:${KNOWN_SYSTEM_PREFIXES.join("|")})(?:[-|]|\\d)`, "i").test(normalized);
+  return new RegExp(`^(?:${KNOWN_SYSTEM_PREFIXES.join("|")})(?:[-|\\s]+\\d|\\d|[-|][A-Za-z0-9])`, "i").test(normalized);
 }
 
 export const normalizeArabicKeyboardToAscii = normalizeBarcodeScannerInput;
@@ -151,13 +152,18 @@ export function unwrapBarcodeScanEnvelope(raw: string): string {
   return raw;
 }
 
-export function normalizeKnownSystemBarcode(raw: string): string {
+export function normalizeKnownSystemBarcode(raw: string, options?: { physicalBurst?: boolean }): string {
   if (!raw) return "";
   const unwrapped = unwrapBarcodeScanEnvelope(raw);
-  const normalized = normalizeBarcodeScannerInput(unwrapped);
+  const normalized = normalizeBarcodeScannerInput(unwrapped, { forcePhysicalBurstLayout: options?.physicalBurst });
   if (!looksLikeSystemBarcode(normalized)) {
     if (unwrapped !== raw) return normalized;
+    if (options?.physicalBurst) return normalized;
     return raw.startsWith("]") ? normalized : raw;
+  }
+  const spaceMatch = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})\\s+([A-Za-z0-9].*)$`, "i"));
+  if (spaceMatch) {
+    return `${spaceMatch[1].toUpperCase()}-${spaceMatch[2].trim()}`;
   }
   const match = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})([-|]?.*)$`, "i"));
   if (match) {

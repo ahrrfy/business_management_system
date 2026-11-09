@@ -131,7 +131,8 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(invoices.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "invoice" as const, id: row.id })),
     );
@@ -149,7 +150,8 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(workOrders.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "workOrder" as const, id: row.id })),
     );
@@ -171,14 +173,19 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(onlineOrders.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "onlineOrder" as const, id: row.id })),
     );
   }
   if (namespaceAllowsTarget(lookup.namespace, "CONSIGNMENT")) {
     const rows = await tx
-      .select({ id: deliveryConsignments.id })
+      .select({
+        id: deliveryConsignments.id,
+        status: deliveryConsignments.status,
+        consignmentNumber: deliveryConsignments.consignmentNumber,
+      })
       .from(deliveryConsignments)
       .where(
         and(
@@ -204,9 +211,20 @@ export async function resolveWorkflowSourceTx(
             : eq(deliveryConsignments.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
-      ...rows.map((row) => ({ kind: "consignment" as const, id: row.id })),
+      ...[...rows]
+        .sort((a, b) => {
+          const aExact = [lookup.systemCode, lookup.documentCode, docBarcode("CN", lookup.documentCode)].includes(a.consignmentNumber) ? 0 : 1;
+          const bExact = [lookup.systemCode, lookup.documentCode, docBarcode("CN", lookup.documentCode)].includes(b.consignmentNumber) ? 0 : 1;
+          if (aExact !== bExact) return aExact - bExact;
+          const aDead = ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(a.status) ? 1 : 0;
+          const bDead = ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(b.status) ? 1 : 0;
+          return aDead !== bDead ? aDead - bDead : b.id - a.id;
+        })
+        .slice(0, 3)
+        .map((row) => ({ kind: "consignment" as const, id: row.id })),
     );
   }
   if (!candidates.length)
@@ -216,7 +234,7 @@ export async function resolveWorkflowSourceTx(
     );
   if (candidates.length === 1) return candidates[0]!;
   // Unified transaction numbering can identify several linked stages, but never unrelated sources.
-  const previews = [];
+  const previews: WorkflowScanPreview[] = [];
   for (const candidate of candidates)
     previews.push(
       await loadWorkflowPreviewTx(tx, candidate, undefined, branchId),
@@ -224,6 +242,23 @@ export async function resolveWorkflowSourceTx(
   const keys = new Set(
     previews.map((p) => p.group?.key ?? p.source.canonicalKey),
   );
+  if (keys.size !== 1) {
+    // Prefer active operational sources when a closed/cancelled tracking ref collides with a live document.
+    const livePairs = candidates
+      .map((c, idx) => ({ c, p: previews[idx]! }))
+      .filter(({ c, p }) => !(c.kind === "consignment" && ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(p.status)));
+    const liveKeys = new Set(livePairs.map(({ p }) => p.group?.key ?? p.source.canonicalKey));
+    if (liveKeys.size === 1) {
+      return livePairs.find(({ c }) => c.kind === "workOrder" || c.kind === "onlineOrder")?.c ?? livePairs[0]!.c;
+    }
+    if (lookup.namespace === "NUMERIC") {
+      const systemPairs = livePairs.filter(({ c }) => c.kind !== "consignment");
+      const systemKeys = new Set(systemPairs.map(({ p }) => p.group?.key ?? p.source.canonicalKey));
+      if (systemKeys.size === 1) {
+        return systemPairs.find(({ c }) => c.kind === "workOrder" || c.kind === "onlineOrder")?.c ?? systemPairs[0]!.c;
+      }
+    }
+  }
   if (keys.size !== 1)
     throw fulfillmentError(
       "الرقم يطابق مستندات مختلفة؛ امسح الباركود الكامل مع بادئة النوع",
@@ -890,6 +925,19 @@ export async function loadWorkflowPreviewTx(
     paidAmount: workflowMoney(paid),
     remainingAmount: workflowMoney(total.minus(paid)),
     codAmount: workflowMoney(cod),
+    ...(invoice && members.length > 1
+      ? {
+          sourceCodAmount: workflowMoney(
+            assignedGoodsCodDue(
+              invoice,
+              await creditCollectionChoiceTx(
+                tx,
+                members.find((m) => m.invoiceId === invoice.id)?.id ?? cn!.id,
+              ),
+            ),
+          ),
+        }
+      : {}),
     cashInCourierCustody: cn
       ? workflowMoney(
           money(
@@ -987,7 +1035,7 @@ export async function loadWorkflowPreviewTx(
     const received =
       member.sourceType === "AFTERCARE_EXECUTION"
         ? member.parcelStatus === "RETURNED"
-        : receipt != null;
+        : receipt != null || member.parcelStatus === "RETURNED";
     const inv =
       member.invoiceId == null
         ? undefined
@@ -1044,6 +1092,14 @@ export async function loadWorkflowPreviewTx(
       heldCustomerOwned: commercialActionRequired,
       commercialActionRequired,
       sourceClosureRequired,
+      postDeliveryCommercialEligible:
+        !received &&
+        member.sourceType !== "AFTERCARE_EXECUTION" &&
+        member.parcelStatus === "DELIVERED" &&
+        member.returnDeclaredAt == null &&
+        inv != null &&
+        !isDeadInvoiceStatus(inv.status) &&
+        inv.sourceType !== "WORKORDER",
     });
     if (!(await heldCustomerParcelReissueTx(tx, member)))
       allHeldReissuable = false;
@@ -1071,6 +1127,9 @@ export async function loadWorkflowPreviewTx(
           (member) => member.heldCustomerOwned,
         ),
         commercialActionRequired: pendingCommercial,
+        postDeliveryCommercialEligible: returnMembers.some(
+          (member) => member.postDeliveryCommercialEligible === true,
+        ),
         sourceClosureRequired: pendingSourceClosure,
         refundActionRequired:
           pendingCommercial &&
@@ -1244,8 +1303,20 @@ export async function loadWorkflowPreviewTx(
             operationalMembers[0]?.partyId ??
             leaderMember?.partyId ??
             cn?.partyId ??
-            request?.partyId ??
-            null,
+            request?.partyId ?? null,
+          ...(returnMembers.length > 1
+            ? {
+                members: returnMembers.map((m, idx) => ({
+                  consignmentId: m.consignmentId,
+                  consignmentNumber: m.consignmentNumber,
+                  invoiceId: m.invoiceId,
+                  invoiceNumber: m.invoiceNumber,
+                  workOrderId: m.workOrderId,
+                  workOrderNumber: m.workOrderNumber,
+                  codAmount: workflowMoney(money(members[idx]?.codAmount ?? 0)),
+                })),
+              }
+            : {}),
         }
       : undefined;
   const printSource: WorkflowScanPreview["printSource"] = execution
