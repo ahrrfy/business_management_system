@@ -22,9 +22,12 @@ const git = (cwd, ...args) =>
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 function fixture(t, { squash = false, merge = true } = {}) {
-  const temp = fs.mkdtempSync(
-    path.join(os.tmpdir(), "session-maintenance-test-"),
+  // A running editor or shell may hold the user's profile open and therefore
+  // protect all fixture trees under the default temporary directory.
+  const tempBase = path.resolve(
+    process.env.SESSION_MAINTENANCE_TEST_TMPDIR || os.tmpdir(),
   );
+  const temp = fs.mkdtempSync(path.join(tempBase, "session-maintenance-test-"));
   const repo = path.join(temp, "project");
   const remote = path.join(temp, "remote.git");
   const storage = path.join(temp, "storage");
@@ -81,9 +84,7 @@ function fixture(t, { squash = false, merge = true } = {}) {
   assert.equal(fs.existsSync(coord), false);
   t.after(() => {
     // Delete only the exact temporary roots created by this fixture.
-    assert.ok(
-      path.resolve(temp).startsWith(path.resolve(os.tmpdir()) + path.sep),
-    );
+    assert.equal(path.dirname(temp), tempBase);
     fs.rmSync(temp, { recursive: true, force: true });
     if (fs.existsSync(coord)) {
       assert.equal(
@@ -159,6 +160,84 @@ test("dry run preserves files; apply backs up local configuration, keeps branch 
   assert.equal(registeredWorktrees(f.repo).length, 2);
   assert.ok(registeredWorktrees(f.repo).some((w) => w.locked));
 });
+test("an old missing chat directory protects its alias target without blocking unrelated sessions", (t) => {
+  const f = fixture(t);
+  const alias = path.join(f.temp, "old-chat-alias");
+  const missing = path.join(alias, "gone", "nested");
+  const unrelated = path.join(f.temp, "old-unrelated-project", "gone");
+  const prepare = (...paths) =>
+    prepareSnapshot(f.repo, {
+      capturedAt: Date.now(),
+      state: {
+        threads: paths.map((cwd) => ({ kind: "codex", hostId: "local", cwd })),
+        unavailableHosts: [],
+        unavailableSources: [],
+      },
+    });
+  const preview = (snapshot) =>
+    result(f, cleanup({ repo: f.repo, storage: f.storage, snapshot }));
+
+  const unrelatedSnapshot = prepare(unrelated);
+  assert.ok(unrelatedSnapshot.activePaths.includes(unrelated));
+  assert.equal(preview(unrelatedSnapshot).action, "would_retire");
+
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  fs.symlinkSync(f.root, alias, linkType);
+  const aliasSnapshot = prepare(missing, unrelated);
+  assert.ok(aliasSnapshot.activePaths.includes(missing));
+  assert.ok(
+    aliasSnapshot.activePaths.includes(
+      path.join(fs.realpathSync(f.root), "gone", "nested"),
+    ),
+  );
+  assert.equal(preview(aliasSnapshot).reason, "active_app_or_process");
+
+  const target = path.join(f.temp, "removed-target");
+  const dangling = path.join(f.temp, "dangling");
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, dangling, linkType);
+  fs.rmdirSync(target);
+  assert.throws(() => prepare(path.join(dangling, "gone")), { code: "ENOENT" });
+});
+
+test("legacy-root mode archives only old root sessions and retains their generated files", (t) => {
+  const f = fixture(t);
+  const legacy = path.join(f.temp, "project__old-root");
+  git(f.repo, "worktree", "add", "-b", "session/old-root", legacy, f.head);
+  const cache = path.join(legacy, "node_modules");
+  fs.mkdirSync(cache);
+  fs.writeFileSync(path.join(cache, "local.txt"), "preserve");
+  f.age(legacy);
+  const options = {
+    repo: f.repo,
+    storage: f.storage,
+    snapshot: f.snapshot,
+    archiveLegacyRoot: true,
+  };
+
+  const preview = cleanup(options);
+  assert.equal(
+    preview.results.find((x) => x.root === legacy).action,
+    "would_retire",
+  );
+  assert.equal(result(f, preview), undefined);
+  assert.ok(fs.existsSync(cache));
+
+  const report = cleanup({ ...options, apply: true });
+  const retired = report.results.find((x) => x.root === legacy);
+  assert.equal(retired.action, "retired");
+  assert.ok(fs.existsSync(f.root));
+  assert.equal(
+    fs.readFileSync(path.join(retired.sourceArchive, "node_modules", "local.txt"), "utf8"),
+    "preserve",
+  );
+
+  git(f.repo, "worktree", "unlock", retired.sourceArchive);
+  git(f.repo, "worktree", "move", retired.sourceArchive, legacy);
+  assert.equal(git(legacy, "rev-parse", "HEAD"), f.head);
+  assert.equal(fs.readFileSync(path.join(cache, "local.txt"), "utf8"), "preserve");
+});
+
 test("unmerged work is retained", (t) => {
   const f = fixture(t, { merge: false });
   assert.equal(result(f, f.run(true)).reason, "not_proven_merged");

@@ -56,6 +56,30 @@ export function registeredWorktrees(repo) {
       ),
     );
 }
+function chatPaths(cwd) {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd))
+    throw new Error("A linked local chat has no inspectable working directory");
+
+  const original = path.resolve(cwd);
+  let ancestor = original;
+  for (;;) {
+    try {
+      const resolved = fs.realpathSync(ancestor);
+      return [original, path.resolve(resolved, path.relative(ancestor, original))];
+    } catch (error) {
+      const parent = path.dirname(ancestor);
+      // A missing suffix is normal for old chats. A dangling link or a path
+      // we cannot inspect is still ambiguous and must block maintenance.
+      if (
+        error.code !== "ENOENT" ||
+        parent === ancestor ||
+        fs.lstatSync(ancestor, { throwIfNoEntry: false })
+      )
+        throw error;
+      ancestor = parent;
+    }
+  }
+}
 export function prepareSnapshot(repo, capturedApp) {
   const now = Date.now();
   const state = capturedApp.state;
@@ -74,9 +98,7 @@ export function prepareSnapshot(repo, capturedApp) {
   const active = [...state.threads, ...(state.pinnedThreads || [])].filter(
     (t) => t.kind === "codex" && (!t.hostId || t.hostId === "local"),
   );
-  if (active.some((t) => typeof t.cwd !== "string" || !t.cwd))
-    throw new Error("A linked local chat has no inspectable working directory");
-  const activePaths = active.map((t) => fs.realpathSync(t.cwd));
+  const activePaths = [...new Set(active.flatMap((t) => chatPaths(t.cwd)))];
   const processPaths = captureProcessPaths(repo);
   return {
     complete: true,
@@ -199,7 +221,7 @@ function liveEvidence(project, root, snapshot, now) {
     throw new Error("Fresh complete activity snapshot required");
   if (
     [
-      ...snapshot.activePaths,
+      ...snapshot.activePaths.flatMap(chatPaths),
       ...snapshot.processPaths,
       ...captureProcessPaths(project),
     ].some((p) => typeof p !== "string" || overlaps(p, root))
@@ -423,6 +445,7 @@ export function cleanup({
   repo,
   snapshot,
   apply = false,
+  archiveLegacyRoot = false,
   storage = path.join(os.homedir(), ".codex", "session-maintenance"),
   now = Date.now(),
 }) {
@@ -451,6 +474,11 @@ export function cleanup({
   const results = [];
   try {
     for (const tree of registeredWorktrees(repo)) {
+      if (
+        archiveLegacyRoot &&
+        norm(path.dirname(tree.worktree)) !== norm(path.dirname(project))
+      )
+        continue;
       let c;
       try {
         c = assess(repo, project, tree, snapshot, now);
@@ -474,22 +502,24 @@ export function cleanup({
           JSON.stringify(recheck.files) !== JSON.stringify(c.files)
         )
           throw new Error("Candidate changed after preservation");
-        save(path.join(archive, "operation.json"), {
-          phase: "deleting",
-          root: c.root,
-          head: c.head,
-        });
-        // Remove generated directories ourselves first, explicitly unlinking
-        // dependency junctions. Git must never traverse a dependency target.
-        const dirs = [c.root];
-        while (dirs.length) {
-          const dir = dirs.pop();
-          for (const name of fs.readdirSync(dir)) {
-            const p = path.join(dir, name);
-            const rel = path.relative(c.root, p);
-            if (rel === ".git") continue;
-            if (generated(rel)) removeWithoutLinks(c.root, project, p);
-            else if (fs.lstatSync(p).isDirectory()) dirs.push(p);
+        if (!archiveLegacyRoot) {
+          save(path.join(archive, "operation.json"), {
+            phase: "deleting",
+            root: c.root,
+            head: c.head,
+          });
+          // Remove generated directories ourselves first, explicitly unlinking
+          // dependency junctions. Git must never traverse a dependency target.
+          const dirs = [c.root];
+          while (dirs.length) {
+            const dir = dirs.pop();
+            for (const name of fs.readdirSync(dir)) {
+              const p = path.join(dir, name);
+              const rel = path.relative(c.root, p);
+              if (rel === ".git") continue;
+              if (generated(rel)) removeWithoutLinks(c.root, project, p);
+              else if (fs.lstatSync(p).isDirectory()) dirs.push(p);
+            }
           }
         }
         const finalTree = registeredWorktrees(repo).find(
@@ -500,7 +530,7 @@ export function cleanup({
         const finalCheck =
           finalTree &&
           assess(repo, project, finalTree, snapshot, Date.now(), {
-            ignoreRetention: true,
+            ignoreRetention: !archiveLegacyRoot,
           });
         if (
           !finalCheck?.eligible ||
@@ -508,7 +538,7 @@ export function cleanup({
           finalCheck.branch !== c.branch ||
           JSON.stringify(finalCheck.files) !== JSON.stringify(c.files)
         )
-          throw new Error("Candidate changed while clearing generated files");
+          throw new Error("Candidate changed before retirement");
         const sourceArchive = retireWithoutDeletingSource(
           repo,
           c,
@@ -536,7 +566,13 @@ export function cleanup({
         });
       }
     }
-    const report = { at: Date.now(), apply, repo: project, results };
+    const report = {
+      at: Date.now(),
+      apply,
+      archiveLegacyRoot,
+      repo: project,
+      results,
+    };
     save(path.join(logDir, `report-${Date.now()}.json`), report);
     save(path.join(logDir, "latest.json"), report);
     return report;
@@ -567,12 +603,13 @@ if (
     }
     if (!args.includes("--repo") || !args.includes("--snapshot"))
       throw new Error(
-        "Usage: node session-cleanup.mjs --repo PATH --snapshot JSON [--apply]",
+        "Usage: node session-cleanup.mjs --repo PATH --snapshot JSON [--archive-legacy-root] [--apply]",
       );
     const report = cleanup({
       repo: value("--repo"),
       snapshot: json(value("--snapshot")),
       apply: args.includes("--apply"),
+      archiveLegacyRoot: args.includes("--archive-legacy-root"),
     });
     console.log(JSON.stringify(report, null, 2));
     if (report.results.some((r) => r.action === "preserved_or_error"))
