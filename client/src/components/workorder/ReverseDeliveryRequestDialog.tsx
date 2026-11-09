@@ -20,6 +20,14 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { notify } from "@/lib/notify";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+
+const REVERSE_REASON_PRESETS = [
+  "رفض الزبون الاستلام",
+  "تراجع الزبون",
+  "عيب في التنفيذ",
+  "خطأ في الطلب",
+] as const;
 
 type ReverseControlInput = Extract<
   RouterInputs["workOrders"]["requestControl"],
@@ -104,8 +112,11 @@ export default function ReverseDeliveryRequestDialog({
   workOrderId,
   orderNumber,
   title,
-  buttonLabel = "طلب عكس التسليم",
+  buttonLabel = "مرتجع / عكس تسليم",
   size = "default",
+  defaultOpen = false,
+  hideTrigger = false,
+  onOpenChange,
   onRequested,
 }: {
   workOrderId: number;
@@ -113,14 +124,16 @@ export default function ReverseDeliveryRequestDialog({
   title?: string | null;
   buttonLabel?: string;
   size?: "sm" | "default";
+  defaultOpen?: boolean;
+  hideTrigger?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onRequested?: (message: string) => void;
 }) {
   const utils = trpc.useUtils();
-  const [open, setOpen] = useState(false);
-  const [reason, setReason] = useState("");
+  const [open, setOpen] = useState(defaultOpen);
+  const [reason, setReason] = useState<string>(REVERSE_REASON_PRESETS[0]);
   const [reopen, setReopen] = useState(false);
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
-  /** حالةُ منتقي الروافد الموحَّد — الدرجُ وسببُ الحجب من الخادم لا من قائمةٍ محلّيّة. */
   const [rail, setRail] = useState<RefundRailPickerState | null>(null);
   const [attempt, setAttempt] = useState<PendingReverseDeliveryAttempt | null>(null);
   const [submitError, setSubmitError] = useState("");
@@ -160,24 +173,29 @@ export default function ReverseDeliveryRequestDialog({
     }
   };
 
+  const updateOpen = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+
   const request = trpc.workOrders.requestControl.useMutation({
     onSuccess: async (result) => {
       const message = result.status === "APPROVED"
-        ? "استعاد النظام طلب عكس معتمداً سابقاً؛ حُدّثت التفاصيل من السجل الفعلي بدلاً من افتراض نتيجة جديدة."
+        ? "تم اعتماد الطلب مسبقاً وتحديث بياناته."
         : result.status === "REJECTED"
-          ? "استعاد النظام طلب عكس مرفوضاً سابقاً؛ لم ينفذ أي ردّ أو تغيير حالة بهذه المحاولة."
+          ? "تم رفض هذا الطلب مسبقاً."
           : result.status === "STALE"
-            ? "استعاد النظام طلب عكس متقادماً؛ لم ينفذ أي ردّ أو تغيير حالة بهذه المحاولة."
+            ? "تغيّرت بيانات الطلب؛ حدّث الصفحة وحاول مجدداً."
             : result.replayed
-              ? "تحقق النظام من طلب عكس التسليم السابق؛ ما زال بانتظار مراجع مستقل، ولم تتغير حالة الأمر."
-              : "أُرسل طلب عكس التسليم بلا ردّ مال أو تغيير حالة؛ ينتظر اعتماد مراجع مستقل.";
+              ? "طلب المرتجع مسجّل مسبقاً وبانتظار موافقة المدير."
+              : "أُرسل طلب المرتجع وعكس التسليم لموافقة المدير.";
       forgetAttempt();
       setSubmitError("");
-      setOpen(false);
-      setReason("");
+      updateOpen(false);
+      setReason(REVERSE_REASON_PRESETS[0]);
       setReopen(false);
       setRefundShiftId(null);
-      notify.ok("طلب العكس قيد المراجعة", message);
+      notify.ok("أُرسل الطلب", message);
       onRequested?.(message);
       await Promise.all([
         utils.workOrders.pendingControlRequests.invalidate(),
@@ -190,14 +208,17 @@ export default function ReverseDeliveryRequestDialog({
       ]);
     },
     onError: (error) => {
-      setSubmitError(`${error.message} — لم نفترض نجاح الطلب. أعد إرسال الحمولة المحفوظة نفسها للتحقق الآمن.`);
+      setSubmitError(`${error.message} — يمكنك إعادة المحاولة بأمان.`);
     },
   });
 
   useEffect(() => {
     if (!open) return;
     const recovered = recoverAttempt();
-    if (!recovered) return;
+    if (!recovered) {
+      setReason((prev) => (prev.trim().length >= 3 ? prev : REVERSE_REASON_PRESETS[0]));
+      return;
+    }
     setAttempt(recovered);
     setReason(recovered.input.reason);
     setReopen(recovered.input.payload.reopen);
@@ -212,13 +233,8 @@ export default function ReverseDeliveryRequestDialog({
   );
   const liveConsignment = eligiblePreflight ? !consignmentReadyForReverse(eligiblePreflight) : false;
   const unsupportedRefundSource = eligiblePreflight?.refundSources.some((source) => !isRequestableReverseRefundSource(source)) ?? false;
-  /**
-   * الدرجُ من المنتقي الموحَّد: يُحجَب الإرسال بسبب المنتقي المقروء (لا درجَ · تعدّدٌ بلا اختيار ·
-   * درجٌ أُغلق) — لا بعدِّ الورديات محلّياً. والمحاولةُ المحفوظة تُبذَر في المنتقي فيُحترَم درجُها.
-   */
   const railReady = rail != null && !rail.loading && rail.error == null && rail.preflight != null;
   const pickedRail = railReady ? rail.selection?.rail ?? null : null;
-  // الدرجُ يلزمه رقمٌ؛ والخزينةُ (المفتاح الناقص، ق١٠) اختيارٌ صريح بلا درج يُنفَّذ عند الاعتماد.
   const shiftRequiredButMissing = cashRefundRequired
     && (!railReady || rail.blockReason != null || pickedRail == null || (pickedRail === "DRAWER" && refundShiftId == null));
   const cashShiftUnavailable = cashRefundRequired && railReady
@@ -254,25 +270,27 @@ export default function ReverseDeliveryRequestDialog({
 
   const handleOpenChange = (next: boolean) => {
     if (request.isPending) return;
-    setOpen(next);
+    updateOpen(next);
     if (next) setSubmitError("");
   };
 
   return (
     <>
-      <Button variant="destructive" size={size} onClick={() => setOpen(true)}>
-        <RotateCcw aria-hidden className="me-1 size-4" />
-        {buttonLabel}
-      </Button>
+      {!hideTrigger && (
+        <Button variant="destructive" size={size} onClick={() => updateOpen(true)}>
+          <RotateCcw aria-hidden className="me-1 size-4" />
+          {buttonLabel}
+        </Button>
+      )}
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-lg" dir="rtl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <RotateCcw aria-hidden className="size-4" />
-              طلب عكس تسليم أمر الشغل
+              مرتجع / عكس تسليم الطلب
             </DialogTitle>
             <DialogDescription>
-              {[title ? `«${title}»` : null, orderNumber ? `الأمر ${orderNumber}` : null].filter(Boolean).join(" — ")}
+              {[title ? `«${title}»` : null, orderNumber ? `الطلب ${orderNumber}` : null].filter(Boolean).join(" — ")}
             </DialogDescription>
           </DialogHeader>
 
@@ -288,52 +306,38 @@ export default function ReverseDeliveryRequestDialog({
             <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
               {preflight && !preflight.eligible
                 ? preflight.ineligibleReason
-                : "الأمر ليس في حالة «مُسلَّم» ذات فاتورة حيّة، لذلك لا يمكن فتح طلب عكس تسليم."}
+                : "هذا الطلب ليس في حالة «مُسلَّم» قابلة للإرجاع."}
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="space-y-2 rounded-md border p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">نسخة الأمر التي ستُراجع</span>
-                  <span dir="ltr" className="font-mono font-bold">v{eligiblePreflight.version}</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">صافي المقبوض بعد الردود المنفذة</span>
+            <div className="space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg border bg-muted/20 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">المقبوض الصافي</span>
                   <span dir="ltr" className="font-bold tabular-nums">{fmtAr(eligiblePreflight.netPaid)} د.ع</span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">ردود معلّقة سبق طلبها</span>
-                  <span dir="ltr" className="tabular-nums">{fmtAr(eligiblePreflight.priorPendingOut)} د.ع</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold">المبلغ الجديد المطلوب ردّه عند الاعتماد</span>
-                  <span dir="ltr" className="font-bold tabular-nums">{fmtAr(plannedRefundTotal)} د.ع</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">يُردّ عند الاعتماد</span>
+                  <span dir="ltr" className="font-bold tabular-nums text-destructive">{fmtAr(plannedRefundTotal)} د.ع</span>
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label className="text-xs font-bold">مصادر الاسترداد المطابقة للمقبوضات</Label>
                 {eligiblePreflight.refundSources.length === 0 ? (
-                  <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-                    لا يوجد مبلغ مقبوض جديد يحتاج إلى رد؛ يبقى عكس الذمة والقيد مشروطاً باعتماد المراجع.
+                  <p className="rounded-md bg-muted/50 p-2.5 text-xs text-muted-foreground">
+                    لا يوجد مبلغ مقبوض يُردّ للزبون.
                   </p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {eligiblePreflight.refundSources.map((source) => (
                       <div
                         key={`${source.sourceReceiptId}:${source.counterRole}:${source.refundMethod}`}
-                        className="grid gap-1 rounded-md border p-3 text-xs sm:grid-cols-[1fr_auto]"
+                        className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs"
                       >
-                        <div>
-                          <p className="font-semibold">سند القبض #{source.sourceReceiptId}</p>
-                          <p className="text-muted-foreground">
-                            {paymentMethodLabel(source.collectedMethod)} ← الرد عبر {paymentMethodLabel(source.refundMethod)}
-                          </p>
-                          <p className="text-muted-foreground">
-                            الحساب المقابل: {source.counterRole === "OTHER_LIABILITY" ? "أمانة العميل" : "ذمة العميل"}
-                          </p>
-                        </div>
-                        <span dir="ltr" className="self-center font-bold tabular-nums">{fmtAr(source.amount)} د.ع</span>
+                        <span>
+                          {paymentMethodLabel(source.collectedMethod)} ← ردّ {paymentMethodLabel(source.refundMethod)}
+                        </span>
+                        <span dir="ltr" className="font-bold tabular-nums">{fmtAr(source.amount)} د.ع</span>
                       </div>
                     ))}
                   </div>
@@ -342,16 +346,7 @@ export default function ReverseDeliveryRequestDialog({
 
               {cashRefundRequired && (
                 <div className="space-y-2 rounded-md border p-3">
-                  <Label>وردية الاسترداد النقدي</Label>
-                  <p className="text-xs text-muted-foreground">
-                    يخرج الرد النقدي من درج استقبال مفتوح في فرع الأمر، ويظهر في مطابقة اليوم.
-                  </p>
-                  {/*
-                    المنتقي الموحَّد (ق١٠): الأدراجُ وكفايتُها من الخادم. بلا وردية استقبال مفتوحة تُعرَض
-                    **الخزينة** رافداً (المفتاح الناقص — `WORK_ORDER_REVERSE_DELIVERY_COMPENSATION`): الطلبُ
-                    يُرسَل بلا درج، والمعتمِدُ يصرف من الخزينة بصفته؛ وإن فُتحت وردية استقبال قبل الاعتماد
-                    خرج النقد من درجها. والبطاقةُ تُعلَن غيرَ متاحة بسببها لا تُخفى.
-                  */}
+                  <Label className="text-xs font-bold">وردية الاسترداد النقدي</Label>
                   <RefundRailPicker
                     context={{ sourceDocType: "WORKORDER_REVERSE_DELIVERY", sourceDocId: workOrderId }}
                     mode="embedded"
@@ -361,16 +356,16 @@ export default function ReverseDeliveryRequestDialog({
                     }}
                     initialSelection={attempt?.input.payload.refundShiftId != null ? { rail: "DRAWER", refundShiftId: attempt.input.payload.refundShiftId } : null}
                     drawerLabel="درج الاسترداد النقدي"
-                    drawerHint="النقد يخرج فوراً من درج الاستقبال المختار عند اعتماد الطلب."
+                    drawerHint="يُصرف النقد من درج الاستقبال المختار عند موافقة المدير."
                     submitting={attempt != null || request.isPending}
                   />
                   {cashShiftUnavailable ? (
                     <p role="alert" className="text-xs font-bold text-destructive">
-                      لا توجد وردية استقبال مفتوحة ولا خزينةٌ متاحة؛ افتح ورديةً قبل إرسال الطلب.
+                      لا توجد وردية استقبال مفتوحة؛ افتح ورديةً أولاً.
                     </p>
                   ) : pickedRail === "TREASURY" ? (
                     <p className="text-xs text-muted-foreground">
-                      لا وردية استقبال مفتوحة — يُصرَف الردّ من خزينة الفرع عند اعتماد الطلب بصفة المعتمِد.
+                      يُصرف المبلغ من خزينة الفرع عند اعتماد المدير.
                     </p>
                   ) : railReady && rail.blockReason ? (
                     <p className="text-xs font-bold text-[var(--sem-warn)]">{rail.blockReason}</p>
@@ -378,32 +373,46 @@ export default function ReverseDeliveryRequestDialog({
                 </div>
               )}
 
-              {eligiblePreflight.consignment && (
-                <div className={liveConsignment
-                  ? "rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-xs text-[var(--sem-warn)]"
-                  : "rounded-md border p-3 text-xs text-muted-foreground"}
-                >
-                  الإرسالية {eligiblePreflight.consignment.number}: {eligiblePreflight.consignment.parcelStatus} / {eligiblePreflight.consignment.moneyStatus}.
-                  {liveConsignment && " أكمل رجوع الطرد وتسوية عهدة المندوب أولاً؛ لا يُرسل طلب عكس على إرسالية حيّة."}
+              {eligiblePreflight.consignment && liveConsignment && (
+                <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]">
+                  الإرسالية {eligiblePreflight.consignment.number} ما زالت نشطة؛ أكمل إرجاع الطرد مع المندوب أولاً.
                 </div>
               )}
 
               {unsupportedRefundSource && (
-                <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
-                  تتضمن مصادر القبض طريقة مبادلة قديمة لا يقبلها عقد طلب العكس؛ أُوقف الإرسال كي لا يُنشأ طلب غير قابل للاعتماد.
+                <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
+                  طريقة قبض قديمة غير مدعومة في هذا المسار؛ راجع المدير.
                 </div>
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor={`reverse-reason-${workOrderId}`}>سبب العكس</Label>
+                <Label htmlFor={`reverse-reason-${workOrderId}`} className="text-xs font-bold">سبب المرتجع</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {REVERSE_REASON_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      disabled={attempt != null || request.isPending}
+                      onClick={() => setReason(preset)}
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors",
+                        reason.trim() === preset
+                          ? "border-destructive bg-destructive text-destructive-foreground"
+                          : "border-border bg-muted/40 text-foreground hover:bg-muted",
+                      )}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
                 <Textarea
                   id={`reverse-reason-${workOrderId}`}
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
                   disabled={attempt != null || request.isPending}
                   maxLength={500}
-                  rows={3}
-                  placeholder="مثال: رفض العميل العمل بعد التسليم وثبتت إعادته"
+                  rows={2}
+                  placeholder="اختر سبباً أو اكتب ملاحظة مختصرة"
                 />
               </div>
 
@@ -414,23 +423,17 @@ export default function ReverseDeliveryRequestDialog({
                   onCheckedChange={(checked) => setReopen(checked === true)}
                   disabled={attempt != null || request.isPending}
                 />
-                <Label htmlFor={`reverse-reopen-${workOrderId}`} className="cursor-pointer font-normal leading-5">
-                  بعد الاعتماد أعِد الأمر إلى «جاهز للتسليم» لإعادة تسليمه، بدل إغلاقه ملغىً.
+                <Label htmlFor={`reverse-reopen-${workOrderId}`} className="cursor-pointer text-xs font-normal leading-5">
+                  إعادة الطلب إلى «جاهز للتسليم» بعد الموافقة (بدلاً من إلغائه نهائياً)
                 </Label>
               </div>
 
-              <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-                الإرسال ينشئ طلب مراجعة فقط: لا يخرج نقد، ولا تنعكس الفاتورة، ولا تصبح حالة الأمر «جاهز» أو «ملغى» قبل اعتماد مراجع مستقل.
+              <p className="rounded-md bg-muted/50 p-2.5 text-[11px] text-muted-foreground">
+                يُرسل الطلب لموافقة المدير أولاً؛ لا تصبح حالة الأمر «جاهز» أو «ملغى» قبل اعتماد مراجع مستقل.
               </p>
 
-              {attempt && (
-                <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-xs text-[var(--sem-warn)]">
-                  توجد محاولة محفوظة بالمفتاح <span dir="ltr" className="font-mono">{attempt.input.requestKey}</span>.
-                  زر إعادة الإرسال يعيد الحمولة نفسها حرفياً ولا يولّد مفتاحاً جديداً.
-                </div>
-              )}
               {submitError && (
-                <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+                <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
                   <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
                   <span>{submitError}</span>
                 </div>
@@ -445,7 +448,7 @@ export default function ReverseDeliveryRequestDialog({
               </Button>
               {attempt && (
                 <Button variant="outline" onClick={discardAndRefresh} disabled={request.isPending}>
-                  إلغاء المحاولة وتحديث المعاينة
+                  تحديث
                 </Button>
               )}
             </div>
@@ -466,7 +469,7 @@ export default function ReverseDeliveryRequestDialog({
             >
               {request.isPending ? (
                 <><Loader2 aria-hidden className="me-1 size-4 animate-spin" /> {ACTION_LABELS.sending}</>
-              ) : attempt ? "إعادة إرسال المحاولة نفسها" : "إرسال طلب العكس للمراجعة"}
+              ) : attempt ? "إعادة الإرسال" : "تأكيد طلب المرتجع"}
             </Button>
           </DialogFooter>
         </DialogContent>

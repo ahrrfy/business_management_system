@@ -107,7 +107,7 @@ export function ReturnComposerRefundPanel({
                     : !isWalkIn &&
                         suggestedRefund.gt(0) &&
                         manualAmount !== null
-                      ? "تم اختيار تقييد كامل مبلغ المرتجع في حساب العميل (رصيد دائن / موازنة ذمم) دون صرف نقد من الدرج."
+                      ? "سيُخصم مبلغ المرتجع من حساب العميل دون صرف نقد."
                       : "لم يُقبض من هذه الفاتورة ما يستوجب الرد — يُسجّل المرتجع بلا إخراج نقد وبلا وردية صرف."}
                 </div>
                 <div className="mt-1 text-[11px] font-normal">
@@ -196,7 +196,7 @@ export function ReturnComposerRefundPanel({
                       : "bg-background hover:bg-muted text-muted-foreground",
                   )}
                 >
-                  تقييد كامل المرتجع بحساب العميل / موازنة ذمم (0 د.ع نقد)
+                  خصم من حساب العميل (بدون صرف نقد)
                 </button>
               </div>
             )}

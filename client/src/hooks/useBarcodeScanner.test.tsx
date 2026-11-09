@@ -156,6 +156,37 @@ describe("useBarcodeScanner — حقل React متحكم به", () => {
     expect(input.value).toBe("م10");
     expect(host.querySelector("[data-testid='unified-val']")?.textContent).toBe("م10");
   });
+
+  it("يتنحّى الماسح الخلفي للصفحة تلقائياً داخل النوافذ الحوارية [role=dialog] فلا يخطف الكتابة أو المسح من UnifiedSearchInput", () => {
+    const bgScan = vi.fn();
+    function PageWithModal() {
+      const [modalVal, setModalVal] = useState("");
+      useBarcodeScanner(bgScan, { minLength: 3, thresholdMs: 120 });
+      return (
+        <div>
+          <div role="dialog" data-state="open">
+            <UnifiedSearchInput value={modalVal} onChange={setModalVal} debounceMs={0} />
+            <output data-testid="modal-val">{modalVal}</output>
+          </div>
+        </div>
+      );
+    }
+    act(() => root.render(<PageWithModal />));
+    const modalInput = host.querySelector('[role="dialog"] input') as HTMLInputElement;
+    expect(modalInput).not.toBeNull();
+    modalInput.focus();
+
+    press(modalInput, "1", "Digit1", 0);
+    press(modalInput, "0", "Digit0", 10);
+    press(modalInput, "0", "Digit0", 10);
+    press(modalInput, "0", "Digit0", 10);
+    press(modalInput, "6", "Digit6", 10);
+    press(modalInput, "5", "Digit5", 10);
+    press(modalInput, "Enter", "Enter", 10);
+
+    expect(bgScan).not.toHaveBeenCalled();
+    expect(host.querySelector("[data-testid='modal-val']")?.textContent).toBe("100065");
+  });
 });
 
 function press(

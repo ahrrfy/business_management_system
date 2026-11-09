@@ -12,6 +12,9 @@ import {
   CheckCircle2,
   CreditCard,
   Package,
+  FileWarning,
+  Printer,
+  RotateCcw,
   ScanLine,
   User,
   Wallet,
@@ -39,6 +42,12 @@ import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions
 import { preopenDocumentWindow, printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
+import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
+import { WorkOrderQuickCancelDialog } from "@/components/workorder/WorkOrderQuickCancelDialog";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import { workOrderDetailOperationAccess } from "@/lib/workOrderDetailOperationAccess";
+import { workOrderStatusLabel } from "@shared/workOrderStatus";
 
 const PAYMENT_METHODS = [
   { v: "CASH", label: "نقدي", icon: Banknote },
@@ -63,6 +72,10 @@ interface SiblingWorkOrder {
 interface ScannedOrder {
   id: number;
   kind?: "workOrder" | "invoice" | "onlineOrder";
+  alreadyCompleted?: boolean;
+  nonReadyStatus?: string;
+  linkedInvoiceId?: number | null;
+  sourceType?: string | null;
   orderNumber: string;
   title: string | null;
   customerName: string | null;
@@ -111,7 +124,12 @@ export default function ReceptionHandoverPage() {
       await printAuthorizedDocument(invoiceId, "THERMAL", reprint, () => printReceipt(invoiceToReceipt(inv), { into: win }));
     } catch { try { win?.close(); } catch { /* noop */ } }
   }, [utils.sales.get, printAuthorizedDocument]);
-  const { canReprint } = useInvoiceActionPermissions(me.data);
+  const { canReprint, canReturnInvoice, canCancelInvoice, canReverseWorkOrder } = useInvoiceActionPermissions(me.data);
+  const { canOpenCancellation: canCancelWorkOrder } = workOrderDetailOperationAccess(me.data);
+  const [returnInvoiceId, setReturnInvoiceId] = useState<number | null>(null);
+  const [cancelInvoiceId, setCancelInvoiceId] = useState<number | null>(null);
+  const [cancelWorkOrderId, setCancelWorkOrderId] = useState<number | null>(null);
+  const [reverseWorkOrder, setReverseWorkOrder] = useState<{ id: number; orderNumber: string; title: string | null } | null>(null);
   const deliverPrintRef = useRef<{
     win: Window | null;
     order: ScannedOrder;
@@ -206,7 +224,10 @@ export default function ReceptionHandoverPage() {
               resetPaymentFields();
               return;
             }
-            notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً ومسدد بالكامل");
+            setSiblingOrders([]);
+            setScanned({ id: wo.id, kind: "workOrder", alreadyCompleted: true, linkedInvoiceId: wo.linkedInvoice?.id ?? null, orderNumber: wo.orderNumber, title: wo.title, customerName: wo.customerName, customerPhone: wo.customerPhone, salePrice: wo.linkedInvoice ? wo.linkedInvoice.total : wo.salePrice, deposit: wo.linkedInvoice ? wo.linkedInvoice.paidAmount : (wo.deposit ?? wo.salePrice) });
+            setManualInput("");
+            resetPaymentFields();
             return;
           }
           if (wo.status !== "READY") {
@@ -219,7 +240,11 @@ export default function ReceptionHandoverPage() {
               resetPaymentFields();
               return;
             }
-            notify.warn("الطلب غير جاهز للتسليم — حالته: " + wo.status);
+            if (wo.status === "CANCELLED") { notify.err("هذا الطلب ملغى مسبقاً"); return; }
+            setSiblingOrders([]);
+            setScanned({ id: wo.id, kind: "workOrder", nonReadyStatus: wo.status, orderNumber: wo.orderNumber, title: wo.title, customerName: wo.customerName, customerPhone: wo.customerPhone, salePrice: wo.linkedInvoice ? wo.linkedInvoice.total : wo.salePrice, deposit: wo.linkedInvoice ? wo.linkedInvoice.paidAmount : wo.deposit });
+            setManualInput("");
+            resetPaymentFields();
             return;
           }
 
@@ -284,7 +309,10 @@ export default function ReceptionHandoverPage() {
               return;
             }
             if (wo.status === "PAID") {
-              notify.info("الفاتورة " + wo.orderNumber + " مسددة بالكامل مسبقاً ومسلّمة");
+              setSiblingOrders([]);
+              setScanned({ id: wo.id, kind: "invoice", alreadyCompleted: true, sourceType: (wo as { sourceType?: string | null }).sourceType ?? null, orderNumber: wo.orderNumber, title: wo.title, customerName: wo.customerName, customerPhone: wo.customerPhone, salePrice: wo.salePrice, deposit: wo.deposit });
+              setManualInput("");
+              resetPaymentFields();
               return;
             }
           }
@@ -296,6 +324,7 @@ export default function ReceptionHandoverPage() {
         setScanned({
           id: wo.id,
           kind: wo.kind ?? "workOrder",
+          sourceType: (wo as { sourceType?: string | null }).sourceType ?? null,
           orderNumber: wo.orderNumber,
           title: wo.title,
           customerName: wo.customerName,
@@ -725,7 +754,7 @@ export default function ReceptionHandoverPage() {
                         variant="outline"
                         className="border-green-500 bg-green-50 text-green-700"
                       >
-                        {scanned.kind === "invoice" ? "فاتورة جاهزة للتسليم" : "جاهز للتسليم"}
+                        {scanned.alreadyCompleted ? "مُسلَّم ومسدّد" : scanned.nonReadyStatus ? workOrderStatusLabel(scanned.nonReadyStatus) : scanned.kind === "invoice" ? "فاتورة جاهزة للتسليم" : "جاهز للتسليم"}
                       </Badge>
                     </div>
                     {scanned.title && (
@@ -782,7 +811,7 @@ export default function ReceptionHandoverPage() {
                 </div>
 
                 {/* اختيار طريقة الدفع عند وجود مبلغ متبقٍ */}
-                {remainingDue && (
+                {!scanned.alreadyCompleted && !scanned.nonReadyStatus && remainingDue && (
                   <div className="space-y-3 rounded-xl border bg-background p-4">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-muted-foreground">
@@ -876,6 +905,49 @@ export default function ReceptionHandoverPage() {
                   </div>
                 )}
 
+                {scanned.alreadyCompleted && (
+                  <div className="space-y-2.5 rounded-xl border bg-muted/20 p-4">
+                    <p className="text-sm font-bold text-foreground">
+                      {scanned.kind === "invoice" ? "هذه الفاتورة مسدّدة ومسلّمة مسبقاً." : "هذا الطلب مُسلَّم ومسدّد بالكامل."}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {(scanned.kind === "invoice" || scanned.linkedInvoiceId) && (
+                        <Button type="button" variant="outline" size="sm" onClick={() => { const invId = scanned.kind === "invoice" ? scanned.id : scanned.linkedInvoiceId!; void printHandoverInvoice(invId, canReprint, preopenDocumentWindow()); }}>
+                          <Printer aria-hidden className="me-1 size-4" /> إعادة طباعة الوصل
+                        </Button>
+                      )}
+                      {scanned.kind === "workOrder" && canReverseWorkOrder && (
+                        <Button type="button" variant="destructive" size="sm" onClick={() => setReverseWorkOrder({ id: scanned.id, orderNumber: scanned.orderNumber, title: scanned.title })}>
+                          <RotateCcw aria-hidden className="me-1 size-4" /> مرتجع / عكس تسليم
+                        </Button>
+                      )}
+                      {scanned.kind === "invoice" && scanned.sourceType !== "WORKORDER" && canReturnInvoice && (
+                        <Button type="button" variant="outline" size="sm" onClick={() => setReturnInvoiceId(scanned.id)}>
+                          <RotateCcw aria-hidden className="me-1 size-4 text-warning" /> مرتجع
+                        </Button>
+                      )}
+                      {scanned.kind === "invoice" && scanned.sourceType !== "WORKORDER" && canCancelInvoice && (
+                        <Button type="button" variant="destructive" size="sm" onClick={() => setCancelInvoiceId(scanned.id)}>
+                          <FileWarning aria-hidden className="me-1 size-4" /> إلغاء الفاتورة
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {scanned.nonReadyStatus && (
+                  <div className="space-y-2.5 rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4">
+                    <p className="text-sm font-bold text-[var(--sem-warn)]">
+                      الطلب قيد التحضير ({workOrderStatusLabel(scanned.nonReadyStatus)}) — لم يجهز للتسليم بعد.
+                    </p>
+                    {canCancelWorkOrder && (
+                      <Button type="button" variant="destructive" size="sm" onClick={() => setCancelWorkOrderId(scanned.id)}>
+                        <FileWarning aria-hidden className="me-1 size-4" /> إلغاء الطلب
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {!scanned.alreadyCompleted && !scanned.nonReadyStatus && (
+                  <>
                 {/* مؤشر المبلغ المتبقي */}
                 <div
                   className={
@@ -890,7 +962,7 @@ export default function ReceptionHandoverPage() {
                         ? `يُحصَّل الآن (${paymentMethodLabel(method)}):`
                         : "مدفوع بالكامل مسبقاً"}
                     </span>
-                    {remainingDue && (
+                    {!scanned.alreadyCompleted && !scanned.nonReadyStatus && remainingDue && (
                       <span className="text-2xl font-extrabold tabular-nums text-amber-700">
                         {fmt(remainingDue.toFixed(2))} د.ع
                       </span>
@@ -919,7 +991,26 @@ export default function ReceptionHandoverPage() {
                     : "تسليم (مدفوع كاملاً)"}
                 </Button>
 
-                {remainingDue && scanned.kind === "workOrder" && (
+                  <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+                    {scanned.kind === "workOrder" && canCancelWorkOrder && (
+                      <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelWorkOrderId(scanned.id)}>
+                        <FileWarning aria-hidden className="me-1 size-3.5" /> إلغاء الطلب
+                      </Button>
+                    )}
+                    {scanned.kind === "invoice" && scanned.sourceType !== "WORKORDER" && canReturnInvoice && (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setReturnInvoiceId(scanned.id)}>
+                        <RotateCcw aria-hidden className="me-1 size-3.5 text-warning" /> مرتجع
+                      </Button>
+                    )}
+                    {scanned.kind === "invoice" && scanned.sourceType !== "WORKORDER" && canCancelInvoice && (
+                      <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelInvoiceId(scanned.id)}>
+                        <FileWarning aria-hidden className="me-1 size-3.5" /> إلغاء الفاتورة
+                      </Button>
+                    )}
+                  </div>
+                  </>
+                )}
+                {!scanned.alreadyCompleted && !scanned.nonReadyStatus && remainingDue && scanned.kind === "workOrder" && (
                   <Button
                     type="button"
                     variant="outline"
@@ -960,6 +1051,37 @@ export default function ReceptionHandoverPage() {
               </div>
             </Card>
 
+            <SalesReturnDrawer
+              invoiceId={returnInvoiceId}
+              initialMode="FULL"
+              onClose={() => setReturnInvoiceId(null)}
+              onSuccess={() => { setReturnInvoiceId(null); setScanned(null); setSiblingOrders([]); resetPaymentFields(); }}
+            />
+            <QuickCancelInvoiceDialog
+              invoiceId={cancelInvoiceId}
+              open={cancelInvoiceId != null}
+              onOpenChange={(v) => { if (!v) setCancelInvoiceId(null); }}
+              onSwitchToReturn={(id) => { setCancelInvoiceId(null); setReturnInvoiceId(id); }}
+              onSuccess={() => { setCancelInvoiceId(null); setScanned(null); setSiblingOrders([]); resetPaymentFields(); }}
+            />
+            {cancelWorkOrderId != null && (
+              <WorkOrderQuickCancelDialog
+                workOrderId={cancelWorkOrderId}
+                onOpenChange={(v) => { if (!v) setCancelWorkOrderId(null); }}
+                onSuccess={() => { setCancelWorkOrderId(null); setScanned(null); setSiblingOrders([]); resetPaymentFields(); }}
+              />
+            )}
+            {reverseWorkOrder && (
+              <ReverseDeliveryRequestDialog
+                workOrderId={reverseWorkOrder.id}
+                orderNumber={reverseWorkOrder.orderNumber}
+                title={reverseWorkOrder.title}
+                defaultOpen
+                hideTrigger
+                onOpenChange={(v) => { if (!v) setReverseWorkOrder(null); }}
+                onRequested={() => { setReverseWorkOrder(null); setScanned(null); setSiblingOrders([]); resetPaymentFields(); }}
+              />
+            )}
             {showDebtApproval && remainingDue && (
               <ManagerApprovalDialog
                 zIndexClass="z-[110]"

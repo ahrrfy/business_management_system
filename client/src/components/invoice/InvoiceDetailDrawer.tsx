@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { trpc } from "@/lib/trpc";
 import { D, fmt } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
-import { ExternalLink, FileText, HandCoins, Printer, RotateCcw, User } from "lucide-react";
+import { ExternalLink, FileText, FileWarning, HandCoins, Printer, RotateCcw, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,8 +22,10 @@ import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
-import { hasModuleAccess } from "@shared/permissions";
-import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
+import { SalesReturnDrawer } from "./SalesReturnDrawer";
+import { QuickCancelInvoiceDialog } from "./QuickCancelInvoiceDialog";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
 import { financialIntentScopeKey, loadFinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 
 export interface InvoiceDetailDrawerProps {
@@ -47,6 +49,8 @@ export function InvoiceDetailDrawer({
   const [currentInvoiceId, setCurrentInvoiceId] = useState<number | null>(null);
   const [openingCurrent, setOpeningCurrent] = useState(false);
   const [currentError, setCurrentError] = useState("");
+  const [inlineReturnId, setInlineReturnId] = useState<number | null>(null);
+  const [inlineCancelId, setInlineCancelId] = useState<number | null>(null);
   useEffect(() => { setCurrentInvoiceId(null); setCurrentError(""); }, [invoiceId]);
   const isOpen = invoiceId != null && invoiceId > 0;
   const q = trpc.sales.get.useQuery(
@@ -61,35 +65,34 @@ export function InvoiceDetailDrawer({
   const remaining = isDeadInvoiceStatus(inv?.status) ? D(0) : total.minus(paid).minus(returned);
 
   const me = trpc.auth.me.useQuery();
-  const canWriteSales = hasModuleAccess(
-    me.data?.role ?? "",
-    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
-    "sales",
-    "FULL",
-  );
+  const {
+    canReturnInvoice,
+    canCancelInvoice,
+    canCancelUnpaidCodInvoice,
+    canReverseWorkOrder,
+    canRecordPayment,
+  } = useInvoiceActionPermissions(me.data);
 
   const isInvoiceFullyReturned = Boolean(
-    inv &&
-      (inv.status === "RETURNED" ||
-        (D(inv.returnedTotal ?? "0").gte(D(inv.total)) && D(inv.total).gt(0))),
+    inv && (inv.status === "RETURNED" || (D(inv.returnedTotal ?? "0").gte(D(inv.total)) && D(inv.total).gt(0))),
   );
-
-  const canReturn =
-    lifecycleActionAllowed(me.data, "returns.create", canWriteSales) &&
-    inv &&
-    inv.status !== "CANCELLED" &&
-    inv.status !== "RETURNED" &&
-    inv.status !== "SUPERSEDED" &&
-    !isInvoiceFullyReturned;
-
-  const canPay =
-    lifecycleActionAllowed(me.data, "sales.pay", canWriteSales) &&
-    inv &&
-    inv.status !== "CANCELLED" &&
-    inv.status !== "RETURNED" &&
-    inv.status !== "SUPERSEDED" &&
-    !isInvoiceFullyReturned &&
-    remaining.gt(0);
+  const isLiveStatus = Boolean(
+    inv && inv.status !== "CANCELLED" && inv.status !== "RETURNED" && inv.status !== "SUPERSEDED",
+  );
+  const canReturn = Boolean(canReturnInvoice && isLiveStatus && inv?.sourceType !== "WORKORDER" && !isInvoiceFullyReturned);
+  const canCancel = Boolean(
+    isLiveStatus &&
+      inv?.sourceType !== "WORKORDER" &&
+      inv?.consignmentStatus !== "DELIVERED" &&
+      inv?.consignmentStatus !== "PARTIAL" &&
+      (canCancelInvoice || (canCancelUnpaidCodInvoice && inv?.unpaidCodCancellationEligible)),
+  );
+  const linkedWorkOrderId = (() => {
+    const m = /^WO-(\d+)(?::R\d+)?$/.exec(String(inv?.sourceId ?? ""));
+    return m ? Number(m[1]) : null;
+  })();
+  const canReverseWo = Boolean(isLiveStatus && inv?.sourceType === "WORKORDER" && canReverseWorkOrder && linkedWorkOrderId != null);
+  const canPay = Boolean(canRecordPayment && isLiveStatus && !isInvoiceFullyReturned && remaining.gt(0));
 
   const [payOpen, setPayOpen] = useState(false);
   const paymentScope: FinancialIntentScope | null = me.data?.id && inv && Number(inv.branchId) > 0
@@ -97,9 +100,7 @@ export function InvoiceDetailDrawer({
   const paymentScopeKey = paymentScope ? financialIntentScopeKey(paymentScope) : "";
   const [recoveryEntry, setRecoveryEntry] = useState({ key: "", pending: false, error: "" });
   const hasRecovery = recoveryEntry.key === paymentScopeKey && recoveryEntry.pending;
-  useEffect(() => {
-    setPayOpen(false);
-  }, [paymentScopeKey]);
+  useEffect(() => { setPayOpen(false); }, [paymentScopeKey]);
   useEffect(() => {
     if (!isOpen || !paymentScope) return;
     let cancelled = false;
@@ -135,31 +136,19 @@ export function InvoiceDetailDrawer({
 
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="right"
-        className="w-full sm:max-w-2xl overflow-y-auto space-y-4"
-        dir="rtl"
-      >
+      <SheetContent side="right" className="w-full sm:max-w-2xl overflow-y-auto space-y-4" dir="rtl">
         <SheetHeader className="border-b pb-3">
           <div className="flex items-center justify-between gap-2">
             <SheetTitle className="flex items-center gap-2 text-base">
               <FileText aria-hidden className="size-5 text-primary" />
               <span>فاتورة مبيعات</span>
-              <span dir="ltr" className="tabular-nums font-bold">
-                {inv?.invoiceNumber ?? `#${invoiceId ?? ""}`}
-              </span>
+              <span dir="ltr" className="tabular-nums font-bold">{inv?.invoiceNumber ?? `#${invoiceId ?? ""}`}</span>
             </SheetTitle>
             <div className="flex items-center gap-1.5 flex-wrap">
               {isInvoiceFullyReturned && (
-                <Badge variant="destructive" className="font-bold bg-destructive text-destructive-foreground">
-                  تم إرجاع هذه الفاتورة
-                </Badge>
+                <Badge variant="destructive" className="font-bold bg-destructive text-destructive-foreground">تم إرجاع هذه الفاتورة</Badge>
               )}
-              {inv?.status ? (
-                <Badge variant={invoiceStatusBadgeVariant(inv.status)}>
-                  {invoiceStatusLabel(inv.status)}
-                </Badge>
-              ) : null}
+              {inv?.status ? <Badge variant={invoiceStatusBadgeVariant(inv.status)}>{invoiceStatusLabel(inv.status)}</Badge> : null}
             </div>
           </div>
         </SheetHeader>
@@ -175,24 +164,17 @@ export function InvoiceDetailDrawer({
             {inv.correctedByInvoiceId != null && (
               <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
                 <p className="font-semibold">نسخة تاريخية قبل التعديل — المبالغ أدناه تخصّ هذه النسخة.</p>
-                <Button type="button" size="sm" variant="outline" onClick={() => void openCurrentInvoice()} disabled={openingCurrent}>
-                  فتح الفاتورة الحالية
-                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => void openCurrentInvoice()} disabled={openingCurrent}>فتح الفاتورة الحالية</Button>
                 {currentError && <p role="alert" className="text-xs text-destructive">{currentError}</p>}
               </div>
             )}
-            {/* بطاقة العميل والمصدر */}
             <Card>
               <CardContent className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                 <div>
                   <div className="text-xs text-muted-foreground">العميل</div>
                   <div className="font-semibold truncate">
                     {inv.customerId ? (
-                      <Link
-                        href={`/customers-statement?id=${inv.customerId}`}
-                        className="text-primary hover:underline"
-                        title="كشف الحساب"
-                      >
+                      <Link href={`/customers-statement?id=${inv.customerId}`} className="text-primary hover:underline" title="كشف الحساب">
                         {inv.customerName ?? `#${inv.customerId}`}
                       </Link>
                     ) : (
@@ -209,9 +191,7 @@ export function InvoiceDetailDrawer({
                   <div>
                     {sourceTypeLabel(inv.sourceType)}
                     {(inv.onlineOrderNumber || inv.workOrderNumber) && (
-                      <span className="block font-mono text-[11px] text-muted-foreground" dir="ltr">
-                        {inv.onlineOrderNumber ?? inv.workOrderNumber}
-                      </span>
+                      <span className="block font-mono text-[11px] text-muted-foreground" dir="ltr">{inv.onlineOrderNumber ?? inv.workOrderNumber}</span>
                     )}
                   </div>
                 </div>
@@ -225,7 +205,6 @@ export function InvoiceDetailDrawer({
               </CardContent>
             </Card>
 
-            {/* الأرقام المالية السريعة */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="rounded-lg border bg-card p-2 text-center">
                 <div className="text-xs text-muted-foreground">الإجمالي</div>
@@ -233,73 +212,42 @@ export function InvoiceDetailDrawer({
               </div>
               <div className="rounded-lg border bg-card p-2 text-center">
                 <div className="text-xs text-muted-foreground">المدفوع</div>
-                <div className="font-bold text-sm text-money-positive tabular-nums">
-                  {fmt(inv.paidAmount)} د.ع
-                </div>
+                <div className="font-bold text-sm text-money-positive tabular-nums">{fmt(inv.paidAmount)} د.ع</div>
               </div>
               <div className="rounded-lg border bg-card p-2 text-center">
                 <div className="text-xs text-muted-foreground">المرتجع</div>
-                <div className="font-bold text-sm text-muted-foreground tabular-nums">
-                  {fmt(inv.returnedTotal ?? "0")} د.ع
-                </div>
+                <div className="font-bold text-sm text-muted-foreground tabular-nums">{fmt(inv.returnedTotal ?? "0")} د.ع</div>
               </div>
               <div className="rounded-lg border bg-card p-2 text-center">
                 <div className="text-xs text-muted-foreground">المتبقي</div>
-                <div
-                  className={`font-bold text-sm tabular-nums ${
-                    remaining.gt(0) ? "text-money-negative" : "text-money-positive"
-                  }`}
-                >
+                <div className={`font-bold text-sm tabular-nums ${remaining.gt(0) ? "text-money-negative" : "text-money-positive"}`}>
                   {fmt(remaining.toFixed(2))} د.ع
                 </div>
               </div>
             </div>
 
-            {/* جدول بنود الفاتورة */}
             <div>
               <div className="text-xs font-semibold mb-1.5 flex items-center justify-between">
                 <span>البنود ({inv.items.length})</span>
-                {inv.notes ? (
-                  <span className="text-muted-foreground font-normal">ملاحظات: {inv.notes}</span>
-                ) : null}
+                {inv.notes ? <span className="text-muted-foreground font-normal">ملاحظات: {inv.notes}</span> : null}
               </div>
               <div className="rounded-md border overflow-hidden">
-                <DataTable<InvoiceItemRow>
-                  embedded
-                  searchable={false}
-                  bounded={false}
-                  pageSize={Infinity}
-                  data={inv.items}
-                  columns={invoiceItemColumns(inv.subtotal)}
-                  emptyText="لا بنود مسجلة."
-                />
+                <DataTable<InvoiceItemRow> embedded searchable={false} bounded={false} pageSize={Infinity} data={inv.items} columns={invoiceItemColumns(inv.subtotal)} emptyText="لا بنود مسجلة." />
               </div>
             </div>
 
-            {/* سجل المرتجعات إن وجدت */}
             {inv.returns && inv.returns.length > 0 && (
               <div>
                 <div className="text-xs font-semibold mb-1.5 flex items-center justify-between text-destructive">
                   <span>سجل المرتجعات ({inv.returns.length})</span>
-                  <span className="font-mono text-xs">
-                    إجمالي المسترد: {fmt(inv.returnedTotal ?? "0")} د.ع
-                  </span>
+                  <span className="font-mono text-xs">إجمالي المسترد: {fmt(inv.returnedTotal ?? "0")} د.ع</span>
                 </div>
                 <div className="rounded-md border border-destructive/20 overflow-hidden bg-destructive/5">
-                  <DataTable<InvoiceReturnRow>
-                    embedded
-                    searchable={false}
-                    bounded={false}
-                    pageSize={Infinity}
-                    data={inv.returns}
-                    columns={invoiceReturnColumns}
-                    emptyText="لا توجد مرتجعات مسجلة."
-                  />
+                  <DataTable<InvoiceReturnRow> embedded searchable={false} bounded={false} pageSize={Infinity} data={inv.returns} columns={invoiceReturnColumns} emptyText="لا توجد مرتجعات مسجلة." />
                 </div>
               </div>
             )}
 
-            {/* الإجراءات الموضعية المباشرة */}
             <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 {canPay || hasRecovery ? (
@@ -308,11 +256,27 @@ export function InvoiceDetailDrawer({
                     {hasRecovery ? "استرداد دفعة سابقة" : "تسديد دفعة"}
                   </Button>
                 ) : null}
-                {canReturn && onOpenReturn ? (
-                  <Button size="sm" variant="outline" onClick={() => onOpenReturn(inv.id)}>
+                {canReturn ? (
+                  <Button size="sm" variant="outline" onClick={() => (onOpenReturn ? onOpenReturn(inv.id) : setInlineReturnId(inv.id))}>
                     <RotateCcw aria-hidden className="size-4 text-warning" />
-                    إرجاع أصناف
+                    مرتجع
                   </Button>
+                ) : null}
+                {canCancel ? (
+                  <Button size="sm" variant="destructive" onClick={() => setInlineCancelId(inv.id)}>
+                    <FileWarning aria-hidden className="size-4" />
+                    إلغاء الفاتورة
+                  </Button>
+                ) : null}
+                {canReverseWo && linkedWorkOrderId != null ? (
+                  <ReverseDeliveryRequestDialog
+                    workOrderId={linkedWorkOrderId}
+                    orderNumber={String(inv.sourceId ?? linkedWorkOrderId)}
+                    title={`فاتورة ${inv.invoiceNumber}`}
+                    buttonLabel="مرتجع / عكس تسليم"
+                    size="sm"
+                    onRequested={() => { void q.refetch(); }}
+                  />
                 ) : null}
                 {onPrintThermal ? (
                   <Button size="sm" variant="outline" onClick={() => onPrintThermal(inv.id)}>
@@ -356,8 +320,7 @@ export function InvoiceDetailDrawer({
                 paidAmount={inv.paidAmount}
                 branchId={Number(inv.branchId)}
                 onSuccess={() => {
-                  setRecoveryEntry(current => current.key === paymentScopeKey
-                    ? { key: paymentScopeKey, pending: false, error: "" } : current);
+                  setRecoveryEntry(current => current.key === paymentScopeKey ? { key: paymentScopeKey, pending: false, error: "" } : current);
                   void q.refetch();
                 }}
               />
@@ -365,6 +328,25 @@ export function InvoiceDetailDrawer({
           </div>
         ) : null}
       </SheetContent>
+      <SalesReturnDrawer
+        invoiceId={inlineReturnId}
+        initialMode="FULL"
+        onClose={() => setInlineReturnId(null)}
+        onSuccess={() => {
+          setInlineReturnId(null);
+          void q.refetch();
+        }}
+      />
+      <QuickCancelInvoiceDialog
+        invoiceId={inlineCancelId}
+        open={inlineCancelId != null}
+        onOpenChange={(v) => { if (!v) setInlineCancelId(null); }}
+        onSwitchToReturn={(id) => setInlineReturnId(id)}
+        onSuccess={() => {
+          setInlineCancelId(null);
+          void q.refetch();
+        }}
+      />
     </Sheet>
   );
 }

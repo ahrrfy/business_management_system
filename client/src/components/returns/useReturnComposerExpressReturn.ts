@@ -193,7 +193,7 @@ export function useReturnComposerExpressReturn(
           : `إرسال طلب إرجاع كامل للفاتورة ${inv?.invoiceNumber}`,
       description:
         approvingRequestId || executesImmediately
-          ? `يُنفَّذ الأثر الآن: ترجع جميع البنود المتبقية (${linesToSubmit.length} صنف · ${totalPieces} قطعة) مع ${moneySentence}. متابعة؟`
+          ? `إرجاع جميع البنود المتبقية (${linesToSubmit.length} صنف · ${totalPieces} قطعة) — ${moneySentence}.`
           : `سيُرسل طلب إرجاع جميع البنود المتبقية (${linesToSubmit.length} صنف · ${totalPieces} قطعة) مع ${moneySentence}. لا تسلّم الزبون مالاً ولا تستلم البضاعة حتى يعتمد مراجعٌ مستقل الطلب.`,
       confirmText: approvingRequestId
         ? "اعتماد وتنفيذ فوراً"

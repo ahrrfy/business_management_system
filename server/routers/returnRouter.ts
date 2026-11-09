@@ -3275,10 +3275,19 @@ export const returnRouter = router({
                     effectiveShiftId = Number(selectedShift.id);
                   }
                 } else {
+                  const preferredShiftType =
+                    returnInvoiceScopeForUser(ctx.user, "returns.executeSalesReturnCart") ===
+                    "reception"
+                      ? "RECEPTION"
+                      : returnInvoiceScopeForUser(ctx.user, "returns.executeSalesReturnCart") ===
+                          "print"
+                        ? "PRINT_SERVICES"
+                        : "RETAIL";
                   effectiveShiftId = await openShiftIdTx(
                     tx,
                     ctx.user.id,
                     Number(matchedInvoice.branchId),
+                    preferredShiftType,
                   );
                 }
               }

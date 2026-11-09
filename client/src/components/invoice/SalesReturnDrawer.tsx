@@ -11,7 +11,7 @@ export interface SalesReturnDrawerProps {
 
 export function SalesReturnDrawer({
   invoiceId,
-  initialMode,
+  initialMode = "FULL",
   onClose,
   onSuccess,
 }: SalesReturnDrawerProps) {
@@ -27,11 +27,7 @@ export function SalesReturnDrawer({
         <SheetHeader className="border-b pb-3">
           <SheetTitle className="flex items-center gap-2 text-base">
             <RotateCcw aria-hidden className="size-5 text-primary" />
-            <span>
-              {initialMode === "FULL"
-                ? `مرتجع كامل للمبيعات — الفاتورة #${invoiceId ?? ""}`
-                : `إرجاع مبيعات — الفاتورة #${invoiceId ?? ""}`}
-            </span>
+            <span>مرتجع المبيعات</span>
           </SheetTitle>
         </SheetHeader>
 

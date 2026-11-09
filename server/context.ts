@@ -38,6 +38,7 @@ export type AuthUser = User & {
   operationPolicy: OperationPolicy | null;
   customRoleLabel?: string | null;
   customRoleKey?: string | null;
+  customRoleAtomicPermissions?: AtomicPermissionsMap | null;
   persistedPermissionsOverride?: PermissionMap | null;
   /** ش٢: دورٌ مخصّص مُسنَد لكنه معطَّل/محذوف ⇒ هبط الحساب فشلاً مغلقاً إلى «user» (لا الفئة الكاملة). */
   roleLockedByInactiveCustomRole?: boolean;
@@ -217,6 +218,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.persistedPermissionsOverride = null;
     user.customRoleLabel = null;
     user.customRoleKey = null;
+    user.customRoleAtomicPermissions = null;
     user.roleLockedByInactiveCustomRole = true;
     user.resolvedAtomicPermissions = resolveAtomicPermissions("user");
     user.resolvedOperationalCaps = resolveOperationalCaps("user");
@@ -251,6 +253,8 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.permissionsOverride as PermissionMap | null;
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
+  user.customRoleAtomicPermissions =
+    (role.atomicPermissions as AtomicPermissionsMap | null) ?? null;
   const effectiveCustomAtomicRole: RoleKey =
     baseRole === "print_operator" || baseRole === "user"
       ? effectivePermissions.workorders === "FULL" ||
@@ -259,6 +263,19 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         ? "cashier"
         : baseRole
       : baseRole;
+  const customFallbackCapRole =
+    effectivePermissions.workorders === "FULL" &&
+    effectivePermissions.sales !== "FULL" &&
+    (baseRole === "cashier" ||
+      baseRole === "print_operator" ||
+      baseRole === "user")
+      ? "reception_clerk"
+      : baseRole === "print_operator" || baseRole === "user"
+        ? effectivePermissions.pos === "FULL" ||
+          effectivePermissions.sales === "FULL"
+          ? "cashier"
+          : baseRole
+        : baseRole;
   user.resolvedAtomicPermissions = resolveAtomicPermissions(
     effectiveCustomAtomicRole,
     role.atomicPermissions as AtomicPermissionsMap | null,
@@ -268,7 +285,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     role.key,
     role.operationalCaps as OperationalCaps | null,
     user.operationalCaps as OperationalCaps | null,
-    baseRole,
+    customFallbackCapRole,
   );
   user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
     baseRole,

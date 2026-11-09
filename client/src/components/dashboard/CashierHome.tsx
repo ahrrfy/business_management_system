@@ -164,7 +164,7 @@ export function CashierHome({
             ? [{
                 href: "/reception/invoices",
                 name: "فواتير المبيعات",
-                desc: "الفواتير الضريبية للفرع / تعديل الفواتير / تحصيل الذمم",
+                desc: "فواتير الفرع: تحصيل / مرتجع / إلغاء / تعديل",
                 icon: BadgeDollarSign,
               }]
             : []),

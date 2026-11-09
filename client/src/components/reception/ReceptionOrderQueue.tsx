@@ -25,6 +25,10 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
 import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationOverlay";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
+import { WorkOrderQuickCancelDialog } from "@/components/workorder/WorkOrderQuickCancelDialog";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import { workOrderDetailOperationAccess } from "@/lib/workOrderDetailOperationAccess";
+import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { preopenDocumentWindow, printReceipt } from "@/lib/printing/print";
@@ -85,6 +89,8 @@ export function isShelfAuditEligible(r: ShelfAuditCandidate): boolean {
 const FULFILL_GATE: RoleGate = { operations: ["workOrders.deliver"], roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
 const RECLASSIFY_GATE: RoleGate = { ...FULFILL_GATE, operations: ["workOrders.setDeliveryMethod"] };
 const DISPATCH_GATE: RoleGate = { operations: ["delivery.dispatch"], roles: ["cashier", "manager"] };
+const CANCEL_WO_GATE: RoleGate = { operations: ["workOrders.cancel", "workOrders.requestControl"], roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" };
+const REVERSE_WO_GATE: RoleGate = { operations: ["workOrders.requestControl"], roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
 
 // صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
@@ -118,6 +124,8 @@ export default function ReceptionOrderQueue({
   const canReclassify = lifecycleActionAllowed(me.data, "workOrders.setDeliveryMethod", legacyCanFulfill);
   const canDispatch = lifecycleActionAllowed(me.data, "delivery.dispatch", legacyCanDispatch);
   const canReadParties = lifecycleActionAllowed(me.data, "delivery.listParties", legacyCanDispatch);
+  const canCancelWo = workOrderDetailOperationAccess(me.data).canOpenCancellation;
+  const canReverseWo = useInvoiceActionPermissions(me.data).canReverseWorkOrder;
   const isShelfAuditManager =
     (role === "admin" || role === "manager") &&
     me.data?.operationPolicy?.grants?.["operation.workOrders.autoClearReady"] !== false;
@@ -226,6 +234,8 @@ export default function ReceptionOrderQueue({
   const [reclassifyTarget, setReclassifyTarget] = useState<QueueRow | null>(null);
   const [reclassifyMgrAsk, setReclassifyMgrAsk] = useState<RouterInputs["workOrders"]["setDeliveryMethod"] | null>(null);
   const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
+  const [cancelWorkOrderId, setCancelWorkOrderId] = useState<number | null>(null);
+  const [reverseTarget, setReverseTarget] = useState<QueueRow | null>(null);
 
   const invalidateAll = () => {
     void utils.workOrders?.list?.invalidate?.();
@@ -492,6 +502,8 @@ export default function ReceptionOrderQueue({
             onDispatch={setDispatchTarget}
             onPickup={setPickupTarget}
             onReclassify={setReclassifyTarget}
+            canCancelWo={canCancelWo}
+            onCancel={(r) => setCancelWorkOrderId(r.id)}
             shelfAudit={
               shelfAuditActive
                 ? { selectedIds: selectedIdSet, onToggle: toggleShelfAuditId }
@@ -506,6 +518,8 @@ export default function ReceptionOrderQueue({
             canFulfill={canFulfill}
             canReclassify={canReclassify}
             onReclassify={setReclassifyTarget}
+            canCancelWo={canCancelWo}
+            onCancel={(r) => setCancelWorkOrderId(r.id)}
           />
           <QueueSection
             title="سُلِّمت اليوم"
@@ -516,6 +530,8 @@ export default function ReceptionOrderQueue({
             loading={deliveredToday.isLoading}
             error={deliveredToday.isError}
             onRetry={() => { void deliveredToday.refetch(); }}
+            canReverseWo={canReverseWo}
+            onReverse={setReverseTarget}
           />
         </>
       )}
@@ -702,6 +718,8 @@ export default function ReceptionOrderQueue({
         }}
       />
 
+      {cancelWorkOrderId != null && <WorkOrderQuickCancelDialog workOrderId={cancelWorkOrderId} onOpenChange={(v) => { if (!v) setCancelWorkOrderId(null); }} onSuccess={() => { setCancelWorkOrderId(null); void active.refetch(); invalidateAll(); }} />}
+      {reverseTarget && <ReverseDeliveryRequestDialog workOrderId={reverseTarget.id} orderNumber={reverseTarget.orderNumber} title={reverseTarget.title} defaultOpen hideTrigger onOpenChange={(v) => { if (!v) setReverseTarget(null); }} onRequested={() => { setReverseTarget(null); void active.refetch(); void deliveredToday.refetch(); invalidateAll(); }} />}
       {reclassifyMgrAsk && (
         <ManagerApprovalDialog
           title="اعتماد مدير — ردّ أمانة أجرة التوصيل"
@@ -724,7 +742,7 @@ export default function ReceptionOrderQueue({
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify, shelfAudit }: {
+function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, canCancelWo = false, canReverseWo = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify, onCancel, onReverse, shelfAudit }: {
   title: string;
   icon: LucideIcon;
   rows: QueueRow[];
@@ -739,6 +757,10 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
+  canCancelWo?: boolean;
+  canReverseWo?: boolean;
+  onCancel?: (r: QueueRow) => void;
+  onReverse?: (r: QueueRow) => void;
   shelfAudit?: ShelfAuditSelectionProps;
 }) {
   const groups = groupQueueRows(rows);
@@ -758,7 +780,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
       ) : (
         <ul className="divide-y">
           {groups.map((group) => group.draftId == null ? (
-            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} shelfAudit={shelfAudit} />
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} canCancelWo={canCancelWo} canReverseWo={canReverseWo} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} onCancel={onCancel} onReverse={onReverse} shelfAudit={shelfAudit} />
           ) : (
             <li key={`draft-${group.draftId}`}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-3 py-1.5 text-xs">
@@ -769,7 +791,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
                 {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
               </div>
               <ul className="divide-y">
-                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} shelfAudit={shelfAudit} />)}
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} canCancelWo={canCancelWo} canReverseWo={canReverseWo} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} onCancel={onCancel} onReverse={onReverse} shelfAudit={shelfAudit} />)}
               </ul>
             </li>
           ))}
@@ -797,7 +819,7 @@ function groupQueueRows(rows: QueueRow[]) {
   return Array.from(groups.values());
 }
 
-function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesReady, onDispatch, onPickup, onReclassify, shelfAudit }: {
+function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, canCancelWo = false, canReverseWo = false, partiesReady, onDispatch, onPickup, onReclassify, onCancel, onReverse, shelfAudit }: {
   row: QueueRow;
   canFulfill: boolean;
   canReclassify: boolean;
@@ -806,6 +828,10 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
+  canCancelWo?: boolean;
+  canReverseWo?: boolean;
+  onCancel?: (r: QueueRow) => void;
+  onReverse?: (r: QueueRow) => void;
   shelfAudit?: ShelfAuditSelectionProps;
 }) {
   const isReady = r.status === "READY";
@@ -834,6 +860,12 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
   }
   if (!isFinal && onReclassify) {
     actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canReclassify, onSelect: () => onReclassify(r), gate: RECLASSIFY_GATE });
+  }
+  if (!isFinal && !hasLiveConsignment && onCancel) {
+    actions.push({ key: "cancel-wo", kind: "cancel", variant: "destructive", label: "إلغاء الطلب", hidden: !canCancelWo, onSelect: () => onCancel(r), gate: CANCEL_WO_GATE });
+  }
+  if (r.status === "DELIVERED" && !hasLiveConsignment && onReverse) {
+    actions.push({ key: "reverse-wo", kind: "reverse", variant: "destructive", label: "مرتجع / عكس تسليم", hidden: !canReverseWo, onSelect: () => onReverse(r), gate: REVERSE_WO_GATE });
   }
   actions.push({ key: "open", kind: "view", label: "فتح", onSelect: () => window.open(`/work-orders/${r.id}`, "_blank", "noopener") });
 

@@ -49,6 +49,8 @@ import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
 import { QuickSalesPaymentDialog } from "@/components/invoice/QuickSalesPaymentDialog";
 
+import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
+
 type Row = RouterOutputs["sales"]["list"][number];
 
 /** حجم صفحة القائمة — الخادم يُرقّم، والمعروض هو المُحمَّل. */
@@ -265,6 +267,8 @@ export default function Invoices() {
   const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
   const [drawerInvoiceId, setDrawerInvoiceId] = useState<number | null>(null);
   const [payTarget, setPayTarget] = useState<Row | null>(null);
+
+  const [cancelInvoiceId, setCancelInvoiceId] = useState<number | null>(null);
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
@@ -798,14 +802,8 @@ export default function Invoices() {
                     level: "FULL",
                   },
                 },
-                {
-                  key: "return",
-                  kind: "reverse",
-                  label: "إرجاع فوري",
-                  href: `/returns?portal=sales&invoice=${encodeURIComponent(r.invoiceNumber)}`,
-                  hidden: !returnable,
-                  gate: {operations: ["returns.create"],  roles: ["cashier", "manager"], module: "sales", level: "FULL" },
-                },
+                { key: "return", kind: "reverse", label: "مرتجع", href: `/returns?portal=sales&invoice=${encodeURIComponent(r.invoiceNumber)}`, hidden: !returnable, gate: { operations: ["returns.create", "returns.executeSalesReturnCart"], ...{ anyOf: [{ roles: ["cashier", "manager"], module: "sales", level: "FULL" }, { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" }, { roles: ["cashier", "manager", "print_operator"], module: "pos", level: "FULL" }] } } },
+                { key: "cancel", kind: "cancel", variant: "destructive", label: "إلغاء الفاتورة", onSelect: () => setCancelInvoiceId(r.id), hidden: !returnable || r.consignmentStatus === "DELIVERED" || r.consignmentStatus === "PARTIAL", gate: { operations: ["sales.cancel"], ...{ anyOf: [{ roles: ["cashier", "manager"], module: "sales", level: "FULL" }, { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" }, { roles: ["cashier", "manager", "print_operator"], module: "pos", level: "FULL" }] } } },
               ]}
             />
           );
@@ -1259,16 +1257,9 @@ export default function Invoices() {
             : null
         }
       />
-      <InvoiceDetailDrawer
-        invoiceId={drawerInvoiceId}
-        onClose={() => setDrawerInvoiceId(null)}
-        onOpenReturn={(id) => {
-          setDrawerInvoiceId(null);
-          navigate(`/returns?portal=sales&invoice=${id}`);
-        }}
-        onPrintThermal={(id) => void reprintThermal(id)}
-        onPrintA4={(id) => void printA4(id)}
-      />
+      <InvoiceDetailDrawer invoiceId={drawerInvoiceId} onClose={() => setDrawerInvoiceId(null)} onPrintThermal={(id) => void reprintThermal(id)} onPrintA4={(id) => void printA4(id)} />
+
+      <QuickCancelInvoiceDialog invoiceId={cancelInvoiceId} open={cancelInvoiceId != null} onOpenChange={(v) => { if (!v) setCancelInvoiceId(null); }} onSwitchToReturn={(id) => { const target = data.find((x) => x.id === id); if (target) navigate(`/returns?portal=sales&invoice=${encodeURIComponent(target.invoiceNumber)}`); else setDrawerInvoiceId(id); }} onSuccess={() => { setCancelInvoiceId(null); void utils.sales.list.invalidate(); void utils.sales.listPage.invalidate(); void utils.sales.listSummary.invalidate(); }} />
       {payTarget ? (
         <QuickSalesPaymentDialog
           open={payTarget != null}

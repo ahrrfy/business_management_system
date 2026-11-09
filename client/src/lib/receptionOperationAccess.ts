@@ -28,5 +28,10 @@ export function receptionInvoiceActions(user: OperationUser | null | undefined) 
       (allowed("sales.reissue") || allowed("salesControl.requestExchange")),
     canCreateReturn: allowed("returns.create"),
     canRequestReturn: allowed("returns.request") && allowed("sales.get"),
+    canCancelInvoice: allowed("sales.cancel"),
+    canCancelUnpaidCod: allowed("sales.cancelUnpaidCod"),
+    canReverseWorkOrder: allowed("workOrders.requestControl"),
+    canCancelWorkOrder:
+      allowed("workOrders.cancel") || allowed("workOrders.requestControl"),
   };
 }

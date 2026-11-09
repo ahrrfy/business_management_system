@@ -256,7 +256,7 @@ export function useSalesReturnInvoiceLookup(
               );
             } else {
               notify.ok(
-                `تم العثور على الفاتورة #${inspected.invoiceNumber} عبر التحري الذكي`,
+                `تم العثور على الفاتورة #${inspected.invoiceNumber} تلقائياً`,
               );
             }
             return;

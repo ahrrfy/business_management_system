@@ -16,6 +16,10 @@ export function useInvoiceActionPermissions(
   const legacy = (module: string, level: "READ" | "FULL", roles: RoleKey[]) =>
     !!user?.role && moduleAccessAllowed(role, override, module, level, roles);
   const cashier = legacy("sales", "FULL", ["cashier", "manager"]);
+  const stationReturnOrCancel =
+    cashier ||
+    legacy("workorders", "FULL", ["cashier", "manager", "print_operator"]) ||
+    legacy("pos", "FULL", ["cashier", "manager", "print_operator"]);
   const manager = legacy("sales", "FULL", ["manager"]);
   const delivery = legacy("store", "FULL", ["manager", "cashier"]);
   const allowed = (path: string, before: boolean) =>
@@ -44,8 +48,8 @@ export function useInvoiceActionPermissions(
       "digitalCards.sales.printDetails",
       !!user?.role && hasModuleAccess(role, override, "digital_cards", "READ"),
     ),
-    canCancelInvoice: allowed("sales.cancel", cashier),
-    canCancelUnpaidCodInvoice: allowed("sales.cancelUnpaidCod", false),
+    canCancelInvoice: allowed("sales.cancel", stationReturnOrCancel),
+    canCancelUnpaidCodInvoice: allowed("sales.cancelUnpaidCod", stationReturnOrCancel),
     canDispatch: allowed("delivery.dispatchInvoice", delivery),
     canCancelAssignment: allowed("delivery.cancelAssignment", delivery),
     canReverseWorkOrder: allowed(
@@ -57,8 +61,9 @@ export function useInvoiceActionPermissions(
       manager,
     ),
     canReturnInvoice:
-      allowed("returns.create", cashier) ||
-      allowed("returns.executeSalesReturnCart", cashier),
+      allowed("returns.create", stationReturnOrCancel) ||
+      allowed("returns.executeSalesReturnCart", stationReturnOrCancel),
+
     canDownloadPdf: allowed("documentDelivery.downloadPdf", !!user),
   };
 }

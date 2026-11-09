@@ -20,6 +20,7 @@ vi.mock("./operationPermissionCatalog.generated", () => {
   return {
     GENERATED_OPERATION_PERMISSIONS: [
       { ...metadata, key: "operation.sales.create", path: "sales.create" },
+      { ...metadata, key: "operation.sales.cancel", path: "sales.cancel", legacyAliases: ["pos.invoice.void"] },
       { ...metadata, key: "operation.printPos.createSale", path: "printPos.createSale", module: "pos" },
       { ...metadata, key: "operation.delivery.dispatchInvoice", path: "delivery.dispatchInvoice", module: "store" },
       { ...metadata, key: "operation.delivery.invoiceCandidates", path: "delivery.invoiceCandidates", module: "store", kind: "query", level: "READ" },
@@ -799,6 +800,8 @@ describe("operation decision", () => {
   });
 
   it("bridges legacy station accounts with pos or workorders FULL override into return operations unless explicitly revoked", () => {
+    expect(operationDecision({ role: "print_operator", permissionsOverride: { workorders: "FULL" } }, "sales.cancel")).toMatchObject({ allowed: true, source: "legacy" });
+    expect(operationDecision({ role: "user", permissionsOverride: { pos: "FULL" } }, "sales.cancel")).toMatchObject({ allowed: true, source: "legacy" });
     expect(
       operationDecision(
         { role: "user", permissionsOverride: { pos: "FULL" } },

@@ -109,6 +109,9 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
       like(invoices.contactPhone, pat),
       like(customers.name, pat),
       like(customers.phone, pat),
+      like(workOrders.orderNumber, pat),
+      strippedPat ? like(workOrders.orderNumber, strippedPat) : undefined,
+      like(invoices.sourceId, pat),
     );
     if (cond) baseConds.push(cond);
   }

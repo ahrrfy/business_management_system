@@ -91,7 +91,7 @@ export function SalesReturnSettlementPanel({
             effectiveCashOrCardRefund > 0 && (
               <div className="mt-2 pt-2 border-t border-emerald-500/20 text-right space-y-1 text-[11px]">
                 <div className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center justify-between">
-                  <span>تفصيل التسوية الذرية المركبة:</span>
+                  <span>تفصيل الاسترداد:</span>
                   <Badge
                     variant="outline"
                     className="text-[9px] px-1 py-0 border-emerald-600 text-emerald-700"

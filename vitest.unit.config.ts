@@ -161,6 +161,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/hooks/useInvoiceReceiptPrinter.test.tsx",
       "client/src/lib/printing/invoicePrintAttempt.test.ts",
       "client/src/components/reception/ReceptionOrderQueue.test.tsx",
+      "client/src/components/reception/__tests__/ReceptionReturnAndCancelUx.test.tsx",
       "client/src/components/reception/cartCustomization.test.ts",
       "server/services/__tests__/digitalIntentOperationScope.unit.test.ts",
       "server/services/__tests__/operationAssigneeCustody.unit.test.ts",

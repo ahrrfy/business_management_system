@@ -296,6 +296,22 @@ function legacyAllowed(
       (allows("workorders", "FULL") && allows("products", "READ"))
     );
   }
+  if (operation.path === "refundRails.preflight") {
+    return (
+      allows("treasury", "READ") ||
+      moduleAccessAllowed(role, override, "sales", "FULL", ["cashier", "manager"]) ||
+      moduleAccessAllowed(role, override, "workorders", "FULL", [
+        "cashier",
+        "manager",
+        "print_operator",
+      ]) ||
+      moduleAccessAllowed(role, override, "pos", "FULL", [
+        "cashier",
+        "manager",
+        "print_operator",
+      ])
+    );
+  }
   const levels = operation.level?.split("|") ?? [];
   if (levels.length > 1) {
     if (
@@ -535,6 +551,25 @@ export function resolveOperationPolicy(
       grants[recruitmentFormOptions.key] = true;
     }
   }
+  const refundPreflight = getOperationPermission("refundRails.preflight");
+  if (refundPreflight?.delegable) {
+    const explicitlyDenied =
+      userPolicy?.grants[refundPreflight.key] === false ||
+      (userPolicy?.grants[refundPreflight.key] !== true &&
+        rolePolicy?.grants[refundPreflight.key] === false);
+    if (
+      !explicitlyDenied &&
+      (grants["operation.returns.create"] === true ||
+        grants["operation.returns.approveRequest"] === true ||
+        grants["operation.sales.cancel"] === true ||
+        grants["operation.workOrders.cancel"] === true ||
+        grants["operation.workOrders.requestControl"] === true ||
+        grants["operation.delivery.returnConsignment"] === true ||
+        grants["operation.delivery.returnByBarcode"] === true)
+    ) {
+      grants[refundPreflight.key] = true;
+    }
+  }
   // These are station companions, not independent business authority. Every
   // mutation still checks its original native operation for the actual source.
   // Cap even an explicit companion grant when all of its native grants are gone.
@@ -697,6 +732,7 @@ export function applyLegacyIndividualOperationOverrides(
       "returns.executeSalesReturnCart",
       "returns.getOpenRefundDrawers",
       "refundRails.preflight",
+      ...(rawAtomic?.["pos.invoice.void"] !== false ? ["sales.cancel"] : []),
       ...(rawModules?.workorders === "FULL"
         ? ["returns.request", "returns.requests"]
         : []),
@@ -704,6 +740,11 @@ export function applyLegacyIndividualOperationOverrides(
       const operation = getOperationPermission(path);
       if (operation?.delegable) bridgedGrants[operation.key] = true;
     }
+  } else if (
+    bothReturnAndVoidRevoked &&
+    !levelSatisfies(effectiveModules.treasury, "READ")
+  ) {
+    bridgedGrants["operation.refundRails.preflight"] = false;
   }
   return applyLegacyOperationDenials(
     { ...denied, grants: bridgedGrants },
@@ -937,7 +978,18 @@ export function buildOperationPolicyFromLegacy(
       explicitAtomicGrants,
     );
   }
-  return applyLegacyOperationDenials(basePolicy, explicitAtomicGrants);
+  const denied = applyLegacyOperationDenials(basePolicy, explicitAtomicGrants);
+  if (
+    explicitAtomicGrants?.["pos.return.create"] === false &&
+    explicitAtomicGrants?.["pos.invoice.void"] === false &&
+    !levelSatisfies(modules.treasury, "READ")
+  ) {
+    return {
+      ...denied,
+      grants: { ...denied.grants, "operation.refundRails.preflight": false },
+    };
+  }
+  return denied;
 }
 
 /** Navigation summary only. It must never be used to authorize an operation. */

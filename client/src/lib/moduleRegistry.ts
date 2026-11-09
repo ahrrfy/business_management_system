@@ -47,7 +47,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
     id: "returns",
     href: "/returns",
     label: "بوابة المرتجعات",
-    description: "مرتجعات شاملة وتحرٍّ جنائي",
+    description: "إرجاع الفواتير والأصناف",
     section: 1,
     icon: RotateCcw,
     ...RETURNS_WORKSPACE_GATE,

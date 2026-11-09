@@ -152,14 +152,18 @@ export async function loadCurrentOperationalAuthorityTx(
       user.permissionsOverride as PermissionMap | null,
     );
     const customFallbackCapRole =
-      customRole.baseRole === "print_operator" || customRole.baseRole === "user"
-        ? effectiveCustomModules.workorders === "FULL"
-          ? "reception_clerk"
-          : effectiveCustomModules.pos === "FULL" ||
+      effectiveCustomModules.workorders === "FULL" &&
+      effectiveCustomModules.sales !== "FULL" &&
+      (customRole.baseRole === "cashier" ||
+        customRole.baseRole === "print_operator" ||
+        customRole.baseRole === "user")
+        ? "reception_clerk"
+        : customRole.baseRole === "print_operator" || customRole.baseRole === "user"
+          ? effectiveCustomModules.pos === "FULL" ||
               effectiveCustomModules.sales === "FULL"
             ? "cashier"
             : customRole.baseRole
-        : customRole.baseRole;
+          : customRole.baseRole;
     return {
       branchId: user.branchId == null ? null : Number(user.branchId),
       caps: resolveOperationalCaps(

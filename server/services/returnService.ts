@@ -3324,14 +3324,18 @@ export async function returnSaleDirect(
       );
       const userOverride = userRow.permissionsOverride as PermissionMap | null;
       const fallbackCapRole =
-        effectiveRole === "print_operator" || effectiveRole === "user"
-          ? effectivePermissions.workorders === "FULL"
-            ? "reception_clerk"
-            : effectivePermissions.pos === "FULL" ||
+        effectivePermissions.workorders === "FULL" &&
+        effectivePermissions.sales !== "FULL" &&
+        (effectiveRole === "cashier" ||
+          effectiveRole === "print_operator" ||
+          effectiveRole === "user")
+          ? "reception_clerk"
+          : effectiveRole === "print_operator" || effectiveRole === "user"
+            ? effectivePermissions.pos === "FULL" ||
                 effectivePermissions.sales === "FULL"
               ? "cashier"
               : effectiveRole
-          : effectiveRole;
+            : effectiveRole;
       const resolvedCaps = resolveOperationalCaps(
         customRoleRow && userRow.customRoleId != null
           ? customRoleRow.key
@@ -3396,6 +3400,7 @@ export async function returnSaleDirect(
         !explicitRoleSalesDenied &&
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
+          effectiveRole === "cashier" ||
           customRoleRow?.key === "reception_clerk") &&
         effectivePermissions.workorders === "FULL";
       const hasExplicitPrintPosFull =
@@ -3403,6 +3408,7 @@ export async function returnSaleDirect(
         !explicitRoleSalesDenied &&
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
+          effectiveRole === "cashier" ||
           customRoleRow?.key === "print_cashier") &&
         effectivePermissions.pos === "FULL";
 
@@ -3549,7 +3555,18 @@ export async function returnSaleDirect(
               openShiftId = Number(selectedShift.id);
             }
           } else {
-            openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
+            const preferredShiftType =
+              hasReceptionFull && !hasSalesFull
+                ? "RECEPTION"
+                : hasExplicitPrintPosFull && !hasSalesFull
+                  ? "PRINT_SERVICES"
+                  : "RETAIL";
+            openShiftId = await openShiftIdTx(
+              tx,
+              actor.userId,
+              targetBranchId,
+              preferredShiftType,
+            );
           }
         }
         if (needsCashShift && !openShiftId) {

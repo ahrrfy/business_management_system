@@ -129,7 +129,7 @@ export default function ReturnsHub() {
       ? ("FULL" as const)
       : urlParams.get("mode") === "PARTIAL"
         ? ("PARTIAL" as const)
-        : undefined;
+        : initialInvoice ? ("FULL" as const) : undefined;
   const initialPo = urlParams.get("po") || undefined;
   const canCreateActivePortal =
     portalMode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
