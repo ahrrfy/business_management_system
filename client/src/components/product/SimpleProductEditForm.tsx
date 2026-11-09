@@ -33,7 +33,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import {
   findForeignBarcodeUsages,
   findTakenEditableBarcodeCodes,
@@ -539,7 +539,7 @@ export default function SimpleProductEditForm({
               aria-label="الفئة / التصنيف"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
+              {categoryOptionElements(categoriesQ.data ?? [])}
             </AppSelect>
           </Field>
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">

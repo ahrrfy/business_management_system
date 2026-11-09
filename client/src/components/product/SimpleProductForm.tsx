@@ -26,7 +26,7 @@ import { AiProductContentAssistant } from "@/components/product/AiProductContent
 import { ImageFirstProductAssistant } from "@/components/product/ImageFirstProductAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import {
   PostSaveProductBanner,
   type PostSaveProductSummary,
@@ -556,7 +556,7 @@ export default function SimpleProductForm({
               aria-label="الفئة / التصنيف"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
+              {categoryOptionElements(categoriesQ.data ?? [])}
             </AppSelect>
           </Field>
           <Field label="رمز المنتج (SKU)" hint="يُولَّد تلقائياً وفريداً إن تُرك فارغاً." className="md:col-span-2">

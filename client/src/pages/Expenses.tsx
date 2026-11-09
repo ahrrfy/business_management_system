@@ -28,6 +28,16 @@ import { printExpenseReceipt } from "@/components/expenses/printExpenseReceipt";
 import { APPROVAL_LABEL, CATEGORY_LABEL, expenseCategoryText, fundingDetail, fundingKindOf, FUNDING_META, FUNDING_ORDER, isApprovedAwaitingExecution, METHOD_LABEL, metric, PAGE_SIZE, SHIFT_STATUS_LABEL, SHIFT_TYPE_LABEL, STATUS_LABEL, warningsOf, type AuditFocus, type ExpenseRow, type ExpenseTotals } from "@/components/expenses/expenseView";
 import { ExpenseRejectDialog } from "@/components/expenses/ExpenseRejectDialog";
 import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrectionDialog";
+import { AppSelect } from "@/components/ui/AppSelect";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 export default function Expenses() {
   const utils = trpc.useUtils();
@@ -56,6 +66,11 @@ export default function Expenses() {
   const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
     null,
   );
+  const [drawerExecTarget, setDrawerExecTarget] = useState<{
+    row: ExpenseRow;
+    drawers: Array<{ id: number; shiftType: string; availableCash: string }>;
+    selectedShiftId: string;
+  } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [auditOnly, setAuditOnly] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
@@ -626,6 +641,14 @@ export default function Expenses() {
             }
             const chosenShift =
               drawers.find((d) => D(d.availableCash).gte(D(r.amount))) ?? drawers[0]!;
+            if (drawers.length > 1) {
+              setDrawerExecTarget({
+                row: r,
+                drawers,
+                selectedShiftId: String(chosenShift.id),
+              });
+              return;
+            }
             const shiftKind = SHIFT_TYPE_LABEL[chosenShift.shiftType] ?? chosenShift.shiftType;
             if (
               !(await confirm({
@@ -1071,6 +1094,80 @@ export default function Expenses() {
         target={correctionTarget}
         onClose={() => setCorrectionTarget(null)}
       />
+      <Dialog
+        open={drawerExecTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDrawerExecTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>اختيار الوردية لصرف المصروف المعتمد</DialogTitle>
+            <DialogDescription className="text-right text-xs">
+              حدد ورديتك النشطة المطلوب خصم مبلغ{" "}
+              {drawerExecTarget ? fmt(drawerExecTarget.row.amount) : "0"} د.ع منها وتسجيلها في سند الصرف.
+            </DialogDescription>
+          </DialogHeader>
+          {drawerExecTarget ? (
+            <div className="space-y-2 py-1">
+              <Label htmlFor="exec-expense-shift-select" className="text-xs">
+                ورديتك النشطة في الفرع
+              </Label>
+              <AppSelect
+                id="exec-expense-shift-select"
+                className="h-9"
+                value={drawerExecTarget.selectedShiftId}
+                onValueChange={(val) =>
+                  setDrawerExecTarget((cur) =>
+                    cur ? { ...cur, selectedShiftId: val } : null,
+                  )
+                }
+                aria-label="ورديتك النشطة في الفرع"
+              >
+                {drawerExecTarget.drawers.map((d) => (
+                  <option key={d.id} value={String(d.id)}>
+                    وردية #{d.id} ({SHIFT_TYPE_LABEL[d.shiftType] ?? d.shiftType}) — المتاح {fmt(d.availableCash)} د.ع
+                  </option>
+                ))}
+              </AppSelect>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={executeFromOwnDrawer.isPending}
+              onClick={() => setDrawerExecTarget(null)}
+            >
+              تراجع
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={
+                executeFromOwnDrawer.isPending ||
+                !drawerExecTarget?.selectedShiftId
+              }
+              onClick={() => {
+                if (!drawerExecTarget) return;
+                const { row, selectedShiftId } = drawerExecTarget;
+                setDrawerExecTarget(null);
+                execWinRef.current = {
+                  win: preopenDocumentWindow("width=420,height=760"),
+                  row,
+                };
+                executeFromOwnDrawer.mutate({
+                  expenseId: Number(row.id),
+                  shiftId: Number(selectedShiftId),
+                });
+              }}
+            >
+              تنفيذ من الوردية المحددة
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

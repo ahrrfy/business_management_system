@@ -18,6 +18,7 @@ const HEAD_LABEL: Record<string, string> = {
   agreedCurrency: "العملة",
   agreedRate: "سعر الصرف",
   settlementType: "نوع التسوية",
+  paymentSource: "مصدر سداد البضاعة",
   expectedDeliveryDate: "تاريخ التسليم المتوقع",
   subtotal: "المجموع",
   taxAmount: "الضريبة",

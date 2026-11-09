@@ -1694,6 +1694,7 @@ export async function revisePurchaseOrderPaymentSource(
       purchaseOrderId: input.purchaseOrderId,
       actorUserId: actor.userId,
       reason,
+      allowHistoricalCycle: true,
       cashSource: declaredCashSource,
       tender: declaredTender,
     });

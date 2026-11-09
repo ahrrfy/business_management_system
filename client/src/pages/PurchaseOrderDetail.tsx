@@ -998,15 +998,7 @@ export default function PurchaseOrderDetail() {
                   expectedVersion: d.version,
                   reason: revisePaymentReason.trim(),
                   tender: reviseTenderState.payload,
-                  cashSource:
-                    reviseTenderState.payload.mode === "DRAWER"
-                      ? {
-                          mode: "DRAWER",
-                          shiftId: reviseTenderState.payload.shiftId ?? null,
-                        }
-                      : reviseTenderState.payload.mode === "TREASURY"
-                        ? { mode: "TREASURY", shiftId: null }
-                        : null,
+                  cashSource: undefined,
                   clientRequestId: reviseRequestId,
                 });
               }}

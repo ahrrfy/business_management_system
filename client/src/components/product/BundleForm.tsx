@@ -22,7 +22,7 @@ import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, genEan13 } from "@/lib/variants";
 import { cn } from "@/lib/utils";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 /**
@@ -466,7 +466,7 @@ export default function BundleForm() {
               aria-label="الفئة"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
+              {categoryOptionElements(categoriesQ.data ?? [])}
             </AppSelect>
           </Field>
           <Field label="التفعيل">
@@ -518,7 +518,7 @@ export default function BundleForm() {
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
+                {categoryOptionElements(categoriesQ.data ?? [])}
               </AppSelect>
               <Button
                 type="button"
@@ -774,7 +774,7 @@ export default function BundleForm() {
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
+                {categoryOptionElements(categoriesQ.data ?? [])}
               </AppSelect>
             </div>
             <div className="max-h-80 overflow-auto rounded-md border bg-popover">

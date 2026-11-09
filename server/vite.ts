@@ -83,6 +83,19 @@ export async function buildDevServerConfig(
 export async function setupVite(app: Express, server: Server) {
   const vite = await createViteServer(await buildDevServerConfig(server));
 
+  // في وضع التطوير لا نريد أن يعترض sw.js قديم من بناء إنتاجي سابق طلبات Vite المحلية
+  app.get("/sw.js", (_req, res) => {
+    res
+      .status(200)
+      .set({
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      })
+      .end(
+        "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).then(()=>self.registration.unregister())));",
+      );
+  });
+
   app.use(vite.middlewares);
   app.use(
     "*",

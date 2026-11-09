@@ -3899,6 +3899,17 @@ export async function settlePostedCashPurchaseInvoiceInTx(
         explicitCashSource: input.cashSource,
       });
   if (isCard) {
+    if (input.cashSource != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تغيير مصدر سداد البضاعة أثناء الاعتماد",
+          why: "مصدر السداد المثبّت في مراجعة الأمر هو بطاقة الشركة ولا يقبل مصدر نقد يدوي عند الاعتماد",
+          doThis:
+            "صحّح مصدر السداد بمراجعة جديدة محكومة (تصحيح مصدر السداد) قبل الاعتماد",
+        }),
+      });
+    }
     await assertPurchaseCardAccountTx(tx, tender.accountId);
     // Serialise same-account submissions before checking the documentary key.
     await tx

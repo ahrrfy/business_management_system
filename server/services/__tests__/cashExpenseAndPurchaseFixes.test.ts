@@ -85,6 +85,7 @@ const TABLES = [
   "productVariants",
   "products",
   "suppliers",
+  "accounts",
   "users",
   "branches",
 ] as const;
@@ -767,11 +768,52 @@ describe("إصلاح الشراء النقدي (فصل البضاعة عن ال�
       .from(s.purchaseOrders)
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
 
+    // تصحيح مؤقت إلى بطاقة الشركة للتحقق من حارس منع تمرير cashSource متعارض عند الاعتماد
+    await db().insert(s.accounts).values({
+      id: 77,
+      code: "1115",
+      name: "بطاقة الشركة الإلكترونية",
+      type: "ASSET",
+      systemRole: "CARD_BANK",
+      isActive: true,
+    });
+    const revisedCard = await revisePurchaseOrderPaymentSource(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: Number(sentRow!.version),
+        reason: "تحويل السداد مؤقتاً إلى بطاقة الشركة",
+        tender: {
+          mode: "CARD",
+          accountId: 77,
+          cardLastFour: "4242",
+          referenceNumber: "CARD-TEST-77",
+        },
+        clientRequestId: "revise-pay-src-card-conflict",
+      },
+      approver,
+    );
+    expect(revisedCard.idempotent).toBe(false);
+    if (!revisedCard.idempotent) {
+      await expect(
+        decidePurchaseOrderControl(
+          {
+            requestId: Number(revisedCard.controlRequestId),
+            decisionKey: "approve-card-with-conflicting-cash-source",
+            approve: true,
+            confirmedFullReceipt: true,
+            cashSource: { mode: "TREASURY" },
+            reason: "محاولة تمرير مصدر نقدي متعارض مع البطاقة",
+          },
+          approver,
+        ),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+    }
+
     // تصحيح مصدر السداد إلى الخزينة بمراجعة جديدة بعد التحقق من عدم وجود دفع سابق
     const revised = await revisePurchaseOrderPaymentSource(
       {
         purchaseOrderId: po.purchaseOrderId,
-        expectedVersion: Number(sentRow!.version),
+        expectedVersion: Number(revisedCard.version),
         reason: "تحويل السداد إلى الخزينة الرئيسية لعدم توفر سيولة في الدرج",
         tender: { mode: "TREASURY" },
         clientRequestId: "revise-pay-src-1",
@@ -780,7 +822,7 @@ describe("إصلاح الشراء النقدي (فصل البضاعة عن ال�
     );
     expect(revised.idempotent).toBe(false);
     if (!revised.idempotent) {
-      expect(revised.revisionNo).toBe(2);
+      expect(revised.revisionNo).toBe(3);
       expect(revised.controlRequestId).toBeTruthy();
       expect(revised.shortageWarning?.hasShortage).toBe(false);
 

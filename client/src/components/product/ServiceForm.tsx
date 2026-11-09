@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Field, MarginBadge } from "@/components/product/variantBits";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { toArabicDigits } from "@/lib/variants";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 
 /**
  * ServiceForm — تعريف بند خدمة وتوجيهه لنقطة بيع الطباعة.
@@ -391,7 +391,7 @@ export default function ServiceForm() {
               aria-label="الفئة / التبويب"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
+              {categoryOptionElements(categoriesQ.data ?? [])}
             </AppSelect>
           </Field>
           <Field label="الوحدة" required hint="ورقة / صورة / نسخة / خدمة…">

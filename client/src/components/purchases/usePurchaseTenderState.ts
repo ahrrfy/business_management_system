@@ -295,7 +295,19 @@ export function usePurchaseTenderState({
     value: PurchaseTenderDraft[K],
   ) {
     setPreservingLegacy(false);
-    setDraft((current) => ({ ...current, [key]: value }));
+    setDraft((current) => {
+      const next = { ...current, [key]: value };
+      if (
+        key === "mode" &&
+        value === "DRAWER" &&
+        !next.shiftId &&
+        canChooseDrawer &&
+        drawers.length === 1
+      ) {
+        next.shiftId = String(drawers[0]!.id);
+      }
+      return next;
+    });
   }
   return {
     draft,
