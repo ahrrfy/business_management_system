@@ -11,6 +11,9 @@ import { D } from "@/lib/money";
 const state = vi.hoisted(() => ({
   rows: [] as unknown[],
   change: null as ((value: string) => void) | null,
+  scan: null as ((code: string) => void) | null,
+  keyDown: null as ((e: React.KeyboardEvent<HTMLInputElement>) => void) | null,
+  value: "",
   delayedQuery: null as string | null,
 }));
 vi.mock("@/lib/trpc", () => ({
@@ -25,10 +28,18 @@ vi.mock("@/lib/notifyBeep", () => ({ playReadyBeep: vi.fn() }));
 vi.mock("@/components/search/UnifiedSearchInput", () => ({
   UnifiedSearchInput: React.forwardRef<
     HTMLInputElement,
-    { onChange: (value: string) => void }
+    {
+      value?: string;
+      onChange: (value: string) => void;
+      onScan?: (code: string) => void;
+      onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+    }
   >((props, ref) => {
     state.change = props.onChange;
-    return <input ref={ref} />;
+    state.scan = props.onScan ?? null;
+    state.keyDown = props.onKeyDown ?? null;
+    state.value = props.value ?? "";
+    return <input ref={ref} value={props.value ?? ""} readOnly />;
   }),
 }));
 
@@ -170,5 +181,37 @@ describe("current invoice and carrier obligations", () => {
     expect(html).toContain("آجل — على حساب العميل");
     expect(html).not.toContain("40,000");
     expect(html).toContain("المطلوب عند التسليم");
+  });
+
+  it("clears the search input and closes the dropdown after barcode scan or Enter to prevent concatenation", () => {
+    state.rows = [candidate];
+    const onBarcodeEnter = vi.fn();
+    act(() =>
+      root.render(
+        <PredictiveConsignmentSearchInput
+          onSelect={vi.fn()}
+          onBarcodeEnter={onBarcodeEnter}
+        />,
+      ),
+    );
+    act(() => state.change!("CN-1001"));
+    expect(state.value).toBe("CN-1001");
+    expect(host.querySelector('[role="listbox"]')).not.toBeNull();
+
+    act(() =>
+      state.keyDown!({
+        key: "Enter",
+        preventDefault: vi.fn(),
+      } as unknown as React.KeyboardEvent<HTMLInputElement>),
+    );
+    expect(onBarcodeEnter).toHaveBeenCalledWith("CN-1001");
+    expect(state.value).toBe("");
+    expect(host.querySelector('[role="listbox"]')).toBeNull();
+
+    act(() => state.change!("CN-1002"));
+    act(() => state.scan!("CN-1002"));
+    expect(onBarcodeEnter).toHaveBeenLastCalledWith("CN-1002");
+    expect(state.value).toBe("");
+    expect(host.querySelector('[role="listbox"]')).toBeNull();
   });
 });

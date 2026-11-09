@@ -88,7 +88,7 @@ export interface RemittanceInput {
   countedCash: string;
   /** Server-selected policy: settle all outstanding cash for each selected shipment. */
   requireFullShipment?: boolean;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   clientRequestId?: string | null;
   /**
    * **كشف شركة التوصيل** (١٩/٨) — مستند الشركة الذي قاد هذه التسوية (إطار المالك نسخة ٢:

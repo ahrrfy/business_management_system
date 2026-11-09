@@ -81,15 +81,7 @@ export async function resolveWorkflowSourceTx(
   raw: string,
   branchId?: number,
 ): Promise<SourceRef> {
-  let code = normalizeKnownSystemBarcode(raw).trim();
-  try {
-    const url = new URL(code, "http://localhost");
-    code = normalizeKnownSystemBarcode(
-      url.searchParams.get("payload") ?? url.searchParams.get("order") ?? code,
-    );
-  } catch {
-    /* A plain barcode has no URL envelope. */
-  }
+  const code = normalizeKnownSystemBarcode(raw).trim();
   const physical = /^(AE|CHG)[-|](\d+)(?:\||$)/i.exec(code);
   if (
     physical &&

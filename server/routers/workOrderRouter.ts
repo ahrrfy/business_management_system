@@ -1450,6 +1450,7 @@ export const workOrderRouter = router({
           title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
           status: invoices.status,
           salePrice: invoices.total,
+          returnedTotal: invoices.returnedTotal,
           deposit: invoices.paidAmount,
           customerId: invoices.customerId,
           customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
@@ -1496,13 +1497,26 @@ export const workOrderRouter = router({
           .orderBy(desc(deliveryConsignments.id))
           .limit(1);
 
+        const rawInvoiceTotal = String(inv.salePrice);
+        const invFin = resolveWorkOrderHandoverFinancials(
+          { salePrice: inv.salePrice, deposit: "0", invoiceId: Number(inv.id) },
+          {
+            total: inv.salePrice,
+            returnedTotal: inv.returnedTotal,
+            paidAmount: inv.deposit,
+            status: inv.status,
+          },
+        );
+
         return {
           ...inv,
+          salePrice: invFin.salePrice,
+          deposit: invFin.deposit ?? "0.00",
           siblingWorkOrders,
           qrPayload: invoiceBarcodeSet({
             invoiceNumber: inv.orderNumber,
             invoiceDate: inv.invoiceDate.toISOString(),
-            total: String(inv.salePrice),
+            total: rawInvoiceTotal,
             branchId: Number(inv.branchId),
           }).qrPayload,
           version: 1,

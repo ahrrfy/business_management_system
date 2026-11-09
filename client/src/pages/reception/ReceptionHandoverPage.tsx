@@ -151,8 +151,33 @@ export default function ReceptionHandoverPage() {
       try {
         const fetched = await utils.workOrders.getByNumber.fetch({ orderNumber });
         if (!fetched) { notify.err("طلب أو فاتورة غير موجودة: " + orderNumber); return; }
-        const wo = fetched as typeof fetched & { siblingWorkOrders?: SiblingWorkOrder[] };
+        const wo = fetched as typeof fetched & {
+          siblingWorkOrders?: SiblingWorkOrder[];
+          activeConsignment?: {
+            id: number;
+            consignmentNumber: string;
+            partyName: string | null;
+            parcelStatus: string;
+          } | null;
+        };
         const readyPickupSiblings = (wo.siblingWorkOrders ?? []).filter((s) => s.status === "READY" && !s.hasDelivery);
+
+        if (wo.kind === "onlineOrder") {
+          notify.info(`طلب متجر إلكتروني #${wo.orderNumber} — استخدم شاشة سير عمل التوصيل للإسناد أو التسليم`);
+          setManualInput("");
+          return;
+        }
+
+        if (
+          wo.activeConsignment &&
+          !["DELIVERED", "RETURNED", "CANCELLED"].includes(wo.activeConsignment.parcelStatus)
+        ) {
+          notify.warn(
+            `المستند مرتبط بإرسالية توصيل نشطة (#${wo.activeConsignment.consignmentNumber}${wo.activeConsignment.partyName ? ` — ${wo.activeConsignment.partyName}` : ""})؛ ألغِ الإسناد أو حصّل عبر التوصيل أولاً`,
+          );
+          setManualInput("");
+          return;
+        }
 
         if (wo.kind === "workOrder") {
           if (wo.status === "DELIVERED") {
@@ -242,6 +267,10 @@ export default function ReceptionHandoverPage() {
           }
           if (wo.status === "RETURNED") {
             notify.err("هذه الفاتورة مرتجعة بالكامل ولا يمكن تسليمها");
+            return;
+          }
+          if (wo.status === "SUPERSEDED") {
+            notify.err("هذه الفاتورة مستبدلة بفاتورة مصححة ولا تقبل التسليم أو التحصيل");
             return;
           }
           const rem = round2(D(wo.salePrice).minus(D(wo.deposit ?? "0")));
@@ -540,6 +569,8 @@ export default function ReceptionHandoverPage() {
         void printHandoverInvoice(scanned.id, canReprint, win);
         advanceOrClearAfterHandover(null, "الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
       }
+    } else if (scanned.kind === "onlineOrder") {
+      notify.err("طلبات المتجر تُسلَّم عبر مسار التوصيل لا التسليم المباشر");
     } else {
       deliverPrintRef.current = {
         win: preopenDocumentWindow(),

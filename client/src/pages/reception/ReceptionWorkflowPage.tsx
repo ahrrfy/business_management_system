@@ -267,7 +267,7 @@ export default function DeliveryWorkflowPage() {
     { branchId: branchId!, shiftType: "RECEPTION" },
     { enabled: !!branchId },
   );
-  const shift = shiftQ.data ?? null;
+  const anyShiftQ = trpc.shifts.current.useQuery({ branchId: branchId! }, { enabled: !!branchId && shiftQ.isSuccess && !shiftQ.data }); const shift = shiftQ.data ?? anyShiftQ.data ?? null;
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
     { staleTime: 60_000 },
@@ -909,7 +909,7 @@ export default function DeliveryWorkflowPage() {
                               variant="outline"
                               onClick={() => {
                                 setCancelScannedCode(
-                                  currentEditContext.source.number,
+                                  workflowSourceBarcode(currentEditContext.source),
                                 );
                                 chooseSection("cancelAssignment");
                               }}

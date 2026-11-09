@@ -4,6 +4,7 @@ import {
   normalizeBarcodeScannerInput,
   normalizeKnownSystemBarcode,
   stripTrackingLeadingZeros,
+  unwrapBarcodeScanEnvelope,
 } from "@shared/barcodeScanner";
 import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 
@@ -44,20 +45,9 @@ export interface PreparedDeliveryBarcodeLookup extends DeliveryBarcodeLookup {
 function unwrapBarcodeEnvelope(raw: string): string {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) return "";
-  let candidate = trimmed;
-  if (/^https?:\/\//i.test(candidate) || candidate.includes("?payload=") || candidate.includes("?order=")) {
-    try {
-      const url = new URL(candidate, "http://localhost");
-      const payload = url.searchParams.get("payload")?.trim();
-      const order = url.searchParams.get("order")?.trim();
-      if (payload) candidate = payload;
-      else if (order) candidate = order;
-    } catch {
-      // Fall back to raw string when URL parsing fails
-    }
-  }
+  const candidate = unwrapBarcodeScanEnvelope(trimmed);
   const normalizedCandidate = normalizeKnownSystemBarcode(candidate);
-  const pipeMatch = /^(INV|WO|ORD|CNS?|PO|QUO|RV|PV)\|([^|]+)/i.exec(normalizedCandidate);
+  const pipeMatch = /^(INV|WO|ORD|CNS?|PO|QUO|RV|PV|FR|AE|CHG)\|([^|]+)/i.exec(normalizedCandidate);
   if (pipeMatch) {
     const prefix = pipeMatch[1].toUpperCase() === "CNS" ? "CN" : pipeMatch[1].toUpperCase();
     const num = stripDocPrefix(pipeMatch[2].trim()).replace(/^CNS-/i, "CN-");

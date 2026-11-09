@@ -37,7 +37,7 @@ export interface DailySettlementDialogProps {
   previewLoading: boolean;
   previewError: string | null;
   onRetryPreview: () => void;
-  shiftType: "RETAIL" | "RECEPTION";
+  shiftType: "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
   /** يُنفّذ `delivery.settleDaily`؛ يرمي عند الرفض (الزيادة مثلاً) فتُعرض رسالة الخادم كما هي. */
   onSettle: (payload: SettleDailyPayload) => Promise<SettleDailyResult>;
 }

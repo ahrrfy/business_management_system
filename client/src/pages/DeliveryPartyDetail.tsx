@@ -1,5 +1,5 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react"; import { useLocation } from "wouter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { printShortfallSettlementVoucher } from "@/lib/printing/cashierLifecycleReceipts";
 import { Banknote, Truck, Wallet, X } from "lucide-react";
@@ -36,7 +36,7 @@ export default function DeliveryPartyDetail({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const me = trpc.auth.me.useQuery();
+  const me = trpc.auth.me.useQuery(); const [, navigate] = useLocation();
   // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
   const canManageParty =
@@ -132,10 +132,10 @@ export default function DeliveryPartyDetail({
               <Button
                 size="sm"
                 className="gap-1.5 font-bold"
-                onClick={() => setShowCollectModal(true)}
+                onClick={() => party.partyType === "COMPANY" ? (onClose(), navigate(`/delivery?tab=settlement&party=${party.id}`)) : setShowCollectModal(true)}
                 title="مراجعة النقد والتسوية بسند توريد"
               >
-                <Wallet aria-hidden className="size-4" /> استلام توريد وتسوية
+                <Wallet aria-hidden className="size-4" /> {party.partyType === "COMPANY" ? "تسجيل كشف وتسوية الشركة" : "استلام توريد وتسوية"}
               </Button>
             )}
             <StoreInTransitChip partyId={party.id} />

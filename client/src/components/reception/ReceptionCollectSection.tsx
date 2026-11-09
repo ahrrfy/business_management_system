@@ -160,7 +160,7 @@ function BarcodeCustomerCollection({
 export interface ReceptionCollectSectionProps {
   onLookupReset?: () => void;
   branchId: number;
-  shift: { id: number } | null;
+  shift: { id: number; shiftType?: "RETAIL" | "RECEPTION" | "PRINT_SERVICES" } | null;
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
   onNavigateToDispatchBarcode?: (raw: string) => void;
@@ -213,6 +213,8 @@ export function ReceptionCollectSection({
   const remittanceRetry = useRef<FinancialRetry | null>(null);
   const statementRetry = useRef<FinancialRetry | null>(null);
   const me = trpc.auth.me.useQuery();
+  const canCollectWithoutShift = me.data?.role === "admin" || me.data?.role === "manager";
+  const canReceiveCash = Boolean(shift) || canCollectWithoutShift;
   const canProvePartial = useOperationPermission("delivery.manualProof").allowed;
   const canRemitPartial = useOperationPermission("delivery.recordRemittance").allowed;
   const canCompletePartial = canProvePartial && canRemitPartial;
@@ -298,8 +300,8 @@ export function ReceptionCollectSection({
         setPendingCompanySelection(null);
         setStatementQueueIds(reset.queueIds);
         setSelectedCourierShipments([]);
+        setReturnedCustodyOnly(false);
       }
-      setReturnedCustodyOnly(false);
       setSettleMode(nextPartyType === "COMPANY" ? "company" : "courier");
     },
     [selectedPartyId],
@@ -361,10 +363,11 @@ export function ReceptionCollectSection({
 
   const openRows = (openConsQ.data?.pages ?? []).flatMap((page) => page.rows);
   const openConsStillLoading =
-    openConsQ.isLoading ||
-    openConsQ.hasNextPage ||
-    openConsQ.isFetchingNextPage ||
-    openConsQ.isError;
+    Boolean(openConsQ.isLoading) ||
+    Boolean(openConsQ.isFetching) ||
+    Boolean(openConsQ.hasNextPage) ||
+    Boolean(openConsQ.isFetchingNextPage) ||
+    Boolean(openConsQ.isError);
   useEffect(() => {
     if (!pendingCompanySelection || selectedPartyId !== pendingCompanySelection.partyId || openConsStillLoading) return;
     const available = (openConsQ.data?.pages ?? []).flatMap((page) => page.rows)
@@ -405,18 +408,30 @@ export function ReceptionCollectSection({
     .map((row) => [row.id, row])).values());
   const displayedOpenRows = filterOperationalRows(openRows, parcelFilter);
 
+  const releaseStatementGroupKeys = (
+    rowsToRelease: ReadonlyArray<{ id: number; shipmentLeaderConsignmentId?: number | null }>,
+  ) => {
+    for (const r of rowsToRelease) {
+      const leader = r.shipmentLeaderConsignmentId ?? r.id;
+      acceptedGroups.current.delete(`shipment:${leader}`);
+      acceptedGroups.current.delete(`consignment:${leader}`);
+      acceptedGroups.current.delete(`consignment:${r.id}`);
+    }
+  };
+
   const remittableRows = openRows.filter(
     (r) =>
       (r.parcelStatus === "DELIVERED" || r.physicalReturnReceived) &&
+      D(r.cashInCourierCustody ?? "0").gt(0) &&
       (!returnedCustodyOnly || r.physicalReturnReceived) &&
       r.sourceType !== "AFTERCARE_EXECUTION",
   );
-  const remittableTotal = remittableRows.reduce((sum, r) => {
-    const due = r.physicalReturnReceived
-      ? Number(r.cashInCourierCustody)
-      : statementQueueRemaining(r).toNumber();
-    return sum + due;
-  }, 0);
+  const remittableTotal = round2(
+    remittableRows.reduce(
+      (sum, r) => sum.plus(D(r.cashInCourierCustody ?? "0")),
+      D(0),
+    ),
+  ).toNumber();
 
   // حسابات وضع كشف الشركة:
   const statementSelectedRows = statementRows.filter(
@@ -482,6 +497,7 @@ export function ReceptionCollectSection({
         }
         void obligationsQ.refetch();
         void openConsQ.refetch();
+        void utils.delivery.invalidate?.();
       },
       onError: (error) => {
         if (hasUnresolvedWorkflowError(error)) setConfirmationUnresolved(true);
@@ -670,6 +686,7 @@ export function ReceptionCollectSection({
         context?.window ?? null,
         r.idempotentReplay === true,
       );
+      acceptedGroups.current.clear();
       setStatementNumber("");
       setAppendToStatement(false);
       setStatementDeductions("");
@@ -763,7 +780,7 @@ export function ReceptionCollectSection({
       remitMut.mutate(pendingRemittance);
       return;
     }
-    if (!selectedPartyId || !shift || remitMut.isPending || openConsStillLoading)
+    if (!selectedPartyId || !canReceiveCash || remitMut.isPending || openConsStillLoading)
       return;
     const selection = selectedShipmentRemittance(remittableRows, selectedCourierShipments);
     if (!selection.ok) {
@@ -801,7 +818,7 @@ export function ReceptionCollectSection({
     const payload = {
       partyId: selectedPartyId,
       branchId,
-      targetShiftId: shift.id,
+      ...(shift?.id ? { targetShiftId: shift.id } : {}),
       lines,
       countedCash: net.toFixed(2),
     };
@@ -810,7 +827,7 @@ export function ReceptionCollectSection({
     remittancePrintContext.current = {
       partyName: selectedParty?.name ?? partyInfo?.name ?? "جهة التوصيل",
       branchId,
-      shiftId: shift.id,
+      shiftId: shift?.id ?? 0,
       window: preopenDocumentWindow("width=380,height=700"),
     };
     const submitted = {
@@ -829,7 +846,7 @@ export function ReceptionCollectSection({
     }
     if (
       !selectedPartyId ||
-      !shift ||
+      !canReceiveCash ||
       openConsStillLoading ||
       companyStatementMut.isPending
     )
@@ -891,8 +908,8 @@ export function ReceptionCollectSection({
     const payload = {
       partyId: selectedPartyId,
       branchId,
-      shiftType: "RECEPTION" as const,
-      targetShiftId: shift.id,
+      shiftType: shift?.shiftType ?? "RECEPTION",
+      ...(shift?.id ? { targetShiftId: shift.id } : {}),
       statementNumber: statementNumber.trim(),
       appendToStatement,
       statementDate: appendToStatement ? undefined : new Date().toISOString().slice(0, 10),
@@ -1012,8 +1029,6 @@ export function ReceptionCollectSection({
           onBarcodeConsumed?.();
           return;
         }
-        switchCollectParty(partyId, pInfo?.partyType);
-        acceptedGroups.current.add(groupKey);
         const groupMembers = timeline.shipment.members.filter(
           (row) => row.operational || heldIds.has(row.id),
         );
@@ -1021,6 +1036,24 @@ export function ReceptionCollectSection({
           .filter((row) => row.received)
           .reduce((sum, row) => sum.plus(row.cashInCourierCustody), D(0));
         const returnedCash = heldIds.size > 0 && returnedAmount.gt(0);
+        if (
+          pInfo?.partyType !== "COMPANY" &&
+          selectedPartyId === partyId &&
+          selectedCourierShipments.length > 0
+        ) {
+          if (returnedCash && !returnedCustodyOnly) {
+            notify.warn("أكمل توريد الشحنات المسلّمة المحددة أولاً قبل مسح عهدة طرد عائد");
+            onBarcodeConsumed?.();
+            return;
+          }
+          if (!returnedCash && heldIds.size === 0 && returnedCustodyOnly) {
+            notify.warn("أكمل توريد عهدة الطرود العائدة المحددة أولاً قبل مسح شحنة عادية");
+            onBarcodeConsumed?.();
+            return;
+          }
+        }
+        switchCollectParty(partyId, pInfo?.partyType);
+        acceptedGroups.current.add(groupKey);
         if (returnedCash) {
           setSettleMode("courier");
           setReturnedCustodyOnly(true);
@@ -1078,6 +1111,9 @@ export function ReceptionCollectSection({
       utils,
       branchId,
       partiesQ.data,
+      selectedPartyId,
+      selectedCourierShipments.length,
+      returnedCustodyOnly,
       switchCollectParty,
       onOpenCharge,
       onBarcodeConsumed,
@@ -1648,17 +1684,20 @@ export function ReceptionCollectSection({
                       }));
                     }}
                     onRemove={(consignmentId) => {
-                      setStatementDecisions((current) => { const next = { ...current }; delete next[consignmentId]; return next; });
+                      const members = shipmentStatementCandidates(statementRows, consignmentId);
+                      releaseStatementGroupKeys(members);
+                      const memberIds = members.map((row) => row.id);
+                      setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !memberIds.includes(Number(key)))));
                       setStatementQueueIds((ids) =>
-                        ids.filter((id) => id !== consignmentId),
+                        ids.filter((id) => !memberIds.includes(id)),
                       );
                       setSelectedStatementLines((current) => ({
                         ...current,
-                        [consignmentId]: false,
+                        ...Object.fromEntries(memberIds.map((id) => [id, false])),
                       }));
                       setStatementAmounts((current) => {
                         const next = { ...current };
-                        delete next[consignmentId];
+                        for (const id of memberIds) delete next[id];
                         return next;
                       });
                     }}
@@ -1776,6 +1815,7 @@ export function ReceptionCollectSection({
                           className="text-xs h-7 font-bold text-muted-foreground"
                           disabled={companyStatementMut.isPending || pendingStatement != null}
                           onClick={() => {
+                            releaseStatementGroupKeys(displayedStatementGroups);
                             const visible = new Set(
                               displayedStatementGroups.map((row) => row.id),
                             );
@@ -1845,6 +1885,7 @@ export function ReceptionCollectSection({
                                 const members = shipmentStatementCandidates(statementRows, row.id);
                                 const memberIds = new Set(members.map((member) => member.id));
                                 if (isSelected) {
+                                  releaseStatementGroupKeys(members);
                                   setStatementDecisions((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !memberIds.has(Number(id)))));
                                   setSelectedStatementLines((current) => ({
                                     ...current,
@@ -1952,7 +1993,7 @@ export function ReceptionCollectSection({
                   </div>
 
                   {/* حسابات التوريد والتأكيد */}
-                  {shift && (statementSelectedRows.length > 0 || pendingStatement) && (
+                  {canReceiveCash && (statementSelectedRows.length > 0 || pendingStatement) && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
                         مطابقة كشف الجهة وتوريد الصافي للدرج
@@ -2100,9 +2141,14 @@ export function ReceptionCollectSection({
                                       في الطريق
                                     </Badge>
                                   )}
-                                  {isDelivered && (
+                                  {isDelivered && D(row.cashInCourierCustody ?? "0").gt(0) && (
                                     <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-transparent text-[11px] font-bold">
                                       سلم — جاهز للتوريد
+                                    </Badge>
+                                  )}
+                                  {isDelivered && D(row.cashInCourierCustody ?? "0").lte(0) && (
+                                    <Badge variant="outline" className="text-[11px] font-bold">
+                                      مُسلَّم آجل
                                     </Badge>
                                   )}
                                 </div>
@@ -2181,7 +2227,7 @@ export function ReceptionCollectSection({
                   </div>
 
                   {/* قسم القبض والتوريد للدرج للمندوب */}
-                  {shift && (remittableTotal > 0 || selectedCourierShipments.length > 0 || pendingRemittance) && (
+                  {canReceiveCash && (remittableTotal > 0 || selectedCourierShipments.length > 0 || pendingRemittance) && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
                         توريد جهة التوصيل للدرج
@@ -2204,7 +2250,11 @@ export function ReceptionCollectSection({
                               <p className="font-bold">إجمالي الشحنة: {fmt(shipment.expectedCash)} د.ع</p>
                               <Button type="button" variant="ghost" size="sm" disabled={remitMut.isPending || pendingRemittance != null} onClick={() => {
                                 acceptedGroups.current.delete(shipment.key);
-                                setSelectedCourierShipments((current) => current.filter((item) => item.key !== shipment.key));
+                                setSelectedCourierShipments((current) => {
+                                  const next = current.filter((item) => item.key !== shipment.key);
+                                  if (!next.length) setReturnedCustodyOnly(false);
+                                  return next;
+                                });
                               }}>إزالة الشحنة</Button>
                             </div>
                           ))}
@@ -2227,7 +2277,7 @@ export function ReceptionCollectSection({
                     </div>
                   )}
 
-                  {shift && !partialCollection && remittableTotal === 0 && totalObligation > 0 && (
+                  {canReceiveCash && !partialCollection && remittableTotal === 0 && totalObligation > 0 && (
                     <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
                       <div className="flex items-center gap-2 font-bold text-xs text-foreground">
                         <Clock
@@ -2254,9 +2304,14 @@ export function ReceptionCollectSection({
                 </div>
               )}
 
-              {!shift && (
+              {!canReceiveCash && (
                 <p className="text-sm text-destructive text-center">
-                  افتح وردية استقبال لتسجيل التحصيل
+                  افتح وردية لتسجيل التحصيل
+                </p>
+              )}
+              {!shift && canCollectWithoutShift && (
+                <p className="text-xs text-muted-foreground text-center">
+                  لا توجد وردية مفتوحة — سيُودَع النقد في الخزينة الإدارية تلقائياً
                 </p>
               )}
             </>

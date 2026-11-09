@@ -15,35 +15,17 @@
  */
 import type { ScanResult } from "@shared/barcodeTypes";
 import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
-import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
+import {
+  normalizeKnownSystemBarcode,
+  unwrapBarcodeScanEnvelope,
+} from "@/lib/barcodeScannerInput";
 
 const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER|ORD|CNS?|FR|AE|CHG)\|/i;
 
-function unwrapUrlScanPayload(raw: string): string {
-  const trimmed = String(raw ?? "").trim();
-  if (!trimmed) return "";
-  if (
-    /^https?:\/\//i.test(trimmed) ||
-    trimmed.includes("?payload=") ||
-    trimmed.includes("?order=")
-  ) {
-    try {
-      const url = new URL(trimmed, "http://localhost");
-      const payload = url.searchParams.get("payload")?.trim();
-      const order = url.searchParams.get("order")?.trim();
-      if (payload) return payload;
-      if (order) return order;
-    } catch {
-      // Fall back to raw string when URL parsing fails
-    }
-  }
-  return trimmed;
-}
-
 export function parseScan(raw: string): ScanResult {
-  // حارس إضافي لباركودات النظام: حتى لو وصل النص من مسار لا يستعمل useBarcodeScanner،
-  // تُستعاد البادئة اللاتينية التي شوّهها تخطيط Windows العربي (÷آ{ ⇒ INV).
-  const unwrapped = unwrapUrlScanPayload(raw);
+  // حارس إضافي لباركودات النظام وروابط QR: حتى لو وصل النص من مسار لا يستعمل useBarcodeScanner،
+  // يُفكّ غلاف الرابط وتُستعاد البادئة اللاتينية التي شوّهها تخطيط Windows العربي (÷آ{ ⇒ INV).
+  const unwrapped = unwrapBarcodeScanEnvelope(raw);
   const s = normalizeKnownSystemBarcode(unwrapped).trim();
   if (!s) return { type: "unknown", raw: s };
 
@@ -74,8 +56,8 @@ export function parseScan(raw: string): ScanResult {
       };
     if (docType === "ORD")
       return {
-        type: "product",
-        barcode: docBarcode("ORD", stripDocPrefix(number)),
+        type: "onlineOrder",
+        number: docBarcode("ORD", stripDocPrefix(number)),
       };
     if (docType === "FR")
       return { type: "fulfillmentRequest", number: docBarcode("FR", number) };
@@ -98,6 +80,8 @@ export function parseScan(raw: string): ScanResult {
     return { type: "invoice", number: stripDocPrefix(s) };
   if (s.startsWith("WO-"))
     return { type: "workOrder", number: stripDocPrefix(s) };
+  if (s.startsWith("ORD-"))
+    return { type: "onlineOrder", number: docBarcode("ORD", stripDocPrefix(s)) };
   if (/^CNS?-/i.test(s)) return { type: "consignment", number: s };
   if (/^FR-/i.test(s)) return { type: "fulfillmentRequest", number: s };
   const physical = /^(AE|CHG)-(\d+)$/i.exec(s);

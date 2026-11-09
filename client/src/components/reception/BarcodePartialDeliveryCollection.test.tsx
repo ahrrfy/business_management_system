@@ -11,6 +11,8 @@ const state = vi.hoisted(() => ({
   confirmOptions: undefined as any,
   parties: [{ id: 2, name: "المندوب", partyType: "INDIVIDUAL", branchId: 1 }],
   obligations: [] as unknown[],
+  openPages: [] as Array<{ rows: unknown[] }>,
+  openFetching: false,
 }));
 vi.mock("@tanstack/react-query", () => ({ useIsMutating: () => 0 }));
 vi.mock("@/lib/trpc", () => {
@@ -37,7 +39,12 @@ vi.mock("@/lib/trpc", () => {
       delivery: {
         listParties: { useQuery: () => ({ data: state.parties }) },
         obligations: { useQuery: () => ({ data: state.obligations }) },
-        openConsignments: { useInfiniteQuery: () => ({ data: { pages: [] } }) },
+        openConsignments: {
+          useInfiniteQuery: () => ({
+            data: { pages: state.openPages },
+            isFetching: state.openFetching,
+          }),
+        },
         staffConfirm: mutation,
         recordRemittance: mutation,
         recordCompanyStatement: mutation,
@@ -48,7 +55,7 @@ vi.mock("@/lib/trpc", () => {
 });
 vi.mock("@/lib/notify", () => ({
   errMsg: String,
-  notify: { ok: vi.fn(), err: vi.fn(), info: vi.fn() },
+  notify: { ok: vi.fn(), err: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 vi.mock("@/components/delivery/PartialDeliverySettlementButton", () => ({
   PartialDeliverySettlementButton: (props: any) => (
@@ -157,6 +164,8 @@ describe("barcode partial delivery collection in the receiving shift", () => {
     );
   }
   beforeEach(() => {
+    state.openPages = [];
+    state.openFetching = false;
     vi.clearAllMocks();
     vi.spyOn(window, "open").mockReturnValue(null);
     state.obligations = [
@@ -367,5 +376,81 @@ describe("barcode partial delivery collection in the receiving shift", () => {
     expect(findButton("مسح الاستعلام").disabled).toBe(true);
     await act(async () => findButton("إثبات التسليم وتحصيل العميل").click());
     expect(state.mutate.mock.calls.at(-1)![0].clientRequestId).toBe(requestId);
+  });
+
+  it("blocks remittance button while post-confirm openConsignments refetch is in flight and labels zero-custody credit deliveries accurately", async () => {
+    state.openPages = [
+      {
+        rows: [
+          {
+            id: 1787,
+            consignmentNumber: "CN-106208",
+            invoiceId: 33494,
+            invoiceNumber: "106208",
+            sourceType: "INVOICE",
+            parcelStatus: "DELIVERED",
+            status: "DELIVERED",
+            moneyStatus: "NOT_APPLICABLE",
+            codAmount: "0.00",
+            collectedAmount: "0.00",
+            cashInCourierCustody: "0.00",
+            physicalReturnReceived: false,
+          },
+          {
+            id: 1788,
+            consignmentNumber: "CN-106209",
+            invoiceId: 33495,
+            invoiceNumber: "106209",
+            sourceType: "INVOICE",
+            parcelStatus: "DELIVERED",
+            status: "DISPATCHED",
+            moneyStatus: "UNSETTLED",
+            codAmount: "15000.00",
+            collectedAmount: "0.00",
+            cashInCourierCustody: "15000.00",
+            physicalReturnReceived: false,
+          },
+        ],
+      },
+    ];
+    const deliveredScan = {
+      ...preview(),
+      group: { key: "shipment:1788", leaderConsignmentId: 1788, consignmentIds: [1788] },
+      relations: { invoiceId: 33495, consignmentId: 1788 },
+      money: { codAmount: "15000.00", heldDeliveryFee: "0.00", cashInCourierCustody: "15000.00" },
+      returnState: { members: [] },
+    };
+    const deliveredTimeline = {
+      consignment: {
+        ...timeline().consignment,
+        id: 1788,
+        invoiceId: 33495,
+        parcelStatus: "DELIVERED",
+        invoiceReturnedTotal: "0.00",
+        partialReturnReceived: false,
+      },
+      shipment: {
+        memberCount: 1,
+        members: [{ id: 1788, operational: true, parcelStatus: "DELIVERED" }],
+      },
+    };
+    state.scan.mockResolvedValue(deliveredScan);
+    state.timeline.mockResolvedValue(deliveredTimeline);
+    state.openFetching = true;
+    await render("CN-106209");
+
+    expect(host.textContent).toContain("مُسلَّم آجل");
+    const remitBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("تسجيل التوريد"),
+    );
+    expect(remitBtn).toBeDefined();
+    expect(remitBtn!.disabled).toBe(true);
+
+    state.openFetching = false;
+    await render("CN-106209");
+    const readyRemitBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("تسجيل التوريد"),
+    );
+    expect(readyRemitBtn!.disabled).toBe(false);
   });
 });

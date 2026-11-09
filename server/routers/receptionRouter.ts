@@ -200,7 +200,7 @@ export const receptionRouter = router({
         branchId: z.number().int().positive().nullish(),
         shiftIds: z.array(z.number().int().positive()).max(20).optional(),
         sinceDays: z.number().int().min(0).max(30).optional(),
-        q: z.string().trim().max(80).optional(),
+        q: z.string().trim().max(500).optional(),
         deliveryState: z.enum(["ALL", "NOT_DISPATCHED", "DISPATCHED", "DELIVERED"]).optional(),
         paymentState: z.enum(["ALL", "UNSETTLED", "UNPAID", "PARTIAL", "PAID"]).optional(),
         method: payMethodEnum.optional(),

@@ -83,7 +83,7 @@ export interface SettleInput {
   branchId: number;
   partyId: number;
   amount: string;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
@@ -126,7 +126,7 @@ export async function settleDeliveryBalance(
       branchId: Number(input.branchId),
       partyId: Number(input.partyId),
       amount: toDbMoney(amount),
-      shiftType: input.shiftType ?? "RECEPTION",
+      shiftType: input.shiftType ?? "RECEPTION", ...(input.targetShiftId != null ? { targetShiftId: Number(input.targetShiftId) } : {}),
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(
@@ -1057,7 +1057,7 @@ export interface RecoverWriteOffInput {
   branchId: number;
   partyId: number;
   amount: string;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
@@ -1087,6 +1087,8 @@ export async function recoverDeliveryWriteOff(
       branchId: Number(input.branchId),
       partyId: Number(input.partyId),
       amount: toDbMoney(amount),
+      ...(input.shiftType && input.shiftType !== "RECEPTION" ? { shiftType: input.shiftType } : {}),
+      ...(input.targetShiftId != null ? { targetShiftId: Number(input.targetShiftId) } : {}),
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeBarcodeScannerInput, normalizeKnownSystemBarcode } from "./barcodeScannerInput";
+import {
+  normalizeBarcodeScannerInput,
+  normalizeKnownSystemBarcode,
+  unwrapBarcodeScanEnvelope,
+} from "./barcodeScannerInput";
 import { parseScan, resolveOrderLookupBarcode } from "./scanRouter";
 import { resolveShippingLabelQrTarget } from "./printing/shippingLabel";
 
@@ -62,6 +66,24 @@ describe("parseScan", () => {
     expect(resolveOrderLookupBarcode("https://store.alroya.com/?order=ORD-100034&token=abc")).toBe("ORD-100034");
     expect(resolveOrderLookupBarcode("INV-1-20260818-00073-1")).toBe("INV-1-20260818-00073-1");
     expect(resolveOrderLookupBarcode("100034")).toBe("100034");
+    expect(resolveOrderLookupBarcode("https://srv1548487.hstgr.cloud/verify?ref=INV-100055")).toBe("INV-100055");
+    expect(resolveOrderLookupBarcode("https://srv1548487.hstgr.cloud/verify?p=WO%7C100035%7C2026-11-09%7C100%7C1%7Csig")).toBe("WO-100035");
+    expect(resolveOrderLookupBarcode("https://srv1548487.hstgr.cloud/verify/ORD-100009")).toBe("ORD-100009");
+    expect(resolveOrderLookupBarcode("اففحس:ظظsrv1548487.hstgr.cloudظverify؟ref=÷آ{-١٠٠٠٥٥")).toBe("INV-100055");
+  });
+
+  it("يصنّف طلبات المتجر ORD كـ onlineOrder لا كباركود منتج ويفك أغلفة الروابط العربية", () => {
+    expect(parseScan("ORD-100034")).toEqual({
+      type: "onlineOrder",
+      number: "ORD-100034",
+    });
+    expect(parseScan("ORD|100034|2026-10-19|45000|1|sig")).toEqual({
+      type: "onlineOrder",
+      number: "ORD-100034",
+    });
+    expect(unwrapBarcodeScanEnvelope("اففحس:ظظsrv1548487.hstgr.cloudظverify؟ref=÷آ{-١٠٠٠٥٥")).toBe("INV-100055");
+    expect(normalizeKnownSystemBarcode("https;//srv1548487.hstgr.cloud/verify/ref=cn-100065")).toBe("CN-100065");
+    expect(unwrapBarcodeScanEnvelope("عمار السلامي ")).toBe("عمار السلامي ");
   });
 });
 

@@ -2,7 +2,7 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const state = vi.hoisted(() => ({ rows: [] as any[], fetching: false, hasNextPage: false, remit: vi.fn(), next: vi.fn(), staff: vi.fn(), invalidate: vi.fn(), print: vi.fn(), close: vi.fn(), completed: vi.fn() }));
+const state = vi.hoisted(() => ({ rows: [] as any[], timeline: undefined as any, fetching: false, hasNextPage: false, remit: vi.fn(), next: vi.fn(), staff: vi.fn(), invalidate: vi.fn(), print: vi.fn(), close: vi.fn(), completed: vi.fn() }));
 vi.mock("@/lib/lifecycleActionPermission", () => ({ lifecycleActionAllowed: () => true }));
 vi.mock("./printRemittanceReceipt", () => ({ printRemittanceReceipt: state.print }));
 vi.mock("@/lib/notify", () => ({ notify: { ok: vi.fn(), err: vi.fn() } }));
@@ -11,6 +11,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: {
   auth: { me: { useQuery: () => ({ data: { id: 7, role: "cashier", branchId: 2 } }) } },
   shifts: { current: { useQuery: () => ({ data: { id: 22 } }) } },
   delivery: {
+    consignmentTimeline: { useQuery: () => ({ data: state.timeline, isFetching: false }) },
     openConsignments: {
       useQuery: () => ({ data: { rows: state.rows }, isFetching: state.fetching }),
       useInfiniteQuery: () => ({ data: { pages: [{ rows: state.rows }] }, isFetching: state.fetching, hasNextPage: state.hasNextPage, fetchNextPage: state.next }),
@@ -28,10 +29,11 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, React });
 describe("current collection obligation", () => {
   let host: HTMLDivElement; let root: Root;
   const target = { id: 1, partyId: 2, codDue: "40000", codAmount: "40000", parcelStatus: "DELIVERED" };
-  const confirm = () => [...host.querySelectorAll("button")].find(button => button.textContent?.includes("تأكيد القبض"))!;
+  const confirm = () => Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("تأكيد القبض"))!;
   async function render(selected = target) { await act(async () => root.render(<CollectConsignmentDialog open consignment={selected} onOpenChange={state.close} onCompleted={state.completed} />)); }
   beforeEach(() => {
     state.rows = [{ id: 1, codAmount: "20000", collectedAmount: "0", counterSettledAmount: "5000", shortfallAssigned: "2000", parcelStatus: "DELIVERED" }];
+    state.timeline = undefined;
     state.fetching = false; state.hasNextPage = false; state.next.mockClear(); state.remit.mockReset();
     state.staff.mockReset(); state.staff.mockResolvedValue({});
     state.invalidate.mockReset(); state.invalidate.mockResolvedValue(undefined);
@@ -74,7 +76,7 @@ describe("current collection obligation", () => {
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
       await act(async () => {
-        const reason = [...host.querySelectorAll("select")].find(select => [...select.options].some(option => option.value === "OTHER"))!;
+        const reason = Array.from(host.querySelectorAll("select")).find(select => Array.from(select.options).some(option => option.value === "OTHER"))!;
         reason.value = "OTHER";
         reason.dispatchEvent(new Event("change", { bubbles: true }));
       });
@@ -92,7 +94,7 @@ describe("current collection obligation", () => {
     state.fetching = true;
     await render(selected);
     expect(confirm().disabled).toBe(true);
-    const recover = [...host.querySelectorAll("button")].find(button => button.textContent?.includes("استعادة نتيجة التوريد"))!;
+    const recover = Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("استعادة نتيجة التوريد"))!;
     expect(recover).toBeDefined();
     expect(recover.disabled).toBe(false);
     // An acknowledged receipt must print/close even while refreshed lists are still pending.
@@ -104,5 +106,64 @@ describe("current collection obligation", () => {
     expect(state.print).toHaveBeenCalledWith("جهة التوصيل", receipt);
     expect(state.close).toHaveBeenCalledWith(false);
     expect(state.completed).toHaveBeenCalledTimes(1);
+  });
+
+  it("collects all invoices of a grouped multi-invoice shipment with exact Decimal math and wholeShipment confirmation", async () => {
+    state.rows = [
+      { id: 10, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "100.10", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "OUT_FOR_DELIVERY" },
+      { id: 11, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "200.20", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "OUT_FOR_DELIVERY" },
+    ];
+    state.remit.mockResolvedValueOnce({ remittanceId: 99, remittanceNumber: "REM-99", netRemitted: "300.30", shortfallTotal: "0.00" });
+    await render({ id: 10, partyId: 2, codDue: "100.10", codAmount: "100.10", parcelStatus: "OUT_FOR_DELIVERY" });
+    expect(confirm().disabled).toBe(false);
+    await act(async () => confirm().click());
+    expect(state.staff).toHaveBeenCalledWith(expect.objectContaining({
+      wholeShipment: true,
+      consignmentId: 10,
+      collectedAmount: "300.3",
+    }));
+    expect(state.remit).toHaveBeenCalledWith(expect.objectContaining({
+      partyId: 2,
+      targetShiftId: 22,
+      countedCash: "300.3",
+      lines: [
+        { consignmentId: 10, collectedAmount: "100.1" },
+        { consignmentId: 11, collectedAmount: "200.2" },
+      ],
+    }));
+  });
+
+  it("excludes zero-custody credit deliveries in ALL_PARTY remittance mode", async () => {
+    state.rows = [
+      { id: 1, codAmount: "10000", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "DELIVERED", cashInCourierCustody: "10000.00" },
+      { id: 2, codAmount: "5000", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "DELIVERED", cashInCourierCustody: "5000.00" },
+      { id: 3, codAmount: "8000", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "DELIVERED", cashInCourierCustody: "0.00" },
+    ];
+    state.remit.mockResolvedValueOnce({ remittanceId: 101, remittanceNumber: "REM-101", netRemitted: "15000.00", shortfallTotal: "0.00" });
+    await render();
+    const allPartyBtn = Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("تصفير كامل ذمة المندوب"))!;
+    await act(async () => allPartyBtn.click());
+    expect(confirm().textContent).toContain("15,000");
+    await act(async () => confirm().click());
+    expect(state.remit).toHaveBeenCalledWith(expect.objectContaining({
+      partyId: 2,
+      countedCash: "15000",
+      lines: [
+        { consignmentId: 1, collectedAmount: "10000" },
+        { consignmentId: 2, collectedAmount: "5000" },
+      ],
+    }));
+  });
+
+  it("resolves partyId from consignmentTimeline when opened with partyId=0", async () => {
+    state.timeline = { consignment: { id: 1, partyId: 9 } };
+    state.remit.mockResolvedValueOnce({ remittanceId: 102, remittanceNumber: "REM-102", netRemitted: "13000.00", shortfallTotal: "0.00" });
+    await render({ ...target, partyId: 0 });
+    expect(confirm().disabled).toBe(false);
+    await act(async () => confirm().click());
+    expect(state.remit).toHaveBeenCalledWith(expect.objectContaining({
+      partyId: 9,
+      countedCash: "13000",
+    }));
   });
 });

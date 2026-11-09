@@ -89,7 +89,7 @@ export interface CompanyStatementInput {
   lines: CompanyStatementLineInput[];
   /** النقد المعدود فعلاً — تفرض آلةُ التوريد مطابقتَه لصافي الكشف بالضبط. */
   countedCash: string;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه

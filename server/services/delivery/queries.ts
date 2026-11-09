@@ -588,6 +588,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       shortfallAssigned: consignmentShortfallAssignedSql,
+      cashInCourierCustody: custody,
       remainingDue: remainingDueSql,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,

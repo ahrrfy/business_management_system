@@ -1,15 +1,13 @@
+import Decimal from "decimal.js";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "wouter";
 import {
   AlertTriangle,
   Banknote,
   CheckCircle2,
-  PackageCheck,
-  Printer,
   Receipt,
-  RotateCcw,
   Truck,
-  User,
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -28,7 +26,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import {
@@ -66,6 +64,13 @@ type SubmittedRemittance = {
   partyLabel: string;
 };
 
+type ShiftTypeOption = "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
+
+function cleanMoneyStr(value: Decimal | string | number | null | undefined): string {
+  const fixed = round2(value instanceof Decimal ? value : D(value)).toFixed(2);
+  return fixed.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
 export function CollectConsignmentDialog({
   consignment,
   partyId,
@@ -75,18 +80,46 @@ export function CollectConsignmentDialog({
   onCompleted,
 }: CollectConsignmentDialogProps) {
   const utils = trpc.useUtils();
-  const effectivePartyId = consignment?.partyId ?? partyId ?? null;
+  const explicitPartyId =
+    consignment?.partyId && consignment.partyId > 0
+      ? consignment.partyId
+      : partyId && partyId > 0
+      ? partyId
+      : null;
+
+  // في حال فتح الحوار من مستند لم يمرر partyId صريحاً (مثل مسارات قديمة)، نشتقه من الإرسالية مباشرة
+  const timelineFallback = trpc.delivery.consignmentTimeline.useQuery(
+    { consignmentId: consignment?.id ?? 0 },
+    {
+      enabled: open && explicitPartyId == null && Boolean(consignment?.id && consignment.id > 0),
+      staleTime: 30_000,
+      retry: false,
+    },
+  );
+  const effectivePartyId =
+    explicitPartyId ??
+    (timelineFallback.data?.consignment?.partyId
+      ? Number(timelineFallback.data.consignment.partyId)
+      : null);
 
   // استعلام الطرود المفتوحة للجهة لمعرفة كل ما بذمتها
   const openCn = trpc.delivery.openConsignments.useInfiniteQuery(
     { partyId: effectivePartyId ?? 0, limit: 500 },
-    { enabled: open && effectivePartyId != null && effectivePartyId > 0, staleTime: 0,
-      getNextPageParam: last => last.nextCursor ?? undefined },
+    {
+      enabled: open && effectivePartyId != null && effectivePartyId > 0,
+      staleTime: 0,
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+    },
   );
   useEffect(() => {
     if (open && openCn.hasNextPage && !openCn.isFetching && !openCn.isError) void openCn.fetchNextPage();
   }, [open, openCn.hasNextPage, openCn.isFetching, openCn.isError, openCn.fetchNextPage]);
-  const obligationsLoading = !openCn.data || openCn.isFetching || openCn.hasNextPage || openCn.isError;
+  const obligationsLoading =
+    timelineFallback.isFetching ||
+    !openCn.data ||
+    openCn.isFetching ||
+    openCn.hasNextPage ||
+    openCn.isError;
 
   // استعلام بيانات الفاعل
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
@@ -95,7 +128,7 @@ export function CollectConsignmentDialog({
   const isAdmin = me.data?.role === "admin";
   const isManager = me.data?.role === "manager" || isAdmin;
 
-  // وضع التحصيل: تحصيل هذا الطرد فقط أو تحصيل وتصفير كامل رصيد المندوب
+  // وضع التحصيل: تحصيل هذا الطرد/الشحنة فقط أو تحصيل وتصفير كامل رصيد المندوب
   const [settleScope, setSettleScope] = useState<"SINGLE" | "ALL_PARTY">(() =>
     consignment ? "SINGLE" : "ALL_PARTY",
   );
@@ -107,13 +140,13 @@ export function CollectConsignmentDialog({
   const [countedCash, setCountedCash] = useState("0");
   const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
   const [shortfallNotes, setShortfallNotes] = useState("");
-  const [shiftType, setShiftType] = useState<"RECEPTION" | "RETAIL">("RECEPTION");
+  const [shiftType, setShiftType] = useState<ShiftTypeOption>("RECEPTION");
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const [submittedRemittance, setSubmittedRemittance] = useState<SubmittedRemittance | null>(null);
   const [submittingRemittance, setSubmittingRemittance] = useState(false);
   const remittanceInFlight = useRef(false);
 
-  // استعلام بيانات الجهة لمعرفة فرعها
+  // استعلام بيانات الجهة لمعرفة فرعها ونوعها (مندوب أم شركة)
   const partyQ = trpc.delivery.getParty.useQuery(
     { id: effectivePartyId ?? 0 },
     { enabled: open && effectivePartyId != null && effectivePartyId > 0, staleTime: 60_000 },
@@ -139,42 +172,123 @@ export function CollectConsignmentDialog({
     },
   );
 
-  // الطرود القابلة للتوريد: المسلَّمة والتي لم تُورَّد بالكامل بعد
+  // الطرود القابلة للتوريد بحساب Decimal الدقيق (مع دعم عهدة المرتجع واستبعاد المسلم الآجل بلا نقد بيد المندوب)
   const remittableRows = useMemo(() => {
-    const rows = (openCn.data?.pages ?? []).flatMap(page => page.rows);
+    const rows = (openCn.data?.pages ?? []).flatMap((page) => page.rows);
     return rows
       .map((r) => {
-        const cod = Number(r.codAmount || 0);
-        const collected = Number(r.collectedAmount || 0);
-        const counter = Number(r.counterSettledAmount || 0);
-        const shortfall = Number(r.shortfallAssigned || 0);
-        const remaining = Math.max(0, cod - collected - counter - shortfall);
+        const cod = D(r.codAmount ?? 0);
+        const collected = D(r.collectedAmount ?? 0);
+        const counter = D(r.counterSettledAmount ?? 0);
+        const shortfall = D(r.shortfallAssigned ?? 0);
+        const invoiceRemainingDec = Decimal.max(0, round2(cod.minus(collected).minus(counter).minus(shortfall)));
+        const isReturnedWithCustody =
+          Boolean(r.physicalReturnReceived) &&
+          r.parcelStatus !== "DELIVERED" &&
+          D(r.cashInCourierCustody ?? 0).gt(0);
+        const remainingDec = isReturnedWithCustody ? round2(D(r.cashInCourierCustody ?? 0)) : invoiceRemainingDec;
+        const hasProvenCustody =
+          isReturnedWithCustody ||
+          (r.parcelStatus === "DELIVERED" &&
+            !Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt) &&
+            (r.cashInCourierCustody == null || D(r.cashInCourierCustody).gt(0)));
         return {
           ...r,
-          remainingDue: remaining,
+          remainingDec,
+          remainingDue: remainingDec.toNumber(),
+          isReturnedWithCustody,
+          hasProvenCustody,
         };
       })
-      .filter((r) => r.remainingDue > 0);
+      .filter((r) => r.remainingDec.gt(0));
   }, [openCn.data]);
-  const currentConsignment = consignment ? remittableRows.find(row => row.id === consignment.id) : null;
-  const deliveredRows = remittableRows.filter((row) => row.parcelStatus === "DELIVERED");
+
+  const currentConsignment = consignment ? remittableRows.find((row) => row.id === consignment.id) : null;
+
+  // أعضاء الشحنة الكاملة عند فتح طرد فردي أو شحنة متعددة الفواتير
+  const singleTargetRows = useMemo(() => {
+    if (!currentConsignment) return [];
+    if (currentConsignment.shipmentLeaderConsignmentId != null) {
+      return remittableRows.filter(
+        (row) => row.shipmentLeaderConsignmentId === currentConsignment.shipmentLeaderConsignmentId,
+      );
+    }
+    return [currentConsignment];
+  }, [currentConsignment, remittableRows]);
+
   const isGroupedShipment = (currentConsignment?.shipmentInvoiceCount ?? 0) > 1;
 
-  // حساب المتبقي للطرد الفردي المستهدف
-  const singleRemainingDue = useMemo(() => {
-    return currentConsignment?.remainingDue ?? 0;
-  }, [currentConsignment]);
+  // التحقق من جاهزية الشحنة متعددة الفواتير للتوريد الكامل أو التأكيد الجماعي + التوريد
+  const singleShipmentBlockReason = useMemo(() => {
+    if (!currentConsignment) return null;
+    if (singleTargetRows.some((r) => r.feeWithholdingBlocked)) {
+      return "توجد قيود على أجرة هذه الشحنة أو قاعدة عمولتها؛ عالجها من شاشة تسوية المناديب.";
+    }
+    if (singleTargetRows.some((r) => Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt))) {
+      return "تم إعلان رجوع على هذه الشحنة؛ عالج المرتجع من شاشة تسوية المناديب.";
+    }
+    const allReadyWithCustody = singleTargetRows.every((r) => r.hasProvenCustody);
+    const allUnconfirmedInTransit = singleTargetRows.every(
+      (r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody,
+    );
+    if (!allReadyWithCustody && !allUnconfirmedInTransit) {
+      if (
+        !isGroupedShipment &&
+        currentConsignment.parcelStatus === "DELIVERED" &&
+        !currentConsignment.hasProvenCustody
+      ) {
+        return "هذا الطرد مسلّم بالآجل دون نقد مقبوض بيد المندوب؛ يُحصّل من ذمة العميل لا من توريد المندوب.";
+      }
+      return "بعض فواتير هذه الشحنة بحالات تسليم مختلفة أو مسلّمة بالآجل؛ استخدم شاشة تسوية المناديب لمعالجتها.";
+    }
+    return null;
+  }, [currentConsignment, isGroupedShipment, singleTargetRows]);
 
-  // إجمالي المتبقي على جميع طرود الجهة
-  const allPartyRemainingDue = useMemo(() => {
-    return deliveredRows.reduce((sum, r) => sum + r.remainingDue, 0);
+  const singleNeedsConfirmFirst = useMemo(
+    () =>
+      singleTargetRows.length > 0 &&
+      singleShipmentBlockReason == null &&
+      singleTargetRows.every((r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody),
+    [singleTargetRows, singleShipmentBlockReason],
+  );
+
+  // الطرود المسلمة الجاهزة للتوريد الشامل (مع استبعاد المسلم الآجل والشحنات المجمعة غير المكتملة)
+  const deliveredRows = useMemo(() => {
+    const candidates = remittableRows.filter((row) => row.hasProvenCustody && !row.feeWithholdingBlocked);
+    const candidateIds = new Set(candidates.map((row) => row.id));
+    return candidates.filter((row) => {
+      if (row.shipmentLeaderConsignmentId == null) return true;
+      const allShipmentOwing = remittableRows.filter(
+        (sibling) => sibling.shipmentLeaderConsignmentId === row.shipmentLeaderConsignmentId,
+      );
+      return allShipmentOwing.every((sibling) => candidateIds.has(sibling.id));
+    });
   }, [remittableRows]);
 
-  // المبلغ المتوقع توريده بناءً على النطاق المختار
-  const expectedTotal = useMemo(() => {
-    const selected = settleScope === "SINGLE" ? (currentConsignment ? [currentConsignment] : []) : deliveredRows;
-    return selected.reduce((sum, row) => sum + row.remainingDue - Math.min(row.remainingDue, Number(row.feeWithholdingCash ?? 0)), 0);
-  }, [settleScope, currentConsignment, remittableRows]);
+  const rowNetExpectedDec = (row: (typeof remittableRows)[number]) => {
+    const fee = Decimal.min(row.remainingDec, Decimal.max(0, D(row.feeWithholdingCash ?? 0)));
+    return round2(row.remainingDec.minus(fee));
+  };
+
+  // حساب المتبقي وصافي التوريد للطرد/الشحنة المستهدفة
+  const singleGrossDueDec = useMemo(
+    () => round2(singleTargetRows.reduce((sum, r) => sum.plus(r.remainingDec), D(0))),
+    [singleTargetRows],
+  );
+  const singleNetExpectedDec = useMemo(
+    () => round2(singleTargetRows.reduce((sum, r) => sum.plus(rowNetExpectedDec(r)), D(0))),
+    [singleTargetRows],
+  );
+
+  // صافي التوريد لجميع طرود الجهة الجاهزة
+  const allPartyNetExpectedDec = useMemo(
+    () => round2(deliveredRows.reduce((sum, r) => sum.plus(rowNetExpectedDec(r)), D(0))),
+    [deliveredRows],
+  );
+
+  // المبلغ الصافي المتوقع توريده بناءً على النطاق المختار
+  const expectedTotalDec = settleScope === "SINGLE" ? singleNetExpectedDec : allPartyNetExpectedDec;
+  const expectedTotalStr = cleanMoneyStr(expectedTotalDec);
 
   // إعادة الضبط عند الفتح
   useEffect(() => {
@@ -187,17 +301,31 @@ export function CollectConsignmentDialog({
     setClientRequestId(crypto.randomUUID());
   }, [open, consignment?.id, submittedRemittance]);
 
-  // تحديث النقد المعدود تلقائياً ليتطابق مع المبلغ المتوقع
+  // إذا اتضح بعد جلب القائمة أن الشحنة غير مختومة بالتسليم بعد، نفعل خيار التأكيد المسبق تلقائياً
   useEffect(() => {
     if (!open || submittedRemittance) return;
-    setCountedCash(String(expectedTotal));
-  }, [open, expectedTotal, submittedRemittance]);
+    if (singleNeedsConfirmFirst && canConfirmDelivery) {
+      setConfirmDeliveryFirst(true);
+    }
+  }, [open, singleNeedsConfirmFirst, canConfirmDelivery, submittedRemittance]);
 
-  // حساب الفرق والعجز
-  const countedNum = Number(countedCash || "0");
-  const shortfallAmount = Math.max(0, expectedTotal - countedNum);
-  const isShortfall = shortfallAmount > 0;
-  const isExcess = countedNum > expectedTotal;
+  // تحديث النقد المعدود تلقائياً ليتطابق مع المبلغ المتوقع بدقة Decimal
+  useEffect(() => {
+    if (!open || submittedRemittance) return;
+    setCountedCash(expectedTotalStr);
+  }, [open, expectedTotalStr, submittedRemittance]);
+
+  // حساب الفرق والعجز بدقة Decimal
+  const countedDec = useMemo(() => {
+    try {
+      return round2(D(countedCash?.trim() ? countedCash : "0"));
+    } catch {
+      return D(0);
+    }
+  }, [countedCash]);
+  const shortfallDec = Decimal.max(0, round2(expectedTotalDec.minus(countedDec)));
+  const isShortfall = shortfallDec.gt(0);
+  const isExcess = countedDec.gt(expectedTotalDec);
 
   // طفرة تأكيد التسليم اليدوي بيد الموظف
   const staffConfirm = trpc.delivery.staffConfirm.useMutation();
@@ -224,7 +352,7 @@ export function CollectConsignmentDialog({
       notify.ok(
         "تم تسجيل التوريد وقبض النقد بنجاح",
         `سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع${
-          Number(res.shortfallTotal) > 0 ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
+          D(res.shortfallTotal ?? 0).gt(0) ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
         }`,
       );
       try {
@@ -261,22 +389,29 @@ export function CollectConsignmentDialog({
 
   const handleSettle = async () => {
     if (intentLocked) return;
-    if (obligationsLoading || expectedTotal <= 0) { notify.err("انتظر تحميل الذمة الحالية قبل تأكيد التوريد"); return; }
-    if (!canRemit || (settleScope === "SINGLE" && confirmDeliveryFirst && currentConsignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery)) { notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك"); return; }
-    if (effectivePartyId == null) {
+    if (obligationsLoading || expectedTotalDec.lte(0)) {
+      notify.err("انتظر تحميل الذمة الحالية قبل تأكيد التوريد");
+      return;
+    }
+    if (
+      !canRemit ||
+      (settleScope === "SINGLE" && singleNeedsConfirmFirst && (!confirmDeliveryFirst || !canConfirmDelivery))
+    ) {
+      notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك");
+      return;
+    }
+    if (effectivePartyId == null || effectivePartyId <= 0) {
       notify.err("لم يتم تحديد جهة التوصيل");
       return;
     }
-    if (settleScope === "SINGLE" && isGroupedShipment) {
-      notify.err("هذه الإرسالية جزء من شحنة متعددة الفواتير؛ امسح الشحنة من شاشة التحصيل لتحديد فواتيرها كاملة");
+    if (settleScope === "SINGLE" && singleShipmentBlockReason) {
+      notify.err(singleShipmentBlockReason);
       return;
     }
-
     if (isExcess) {
       notify.err("المبلغ المقبوض أكبر من الصافي المتوقع للتوريد");
       return;
     }
-
     if (isShortfall) {
       notify.err("يجب أن يطابق النقد المستلم صافي التوريد كاملاً");
       return;
@@ -284,11 +419,18 @@ export function CollectConsignmentDialog({
 
     remitWinRef.current = preopenDocumentWindow();
     try {
-      // 1. إذا كان الطرد الفردي غير مسلّم وطُلب تأكيد تسليمه أولاً:
-      if (settleScope === "SINGLE" && currentConsignment && confirmDeliveryFirst && currentConsignment.parcelStatus !== "DELIVERED") {
+      // 1. إذا كان الطرد أو الشحنة المجمعة غير مسلّمة وطُلب تأكيد تسليمها أولاً:
+      if (settleScope === "SINGLE" && currentConsignment && singleNeedsConfirmFirst && confirmDeliveryFirst) {
         await staffConfirm.mutateAsync({
-          consignmentId: currentConsignment.id,
-          collectedAmount: String(singleRemainingDue),
+          ...(isGroupedShipment
+            ? {
+                wholeShipment: true,
+                consignmentId: currentConsignment.shipmentLeaderConsignmentId ?? currentConsignment.id,
+              }
+            : {
+                consignmentId: currentConsignment.id,
+              }),
+          collectedAmount: cleanMoneyStr(singleGrossDueDec),
           evidence: "تسليم وتحصيل مباشر بالكاونتر",
           clientRequestId: crypto.randomUUID(),
           shortfallReason: isShortfall && shortfallReason ? (shortfallReason as ShortfallReason) : undefined,
@@ -299,46 +441,43 @@ export function CollectConsignmentDialog({
       let lines: Array<{ consignmentId: number; collectedAmount: string }> = [];
 
       if (settleScope === "SINGLE") {
-        if (!consignment) throw new Error("لم يتم تحديد الإرسالية");
-        // في حالة الطرد الفردي، المبلغ المقبوض هو النقد المعدود
-        lines = [
-          {
-            consignmentId: consignment.id,
-            collectedAmount: String(singleRemainingDue),
-          },
-        ];
+        if (!consignment || singleTargetRows.length === 0) throw new Error("لم يتم تحديد الإرسالية");
+        lines = singleTargetRows.map((r) => ({
+          consignmentId: r.id,
+          collectedAmount: cleanMoneyStr(r.remainingDec),
+        }));
       } else {
-        // في حالة التصفية الشاملة لكافة طرود الجهة
         if (deliveredRows.length === 0) {
           try { remitWinRef.current?.close(); } catch { /* noop */ }
           remitWinRef.current = null;
           notify.err("لا توجد طرود مسلّمة بانتظار التوريد لهذه الجهة");
           return;
         }
-
-        {
-          lines = deliveredRows.map((r) => ({
-            consignmentId: r.id,
-            collectedAmount: String(r.remainingDue),
-          }));
-        }
+        lines = deliveredRows.map((r) => ({
+          consignmentId: r.id,
+          collectedAmount: cleanMoneyStr(r.remainingDec),
+        }));
       }
 
       // استبعاد الأسطر الصفرية
-      const activeLines = lines.filter((l) => Number(l.collectedAmount) > 0);
-      if (activeLines.length === 0 && countedNum > 0) {
+      const activeLines = lines.filter((l) => D(l.collectedAmount).gt(0));
+      if (activeLines.length === 0 && countedDec.gt(0)) {
         throw new Error("تعذر توزيع المبلغ المقبوض على الإرساليات");
       }
 
       // 3. تنفيذ التوريد المالي الذري
-      await submitRemittance({ payload: {
-        partyId: effectivePartyId,
-        shiftType,
-        lines: activeLines,
-        countedCash: String(countedNum),
-        shortfall: null,
-        clientRequestId,
-      }, partyLabel: consignment?.partyName ?? partyName ?? "جهة التوصيل" });
+      await submitRemittance({
+        payload: {
+          partyId: effectivePartyId,
+          shiftType,
+          ...(activeShift.data?.id ? { targetShiftId: activeShift.data.id } : {}),
+          lines: activeLines,
+          countedCash: cleanMoneyStr(countedDec),
+          shortfall: null,
+          clientRequestId,
+        },
+        partyLabel: consignment?.partyName ?? partyName ?? partyQ.data?.name ?? "جهة التوصيل",
+      });
     } catch (err: unknown) {
       try { remitWinRef.current?.close(); } catch { /* noop */ }
       remitWinRef.current = null;
@@ -346,10 +485,11 @@ export function CollectConsignmentDialog({
     }
   };
 
-  const displayName = consignment?.partyName ?? partyName ?? "المندوب";
+  const displayName = consignment?.partyName ?? partyName ?? partyQ.data?.name ?? "المندوب";
+  const isCompanyParty = partyQ.data?.partyType === "COMPANY";
 
   return (
-    <Dialog open={open} onOpenChange={next => { if (!next && intentLocked) return; onOpenChange(next); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && intentLocked) return; onOpenChange(next); }}>
       <DialogContent dir="rtl" className="sm:max-w-xl" showCloseButton={!intentLocked}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl font-black">
@@ -362,9 +502,25 @@ export function CollectConsignmentDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {submittedRemittance && <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 text-sm">
-            أُرسل طلب توريد بقيمة {fmt(submittedRemittance.payload.countedCash)} د.ع. استعد نتيجته بنفس الطلب قبل إجراء تحصيل آخر؛ قد تكون الذمة الحالية تغيّرت بعد تسجيله.
-          </div>}
+          {submittedRemittance && (
+            <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 text-sm">
+              أُرسل طلب توريد بقيمة {fmt(submittedRemittance.payload.countedCash)} د.ع. استعد نتيجته بنفس الطلب قبل إجراء تحصيل آخر؛ قد تكون الذمة الحالية تغيّرت بعد تسجيله.
+            </div>
+          )}
+
+          {isCompanyParty && deliveredRows.length === 0 && effectivePartyId != null && (
+            <div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs space-y-2">
+              <p className="font-bold text-foreground">
+                هذه شركة توصيل خارجية — طرودها المفتوحة ({remittableRows.length}) تُختَم وتُورَّد عبر «كشف شركة التوصيل» برقم الكشف واستقطاعاته.
+              </p>
+              <Button size="sm" variant="outline" asChild onClick={() => onOpenChange(false)}>
+                <Link href={`/delivery?tab=settlement&party=${effectivePartyId}`}>
+                  فتح شاشة تسجيل كشف الشركة
+                </Link>
+              </Button>
+            </div>
+          )}
+
           {/* بطاقة معلومات المندوب */}
           <div className="rounded-xl border bg-muted/40 p-3.5 space-y-2">
             <div className="flex items-center justify-between">
@@ -373,14 +529,22 @@ export function CollectConsignmentDialog({
                 <span className="font-extrabold text-base">{displayName}</span>
               </div>
               <Badge variant="outline" className="font-mono text-xs">
-                {remittableRows.length} طرد مسلم بانتظار التوريد
+                {deliveredRows.length} طرد مسلم بانتظار التوريد
               </Badge>
             </div>
 
             {consignment && (
-              <div className="mt-2 pt-2 border-t text-xs grid grid-cols-2 gap-2 text-muted-foreground">
+              <div className="mt-2 pt-2 border-t text-xs grid grid-cols-1 sm:grid-cols-2 gap-2 text-muted-foreground">
                 <div>
-                  الإرسالية: <span className="font-mono font-bold text-foreground">{consignment.consignmentNumber ?? `#${consignment.id}`}</span>
+                  الإرسالية:{" "}
+                  <span className="font-mono font-bold text-foreground">
+                    {consignment.consignmentNumber ?? `#${consignment.id}`}
+                  </span>
+                  {isGroupedShipment && (
+                    <span className="ms-1 text-[11px] font-bold text-primary">
+                      (شحنة {singleTargetRows.length} فواتير)
+                    </span>
+                  )}
                 </div>
                 <div>
                   المستلم: <span className="font-bold text-foreground">{consignment.customerName ?? "عميل نقدي"}</span>
@@ -399,9 +563,9 @@ export function CollectConsignmentDialog({
             )}
           </div>
 
-          {/* خيار نطاق التوريد إذا فتح من طرد فردي */}
+          {/* خيار نطاق التوريد إذا فتح من طرد فردي أو شحنة */}
           {consignment && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 type="button"
                 disabled={intentLocked}
@@ -412,12 +576,16 @@ export function CollectConsignmentDialog({
                 }`}
                 onClick={() => setSettleScope("SINGLE")}
               >
-                <span className="text-xs font-bold text-muted-foreground">تحصيل هذا الطرد فقط</span>
+                <span className="text-xs font-bold text-muted-foreground">
+                  {isGroupedShipment ? `تحصيل هذه الشحنة كاملة (${singleTargetRows.length} فواتير)` : "تحصيل هذا الطرد فقط"}
+                </span>
                 <span className="text-lg font-black text-emerald-600 mt-1 tabular-nums" dir="ltr">
-                  {fmt(singleRemainingDue)} د.ع
+                  {fmt(cleanMoneyStr(singleNetExpectedDec))} د.ع
                 </span>
                 <span className="text-[10px] text-muted-foreground mt-0.5">
-                  طرد #{consignment.consignmentNumber ?? consignment.id}
+                  {isGroupedShipment
+                    ? `إجمالي فواتير الشحنة: ${fmt(cleanMoneyStr(singleGrossDueDec))} د.ع`
+                    : `طرد #${consignment.consignmentNumber ?? consignment.id}`}
                 </span>
               </button>
 
@@ -433,7 +601,7 @@ export function CollectConsignmentDialog({
               >
                 <span className="text-xs font-bold text-muted-foreground">تصفير كامل ذمة المندوب</span>
                 <span className="text-lg font-black text-foreground mt-1 tabular-nums" dir="ltr">
-                  {fmt(allPartyRemainingDue)} د.ع
+                  {fmt(cleanMoneyStr(allPartyNetExpectedDec))} د.ع
                 </span>
                 <span className="text-[10px] text-muted-foreground mt-0.5">
                   جميع الطرود المسلمة ({deliveredRows.length} طرد)
@@ -443,7 +611,7 @@ export function CollectConsignmentDialog({
           )}
 
           {/* تأكيد التسليم المسبق إذا لم يكن مسلماً بعد */}
-          {currentConsignment && currentConsignment.parcelStatus !== "DELIVERED" && (
+          {settleScope === "SINGLE" && singleNeedsConfirmFirst && (
             <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs">
               <input
                 type="checkbox"
@@ -454,11 +622,18 @@ export function CollectConsignmentDialog({
                 className="mt-0.5 rounded border-amber-500"
               />
               <label htmlFor="confirm-first-check" className="cursor-pointer font-bold leading-5">
-                تأكيد وصول الطرد للعميل وقبض ثمنه أولاً (تأكيد تسليم + توريد فوري في خطوة واحدة)
+                {isGroupedShipment
+                  ? `تأكيد تسليم جميع فواتير الشحنة (${singleTargetRows.length}) للعميل وقبض ثمنها ثم توريدها فوراً`
+                  : "تأكيد وصول الطرد للعميل وقبض ثمنه أولاً (تأكيد تسليم + توريد فوري في خطوة واحدة)"}
               </label>
             </div>
           )}
-          {settleScope === "SINGLE" && isGroupedShipment && <p role="alert" className="text-sm font-bold text-destructive">هذه شحنة متعددة الفواتير. استخدم مسح الشحنة في شاشة التحصيل لتحديدها كاملة.</p>}
+
+          {settleScope === "SINGLE" && singleShipmentBlockReason && (
+            <p role="alert" className="text-sm font-bold text-destructive">
+              {singleShipmentBlockReason}
+            </p>
+          )}
 
           {/* تحديد الوردية والدرج */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -467,11 +642,12 @@ export function CollectConsignmentDialog({
               <AppSelect
                 value={shiftType}
                 disabled={intentLocked}
-                onValueChange={(val) => setShiftType(val as "RECEPTION" | "RETAIL")}
+                onValueChange={(val) => setShiftType(val as ShiftTypeOption)}
                 className="h-10 text-sm"
               >
                 <option value="RECEPTION">وردية الاستقبال (كاونتر المبيعات)</option>
                 <option value="RETAIL">وردية التجزئة</option>
+                <option value="PRINT_SERVICES">وردية خدمات الطباعة</option>
               </AppSelect>
             </div>
 
@@ -499,7 +675,7 @@ export function CollectConsignmentDialog({
                 المبلغ المقبوض وعده الكاشير (د.ع)
               </Label>
               <span className="text-xs text-muted-foreground">
-                المتوقع: <b className="text-foreground tabular-nums">{fmt(expectedTotal)}</b> د.ع
+                المتوقع: <b className="text-foreground tabular-nums">{fmt(expectedTotalStr)}</b> د.ع
               </span>
             </div>
 
@@ -517,7 +693,7 @@ export function CollectConsignmentDialog({
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 space-y-2 mt-2">
                 <div className="flex items-center gap-2 text-xs font-black text-destructive">
                   <AlertTriangle className="size-4 shrink-0" />
-                  يوجد عجز نقدي بمقدار {fmt(shortfallAmount)} د.ع سيقيد ذمة فورية على المندوب
+                  يوجد عجز نقدي بمقدار {fmt(cleanMoneyStr(shortfallDec))} د.ع سيقيد ذمة فورية على المندوب
                 </div>
 
                 <div className="space-y-1.5 pt-1">
@@ -550,7 +726,7 @@ export function CollectConsignmentDialog({
             {isExcess && !submittedRemittance && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs text-destructive font-bold flex items-center gap-1.5">
                 <AlertTriangle className="size-4 shrink-0" />
-                المبلغ المقبوض أكبر من الصافي المطلوب ({fmt(expectedTotal)} د.ع)؛ لا يقبل قبض زيادة عن الذمة.
+                المبلغ المقبوض أكبر من الصافي المطلوب ({fmt(expectedTotalStr)} د.ع)؛ لا يقبل قبض زيادة عن الذمة.
               </div>
             )}
           </div>
@@ -567,12 +743,12 @@ export function CollectConsignmentDialog({
               !canRemit ||
               submittedRemittance != null ||
               obligationsLoading ||
-              (settleScope === "SINGLE" && confirmDeliveryFirst && currentConsignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery) ||
+              (settleScope === "SINGLE" && singleNeedsConfirmFirst && (!confirmDeliveryFirst || !canConfirmDelivery)) ||
               isPending ||
-              countedNum <= 0 ||
+              countedDec.lte(0) ||
               isExcess ||
               isShortfall ||
-              (settleScope === "SINGLE" && isGroupedShipment) ||
+              (settleScope === "SINGLE" && singleShipmentBlockReason != null) ||
               (settleScope === "SINGLE" && !consignment)
             }
             onClick={() => void handleSettle()}
@@ -586,9 +762,11 @@ export function CollectConsignmentDialog({
               </>
             )}
           </Button>
-          {submittedRemittance && <Button disabled={!canRemit || isPending} onClick={() => void submitRemittance(submittedRemittance)}>
-            {isPending ? "جارٍ التحقق من نتيجة التوريد…" : "استعادة نتيجة التوريد"}
-          </Button>}
+          {submittedRemittance && (
+            <Button disabled={!canRemit || isPending} onClick={() => void submitRemittance(submittedRemittance)}>
+              {isPending ? "جارٍ التحقق من نتيجة التوريد…" : "استعادة نتيجة التوريد"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

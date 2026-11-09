@@ -98,7 +98,7 @@ async function loadSettlementLines(
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       // عجزُ التسليم المُقيَّد على الطرد — نقدٌ لم تقبضه الجهة (انظر `openParcelPredicates.ts`).
-      shortfallAssigned: consignmentShortfallAssignedSql,
+      shortfallAssigned: consignmentShortfallAssignedSql, cashInCourierCustody: sql<string>`GREATEST(COALESCE((SELECT SUM(CASE WHEN returned_cash.entryType='COD_COLLECTED' THEN returned_cash.amount WHEN returned_cash.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -returned_cash.amount ELSE 0 END) FROM deliveryLedgerEntries returned_cash WHERE returned_cash.consignmentId = ${deliveryConsignments.id} AND ${effectiveDeliveryLedgerEntrySql("returned_cash")}),0),0)`,
       parcelStatus: deliveryConsignments.parcelStatus,
       recipientName: deliveryConsignments.recipientName,
       invoiceNumber: invoices.invoiceNumber,
@@ -127,7 +127,7 @@ async function loadSettlementLines(
   const { quoteFee } = feePolicy;
   const lines: SettlementPreviewLine[] = [];
   for (const r of rows) {
-    const cod = round2(money(r.codAmount));
+    const cod = round2(money(r.codAmount)); if (round2(money(r.cashInCourierCustody ?? "0")).lte(0)) continue;
     const collected = round2(money(r.collectedAmount ?? "0"));
     const remaining = round2(
       cod
@@ -251,7 +251,7 @@ export interface SettleDailyInput extends DailySettlementScope {
   /** إلزاميٌّ حين يقلّ المعدود عن المتوقَّع — من القائمة المغلقة `shared/shortfallReason.ts`. */
   shortfallReason?: ShortfallReason | string | null;
   shortfallNotes?: string | null;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه

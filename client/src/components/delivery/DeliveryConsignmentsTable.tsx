@@ -1,7 +1,7 @@
 import { DeliverySourceLink } from "./DeliverySourceLink";
 import { Check, RotateCcw } from "lucide-react";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
 import {
@@ -33,11 +33,17 @@ export function DeliveryConsignmentsTable({
   onOpenTimeline: (consignmentId: number) => void;
 }) {
   const remainingOf = (c: OpenConsignment) => statementQueueRemaining(c).toNumber();
+  const remittableAmountOf = (c: OpenConsignment) =>
+    Boolean(c.physicalReturnReceived) && c.parcelStatus !== "DELIVERED"
+      ? D(c.cashInCourierCustody ?? 0).toNumber()
+      : remainingOf(c);
 
   const isRemittable = (c: OpenConsignment) =>
-    c.parcelStatus === "DELIVERED" &&
     (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
-    remainingOf(c) > 0;
+    ((c.parcelStatus === "DELIVERED" &&
+      (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0)) &&
+      remainingOf(c) > 0) ||
+      (Boolean(c.physicalReturnReceived) && D(c.cashInCourierCustody ?? 0).gt(0)));
 
   const isStatementConfirmable = (c: OpenConsignment) =>
     c.status === "DISPATCHED" &&
@@ -74,9 +80,15 @@ export function DeliveryConsignmentsTable({
         <tbody>
           {list.map((c) => {
             const st = get(c);
-            const remaining = remainingOf(c);
+            const remaining = statementMode ? remainingOf(c) : remittableAmountOf(c);
             const remittable = isSettleable(c);
             const returnable = isReturnable(c);
+            const deliveredUncollected =
+              !statementMode &&
+              c.parcelStatus === "DELIVERED" &&
+              c.cashInCourierCustody != null &&
+              D(c.cashInCourierCustody).lte(0) &&
+              remainingOf(c) > 0;
             const feeDue = Math.max(0, Number(c.feeDue ?? 0));
             const ageHours = c.dispatchedAt ? Math.max(0, Math.floor((Date.now() - new Date(c.dispatchedAt as unknown as string).getTime()) / 3600000)) : 0;
             const ageLevel = deliveryAgeLevel(ageHours);
@@ -123,7 +135,8 @@ export function DeliveryConsignmentsTable({
                         <RotateCcw aria-hidden className="inline size-3" /> مُرتجَع
                       </button>
                     )}
-                    {!remittable && !returnable && feeDue > 0 && <span className="text-xs font-bold text-[var(--sem-warn)]">أجرة مستحقة</span>}
+                    {deliveredUncollected && <span className="text-xs font-bold text-muted-foreground">مُسلَّم آجل</span>}
+                    {!remittable && !returnable && !deliveredUncollected && feeDue > 0 && <span className="text-xs font-bold text-[var(--sem-warn)]">أجرة مستحقة</span>}
                   </div>
                 </td>
                 <td className="p-3 text-left">

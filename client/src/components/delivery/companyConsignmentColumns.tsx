@@ -91,7 +91,8 @@ export function CompanyConsignmentActions({
   const canRemit =
     isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
-    c.moneyStatus !== "SETTLED" &&
+    (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
+    D(c.cashInCourierCustody ?? 0).gt(0) &&
     remaining.gt(0);
   const canCancel =
     isOpen && c.returnDeclaredAt == null &&

@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
 import { Label } from "@/components/ui/label";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -211,9 +212,10 @@ export function ReceptionInvoiceQueue({
           <span>بالبطاقة</span>
         </button>
         <UnifiedSearchInput
-          barcode={false}
+          barcode={true}
           debounceMs={0}
           value={search}
+          onScan={(code) => { setSearch(resolveOrderLookupBarcode(code)); resetPaging(); }}
           onChange={(val) => { setSearch(val); resetPaging(); }}
           placeholder="رقم الفاتورة أو اسم/هاتف الزبون"
           className="h-8 text-xs"
