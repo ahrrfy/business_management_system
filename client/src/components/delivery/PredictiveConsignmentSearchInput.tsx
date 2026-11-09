@@ -118,7 +118,8 @@ export function PredictiveConsignmentSearchInput({
         const normName = normalizeArabic(name);
         const inv = String(row.invoiceNumber ?? row.invoiceId ?? "");
         const cn = String(row.consignmentNumber ?? "");
-        const ext = String(row.externalTrackingRef ?? "");
+        const shipNum = String(row.shipmentNumber ?? "");
+        const ext = String(row.externalTrackingRef ?? row.shipmentTrackingRef ?? "");
         const ord = String(row.orderNumber ?? "");
         const addr = String(row.address ?? row.deliveryAddress ?? "");
         const normAddr = normalizeArabic(addr);
@@ -130,7 +131,11 @@ export function PredictiveConsignmentSearchInput({
           matchedOn.push("PHONE");
           matched = true;
         }
-        if (cn.toLowerCase().includes(normQ) || (digits.length >= 2 && cn.includes(digits))) {
+        if (
+          cn.toLowerCase().includes(normQ) ||
+          (digits.length >= 2 && cn.includes(digits)) ||
+          (shipNum && (shipNum.toLowerCase().includes(normQ) || (digits.length >= 2 && shipNum.includes(digits))))
+        ) {
           matchedOn.push("CONSIGNMENT_NUMBER");
           matched = true;
         }

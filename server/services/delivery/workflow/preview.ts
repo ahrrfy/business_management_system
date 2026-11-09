@@ -4,6 +4,7 @@ import {
   customers,
   deliveryConsignments,
   deliveryLedgerEntries,
+  deliveryShipmentMembers,
   invoices,
   onlineOrders,
   receipts,
@@ -665,13 +666,39 @@ export async function loadWorkflowPreviewTx(
     }
   }
   const members = cn ? await loadShipmentMembersTx(tx, cn.id) : [];
+  const [shipmentMembership] = cn
+    ? await tx
+        .select({
+          leaderConsignmentId: deliveryShipmentMembers.leaderConsignmentId,
+        })
+        .from(deliveryShipmentMembers)
+        .where(eq(deliveryShipmentMembers.consignmentId, cn.id))
+        .limit(1)
+    : [];
+  const resolvedLeaderConsignmentId = cn
+    ? Number(shipmentMembership?.leaderConsignmentId ?? members[0]?.id ?? cn.id)
+    : null;
+  const leaderMember =
+    (resolvedLeaderConsignmentId != null
+      ? members.find(
+          (member) => Number(member.id) === resolvedLeaderConsignmentId,
+        )
+      : undefined) ??
+    members[0] ??
+    cn ??
+    undefined;
   const operationalMembers = operationalShipmentMembers(members);
+  const operationalMemberIds = new Set(
+    operationalMembers.map((member) => Number(member.id)),
+  );
   const physicalHandoverIds = await physicalHandoverConsignmentIdsTx(
     tx,
     operationalMembers.map((member) => Number(member.id)),
   );
   const feeSource =
-    members.find((member) => money(member.deliveryFee).gt(0)) ?? members[0];
+    members.find((member) => money(member.deliveryFee).gt(0)) ??
+    leaderMember ??
+    members[0];
   if (members.some((member) => member.branchId !== branchId))
     throw fulfillmentError(
       "تضم الشحنة علاقة من فرع مختلف؛ راجع المسؤول",
@@ -754,18 +781,27 @@ export async function loadWorkflowPreviewTx(
       paid = money(0);
     }
     for (const member of members) {
+      const isOperationalCollectable =
+        operationalMemberIds.has(Number(member.id)) &&
+        member.returnDeclaredAt == null;
       const row =
         member.invoiceId == null
           ? undefined
           : await readInvoice(member.invoiceId);
-      cod = cod.plus(assignedGoodsCodDue(row, await creditCollectionChoiceTx(tx, member.id)));
+      if (isOperationalCollectable) {
+        cod = cod.plus(
+          assignedGoodsCodDue(row, await creditCollectionChoiceTx(tx, member.id)),
+        );
+      }
       if (row?.paymentMode === "CREDIT") creditRemaining = creditRemaining.plus(positive(money(row.total).minus(row.returnedTotal).minus(row.paidAmount)));
       if (row && !execution) {
         total = total.plus(positive(money(row.total).minus(row.returnedTotal)));
         paid = paid.plus(row.paidAmount);
       }
-      const claims = await loadAssignedChargeClaimsTx(tx, member.id);
-      serviceCharges = serviceCharges.plus(claims.remaining);
+      if (isOperationalCollectable) {
+        const claims = await loadAssignedChargeClaimsTx(tx, member.id);
+        serviceCharges = serviceCharges.plus(claims.remaining);
+      }
     }
   }
   if (request && !cn) {
@@ -1110,13 +1146,16 @@ export async function loadWorkflowPreviewTx(
       charge && !cn
         ? ["APPROVED", "COMPLETED"].includes(charge.status) &&
           money(charge.amount).gt(charge.paidAmount)
-        : !!activeCn && !execution && cn!.returnDeclaredAt == null,
+        : Boolean(cn) &&
+          !execution &&
+          operationalMembers.length > 0 &&
+          operationalMembers.every((member) => member.returnDeclaredAt == null),
       execution
         ? "دفعة المعالجة بلا تحصيل من العميل"
         : "لا توجد مطالبة توصيل قائمة قابلة للتحصيل",
     ],
     cancelAssignment: [
-      !!activeCn &&
+      Boolean(cn) &&
         operationalMembers.length > 0 &&
         operationalMembers.every(
           (member) =>
@@ -1136,15 +1175,21 @@ export async function loadWorkflowPreviewTx(
       !!cn &&
         !execution &&
         (allHeldReissuable ||
-          ((cn.status === "CANCELLED" || !!activeCn) &&
-            cn.returnDeclaredAt == null)),
+          ((cn.status === "CANCELLED" ||
+            !!activeCn ||
+            operationalMembers.length > 0) &&
+            operationalMembers.every(
+              (member) => member.returnDeclaredAt == null,
+            ) &&
+            (operationalMembers.length > 0 || cn.returnDeclaredAt == null))),
       pendingCommercial
         ? "الطرد مستلم، لكن تحصيل الناقل أو تاريخه المالي/أجرته يحتاج تسوية مستقلة قبل إعادة الإصدار؛ لا تعاد حركة المخزون"
         : "إعادة الإسناد تتطلب إلغاءً محكوماً أو شحنة مفتوحة أو عهدة عائدة مستلمة مثبتة",
     ],
     declareReturn: [
-      !!activeCn &&
-        cn!.returnDeclaredAt == null &&
+      Boolean(cn) &&
+        operationalMembers.length > 0 &&
+        operationalMembers.every((member) => member.returnDeclaredAt == null) &&
         !returnMembers.every((member) => member.received),
       "لا توجد شحنة بالطريق تقبل إعلان رجوع",
     ],
@@ -1187,15 +1232,20 @@ export async function loadWorkflowPreviewTx(
     cn || request
       ? {
           key: cn
-            ? `shipment:${members[0]?.id ?? cn.id}`
+            ? `shipment:${resolvedLeaderConsignmentId ?? cn.id}`
             : `fulfillmentRequest:${request!.id}`,
-          leaderConsignmentId: members[0]?.id ?? null,
+          leaderConsignmentId: resolvedLeaderConsignmentId,
           consignmentNumber:
-            members[0]?.consignmentNumber ?? cn?.consignmentNumber ?? null,
+            leaderMember?.consignmentNumber ?? cn?.consignmentNumber ?? null,
           consignmentIds: members.map((r) => r.id),
           invoiceIds,
           fulfillmentRequestId: request?.id ?? null,
-          partyId: cn?.partyId ?? request?.partyId ?? null,
+          partyId:
+            operationalMembers[0]?.partyId ??
+            leaderMember?.partyId ??
+            cn?.partyId ??
+            request?.partyId ??
+            null,
         }
       : undefined;
   const printSource: WorkflowScanPreview["printSource"] = execution
@@ -1325,7 +1375,11 @@ export async function loadWorkflowPreviewTx(
   const custodyStates = allCustodyStates.filter(
     ([, baseQuantity]) => baseQuantity > 0,
   );
-  const parcelStatuses = new Set(members.map((member) => member.parcelStatus));
+  const statusMembers =
+    operationalMembers.length > 0 ? operationalMembers : members;
+  const parcelStatuses = new Set(
+    statusMembers.map((member) => member.parcelStatus),
+  );
   const parcelStatus =
     parcelStatuses.size === 0
       ? null
@@ -1354,7 +1408,7 @@ export async function loadWorkflowPreviewTx(
       )!,
     );
   const shipmentSourceId =
-    group?.leaderConsignmentId ?? members[0]?.id ?? cn?.id;
+    group?.leaderConsignmentId ?? leaderMember?.id ?? cn?.id;
   if (shipmentSourceId != null)
     snapshotSources.push(
       and(
@@ -1715,11 +1769,11 @@ export async function loadWorkflowPreviewTx(
     },
     parcel: {
       shipmentNumber:
-        members[0]?.consignmentNumber ?? cn?.consignmentNumber ?? null,
+        leaderMember?.consignmentNumber ?? cn?.consignmentNumber ?? null,
       consignmentCount: members.length,
       parcelStatus,
       dispatchedAt:
-        members[0]?.dispatchedAt?.toISOString() ??
+        leaderMember?.dispatchedAt?.toISOString() ??
         cn?.dispatchedAt?.toISOString() ??
         null,
       physicallyReturned: physicallyReceived,

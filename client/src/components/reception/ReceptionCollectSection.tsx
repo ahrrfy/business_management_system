@@ -123,11 +123,20 @@ function BarcodeCustomerCollection({
   onCancel: () => void;
 }) {
   const due = D(preview.money.codAmount);
+  const shipmentInvoiceCount =
+    preview.group?.invoiceIds?.length ?? preview.group?.consignmentIds?.length ?? 0;
 
   return (
     <div className="space-y-3 rounded-md border bg-muted/20 p-3">
       <div>
-        <p className="text-sm font-bold">تحصيل العميل</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-bold">تحصيل العميل</p>
+          {shipmentInvoiceCount > 1 && (
+            <Badge variant="outline" className="text-[11px] font-bold">
+              شحنة مجمعة · {shipmentInvoiceCount} فواتير
+            </Badge>
+          )}
+        </div>
         <p className="text-xs leading-5 text-muted-foreground">
           المسح عرّف الشحنة فقط. عند التأكيد ينتقل المقبوض إلى عهدة{" "}
           {partyName ?? "جهة التوصيل"}؛ توريد الجهة للدرج إجراء مستقل لاحقاً.
@@ -990,7 +999,8 @@ export function ReceptionCollectSection({
           consignmentId: leaderId,
         });
         if (generation !== scanSequence.current || draftBusyRef.current) return;
-        const partyId = timeline.consignment.partyId;
+        const partyId =
+          preview.group?.partyId ?? timeline.consignment.partyId;
         const pInfo = (partiesQ.data ?? []).find((p) => p.id === partyId);
         const groupKey = preview.group?.key ?? `consignment:${leaderId}`;
         const heldIds = new Set(
@@ -1029,6 +1039,10 @@ export function ReceptionCollectSection({
           onBarcodeConsumed?.();
           return;
         }
+        const operationalMembers = timeline.shipment.members.filter(
+          (row) => row.operational,
+        );
+        const hasOperationalMembers = operationalMembers.length > 0;
         const groupMembers = timeline.shipment.members.filter(
           (row) => row.operational || heldIds.has(row.id),
         );
@@ -1036,17 +1050,18 @@ export function ReceptionCollectSection({
           .filter((row) => row.received)
           .reduce((sum, row) => sum.plus(row.cashInCourierCustody), D(0));
         const returnedCash = heldIds.size > 0 && returnedAmount.gt(0);
+        const pureReturnedCash = !hasOperationalMembers && returnedCash;
         if (
           pInfo?.partyType !== "COMPANY" &&
           selectedPartyId === partyId &&
           selectedCourierShipments.length > 0
         ) {
-          if (returnedCash && !returnedCustodyOnly) {
+          if (pureReturnedCash && !returnedCustodyOnly) {
             notify.warn("أكمل توريد الشحنات المسلّمة المحددة أولاً قبل مسح عهدة طرد عائد");
             onBarcodeConsumed?.();
             return;
           }
-          if (!returnedCash && heldIds.size === 0 && returnedCustodyOnly) {
+          if (!pureReturnedCash && (hasOperationalMembers || heldIds.size === 0) && returnedCustodyOnly) {
             notify.warn("أكمل توريد عهدة الطرود العائدة المحددة أولاً قبل مسح شحنة عادية");
             onBarcodeConsumed?.();
             return;
@@ -1054,7 +1069,10 @@ export function ReceptionCollectSection({
         }
         switchCollectParty(partyId, pInfo?.partyType);
         acceptedGroups.current.add(groupKey);
-        if (returnedCash) {
+        if (
+          pureReturnedCash ||
+          (pInfo?.partyType === "COMPANY" && returnedCustodyOnly && returnedCash)
+        ) {
           setSettleMode("courier");
           setReturnedCustodyOnly(true);
           setSelectedCourierShipments((current) => [...current, {
@@ -1063,15 +1081,19 @@ export function ReceptionCollectSection({
           notify.ok(
             `الطرود مستلمة فعلياً — النقد المثبت بعهدة الناقل ${fmt(returnedAmount.toFixed(2))} د.ع؛ توريده لا يعيد قبض العميل`,
           );
-        } else if (heldIds.size > 0) {
+        } else if (!hasOperationalMembers && heldIds.size > 0) {
           acceptedGroups.current.delete(groupKey);
           notify.info(
             "الطرود مستلمة ولا تحمل نقداً مثبتاً بعهدة الناقل؛ راجع الأجرة أو المرتجع التجاري من المصدر دون قبض عميل جديد",
           );
         } else if (pInfo?.partyType === "COMPANY") {
-          setPendingCompanySelection({ partyId, ids: groupMembers.map((row) => row.id), groupKey });
+          setPendingCompanySelection({
+            partyId,
+            ids: operationalMembers.map((row) => row.id),
+            groupKey,
+          });
         } else if (
-          groupMembers.some((row) => row.parcelStatus !== "DELIVERED")
+          operationalMembers.some((row) => row.parcelStatus !== "DELIVERED")
         ) {
           setPendingCustomerCollection({
             preview,
@@ -1268,7 +1290,22 @@ export function ReceptionCollectSection({
 
       {scanContext && (
         <Card className="p-3 space-y-2">
-          <strong dir="ltr">{scanContext.preview.printSource.number}</strong>
+          <div className="flex flex-wrap items-center gap-2">
+            <strong dir="ltr">{scanContext.preview.printSource.number}</strong>
+            {(scanContext.preview.group?.invoiceIds?.length ??
+              scanContext.preview.group?.consignmentIds?.length ??
+              0) > 1 && (
+              <Badge variant="outline" className="text-[11px] font-bold">
+                شحنة مجمعة ·{" "}
+                {scanContext.preview.group?.invoiceIds?.length ??
+                  scanContext.preview.group?.consignmentIds?.length}{" "}
+                فواتير
+                {scanContext.preview.summaries.parcel.shipmentNumber
+                  ? ` (${scanContext.preview.summaries.parcel.shipmentNumber})`
+                  : ""}
+              </Badge>
+            )}
+          </div>
           <p className="text-sm">
             مطالبة العميل الحالية {fmt(scanContext.preview.money.codAmount)} د.ع
             · أمانة الأجرة {fmt(scanContext.preview.money.heldDeliveryFee)} د.ع
@@ -1334,18 +1371,29 @@ export function ReceptionCollectSection({
                       key: crypto.randomUUID(),
                     };
                   const pvw = pendingCustomerCollection.preview;
+                  const shipmentCount =
+                    pvw.group?.invoiceIds?.length ??
+                    pvw.group?.consignmentIds?.length ??
+                    1;
+                  const shipmentDocNumber =
+                    pvw.group?.consignmentNumber ??
+                    pvw.summaries.parcel.shipmentNumber ??
+                    pvw.printSource.number;
                   const remAfter = round2(D(pvw.money.codAmount).minus(D(collectedAmount)));
                   workflowConfirmPrintContext.current = {
                     data: {
                       receiptNumber: pvw.summaries.parcel.shipmentNumber ?? pvw.printSource.number,
-                      invoiceNumber: pvw.printSource.number,
+                      invoiceNumber:
+                        shipmentCount > 1
+                          ? `${shipmentDocNumber} (${shipmentCount} فواتير)`
+                          : pvw.printSource.number,
                       customerName: pvw.recipient.name,
                       customerPhone: pvw.recipient.phone,
                       invoiceTotal: pvw.money.codAmount,
                       amountPaid: collectedAmount,
                       remainingAfter: remAfter.gt(0) ? remAfter.toFixed(2) : "0.00",
                       paymentMethod: "CASH",
-                      reference: `إثبات تسليم وتحصيل COD${pendingCustomerCollection.partyName ? ` — ${pendingCustomerCollection.partyName}` : ""}${shortfallReason ? ` (${SHORTFALL_REASON_LABEL_AR[shortfallReason]})` : ""}`,
+                      reference: `إثبات تسليم وتحصيل COD${shipmentCount > 1 ? ` — شحنة مجمعة (${shipmentCount} فواتير)` : ""}${pendingCustomerCollection.partyName ? ` — ${pendingCustomerCollection.partyName}` : ""}${shortfallReason ? ` (${SHORTFALL_REASON_LABEL_AR[shortfallReason]})` : ""}`,
                       cashierName: me.data?.name ?? null,
                     },
                     window: preopenDocumentWindow("width=380,height=700"),
@@ -1370,11 +1418,14 @@ export function ReceptionCollectSection({
                       onSuccess: () => {
                         const ids = pvw.group?.consignmentIds ??
                           (pvw.relations.consignmentId == null ? [] : [pvw.relations.consignmentId]);
-                        if (D(collectedAmount).gt(0) && ids.length) {
+                        const totalExpectedCash = round2(
+                          D(pvw.money.cashInCourierCustody).plus(D(collectedAmount)),
+                        );
+                        if (totalExpectedCash.gt(0) && ids.length) {
                           setSelectedCourierShipments((current) => [...current, {
                             key: pendingCustomerCollection.groupKey,
                             memberIds: ids,
-                            expectedCash: collectedAmount,
+                            expectedCash: totalExpectedCash.toFixed(2),
                           }]);
                         } else {
                           acceptedGroups.current.delete(pendingCustomerCollection.groupKey);
@@ -1927,19 +1978,24 @@ export function ReceptionCollectSection({
                                   )}
                                 </div>
                                 <div className="space-y-0.5">
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex items-center gap-2 flex-wrap">
                                     <span className="font-extrabold text-sm">
                                       {deliverySourceView(row).reference}
                                     </span>
                                     <span className="text-xs text-muted-foreground font-mono">
                                       {row.consignmentNumber}
                                     </span>
-                                    {row.externalTrackingRef && (
+                                    {(row.shipmentInvoiceCount ?? 0) > 1 && (
+                                      <Badge variant="outline" className="text-[11px] font-bold">
+                                        شحنة · {row.shipmentInvoiceCount} فواتير
+                                      </Badge>
+                                    )}
+                                    {(row.externalTrackingRef ?? row.shipmentTrackingRef) && (
                                       <span
                                         className="text-xs font-bold text-primary font-mono"
                                         dir="ltr"
                                       >
-                                        {row.externalTrackingRef}
+                                        {row.externalTrackingRef ?? row.shipmentTrackingRef}
                                       </span>
                                     )}
                                   </div>
@@ -2133,6 +2189,19 @@ export function ReceptionCollectSection({
                                   <span className="text-xs text-muted-foreground font-mono">
                                     {row.consignmentNumber}
                                   </span>
+                                  {(row.shipmentInvoiceCount ?? 0) > 1 && (
+                                    <Badge variant="outline" className="text-[11px] font-bold">
+                                      شحنة · {row.shipmentInvoiceCount} فواتير
+                                    </Badge>
+                                  )}
+                                  {(row.externalTrackingRef ?? row.shipmentTrackingRef) && (
+                                    <span
+                                      className="text-xs font-bold text-primary font-mono"
+                                      dir="ltr"
+                                    >
+                                      {row.externalTrackingRef ?? row.shipmentTrackingRef}
+                                    </span>
+                                  )}
                                   {isInTransit && (
                                     <Badge
                                       variant="secondary"

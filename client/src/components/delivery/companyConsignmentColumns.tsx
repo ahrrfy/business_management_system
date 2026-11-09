@@ -92,7 +92,7 @@ export function CompanyConsignmentActions({
     isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
     (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
-    D(c.cashInCourierCustody ?? 0).gt(0) &&
+    (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0)) &&
     remaining.gt(0);
   const canCancel =
     isOpen && c.returnDeclaredAt == null &&
@@ -102,7 +102,32 @@ export function CompanyConsignmentActions({
     D(c.collectedAmount).isZero() &&
     D(c.counterSettledAmount).isZero() &&
     D(c.shortfallAssigned).isZero();
-  if (c.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}>الشحنة · {c.shipmentInvoiceCount} فواتير</Button>;
+  if (c.shipmentLeaderConsignmentId != null) {
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}
+        >
+          الشحنة · {c.shipmentInvoiceCount} فواتير
+        </Button>
+        {lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) &&
+          canRemit && (
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7 px-2 text-xs font-bold gap-1"
+              onClick={() => setCollectConsignmentTarget(c)}
+              title="قبض وتحصيل هذه الشحنة المجمعة"
+            >
+              <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+            </Button>
+          )}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-1">
       {partialLabel && c.returnDeclaredAt == null && c.parcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={c.id} />}

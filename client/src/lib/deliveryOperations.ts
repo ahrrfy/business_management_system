@@ -29,6 +29,8 @@ export interface OperationalSearchRow {
   invoiceNumber?: string | null;
   consignmentNumber?: string | null;
   externalTrackingRef?: string | null;
+  shipmentNumber?: string | null;
+  shipmentTrackingRef?: string | null;
 }
 
 export type SelectedCourierShipment = {
@@ -87,6 +89,8 @@ export function operationalSearchTarget(
       row.invoiceNumber,
       row.consignmentNumber,
       row.externalTrackingRef,
+      row.shipmentNumber,
+      row.shipmentTrackingRef,
       row.id,
       row.invoiceId,
     ],

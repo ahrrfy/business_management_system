@@ -166,4 +166,36 @@ describe("current collection obligation", () => {
       countedCash: "13000",
     }));
   });
+
+  it("settles a grouped shipment even when opened from its zero-COD leader row", async () => {
+    state.rows = [
+      { id: 10, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "0.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "OUT_FOR_DELIVERY" },
+      { id: 11, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "25000.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "OUT_FOR_DELIVERY" },
+    ];
+    state.remit.mockResolvedValueOnce({ remittanceId: 103, remittanceNumber: "REM-103", netRemitted: "25000.00", shortfallTotal: "0.00" });
+    await render({ id: 10, partyId: 2, codDue: "0.00", codAmount: "0.00", parcelStatus: "OUT_FOR_DELIVERY" } as any);
+    expect(host.textContent).toContain("شحنة 2 فواتير");
+    expect(confirm().disabled).toBe(false);
+    await act(async () => confirm().click());
+    expect(state.staff).toHaveBeenCalledWith(expect.objectContaining({
+      wholeShipment: true,
+      consignmentId: 10,
+      collectedAmount: "25000",
+    }));
+    expect(state.remit).toHaveBeenCalledWith(expect.objectContaining({
+      partyId: 2,
+      countedCash: "25000",
+      lines: [{ consignmentId: 11, collectedAmount: "25000" }],
+    }));
+  });
+
+  it("blocks grouped shipment settlement when a zero-COD leader has feeWithholdingBlocked", async () => {
+    state.rows = [
+      { id: 10, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "0.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "DELIVERED", cashInCourierCustody: "0.00", feeWithholdingBlocked: true },
+      { id: 11, shipmentLeaderConsignmentId: 10, shipmentInvoiceCount: 2, codAmount: "25000.00", collectedAmount: "0", counterSettledAmount: "0", shortfallAssigned: "0", parcelStatus: "DELIVERED", cashInCourierCustody: "25000.00", feeWithholdingBlocked: false },
+    ];
+    await render({ id: 11, partyId: 2, codDue: "25000.00", codAmount: "25000.00", parcelStatus: "DELIVERED" } as any);
+    expect(confirm().disabled).toBe(true);
+    expect(host.textContent).toContain("قيود على أجرة هذه الشحنة");
+  });
 });

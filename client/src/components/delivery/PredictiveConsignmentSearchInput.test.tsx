@@ -214,4 +214,28 @@ describe("current invoice and carrier obligations", () => {
     expect(state.value).toBe("");
     expect(host.querySelector('[role="listbox"]')).toBeNull();
   });
+
+  it("matches non-leader multi-invoice siblings locally by shipmentTrackingRef and shipmentNumber", () => {
+    const sibling = {
+      ...candidate,
+      id: 1462,
+      consignmentNumber: "CN-2002",
+      externalTrackingRef: null,
+      shipmentNumber: "CN-2001",
+      shipmentTrackingRef: "TRK-998877",
+    };
+    act(() =>
+      root.render(
+        <PredictiveConsignmentSearchInput
+          localCandidates={[sibling]}
+          onSelect={vi.fn()}
+        />,
+      ),
+    );
+    act(() => state.change!("TRK-998877"));
+    expect(host.textContent).toContain("CN-2002");
+
+    act(() => state.change!("CN-2001"));
+    expect(host.textContent).toContain("CN-2002");
+  });
 });

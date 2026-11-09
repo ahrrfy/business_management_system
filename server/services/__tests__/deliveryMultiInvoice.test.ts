@@ -18,6 +18,8 @@ import {
   listShipmentInvoiceCandidates,
   loadShipmentMembersTx,
 } from "../delivery/shipments";
+import { previewWorkflowScan } from "../delivery/workflow/preview";
+import { confirmWorkflowDelivery } from "../delivery/workflow/collection";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const cashier = { userId: 1, branchId: 1, role: "cashier" };
@@ -737,5 +739,105 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
       withTx((tx) => assertStandaloneConsignmentTx(tx, single.consignmentId)),
     ).resolves.toBeUndefined();
     expect(await db().select().from(s.deliveryShipmentMembers)).toHaveLength(0);
+  });
+
+  it("يوحّد leaderConsignmentId ومفتاح المجموعة عند كون القائد ليس أول عضو رقمياً", async () => {
+    const dispatched = await dispatchInvoiceShipment(
+      {
+        ...input,
+        invoiceId: 1,
+        invoiceIds: [1, 2],
+        clientRequestId: "non-first-leader-shipment",
+      },
+      cashier,
+    );
+    const orderedIds = dispatched.members.map((m) => Number(m.id)).sort((a, b) => a - b);
+    const firstId = orderedIds[0]!;
+    const secondId = orderedIds[1]!;
+    const firstMember = dispatched.members.find((m) => Number(m.id) === firstId)!;
+    const secondMember = dispatched.members.find((m) => Number(m.id) === secondId)!;
+
+    await db()
+      .update(s.deliveryShipmentMembers)
+      .set({ leaderConsignmentId: secondId })
+      .where(eq(s.deliveryShipmentMembers.leaderConsignmentId, dispatched.leaderConsignmentId));
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ deliveryFee: "0.00", externalTrackingRef: null })
+      .where(eq(s.deliveryConsignments.id, firstId));
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ deliveryFee: "1500.00", externalTrackingRef: "00441446" })
+      .where(eq(s.deliveryConsignments.id, secondId));
+
+    for (const raw of ["SHIP-INV-1", "SHIP-INV-2", firstMember.consignmentNumber, secondMember.consignmentNumber]) {
+      const pvw = await previewWorkflowScan(
+        { raw, station: "collect", branchId: 1 },
+        actor,
+      );
+      expect(pvw.group?.leaderConsignmentId).toBe(secondId);
+      expect(pvw.group?.key).toBe(`shipment:${secondId}`);
+      expect(pvw.group?.consignmentNumber).toBe(secondMember.consignmentNumber);
+      expect(pvw.summaries.parcel.shipmentNumber).toBe(secondMember.consignmentNumber);
+    }
+  });
+
+  it("يحسب مطالبة العميل بالباركود من الأعضاء التشغيلية فقط عند إرجاع إحدى فواتير الشحنة المجمعة", async () => {
+    const dispatched = await dispatchInvoiceShipment(input, cashier);
+    const [firstMember, secondMember] = dispatched.members;
+    await db()
+      .update(s.deliveryConsignments)
+      .set({
+        status: "RETURNED",
+        parcelStatus: "RETURNED",
+        returnedAt: new Date(),
+      })
+      .where(eq(s.deliveryConsignments.id, Number(firstMember.id)));
+
+    const expectedSurvivingCod =
+      Number(secondMember.invoiceId) === 1 ? "1000.00" : "2000.00";
+
+    const pvwFromClosedLeader = await previewWorkflowScan(
+      { raw: firstMember.consignmentNumber, station: "collect", branchId: 1 },
+      actor,
+    );
+    expect(pvwFromClosedLeader.money.codAmount).toBe(expectedSurvivingCod);
+    expect(
+      pvwFromClosedLeader.allowedActions.find((a) => a.action === "collect")?.allowed,
+    ).toBe(true);
+
+    await confirmWorkflowDelivery(
+      {
+        source: {
+          kind: pvwFromClosedLeader.source.kind,
+          id: pvwFromClosedLeader.source.id,
+          expectedVersion: pvwFromClosedLeader.source.version,
+        },
+        branchId: 1,
+        evidence: "إثبات تسليم الفاتورة المتبقية من الشحنة المجمعة",
+        collectedAmount: pvwFromClosedLeader.money.codAmount,
+        clientRequestId: "confirm-surviving-shipment-member",
+      },
+      actor,
+    );
+
+    const ledgerRows = await db()
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.entryType, "COD_COLLECTED"));
+    expect(ledgerRows.map((r) => ({ consignmentId: Number(r.consignmentId), amount: r.amount }))).toEqual([
+      { consignmentId: Number(secondMember.id), amount: expectedSurvivingCod },
+    ]);
+
+    const afterConfirm = await previewWorkflowScan(
+      { raw: secondMember.consignmentNumber, station: "collect", branchId: 1 },
+      actor,
+    );
+    expect(afterConfirm.money.cashInCourierCustody).toBe(expectedSurvivingCod);
+    expect(afterConfirm.summaries.parcel.parcelStatus).toBe("DELIVERED");
+    // يبقى إجراء محطة التحصيل متاحاً لتوريد عهدة المندوب إلى الدرج حتى تسوية الذمة
+    expect(
+      afterConfirm.allowedActions.find((a) => a.action === "collect")?.allowed,
+    ).toBe(true);
   });
 });

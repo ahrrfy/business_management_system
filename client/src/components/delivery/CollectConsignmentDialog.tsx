@@ -172,64 +172,102 @@ export function CollectConsignmentDialog({
     },
   );
 
-  // الطرود القابلة للتوريد بحساب Decimal الدقيق (مع دعم عهدة المرتجع واستبعاد المسلم الآجل بلا نقد بيد المندوب)
-  const remittableRows = useMemo(() => {
+  // كافة الطرود المفتوحة بحساب Decimal الدقيق (قبل استبعاد الصفرية حتى لا تضيع قيادة الشحنة المجمعة)
+  const allOpenRows = useMemo(() => {
     const rows = (openCn.data?.pages ?? []).flatMap((page) => page.rows);
-    return rows
-      .map((r) => {
-        const cod = D(r.codAmount ?? 0);
-        const collected = D(r.collectedAmount ?? 0);
-        const counter = D(r.counterSettledAmount ?? 0);
-        const shortfall = D(r.shortfallAssigned ?? 0);
-        const invoiceRemainingDec = Decimal.max(0, round2(cod.minus(collected).minus(counter).minus(shortfall)));
-        const isReturnedWithCustody =
-          Boolean(r.physicalReturnReceived) &&
-          r.parcelStatus !== "DELIVERED" &&
-          D(r.cashInCourierCustody ?? 0).gt(0);
-        const remainingDec = isReturnedWithCustody ? round2(D(r.cashInCourierCustody ?? 0)) : invoiceRemainingDec;
-        const hasProvenCustody =
-          isReturnedWithCustody ||
-          (r.parcelStatus === "DELIVERED" &&
-            !Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt) &&
-            (r.cashInCourierCustody == null || D(r.cashInCourierCustody).gt(0)));
-        return {
-          ...r,
-          remainingDec,
-          remainingDue: remainingDec.toNumber(),
-          isReturnedWithCustody,
-          hasProvenCustody,
-        };
-      })
-      .filter((r) => r.remainingDec.gt(0));
+    return rows.map((r) => {
+      const cod = D(r.codAmount ?? 0);
+      const collected = D(r.collectedAmount ?? 0);
+      const counter = D(r.counterSettledAmount ?? 0);
+      const shortfall = D(r.shortfallAssigned ?? 0);
+      const invoiceRemainingDec = Decimal.max(0, round2(cod.minus(collected).minus(counter).minus(shortfall)));
+      const isReturnedWithCustody =
+        Boolean(r.physicalReturnReceived) &&
+        r.parcelStatus !== "DELIVERED" &&
+        D(r.cashInCourierCustody ?? 0).gt(0);
+      const remainingDec = isReturnedWithCustody ? round2(D(r.cashInCourierCustody ?? 0)) : invoiceRemainingDec;
+      const hasProvenCustody =
+        isReturnedWithCustody ||
+        (r.parcelStatus === "DELIVERED" &&
+          !Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt) &&
+          (r.cashInCourierCustody == null || D(r.cashInCourierCustody).gt(0)));
+      return {
+        ...r,
+        remainingDec,
+        remainingDue: remainingDec.toNumber(),
+        isReturnedWithCustody,
+        hasProvenCustody,
+      };
+    });
   }, [openCn.data]);
 
-  const currentConsignment = consignment ? remittableRows.find((row) => row.id === consignment.id) : null;
+  // الطرود ذات المتبقي النقدي الموجب القابل للتوريد
+  const remittableRows = useMemo(
+    () => allOpenRows.filter((r) => r.remainingDec.gt(0)),
+    [allOpenRows],
+  );
 
-  // أعضاء الشحنة الكاملة عند فتح طرد فردي أو شحنة متعددة الفواتير
-  const singleTargetRows = useMemo(() => {
+  const targetShipmentLeaderId =
+    (consignment as { shipmentLeaderConsignmentId?: number | null } | null)?.shipmentLeaderConsignmentId ?? null;
+
+  const currentConsignment = useMemo(() => {
+    if (!consignment) return null;
+    return (
+      allOpenRows.find((row) => row.id === consignment.id) ??
+      (targetShipmentLeaderId != null
+        ? allOpenRows.find((row) => row.shipmentLeaderConsignmentId === targetShipmentLeaderId)
+        : null) ??
+      null
+    );
+  }, [allOpenRows, consignment, targetShipmentLeaderId]);
+
+  // كافة أعضاء الشحنة المفتوحة (بما فيها الفواتير الآجلة/المدفوعة الصفرية للتحقق من الحالة والأجور)
+  const shipmentOpenRows = useMemo(() => {
     if (!currentConsignment) return [];
     if (currentConsignment.shipmentLeaderConsignmentId != null) {
-      return remittableRows.filter(
+      return allOpenRows.filter(
         (row) => row.shipmentLeaderConsignmentId === currentConsignment.shipmentLeaderConsignmentId,
       );
     }
     return [currentConsignment];
-  }, [currentConsignment, remittableRows]);
+  }, [allOpenRows, currentConsignment]);
 
-  const isGroupedShipment = (currentConsignment?.shipmentInvoiceCount ?? 0) > 1;
+  // أعضاء الشحنة ذوو المطالبة النقدية الموجبة للتوريد الفعلي
+  const singleTargetRows = useMemo(
+    () => shipmentOpenRows.filter((row) => row.remainingDec.gt(0)),
+    [shipmentOpenRows],
+  );
+
+  const shipmentInvoiceCount = currentConsignment?.shipmentInvoiceCount ?? shipmentOpenRows.length;
+  const isGroupedShipment = shipmentInvoiceCount > 1;
 
   // التحقق من جاهزية الشحنة متعددة الفواتير للتوريد الكامل أو التأكيد الجماعي + التوريد
   const singleShipmentBlockReason = useMemo(() => {
     if (!currentConsignment) return null;
-    if (singleTargetRows.some((r) => r.feeWithholdingBlocked)) {
+    if (shipmentOpenRows.some((r) => r.feeWithholdingBlocked)) {
       return "توجد قيود على أجرة هذه الشحنة أو قاعدة عمولتها؛ عالجها من شاشة تسوية المناديب.";
     }
-    if (singleTargetRows.some((r) => Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt))) {
+    if (shipmentOpenRows.some((r) => Boolean((r as { returnDeclaredAt?: unknown }).returnDeclaredAt))) {
       return "تم إعلان رجوع على هذه الشحنة؛ عالج المرتجع من شاشة تسوية المناديب.";
     }
-    const allReadyWithCustody = singleTargetRows.every((r) => r.hasProvenCustody);
-    const allUnconfirmedInTransit = singleTargetRows.every(
-      (r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody,
+    if (singleTargetRows.length === 0) {
+      if (
+        !isGroupedShipment &&
+        currentConsignment.parcelStatus === "DELIVERED" &&
+        !currentConsignment.hasProvenCustody
+      ) {
+        return "هذا الطرد مسلّم بالآجل دون نقد مقبوض بيد المندوب؛ يُحصّل من ذمة العميل لا من توريد المندوب.";
+      }
+      if (isGroupedShipment && shipmentOpenRows.every((r) => r.parcelStatus === "DELIVERED")) {
+        return "هذه الشحنة مسلّمة دون نقد مقبوض بيد المندوب؛ تُحصّل الذمم الآجلة من حساب العميل.";
+      }
+      return null;
+    }
+    const allReadyWithCustody =
+      singleTargetRows.every((r) => r.hasProvenCustody) &&
+      shipmentOpenRows.every((r) => r.parcelStatus === "DELIVERED" || Boolean(r.physicalReturnReceived));
+    const allUnconfirmedInTransit = shipmentOpenRows.every(
+      (r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody && !Boolean(r.physicalReturnReceived),
     );
     if (!allReadyWithCustody && !allUnconfirmedInTransit) {
       if (
@@ -242,14 +280,16 @@ export function CollectConsignmentDialog({
       return "بعض فواتير هذه الشحنة بحالات تسليم مختلفة أو مسلّمة بالآجل؛ استخدم شاشة تسوية المناديب لمعالجتها.";
     }
     return null;
-  }, [currentConsignment, isGroupedShipment, singleTargetRows]);
+  }, [currentConsignment, isGroupedShipment, shipmentOpenRows, singleTargetRows]);
 
   const singleNeedsConfirmFirst = useMemo(
     () =>
       singleTargetRows.length > 0 &&
       singleShipmentBlockReason == null &&
-      singleTargetRows.every((r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody),
-    [singleTargetRows, singleShipmentBlockReason],
+      shipmentOpenRows.every(
+        (r) => r.parcelStatus !== "DELIVERED" && !r.isReturnedWithCustody && !Boolean(r.physicalReturnReceived),
+      ),
+    [shipmentOpenRows, singleTargetRows, singleShipmentBlockReason],
   );
 
   // الطرود المسلمة الجاهزة للتوريد الشامل (مع استبعاد المسلم الآجل والشحنات المجمعة غير المكتملة)
@@ -258,12 +298,25 @@ export function CollectConsignmentDialog({
     const candidateIds = new Set(candidates.map((row) => row.id));
     return candidates.filter((row) => {
       if (row.shipmentLeaderConsignmentId == null) return true;
+      const allShipmentOpen = allOpenRows.filter(
+        (sibling) => sibling.shipmentLeaderConsignmentId === row.shipmentLeaderConsignmentId,
+      );
+      if (
+        allShipmentOpen.some(
+          (s) =>
+            s.feeWithholdingBlocked ||
+            Boolean((s as { returnDeclaredAt?: unknown }).returnDeclaredAt) ||
+            (s.parcelStatus !== "DELIVERED" && !Boolean(s.physicalReturnReceived)),
+        )
+      ) {
+        return false;
+      }
       const allShipmentOwing = remittableRows.filter(
         (sibling) => sibling.shipmentLeaderConsignmentId === row.shipmentLeaderConsignmentId,
       );
       return allShipmentOwing.every((sibling) => candidateIds.has(sibling.id));
     });
-  }, [remittableRows]);
+  }, [allOpenRows, remittableRows]);
 
   const rowNetExpectedDec = (row: (typeof remittableRows)[number]) => {
     const fee = Decimal.min(row.remainingDec, Decimal.max(0, D(row.feeWithholdingCash ?? 0)));
@@ -542,7 +595,7 @@ export function CollectConsignmentDialog({
                   </span>
                   {isGroupedShipment && (
                     <span className="ms-1 text-[11px] font-bold text-primary">
-                      (شحنة {singleTargetRows.length} فواتير)
+                      (شحنة {shipmentInvoiceCount} فواتير)
                     </span>
                   )}
                 </div>
@@ -577,7 +630,7 @@ export function CollectConsignmentDialog({
                 onClick={() => setSettleScope("SINGLE")}
               >
                 <span className="text-xs font-bold text-muted-foreground">
-                  {isGroupedShipment ? `تحصيل هذه الشحنة كاملة (${singleTargetRows.length} فواتير)` : "تحصيل هذا الطرد فقط"}
+                  {isGroupedShipment ? `تحصيل هذه الشحنة كاملة (${shipmentInvoiceCount} فواتير)` : "تحصيل هذا الطرد فقط"}
                 </span>
                 <span className="text-lg font-black text-emerald-600 mt-1 tabular-nums" dir="ltr">
                   {fmt(cleanMoneyStr(singleNetExpectedDec))} د.ع

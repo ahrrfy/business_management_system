@@ -58,6 +58,12 @@ describe("delivery operational scope", () => {
     expect(filterOperationalRows(candidates, "CN-2").map((r) => r.id)).toEqual([
       2,
     ]);
+    const groupedRows = [
+      { ...candidates[0], shipmentNumber: "CN-1", shipmentTrackingRef: "SHIP-TRK-77" },
+      { ...candidates[1], externalTrackingRef: null, shipmentNumber: "CN-1", shipmentTrackingRef: "SHIP-TRK-77" },
+    ];
+    expect(filterOperationalRows(groupedRows, "SHIP-TRK-77").map((r) => r.id)).toEqual([1, 2]);
+    expect(filterOperationalRows(groupedRows, "CN-1").map((r) => r.id)).toEqual([1, 2]);
   });
   it("selects only displayed rows and preserves hidden selections and manual amounts", () => {
     const current = {

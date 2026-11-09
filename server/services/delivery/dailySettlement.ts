@@ -14,7 +14,7 @@ import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
  */
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import type {
   SettlementPreview,
@@ -32,6 +32,7 @@ import {
   deliveryLedgerEntries,
   deliveryParties,
   deliveryRemittances,
+  deliveryShipmentMembers,
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -126,8 +127,9 @@ async function loadSettlementLines(
   );
   const { quoteFee } = feePolicy;
   const lines: SettlementPreviewLine[] = [];
+  const unremittableDeliveredIds: number[] = [];
   for (const r of rows) {
-    const cod = round2(money(r.codAmount)); if (round2(money(r.cashInCourierCustody ?? "0")).lte(0)) continue;
+    const cod = round2(money(r.codAmount));
     const collected = round2(money(r.collectedAmount ?? "0"));
     const remaining = round2(
       cod
@@ -136,6 +138,10 @@ async function loadSettlementLines(
         .minus(money(r.shortfallAssigned ?? "0")),
     );
     if (remaining.lte(0)) continue;
+    if (round2(money(r.cashInCourierCustody ?? "0")).lte(0)) {
+      unremittableDeliveredIds.push(Number(r.id));
+      continue;
+    }
     let feeWithholding = money(0);
     if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
       const due = money(r.feeDue);
@@ -158,6 +164,66 @@ async function loadSettlementLines(
       parcelStatus: r.parcelStatus,
       feeWithholding: feeWithholding.toFixed(2),
     });
+  }
+  if (unremittableDeliveredIds.length > 0) {
+    const unremittableMemberships = await tx
+      .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+      .from(deliveryShipmentMembers)
+      .where(inArray(deliveryShipmentMembers.consignmentId, unremittableDeliveredIds));
+    const unremittableLeaders = Array.from(
+      new Set(unremittableMemberships.map((m) => Number(m.leaderId))),
+    );
+    if (unremittableLeaders.length > 0) {
+      const lineIdSet = new Set(lines.map((line) => line.consignmentId));
+      const shipmentRows = await tx
+        .select({
+          leaderId: deliveryShipmentMembers.leaderConsignmentId,
+          cn: deliveryConsignments,
+          shortfall: consignmentShortfallAssignedSql,
+        })
+        .from(deliveryShipmentMembers)
+        .innerJoin(
+          deliveryConsignments,
+          eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+        )
+        .where(inArray(deliveryShipmentMembers.leaderConsignmentId, unremittableLeaders));
+      for (const leaderId of unremittableLeaders) {
+        const owing = shipmentRows
+          .filter(
+            (row) =>
+              Number(row.leaderId) === leaderId &&
+              !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.cn.status) &&
+              !["CANCELLED", "RETURNED"].includes(row.cn.parcelStatus),
+          )
+          .filter((row) =>
+            round2(
+              Decimal.max(
+                0,
+                money(row.cn.codAmount)
+                  .minus(money(row.cn.collectedAmount ?? "0"))
+                  .minus(money(row.cn.counterSettledAmount ?? "0"))
+                  .minus(money(row.shortfall ?? "0")),
+              ),
+            ).gt(0),
+          );
+        if (
+          owing.some(
+            (row) =>
+              row.cn.parcelStatus !== "DELIVERED" ||
+              lineIdSet.has(Number(row.cn.id)),
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر معاينة تسوية الشحنة",
+              why: "توجد فواتير أخرى للشحنة لم تُدرج في التسوية",
+              doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
+            }),
+          });
+        }
+      }
+    }
   }
   const detached = await planDetachedShipmentFees(tx, { partyId: scope.partyId, branchId: scope.branchId,
     consignmentIds: lines.map((line) => line.consignmentId), useCommission, includePending: false, requireComplete: true, feePolicy });
