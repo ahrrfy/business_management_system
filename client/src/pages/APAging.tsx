@@ -70,10 +70,20 @@ export default function APAging() {
   const unbilledOf = (r: { currentBalance: string | null; unpaidTotal: string | null }) =>
     D(r.currentBalance || 0).minus(D(r.unpaidTotal || 0));
 
+  // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ. (الفرز يتولّاه DataTable.)
+  const filtered = useMemo(() => {
+    const q = f.q.trim();
+    return (aging.data ?? []).filter((r) => {
+      if (q && !(r.supplierName.includes(q) || (r.phone ?? "").includes(q))) return false;
+      if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
+      return true;
+    });
+  }, [aging.data, f.q, f.bucket]);
+
   // §٥: نجمع بدقّة Decimal، لا Number() (يتراكم انجراف على كثرة الصفوف). نُخرج نصوصاً 2dp.
-  // المجاميع على **كامل** البيانات (صورة الذمم الكلية) لا على نتيجة الفلاتر العميلية.
+  // المجاميع تتبع الصفوف المعروضة (filtered) لتتطابق البطاقات السبع مع الجدول والتصدير والطباعة.
   const totals = useMemo(() => {
-    const rows = aging.data ?? [];
+    const rows = filtered;
     const acc = rows.reduce(
       (a, r) => ({
         d0_30: a.d0_30.plus(D(r.d0_30 || 0)),
@@ -94,17 +104,7 @@ export default function APAging() {
       currentBalance: acc.currentBalance.toFixed(2),
       unbilled: acc.currentBalance.minus(acc.unpaidTotal).toFixed(2),
     };
-  }, [aging.data]);
-
-  // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ. (الفرز يتولّاه DataTable.)
-  const filtered = useMemo(() => {
-    const q = f.q.trim();
-    return (aging.data ?? []).filter((r) => {
-      if (q && !(r.supplierName.includes(q) || (r.phone ?? "").includes(q))) return false;
-      if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
-      return true;
-    });
-  }, [aging.data, f.q, f.bucket]);
+  }, [filtered]);
 
   /**
    * ٢/٩ — «كم فلتراً نشطاً الآن؟» مفهومٌ واحدٌ لهذه الشاشة، وله **مستهلكان**: زرّ «مسح

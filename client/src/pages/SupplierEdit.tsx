@@ -12,6 +12,7 @@ import { FormError } from "@/components/form/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr as fmt } from "@/lib/money";
+import { getBalanceDirection } from "@/components/BalanceBadge";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
@@ -241,7 +242,17 @@ export default function SupplierEdit() {
                 <Handshake aria-hidden className="size-3" /> أمانة
               </span>
             )}
-            <span>الرصيد الحالي: <span className="tabular-nums" dir="ltr">{fmt(detail.data.currentBalance)}</span> دينار</span>
+            <span>
+              الرصيد الحالي:{" "}
+              <span className="tabular-nums" dir="ltr">
+                {fmt(Math.abs(Number(detail.data.currentBalance || 0)))}
+              </span>{" "}
+              دينار
+              {(() => {
+                const dir = getBalanceDirection(Number(detail.data.currentBalance || 0), "supplier");
+                return dir ? ` (${dir.label})` : "";
+              })()}
+            </span>
           </span>
         }
         backHref="/suppliers"

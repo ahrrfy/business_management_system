@@ -61,19 +61,30 @@ export function DeliveryObligationsCard({
       {
         id: "currentBalance",
         header: PARTY_EXPOSURE_LABEL_AR.cashInHand,
-        accessorFn: (p) => fmt(p.currentBalance),
+        accessorFn: (p) => fmt(p.cashInHandStored ?? p.currentBalance),
         meta: { kind: "money" },
         cell: ({ row }) => {
-          const val = Number(row.original.currentBalance ?? 0);
+          const val = Number(
+            row.original.cashInHandStored ?? row.original.currentBalance ?? 0,
+          );
+          const shortfall = Number(row.original.shortfallOwedAmount ?? 0);
           return (
             <span
               className={cn(
                 "font-bold tabular-nums",
                 val > 0 ? "text-[var(--sem-pos)] font-black" : "text-muted-foreground",
               )}
-              title="النقد المادي الذي قبضه المندوب من الطرود المسلَّمة ولم يُورِّده للدرج بعد (+ أي عجز مقبول ذمةً)."
+              title="النقد المادي الذي قبضه المندوب من الطرود المسلَّمة ولم يُورِّده للدرج بعد."
             >
-              {fmt(row.original.currentBalance)}
+              {fmt(val)}
+              {shortfall > 0 && (
+                <span
+                  className="ms-1.5 rounded bg-[var(--sem-neg-bg)] px-1 py-0.5 text-[10px] font-bold text-[var(--sem-neg)]"
+                  title="عجز محمَّل ذمّةً غير نقدية على الجهة"
+                >
+                  عجز {fmt(shortfall)}
+                </span>
+              )}
             </span>
           );
         },
@@ -202,7 +213,7 @@ export function DeliveryObligationsCard({
   );
 
   const totalCashInHand = (obligations.data ?? []).reduce(
-    (s, p) => s + Number(p.currentBalance || 0),
+    (s, p) => s + Number(p.cashInHandStored ?? p.currentBalance ?? 0),
     0,
   );
   const totalInTransitExposure = (obligations.data ?? []).reduce((s, p) => {

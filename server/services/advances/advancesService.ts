@@ -6,7 +6,7 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { appErrorMessage } from "@shared/errors";
 import { levelSatisfies } from "@shared/permissions";
@@ -157,6 +157,12 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
       filters.period === currentPeriod
         ? or(
             eq(employeeAdvances.payrollPeriod, filters.period),
+            // السلف النشطة المتبقية من أشهر سابقة تبقى ظاهرة في الشهر الجاري حتى تُسوّى.
+            and(
+              lt(employeeAdvances.payrollPeriod, filters.period),
+              eq(employeeAdvances.status, "ACTIVE"),
+              gt(employeeAdvances.remaining, "0.00"),
+            ),
             // A settled unclassified record stays in the explicit historical
             // view; it must not reappear in every new month's salary table.
             and(
@@ -1102,7 +1108,8 @@ export async function suggestDeductionsTx(
     if (
       adv.sourceType === "SALARY_ADVANCE" &&
       payrollPeriod != null &&
-      adv.payrollPeriod !== payrollPeriod
+      adv.payrollPeriod != null &&
+      adv.payrollPeriod > payrollPeriod
     ) {
       continue;
     }

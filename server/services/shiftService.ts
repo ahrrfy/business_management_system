@@ -30,6 +30,7 @@ import {
 } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import {
+  MATERIALIZED_RECEIPT_STATUSES,
   assertCashOutAvailable,
   assertTreasuryOutException,
   computeDrawerCashBalance,
@@ -781,7 +782,13 @@ export async function getShiftReport(shiftId: number) {
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
     .leftJoin(users, eq(users.id, sql<number>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`))
-    .where(eq(receipts.shiftId, shiftId));
+    .where(
+      and(
+        eq(receipts.shiftId, shiftId),
+        inArray(receipts.status, MATERIALIZED_RECEIPT_STATUSES),
+        eq(receipts.approvalStatus, "APPROVED"),
+      ),
+    );
 
   // reportsDayCloseService يصنّف المصروف المرتبط عبر expenses.receiptId. نجلب الرابط منفصلاً
   // كي يبقى كل إيصال سطراً واحداً حتى لو وُجدت بيانات مصروف مكرّرة/تالفة على الإيصال نفسه.
@@ -987,6 +994,7 @@ export async function getShiftReport(shiftId: number) {
 
   for (const row of receiptRows) {
     if (row.paymentMethod !== "CASH" || row.cashBucket !== "DRAWER") continue;
+    if ((row.referenceNumber ?? "") === `SV-${shiftId}`) continue;
     const pairedTransfer = pairedTransferByReceipt.get(Number(row.id));
     if (pairedTransfer && row.referenceNumber?.startsWith("CH-")) {
       treasuryHandovers.push(makeItem(row, "treasuryHandover"));
@@ -1061,6 +1069,7 @@ export async function getShiftReport(shiftId: number) {
     }
   >();
   for (const row of receiptRows) {
+    if ((row.referenceNumber ?? "") === `SV-${shiftId}`) continue;
     if (
       pairedTransferByReceipt.has(Number(row.id)) &&
       row.referenceNumber?.startsWith("CH-")
@@ -1646,6 +1655,7 @@ export async function enrichShiftListProvenance<
     let otherOut = money(0);
 
     for (const r of shReceipts) {
+      if ((r.referenceNumber ?? "") === `SV-${sid}`) continue;
       const amt = money(r.amount);
       if (r.direction === "IN") {
         if (r.invoiceId != null && r.invoiceShiftId === sid) {
@@ -1855,6 +1865,7 @@ export async function enrichShiftListProvenance<
 
     return {
       ...sh,
+      expectedCash: sh.expectedCash ?? totalAmount,
       provenance,
       countedProvenance,
     };

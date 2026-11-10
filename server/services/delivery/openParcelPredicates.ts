@@ -81,6 +81,8 @@ export async function shortfallAssignedForConsignmentTx(
 export function staleOpenParcelCondition(daysExpr: SQL | number): SQL {
   const days = typeof daysExpr === "number" ? sql`${daysExpr}` : daysExpr;
   return sql`${deliveryConsignments.dispatchedAt} IS NOT NULL
+    AND ${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')
+    AND ${deliveryConsignments.returnDeclaredAt} IS NULL
     AND TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW()) > ${days}
     AND ${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL')
     AND ${deliveryConsignments.parcelStatus} NOT IN ('RETURNED', 'CANCELLED')`;

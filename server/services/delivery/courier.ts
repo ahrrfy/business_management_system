@@ -37,7 +37,7 @@ import { routeAftercareDeliveryResultTx } from "../fulfillment/aftercareDelivery
 import { assertAftercareCourierTx } from "../fulfillment/aftercare";
 import { loadOperationUserTx } from "../authorization/operationAuthority";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -345,6 +345,7 @@ export async function listMyDeliveries(
       .where(
         and(
           consignmentScope,
+          isNull(deliveryConsignments.returnDeclaredAt),
           sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
           sql`${deliveryConsignments.status} NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')`,
         ),
@@ -367,7 +368,8 @@ export async function listMyDeliveries(
     const consignmentDue = Decimal.max(
       money(r.codAmount)
         .minus(money(r.collectedAmount ?? "0"))
-        .minus(money(r.counterSettledAmount ?? "0")),
+        .minus(money(r.counterSettledAmount ?? "0"))
+        .minus(money(r.shortfallAssigned ?? "0")),
       0,
     );
     // Delivery settles the customer's invoice before the party remits its custody.

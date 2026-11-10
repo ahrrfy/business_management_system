@@ -115,7 +115,7 @@ export default function DeliveryPartyDetail({
               label="رسائل واتساب للمندوب"
             />
             <div className="rounded-lg border px-3 py-1.5 text-sm">
-              <span className="text-muted-foreground">رصيد عهدة الجهة: </span>
+              <span className="text-muted-foreground">نقد وعهدة الجهة: </span>
               <b
                 className={cn(
                   "tabular-nums",
@@ -125,8 +125,13 @@ export default function DeliveryPartyDetail({
                 )}
                 dir="ltr"
               >
-                {fmt(party.currentBalance)} د.ع
+                {fmt(party.cashInHandStored ?? party.currentBalance)} د.ع
               </b>
+              {Number(party.shortfallOwedAmount ?? 0) > 0 && (
+                <span className="ms-1.5 text-xs font-bold text-[var(--sem-neg)]" dir="ltr">
+                  (+ عجز {fmt(party.shortfallOwedAmount)})
+                </span>
+              )}
             </div>
             {canSettle && (
               <>

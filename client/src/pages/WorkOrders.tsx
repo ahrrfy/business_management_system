@@ -387,7 +387,7 @@ export default function WorkOrders() {
       let late = 0;
       let blocked = 0;
       for (const o of colItems) {
-        total = total.plus(D(o.salePrice || 0));
+        total = total.plus(D((o as { effectiveSalePrice?: string | null }).effectiveSalePrice ?? o.salePrice ?? 0));
         if (o.status !== "DELIVERED" && o.status !== "CANCELLED") {
           const delta = dueDayDelta(o.dueDate);
           if (delta != null && delta < 0) late++;

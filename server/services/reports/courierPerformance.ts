@@ -10,7 +10,7 @@
 // عن إلغاء الموظّف قبل الإرسال (بلا سبب مُسجَّل، وغالباً بلا جهة مُسنَدة). المصدر الوحيد للحقيقة
 // المالية يبقى الدفتر؛ هذا تقرير تشغيليّ للعدّ والقيمة يقرأ حالة الطلب وفاتورته فقط (بلا كتابة).
 import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryRemittances, invoices, onlineOrders, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -103,10 +103,19 @@ export async function getConsignmentAging(input: { branchId?: number } = {}): Pr
   const empty = { rows: [], totals: { openCount: 0, d0_7: "0.00", d8_14: "0.00", d15_30: "0.00", d31p: "0.00", totalOutstanding: "0.00" } };
   const db = getDb();
   if (!db) return empty;
-  const conds = [sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`];
+  const conds = [
+    sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`,
+    isNull(deliveryConsignments.returnDeclaredAt),
+    isNotNull(deliveryConsignments.dispatchedAt),
+    sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
+    sql`${deliveryConsignments.parcelStatus} NOT IN ('RETURNED','CANCELLED')`,
+  ];
   if (input.branchId) conds.push(eq(deliveryConsignments.branchId, input.branchId));
   const age = sql<number>`TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW())`;
-  const remaining = sql`GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0)`;
+  const remaining = sql`GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))
+    - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2))
+    - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2))
+    - (SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'SHORTFALL_ASSIGNED' THEN dle.amount WHEN dle.entryType = 'SHORTFALL_SETTLED' THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = ${deliveryConsignments.id} AND ${effectiveDeliveryLedgerEntrySql("dle")}), 0)`;
   const agg = await db
     .select({
       partyId: deliveryConsignments.partyId,

@@ -243,7 +243,7 @@ function operationalConditions(input: CustomerOperationsInput): SQL[] {
   if (input.balance === "RECEIVABLE") conditions.push(sql`op.currentBalance > 0`);
   if (input.balance === "CREDIT") conditions.push(sql`op.currentBalance < 0`);
   if (input.balance === "ZERO") conditions.push(sql`op.currentBalance = 0`);
-  if (input.collection === "OVERDUE") conditions.push(sql`op.overdueAmount > 0`);
+  if (input.collection === "OVERDUE") conditions.push(sql`op.overdueAmount > 0 AND op.currentBalance > 0`);
   if (input.collection === "PROMISE_DUE") conditions.push(sql`op.promisedDate <= UTC_DATE() AND op.currentBalance > 0`);
   if (input.collection === "PROMISE_FUTURE") conditions.push(sql`op.promisedDate > UTC_DATE() AND op.currentBalance > 0`);
   if (input.collection === "NO_FOLLOWUP") conditions.push(sql`op.currentBalance > 0 AND op.lastContactAt IS NULL AND op.lastReminderAt IS NULL`);
@@ -349,13 +349,25 @@ export async function getCustomerOperations(input: CustomerOperationsInput = {})
   ]);
 
   const rawRows = dataRows(pageResult) as DbRow[];
-  const rows = rawRows.map((row) => ({
-    ...row,
-    id: Number(row.id),
-    isActive: !!row.isActive,
-    openTasks: Number(row.openTasks ?? 0),
-    ...collectionMeta(row),
-  }));
+  const rows = rawRows.map((row) => {
+    const cappedOverdue = toDbMoney(
+      money(row.overdueAmount ?? 0).gt(money(row.currentBalance ?? 0))
+        ? money(row.currentBalance ?? 0).gt(0)
+          ? money(row.currentBalance ?? 0)
+          : money(0)
+        : money(row.overdueAmount ?? 0).gt(0)
+          ? money(row.overdueAmount ?? 0)
+          : money(0),
+    );
+    return {
+      ...row,
+      id: Number(row.id),
+      isActive: !!row.isActive,
+      openTasks: Number(row.openTasks ?? 0),
+      overdueAmount: cappedOverdue,
+      ...collectionMeta({ ...row, overdueAmount: cappedOverdue }),
+    };
+  });
   const s = dataRows(summaryResult)[0] ?? {};
   const top = dataRows(topResult);
   const receivable = n(s.receivable);

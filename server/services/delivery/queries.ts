@@ -170,7 +170,11 @@ export async function countReadyForDispatch(branchId: number | null): Promise<nu
   const onlineCount = (await db
     .select({ c: sql<number>`COUNT(*)` })
     .from(onlineOrders)
-    .where(and(...onlineConds))
+    .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
+    .where(and(...onlineConds, or(
+      isNull(onlineOrders.invoiceId),
+      and(isNotNull(invoices.id), notInArray(invoices.status, [...DEAD_INVOICE_STATUSES])),
+    )))
   )[0];
 
   return Number(woCount?.c ?? 0) + Number(onlineCount?.c ?? 0);
@@ -1265,6 +1269,8 @@ export async function listStaleParties(branchId: number | null) {
         WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
           AND dc.dispatchedAt IS NOT NULL
           AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
+          AND dc.returnDeclaredAt IS NULL
           AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
           AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
       // عمرُ أقدم طرد متأخّر بالأيّام — للفرز والعرض.
@@ -1273,17 +1279,22 @@ export async function listStaleParties(branchId: number | null) {
         WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
           AND dc.dispatchedAt IS NOT NULL
           AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
+          AND dc.returnDeclaredAt IS NULL
           AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
           AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
       // مجموع القيمة المُعرَّضة على الطرود المتأخّرة (بضاعةٌ + نقدٌ لم يُورَّد).
       staleTotalAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
           CAST(dc.codAmount AS DECIMAL(15,2))
           - CAST(dc.collectedAmount AS DECIMAL(15,2))
-          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2))
+          - COALESCE((SELECT SUM(CASE WHEN dl.entryType = 'SHORTFALL_ASSIGNED' THEN CAST(dl.amount AS DECIMAL(15,2)) WHEN dl.entryType = 'SHORTFALL_SETTLED' THEN -CAST(dl.amount AS DECIMAL(15,2)) ELSE 0 END) FROM deliveryLedger dl WHERE dl.consignmentId = dc.id AND dl.entryType IN ('SHORTFALL_ASSIGNED', 'SHORTFALL_SETTLED')), 0), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
           AND dc.dispatchedAt IS NOT NULL
           AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
+          AND dc.returnDeclaredAt IS NULL
           AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
           AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
     })

@@ -480,7 +480,11 @@ export async function getDayCloseReconciliation(opts: {
   // المصدر صار واحداً بالبناء: materializedDrawerCashConditions.
   const aggByShift = new Map<number, ReceiptAgg>();
   if (shiftIds.length > 0) {
-    const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
+    const isDrawerCash = and(
+      inArray(receipts.shiftId, shiftIds),
+      ...materializedDrawerCashConditions(),
+      sql`COALESCE(UPPER(TRIM(${receipts.referenceNumber})), '') <> CONCAT('SV-', ${shifts.id})`,
+    );
     const aggRows = await db
       .select({
         shiftId: receipts.shiftId,
@@ -592,7 +596,11 @@ export async function getDayCloseReconciliation(opts: {
   // جلب تفاصيل الحركات النقدية الفردية لكل وردية لبيان مصدر الإيراد ومستفيد المصروف
   const movementsByShift = new Map<number, DayCloseShiftMovementItem[]>();
   if (shiftIds.length > 0) {
-    const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
+    const isDrawerCash = and(
+      inArray(receipts.shiftId, shiftIds),
+      ...materializedDrawerCashConditions(),
+      sql`COALESCE(UPPER(TRIM(${receipts.referenceNumber})), '') <> CONCAT('SV-', ${shifts.id})`,
+    );
     const partyCustomer = alias(customers, "partyCustomer");
     const invoiceCustomer = alias(customers, "invoiceCustomer");
     const receiptUsers = alias(users, "receiptUsers");

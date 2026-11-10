@@ -105,16 +105,17 @@ export default function ExpensesReport() {
       id: "amount", header: "المبلغ",
       accessorFn: (r) => Number(r.amount),
       cell: ({ row }) => <span className="text-money-negative">{fmtAr(row.original.amount)}</span>,
-      footer: () => (er ? fmtAr(er.total) : null),
+      footer: () => (er ? fmtAr(activeRows.reduce((s, r) => s + Number(r.amount || 0), 0)) : null),
       meta: { kind: "money" },
     },
     {
       id: "count", header: "العدد",
       accessorFn: (r) => Number(r.count),
       cell: ({ row }) => <span className="text-muted-foreground">{row.original.count}</span>,
+      footer: () => (er ? fmtAr(activeRows.reduce((s, r) => s + Number(r.count || 0), 0)) : null),
       meta: { kind: "number" },
     },
-  ], [tab, er]);
+  ], [tab, er, activeRows]);
 
   return (
     <ReportShell

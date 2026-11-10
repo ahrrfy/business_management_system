@@ -857,11 +857,18 @@ export default function Invoices() {
     lines.push(`ملخّص الفواتير (${selectedRows.length.toLocaleString("ar-IQ-u-nu-latn")})`);
     let sumTotal = D(0);
     let sumPaid = D(0);
+    let sumReturned = D(0);
+    let sumRemaining = D(0);
     for (const r of selectedRows) {
       const t = D(r.total);
       const p = D(r.paidAmount);
+      const ret = D((r as { returnedTotal?: string | null }).returnedTotal ?? 0);
+      const rawRem = t.minus(ret).minus(p);
+      const rem = rawRem.gt(0) ? rawRem : D(0);
       sumTotal = sumTotal.plus(t);
       sumPaid = sumPaid.plus(p);
+      sumReturned = sumReturned.plus(ret);
+      sumRemaining = sumRemaining.plus(rem);
       const customer = custName(r.customerName);
       const st = exportStatusLabel(r.status);
       const salesperson = r.salespersonName ?? "—";
@@ -869,8 +876,9 @@ export default function Invoices() {
     }
     lines.push("");
     lines.push(`الإجمالي: ${fmt(sumTotal.toString())}`);
+    if (sumReturned.gt(0)) lines.push(`المرتجع: ${fmt(sumReturned.toString())}`);
     lines.push(`المسدَّد: ${fmt(sumPaid.toString())}`);
-    lines.push(`المتبقي: ${fmt(sumTotal.minus(sumPaid).toString())}`);
+    lines.push(`المتبقي: ${fmt(sumRemaining.toString())}`);
     return lines.join("\n");
   }, [selectedRows]);
 

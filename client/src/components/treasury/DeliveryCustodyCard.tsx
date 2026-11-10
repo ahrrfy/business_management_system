@@ -34,9 +34,7 @@ export function DeliveryCustodyCard({ branchId }: { branchId?: number | null } =
 
   const rows = board.data ?? [];
   const rowEffectiveCash = (r: (typeof rows)[number]) => {
-    const cashOnHand = Number(effectiveCashInHand(r, ledgerDerived) || 0);
-    const unremitted = Number(r.deliveredUnremitted?.amount || 0);
-    return Math.max(unremitted, cashOnHand);
+    return Number(effectiveCashInHand(r, ledgerDerived) || 0);
   };
 
   const couriersWithCash = rows.filter((r) => rowEffectiveCash(r) > 0);

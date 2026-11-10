@@ -175,13 +175,13 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
                     const dir = getBalanceDirection(bal, isSale ? "customer" : "supplier");
                     return (
                       <span
-                        dir="ltr"
                         className={cn(
                           "shrink-0 text-xs font-bold",
                           dir?.colorCls === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-neg)]"
                         )}
                       >
-                        {fmtNum(Math.abs(bal))}
+                        <span dir="ltr" className="tabular-nums">{fmtNum(Math.abs(bal))}</span>
+                        {dir?.label ? <span className="mr-1 font-normal opacity-80">({dir.label})</span> : null}
                       </span>
                     );
                   })()}

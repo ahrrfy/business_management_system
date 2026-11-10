@@ -59,14 +59,39 @@ export default function ArApAgingDetail() {
     });
   }, [allRows, bucket, query]);
 
-  const kpis: KpiItem[] = totals
+  const clientFiltersActive = bucket !== "" || query.trim() !== "";
+
+  const displayTotals = useMemo(() => {
+    if (!totals) return undefined;
+    if (!clientFiltersActive) return totals;
+    let d0_30 = 0, d31_60 = 0, d61_90 = 0, d91p = 0, unpaid = 0;
+    for (const r of rows) {
+      const u = Number(r.unpaid || 0);
+      unpaid += u;
+      if (r.bucket === "0-30") d0_30 += u;
+      else if (r.bucket === "31-60") d31_60 += u;
+      else if (r.bucket === "61-90") d61_90 += u;
+      else d91p += u;
+    }
+    return {
+      count: rows.length,
+      d0_30: d0_30.toFixed(2),
+      d31_60: d31_60.toFixed(2),
+      d61_90: d61_90.toFixed(2),
+      d91p: d91p.toFixed(2),
+      unpaid: unpaid.toFixed(2),
+      unallocatedCredit: totals.unallocatedCredit,
+    };
+  }, [totals, clientFiltersActive, rows]);
+
+  const kpis: KpiItem[] = displayTotals
     ? [
-        { label: "0–30 يوم", value: fmtAr(totals.d0_30), tone: "positive" },
-        { label: "31–60 يوم", value: fmtAr(totals.d31_60), tone: "warning" },
-        { label: "61–90 يوم", value: fmtAr(totals.d61_90), tone: "warning" },
-        { label: "أكثر من 90", value: fmtAr(totals.d91p), tone: "negative" },
-        { label: `الصافي المعروض (${totals.count})`, value: fmtAr(totals.unpaid), tone: "info" },
-        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals.unallocatedCredit), tone: "info" },
+        { label: "0–30 يوم", value: fmtAr(displayTotals.d0_30), tone: "positive" },
+        { label: "31–60 يوم", value: fmtAr(displayTotals.d31_60), tone: "warning" },
+        { label: "61–90 يوم", value: fmtAr(displayTotals.d61_90), tone: "warning" },
+        { label: "أكثر من 90", value: fmtAr(displayTotals.d91p), tone: "negative" },
+        { label: `الصافي المعروض (${displayTotals.count})`, value: fmtAr(displayTotals.unpaid), tone: "info" },
+        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(displayTotals.unallocatedCredit), tone: "info" },
       ]
     : [];
 
@@ -74,10 +99,6 @@ export default function ArApAgingDetail() {
     () => (branchId ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId) : "الكل"),
     [branchId, branches.data],
   );
-
-  // الفلترة عميليّة (شريحة + بحث) ⇒ الجدول بلا بحثٍ داخليّ، ونُعلمه بنشاط الفلاتر كي
-  // يفرّق بين «لا مستندات مستحقّة أصلاً» و«لا مطابق للفلتر» بدل رسالةٍ واحدة تُضلّل.
-  const clientFiltersActive = bucket !== "" || query.trim() !== "";
 
   const columns = useMemo<ColumnDef<Row, unknown>[]>(
     () => [
@@ -194,14 +215,14 @@ export default function ArApAgingDetail() {
         bucket: r.bucket,
         unpaid: fmtAr(r.unpaid),
       })),
-      summary: totals
+      summary: displayTotals
         ? [
-            { label: "0–30", value: fmtAr(totals.d0_30) },
-            { label: "31–60", value: fmtAr(totals.d31_60) },
-            { label: "61–90", value: fmtAr(totals.d61_90) },
-            { label: "+90", value: fmtAr(totals.d91p) },
-            { label: "إجمالي المتبقّي", value: fmtAr(totals.unpaid), large: true, bold: true },
-            { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals.unallocatedCredit) },
+            { label: "0–30", value: fmtAr(displayTotals.d0_30) },
+            { label: "31–60", value: fmtAr(displayTotals.d31_60) },
+            { label: "61–90", value: fmtAr(displayTotals.d61_90) },
+            { label: "+90", value: fmtAr(displayTotals.d91p) },
+            { label: "إجمالي المتبقّي", value: fmtAr(displayTotals.unpaid), large: true, bold: true },
+            { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(displayTotals.unallocatedCredit) },
           ]
         : undefined,
     });

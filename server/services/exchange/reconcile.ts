@@ -25,24 +25,37 @@ export async function reconcileExchange(input: ReconcileInput) {
   let pending: Array<Record<string, unknown>> = [];
 
   if (input.asOfDate) {
-    const cutoff = new Date(input.asOfDate + "T23:59:59Z");
-    // الرصيد حتى تاريخ القطع = لقطة آخر عملية ≤ القطع (balanceAfter).
+    // توحيد حدّ القطع مع كشف حساب الصيرفة (توقيت بغداد +03:00) واستثناء العمليات الملغاة (REVERSED).
+    const cutoff = new Date(`${input.asOfDate}T23:59:59.999+03:00`);
+    // الرصيد حتى تاريخ القطع = لقطة آخر عملية نشطة ≤ القطع (balanceAfter).
     const asOfTxn = (
       await db
         .select()
         .from(exchangeTransactions)
-        .where(and(eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId), lte(exchangeTransactions.createdAt, cutoff)))
+        .where(
+          and(
+            eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId),
+            eq(exchangeTransactions.status, "ACTIVE"),
+            lte(exchangeTransactions.createdAt, cutoff),
+          ),
+        )
         .orderBy(desc(exchangeTransactions.createdAt), desc(exchangeTransactions.id))
         .limit(1)
     )[0];
     ourIqd = asOfTxn ? money(asOfTxn.balanceIqdAfter) : new Decimal(0);
     ourUsd = asOfTxn ? money(asOfTxn.balanceUsdAfter) : new Decimal(0);
 
-    // البنود المعلّقة = عمليات بعد تاريخ القطع (تفسّر فروق التوقيت — لا تُسوّى).
+    // البنود المعلّقة = عمليات نشطة بعد تاريخ القطع (تفسّر فروق التوقيت — لا تُسوّى).
     const after = await db
       .select()
       .from(exchangeTransactions)
-      .where(and(eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId), gte(exchangeTransactions.createdAt, new Date(input.asOfDate + "T00:00:01Z"))))
+      .where(
+        and(
+          eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId),
+          eq(exchangeTransactions.status, "ACTIVE"),
+          gte(exchangeTransactions.createdAt, new Date(`${input.asOfDate}T00:00:00.000+03:00`)),
+        ),
+      )
       .orderBy(exchangeTransactions.createdAt);
     pending = after
       .filter((t) => new Date(t.createdAt as Date) > cutoff)

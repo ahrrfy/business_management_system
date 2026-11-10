@@ -50,6 +50,11 @@ export default function CreditExposureReport() {
   const allRows = q.data?.rows ?? [];
   const summary = q.data?.summary;
   const rows = useMemo(() => (risk === "all" ? allRows : allRows.filter((r) => r.risk === risk)), [allRows, risk]);
+  const filteredTotals = useMemo(() => {
+    const exposure = rows.reduce((s, r) => s + Math.max(0, Number(r.currentBalance || 0)), 0);
+    const overdue = rows.reduce((s, r) => s + Number(r.overdueAmount || 0), 0);
+    return { customers: rows.length, totalExposure: exposure, totalOverdue: overdue };
+  }, [rows]);
 
   const kpis: KpiItem[] = summary
     ? [
@@ -93,7 +98,11 @@ export default function CreditExposureReport() {
         { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
       ],
       totalsRow: summary
-        ? { customerName: "الإجمالي", currentBalance: Number(summary.totalExposure), overdueAmount: Number(summary.totalOverdue) }
+        ? {
+            customerName: "الإجمالي",
+            currentBalance: risk === "all" ? Number(summary.totalExposure) : filteredTotals.totalExposure,
+            overdueAmount: risk === "all" ? Number(summary.totalOverdue) : filteredTotals.totalOverdue,
+          }
         : undefined,
     });
   }
@@ -129,9 +138,9 @@ export default function CreditExposureReport() {
       })),
       summary: summary
         ? [
-            { label: "عدد العملاء", value: fmtAr(summary.customers) },
-            { label: "إجمالي المتأخّر", value: formatIqd(summary.totalOverdue) },
-            { label: "إجمالي التعرّض", value: formatIqd(summary.totalExposure), large: true, bold: true },
+            { label: "عدد العملاء", value: fmtAr(risk === "all" ? summary.customers : filteredTotals.customers) },
+            { label: "إجمالي المتأخّر", value: formatIqd(risk === "all" ? summary.totalOverdue : filteredTotals.totalOverdue) },
+            { label: "إجمالي التعرّض", value: formatIqd(risk === "all" ? summary.totalExposure : filteredTotals.totalExposure), large: true, bold: true },
           ]
         : undefined,
     });
@@ -195,7 +204,7 @@ export default function CreditExposureReport() {
             actions={[
               {
                 key: "statement", kind: "view", label: "كشف الحساب", icon: FileText,
-                href: `/customers?tab=statement&id=${r.customerId}`,
+                href: `/customers-statement?id=${r.customerId}`,
                 gate: { module: "crm", level: "READ" },
               },
               {

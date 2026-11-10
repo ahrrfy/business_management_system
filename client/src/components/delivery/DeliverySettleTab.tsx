@@ -353,7 +353,10 @@ export function DeliverySettleTab() {
     let fees = D(0);
     let collected = D(0), expected = D(0), leftInTransit = 0, selectedCount = 0;
     for (const c of list) {
-      if (!isSettleable(c)) continue;
+      if (!isSettleable(c)) {
+        if (remainingOf(c).gt(0)) leftInTransit += 1;
+        continue;
+      }
       const remaining = statementMode ? remainingOf(c) : remittableOf(c);
       const st = get(c);
       if (st.outcome === "COLLECTED" ) {

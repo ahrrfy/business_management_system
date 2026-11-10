@@ -11,6 +11,8 @@ export type DeliveryPartySummary = RouterOutputs["delivery"]["listParties"][numb
 
 export interface PartyObligationSummaryLike {
   currentBalance?: string | number | null;
+  cashInHandStored?: string | number | null;
+  shortfallOwedAmount?: string | number | null;
   parcelsInTransitAmount?: string | number | null;
   deliveredUncollectedAmount?: string | number | null;
   codDueTotal?: string | number | null;
@@ -47,7 +49,11 @@ export function formatPartyObligationOptionLabel(
 ): string {
   const baseName = roleTag ? `${name} (${roleTag})` : name;
   if (!obligation) return baseName;
-  const cashInHand = Number(obligation.currentBalance ?? 0);
+  const physicalCash = Number(
+    obligation.cashInHandStored ?? obligation.currentBalance ?? 0,
+  );
+  const shortfall = Number(obligation.shortfallOwedAmount ?? 0);
+  const cashInHand = physicalCash + shortfall;
   const hasExplicitTransit =
     obligation.parcelsInTransitAmount !== undefined ||
     obligation.deliveredUncollectedAmount !== undefined;
@@ -60,15 +66,19 @@ export function formatPartyObligationOptionLabel(
     : Math.max(0, codTotal - cashInHand);
   const totalCod = codTotal > 0 ? codTotal : cashInHand + inTransit;
   const feeDue = Number(obligation.feeDueTotal ?? 0);
+  const cashLabel =
+    shortfall > 0
+      ? `نقد بيده: ${fmt(physicalCash)} · عجز: ${fmt(shortfall)}`
+      : `نقد بيده: ${fmt(physicalCash)}`;
 
   if (cashInHand > 0 && inTransit > 0) {
-    return `${baseName} — نقد بيده: ${fmt(cashInHand)} · بالطريق: ${fmt(inTransit)} د.ع (إجمالي ${fmt(totalCod)})`;
+    return `${baseName} — ${cashLabel} · بالطريق: ${fmt(inTransit)} د.ع (إجمالي ${fmt(totalCod)})`;
   }
   if (cashInHand <= 0 && inTransit > 0) {
     return `${baseName} — طرود بالطريق: ${fmt(inTransit)} د.ع (نقد بيده: 0)`;
   }
   if (cashInHand > 0) {
-    return `${baseName} — نقد بيده: ${fmt(cashInHand)} د.ع`;
+    return `${baseName} — ${cashLabel} د.ع`;
   }
   if (feeDue > 0) {
     return `${baseName} — أجور له: ${fmt(feeDue)} د.ع`;

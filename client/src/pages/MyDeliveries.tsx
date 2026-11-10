@@ -392,7 +392,7 @@ export default function MyDeliveries() {
                       ) : (
                         <>
                           <span className="tabular-nums font-bold text-foreground" dir="ltr">
-                            {money(row.orderTotal)} د.ع
+                            {claimMoney(row.codDue)} د.ع
                           </span>
                           <span className="text-[10px] text-muted-foreground">قبضته بالكامل عند الباب</span>
                         </>

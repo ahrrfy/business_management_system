@@ -6,6 +6,7 @@ import {
   desc,
   eq,
   inArray,
+  isNull,
   like,
   ne,
   notInArray,
@@ -1101,11 +1102,14 @@ export async function smartSearchCustomers(input: {
       customerId: invoices.customerId,
       count: sql<number>`COUNT(*)`,
       lastAt: sql<string>`MAX(${invoices.invoiceDate})`,
-      total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+      total: sql<string>`COALESCE(SUM(GREATEST(0, CAST(${invoices.total} AS DECIMAL(18,2)) - COALESCE(CAST(${invoices.returnedTotal} AS DECIMAL(18,2)), 0))), 0)`,
     })
     .from(invoices)
     .where(
-      and(inArray(invoices.customerId, ids), ne(invoices.status, "CANCELLED")),
+      and(
+        inArray(invoices.customerId, ids),
+        notInArray(invoices.status, [...VOIDED_INVOICE_STATUSES]),
+      ),
     )
     .groupBy(invoices.customerId);
 
@@ -1120,6 +1124,7 @@ export async function smartSearchCustomers(input: {
       and(
         inArray(workOrders.customerId, ids),
         ne(workOrders.status, "CANCELLED"),
+        isNull(workOrders.invoiceId),
       ),
     )
     .groupBy(workOrders.customerId);
@@ -1255,7 +1260,7 @@ export async function getCustomer360Dossier(
         total: invoices.total,
         status: invoices.status,
         paidAmount: invoices.paidAmount,
-        remainingAmount: sql<string>`(${invoices.total} - ${invoices.paidAmount})`,
+        remainingAmount: sql<string>`GREATEST(0, CAST(${invoices.total} AS DECIMAL(18,2)) - COALESCE(CAST(${invoices.returnedTotal} AS DECIMAL(18,2)), 0) - CAST(${invoices.paidAmount} AS DECIMAL(18,2)))`,
       })
       .from(invoices)
       .where(
