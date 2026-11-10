@@ -120,7 +120,8 @@ import {
   forensicTraceInvoices,
   universalBarcodeScan,
 } from "../services/returns/forensicTraceService";
-import { applyMovement, convertToBaseQuantity } from "../services/inventoryService";
+import { applyMovement, applyValuedInboundMovement, convertToBaseQuantity } from "../services/inventoryService";
+import { lockEconomicInventoryScope } from "../services/inventory/economicOwnership";
 import { assertPeriodOpen } from "../services/periodLockService";
 import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "../services/installment/guards";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
@@ -3274,10 +3275,19 @@ export const returnRouter = router({
                     effectiveShiftId = Number(selectedShift.id);
                   }
                 } else {
+                  const preferredShiftType =
+                    returnInvoiceScopeForUser(ctx.user, "returns.executeSalesReturnCart") ===
+                    "reception"
+                      ? "RECEPTION"
+                      : returnInvoiceScopeForUser(ctx.user, "returns.executeSalesReturnCart") ===
+                          "print"
+                        ? "PRINT_SERVICES"
+                        : "RETAIL";
                   effectiveShiftId = await openShiftIdTx(
                     tx,
                     ctx.user.id,
                     Number(matchedInvoice.branchId),
+                    preferredShiftType,
                   );
                 }
               }
@@ -3810,6 +3820,21 @@ export const returnRouter = router({
           let nonRestoredServiceGiftCost = new Decimal(0);
           const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
           const accumulatedCostReturnedByItemId = new Map<number, number>();
+          type PlannedReturnMovement =
+            | {
+                valued: true;
+                variantId: number;
+                baseQuantity: number;
+                historicalValue: string;
+                notes: string;
+              }
+            | {
+                valued: false;
+                variantId: number;
+                baseQuantity: number;
+                notes: string;
+              };
+          const plannedReturnMovements: PlannedReturnMovement[] = [];
 
           for (const itm of input.items) {
             const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
@@ -3977,26 +4002,66 @@ export const returnRouter = router({
               for (const comp of components) {
                 const compBaseQty =
                   comp.componentBaseQuantity * effectiveBaseQty;
-                await applyMovement(tx, {
+                plannedReturnMovements.push({
+                  valued: false,
                   variantId: comp.componentVariantId,
-                  branchId: actorBranchId,
                   baseQuantity: compBaseQty,
-                  movementType: "RETURN",
-                  referenceType: "SALES_RETURN",
-                  documentNumber: returnNumber,
                   notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
-                  createdBy: ctx.user.id,
                 });
               }
             } else {
-              await applyMovement(tx, {
-                variantId: itm.variantId,
+              const defaultValuation = round2(
+                (costPriceByVariantId.get(itm.variantId) ?? money(0)).times(effectiveBaseQty),
+              );
+              if (matchedInvoice != null && cId == null && !lineCostShare.eq(defaultValuation)) {
+                plannedReturnMovements.push({
+                  valued: true,
+                  variantId: itm.variantId,
+                  baseQuantity: effectiveBaseQty,
+                  historicalValue: lineCostShare.toFixed(2),
+                  notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                });
+              } else {
+                plannedReturnMovements.push({
+                  valued: false,
+                  variantId: itm.variantId,
+                  baseQuantity: effectiveBaseQty,
+                  notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                });
+              }
+            }
+          }
+
+          const needsValuedRestock = plannedReturnMovements.some((m) => m.valued);
+          const economicScope = needsValuedRestock
+            ? await lockEconomicInventoryScope(
+                tx,
+                plannedReturnMovements.map((m) => m.variantId),
+              )
+            : undefined;
+          for (const mv of plannedReturnMovements) {
+            if (mv.valued) {
+              await applyValuedInboundMovement(tx, {
+                variantId: mv.variantId,
                 branchId: actorBranchId,
-                baseQuantity: effectiveBaseQty,
+                baseQuantity: mv.baseQuantity,
+                historicalValue: mv.historicalValue,
                 movementType: "RETURN",
                 referenceType: "SALES_RETURN",
                 documentNumber: returnNumber,
-                notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                notes: mv.notes,
+                createdBy: ctx.user.id,
+              });
+            } else {
+              await applyMovement(tx, {
+                economicScope,
+                variantId: mv.variantId,
+                branchId: actorBranchId,
+                baseQuantity: mv.baseQuantity,
+                movementType: "RETURN",
+                referenceType: "SALES_RETURN",
+                documentNumber: returnNumber,
+                notes: mv.notes,
                 createdBy: ctx.user.id,
               });
             }

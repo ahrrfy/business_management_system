@@ -280,6 +280,8 @@ export function storefrontCheckoutFingerprint(
     phone: form.phone.replace(/\s+/g, " ").trim(),
     governorate: form.governorate,
     address: form.address.trim(),
+    latitude: form.latitude != null ? Number(form.latitude.toFixed(6)) : null,
+    longitude: form.longitude != null ? Number(form.longitude.toFixed(6)) : null,
     notes: form.notes.trim(),
     couponCode: couponCode?.trim().toUpperCase() || null,
   });

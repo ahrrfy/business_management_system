@@ -23,7 +23,7 @@ import { fmtAr, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { useSearch } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
@@ -34,6 +34,7 @@ type DraftItem = RouterOutputs["reception"]["draftList"]["rows"][number];
 type RefundVars = RouterInputs["reception"]["refundDeposit"];
 
 export default function ReceptionDraftsPage() {
+  const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId != null ? Number(me.data.branchId) : null;
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
@@ -278,7 +279,7 @@ export default function ReceptionDraftsPage() {
                                   size="sm"
                                   className="h-7 px-2 text-[11px] gap-1"
                                   onClick={() => {
-                                    window.location.href = `/reception?draftId=${d.id}`;
+                                    navigate(`/pos?mode=RECEPTION&draftId=${d.id}`);
                                   }}
                                   title="فتح في الكاشير لإكمال وتثبيت الطلب"
                                 >
@@ -344,10 +345,12 @@ export function DraftDetailsModal({
   onActionSuccess: () => void;
   isElevated?: boolean;
 }) {
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const draftQ = trpc.reception.draftGet.useQuery({ draftId });
   const paymentsQ = trpc.reception.paymentsOf.useQuery({ draftId });
+  const shiftQ = trpc.shifts.current.useQuery({ shiftType: "RECEPTION" });
 
   const [refundPaymentId, setRefundPaymentId] = useState<number | null>(null);
   const [refundAmount, setRefundAmount] = useState("");
@@ -450,6 +453,7 @@ export function DraftDetailsModal({
       paymentId,
       amount: refundAmount,
       reason: refundReason.trim(),
+      refundShiftId: shiftQ.data?.id ?? undefined,
       clientRequestId: `ref-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     });
   }
@@ -680,7 +684,7 @@ export function DraftDetailsModal({
                   size="sm"
                   className="gap-1 text-xs"
                   onClick={() => {
-                    window.location.href = `/reception?draftId=${draft.id}`;
+                    navigate(`/pos?mode=RECEPTION&draftId=${draft.id}`);
                   }}
                 >
                   <ExternalLink className="size-3.5" />

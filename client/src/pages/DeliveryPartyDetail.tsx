@@ -1,5 +1,5 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react"; import { useLocation } from "wouter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { printShortfallSettlementVoucher } from "@/lib/printing/cashierLifecycleReceipts";
 import { Banknote, Truck, Wallet, X } from "lucide-react";
@@ -36,7 +36,7 @@ export default function DeliveryPartyDetail({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const me = trpc.auth.me.useQuery();
+  const me = trpc.auth.me.useQuery(); const [, navigate] = useLocation();
   // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
   const canManageParty =
@@ -75,7 +75,7 @@ export default function DeliveryPartyDetail({
 
   return (
     <div
-      className="fixed inset-0 z-[45] flex items-start justify-center overflow-y-auto bg-black/70 p-2 md:p-4"
+      className="fixed inset-0 z-[45] flex items-center justify-center overflow-hidden bg-black/70 p-2 md:p-4"
       dir="rtl"
       onClick={onClose}
     >
@@ -83,7 +83,7 @@ export default function DeliveryPartyDetail({
         role="dialog"
         aria-modal="true"
         aria-label={`مساحة عمل ${party.name}`}
-        className="relative min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] rounded-lg border bg-background p-4 shadow-xl md:p-6"
+        className="relative max-h-[calc(100dvh-2rem)] min-h-[min(85dvh,calc(100dvh-2rem))] w-full max-w-[1600px] overflow-y-auto rounded-lg border bg-background px-4 pt-4 pb-0 shadow-xl md:px-6 md:pt-6 md:pb-0"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -129,14 +129,31 @@ export default function DeliveryPartyDetail({
               </b>
             </div>
             {canSettle && (
-              <Button
-                size="sm"
-                className="gap-1.5 font-bold"
-                onClick={() => setShowCollectModal(true)}
-                title="مراجعة النقد والتسوية بسند توريد"
-              >
-                <Wallet aria-hidden className="size-4" /> استلام توريد وتسوية
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  className="gap-1.5 font-bold"
+                  onClick={() => setShowCollectModal(true)}
+                  title="قبض النقد وتوريد الشحنات مباشرة"
+                >
+                  <Wallet aria-hidden className="size-4" />{" "}
+                  {party.partyType === "COMPANY" ? "تحصيل وتوريد سريع" : "استلام توريد وتسوية"}
+                </Button>
+                {party.partyType === "COMPANY" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 font-bold"
+                    onClick={() => {
+                      onClose();
+                      navigate(`/delivery?tab=settlement&party=${party.id}`);
+                    }}
+                    title="فتح طابور واستيراد كشف تسوية الشركة المفصّل"
+                  >
+                    كشف تسوية مفصّل
+                  </Button>
+                )}
+              </>
             )}
             <StoreInTransitChip partyId={party.id} />
             <Button
@@ -208,18 +225,18 @@ export default function DeliveryPartyDetail({
           <StatementTab party={party} active={tab === "statement"} />
         </div>
         {tab === "members" && (
-          <PartyMembersTab partyId={party.id} canEdit={canManageParty} />
+          <div className="pb-4 md:pb-6"><PartyMembersTab partyId={party.id} canEdit={canManageParty} /></div>
         )}
         {tab === "commission" && (
-          <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />
+          <div className="pb-4 md:pb-6"><CommissionRuleTab partyId={party.id} canEdit={canManageParty} /></div>
         )}
         {tab === "settings" && (
-          <SettingsTab
+          <div className="pb-4 md:pb-6"><SettingsTab
             party={party}
             canManage={canManageParty}
             canRecover={canRecover}
             onChanged={onChanged}
-          />
+          /></div>
         )}
 
         {showCollectModal && (

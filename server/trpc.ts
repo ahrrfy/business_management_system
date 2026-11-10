@@ -139,6 +139,7 @@ const PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS = new Set<string>([
   "storefront.trackConversion",
   "storefront.trackRecommendationClick",
   "storefront.trackPushInteraction",
+  "storefront.resolveLocationUrl",
 ]);
 
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
@@ -818,6 +819,7 @@ export function returnOperationsAllowed(user: {
     (user.atomicPermissions as Record<string, boolean> | null | undefined);
   if (atomic) {
     const rawAtomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
+    const roleAtomic = (user as { customRoleAtomicPermissions?: Record<string, boolean> | null }).customRoleAtomicPermissions;
     const hasCustomRole = Boolean(
       (user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
         (user as { customRoleId?: number | null }).customRoleId,
@@ -828,10 +830,14 @@ export function returnOperationsAllowed(user: {
       moduleAllowed;
     const returnRevoked = isBridgedLegacyStation
       ? rawAtomic?.["pos.return.create"] === false
-      : atomic["pos.return.create"] === false;
+      : hasCustomRole && roleAtomic !== undefined
+        ? rawAtomic?.["pos.return.create"] === false || roleAtomic?.["pos.return.create"] === false
+        : atomic["pos.return.create"] === false;
     const voidRevoked = isBridgedLegacyStation
       ? rawAtomic?.["pos.invoice.void"] === false
-      : atomic["pos.invoice.void"] === false;
+      : hasCustomRole && roleAtomic !== undefined
+        ? rawAtomic?.["pos.invoice.void"] === false || roleAtomic?.["pos.invoice.void"] === false
+        : atomic["pos.invoice.void"] === false;
     if (returnRevoked && voidRevoked) {
       return false;
     }
@@ -865,6 +871,7 @@ export const returnsProcedure = auditedProcedure
         ((ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined) ??
         ((ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined);
       const rawAtomic = (ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined;
+      const roleAtomic = (ctx.user as any).customRoleAtomicPermissions as Record<string, boolean> | null | undefined;
       const hasCustomRole = Boolean(
         (ctx.user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
           (ctx.user as { customRoleId?: number | null }).customRoleId,
@@ -875,7 +882,9 @@ export const returnsProcedure = auditedProcedure
       if (atomic) {
         const voidRevoked = isBridgedLegacyStation
           ? rawAtomic?.["pos.invoice.void"] === false
-          : atomic["pos.invoice.void"] === false;
+          : hasCustomRole && roleAtomic !== undefined
+            ? rawAtomic?.["pos.invoice.void"] === false || roleAtomic?.["pos.invoice.void"] === false
+            : atomic["pos.invoice.void"] === false;
         if (path?.endsWith("cancel") && voidRevoked) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -888,7 +897,9 @@ export const returnsProcedure = auditedProcedure
         }
         const returnRevoked = isBridgedLegacyStation
           ? rawAtomic?.["pos.return.create"] === false
-          : atomic["pos.return.create"] === false;
+          : hasCustomRole && roleAtomic !== undefined
+            ? rawAtomic?.["pos.return.create"] === false || roleAtomic?.["pos.return.create"] === false
+            : atomic["pos.return.create"] === false;
         if (
           (path?.endsWith("create") || path?.includes("Refund") || path?.includes("Return")) &&
           returnRevoked

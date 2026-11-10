@@ -393,10 +393,24 @@ function normalizedRefundOverride(
    * ومقفولةً في تمهيدٍ سابق؛ تبديلُ رافدٍ واحدٍ فوقها يُفكّ تطابقَها بلا أن يُعيد بناءها.
    * توسيعُه يحتاج شريحتَه، ولا يُقحَم هنا لأنّ الاسم يسمح.
    */
-  if (requestType !== "CANCEL") {
+  if (requestType !== "CANCEL" && requestType !== "REVERSE_DELIVERY") {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "تبديلُ رافد الردّ عند الاعتماد متاحٌ لطلبات الإلغاء وحدها",
+      message: appErrorMessage({
+        what: "تعذّر تبديل رافد الردّ عند الاعتماد",
+        why: "تبديلُ رافد الردّ عند الاعتماد متاحٌ لطلبات الإلغاء وعكس التسليم فقط",
+        doThis: "اعتمد طلب التعديل بدون تحديد رافد ردّ مالي بديل",
+      }),
+    });
+  }
+  if (requestType === "REVERSE_DELIVERY" && rail === "CARD") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تحويل رافد الردّ النقدي إلى بطاقة",
+        why: "عكس التسليم لا يدعم تبديل الرافد النقدي إلى بطاقة إلكترونية",
+        doThis: "اختر درج الاستقبال المفتوح أو الخزينة الإدارية لصرف الاسترداد النقدي",
+      }),
     });
   }
   if (rail != null) {
@@ -436,17 +450,20 @@ export async function approveWorkOrderControlRequest(
     if (!requestSnapshot) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحكم غير موجود" });
     assertRequestBranch(requestSnapshot, actor);
 
+    const earlyOverride = normalizedRefundOverride(refundOverride, requestSnapshot.requestType as WorkOrderControlType);
     let reverseLocks: Awaited<ReturnType<typeof lockReverseDeliveryApprovalResourcesInTx>> | undefined;
     // REVERSE_DELIVERY: لا نقفل مستند الطلب قبل مصدر النقد. الطلب النهائي لا يحتاج مورداً
     // مالياً؛ أما PENDING فيقفل cash/receipts → workOrder ثم يعيد قفل الطلب والتحقق منه.
     if (requestSnapshot.requestType === "REVERSE_DELIVERY" && requestSnapshot.status === "PENDING") {
       const payload = requestSnapshot.payload as unknown as ReverseDeliveryControlPayload;
+      const forceTreasury = earlyOverride?.refundRail === "TREASURY";
       reverseLocks = await lockReverseDeliveryApprovalResourcesInTx(tx, {
         workOrderId: Number(requestSnapshot.workOrderId),
         expectedVersion: payload.expectedVersion,
         reason: requestSnapshot.reason,
         reopen: payload.reopen === true,
-        refundShiftId: payload.refundShiftId ?? null,
+        refundShiftId: forceTreasury ? null : (earlyOverride?.refundShiftId ?? payload.refundShiftId ?? null),
+        forceTreasury,
         refundSources: payload.refundSources,
         clientRequestId: `wo-control-reverse-${id}`,
       }, actor);
@@ -536,12 +553,14 @@ export async function approveWorkOrderControlRequest(
       }, control);
     } else {
       const payload = request.payload as unknown as ReverseDeliveryControlPayload;
+      const forceTreasury = override?.refundRail === "TREASURY";
       await reverseWorkOrderDeliveryInTx(tx, {
         workOrderId: Number(request.workOrderId),
         expectedVersion: payload.expectedVersion,
         reason: request.reason,
         reopen: payload.reopen === true,
-        refundShiftId: payload.refundShiftId ?? null,
+        refundShiftId: forceTreasury ? null : (override?.refundShiftId ?? payload.refundShiftId ?? null),
+        forceTreasury,
         refundSources: payload.refundSources,
         clientRequestId: `wo-control-reverse-${id}`,
       }, actor, control, reverseLocks);
@@ -621,6 +640,69 @@ export async function rejectWorkOrderControlRequest(
       seq: id,
     });
     return { request: { ...request, status: "REJECTED" as const, reviewedBy: actor.userId, reviewedAt, reviewNote: note }, replayed: false as const };
+  }, { gate: "NONE" });
+}
+
+export async function withdrawWorkOrderControlRequest(
+  id: number,
+  actor: Actor & { role?: string },
+  reason?: string | null,
+) {
+  const note = reason?.trim() || "سحب الطالب طلبه قبل المراجعة";
+  return withTx(async (tx) => {
+    const request = (
+      await tx.select().from(workOrderControlRequests)
+        .where(eq(workOrderControlRequests.id, id)).for("update").limit(1)
+    )[0];
+    if (!request) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر سحب طلب التحكم",
+          why: "طلب التحكم المطلوب غير موجود",
+          doThis: "حدّث صفحة أمر الشغل وتحقق من قائمة طلبات التحكم الحالية",
+        }),
+      });
+    }
+    assertRequestBranch(request, actor);
+    if (Number(request.requestedBy) !== actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر سحب طلب التحكم",
+          why: "سحب الطلب متاح لمنشئ الطلب وحده قبل المراجعة",
+          doThis: "استخدم إجراء الرفض الإداري إذا كنت مخولاً بالمراجعة",
+        }),
+      });
+    }
+    if (request.status === "REJECTED") return { request, replayed: true as const };
+    if (request.status !== "PENDING") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر سحب طلب التحكم",
+          why: `طلب التحكم محسوم مسبقاً بالحالة ${request.status}`,
+          doThis: "حدّث صفحة أمر الشغل للاطلاع على نتيجة المراجعة الحالية",
+        }),
+      });
+    }
+    const reviewedAt = new Date();
+    const reviewNote = `سحب الطالب طلبه: ${note}`.slice(0, 500);
+    await tx.update(workOrderControlRequests).set({
+      status: "REJECTED",
+      reviewedBy: actor.userId,
+      reviewedAt,
+      reviewNote,
+    }).where(eq(workOrderControlRequests.id, id));
+    await recordWorkOrderEvent(tx, {
+      workOrderId: Number(request.workOrderId),
+      eventType: "CONTROL_REJECTED",
+      payload: { controlRequestId: id, requestType: request.requestType, reason: reviewNote, withdrawnByRequester: true },
+      actorUserId: actor.userId,
+      branchId: Number(request.branchId),
+      seq: id,
+    });
+    return { request: { ...request, status: "REJECTED" as const, reviewedBy: actor.userId, reviewedAt, reviewNote }, replayed: false as const };
   }, { gate: "NONE" });
 }
 

@@ -67,7 +67,7 @@ export interface SettleDailyPayload {
   shortfallReason?: ShortfallReason;
   /** ملاحظةٌ اختياريّة مع العجز (مرجع المكالمة/المحضر) — تُحفظ على قيد الذمّة خادمياً. */
   shortfallNotes?: string;
-  shiftType: "RETAIL" | "RECEPTION";
+  shiftType: "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
   clientRequestId: string;
 }
 
@@ -75,7 +75,7 @@ export function buildSettleDailyPayload(
   preview: Pick<SettlementPreview, "partyId" | "branchId" | "net" | "lines">,
   verdict: SettlementVerdict,
   reason: ShortfallReason | null,
-  shiftType: "RETAIL" | "RECEPTION",
+  shiftType: "RETAIL" | "RECEPTION" | "PRINT_SERVICES",
   clientRequestId: string,
   shortfallNotes = "",
 ): SettleDailyPayload | null {

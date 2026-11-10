@@ -98,7 +98,16 @@ export function useBarcodeScanner(
       const inputEl = inField ? (target as HTMLInputElement | HTMLTextAreaElement) : null;
 
       // تنحٍّ عن الحقول المركَّز فيها (وضع لوحة الأوامر): يتركها لماسحها المحلّيّ بلا خطفٍ ولا Enter.
+      // تنحٍّ عن الحقول المركَّز فيها (وضع لوحة الأوامر): يتركها لماسحها المحلّيّ بلا خطفٍ ولا Enter.
       if (ignoreInputFields && inField) return;
+      // تنحٍّ تلقائيّ عند وجود نافذة حوارية أو درج منبثق مفتوح ([role="dialog"] / [role="alertdialog"])
+      // لمنع خطف الكتابة أو المسح من حقول المودالات لصالح سلة الخلفية المخفية.
+      if (
+        target?.closest?.('[role="dialog"], [role="alertdialog"]') ||
+        document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')
+      ) {
+        return;
+      }
 
       // Enter: نعترضه حين تكون ومضةٌ نشطة — إمّا نُصدر الباركود (بلغ الحدّ الأدنى) وإمّا نستعيد
       // النصّ القصير عبر finish (يعيد البادئة + الخام) بلا فقد. غير النشط يمرّ للنموذج/الحقل.

@@ -357,6 +357,7 @@ export const deliveryRouter = router({
   inTransit: deliveryReadProcedure
     .input(z.object({
       partyId: z.number().int().positive().optional(),
+      branchId: z.number().int().positive().optional(),
       limit: z.number().int().positive().max(500).optional(),
       cursor: z.number().int().positive().optional(),
     }).optional())
@@ -378,6 +379,7 @@ export const deliveryRouter = router({
     .input(z.object({
       query: z.string().trim().min(2).max(100),
       partyId: z.number().int().positive().optional(),
+      branchId: z.number().int().positive().optional(),
       limit: z.number().int().positive().max(30).optional(),
     }))
     .query(async ({ input, ctx }) => {
@@ -385,7 +387,7 @@ export const deliveryRouter = router({
         await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       }
       return predictiveSearchConsignments({
-        branchId: ctx.scopedBranchId,
+        branchId: ctx.user.role === "admin" ? input.branchId ?? null : ctx.scopedBranchId,
         query: input.query,
         partyId: input.partyId,
         limit: input.limit,
@@ -560,8 +562,8 @@ export const deliveryRouter = router({
         branchId: z.number().int().positive().nullish(),
         countedCash: moneyStr, expectedLines: z.array(z.object({ consignmentId: z.number().int().positive(), remaining: moneyStr })).min(1),
         shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
-        shortfallNotes: z.string().trim().max(500).nullish(),
-        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        shortfallNotes: z.string().trim().max(500).nullish(), targetShiftId: z.number().int().positive().nullish(),
+        shiftType: z.enum(["RECEPTION", "RETAIL", "PRINT_SERVICES"]).optional(),
         clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
@@ -579,7 +581,7 @@ export const deliveryRouter = router({
               branchId,
               countedCash: input.countedCash, expectedLines: input.expectedLines,
               shortfallReason: input.shortfallReason,
-              shortfallNotes: input.shortfallNotes,
+              shortfallNotes: input.shortfallNotes, targetShiftId: input.targetShiftId ?? null,
               shiftType: input.shiftType,
               clientRequestId: input.clientRequestId,
             },
@@ -906,7 +908,7 @@ export const deliveryRouter = router({
       z.object({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
-        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        shiftType: z.enum(["RECEPTION", "RETAIL", "PRINT_SERVICES"]).optional(),
         /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
         targetShiftId: z.number().int().positive().nullish(),
         lines: z
@@ -985,7 +987,7 @@ export const deliveryRouter = router({
       z.object({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
-        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        shiftType: z.enum(["RECEPTION", "RETAIL", "PRINT_SERVICES"]).optional(),
         /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
         targetShiftId: z.number().int().positive().nullish(),
         statementNumber: z.string().trim().min(2).max(64), appendToStatement: z.boolean().optional(),
@@ -1249,6 +1251,7 @@ export const deliveryRouter = router({
       z.object({
         barcode: z.string().trim().min(1).max(200),
         returnReason: z.string().trim().min(2).max(255).optional(),
+        workOrderDisposition: z.enum(["RETURN_TO_READY", "CANCEL_FINAL"]).optional(),
         refundShiftId: z.number().int().positive().optional(),
         clientRequestId: z.string().trim().min(8).max(64),
       }),
@@ -1259,6 +1262,7 @@ export const deliveryRouter = router({
           {
             barcode: input.barcode,
             returnReason: input.returnReason,
+            workOrderDisposition: input.workOrderDisposition ?? null,
             refundShiftId: input.refundShiftId,
             clientRequestId: input.clientRequestId,
           },
@@ -1320,7 +1324,7 @@ export const deliveryRouter = router({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
-        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        shiftType: z.enum(["RECEPTION", "RETAIL", "PRINT_SERVICES"]).optional(),
         /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
         targetShiftId: z.number().int().positive().nullish(),
         notes: z.string().max(500).nullish(),
@@ -1468,7 +1472,7 @@ export const deliveryRouter = router({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
-        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        shiftType: z.enum(["RECEPTION", "RETAIL", "PRINT_SERVICES"]).optional(),
         /** ش-ISOLATION: الوردية المستلِمة للنقد المستردّ صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
         targetShiftId: z.number().int().positive().nullish(),
         notes: z.string().max(500).nullish(),

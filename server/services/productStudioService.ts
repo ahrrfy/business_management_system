@@ -10,7 +10,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { addUnitBarcodeAlias, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { acquireCatalogBarcodeWriteLock, addUnitBarcodeAliasTx, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
 import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
@@ -6229,9 +6229,9 @@ export async function linkStudioBarcode(
   input: { productUnitId: number; barcode: string; note?: string | null },
 ) {
   assertStudioOperationBinding(actor, "productStudio.linkBarcode");
-  const db = requireDb();
-  const unit = (
-    await db
+  return withTx(async (tx) => {
+    await acquireCatalogBarcodeWriteLock(tx);
+    const [unit] = await tx
       .select({
         id: productUnits.id,
       })
@@ -6248,25 +6248,28 @@ export async function linkStudioBarcode(
         ),
       )
       .limit(1)
-  )[0];
+      .for("share");
 
-  if (!unit) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: "تعذّر ربط الباركود",
-        why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
-        doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
-      }),
-    });
-  }
+    if (!unit) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر ربط الباركود",
+          why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
+          doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
+        }),
+      });
+    }
 
-  return addUnitBarcodeAlias(
-    input.productUnitId,
-    input.barcode,
-    input.note ?? "رُبط من استوديو المنتجات",
-    actor.userId,
-  );
+    return addUnitBarcodeAliasTx(
+      tx,
+      input.productUnitId,
+      input.barcode,
+      input.note ?? "رُبط من استوديو المنتجات",
+      actor.userId,
+      { lockAlreadyHeld: true },
+    );
+  });
 }
 
 /**

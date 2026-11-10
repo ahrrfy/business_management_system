@@ -181,7 +181,7 @@ describe("رافد الردّ عند اعتماد طلب الإلغاء", () => 
 
     await expect(approveWorkOrderControlRequest(Number(edit.id), MANAGER, null, {
       refundRail: "TREASURY", refundShiftId: null, refundReference: null,
-    })).rejects.toThrow(/طلبات الإلغاء وحدها/);
+    })).rejects.toThrow(/طلبات الإلغاء/);
   });
 
   it("⛔ رافدُ الدرج بلا وردية، والبطاقةُ بلا مرجع: مرفوضان قبل أيّ أثر", async () => {

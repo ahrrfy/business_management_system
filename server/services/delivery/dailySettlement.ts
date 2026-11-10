@@ -14,7 +14,7 @@ import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
  */
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import type {
   SettlementPreview,
@@ -32,6 +32,7 @@ import {
   deliveryLedgerEntries,
   deliveryParties,
   deliveryRemittances,
+  deliveryShipmentMembers,
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -98,7 +99,7 @@ async function loadSettlementLines(
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       // عجزُ التسليم المُقيَّد على الطرد — نقدٌ لم تقبضه الجهة (انظر `openParcelPredicates.ts`).
-      shortfallAssigned: consignmentShortfallAssignedSql,
+      shortfallAssigned: consignmentShortfallAssignedSql, cashInCourierCustody: sql<string>`GREATEST(COALESCE((SELECT SUM(CASE WHEN returned_cash.entryType='COD_COLLECTED' THEN returned_cash.amount WHEN returned_cash.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -returned_cash.amount ELSE 0 END) FROM deliveryLedgerEntries returned_cash WHERE returned_cash.consignmentId = ${deliveryConsignments.id} AND ${effectiveDeliveryLedgerEntrySql("returned_cash")}),0),0)`,
       parcelStatus: deliveryConsignments.parcelStatus,
       recipientName: deliveryConsignments.recipientName,
       invoiceNumber: invoices.invoiceNumber,
@@ -125,7 +126,13 @@ async function loadSettlementLines(
     useCommission,
   );
   const { quoteFee } = feePolicy;
-  const lines: SettlementPreviewLine[] = [];
+  const candidates: Array<{
+    r: (typeof rows)[number];
+    cod: Decimal;
+    collected: Decimal;
+    remaining: Decimal;
+  }> = [];
+  const unremittableDeliveredIds: number[] = [];
   for (const r of rows) {
     const cod = round2(money(r.codAmount));
     const collected = round2(money(r.collectedAmount ?? "0"));
@@ -136,15 +143,94 @@ async function loadSettlementLines(
         .minus(money(r.shortfallAssigned ?? "0")),
     );
     if (remaining.lte(0)) continue;
-    let feeWithholding = money(0);
+    if (round2(money(r.cashInCourierCustody ?? "0")).lte(0)) {
+      unremittableDeliveredIds.push(Number(r.id));
+      continue;
+    }
+    candidates.push({ r, cod, collected, remaining });
+  }
+  if (unremittableDeliveredIds.length > 0) {
+    const unremittableMemberships = await tx
+      .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+      .from(deliveryShipmentMembers)
+      .where(inArray(deliveryShipmentMembers.consignmentId, unremittableDeliveredIds));
+    const unremittableLeaders = Array.from(
+      new Set(unremittableMemberships.map((m) => Number(m.leaderId))),
+    );
+    if (unremittableLeaders.length > 0) {
+      const lineIdSet = new Set(candidates.map((item) => Number(item.r.id)));
+      const shipmentRows = await tx
+        .select({
+          leaderId: deliveryShipmentMembers.leaderConsignmentId,
+          cn: deliveryConsignments,
+          shortfall: consignmentShortfallAssignedSql,
+        })
+        .from(deliveryShipmentMembers)
+        .innerJoin(
+          deliveryConsignments,
+          eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+        )
+        .where(inArray(deliveryShipmentMembers.leaderConsignmentId, unremittableLeaders));
+      for (const leaderId of unremittableLeaders) {
+        const owing = shipmentRows
+          .filter(
+            (row) =>
+              Number(row.leaderId) === leaderId &&
+              !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.cn.status) &&
+              !["CANCELLED", "RETURNED"].includes(row.cn.parcelStatus),
+          )
+          .filter((row) =>
+            round2(
+              Decimal.max(
+                0,
+                money(row.cn.codAmount)
+                  .minus(money(row.cn.collectedAmount ?? "0"))
+                  .minus(money(row.cn.counterSettledAmount ?? "0"))
+                  .minus(money(row.shortfall ?? "0")),
+              ),
+            ).gt(0),
+          );
+        if (
+          owing.some(
+            (row) =>
+              row.cn.parcelStatus !== "DELIVERED" ||
+              lineIdSet.has(Number(row.cn.id)),
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر معاينة تسوية الشحنة",
+              why: "توجد فواتير أخرى للشحنة لم تُدرج في التسوية",
+              doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
+            }),
+          });
+        }
+      }
+    }
+  }
+  const detached = await planDetachedShipmentFees(tx, { partyId: scope.partyId, branchId: scope.branchId,
+    consignmentIds: candidates.map((item) => Number(item.r.id)), useCommission, includePending: false, requireComplete: true, feePolicy });
+  if (detached.blocked || detached.uncovered || detached.incomplete) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر معاينة تسوية الشحنة", why: detached.incomplete ? "توجد فواتير أخرى للشحنة لم تُدرج في التسوية" : detached.blocked ? "أجرة على فاتورة مغلقة تحتاج مطابقة قاعدة العمولة" : "نقد الشحنة لا يغطي أجرتها كاملة",
+      doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
+    }) });
+  }
+  const lines: SettlementPreviewLine[] = [];
+  for (const { r, cod, collected, remaining } of candidates) {
+    const id = Number(r.id);
+    let ownFee = money(0);
     if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
       const due = money(r.feeDue);
       const quotedCash = quoteFee(due, money(r.orderTotal));
-      assertFeeWithholdingCapacity(due, quotedCash, remaining);
-      feeWithholding = Decimal.min(remaining, quotedCash);
+      const projected = detached.projectedFromSource.get(id) ?? money(0);
+      assertFeeWithholdingCapacity(due, quotedCash, remaining.plus(projected));
+      ownFee = Decimal.min(remaining, Decimal.max(0, quotedCash.minus(projected)));
     }
+    const feeWithholding = round2(ownFee.plus(detached.allocations.get(id) ?? 0));
     lines.push({
-      consignmentId: Number(r.id),
+      consignmentId: id,
       consignmentNumber: r.consignmentNumber,
       invoiceNumber: r.invoiceNumber,
       customerName:
@@ -159,16 +245,6 @@ async function loadSettlementLines(
       feeWithholding: feeWithholding.toFixed(2),
     });
   }
-  const detached = await planDetachedShipmentFees(tx, { partyId: scope.partyId, branchId: scope.branchId,
-    consignmentIds: lines.map((line) => line.consignmentId), useCommission, includePending: false, requireComplete: true, feePolicy });
-  if (detached.blocked || detached.uncovered || detached.incomplete) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-      what: "تعذر معاينة تسوية الشحنة", why: detached.incomplete ? "توجد فواتير أخرى للشحنة لم تُدرج في التسوية" : detached.blocked ? "أجرة على فاتورة مغلقة تحتاج مطابقة قاعدة العمولة" : "نقد الشحنة لا يغطي أجرتها كاملة",
-      doThis: "راجع جميع فواتير الشحنة وأجرتها قبل التوريد",
-    }) });
-  }
-  for (const line of lines) line.feeWithholding = round2(money(line.feeWithholding ?? "0")
-    .plus(detached.allocations.get(line.consignmentId) ?? 0)).toFixed(2);
   return lines;
 }
 
@@ -251,7 +327,7 @@ export interface SettleDailyInput extends DailySettlementScope {
   /** إلزاميٌّ حين يقلّ المعدود عن المتوقَّع — من القائمة المغلقة `shared/shortfallReason.ts`. */
   shortfallReason?: ShortfallReason | string | null;
   shortfallNotes?: string | null;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه

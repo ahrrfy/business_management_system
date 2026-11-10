@@ -77,7 +77,7 @@ async function assertBranchOwnership(
   entityLabel: string,
 ): Promise<void> {
   const role = await resolveActorRole(tx, actor);
-  if (role === "admin") return;
+  if (role === "admin" || actor.isOwner === true || (role === "accountant" && actor.branchId == null)) return;
   if (targetBranchId == null) return; // كيان بلا فرع مُسنَد ⇒ لا يُمكن فرض الانتماء
   if (Number(actor.branchId) !== Number(targetBranchId)) {
     throw new TRPCError({

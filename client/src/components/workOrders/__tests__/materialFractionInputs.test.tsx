@@ -35,6 +35,9 @@ vi.mock("@/lib/trpc", () => ({
       setMaterials: {
         useMutation: () => ({ mutate: state.save, isPending: false }),
       },
+      searchMaterials: {
+        useQuery: () => ({ data: [], isFetching: false }),
+      },
       requestControl: {
         useMutation: () => ({ mutate: state.request, isPending: false }),
       },

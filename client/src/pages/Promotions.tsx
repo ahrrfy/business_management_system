@@ -39,13 +39,13 @@ import { printTerminationSettlement } from "@/lib/printing/printTerminationSettl
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { TERMINATION_TYPES } from "@shared/hr";
+import { baghdadTodayYmd, TERMINATION_TYPES } from "@shared/hr";
 import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
 import { CheckCircle2, Printer, RotateCcw, TrendingUp, UserMinus, Wallet } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => baghdadTodayYmd();
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -132,7 +132,7 @@ export default function Promotions() {
 
   const promotions = trpc.promotions.listPromotions.useQuery();
   const terminations = trpc.promotions.listTerminations.useQuery();
-  const employees = trpc.employees.list.useQuery({ status: "active", limit: 200 });
+  const employees = trpc.employees.list.useQuery({ status: "active", limit: 500 });
   const activeEmps = employees.data?.rows ?? [];
 
   /* ===== نافذة الترقية ===== */

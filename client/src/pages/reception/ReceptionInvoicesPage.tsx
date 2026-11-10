@@ -36,8 +36,8 @@ export default function ReceptionInvoicesPage() {
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
       <StationPageHeader
-        title="فواتير للتحصيل"
-        description="فواتير محطّتك التي عليها مبلغٌ متبقٍّ — اقبض من الصفّ مباشرةً، أو أسنِد الطلب لجهة توصيل. الصورة الشاملة لكل الفواتير في «المبيعات»."
+        title="فواتير المبيعات"
+        description="فواتير محطة الاستقبال — التحصيل، المرتجع، الإلغاء، وإعادة الطباعة من شاشة واحدة."
         Icon={Receipt}
       />
       {branchId == null ? (
@@ -48,7 +48,7 @@ export default function ReceptionInvoicesPage() {
         currentShiftId={shiftQ.data ? Number(shiftQ.data.id) : null}
         branchName={branchName}
         parties={(partiesQ.data ?? []) as DispatchParty[]}
-        defaultPayChip="UNSETTLED"
+        defaultPayChip="ALL"
       />
       )}
     </div>

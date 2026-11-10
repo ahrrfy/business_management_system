@@ -133,6 +133,11 @@ export function WorkflowCommercialReturn({
   const members = allMembers.filter(
     (member) => member.received && member.commercialActionRequired,
   );
+  const commercialMembers = allMembers.filter(
+    (member) =>
+      (member.received && member.commercialActionRequired) ||
+      member.postDeliveryCommercialEligible === true,
+  );
   const sourceOnlyRequest =
     preview.relations.fulfillmentRequestId != null &&
     allMembers.length > 0 &&
@@ -145,10 +150,12 @@ export function WorkflowCommercialReturn({
           (member) => member.received && member.sourceClosureRequired,
         )
       : [];
-  const invoices = members
+  const invoices = commercialMembers
     .filter(
       (member) =>
-        member.invoiceId != null && member.invoiceSourceType !== "WORKORDER",
+        member.invoiceId != null &&
+        (member.invoiceSourceType !== "WORKORDER" ||
+          member.postDeliveryCommercialEligible === true),
     )
     .filter(
       (member, index, rows) =>
@@ -330,6 +337,7 @@ export function WorkflowCommercialReturn({
   async function submitNative(args: {
     consignmentId: number;
     refundShiftId: number | undefined;
+    workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL";
   }) {
     if (
       nativeLocked ||
@@ -377,6 +385,9 @@ export function WorkflowCommercialReturn({
     }
     const commonInput = {
       refundShiftId: args.refundShiftId,
+      ...(args.workOrderDisposition
+        ? { workOrderDisposition: args.workOrderDisposition }
+        : {}),
       returnReason: reason.trim(),
       clientRequestId: crypto.randomUUID(),
     };
@@ -430,7 +441,9 @@ export function WorkflowCommercialReturn({
       <p className="font-semibold">
         {sourceOnlyRequest
           ? "إقفال إرسالية الطلب بعد الاستلام الفعلي"
-          : "مرتجع البيع ورد حق العميل بعد الاستلام الفعلي"}
+          : preview.returnState?.postDeliveryCommercialEligible && !members.length
+            ? "مرتجع العميل بعد التسليم"
+            : "مرتجع البيع ورد حق العميل بعد الاستلام الفعلي"}
       </p>
       <p className="text-sm text-muted-foreground">
         {sourceOnlyRequest
@@ -534,6 +547,8 @@ export function WorkflowCommercialReturn({
                 setTarget({
                   consignmentId: members[0].consignmentId,
                   label: `مرتجع تجاري كامل للشحنة — ${allMembers.length} إرساليات: ${allMembers.map((member) => member.consignmentNumber).join("، ")}`,
+                  isWorkOrder: workOrders.length > 0,
+                  workOrderId: workOrders[0]?.workOrderId ?? null,
                   memberIds: allMembers.map((member) => member.consignmentId),
                   wholeShipment: true,
                 })
@@ -554,6 +569,8 @@ export function WorkflowCommercialReturn({
                 setTarget({
                   consignmentId: singletonReturn.consignmentId,
                   label: `مرتجع تجاري كامل للإرسالية الأصلية ${singletonReturn.consignmentNumber}${singletonReturn.workOrderNumber ? ` — أمر الشغل ${singletonReturn.workOrderNumber}` : ""}`,
+                  isWorkOrder: singletonReturn.workOrderId != null,
+                  workOrderId: singletonReturn.workOrderId ?? null,
                   memberIds: [singletonReturn.consignmentId],
                   wholeShipment: false,
                 })
@@ -581,7 +598,7 @@ export function WorkflowCommercialReturn({
       {invoices.length > 0 && (
         <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-0 flex-1 space-y-1 text-sm">
-            الفاتورة المستلمة
+            {preview.returnState?.postDeliveryCommercialEligible && !members.length ? "الفاتورة المسلمة للعميل" : "الفاتورة المستلمة"}
             <AppSelect
               value={selected}
               disabled={formLocked || target != null || opened != null}

@@ -22,7 +22,7 @@ import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 export interface PartyBoardSectionProps {
   outstandingOnly?: boolean;
   /** وردية الدرج التي يدخلها النقد المُورَّد (الاستقبال افتراضياً — كتسوية المناديب). */
-  shiftType?: "RETAIL" | "RECEPTION";
+  shiftType?: "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
   onOpenDetail?: (row: PartyBoardRow) => void;
   onSettleLoose?: (row: PartyBoardRow) => void;
   onWriteOff?: (row: PartyBoardRow) => void;

@@ -7,6 +7,7 @@ import {
   deliveryConsignments,
   deliveryLedgerEntries,
   deliveryParties,
+  deliveryShipmentMembers,
   invoices,
   receipts,
 } from "../../../drizzle/schema";
@@ -22,6 +23,20 @@ import {
   createPostingIntent,
   signedPostingLines,
 } from "../accounting/postingEngine";
+
+async function bumpShipmentLeaderClaimVersionTx(tx: Tx, consignmentId: number) {
+  const [membership] = await tx
+    .select({ leaderConsignmentId: deliveryShipmentMembers.leaderConsignmentId })
+    .from(deliveryShipmentMembers)
+    .where(eq(deliveryShipmentMembers.consignmentId, consignmentId))
+    .limit(1);
+  if (membership && Number(membership.leaderConsignmentId) !== consignmentId) {
+    await tx
+      .update(deliveryConsignments)
+      .set({ codClaimVersion: sql`${deliveryConsignments.codClaimVersion} + 1` })
+      .where(eq(deliveryConsignments.id, Number(membership.leaderConsignmentId)));
+  }
+}
 
 /** Caller holds source → party → consignment locks before the invoice lock. */
 export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
@@ -265,6 +280,7 @@ export async function rebindCorrectedInvoiceDeliveryTx(
       ...(state.cn.sourceType === "INVOICE" ? { sourceId: invoiceId } : {}),
       endCustomerId: invoice.customerId,
       codAmount: toDbMoney(cod),
+      codClaimVersion: sql`${deliveryConsignments.codClaimVersion} + 1`,
       ...(state.cn.status === "CANCELLED"
         ? {}
         : {
@@ -295,6 +311,7 @@ export async function rebindCorrectedInvoiceDeliveryTx(
         sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId=${receipts.id} AND ae.entryType='DELIVERY_FEE_HELD')`,
       ),
     );
+  await bumpShipmentLeaderClaimVersionTx(tx, Number(state.cn.id));
   await appendDeliveryEvent(tx, {
     eventKey: `CN:${state.cn.id}:INVOICE_CORRECTED:${key}`,
     consignmentId: Number(state.cn.id),

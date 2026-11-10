@@ -7,6 +7,8 @@
 // keyset (paginateKeyset) على idx_invoice_shift/idx_invoice_branch — الطابور القديم كان
 // sinceDays:1 مثبَّتاً وlimit 300 بلا ترقيم ⇒ فاتورة الأمس غير قابلة للوصول إطلاقاً (§٨.٥).
 import { and, desc, eq, gte, inArray, isNull, like, ne, or, sql, type SQL } from "drizzle-orm";
+import { normalizeKnownSystemBarcode } from "@shared/barcodeScanner";
+import { stripDocPrefix } from "@shared/documentNumber";
 import {
   customers,
   deliveryConsignments,
@@ -92,13 +94,24 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
   const q = input.q?.trim();
   if (q) {
     const pat = `%${escLike(q)}%`;
+    const normalized = normalizeKnownSystemBarcode(q).trim();
+    const pipeSegment = normalized.includes("|")
+      ? (normalized.split("|")[1] ?? normalized)
+      : normalized;
+    const stripped = stripDocPrefix(pipeSegment).trim();
+    const strippedPat = stripped && stripped !== q ? `%${escLike(stripped)}%` : null;
     const cond = or(
       like(invoices.invoiceNumber, pat),
+      strippedPat ? like(invoices.invoiceNumber, strippedPat) : undefined,
       like(invoices.offlineReceiptNumber, pat),
+      strippedPat ? like(invoices.offlineReceiptNumber, strippedPat) : undefined,
       like(invoices.contactName, pat),
       like(invoices.contactPhone, pat),
       like(customers.name, pat),
       like(customers.phone, pat),
+      like(workOrders.orderNumber, pat),
+      strippedPat ? like(workOrders.orderNumber, strippedPat) : undefined,
+      like(invoices.sourceId, pat),
     );
     if (cond) baseConds.push(cond);
   }

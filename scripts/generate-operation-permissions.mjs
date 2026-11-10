@@ -1741,6 +1741,11 @@ Object.assign(WORDS, {
   unlock: "إعادة فتح",
   unsubscribe: "إلغاء الاشتراك",
   deletion: "الحذف",
+  revise: "تصحيح",
+  commitments: "الالتزامات",
+  conflicts: "التعارضات",
+  labels: "الملصقات",
+  warehouse: "المستودع",
 });
 
 function procedureUsesOwnerScope(name, info, visited = new Set()) {

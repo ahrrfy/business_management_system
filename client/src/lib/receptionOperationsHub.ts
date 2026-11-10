@@ -83,7 +83,7 @@ export const RECEPTION_OPERATION_TAB_DEFINITIONS = [
   },
   {
     value: "invoices",
-    label: "فواتير التحصيل",
+    label: "فواتير المبيعات",
     gate: RECEPTION_INVOICES_GATE,
   },
   {

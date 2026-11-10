@@ -663,7 +663,16 @@ function InTransitTab() {
         cell: ({ row }) => {
           const r = row.original, rowId = Number(r.id);
           const phone = (r.recipientPhone ?? "").trim();
-          if (r.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setDrawerId(r.shipmentLeaderConsignmentId!)}>الشحنة · {r.shipmentInvoiceCount} فواتير</Button>;
+          if (r.shipmentLeaderConsignmentId != null) {
+            const shipmentDue = D((r as { shipmentCollectibleDue?: string | number | null }).shipmentCollectibleDue ?? r.codDue);
+            const showCollect = canCollect && shipmentDue.gt(0) && ["DELIVERED_AWAITING_REMIT", "ASSIGNED", "AWAITING_STATEMENT", "IN_TRANSIT"].includes(r.viewKey);
+            return (
+              <div className="flex flex-wrap items-center gap-1">
+                <Button size="sm" variant="outline" onClick={() => setDrawerId(r.shipmentLeaderConsignmentId!)}>الشحنة · {r.shipmentInvoiceCount} فواتير</Button>
+                {showCollect && <Button size="sm" variant="default" className="font-bold gap-1" onClick={() => setCollectTarget(r)}><Wallet aria-hidden className="size-3" /> سجّل التحصيل</Button>}
+              </div>
+            );
+          }
           return (
             <div className="flex flex-wrap items-center gap-1">
               {/* الإجراء التالي حسب الحالة */}
@@ -1071,6 +1080,10 @@ function InTransitTab() {
                 codAmount: collectTarget.codDue,
                 collectedAmount: collectTarget.collectedAmount,
                 parcelStatus: collectTarget.parcelStatus,
+                shipmentLeaderConsignmentId: collectTarget.shipmentLeaderConsignmentId,
+                shipmentInvoiceCount: collectTarget.shipmentInvoiceCount,
+                shipmentNumber: collectTarget.shipmentNumber,
+                shipmentTrackingRef: collectTarget.shipmentTrackingRef,
               }
             : null
         }

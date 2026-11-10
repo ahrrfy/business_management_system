@@ -132,7 +132,7 @@ export const employeeRouter = router({
           // طريقة الأجر — تُغذّي منتقيات مقصورة على الساعيّ/الشهريّ (مثلاً نموذج الحضور اليدويّ).
           payType: z.enum(PAY_TYPE_KEYS).optional(),
           includeInactive: z.boolean().optional(),
-          limit: z.number().int().positive().max(200).optional(),
+          limit: z.number().int().positive().max(500).optional(),
           offset: z.number().int().min(0).optional(),
         })
         .optional(),

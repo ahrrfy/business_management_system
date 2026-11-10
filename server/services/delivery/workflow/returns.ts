@@ -48,6 +48,7 @@ export interface ReceiveWorkflowReturnInput {
   source: WorkflowDispatchSource;
   branchId?: number;
   evidence: string;
+  feeEarned?: boolean;
   inspected: true;
   receivedConsignmentIds?: number[];
   receivedLines?: Array<{
@@ -395,6 +396,7 @@ export function receiveWorkflowReturn(
               proof: input.evidence.trim(),
               clientRequestId: `${input.clientRequestId}:${row.id}`,
               customerCollectedAmount: "0.00",
+              ...(input.feeEarned !== undefined ? { feeEarned: input.feeEarned } : {}),
               authorization: {
                 kind: "STAFF",
                 operationPath: returnPath,

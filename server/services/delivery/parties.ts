@@ -783,6 +783,7 @@ export async function reassignDeliveryConsignment(
     partyId: number;
     consignmentId: number;
     assignedUserId?: number | null;
+    externalTrackingRef?: string | null;
     clientRequestId: string;
     collectCreditOnDelivery?: boolean;
     expectedClaimVersion?: number;
@@ -798,6 +799,7 @@ export async function reassignDeliveryConsignment(
     consignmentId: Number(input.consignmentId),
     assignedUserId:
       input.assignedUserId == null ? null : Number(input.assignedUserId),
+    ...(input.externalTrackingRef != null ? { externalTrackingRef: input.externalTrackingRef.trim() } : {}),
   });
   const run = async (tx: Tx) => {
     const party = (
@@ -876,7 +878,7 @@ export async function reassignDeliveryConsignment(
       Number(shipmentMembership.leaderConsignmentId) !== Number(cn.id);
     const externalTrackingRef = shipmentFollower
       ? null
-      : requireExternalTrackingRef(party.partyType, cn.externalTrackingRef);
+      : requireExternalTrackingRef(party.partyType, input.externalTrackingRef?.trim() || cn.externalTrackingRef);
     await assertExternalTrackingRefAvailable(
       tx,
       Number(party.id),

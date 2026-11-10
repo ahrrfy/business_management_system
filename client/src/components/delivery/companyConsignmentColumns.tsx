@@ -88,11 +88,24 @@ export function CompanyConsignmentActions({
   const isOpen = isOpenConsignmentStatus(c.status);
   const partialLabel = partialDeliveryStatusLabel({ status: c.status, parcelStatus: c.parcelStatus, partialReturnReceived: c.partialReturnReceived, hasPartialReturn: D(c.invoiceReturnedTotal ?? 0).gt(0) && D(c.invoiceReturnedTotal ?? 0).lt(D(c.invoiceTotal ?? 0)) });
   const remaining = D(c.remainingDue);
+  const shipmentCollectible = D((c as { shipmentCollectibleDue?: string | number | null }).shipmentCollectibleDue ?? c.remainingDue);
   const canRemit =
     isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
-    c.moneyStatus !== "SETTLED" &&
+    (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
+    (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0)) &&
     remaining.gt(0);
+  const canCollectGrouped =
+    isOpen &&
+    c.returnDeclaredAt == null &&
+    !["RETURNED", "CANCELLED"].includes(c.parcelStatus) &&
+    shipmentCollectible.gt(0) &&
+    (c.parcelStatus !== "DELIVERED" ||
+      ((c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
+        (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0))));
+  const canExecuteCollect =
+    lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) ||
+    lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canSettle);
   const canCancel =
     isOpen && c.returnDeclaredAt == null &&
     (c.parcelStatus === "ASSIGNED" ||
@@ -101,7 +114,32 @@ export function CompanyConsignmentActions({
     D(c.collectedAmount).isZero() &&
     D(c.counterSettledAmount).isZero() &&
     D(c.shortfallAssigned).isZero();
-  if (c.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}>الشحنة · {c.shipmentInvoiceCount} فواتير</Button>;
+  if (c.shipmentLeaderConsignmentId != null) {
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}
+        >
+          الشحنة · {c.shipmentInvoiceCount} فواتير
+        </Button>
+        {canExecuteCollect &&
+          canCollectGrouped && (
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7 px-2 text-xs font-bold gap-1"
+              onClick={() => setCollectConsignmentTarget(c)}
+              title="قبض وتحصيل هذه الشحنة المجمعة"
+            >
+              <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+            </Button>
+          )}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-1">
       {partialLabel && c.returnDeclaredAt == null && c.parcelStatus !== "DELIVERED" && <PartialDeliverySettlementButton consignmentId={c.id} />}
@@ -281,7 +319,7 @@ export function companyConsignmentColumns(
     {
       id: "tracking",
       header: "التتبع",
-      accessorFn: (c) => c.externalTrackingRef ?? "—",
+      accessorFn: (c) => c.externalTrackingRef ?? c.shipmentTrackingRef ?? "—",
       meta: { kind: "code" },
     },
     {

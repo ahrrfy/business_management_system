@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { shiftTypeLabel } from "@/lib/labels";
+import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 
 export type PurchaseCashSourceMode = "AUTO" | "DRAWER" | "TREASURY";
@@ -45,8 +46,9 @@ export interface PurchaseCashSourceDecisionInput {
   shiftId: string;
   data:
     | {
-        drawers: Array<{ id: number; shiftType: string }>;
+        drawers: Array<{ id: number; shiftType: string; availableCash?: string }>;
         canUseTreasury: boolean;
+        treasuryAvailableCash?: string | null;
       }
     | undefined;
   isLoading: boolean;
@@ -69,7 +71,7 @@ export function derivePurchaseCashSourceDecision({
   const canChooseDrawer =
     context === "create" ||
     (context === "edit" && isCreator) ||
-    (context === "approval" && (canUseTreasury || isCreator));
+    (context === "approval" && isCreator);
   const isResolved = enabled && normalizedBranchId != null && data != null;
   const validShiftId =
     isResolved && drawers.some((d) => String(d.id) === shiftId) ? shiftId : "";
@@ -114,6 +116,7 @@ export function derivePurchaseCashSourceDecision({
   return {
     drawers,
     canUseTreasury,
+    treasuryAvailableCash: data?.treasuryAvailableCash ?? null,
     canChooseDrawer,
     isResolved,
     validShiftId,
@@ -174,6 +177,7 @@ export function usePurchaseCashSourceState({
   const {
     drawers,
     canUseTreasury,
+    treasuryAvailableCash,
     canChooseDrawer,
     isResolved,
     validShiftId,
@@ -234,6 +238,7 @@ export function usePurchaseCashSourceState({
     setShiftId,
     drawers,
     canUseTreasury,
+    treasuryAvailableCash,
     canChooseDrawer,
     isResolved,
     isLoading: query.isLoading,
@@ -293,6 +298,9 @@ export function PurchaseCashSourceField({
               {context === "approval"
                 ? "خزينة الفرع الرئيسية (تجاوز)"
                 : "خزينة الفرع الرئيسية"}
+              {state.treasuryAvailableCash != null
+                ? ` — المتاح ${fmtAr(state.treasuryAvailableCash)} د.ع`
+                : ""}
             </option>
           ) : null}
         </AppSelect>
@@ -313,6 +321,9 @@ export function PurchaseCashSourceField({
             {state.drawers.map((row) => (
               <option key={row.id} value={String(row.id)}>
                 {shiftTypeLabel(row.shiftType)} — درج #{row.id}
+                {row.availableCash != null
+                  ? ` — المتاح ${fmtAr(row.availableCash)} د.ع`
+                  : ""}
               </option>
             ))}
           </AppSelect>
@@ -395,6 +406,7 @@ export async function runSubmitForApprovalWorkflow(args: {
   }) => Promise<unknown>;
   invalidateAll: () => Promise<unknown>;
   onSuccessToast: (msg: string) => void;
+  onWarnToast?: (msg: string) => void;
   onErrorToast: (err: unknown) => void;
   onNavigate: (path: string) => void;
   setPending: (pending: boolean) => void;
@@ -404,13 +416,28 @@ export async function runSubmitForApprovalWorkflow(args: {
   try {
     const created = await args.createOrder();
     createdPoId = created.purchaseOrderId;
-    await args.confirmOrder({
+    const confirmRes = (await args.confirmOrder({
       purchaseOrderId: created.purchaseOrderId,
       expectedVersion: created.version,
       reason: `ارسال فاتورة الشراء ${created.poNumber} للاعتماد المستقل بعد اكمال البيانات`,
       clientRequestId: `${args.clientRequestId}:submit`,
-    });
+    })) as
+      | {
+          shortageWarning?: {
+            hasShortage?: boolean;
+            warningMessage?: string | null;
+          } | null;
+        }
+      | undefined;
     await args.invalidateAll();
+    if (
+      confirmRes?.shortageWarning?.hasShortage &&
+      confirmRes.shortageWarning.warningMessage
+    ) {
+      (args.onWarnToast ?? args.onSuccessToast)(
+        confirmRes.shortageWarning.warningMessage,
+      );
+    }
     args.onSuccessToast(
       args.isCash
         ? `حفظت الفاتورة النقدية ${created.poNumber} وارسلت للاعتماد؛ سيسدد النقد ذريا فور اعتمادها وترحيلها`

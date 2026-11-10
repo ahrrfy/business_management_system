@@ -122,7 +122,7 @@ export function useReturnComposerSubmission(
             : `إرسال طلب مرتجع للفاتورة ${inv.invoiceNumber}`,
         description:
           approvingRequestId || executesImmediately
-            ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}.${executesImmediately && !approvingRequestId ? (me.data?.isOwner ? " تنفيذٌ فوريّ بصفتك المالك، موثَّقٌ بسببه في سجلّ التدقيق." : " تنفيذٌ فوريّ ذريّ، موثَّقٌ بسببه في سجلّ التدقيق.") : ""} متابعة؟`
+            ? `إرجاع ${scope} — ${moneySentence}، ${stockSentence}.`
             : `ترسل طلباً بإرجاع ${scope} — وعند الاعتماد ${moneySentence}، ${stockSentence}.\n\nتنبيه: لا تسلّم الزبون نقوداً ولا تستلم البضاعة على هذا الطلب: لا يتغيّر المخزون ولا المال حتى يعتمده مراجعٌ مستقل (غيرك وغير منشئ الفاتورة).`,
         confirmText: approvingRequestId
           ? "اعتماد وتنفيذ"

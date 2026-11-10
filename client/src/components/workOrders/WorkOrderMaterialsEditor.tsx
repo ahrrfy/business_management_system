@@ -88,9 +88,9 @@ export function WorkOrderMaterialsEditor({
     catch { return true; }
   }) ? "أدخل كمية مادة موجبة بأربع منازل عشرية أو أقل ضمن الحد المسموح؛ الحذف بزر الحذف." : null;
 
-  const posList = trpc.catalog.posList.useQuery(
-    { branchId: baseline.branchId, tier: "RETAIL", query: search, limit: 20 },
-    { enabled: search.trim().length >= 2, staleTime: 15_000 },
+  const materialList = trpc.workOrders.searchMaterials.useQuery(
+    { workOrderId: baseline.workOrderId, query: search, limit: 20 },
+    { enabled: search.trim().length >= 2 && !locked, staleTime: 15_000 },
   );
   const utils = trpc.useUtils();
 
@@ -133,13 +133,24 @@ export function WorkOrderMaterialsEditor({
     return out;
   }, [aggregatedInitial, rows]);
 
-  function addVariant(r: { variantId: number; productName: string; sku: string }) {
+  function addVariant(r: {
+    variantId: number;
+    productName: string;
+    variantName?: string | null;
+    color?: string | null;
+    size?: string | null;
+    sku: string;
+    conversionFactor?: string | number | null;
+  }) {
+    const stepBase = quantityNumber(Math.max(1, Number(r.conversionFactor) || 1));
+    const suffix = [r.color, r.size, r.variantName].filter(Boolean).join(" / ");
+    const displayLabel = suffix && !r.productName.includes(suffix) ? `${r.productName} — ${suffix}` : r.productName;
     setRows((prev) => {
       const existing = prev.find((x) => x.variantId === r.variantId);
       if (existing) {
-        return prev.map((x) => (x.variantId === r.variantId ? { ...x, baseQuantity: addQuantities(x.baseQuantity, 1) } : x));
+        return prev.map((x) => (x.variantId === r.variantId ? { ...x, baseQuantity: addQuantities(x.baseQuantity, stepBase) } : x));
       }
-      return [...prev, { variantId: r.variantId, baseQuantity: 1, productName: r.productName, sku: r.sku }];
+      return [...prev, { variantId: r.variantId, baseQuantity: stepBase, productName: displayLabel, sku: r.sku }];
     });
     setQuantityDrafts((prev) => { const next = { ...prev }; delete next[r.variantId]; return next; });
     setSearch("");
@@ -150,15 +161,18 @@ export function WorkOrderMaterialsEditor({
     const code = raw.trim();
     if (!code) return;
     try {
-      const exact = await utils.catalog.byBarcode.fetch({ barcode: code, branchId: baseline.branchId, tier: "RETAIL" });
+      const exact = await utils.workOrders.lookupMaterialByBarcode.fetch({
+        workOrderId: baseline.workOrderId,
+        barcode: code,
+      });
       if (exact) {
         addVariant(exact);
         return;
       }
-      // لا نستهلك نتيجة posList قديمة: الرجوع لبحث الاسم مسموح فقط إذا لم يتغيّر الحقل
+      // لا نستهلك نتيجة بحث قديمة: الرجوع لبحث الاسم مسموح فقط إذا لم يتغيّر الحقل
       // وكان طلب النص الحالي مستقراً لحظة Enter. مسح HID لا يرجع أبداً لنتيجة LIKE.
-      const first = (posList.data ?? [])[0];
-      if (allowSearchFallback && !posList.isFetching && searchRef.current?.value.trim() === code && first) {
+      const first = (materialList.data ?? [])[0];
+      if (allowSearchFallback && !materialList.isFetching && searchRef.current?.value.trim() === code && first) {
         addVariant(first);
         return;
       }
@@ -264,23 +278,28 @@ export function WorkOrderMaterialsEditor({
           />
           {search.trim().length >= 2 && (
             <div className="max-h-56 overflow-auto rounded-md border">
-              {(posList.data ?? []).length === 0 && !posList.isFetching && (
-                <div className="px-3 py-2 text-xs text-muted-foreground">لا نتائج.</div>
+              {(materialList.data ?? []).length === 0 && !materialList.isFetching && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">لا نتائج لمواد إنتاج مؤهّلة.</div>
               )}
-              {(posList.data ?? []).map((r: any) => (
-                <button
-                  key={`${r.variantId}-${r.productUnitId}`}
-                  type="button"
-                  onClick={() => addVariant(r)}
-                  className="flex w-full items-center justify-between border-b px-3 py-1.5 text-right text-sm last:border-b-0 hover:bg-accent"
-                >
-                  <span className="flex flex-col items-start">
-                    <span>{r.productName}</span>
-                    <span className="text-[11px] text-muted-foreground" dir="ltr">{r.sku} · {r.unitName}</span>
-                  </span>
-                  <Badge variant="outline" dir="ltr">{formatQuantity(r.stockBase)} متوفّر</Badge>
-                </button>
-              ))}
+              {(materialList.data ?? []).map((r) => {
+                const suffix = [r.color, r.size, r.variantName].filter(Boolean).join(" / ");
+                return (
+                  <button
+                    key={`${r.variantId}-${r.productUnitId}`}
+                    type="button"
+                    onClick={() => addVariant(r)}
+                    className="flex w-full items-center justify-between border-b px-3 py-1.5 text-right text-sm last:border-b-0 hover:bg-accent"
+                  >
+                    <span className="flex flex-col items-start">
+                      <span>{suffix ? `${r.productName} — ${suffix}` : r.productName}</span>
+                      <span className="text-[11px] text-muted-foreground" dir="ltr">
+                        {r.sku} · {r.unitName}{Number(r.conversionFactor) > 1 ? ` (×${r.conversionFactor})` : ""}
+                      </span>
+                    </span>
+                    <Badge variant="outline" dir="ltr">{formatQuantity(r.stockBase)} متوفّر</Badge>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

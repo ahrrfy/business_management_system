@@ -186,7 +186,7 @@ export default function TreasuryScreen() {
                   <Text style={styles.sectionHeaderTitle}>أرصدة الخزائن حسب الفرع</Text>
                 </View>
                 {data?.branchTreasuries.map((branch, idx) => (
-                  <View key={branch.branchId || idx} style={styles.itemRow}>
+                  <View key={`branch-${branch.branchId}-${idx}`} style={styles.itemRow}>
                     <View style={styles.itemInfo}>
                       <Text style={styles.itemTitle}>{branch.branchName}</Text>
                       <Text style={styles.itemSubtitle}>خزينة مركزية معتمدة</Text>
@@ -207,14 +207,14 @@ export default function TreasuryScreen() {
                   <Text style={styles.sectionHeaderTitle}>أدراج الكاشيرات وورديات اليوم</Text>
                 </View>
                 {data?.activeDrawers.map((drawer, idx) => (
-                  <View key={drawer.shiftId || idx} style={styles.itemRow}>
+                  <View key={`drawer-${drawer.branchId}-${drawer.shiftId}-${idx}`} style={styles.itemRow}>
                     <View style={styles.drawerIconBox}>
                       <Ionicons color={colors.brand} name="person" size={16} />
                     </View>
                     <View style={styles.itemInfo}>
                       <Text style={styles.itemTitle}>{drawer.cashierName}</Text>
                       <Text style={styles.itemSubtitle}>
-                        وردية #{drawer.shiftId} • {drawer.branchName}
+                        {drawer.openShiftsCount > 0 ? `${drawer.openShiftsCount} وردية مفتوحة` : "لا توجد ورديات مفتوحة"} • {drawer.branchName}
                       </Text>
                     </View>
                     <View style={styles.itemAmountCol}>

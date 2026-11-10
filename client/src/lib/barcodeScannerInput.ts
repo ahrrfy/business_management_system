@@ -3,5 +3,6 @@ export {
   normalizeKnownSystemBarcode,
   stripTrackingLeadingZeros,
   trackingRefsEquivalent,
+  unwrapBarcodeScanEnvelope,
 } from "@shared/barcodeScanner";
 

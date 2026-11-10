@@ -28,6 +28,7 @@ import { nextActionTerminalReason } from "@shared/nextAction";
 import { appErrorMessage } from "@shared/errors";
 import { derivePurchaseOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { getDb } from "../db";
+import { withTx } from "../services/tx";
 import { escLike } from "../lib/sqlLike";
 import {
   nonNegMoneyString,
@@ -59,8 +60,10 @@ import {
   listPurchaseOrderEvents,
   listPurchaseOrderRevisions,
   listPurchaseRequisitions,
+  computeCashPurchaseShortageSummaryTx,
   requestPurchaseOrderControl,
   requestPurchaseRequisitionCancellation,
+  revisePurchaseOrderPaymentSource,
   submitPurchaseOrderForApproval,
   submitPurchaseRequisition,
   updatePurchaseControlSettings,
@@ -188,7 +191,11 @@ export const purchaseRouter = router({
       if (!elevated && ctx.user.branchId == null)
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "لا فرع مُسنَد لهذا المستخدم",
+          message: appErrorMessage({
+            what: "تعذّر تصحيح مصدر سداد أمر الشراء",
+            why: "لا يوجد فرع مُسنَد لهذا المستخدم لتنفيذ العملية",
+            doThis: "اطلب من مدير النظام إسناد فرع لحسابك ثم أعد المحاولة",
+          }),
         });
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       const items = Array.from(
@@ -495,9 +502,56 @@ export const purchaseRouter = router({
           status: "SENT",
           requestStatus: res.status,
           reason: input.reason,
+          shortageWarning: res.shortageWarning?.shortageAmount ?? null,
           idempotent: res.idempotent,
         },
       });
+      return res;
+    }),
+
+  revisePaymentSource: purchasesManagerProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(500),
+        tender: purchaseTenderSchema.nullish(),
+        cashSource: z
+          .object({
+            mode: z.enum(["DRAWER", "TREASURY"]),
+            shiftId: z.number().int().positive().nullish(),
+          })
+          .nullish(),
+        clientRequestId: z.string().trim().min(8).max(64).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا المستخدم",
+        });
+      }
+      const res = await revisePurchaseOrderPaymentSource(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      if (!res.idempotent) {
+        await logAudit(ctx, {
+          action: "purchase.revisePaymentSource",
+          entityType: "purchaseOrder",
+          entityId: input.purchaseOrderId,
+          newValue: {
+            revisionId: res.revisionId,
+            version: res.version,
+            reason: input.reason,
+            tender: input.tender ?? null,
+            cashSource: input.cashSource ?? null,
+          },
+        });
+      }
       return res;
     }),
 
@@ -1547,6 +1601,7 @@ export const purchaseRouter = router({
           ...poMasked,
           tender: null,
           legacyCashSource: null,
+          goodsPaymentSummary: null,
           paymentReceipts: [],
           items: itemsMasked,
           nextAction,
@@ -1560,10 +1615,18 @@ export const purchaseRouter = router({
             po.currentRevisionId == null ? null : Number(po.currentRevisionId))
         : null;
       const paymentReceipts = await loadPurchasePaymentEvidence(db, po, tender);
+      const goodsPaymentSummary =
+        po.settlementType === "CASH" && po.agreedCurrency !== "USD"
+          ? await withTx(
+              (tx) => computeCashPurchaseShortageSummaryTx(tx, po),
+              { gate: "NONE" },
+            )
+          : null;
       return {
         ...po,
         tender,
         legacyCashSource,
+        goodsPaymentSummary,
         paymentReceipts,
         paidAmount: settlement.paidAmountIqd,
         paidUsd:

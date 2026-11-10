@@ -29,6 +29,7 @@ import { toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { withTx, type Actor } from "../tx";
 import { readVersion, readVersionHistory, restoreToVersion } from "../versioning/recordVersion";
+import { acquireCatalogBarcodeWriteLock } from "./barcodeAliases";
 import { getProductForVariantEdit, type VariantEditRow } from "./productEditDocument";
 import type { UpdateVariantRow } from "../productEditService";
 import { buildProductSnapshot } from "./productSnapshot";
@@ -242,8 +243,10 @@ export function snapshotToUpdateInput(doc: ProductSnapshotDocument, reason: stri
     isCustomizable: doc.isCustomizable,
     allowAutoCartRecommendations: doc.allowAutoCartRecommendations,
     isService: doc.isService,
+    ...(doc.stockUsage !== undefined ? { stockUsage: doc.stockUsage } : {}),
     allowBackorder: doc.allowBackorder,
     isActive: doc.isActive,
+    ...(doc.showInStore !== undefined ? { showInStore: doc.showInStore } : {}),
     showInReception: doc.showInReception,
     showInPrintPos: doc.showInPrintPos,
     showInQuotations: doc.showInQuotations,
@@ -323,6 +326,7 @@ export async function restoreProductVersion(
         versionNumber: input.versionNumber,
         reason: input.reason ?? undefined,
         applyRestore: async (tx2, payload, actor2, restoreReason) => {
+          await acquireCatalogBarcodeWriteLock(tx2);
           const snapshot = parseSnapshot(payload, input.productId);
           const current = await getProductForVariantEdit(input.productId, tx2);
           if (!current) throw productNotFoundError(input.productId);

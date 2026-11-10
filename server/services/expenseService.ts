@@ -2,6 +2,7 @@ import { lockEconomicInventoryScope, readEconomicVariant } from "./inventory/eco
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
+import { isOperatingSupplyStockUsage } from "@shared/stockUsage";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -47,7 +48,7 @@ import {
 import { postEntry } from "./ledgerService";
 import { assertPeriodOpen, getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
-import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
+import { assertCashOutAvailable, computeDrawerCashBalance, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { assertApprover, resolveApprovalActor } from "./approval/ownerGate";
 import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
@@ -353,7 +354,11 @@ function expenseCreatePayloadHash(input: CreateExpenseInput, actor: Actor) {
 async function loadExpenseReplay(tx: any, replayId: number) {
   const ex = (
     await tx
-      .select({ receiptId: expenses.receiptId, status: expenses.status })
+      .select({
+        receiptId: expenses.receiptId,
+        shiftId: expenses.shiftId,
+        status: expenses.status,
+      })
       .from(expenses)
       .where(eq(expenses.id, replayId))
       .limit(1)
@@ -368,6 +373,7 @@ async function loadExpenseReplay(tx: any, replayId: number) {
   return {
     expenseId: replayId,
     receiptId: ex.receiptId ? Number(ex.receiptId) : null,
+    shiftId: ex.shiftId != null ? Number(ex.shiftId) : null,
     status: ex.status,
     requiresApproval: ex.status === "PENDING_APPROVAL",
     idempotent: true,
@@ -379,35 +385,92 @@ async function lockOwnRetailShift(
   input: CreateExpenseInput,
   actor: Actor,
 ): Promise<number> {
-  const conds = [
-    eq(shifts.userId, actor.userId),
-    eq(shifts.branchId, input.branchId),
-    eq(shifts.status, "OPEN"),
-    eq(shifts.shiftType, "RETAIL"),
-  ];
-  if (input.shiftId != null) conds.push(eq(shifts.id, input.shiftId));
+  if (input.shiftId != null) {
+    const shift = (
+      await tx
+        .select({
+          id: shifts.id,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+          status: shifts.status,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, input.shiftId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!shift) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر صرف المصروف النقدي من الدرج",
+          why: "الوردية المحددة غير موجودة في السجلات",
+          doThis: "اختر وردية نشطة صالحة من قائمة الأدراج المفتوحة ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (
+      Number(shift.userId) !== actor.userId ||
+      Number(shift.branchId) !== Number(input.branchId)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر صرف المصروف من الوردية المحددة",
+          why: "المصروف النقدي من الدرج يُصرف من درج وردية المُنشئ فقط (في نفس الفرع)",
+          doThis: "اختر ورديتك المفتوحة في نفس الفرع أو اصرف من الخزينة وفق صلاحيتك",
+        }),
+      });
+    }
+    if (shift.status !== "OPEN") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر صرف المصروف من الوردية المحددة",
+          why: "الوردية المحددة مغلقة ولا تقبل حركات نقدية جديدة",
+          doThis: "افتح وردية جديدة أو اختر وردية نشطة وممولة تخصك في نفس الفرع",
+        }),
+      });
+    }
+    return Number(shift.id);
+  }
 
-  const shift = (
-    await tx
-      .select({
-        id: shifts.id,
-        branchId: shifts.branchId,
-        userId: shifts.userId,
-        status: shifts.status,
-      })
-      .from(shifts)
-      .where(and(...conds))
-      .for("update")
-      .limit(1)
-  )[0];
-  if (!shift) {
+  const openShifts = await tx
+    .select({
+      id: shifts.id,
+      branchId: shifts.branchId,
+      userId: shifts.userId,
+      status: shifts.status,
+    })
+    .from(shifts)
+    .where(
+      and(
+        eq(shifts.userId, actor.userId),
+        eq(shifts.branchId, input.branchId),
+        eq(shifts.status, "OPEN"),
+      ),
+    )
+    .orderBy(asc(shifts.id))
+    .for("update")
+    .limit(2);
+  if (openShifts.length === 0) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
-        "المصروف النقدي الصغير يُصرف من درج وردية المُنشئ فقط؛ افتح وردية مبيعات ممولة أولاً.",
+        "المصروف النقدي الصغير يُصرف من درج وردية المُنشئ فقط؛ افتح وردية نشطة وممولة أولاً.",
     });
   }
-  return Number(shift.id);
+  if (openShifts.length > 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تحديد درج الصرف تلقائياً",
+        why: "توجد أكثر من وردية نشطة باسمك في هذا الفرع",
+        doThis: "اختر الوردية المطلوبة صراحةً من حقل الدرج قبل الحفظ",
+      }),
+    });
+  }
+  return Number(openShifts[0].id);
 }
 
 async function insertExpenseAudit(
@@ -496,18 +559,80 @@ async function createStockExpenseTx(
     });
   }
 
-  const varIds = Array.from(new Set(resolved.map((r) => r.variantId)));
+  const varIds = Array.from(new Set(resolved.map((r) => r.variantId))).sort((a, b) => a - b);
   const existing = await tx
-    .select({ id: productVariants.id })
+    .select({
+      id: productVariants.id,
+      productId: productVariants.productId,
+      variantActive: productVariants.isActive,
+    })
     .from(productVariants)
-    .where(inArray(productVariants.id, varIds));
-  const existSet = new Set(existing.map((v: any) => Number(v.id)));
-  for (const id of varIds)
-    if (!existSet.has(id))
+    .where(inArray(productVariants.id, varIds))
+    .orderBy(asc(productVariants.id));
+  type VarLookupRow = { id: number; productId: number; variantActive: boolean | null };
+  type LockedProdRow = {
+    id: number;
+    name: string;
+    isActive: boolean | null;
+    isService: boolean | null;
+    isBundle: boolean | null;
+    isConsignment: boolean | null;
+    productType: string | null;
+    stockUsage: typeof products.$inferSelect["stockUsage"];
+  };
+  const typedExisting = existing as VarLookupRow[];
+  const existByVar = new Map<number, VarLookupRow>(typedExisting.map((v) => [Number(v.id), v]));
+  for (const id of varIds) {
+    if (!existByVar.has(id)) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: `صنف #${id} غير موجود`,
       });
+    }
+  }
+  const productIds: number[] = Array.from(new Set(typedExisting.map((v) => Number(v.productId)))).sort((a: number, b: number) => a - b);
+  const lockedProducts: LockedProdRow[] = productIds.length
+    ? await tx
+        .select({
+          id: products.id,
+          name: products.name,
+          isActive: products.isActive,
+          isService: products.isService,
+          isBundle: products.isBundle,
+          isConsignment: products.isConsignment,
+          productType: products.productType,
+          stockUsage: products.stockUsage,
+        })
+        .from(products)
+        .where(inArray(products.id, productIds))
+        .orderBy(asc(products.id))
+        .for("update")
+    : [];
+  const prodById = new Map<number, LockedProdRow>(lockedProducts.map((p) => [Number(p.id), p]));
+  for (const id of varIds) {
+    const v = existByVar.get(id)!;
+    const p = prodById.get(Number(v.productId));
+    if (!p || !p.isActive || !v.variantActive || p.isService || p.isBundle || p.productType === "DIGITAL_CARD") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر صرف «${p?.name ?? `#${id}`}» كمصروف مخزني`,
+          why: "الصنف معطّل أو ليس مخزوناً مملوكاً (خدمة أو بكج أو أمانة)",
+          doThis: "اختر مستلزم تشغيل مخزني مملوك نشط للصرف الداخلي",
+        }),
+      });
+    }
+    if (!isOperatingSupplyStockUsage(p.stockUsage)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر صرف «${p.name}» كمصروف تشغيلي داخلي`,
+          why: "تصنيف استخدام الصنف ليس «مستلزم تشغيل» (مخصّص للبيع أو كمادة خام للإنتاج)",
+          doThis: "استعمل مستلزم تشغيل للصرف الداخلي، أو حدّث تصنيف استخدام الصنف إن كان مستلزماً داخلياً",
+        }),
+      });
+    }
+  }
 
   const expDate = resolvedExpenseDate;
 
@@ -640,7 +765,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
           current.permissionsOverride as PermissionMap | null,
           "expenses",
           "FULL",
-          ["cashier", "manager", "accountant"],
+          ["cashier", "retail_cashier", "print_cashier", "reception_clerk", "manager", "accountant"],
         ),
       );
       if ((input.source ?? "CASH") === "STOCK") {
@@ -826,6 +951,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       return {
         expenseId,
         receiptId,
+        shiftId: effectiveShiftId,
         status: pendingApproval ? "PENDING_APPROVAL" : "ACTIVE",
         requiresApproval: pendingApproval,
       };
@@ -1035,6 +1161,7 @@ export async function approveExpense(expenseId: number, actor: Actor) {
       return {
         expenseId,
         receiptId: exp.receiptId == null ? null : Number(exp.receiptId),
+        approvedBy: Number(completedReceipt.approvedBy),
         status: "ACTIVE" as const,
         idempotent: true,
       };
@@ -1074,6 +1201,7 @@ export async function approveExpense(expenseId: number, actor: Actor) {
       return {
         expenseId,
         receiptId: Number(exp.receiptId),
+        approvedBy: Number(receipt.approvedBy),
         status: "PENDING_APPROVAL" as const,
         workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
         idempotent: true,
@@ -1112,6 +1240,7 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     return {
       expenseId,
       receiptId: Number(exp.receiptId),
+      approvedBy: actor.userId,
       status: "PENDING_APPROVAL" as const,
       workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
       idempotent: false,
@@ -1123,33 +1252,92 @@ async function lockExpenseExecutorShift(
   tx: any,
   branchId: number,
   actor: Actor,
+  requestedShiftId?: number | null,
 ): Promise<number> {
-  const shift = (
-    await tx
-      .select({ id: shifts.id, userId: shifts.userId })
-      .from(shifts)
-      .where(
-        and(
-          eq(shifts.userId, actor.userId),
-          eq(shifts.branchId, branchId),
-          eq(shifts.status, "OPEN"),
-          eq(shifts.shiftType, "RETAIL"),
-        ),
-      )
-      .for("update")
-      .limit(1)
-  )[0];
-  if (!shift) {
+  if (requestedShiftId != null) {
+    const shift = (
+      await tx
+        .select({
+          id: shifts.id,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+          status: shifts.status,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, requestedShiftId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!shift) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف من درج الوردية",
+          why: "الوردية المحددة غير موجودة",
+          doThis: "اختر وردية نشطة تخصك في نفس الفرع",
+        }),
+      });
+    }
+    if (
+      Number(shift.userId) !== actor.userId ||
+      Number(shift.branchId) !== Number(branchId)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف من هذا الدرج",
+          why: "الوردية المحددة لا تخص منفذ الصرف أو لا تتبع الفرع نفسه",
+          doThis: "اختر ورديتك المفتوحة في نفس الفرع أو نفّذ الصرف من خزينة الفرع",
+        }),
+      });
+    }
+    if (shift.status !== "OPEN") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف من درج الوردية",
+          why: "الوردية المحددة مغلقة",
+          doThis: "اختر وردية نشطة وممولة تخصك في نفس الفرع أو نفّذ الصرف من خزينة الفرع",
+        }),
+      });
+    }
+    return Number(shift.id);
+  }
+
+  const openShifts = await tx
+    .select({ id: shifts.id, userId: shifts.userId })
+    .from(shifts)
+    .where(
+      and(
+        eq(shifts.userId, actor.userId),
+        eq(shifts.branchId, branchId),
+        eq(shifts.status, "OPEN"),
+      ),
+    )
+    .orderBy(asc(shifts.id))
+    .for("update")
+    .limit(2);
+  if (openShifts.length === 0) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: "تعذّر تنفيذ المصروف من درج الوردية",
-        why: "لا توجد وردية بيع بالتجزئة مفتوحة لمنفذ الصرف في الفرع",
+        why: "لا توجد وردية نشطة مفتوحة لمنفذ الصرف في الفرع",
         doThis: "افتح ورديتك وموّلها، أو اختر الدفع المباشر من خزينة الفرع",
       }),
     });
   }
-  return Number(shift.id);
+  if (openShifts.length > 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تحديد درج الوردية تلقائياً",
+        why: "توجد أكثر من وردية نشطة مفتوحة باسمك في نفس الفرع",
+        doThis: "حدّد رقم الوردية المطلوبة صراحةً قبل التنفيذ",
+      }),
+    });
+  }
+  return Number(openShifts[0].id);
 }
 
 async function completedExpenseExecutionReplay(
@@ -1158,6 +1346,7 @@ async function completedExpenseExecutionReplay(
   receipt: typeof receipts.$inferSelect | null,
   source: ExpenseExecutionSource,
   actor: Actor,
+  requestedShiftId?: number | null,
 ) {
   const expectedCashBucket =
     exp.paymentMethod !== "CASH"
@@ -1173,7 +1362,9 @@ async function completedExpenseExecutionReplay(
       : source === "NON_CASH";
   const drawerMatches =
     expectedCashBucket !== "DRAWER" ||
-    (exp.shiftId != null && Number(exp.createdBy) === actor.userId);
+    (exp.shiftId != null &&
+      Number(exp.createdBy) === actor.userId &&
+      (requestedShiftId == null || Number(exp.shiftId) === Number(requestedShiftId)));
   const treasuryMatches =
     expectedCashBucket !== "TREASURY" || exp.shiftId == null;
   const nonCashMatches =
@@ -1237,6 +1428,7 @@ async function completedExpenseExecutionReplay(
     status: "ACTIVE" as const,
     cashBucket: exp.cashBucket,
     shiftId: exp.shiftId == null ? null : Number(exp.shiftId),
+    approvedBy: Number(receipt.approvedBy),
     executedBy: Number(receipt.executedBy),
     idempotent: true,
   };
@@ -1247,6 +1439,7 @@ export async function executeApprovedExpense(
   expenseId: number,
   source: ExpenseExecutionSource,
   actor: Actor,
+  options?: { shiftId?: number | null },
 ) {
   return withTx(async (tx) => {
     const hint = (
@@ -1331,6 +1524,7 @@ export async function executeApprovedExpense(
         completedReceipt,
         source,
         actor,
+        options?.shiftId,
       );
     }
 
@@ -1362,6 +1556,7 @@ export async function executeApprovedExpense(
           tx,
           Number(hint.branchId),
           actor,
+          options?.shiftId,
         );
         cashBucket = "DRAWER";
       } else {
@@ -1432,7 +1627,7 @@ export async function executeApprovedExpense(
       receipt.executedBy != null &&
       receipt.executedAt != null
     ) {
-      return completedExpenseExecutionReplay(tx, exp, receipt, source, actor);
+      return completedExpenseExecutionReplay(tx, exp, receipt, source, actor, options?.shiftId);
     }
     if (
       exp.status !== "PENDING_APPROVAL" ||
@@ -1549,6 +1744,7 @@ export async function executeApprovedExpense(
       status: "ACTIVE" as const,
       cashBucket,
       shiftId,
+      approvedBy: Number(receipt.approvedBy),
       executedBy: actor.userId,
       idempotent: false,
     };
@@ -3563,4 +3759,57 @@ export async function getExpenseTrace(
     auditTrail,
     reversalReceipts,
   };
+}
+
+export async function listOpenExpenseDrawers(branchId: number, actor: Actor) {
+  if (actor.role !== "admin" && Number(actor.branchId) !== Number(branchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر عرض الأدراج المفتوحة",
+        why: "لا تملك صلاحية عرض أدراج فرع آخر غير فرعك المسند",
+        doThis: "اعرض أدراج فرعك الحالي فقط أو اطلب صلاحية عبور الفروع من المالك",
+      }),
+    });
+  }
+  return withTx(
+    async (tx) => {
+      const rows = await tx
+        .select({
+          id: shifts.id,
+          shiftType: shifts.shiftType,
+          openingBalance: shifts.openingBalance,
+        })
+        .from(shifts)
+        .where(
+          and(
+            eq(shifts.branchId, branchId),
+            eq(shifts.userId, actor.userId),
+            eq(shifts.status, "OPEN"),
+          ),
+        )
+        .orderBy(asc(shifts.id));
+      const out: Array<{
+        id: number;
+        shiftType: string;
+        openingBalance: string;
+        availableCash: string;
+      }> = [];
+      for (const row of rows) {
+        const bal = await computeDrawerCashBalance(
+          tx,
+          Number(row.id),
+          row.openingBalance ?? "0",
+        );
+        out.push({
+          id: Number(row.id),
+          shiftType: row.shiftType,
+          openingBalance: toDbMoney(row.openingBalance ?? "0"),
+          availableCash: toDbMoney(bal),
+        });
+      }
+      return out;
+    },
+    { gate: "NONE" },
+  );
 }

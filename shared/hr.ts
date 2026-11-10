@@ -40,11 +40,51 @@ export const ATTENDANCE_STATE_LABELS: Readonly<Record<string, string>> = {
   present: "حضور",
   absent: "غياب",
   open: "بصمة انصراف ناقصة",
+  inProgress: "قيد الدوام الآن",
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل المباشرة",
+  restDay: "استراحة أسبوعية",
   restWorked: "عمل يوم عطلة",
 };
+
+/** تاريخ اليوم بتقويم بغداد (Asia/Baghdad) بصيغة YYYY-MM-DD — يمنع انزياح 00:00–02:59 عن UTC. */
+export function baghdadTodayYmd(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+/** الشهر الحالي بتقويم بغداد بصيغة YYYY-MM. */
+export function baghdadCurrentMonth(now: Date = new Date()): string {
+  return baghdadTodayYmd(now).slice(0, 7);
+}
+
+/** السنة الحالية بتقويم بغداد. */
+export function baghdadCurrentYear(now: Date = new Date()): number {
+  return Number(baghdadTodayYmd(now).slice(0, 4));
+}
+
+/** آخر N أشهُر انطلاقاً من شهر بغداد الحاليّ. */
+export function recentBaghdadMonths(count = 12, now: Date = new Date()): string[] {
+  const [y0, m0] = baghdadCurrentMonth(now).split("-").map(Number);
+  let y = y0;
+  let m = m0;
+  return Array.from({ length: count }, () => {
+    const period = `${y}-${String(m).padStart(2, "0")}`;
+    m -= 1;
+    if (m < 1) {
+      m = 12;
+      y -= 1;
+    }
+    return period;
+  });
+}
 
 /** The statement period is UTC; local month setters can drop its first option. */
 export function recentAttendanceMonths(count = 12, now = new Date()): string[] {

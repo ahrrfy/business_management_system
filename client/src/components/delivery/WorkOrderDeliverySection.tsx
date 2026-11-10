@@ -14,7 +14,7 @@ export interface WorkOrderDeliveryData {
   hasDelivery?: boolean | null;
   consignmentId?: number | null;
   consignmentNumber?: string | null;
-  deliveryPartyName?: string | null;
+  deliveryPartyId?: number | null; deliveryPartyName?: string | null;
   parcelStatus?: string | null;
   deliveryAddress?: string | null;
   customerPhone?: string | null;
@@ -168,7 +168,7 @@ export function WorkOrderDeliverySection({
           consignment={{
             id: Number(data.consignmentId),
             consignmentNumber: data.consignmentNumber,
-            partyId: 0,
+            partyId: Number(data.deliveryPartyId ?? 0),
             partyName: data.deliveryPartyName,
             orderNumber: data.orderNumber,
             customerName: data.customerName,

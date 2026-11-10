@@ -27,6 +27,7 @@ import {
 } from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
+import { Link } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { OperationPolicy } from "@shared/operationPermissions";
 
@@ -127,11 +128,11 @@ function Forbidden() {
       <Lock aria-hidden className="size-16 text-muted-foreground" />
       <h1 className="text-xl font-semibold">لا تملك صلاحية للوصول إلى هذه الصفحة</h1>
       <p className="text-sm text-muted-foreground max-w-md">
-        هذه الشاشة مخصّصة للإدارة. إن كنت تحتاج إليها فعلاً، تواصل مع مدير النظام لمنحك الصلاحية المناسبة.
+        صلاحيات حسابك الحالية لا تشمل هذه الشاشة. إن كنت تحتاج إليها ضمن عملك، تواصل مع مدير النظام لتفعيل الصلاحية المناسبة.
       </p>
-      <a href="/" className="text-sm text-primary hover:underline mt-2">
-        العودة إلى لوحة التحكم
-      </a>
+      <Link href="/" className="text-sm text-primary hover:underline mt-2">
+        العودة إلى الرئيسية
+      </Link>
     </div>
   );
 }

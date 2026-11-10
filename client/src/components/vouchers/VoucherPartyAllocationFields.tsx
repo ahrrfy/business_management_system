@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { fmt } from "@/lib/money";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AlertTriangle, Hourglass, Info } from "lucide-react";
+import { Link } from "wouter";
 import type { VoucherFormModel } from "./useVoucherForm";
 
 type Props = Pick<
@@ -196,7 +197,11 @@ export function VoucherPartyAllocationFields({
             />
             {!isReceipt && supplierId != null ? (
               <p className="text-xs text-muted-foreground">
-                عند اعتماد سند الصرف وتنفيذه، ينخفض رصيد ذمة المورد بقيمة السند وتسوى فواتيره المفتوحة تلقائيا من الاقدم.
+                عند اعتماد سند الصرف وتنفيذه، ينخفض رصيد ذمة المورد بقيمة السند وتسوى فواتيره المفتوحة تلقائيا من الاقدم. للتخصيص اليدوي على فواتير محددة أو بالدولار افتح{" "}
+                <Link href="/purchases/supplier-payments" className="underline font-medium">
+                  حوكمة سداد الموردين
+                </Link>
+                .
               </p>
             ) : null}
           </>

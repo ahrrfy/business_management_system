@@ -115,7 +115,12 @@ export function PageTabs({
     // التبويب الافتراضي (الأوّل المرئي) ⇒ URL نظيف بلا ?tab ؛ غيره ⇒ ?tab=value.
     // push (لا replace) ⇒ زرّ الرجوع يَتنقّل بين التبويبات.
     const isDefault = value === visible[0].value;
-    navigate(isDefault ? loc : `${loc}?tab=${value}`);
+    const preservedBranch = new URLSearchParams(search).get("branchId");
+    const nextParams = new URLSearchParams();
+    if (!isDefault) nextParams.set("tab", value);
+    if (preservedBranch && Number(preservedBranch) > 0) nextParams.set("branchId", preservedBranch);
+    const qs = nextParams.toString();
+    navigate(qs ? `${loc}?${qs}` : loc);
   }
 
   return (

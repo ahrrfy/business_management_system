@@ -39,6 +39,7 @@ export interface BarcodeReturnInput {
   barcode: string;
   returnReason?: string | null;
   refundShiftId?: number | null;
+  workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL" | null;
   clientRequestId?: string | null;
 }
 
@@ -407,7 +408,8 @@ export async function returnByBarcode(
       {
         consignmentId: Number(matchedCn.id),
         reason: defaultReason,
-        refundShiftId: input.refundShiftId,
+        ...(input.refundShiftId !== undefined ? { refundShiftId: input.refundShiftId } : {}),
+        ...(input.workOrderDisposition != null ? { workOrderDisposition: input.workOrderDisposition } : {}),
         clientRequestId:
           input.clientRequestId ?? `barcode-shipment-return:${matchedCn.id}`,
       },
@@ -450,6 +452,7 @@ export async function returnByBarcode(
     ...returnActor,
     returnReason: defaultReason,
     refundShiftId: input.refundShiftId,
+    workOrderDisposition: input.workOrderDisposition ?? null,
     clientRequestId: input.clientRequestId,
   });
 

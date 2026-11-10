@@ -55,6 +55,7 @@ export async function createPurchaseOrderRevisionTx(
     actorUserId: number;
     reason: string;
     origin?: "NATIVE" | "LEGACY";
+    allowHistoricalCycle?: boolean;
     tender?: PurchaseTenderInput | null;
     cashSource?: {
       mode: "DRAWER" | "TREASURY";
@@ -207,8 +208,8 @@ export async function createPurchaseOrderRevisionTx(
     ...(input.tender ? { tender: input.tender } : {}),
     items,
   };
-  const payloadCanonical = canonicalJson(payload);
-  const payloadHash = sha256(payloadCanonical);
+  let payloadCanonical = canonicalJson(payload);
+  let payloadHash = sha256(payloadCanonical);
   if (latest?.payloadHash === payloadHash) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -226,10 +227,18 @@ export async function createPurchaseOrderRevisionTx(
     )
     .limit(1);
   if (sameHistoricalContent) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `البيانات تطابق المراجعة ${sameHistoricalContent.revisionNo}؛ استعمل سجل المراجعات بدلاً من إنشاء نسخة مكررة`,
-    });
+    if (input.allowHistoricalCycle && latest?.id != null) {
+      payloadCanonical = canonicalJson({
+        ...payload,
+        revertedFromRevisionId: Number(latest.id),
+      });
+      payloadHash = sha256(payloadCanonical);
+    } else {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `البيانات تطابق المراجعة ${sameHistoricalContent.revisionNo}؛ استعمل سجل المراجعات بدلاً من إنشاء نسخة مكررة`,
+      });
+    }
   }
   const revisionNo = Number(latest?.revisionNo ?? 0) + 1;
   const inserted = await tx.insert(purchaseOrderRevisions).values({
@@ -469,11 +478,52 @@ export function diffPurchaseOrderRevisions(
     "usdTotal",
     "notesSnapshot",
   ] as const;
-  const head = headFields.flatMap((field) =>
-    String(from[field] ?? "") === String(to[field] ?? "")
-      ? []
-      : [{ field, before: from[field] ?? null, after: to[field] ?? null }],
-  );
+  const describePaymentSource = (payloadCanonical: string | null | undefined) => {
+    if (!payloadCanonical) return null;
+    try {
+      const parsed = JSON.parse(payloadCanonical) as {
+        tender?: {
+          mode?: string;
+          shiftId?: number | null;
+          cardLastFour?: string | null;
+          previousReceiptId?: number | null;
+        } | null;
+        cashSource?: { mode?: string; shiftId?: number | null } | null;
+      };
+      if (parsed.tender?.mode) {
+        const base =
+          parsed.tender.mode === "DRAWER"
+            ? `درج وردية${parsed.tender.shiftId ? ` #${parsed.tender.shiftId}` : ""}`
+            : parsed.tender.mode === "TREASURY"
+              ? "خزينة الفرع"
+              : parsed.tender.mode === "CARD"
+                ? `بطاقة الشركة${parsed.tender.cardLastFour ? ` (${parsed.tender.cardLastFour})` : ""}`
+                : parsed.tender.mode;
+        return parsed.tender.previousReceiptId
+          ? `${base} + سند سابق #${parsed.tender.previousReceiptId}`
+          : base;
+      }
+      if (parsed.cashSource?.mode) {
+        return parsed.cashSource.mode === "DRAWER"
+          ? `درج وردية${parsed.cashSource.shiftId ? ` #${parsed.cashSource.shiftId}` : ""}`
+          : "خزينة الفرع";
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+  const fromPaySrc = describePaymentSource(from.payloadCanonical);
+  const toPaySrc = describePaymentSource(to.payloadCanonical);
+  const head: Array<{ field: string; before: unknown; after: unknown }> =
+    headFields.flatMap((field) =>
+      String(from[field] ?? "") === String(to[field] ?? "")
+        ? []
+        : [{ field, before: from[field] ?? null, after: to[field] ?? null }],
+    );
+  if (fromPaySrc !== toPaySrc) {
+    head.push({ field: "paymentSource", before: fromPaySrc, after: toPaySrc });
+  }
   const fromItems = new Map(
     from.items.map((item) => [Number(item.lineNo), item]),
   );

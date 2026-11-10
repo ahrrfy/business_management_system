@@ -185,16 +185,6 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
           amount, operation: "رد مقبوضات عكس تسليم أمر شغل",
         });
       } else {
-        if (ctx.wo.customerId == null) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: appErrorMessage({
-              what: `تعذّر تسجيل ردٍّ غير نقديّ (${plan.refundMethod}) لأمر الشغل ${ctx.wo.orderNumber}`,
-              why: "الرد غير النقدي يحتاج عميلاً مرتبطاً للاعتماد الخارجي — سندُ الصرف المعلَّق يُنسَب إلى عميلٍ مسجَّل، والأمرُ بلا عميل",
-              doThis: "اربط الأمر بعميلٍ مسجَّل من شاشة الأمر ثمّ أعد الاعتماد، أو ردّ نقداً من درجٍ مفتوح",
-            }),
-          });
-        }
         assertNonPhysicalOutReceipt({
           classification: "DEFERRED_APPROVAL", paymentMethod: plan.refundMethod,
           cashBucket: null, approvalStatus: "PENDING_APPROVAL",

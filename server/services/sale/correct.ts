@@ -692,6 +692,16 @@ export async function correctSaleInTx(
     // الطباعة صارت قابلةً للتصحيح** — وهي نصف سلّة الاستقبال وكانت بلا أيّ مسار تصحيحٍ رغم
     // أنّ الواجهة تُعلن حاجز WORKORDER وحده (بلاغ المالك: «شاشة التصحيح بدائية ولا تعمل»).
     // returnedTotal=0 مضمونٌ أعلاه ⇒ المتبقّي القابل للعكس = كامل الكمية الأساس.
+    const grandfatheredRestrictedLineCaps = new Map<string, number>();
+    for (const it of items) {
+      if (it.productUnitId != null) {
+        const key = `${Number(it.variantId)}:${Number(it.productUnitId)}`;
+        grandfatheredRestrictedLineCaps.set(
+          key,
+          (grandfatheredRestrictedLineCaps.get(key) ?? 0) + Number(it.baseQuantity),
+        );
+      }
+    }
     const reverseLines = items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity),
     }));
     await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null, internalCorrectionReversal: true,
@@ -773,6 +783,7 @@ export async function correctSaleInTx(
           : null,
         preCollected: carriedSum.gt(0) || carriedIds.length > 0 ? { amount: carriedSum.toFixed(2), receiptIds: carriedIds } : null,
       allowPreCollectedOverpay: true,
+      grandfatheredRestrictedLineCaps,
       deferCustomerSettlement: allocatedAmount.gt(0),
       ...(deliveryAmendment
         ? { codDispatchPending: true, paymentMode: "COD" as const }

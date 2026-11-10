@@ -44,7 +44,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
@@ -489,7 +489,7 @@ function CreateCostWave({
                     }
                   >
                     <option value="">كل الفئات</option>
-                    <CategoryOptionList categories={categoriesData ?? []} />
+                    {categoryOptionElements(categoriesData ?? [])}
                   </AppSelect>
                 </Field>
                 <Field label="بحث المنتج / SKU / الباركود">

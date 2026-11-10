@@ -1,5 +1,5 @@
 // خدمات الطباعة (نقطة بيع الخدمات).
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { categories, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import type { PriceTier } from "../pricing";
@@ -55,7 +55,9 @@ export async function listPrintServices(tier: PriceTier): Promise<PrintServiceRo
         eq(productVariants.isActive, true),
         eq(productUnits.isActive, true),
         eq(productUnits.isBaseUnit, true),
-        eq(products.showInPrintPos, true)
+        eq(products.isBundle, false),
+        eq(products.showInPrintPos, true),
+        sql`(${products.isService} = TRUE OR ${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL'))`
       )
     )
     .orderBy(asc(products.categoryId), asc(products.id));

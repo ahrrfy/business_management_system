@@ -2,12 +2,15 @@
 //
 // م٦ (D5): الحرّاس السبعة مصدرُها الواحد `./productUpdateGuards` — يتشاركها هذا المسار (الحامل
 // لمعرّف الوحدة) ومسارُ القالب المشترك في `productEditService.ts`. لا حارسَ يُكتب هنا بيدٍ بعد اليوم.
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import type { PermissionMap } from "@shared/permissions";
 import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import { appErrorMessage } from "@shared/errors";
-import { findBarcodeClashes } from "./barcodeAliases";
+import { canCarryStockUsage, isSellableStockUsage, type StockUsage } from "@shared/stockUsage";
+import { acquireCatalogBarcodeWriteLock, findBarcodeClashes } from "./barcodeAliases";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -21,6 +24,11 @@ import {
   assertHasVariants,
   assertNoActiveStocktakeFactorChange,
   assertNoActiveStocktakeUnitFreeze,
+  assertStorefrontPublishReadyTx,
+  assertUniqueNormalizedVariantCombos,
+  assertUniqueUnitNamesAndTiers,
+  assertUnitFactorImmutableIfUsed,
+  assertVariantIdentityImmutableIfUsed,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -63,24 +71,56 @@ export interface UpdateProductInput {
   categoryId?: number | null;
   isCustomizable?: boolean;
   isActive?: boolean;
+  stockUsage?: StockUsage | null;
+  showInStore?: boolean;
   /** سببُ التعديل — يُلحق بلقطة `recordVersions` (م٦ ق٨). اختياريّ؛ الافتراض في الحرّاس المشتركة. */
   updateReason?: string | null;
   variants: UpdateProductVariantInput[];
+}
+
+export type UpdateProductActor = Actor & {
+  permissionsOverride?: PermissionMap | null;
+};
+
+function assertNonNegativeMoneyDecimal(raw: string, label: string): void {
+  const trimmed = (raw ?? "").trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${label}»`,
+        why: "المبالغ المالية بالدينار العراقي يجب أن تكون غير سالبة وبمنزلتين عشريتين كحدّ أقصى",
+        doThis: "صحّح القيمة المالية ثم أعد الحفظ",
+      }),
+    });
+  }
+  const dec = new Decimal(trimmed);
+  if (!dec.isFinite() || dec.isNegative() || dec.decimalPlaces() > 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${label}»`,
+        why: "المبلغ المالي خارج النطاق المسموح",
+        doThis: "صحّح القيمة المالية ثم أعد الحفظ",
+      }),
+    });
+  }
 }
 
 /** Update a product header + its variant(s) + units + prices in one transaction.
  *  - Existing units (by id) are UPDATEd and their prices replaced.
  *  - New units (no id) are INSERTed with their prices.
  *  - Units present in DB but absent from input are soft-deactivated (isActive=false). */
-export async function updateProduct(input: UpdateProductInput, actor: Actor) {
+export async function updateProduct(input: UpdateProductInput, actor: UpdateProductActor) {
   return withTx((tx) => updateProductTx(tx, input, actor));
 }
 
 /** الجسم داخل معاملةٍ يملكها المستدعي — كي يستطيع مسارٌ أعلى (الاستعادة) ضمّه إلى معاملته. */
-export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: Actor) {
+export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: UpdateProductActor) {
     if (!input.name.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
     assertHasVariants(input.variants.length);
 
+    await acquireCatalogBarcodeWriteLock(tx);
     const p = await loadProductForUpdateOrThrow(tx, input.productId);
 
     // gstack B12 (٧/٧/٢٦): بكج = متغيّر واحد فقط + وحدة أساس واحدة فقط (حارسٌ مشترك — كان هنا وحده).
@@ -105,7 +145,110 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
       return !desired || Number(desired.conversionFactor) !== Number(unit.conversionFactor);
     });
 
-    await lockVariantsForUpdate(tx, input.variants.map((variant) => variant.id));
+    const allProductVariantRows = await tx
+      .select()
+      .from(productVariants)
+      .where(eq(productVariants.productId, input.productId));
+    const allVariantIdsToLock = Array.from(
+      new Set([
+        ...allProductVariantRows.map((row) => Number(row.id)),
+        ...input.variants.map((variant) => variant.id),
+      ]),
+    );
+    await lockVariantsForUpdate(tx, allVariantIdsToLock);
+    const existingVariantById = new Map(
+      allProductVariantRows.map((row) => [Number(row.id), row] as const),
+    );
+    for (const v of input.variants) {
+      if (!existingVariantById.has(v.id)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
+      }
+      assertNonNegativeMoneyDecimal(v.costPrice, `تكلفة المتغيّر ${v.sku}`);
+      for (const u of v.units) {
+        for (const pr of u.prices ?? []) {
+          assertNonNegativeMoneyDecimal(pr.price, `سعر ${pr.priceTier} للوحدة ${u.unitName}`);
+        }
+      }
+    }
+
+    const canHaveStockUsage = canCarryStockUsage(p);
+    if (!canHaveStockUsage && input.stockUsage != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تصنيف الاستخدام المخزني يخصّ الأصناف المخزنية المملوكة فقط",
+          why: "الخدمات والبكجات وبضاعة الأمانة لا تحمل تصنيف stockUsage",
+          doThis: "اترك حقل الاستخدام المخزني فارغاً لهذا الصنف ثم احفظ",
+        }),
+      });
+    }
+    const effectiveStockUsage = canHaveStockUsage
+      ? input.stockUsage !== undefined
+        ? input.stockUsage
+        : (p.stockUsage ?? null)
+      : null;
+
+    const submittedById = new Map(input.variants.map((v) => [v.id, v] as const));
+    const mergedVariantsForComboCheck = allProductVariantRows.map((owned) => {
+      const sub = submittedById.get(Number(owned.id));
+      if (!sub) return owned;
+      return {
+        id: Number(owned.id),
+        sku: sub.sku.trim(),
+        variantKind: owned.variantKind,
+        color: sub.color !== undefined ? (sub.color?.trim() || null) : owned.color,
+        size: sub.size !== undefined ? (sub.size?.trim() || null) : owned.size,
+        isActive: owned.isActive,
+      };
+    });
+    assertUniqueNormalizedVariantCombos(mergedVariantsForComboCheck, existingVariantById);
+
+    const effectiveProductIsActive = input.isActive !== undefined ? input.isActive : !!p.isActive;
+    const isSingleSimpleProduct =
+      allProductVariantRows.length === 1 &&
+      input.variants.length === 1 &&
+      mergedVariantsForComboCheck[0].variantKind !== "ALTERNATIVE" &&
+      !mergedVariantsForComboCheck[0].color &&
+      !mergedVariantsForComboCheck[0].size;
+    const eligibleForStore =
+      effectiveProductIsActive && !p.isService && isSellableStockUsage(effectiveStockUsage);
+    const effectiveCategoryId =
+      input.categoryId !== undefined ? (input.categoryId ?? null) : (p.categoryId ?? null);
+
+    if (input.showInStore === true) {
+      await assertStorefrontPublishReadyTx(tx, {
+        actor,
+        requirePermission: Boolean(actor.role),
+        previouslyPublished: {
+          showInStore: Boolean(p.showInStore),
+          categoryId: p.categoryId != null ? Number(p.categoryId) : null,
+        },
+        isActive: effectiveProductIsActive,
+        isService: !!p.isService,
+        stockUsage: effectiveStockUsage,
+        categoryId: effectiveCategoryId,
+        variants: input.variants.map((v) => {
+          const owned = existingVariantById.get(v.id)!;
+          const vActive = isSingleSimpleProduct ? effectiveProductIsActive : !!owned.isActive;
+          return {
+            isActive: vActive,
+            units: v.units.map((u) => ({
+              isActive: true,
+              isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
+              conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+              retailPrice: u.prices?.find((pr) => pr.priceTier === "RETAIL")?.price ?? null,
+            })),
+          };
+        }),
+      });
+    }
+    const effectiveShowInStore =
+      input.showInStore !== undefined
+        ? input.showInStore
+        : eligibleForStore
+          ? !!p.showInStore
+          : false;
+
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
 
@@ -128,9 +271,11 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
         ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
-        categoryId: input.categoryId ?? null,
+        categoryId: effectiveCategoryId,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
-        ...(input.isActive != null ? { isActive: input.isActive } : {}),
+        stockUsage: effectiveStockUsage,
+        showInStore: effectiveShowInStore,
+        ...(input.isActive != null ? { isActive: effectiveProductIsActive } : {}),
       })
       .where(eq(products.id, input.productId));
 
@@ -141,10 +286,19 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
     // `updateProductWithVariants` أصلاً.
     const editCodes: string[] = [];
     const ownUnitIds: number[] = [];
+    const ignoreAliasByCodeUnitId = new Map<string, number>();
     for (const v of input.variants)
       for (const u of v.units) {
         const b = canonicalizeBarcodeInput(u.barcode ?? "");
-        if (b) editCodes.push(b);
+        if (b) {
+          editCodes.push(b);
+          if (u.id != null) {
+            const targetUnitId = Number(u.id);
+            for (const cand of barcodeIdentityCandidates(b)) {
+              ignoreAliasByCodeUnitId.set(barcodeComparisonKey(cand), targetUnitId);
+            }
+          }
+        }
         if (u.id != null) ownUnitIds.push(Number(u.id));
       }
     const seenEditCodes = new Set<string>();
@@ -159,7 +313,11 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
       identities.forEach((identity) => seenEditCodes.add(identity));
     }
     if (editCodes.length) {
-      const clashes = await findBarcodeClashes(tx, editCodes, { ignorePrimaryUnitIds: ownUnitIds });
+      const clashes = await findBarcodeClashes(tx, editCodes, {
+        ignorePrimaryUnitIds: ownUnitIds,
+        ignoreAliasByCodeUnitId,
+        forShare: true,
+      });
       if (clashes[0])
         throw new TRPCError({
           code: "CONFLICT",
@@ -180,9 +338,7 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
       const submittedIds = v.units.filter((u) => u.id != null).map((u) => Number(u.id));
       if (new Set(submittedIds).size !== submittedIds.length)
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: معرّف وحدةٍ مكرّرٌ في الطلب` });
-      const submittedNames = v.units.map((u) => u.unitName.trim());
-      if (new Set(submittedNames).size !== submittedNames.length)
-        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: اسم وحدةٍ مكرّرٌ في الطلب` });
+      assertUniqueUnitNamesAndTiers(v.sku, v.units);
 
       // Codex جولة٨ P1: كلّ معرّف وحدةٍ مُرسَلٍ يجب أن يخصّ **هذا** المتغيّر — وإلّا فمعرّفٌ أجنبيٌّ (أو معرّف
       // أساس متغيّرٍ آخر في طلبٍ متعدّد) تُحدِّثه الحلقةُ بالمعرّف فتُعطّل أساسَ ذاك بعد اجتياز حارسه. نفحص
@@ -209,20 +365,29 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
       // H3 (تدقيق ٢٧/٧): الحارس يملك ترتيب القفل الحاكم variant→branchStock، ويتحقّق
       // ذرّياً أن لقطة «قبل» ما زالت حيّة قبل أن يسمح بالكتابة. استدعاؤه قبل UPDATE يمنع
       // طمس WAVG متزامن ولا يعكس ترتيب أقفال الشراء/الإنتاج.
-      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
-      // المتغيّرات كلّها مقفولة أعلاه، لذا نحافظ على أولوية تشخيص وحدة الأساس بلا
-      // إنشاء ترتيب أقفال موازٍ لمسارات WAVG. (الترتيب «الأساس ثمّ التكلفة» مُثبَّت في الحارس المشترك.)
+      const ownedV = existingVariantById.get(v.id)!;
+      const nextVariantName = v.variantName !== undefined ? (v.variantName?.trim() || null) : ownedV.variantName;
+      const nextColor = v.color !== undefined ? (v.color?.trim() || null) : ownedV.color;
+      const nextSize = v.size !== undefined ? (v.size?.trim() || null) : ownedV.size;
+      await assertVariantIdentityImmutableIfUsed(
+        tx,
+        v.id,
+        ownedV,
+        { variantKind: ownedV.variantKind, variantName: nextVariantName, color: nextColor, size: nextSize },
+        nextColor || nextSize || v.sku,
+      );
       await assertBaseUnitStableAndRevalueCost(
-        tx, v.id, { by: "id", unitId: baseU?.id ?? null }, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason,
+        tx, v.id, { by: "id", unitId: baseU?.id ?? null }, ownedV.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason,
       );
       await tx
         .update(productVariants)
         .set({
-          sku: v.sku,
-          variantName: v.variantName ?? null,
-          color: v.color ?? null,
-          size: v.size ?? null,
+          sku: v.sku.trim(),
+          variantName: nextVariantName,
+          color: nextColor,
+          size: nextSize,
           costPrice: toDbMoney(v.costPrice),
+          ...(isSingleSimpleProduct && input.isActive !== undefined ? { isActive: effectiveProductIsActive } : {}),
         })
         .where(eq(productVariants.id, v.id));
       // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
@@ -239,10 +404,19 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
         if (u.id) {
           productUnitId = u.id;
           const existingUnit = existing.find((e) => Number(e.id) === Number(u.id));
-          if (existingUnit && !u.isBaseUnit) {
-            await assertNoActiveStocktakeFactorChange(tx, v.id, [
-              { unitName: u.unitName, oldFactor: existingUnit.conversionFactor, newFactor: u.conversionFactor },
-            ]);
+          if (existingUnit) {
+            await assertUnitFactorImmutableIfUsed(
+              tx,
+              u.id,
+              existingUnit.conversionFactor,
+              u.isBaseUnit ? "1" : u.conversionFactor,
+              u.unitName,
+            );
+            if (!u.isBaseUnit) {
+              await assertNoActiveStocktakeFactorChange(tx, v.id, [
+                { unitName: u.unitName, oldFactor: existingUnit.conversionFactor, newFactor: u.conversionFactor },
+              ]);
+            }
           }
           const previousPrices = await tx
             .select({ priceTier: productPrices.priceTier, price: productPrices.price })

@@ -178,7 +178,7 @@ export async function cancelSaleInTx(
           why: "تغير دور الحساب أو فرعه", doThis: "حدث الصفحة وأعد المحاولة بصلاحيات الحساب الحالية" }) });
       }
       // Even a replay must use the currently saved restricted authority.
-      await assertOperationAuthorityTx(tx, actor, "sales.cancelUnpaidCod", false);
+      await assertOperationAuthorityTx(tx, actor, "sales.cancelUnpaidCod", (current) => moduleAccessAllowed(current.role, current.permissionsOverride as PermissionMap | null, "sales", "FULL", ["cashier", "manager"]) || moduleAccessAllowed(current.role, current.permissionsOverride as PermissionMap | null, "workorders", "FULL", ["cashier", "manager", "print_operator"]));
       if (input.refundPaymentMethod !== "CASH" || input.reference != null || input.refundShiftId != null || input.refundCashBucket != null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر إلغاء COD دون قبض",
           why: "هذا المسار لا يقبل أي بيانات استرداد", doThis: "أرسل سبب الإلغاء ورقم الفاتورة فقط" }) });

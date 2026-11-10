@@ -33,6 +33,14 @@ import { categoryOptionElements, type CategoryLite } from "@/lib/categoryTree";
 import { trpc } from "@/lib/trpc";
 import { RefreshCw } from "lucide-react";
 import { ProductVariantsFields } from "@/components/form/product/ProductVariantsFields";
+import { ProductOpenCommitmentsNotice } from "@/components/product/ProductOpenCommitmentsNotice";
+import {
+  STOCK_USAGES,
+  STOCK_USAGE_DESCRIPTIONS,
+  STOCK_USAGE_LABELS,
+  isSellableStockUsage,
+  type StockUsage,
+} from "@shared/stockUsage";
 import {
   composedName,
   finalName,
@@ -52,6 +60,8 @@ export type ProductFormFacts = {
   bundleVariantId?: number | null;
   /** مجموعُ الرصيد عبر الفروع — يقفل وسم الأمانة حين لا يكون صفراً. */
   totalStock?: number;
+  /** الاستخدام المخزنيّ المحفوظ للمنتج عند فتح شاشة التعديل. */
+  savedStockUsage?: StockUsage | null;
 };
 
 export type ProductFormFieldsProps = {
@@ -313,6 +323,56 @@ export function ProductFormFields({
             <div className="flex h-9 items-center gap-2">
               <Switch checked={model.isActive} onCheckedChange={(isActive) => set({ isActive })} />
               <span className="text-xs text-muted-foreground">{model.isActive ? "مفعّل" : "معطّل"}</span>
+            </div>
+          </Field>
+          {!model.isService && !facts?.isBundle && !model.consignment.isConsignment && (
+            <Field
+              label="تصنيف الاستخدام المخزني"
+              hint={STOCK_USAGE_DESCRIPTIONS[model.stockUsage]}
+            >
+              <AppSelect
+                value={model.stockUsage}
+                onValueChange={(next) => {
+                  const usage = next as StockUsage;
+                  set({
+                    stockUsage: usage,
+                    ...(!isSellableStockUsage(usage) ? { showInStore: false } : {}),
+                  });
+                }}
+                aria-label="تصنيف الاستخدام المخزني"
+              >
+                {STOCK_USAGES.map((u) => (
+                  <option key={u} value={u}>
+                    {STOCK_USAGE_LABELS[u]}
+                  </option>
+                ))}
+              </AppSelect>
+              <ProductOpenCommitmentsNotice
+                productId={productId}
+                savedStockUsage={facts?.savedStockUsage}
+                nextStockUsage={model.stockUsage}
+              />
+            </Field>
+          )}
+          <Field
+            label="النشر في المتجر الإلكتروني"
+            hint={
+              model.isService || !isSellableStockUsage(model.stockUsage)
+                ? "غير متاح للخدمات أو الأصناف غير المخصّصة للبيع."
+                : model.showInStore
+                  ? "معروض في المتجر عند استيفاء جاهزية السعر والصورة."
+                  : "مخفيّ عن المتجر افتراضياً حتى يُفعَّل صراحةً."
+            }
+          >
+            <div className="flex h-9 items-center gap-2">
+              <Switch
+                checked={model.showInStore && !model.isService && isSellableStockUsage(model.stockUsage)}
+                onCheckedChange={(showInStore) => set({ showInStore })}
+                disabled={model.isService || !isSellableStockUsage(model.stockUsage)}
+              />
+              <span className="text-xs text-muted-foreground">
+                {model.showInStore && !model.isService && isSellableStockUsage(model.stockUsage) ? "منشور" : "مخفيّ"}
+              </span>
             </div>
           </Field>
           <Field label="نقطة الطباعة والاستنساخ" hint={model.showInPrintPos ? "يَظهر في شبكة «خدمات طباعة» ويُباع عبر كاشير الطباعة." : "لن يَظهر في شبكة خدمات الطباعة."}>

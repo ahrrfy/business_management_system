@@ -345,6 +345,19 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     onRestoreServerDraft: (snapshot: ReceptionServerDraftPointer, isCurrent) => resumeDraft(snapshot.activeDraftId, isCurrent, false, snapshot.legacyIdentityOnly ? undefined : snapshot),
     onStorageError: () => notify.warn("تعذّر حفظ سلة الاستقبال مؤقتاً", "قد تكون مساحة المتصفح ممتلئة؛ أبقِ الشاشة مفتوحة أو احفظ الطلب كمسوّدة خادمية."),
   });
+  const handledUrlDraftIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (workspaceState === "HYDRATING") return;
+    const rawDraftId = new URLSearchParams(pageSearch).get("draftId");
+    const parsedDraftId = rawDraftId ? Number(rawDraftId) : NaN;
+    if (!Number.isInteger(parsedDraftId) || parsedDraftId <= 0) {
+      handledUrlDraftIdRef.current = null;
+      return;
+    }
+    if (handledUrlDraftIdRef.current === parsedDraftId || activeDraftRef.current?.id === parsedDraftId) return;
+    handledUrlDraftIdRef.current = parsedDraftId;
+    void resumeDraft(parsedDraftId, () => true, true);
+  }, [pageSearch, workspaceState]);
   function resetAfterCommittedWorkspace(): boolean { if (!clearPersistedWorkspace()) { setWorkspaceSafetyBlocked(true); notify.warn("تمت العملية، لكن تعذّر تنظيف حالتها المحلية", "لا تعِد الإرسال. أعد تحميل الصفحة أو فرّغ الحالة المحفوظة قبل عملية جديدة."); return false; } feePayment.reset(); splitTender.reset(true); reqIdRef.current = crypto.randomUUID(); resetScreen(); return true; }
   const { connectPrinter, testServerPrint } = useReceptionPrinter({ setPrinterReady, setBridge });
   const splitTender = useSplitTender({ branchId, ownerId: me.data?.id, sessionKey: reqIdRef.current, channel: "RECEPTION", additionalFirstPaymentAmount:cart.length?extraChargeAmount.toFixed(2):"0", canConfirm: canAction("reception.initiateExternalPayment") && canAction("reception.confirmExternalPayment"), disabled: offline || submitting || cart.some(line => line.digital) });

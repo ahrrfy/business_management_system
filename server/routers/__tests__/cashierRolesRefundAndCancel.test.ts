@@ -999,6 +999,15 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
         ),
       );
     expect(giftEntries.some((e) => e.amount === "-5.00" && e.cost === "-5.00")).toBe(true);
+    const [variantAfterZeroCostReturn] = await db()
+      .select({ costPrice: s.productVariants.costPrice })
+      .from(s.productVariants)
+      .where(eq(s.productVariants.id, 1));
+    expect(variantAfterZeroCostReturn?.costPrice).toBe("4.95");
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "5.00" })
+      .where(eq(s.productVariants.id, 1));
 
     // تطبيع وحدات البيع المركبة (conversionFactor > 1) إلى الوحدة الأساسية عند الفحص والمرتجع
     await db().insert(s.productUnits).values({

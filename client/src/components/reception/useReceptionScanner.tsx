@@ -159,11 +159,21 @@ export function useReceptionScanner({
       const r = parseScan(code);
       if (r.type === "workOrder") {
         void handleWorkOrderScan(r.number);
+      } else if (r.type === "customer") {
+        setCustomer({
+          customerId: r.id,
+          name: `عميل #${r.id}`,
+          phone: null,
+          isNew: false,
+        });
+        notify.ok(`تم تحديد العميل #${r.id}`);
+      } else if (r.type === "product") {
+        void lookupBarcode(r.barcode);
       } else {
-        void lookupBarcode(code);
+        notify.info("باركود مستند نظام — استخدم شاشة التسليم المباشر أو سير عمل التوصيل");
       }
     },
-    [handleWorkOrderScan, lookupBarcode],
+    [handleWorkOrderScan, lookupBarcode, setCustomer, setSearch, setShowDrop],
   );
 
   return { blockingDialogOpen, handleSearchScan };

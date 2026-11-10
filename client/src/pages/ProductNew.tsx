@@ -1,5 +1,5 @@
 import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
-import { Boxes, Layers, Package, Wrench } from "lucide-react";
+import { Boxes, FlaskConical, Layers, Package, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -10,10 +10,15 @@ import {
   allBarcodes,
   buildCreateProductPayload,
   emptyProductFormModel,
+  finalName,
   productFormSignature,
   validateProductForm,
   type ProductFormModel,
 } from "@/components/form/product/productFormModel";
+import {
+  PostSaveProductBanner,
+  type PostSaveProductSummary,
+} from "@/components/product/PostSaveProductBanner";
 import BundleForm from "@/components/product/BundleForm";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
@@ -27,10 +32,11 @@ import { trpc } from "@/lib/trpc";
  *
  * كانت هذه الصفحة تحمل ~٢٥ `useState` ومتحقِّقاً وبانيَ حمولةٍ خاصَّين بها ينجرفان عن التعديل.
  */
-type ItemMode = "simple" | "variants" | "service" | "bundle";
+type ItemMode = "simple" | "raw_material" | "variants" | "service" | "bundle";
 
 const MODES: Array<{ v: ItemMode; label: string; Icon: typeof Package; hint: string }> = [
   { v: "simple", label: "سلعة بسيطة", Icon: Package, hint: "منتج واحد بباركود واحد — كتاب/ملزمة/دفتر مفرد" },
+  { v: "raw_material", label: "مادة خام", Icon: FlaskConical, hint: "ورق/حبر/مادة تشغيل تُستهلك في الوصفات وأوامر العمل ولا تظهر في البيع" },
   { v: "variants", label: "سلعة بمتغيّرات", Icon: Layers, hint: "ألوان/قياسات — كل تركيبة منتج مستقل بباركوده" },
   { v: "service", label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
   { v: "bundle", label: "بكج (باندل)", Icon: Boxes, hint: "منتج مركّب من عدّة منتجات يُباع كوحدة — طقم مدرسي/هدية" },
@@ -38,6 +44,7 @@ const MODES: Array<{ v: ItemMode; label: string; Icon: typeof Package; hint: str
 
 const TITLE: Record<ItemMode, string> = {
   simple: "إضافة سلعة بسيطة",
+  raw_material: "إضافة مادة خام",
   variants: "إضافة منتج بمتغيّرات",
   service: "إضافة خِدمة",
   bundle: "إضافة بكج (باندل)",
@@ -52,6 +59,8 @@ export default function ProductNew() {
   const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
   const [mode, setMode] = useState<ItemMode>("simple");
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
 
   // ── النموذج الواحد (وضع المتغيّرات) ──
   const [model, setModel] = useState<ProductFormModel>(() => emptyProductFormModel());
@@ -103,7 +112,8 @@ export default function ProductNew() {
       if (taken.length) throw new Error(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
     }
     const submitted = productFormSignature(model);
-    const res = await create.mutateAsync(buildCreateProductPayload(model, branches));
+    const res = await create.mutateAsync(buildCreateProductPayload(model, branches, clientRequestId));
+    setClientRequestId(crypto.randomUUID());
     setSavedSignature(submitted);
     await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
     return res;
@@ -119,7 +129,23 @@ export default function ProductNew() {
     // بصمةُ ما نبدأ به قبل الحفظ. إن عدّل المستخدم النموذج **أثناء انتظار** الطفرة فلا نطمس تعديله
     // بنموذجٍ فارغ (Codex #1010 P1، نمط CP-U02) — نبدأ فارغاً فقط إن بقي النموذج كما أُرسِل.
     const submitted = productFormSignature(model);
+    const savedName = finalName(model);
+    const savedSku = model.baseSku || model.variants[0]?.sku || null;
+    const savedUsage = model.stockUsage;
     const res = await save();
+    const createdId = Number(
+      (res as { productId?: number; id?: number })?.productId ??
+        (res as { id?: number })?.id ??
+        0,
+    );
+    if (createdId > 0) {
+      setLastSaved({
+        productId: createdId,
+        name: savedName,
+        sku: savedSku,
+        stockUsage: savedUsage,
+      });
+    }
     if (productFormSignature(modelRef.current) === submitted) {
       const fresh = emptyProductFormModel();
       setModel(fresh);
@@ -159,11 +185,13 @@ export default function ProductNew() {
 
       {mode === "service" ? (
         <ServiceForm />
-      ) : mode === "simple" ? (
-        <SimpleProductForm />
+      ) : mode === "simple" || mode === "raw_material" ? (
+        <SimpleProductForm key={mode} rawMaterialPreset={mode === "raw_material"} />
       ) : mode === "bundle" ? (
         <BundleForm />
       ) : (
+        <>
+        <PostSaveProductBanner saved={lastSaved} onDismiss={() => setLastSaved(null)} />
         <RecordForm
           mode="create"
           isDirty={isDirty}
@@ -190,6 +218,7 @@ export default function ProductNew() {
             takenInDb={takenInDb}
           />
         </RecordForm>
+        </>
       )}
     </div>
   );

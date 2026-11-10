@@ -1,8 +1,14 @@
 import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
-import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useLocation } from "wouter";
 import { AlertCircle, Images, ListPlus, Package, Plus, Search, X } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { RecordForm } from "@/components/form/RecordForm";
+import {
+  PostSaveProductBanner,
+  type PostSaveProductSummary,
+} from "@/components/product/PostSaveProductBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,7 +22,7 @@ import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, genEan13 } from "@/lib/variants";
 import { cn } from "@/lib/utils";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 /**
@@ -77,6 +83,34 @@ export default function BundleForm() {
   const [bulkPicker, setBulkPicker] = useState("");
   const [bulkCategoryId, setBulkCategoryId] = useState<number | "">("");
   const [error, setError] = useState("");
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [autoSkuSuffix, setAutoSkuSuffix] = useState(() => Math.random().toString(36).slice(2, 6).toUpperCase());
+  const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
+  const formSignature = JSON.stringify({
+    name,
+    productType,
+    brand,
+    modelName,
+    description,
+    categoryId,
+    barcode,
+    unitName,
+    retail,
+    wholesale,
+    government,
+    isActive,
+    components: components.map((c) => ({
+      id: c.componentVariantId,
+      qty: c.componentBaseQuantity,
+    })),
+  });
+  const [initialSig] = useState(formSignature);
+  const [savedSig, setSavedSig] = useState<string | null>(null);
+  const isDirty = formSignature !== (savedSig ?? initialSig);
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (leaveTo && !isDirty) navigate(leaveTo);
+  }, [leaveTo, isDirty, navigate]);
 
   const branchId = me.data?.branchId ?? 1;
 
@@ -158,7 +192,8 @@ export default function BundleForm() {
         showFlash("err");
         return "FAILED";
       }
-      addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice);
+      const initialBaseQty = Math.max(1, Math.round(Number(res.item.conversionFactor) || 1));
+      addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice, initialBaseQty);
       setPicker("");
       showFlash("ok");
       pickerInputRef.current?.focus();
@@ -206,14 +241,26 @@ export default function BundleForm() {
   const searchRows = useMemo(() => searchQ.data?.items ?? [], [searchQ.data]);
   const _branchIdUnused = branchId; // reserved for future branch-scoped previews
 
-  function addComponent(variantId: number, productName: string, sku: string, cost: string) {
+  function addComponent(
+    variantId: number,
+    productName: string,
+    sku: string,
+    cost: string,
+    initialBaseQty = 1,
+  ) {
     if (components.some((c) => c.componentVariantId === variantId)) {
       setError(`المكوّن «${productName}» مضاف مسبقاً — زد كميّته بدل تكرار السطر.`);
       return;
     }
     setComponents((prev) => [
       ...prev,
-      { componentVariantId: variantId, componentBaseQuantity: 1, productName, sku, unitCost: cost },
+      {
+        componentVariantId: variantId,
+        componentBaseQuantity: Math.max(1, Math.trunc(initialBaseQty)),
+        productName,
+        sku,
+        unitCost: cost,
+      },
     ]);
     setPicker("");
     setError("");
@@ -231,13 +278,7 @@ export default function BundleForm() {
     setComponents((prev) => prev.filter((c) => c.componentVariantId !== variantId));
   }
 
-  const create = trpc.catalog.createProduct.useMutation({
-    onSuccess: async () => {
-      await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
-      navigate("/products");
-    },
-    onError: (e) => setError(e.message),
-  });
+  const create = trpc.catalog.createProduct.useMutation();
 
   function validate(): string | null {
     if (!finalName) return "اسم البكج مطلوب.";
@@ -248,22 +289,25 @@ export default function BundleForm() {
     return null;
   }
 
-  async function save() {
+  async function submitBundle(): Promise<{ res: unknown; usedSku: string }> {
+    if (!can("catalog.createProduct")) throw new Error("العملية غير مفوضة لحسابك");
     setError("");
     const err = validate();
     if (err) {
       setError(err);
-      return;
+      throw new Error(err);
     }
     if (code) {
+      let hit: Array<{ code: string; takenBy: string }> = [];
       try {
-        const hit = await utils.catalog.checkBarcodes.fetch({ codes: [code] });
-        if (hit.length) {
-          setError(`الباركود ${hit[0].code} مُستخدَم في «${hit[0].takenBy}». غيّره قبل الحفظ.`);
-          return;
-        }
+        hit = await utils.catalog.checkBarcodes.fetch({ codes: [code] });
       } catch {
         // لا نمنع الحفظ — قيد UNIQUE في DB الحارس الأخير.
+      }
+      if (hit.length) {
+        const msg = `الباركود ${hit[0].code} مُستخدَم في «${hit[0].takenBy}». غيّره قبل الحفظ.`;
+        setError(msg);
+        throw new Error(msg);
       }
     }
     const prices = [
@@ -273,10 +317,12 @@ export default function BundleForm() {
     ];
     // SKU مولَّد تلقائياً — البكج نادراً ما يحتاج SKU يدوي.
     const slug = finalName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
-    const sku = slug ? `BDL-${slug}-${suffix}` : `BDL-${suffix}`;
+    const suffix = autoSkuSuffix;
+    const usedSku = slug ? `BDL-${slug}-${suffix}` : `BDL-${suffix}`;
+    const submitted = formSignature;
 
-    create.mutate({
+    const res = await create.mutateAsync({
+      clientRequestId,
       name: finalName,
       productType: productType.trim() || null,
       brand: brand.trim() || null,
@@ -284,10 +330,11 @@ export default function BundleForm() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isBundle: true,
+      showInStore: false,
       // costPrice على متغيّر البكج غير مستعمَل عملياً (تُحسب لحظياً من المكوّنات) — نضع "0".
       variants: [
         {
-          sku,
+          sku: usedSku,
           costPrice: "0",
           isActive,
           units: [
@@ -307,10 +354,78 @@ export default function BundleForm() {
         sortOrder: idx,
       })),
     });
+    setClientRequestId(crypto.randomUUID());
+    setAutoSkuSuffix(Math.random().toString(36).slice(2, 6).toUpperCase());
+    setSavedSig(submitted);
+    await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
+    return { res, usedSku };
   }
+
+  async function save(): Promise<unknown> {
+    const { res } = await submitBundle();
+    setLeaveTo("/products");
+    return res;
+  }
+
+  async function saveAndNew(): Promise<unknown> {
+    const savedName = finalName;
+    const { res, usedSku } = await submitBundle();
+    const createdId = Number(
+      (res as { productId?: number; id?: number })?.productId ??
+        (res as { id?: number })?.id ??
+        0,
+    );
+    if (createdId > 0) {
+      setLastSaved({
+        productId: createdId,
+        name: savedName,
+        sku: usedSku,
+      });
+    }
+    setName("");
+    setProductType("");
+    setBrand("");
+    setModelName("");
+    setDescription("");
+    setCategoryId("");
+    setBarcode("");
+    setUnitName("قطعة");
+    setRetail("");
+    setWholesale("");
+    setGovernment("");
+    setIsActive(true);
+    setComponents([]);
+    setSavedSig(initialSig);
+    return res;
+  }
+
+  const validationReason = validate();
 
   return (
     <div className="space-y-4">
+      <PostSaveProductBanner saved={lastSaved} onDismiss={() => setLastSaved(null)} />
+      <RecordForm
+        mode="create"
+        isDirty={isDirty}
+        blockedBy={
+          !can("catalog.createProduct")
+            ? ["العملية غير مفوضة لحسابك"]
+            : validationReason
+              ? [validationReason]
+              : []
+        }
+        isPending={create.isPending}
+        onSave={save}
+        onSaveAndNew={saveAndNew}
+        onCancel={() => navigate("/products")}
+        saveLabel="حفظ البكج"
+        savedMessage="تم حفظ البكج"
+        barHint={
+          <>
+            سيُحفظ بكج واحد من <b className="text-foreground" dir="ltr">{components.length}</b> مكوّن.
+          </>
+        }
+      >
       {/* ── بيانات البكج ── */}
       <Card>
         <CardHeader>
@@ -347,14 +462,14 @@ export default function BundleForm() {
             <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="…" />
           </Field>
           <Field label="الفئة" className="md:col-span-2">
-            <select
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+            <AppSelect
+              value={String(categoryId)}
+              onValueChange={(val) => setCategoryId(val === "" ? "" : Number(val))}
+              aria-label="الفئة"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
-            </select>
+              {categoryOptionElements(categoriesQ.data ?? [])}
+            </AppSelect>
           </Field>
           <Field label="التفعيل">
             <div className="flex items-center gap-2 h-9">
@@ -398,15 +513,15 @@ export default function BundleForm() {
                   aria-label="بحث ذكيّ للمكوّن (باركود أو نصّ)"
                 />
               </div>
-              <select
-                className="h-9 w-full min-w-[130px] rounded-md border border-input bg-transparent px-3 py-1 text-sm sm:w-auto"
-                value={pickerCategoryId}
-                onChange={(e) => setPickerCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+              <AppSelect
+                className="h-9 w-full min-w-[130px] sm:w-auto"
+                value={String(pickerCategoryId)}
+                onValueChange={(val) => setPickerCategoryId(val === "" ? "" : Number(val))}
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
-              </select>
+                {categoryOptionElements(categoriesQ.data ?? [])}
+              </AppSelect>
               <Button
                 type="button"
                 variant="outline"
@@ -612,12 +727,7 @@ export default function BundleForm() {
         </div>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur flex items-center justify-end gap-2">
-        <Button variant="outline" onClick={() => navigate("/products")}>إلغاء</Button>
-        <Button onClick={save} disabled={!can("catalog.createProduct") || (create.isPending || components.length === 0)}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ البكج"}
-        </Button>
-      </div>
+      </RecordForm>
 
       {/* ── حوار «إضافة متعدّدة»: اختر عدّة منتجات دفعةً بمربّعات اختيار ── */}
       <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
@@ -659,15 +769,15 @@ export default function BundleForm() {
                 autoFocus
                 debounceMs={200}
               />
-              <select
-                className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-                value={bulkCategoryId}
-                onChange={(e) => setBulkCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+              <AppSelect
+                className="h-9"
+                value={String(bulkCategoryId)}
+                onValueChange={(val) => setBulkCategoryId(val === "" ? "" : Number(val))}
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
-              </select>
+                {categoryOptionElements(categoriesQ.data ?? [])}
+              </AppSelect>
             </div>
             <div className="max-h-80 overflow-auto rounded-md border bg-popover">
               {!(bulkHasQuery || bulkHasCategory) ? (

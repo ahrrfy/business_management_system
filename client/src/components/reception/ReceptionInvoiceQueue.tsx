@@ -1,29 +1,21 @@
 // ورشة فواتير محطة خدمة الزبائن — ش١ (docs/reception-cashier-system-design-2026-08-05.md §٨.٥).
-//
-// «يرى الموظّف الفواتير مثل كاشير التجزئة ويقوم عليها بالإجراءات» — أوّل مطالب المالك:
-// طابور keyset بفلاتر (الافتراض «ورديتي» لا يومٌ تقويميّ)، وستّ إجراءاتٍ لكل صفّ كلّها
-// إعادة استعمال: إعادة طباعة حرارية (invoiceToReceipt) · A4 · **تسديد دفعة**
-// (reception.collectOnInvoice — تدخل درج القابض) · إسناد توصيل · تفاصيل · طلب إرجاع (م٧:
-// المرتجع مديريّ؛ الموظّف يستدعي المدير).
-//
-// محاسبياً: الإسناد لا يُنشئ فاتورةً ثانية ولا يمسّ قيد SALE؛ والتسديد يمرّ بـprocessPayment
-// نفسها بحصرٍ بنيويّ (وردية إنشاء الفاتورة RECEPTION) — §٩.٢.
 import { useMemo, useRef, useState } from "react";
 import {
   Banknote,
   FileText,
+  FileWarning,
   HandCoins,
   PencilLine,
   Printer,
   Receipt,
   RotateCcw,
-  Search,
   Truck,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
 import { Label } from "@/components/ui/label";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -32,6 +24,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
+import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
+import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
+import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -47,19 +43,17 @@ import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/b
 import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { fmtDate, fmtDateTime } from "@/lib/date";
-import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
-} from "@shared/posPaymentPolicy";
+import { fmtDateTime } from "@/lib/date";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
-import { invoiceStatusLabel, invoiceStatusBadgeVariant,
-} from "@shared/invoiceStatus";
+import { invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { getDeviceCode } from "@/lib/offline/outbox";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
 
 type RangeChip = "MY_SHIFT" | "TODAY" | "WEEK";
-type PayChip = "ALL" | "UNSETTLED" | "CARD";
+type PayChip = "ALL" | "UNSETTLED" | "PAID" | "CARD";
 
 export function ReceptionInvoiceQueue({
   branchId,
@@ -68,14 +62,9 @@ export function ReceptionInvoiceQueue({
   defaultPayChip,
 }: {
   branchId: number;
-  /** وردية الاستقبال المفتوحة (رقاقة «ورديتي» + حوار التسديد «سيدخل درجك أنت»). */
   currentShiftId: number | null;
   branchName: string;
   parties: DispatchParty[];
-  /**
-   * الفلتر الافتراضيّ عند الفتح (١٩/٨). شاشة «فواتير للتحصيل» تفتح على **غير المسدَّدة**
-   * لأنّ غرضها في اسمها؛ واللوحة العامّة تبقى على `ALL`. الفلتر يبقى قابلاً للتبديل بعدها.
-   */
   defaultPayChip?: PayChip;
 }) {
   const utils = trpc.useUtils();
@@ -83,13 +72,12 @@ export function ReceptionInvoiceQueue({
   const actions = receptionInvoiceActions(me.data);
   const { canFirstPrint, canReprint } = useInvoiceActionPermissions(me.data);
   const { printAuthorizedReceiptData, printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
-  const canRetryThermal = (invoiceId: number) => canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
-  const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY",
-  );
+  const canRetryThermal = (invoiceId: number) =>
+    canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
+  const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY");
   const [payChip, setPayChip] = useState<PayChip>(defaultPayChip ?? "ALL");
   const [search, setSearch] = useState("");
   const debouncedQ = useDebouncedValue(search, 250);
-  // صفحات keyset متراكمة (تحميل المزيد) — تُصفَّر عند تغيّر أي فلتر.
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [accRows, setAccRows] = useState<Row[]>([]);
 
@@ -97,22 +85,26 @@ export function ReceptionInvoiceQueue({
     const base = {
       branchId,
       q: debouncedQ.trim() || undefined,
-      paymentState: payChip === "UNSETTLED" ? ("UNSETTLED" as const) : undefined,
+      paymentState:
+        payChip === "UNSETTLED"
+          ? ("UNSETTLED" as const)
+          : payChip === "PAID"
+            ? ("PAID" as const)
+            : undefined,
       method: payChip === "CARD" ? ("CARD" as const) : undefined,
       limit: 50,
       cursor,
     };
+    if (debouncedQ.trim()) return { ...base, sinceDays: 90 };
     if (range === "MY_SHIFT" && currentShiftId) return { ...base, shiftIds: [currentShiftId] };
     return { ...base, sinceDays: range === "TODAY" ? 0 : 7 };
   }, [branchId, debouncedQ, payChip, range, currentShiftId, cursor]);
 
   const q = trpc.reception.invoiceQueue.useQuery(queryInput, {
     enabled: receptionOperationAllowed(me.data, "reception.invoiceQueue"),
-    // إبقاء الصفحة الظاهرة أثناء تبديل الفلاتر يمنع وميض جدولٍ فارغ.
     placeholderData: (prev) => prev,
   });
 
-  // دمج صفحات keyset: الصفحة الأولى تستبدل، وصفحات المؤشّر تُلحَق.
   const rows = useMemo(() => {
     const page = q.data?.rows ?? [];
     if (!cursor) return page;
@@ -133,11 +125,12 @@ export function ReceptionInvoiceQueue({
   const [collectTarget, setCollectTarget] = useState<Row | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
   const [returnTarget, setReturnTarget] = useState<Row | null>(null);
+  const [inlineReturnId, setInlineReturnId] = useState<number | null>(null);
+  const [cancelInvoiceId, setCancelInvoiceId] = useState<number | null>(null);
+  const [detailInvoiceId, setDetailInvoiceId] = useState<number | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
-  const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000,
-  });
+  const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000 });
 
-  /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
   async function reprintThermal(row: Row) {
     if (printingId != null || !actions.canReadInvoice || !canRetryThermal(Number(row.id))) return;
     reservePrintWindow();
@@ -146,10 +139,8 @@ export function ReceptionInvoiceQueue({
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       const result = await printAuthorizedReceiptData(invoiceToReceipt(d), true);
-      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة",
-        );
-      else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة",
-        );
+      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة");
       else notify.ok("تمت إعادة الطباعة", `الفاتورة ${d.invoiceNumber}`);
     } catch (e) {
       notify.err(e);
@@ -166,8 +157,10 @@ export function ReceptionInvoiceQueue({
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       await printAuthorizedDocument(Number(row.id), "A4", canReprint, async () =>
-        await printInvoiceA4(invoiceDetailPrintData(d, taxSettings.data?.taxRegistrationNumber ?? null))
-          ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" });
+        (await printInvoiceA4(invoiceDetailPrintData(d, taxSettings.data?.taxRegistrationNumber ?? null)))
+          ? { ok: true, via: "browser" }
+          : { ok: false, via: "browser", reason: "popup-blocked" },
+      );
     } catch (e) {
       notify.err(e);
     } finally {
@@ -178,8 +171,7 @@ export function ReceptionInvoiceQueue({
   if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
 
   const remainingOf = (r: Row) =>
-    round2(D(r.total).minus(D(r.paidAmount ?? 0)).minus(D(r.returnedTotal ?? 0)),
-    ).toNumber();
+    round2(D(r.total).minus(D(r.paidAmount ?? 0)).minus(D(r.returnedTotal ?? 0))).toNumber();
 
   const chip = (active: boolean) =>
     cn(
@@ -189,7 +181,6 @@ export function ReceptionInvoiceQueue({
 
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label="ورشة فواتير المحطة">
-      {/* الفلاتر: رقائق النطاق + الدفع + بحث (§٨.٥) */}
       <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 border-b bg-muted/30 px-3 py-2">
         {currentShiftId != null && (
           <button type="button" className={chip(range === "MY_SHIFT")} onClick={() => { setRange("MY_SHIFT"); resetPaging(); }}>
@@ -203,21 +194,28 @@ export function ReceptionInvoiceQueue({
           ٧ أيام
         </button>
         <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+        <button type="button" className={chip(payChip === "ALL")} onClick={() => { setPayChip("ALL"); resetPaging(); }}>
+          الكل
+        </button>
         <button type="button" className={chip(payChip === "UNSETTLED")} onClick={() => { setPayChip((p) => (p === "UNSETTLED" ? "ALL" : "UNSETTLED")); resetPaging(); }}>
           غير مسدّدة
+        </button>
+        <button type="button" className={chip(payChip === "PAID")} onClick={() => { setPayChip((p) => (p === "PAID" ? "ALL" : "PAID")); resetPaging(); }}>
+          مسدّدة
         </button>
         <button type="button" className={chip(payChip === "CARD")} onClick={() => { setPayChip((p) => (p === "CARD" ? "ALL" : "CARD")); resetPaging(); }}>
           <CardBrandLogos size="xs" />
           <span>بالبطاقة</span>
         </button>
         <UnifiedSearchInput
-          barcode={false}
+          barcode={true}
           debounceMs={0}
           value={search}
+          onScan={(code) => { setSearch(resolveOrderLookupBarcode(code)); resetPaging(); }}
           onChange={(val) => { setSearch(val); resetPaging(); }}
-          placeholder="رقم الفاتورة أو اسم/هاتف الزبون"
+          placeholder="امسح الباركود أو اكتب رقم الفاتورة أو اسم/هاتف الزبون"
           className="h-8 text-xs"
-          wrapperClassName="ms-auto min-w-44 flex-1 sm:max-w-64"
+          wrapperClassName="ms-auto min-w-44 flex-1 sm:max-w-72"
           aria-label="بحث في فواتير المحطة"
         />
       </div>
@@ -227,7 +225,7 @@ export function ReceptionInvoiceQueue({
           <EmptyState
             icon={Receipt}
             title="لا فواتير ضمن هذا النطاق"
-            description="أنجز طلباً من السلة، أو وسّع النطاق إلى اليوم أو ٧ أيام."
+            description="غيّر الفلتر إلى اليوم أو ٧ أيام، أو امسح باركود الفاتورة للبحث الشامل."
           />
         ) : (
           <table className="w-full border-collapse text-xs">
@@ -241,113 +239,171 @@ export function ReceptionInvoiceQueue({
                 <th className="px-2 py-2 text-center font-bold">المتبقّي</th>
                 <th className="px-2 py-2 text-center font-bold">الحالة</th>
                 <th className="px-2 py-2 text-right font-bold">التسليم</th>
-                <th className="px-2 py-2 text-right font-bold">قَبَضَها</th>
+                <th className="px-2 py-2 text-right font-bold">الموظف</th>
                 <th className="px-2 py-2 text-center font-bold">إجراءات</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
-                const remaining = remainingOf(r);
+              {rows.map((row) => {
+                const remaining = remainingOf(row);
                 const canCorrect = actions.canCorrect;
+                const parsedWorkOrderId = (() => {
+                  if (row.workOrderId != null) return Number(row.workOrderId);
+                  const m = /^WO-(\d+)(?::R\d+)?$/.exec(String(row.sourceId ?? ""));
+                  return m ? Number(m[1]) : null;
+                })();
+                const isWorkOrderInvoice =
+                  row.sourceType === "WORKORDER" || parsedWorkOrderId != null;
+                const isLiveRow =
+                  row.status !== "RETURNED" &&
+                  row.status !== "CANCELLED" &&
+                  row.status !== "SUPERSEDED";
+                const canCancelRow =
+                  isLiveRow &&
+                  !isWorkOrderInvoice &&
+                  row.consignmentStatus !== "DELIVERED" &&
+                  row.consignmentStatus !== "PARTIAL" &&
+                  (actions.canCancelInvoice || actions.canCancelUnpaidCod);
+
                 return (
-                  <tr key={String(r.id)} className="border-b align-middle hover:bg-muted/30">
+                  <tr key={String(row.id)} className="border-b align-middle hover:bg-muted/30">
                     <td className="px-2 py-2 font-bold" dir="ltr">
-                      {r.invoiceNumber}
-                      {r.offlineReceiptNumber && (
-                        <div className="text-[9px] font-medium text-muted-foreground">{r.offlineReceiptNumber}</div>
+                      {row.invoiceNumber}
+                      {row.offlineReceiptNumber && (
+                        <div className="text-[9px] font-medium text-muted-foreground">{row.offlineReceiptNumber}</div>
                       )}
                     </td>
                     <td className="px-2 py-2 text-muted-foreground" dir="ltr">
-                      {r.invoiceDate ? fmtDateTime(r.invoiceDate) : "—"}
+                      {row.invoiceDate ? fmtDateTime(row.invoiceDate) : "—"}
                     </td>
                     <td className="px-2 py-2">
                       <div className="max-w-36 truncate font-semibold">
-                        {r.customerName ?? r.contactName ?? "عميل نقدي"}
+                        {row.customerName ?? row.contactName ?? "عميل نقدي"}
                       </div>
-                      {(r.customerPhone ?? r.contactPhone) && (
-                        <div className="text-[10px] text-muted-foreground" dir="ltr">{r.customerPhone ?? r.contactPhone}</div>
+                      {(row.customerPhone ?? row.contactPhone) && (
+                        <div className="text-[10px] text-muted-foreground" dir="ltr">{row.customerPhone ?? row.contactPhone}</div>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-center font-bold tabular-nums" dir="ltr">{fmt(r.total)}</td>
-                    <td className="px-2 py-2 text-center tabular-nums" dir="ltr">{fmt(r.paidAmount ?? "0")}</td>
-                    <td className={cn("px-2 py-2 text-center font-extrabold tabular-nums", remaining > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground",
-                      )} dir="ltr">
+                    <td className="px-2 py-2 text-center font-bold tabular-nums" dir="ltr">{fmt(row.total)}</td>
+                    <td className="px-2 py-2 text-center tabular-nums" dir="ltr">{fmt(row.paidAmount ?? "0")}</td>
+                    <td className={cn("px-2 py-2 text-center font-extrabold tabular-nums", remaining > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground")} dir="ltr">
                       {fmt(remaining)}
                     </td>
                     <td className="px-2 py-2 text-center">
-                      <Badge variant={invoiceStatusBadgeVariant(r.status)} className="text-[10px]">
-                        {/* التعريب و variant من المصدر المشترك — كانت السلسلة الشرطية تُترجم PAID→default
-                            بينما الشاشة الأخرى (Invoices.tsx) تُترجمها success. الآن حالة واحدة، شكل واحد. */}
-                        {invoiceStatusLabel(r.status)}
+                      <Badge variant={invoiceStatusBadgeVariant(row.status)} className="text-[10px]">
+                        {invoiceStatusLabel(row.status)}
                       </Badge>
                     </td>
                     <td className="px-2 py-2">
-                      {r.consignmentNumber && r.consignmentStatus !== "CANCELLED" ? (
+                      {row.consignmentNumber && row.consignmentStatus !== "CANCELLED" ? (
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold">
                           <Truck aria-hidden className="size-3" />
-                          {r.consignmentNumber}
-                          <span className="text-muted-foreground">· {r.partyName ?? "مندوب"}</span>
+                          {row.consignmentNumber}
+                          <span className="text-muted-foreground">· {row.partyName ?? "مندوب"}</span>
                           <span className="text-muted-foreground">
-                            {r.consignmentStatus === "DELIVERED" ? "(سُلِّمت)" : r.consignmentStatus === "PARTIAL" ? "(جزئي)" : "(بالطريق)"}
+                            {row.consignmentStatus === "DELIVERED" ? "(سُلِّمت)" : row.consignmentStatus === "PARTIAL" ? "(جزئي)" : "(بالطريق)"}
                           </span>
                         </span>
-                      ) : r.workOrderId ? (
-                        <span className="text-[10px] text-muted-foreground">طلب {r.workOrderNumber}</span>
+                      ) : parsedWorkOrderId != null ? (
+                        <a href={`/work-orders/${parsedWorkOrderId}`} className="text-[10px] text-primary hover:underline">
+                          طلب {row.workOrderNumber ?? `#${parsedWorkOrderId}`}
+                        </a>
                       ) : (
-                        <span className="text-[10px] text-muted-foreground">كاونتر</span>
+                        <span className="text-[10px] text-muted-foreground">مباشر</span>
                       )}
                     </td>
                     <td className="px-2 py-2 text-[10px] text-muted-foreground">
-                      {r.lastCollectorName ?? r.createdByName ?? "—"}
+                      {row.lastCollectorName ?? row.createdByName ?? "—"}
                     </td>
                     <td className="px-2 py-2">
-                      <div className="flex items-center justify-center gap-1">
-                        {/* بالطريق مع المندوب ⇒ التحصيل عبر توريده لا الدرج (مرآة حارس الخادم — مراجعة ٥/٨) */}
-                        {actions.canCollect && remaining > 0 && r.consignmentStatus !== "DISPATCHED" && r.consignmentStatus !== "PARTIAL" && (
-                          <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setCollectTarget(r)}>
-                            <HandCoins aria-hidden className="size-3 me-1" />{" "}
-                              تسديد
+                      <div className="flex flex-wrap items-center justify-center gap-1">
+                        {actions.canCollect && remaining > 0 && row.consignmentStatus !== "DISPATCHED" && row.consignmentStatus !== "PARTIAL" && (
+                          <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setCollectTarget(row)}>
+                            <HandCoins aria-hidden className="size-3 me-1" />
+                            تسديد
                           </Button>
                         )}
-                        {remaining > 0 && (r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL") && (
-                          <span className="inline-flex h-7 items-center rounded-md border border-dashed px-1.5 text-[10px] text-muted-foreground" title="الفاتورة بالطريق مع المندوب — التحصيل عبر توريد المندوب">
+                        {remaining > 0 && (row.consignmentStatus === "DISPATCHED" || row.consignmentStatus === "PARTIAL") && (
+                          <span className="inline-flex h-7 items-center rounded-md border border-dashed px-1.5 text-[10px] text-muted-foreground" title="الفاتورة مع المندوب">
                             مع المندوب
                           </span>
                         )}
-                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="إعادة طباعة حرارية" aria-label={`إعادة طباعة الفاتورة ${r.invoiceNumber}`} disabled={printingId != null || !canRetryThermal(Number(r.id))} onClick={() => void reprintThermal(r)}>
+                        {isLiveRow && isWorkOrderInvoice && actions.canReverseWorkOrder && parsedWorkOrderId != null && (
+                          <ReverseDeliveryRequestDialog
+                            workOrderId={parsedWorkOrderId}
+                            orderNumber={row.workOrderNumber ?? String(row.sourceId ?? parsedWorkOrderId)}
+                            title={`فاتورة ${row.invoiceNumber}`}
+                            buttonLabel="مرتجع"
+                            size="sm"
+                            onRequested={() => {
+                              resetPaging();
+                              void utils.reception.invoiceQueue.invalidate();
+                            }}
+                          />
+                        )}
+                        {isLiveRow && !isWorkOrderInvoice && actions.canCreateReturn && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1 px-2 text-[10px] font-bold"
+                            onClick={() => setInlineReturnId(Number(row.id))}
+                          >
+                            <RotateCcw aria-hidden className="size-3" />
+                            مرتجع
+                          </Button>
+                        )}
+                        {isLiveRow && !isWorkOrderInvoice && !actions.canCreateReturn && actions.canRequestReturn && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1 px-2 text-[10px]"
+                            onClick={() => setReturnTarget(row)}
+                          >
+                            <RotateCcw aria-hidden className="size-3" />
+                            مرتجع
+                          </Button>
+                        )}
+                        {canCancelRow && (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-7 gap-1 px-2 text-[10px] font-bold"
+                            onClick={() => setCancelInvoiceId(Number(row.id))}
+                          >
+                            <FileWarning aria-hidden className="size-3" />
+                            إلغاء
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="إعادة طباعة حرارية" aria-label={`إعادة طباعة الفاتورة ${row.invoiceNumber}`} disabled={printingId != null || !canRetryThermal(Number(row.id))} onClick={() => void reprintThermal(row)}>
                           <Printer aria-hidden className="size-3" />
                         </Button>
-                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="طباعة A4" aria-label={`طباعة A4 للفاتورة ${r.invoiceNumber}`} disabled={!canFirstPrint && !canReprint} onClick={() => void printA4(r)}>
+                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="طباعة A4" aria-label={`طباعة A4 للفاتورة ${row.invoiceNumber}`} disabled={!canFirstPrint && !canReprint} onClick={() => void printA4(row)}>
                           <FileText aria-hidden className="size-3" />
                         </Button>
-                        {canCorrect && (
+                        {canCorrect && isLiveRow && !isWorkOrderInvoice && (
                           <a
-                            href={`/reception/workflow?section=edit&invoice=${encodeURIComponent(r.invoiceNumber)}`}
+                            href={`/reception/workflow?section=edit&invoice=${encodeURIComponent(row.invoiceNumber)}`}
                             className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 text-[10px] font-bold text-[var(--sem-warn)] hover:bg-muted"
-                            title="فتح فحص أهلية التعديل ثم محرر الفاتورة"
-                            aria-label={`تعديل الفاتورة ${r.invoiceNumber} وإعادة إصدارها`}
+                            title="تعديل أصناف الفاتورة"
+                            aria-label={`تعديل الفاتورة ${row.invoiceNumber}`}
                           >
                             <PencilLine aria-hidden className="size-3" />
                             تعديل
                           </a>
                         )}
-                        {(!r.consignmentId || r.consignmentStatus === "CANCELLED") && actions.canDispatch && (
-                          <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${r.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(r)}>
+                        {isLiveRow && (!row.consignmentId || row.consignmentStatus === "CANCELLED") && actions.canDispatch && (
+                          <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${row.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(row)}>
                             <Truck aria-hidden className="size-3" />
                           </Button>
                         )}
-                        {actions.canReadInvoice && <a
-                          href={`/invoices/${r.id}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex h-7 items-center rounded-md border bg-card px-1.5 text-[10px] font-bold hover:bg-muted"
-                          title="التفاصيل الكاملة (تبويب جديد — سلّتك محفوظة)"
-                        >
-                          تفاصيل
-                        </a>}
-                        {(actions.canCreateReturn || actions.canRequestReturn) && r.status !== "RETURNED" && r.status !== "CANCELLED" && (
-                          <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[10px] text-muted-foreground" title="طلب إرجاع" onClick={() => setReturnTarget(r)}>
-                            <RotateCcw aria-hidden className="size-3" />
+                        {actions.canReadInvoice && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-[10px] font-bold"
+                            onClick={() => setDetailInvoiceId(Number(row.id))}
+                          >
+                            تفاصيل
                           </Button>
                         )}
                       </div>
@@ -365,11 +421,6 @@ export function ReceptionInvoiceQueue({
             </Button>
           </div>
         )}
-      </div>
-
-      {/* التصحيح لا يكتب فوق المستند: الأصل يبقى تدقيقياً ويُستبدل بعد اعتماد مستقل. */}
-      <div className="flex-shrink-0 border-t bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
-        «تعديل» يفتح محرر الفاتورة نفسه. عند اعتماد مدير مستقل يُعكس الأصل وتصدر فاتورة بديلة بكل آثارها المالية والمخزنية، ثم تُطبع البديلة.
       </div>
 
       {collectTarget && actions.canCollect && (
@@ -392,8 +443,10 @@ export function ReceptionInvoiceQueue({
         <InvoiceDispatchDialog
           open
           invoice={{
-            id: Number(dispatchTarget.id), invoiceNumber: dispatchTarget.invoiceNumber,
-            total: dispatchTarget.total, paidAmount: dispatchTarget.paidAmount,
+            id: Number(dispatchTarget.id),
+            invoiceNumber: dispatchTarget.invoiceNumber,
+            total: dispatchTarget.total,
+            paidAmount: dispatchTarget.paidAmount,
             returnedTotal: dispatchTarget.returnedTotal,
             customerName: dispatchTarget.customerName ?? dispatchTarget.contactName,
             customerPhone: dispatchTarget.customerPhone ?? dispatchTarget.contactPhone ?? dispatchTarget.deliveryPhone,
@@ -409,18 +462,50 @@ export function ReceptionInvoiceQueue({
         />
       )}
 
-      {returnTarget && (actions.canCreateReturn || actions.canRequestReturn) && (
-        <ReturnRequestDialog
-          row={returnTarget}
-          canCreateReturn={actions.canCreateReturn}
-          onClose={() => setReturnTarget(null)}
-        />
+      <InvoiceDetailDrawer
+        invoiceId={detailInvoiceId}
+        onClose={() => setDetailInvoiceId(null)}
+        onOpenReturn={(id) => {
+          setDetailInvoiceId(null);
+          setInlineReturnId(id);
+        }}
+      />
+
+      <SalesReturnDrawer
+        invoiceId={inlineReturnId}
+        initialMode="FULL"
+        onClose={() => setInlineReturnId(null)}
+        onSuccess={() => {
+          setInlineReturnId(null);
+          resetPaging();
+          void utils.reception.invoiceQueue.invalidate();
+        }}
+      />
+
+      <QuickCancelInvoiceDialog
+        invoiceId={cancelInvoiceId}
+        open={cancelInvoiceId != null}
+        onOpenChange={(v) => { if (!v) setCancelInvoiceId(null); }}
+        onSwitchToReturn={(id) => setInlineReturnId(id)}
+        onSuccess={() => {
+          setCancelInvoiceId(null);
+          resetPaging();
+          void utils.reception.invoiceQueue.invalidate();
+        }}
+      />
+
+      {returnTarget && actions.canRequestReturn && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={() => setReturnTarget(null)}>
+          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-extrabold">مرتجع — {returnTarget.invoiceNumber}</h3>
+            <StaffReturnRequestForm row={returnTarget} onClose={() => setReturnTarget(null)} />
+          </div>
+        </div>
       )}
     </section>
   );
 }
 
-/** تسديد دفعة — ح٥ (V8): يسمّي الدرج صراحةً («سيدخل درجك أنت») ويولّد مفتاح idempotency لكل فتح. */
 function CollectPaymentDialog({
   row,
   remaining,
@@ -461,11 +546,13 @@ function CollectPaymentDialog({
       payWinRef.current = null;
       notify.ok(
         `سُدِّدت دفعة على ${row.invoiceNumber}`,
-        "notice" in r && r.notice ? r.notice : method === "CASH" && r.collectedIntoShiftId
-          ? `دخل المبلغ درج ورديتك #${r.collectedIntoShiftId}`
-          : r.collectedIntoShiftId
-            ? `سُجِّلت على ورديتك #${r.collectedIntoShiftId} — لا تدخل درج النقد`
-            : undefined,
+        "notice" in r && r.notice
+          ? r.notice
+          : method === "CASH" && r.collectedIntoShiftId
+            ? `دخل المبلغ درج ورديتك #${r.collectedIntoShiftId}`
+            : r.collectedIntoShiftId
+              ? `سُجِّلت على ورديتك #${r.collectedIntoShiftId} — لا تدخل درج النقد`
+              : undefined,
       );
       const paidNow = round2(D(amount || "0")).toFixed(2);
       const remAfter = round2(D(remaining).minus(D(paidNow)));
@@ -502,24 +589,14 @@ function CollectPaymentDialog({
   const externalFingerprint = `SALES_COLLECTION|${branchId}|${method}|${normalizedAmount}|${reference.trim()}`;
   const externalConfirmed =
     method === "CASH" ||
-    (externalAttempt?.confirmed === true &&
-      externalAttempt.fingerprint === externalFingerprint);
+    (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
 
   async function confirmReceptionExternalPayment() {
     if (!actions.canCollect || !actions.canConfirmExternalPayment) return;
     const normalizedReference = reference.trim();
-    if (
-      !normalizedReference ||
-      !D(amount || "0").gt(0) ||
-      method === "CASH" ||
-      method === "TELECOM"
-    )
-      return;
+    if (!normalizedReference || !D(amount || "0").gt(0) || method === "CASH" || method === "TELECOM") return;
     try {
-      const prior =
-        externalAttempt?.fingerprint === externalFingerprint
-          ? externalAttempt
-          : null;
+      const prior = externalAttempt?.fingerprint === externalFingerprint ? externalAttempt : null;
       const deviceId = prior?.deviceId ?? (await getDeviceCode());
       const requestId = prior?.requestId ?? crypto.randomUUID();
       let attemptId = prior?.attemptId ?? null;
@@ -534,31 +611,11 @@ function CollectPaymentDialog({
           deviceId,
         });
         attemptId = initiated.attemptId;
-        setExternalAttempt({
-          attemptId,
-          requestId,
-          deviceId,
-          fingerprint: externalFingerprint,
-          confirmed: false,
-        });
+        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false });
       }
-      await confirmExternal.mutateAsync({
-        branchId,
-        channel: "SALES_COLLECTION",
-        attemptId,
-        deviceId,
-      });
-      setExternalAttempt({
-        attemptId,
-        requestId,
-        deviceId,
-        fingerprint: externalFingerprint,
-        confirmed: true,
-      });
-      notify.ok(
-        "تأكّد الدفع الخارجي",
-        `ثُبّت المرجع ${normalizedReference} وأصبح جاهزاً للاستهلاك مرة واحدة.`,
-      );
+      await confirmExternal.mutateAsync({ branchId, channel: "SALES_COLLECTION", attemptId, deviceId });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${normalizedReference}`);
     } catch (error) {
       notify.err(error, "تعذّر تأكيد الدفع الخارجي");
     }
@@ -655,11 +712,9 @@ function CollectPaymentDialog({
               onChange={(e) => setTelecomConfirmed(e.target.checked)}
               className="mt-0.5"
             />
-            <span>تحقّقتُ أنّ الرصيد وصل فعلاً — الكود يُقبل مرّةً واحدة ولا يدخل درج النقد</span>
+            <span>تحقّقتُ أنّ الرصيد وصل فعلاً</span>
           </label>
         )}
-        {/* §٨.٥ — سطرٌ إلزاميّ: shiftIdForCashTx يفرض درج الفاعل، وهذه الشاشة تعلنه بدل أن يُفاجأ عند الإغلاق.
-            I15: لغير النقد المبلغ يُسجَّل على الوردية للمحاسبة ولا يدخل الدرج. */}
         <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
           <Banknote aria-hidden className="me-1 inline size-3.5" />
           {method === "CASH" ? (
@@ -670,8 +725,7 @@ function CollectPaymentDialog({
             </>
           ) : (
             <>
-              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : ""}{" "}
-              للمحاسبة — لا يدخل درج النقد · {branchName}
+              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : ""} · {branchName}
             </>
           )}
         </p>
@@ -679,9 +733,14 @@ function CollectPaymentDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={!actions.canCollect || collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) ||
+            disabled={
+              !actions.canCollect ||
+              collect.isPending ||
+              D(amount || 0).lte(0) ||
+              (needRef && !reference.trim()) ||
               !externalConfirmed ||
-              (method === "TELECOM" && !telecomConfirmed)}
+              (method === "TELECOM" && !telecomConfirmed)
+            }
             onClick={() => {
               payWinRef.current = preopenDocumentWindow();
               collect.mutate({
@@ -692,10 +751,8 @@ function CollectPaymentDialog({
                 ...(method === "CASH"
                   ? {}
                   : {
-                      externalPaymentAttemptId:
-                        externalAttempt?.attemptId ?? undefined,
-                      externalPaymentDeviceId:
-                        externalAttempt?.deviceId ?? undefined,
+                      externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
+                      externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
                     }),
                 clientRequestId,
               });
@@ -709,68 +766,67 @@ function CollectPaymentDialog({
   );
 }
 
-/**
- * نموذج **طلب الإرجاع** لموظّف المحطة (١٩/٨): الأصناف والسبب — لا مبالغَ ولا رافدَ ولا درج.
- * قرارُ المال كلّه للمدير لحظة الاعتماد، فالطلب مستند نيّةٍ لا مال.
- */
-function StaffReturnRequestForm({ row, onClose,
-}: { row: Row; onClose: () => void;
-}) {
+function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => void }) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const canRequest = receptionInvoiceActions(me.data).canRequestReturn;
   const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) }, { enabled: canRequest });
   const [qty, setQty] = useState<Record<number, number>>({});
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState("تراجع الزبون");
 
   const req = trpc.returns.request.useMutation({
     onSuccess: (r) => {
-      notify.ok("أُرسل طلب الإرجاع", `طلب #${r.requestId} — بانتظار اعتماد المدير. لا أثر ماليّ قبل الاعتماد.`,
-      );
-      utils.returns.requests.invalidate();
+      notify.ok("أُرسل طلب المرتجع", `طلب #${r.requestId} بانتظار موافقة المدير.`);
+      void utils.returns.requests.invalidate();
       onClose();
     },
     onError: (e) => notify.err(e),
   });
 
-  const items = (detail.data?.items ?? []).map((it) => ({
-    id: Number(it.id),
-    name: it.productName ?? it.sku ?? `بند ${it.id}`,
-    remaining: Number(it.baseQuantity) - Number(it.returnedBaseQuantity ?? 0),
-  })).filter((it) => it.remaining > 0);
+  const items = (detail.data?.items ?? [])
+    .map((it) => ({
+      id: Number(it.id),
+      name: it.productName ?? it.sku ?? `بند ${it.id}`,
+      remaining: Number(it.baseQuantity) - Number(it.returnedBaseQuantity ?? 0),
+    }))
+    .filter((it) => it.remaining > 0);
 
   const lines = items
-    .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining),
+    .map((it) => ({
+      invoiceItemId: it.id,
+      baseQuantity: Math.min(qty[it.id] ?? it.remaining, it.remaining),
     }))
     .filter((l) => l.baseQuantity > 0);
   const canSubmit = canRequest && lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
 
   return (
     <>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        حدّد المُرجَع واذكر السبب.{" "}
-        <span className="font-bold">لا أثر ماليّ الآن</span> — المدير
-        يعتمده فيُنفَّذ المرتجع ويقرّر هو ردّ النقد إن لزم.
+      <p className="text-xs text-muted-foreground">
+        حدّد الأصناف المرتجعة واضغط إرسال لاعتمادها من المدير.
       </p>
       {detail.isLoading ? (
         <p className="py-4 text-center text-xs text-muted-foreground">جارٍ تحميل البنود…</p>
       ) : items.length === 0 ? (
-        <p className="py-4 text-center text-xs text-muted-foreground">لا بنود قابلة للإرجاع على هذه الفاتورة.</p>
+        <p className="py-4 text-center text-xs text-muted-foreground">لا توجد بنود متبقية للإرجاع.</p>
       ) : (
         <div className="max-h-52 space-y-1.5 overflow-y-auto">
           {items.map((it) => (
             <div key={it.id} className="flex items-center gap-2 rounded-lg border p-2">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-bold">{it.name}</div>
-                <div className="text-[10px] text-muted-foreground">المتبقّي القابل للإرجاع: {it.remaining}</div>
+                <div className="text-[10px] text-muted-foreground">المتبقّي: {it.remaining}</div>
               </div>
               <Input
                 type="number"
                 min={0}
                 max={it.remaining}
-                value={qty[it.id] ?? ""}
-                onChange={(e) => setQty((q) => ({ ...q, [it.id]: Math.max(0, Number(e.target.value) || 0),
-                  }))}
+                value={qty[it.id] ?? it.remaining}
+                onChange={(e) =>
+                  setQty((prev) => ({
+                    ...prev,
+                    [it.id]: Math.max(0, Number(e.target.value) || 0),
+                  }))
+                }
                 className="h-8 w-20 text-center tabular-nums"
                 aria-label={`كمية إرجاع ${it.name}`}
               />
@@ -779,13 +835,13 @@ function StaffReturnRequestForm({ row, onClose,
         </div>
       )}
       <div className="space-y-1">
-        <Label htmlFor="ret-reason" className="text-xs">سبب الإرجاع</Label>
+        <Label htmlFor="ret-reason" className="text-xs">السبب</Label>
         <Input
           id="ret-reason"
           value={reason}
           maxLength={500}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="رفض العميل الاستلام / صنف خاطئ / تلف…"
+          placeholder="سبب المرتجع"
           className="h-9"
         />
       </div>
@@ -794,90 +850,13 @@ function StaffReturnRequestForm({ row, onClose,
         <Button
           className="flex-1"
           disabled={!canSubmit}
-          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim(),
-            })}
+          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim() })}
         >
-          {req.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للمدير"}
+          {req.isPending ? "جارٍ الإرسال…" : "إرسال للمدير"}
         </Button>
       </div>
     </>
   );
 }
-
-/** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يقدّم طلباً يعتمده المدير. */
-function ReturnRequestDialog({ row, canCreateReturn, onClose,
-}: { row: Row; canCreateReturn: boolean; onClose: () => void;
-}) {
-  const parsedWorkOrderId = (() => {
-    if (row.workOrderId != null) return Number(row.workOrderId);
-    const m = /^WO-(\d+)(?::R\d+)?$/.exec(String(row.sourceId ?? ""));
-    return m ? Number(m[1]) : null;
-  })();
-  const isWorkOrderInvoice =
-    row.sourceType === "WORKORDER" || parsedWorkOrderId != null;
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
-      <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-extrabold">طلب إرجاع — {row.invoiceNumber}</h3>
-        {isWorkOrderInvoice ? (
-          <>
-            <p className="text-xs text-muted-foreground">
-              فاتورة أمر الشغل لا تمرّ بمرتجع المبيعات العام؛ تُعالَج عبر «طلب عكس التسليم» من شاشة أمر الشغل أو تفاصيل الفاتورة.
-            </p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-              <a
-                href={
-                  parsedWorkOrderId != null
-                    ? `/work-orders/${parsedWorkOrderId}`
-                    : `/invoices/${row.id}`
-                }
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-bold text-primary-foreground hover:bg-primary/90"
-              >
-                {parsedWorkOrderId != null ? "فتح أمر الشغل" : "فتح تفاصيل الفاتورة"}
-              </a>
-            </div>
-          </>
-        ) : canCreateReturn ? (
-          <>
-            <p className="text-xs text-muted-foreground">
-              اختر نوع المرتجع لتنفيذه مباشرةً بصلاحيتك (عكس المخزون والقيود وتسوية المدفوع أو موازنة الذمم):
-            </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <a
-                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}&mode=FULL`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-3 text-xs font-extrabold text-destructive-foreground hover:bg-destructive/90"
-              >
-                مرتجع كامل للفاتورة
-              </a>
-              <a
-                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}&mode=PARTIAL`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-3 text-xs font-extrabold text-primary-foreground hover:bg-primary/90"
-              >
-                مرتجع جزئي (تحديد بنود)
-              </a>
-            </div>
-            <div className="flex justify-end pt-1">
-              <Button variant="outline" size="sm" className="w-full" onClick={onClose}>إغلاق</Button>
-            </div>
-          </>
-        ) : (
-          /* ١٩/٨ (قرار المالك «طلب موظف + اعتماد مدير») — كان هنا نصٌّ يقول «استدعِ المدير»
-             ويقف: رفضُ الزبون حدثٌ يوميّ فيتوقّف العمل حتى يحضر، أو يُحفَظ المرتجع بحسابه
-             فتضيع نسبةُ الفاعل. الآن الموظّف يقدّم **طلباً موثّقاً** بلا أيّ أثرٍ ماليّ. */
-          <StaffReturnRequestForm row={row} onClose={onClose} />
-        )}
-      </div>
-    </div>
-  );
-}
-
 
 export default ReceptionInvoiceQueue;

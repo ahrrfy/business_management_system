@@ -3,7 +3,7 @@ import {checkoutChargesFields,hasCheckoutCharges} from "../services/checkoutChar
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isQuantity } from "@shared/quantity";
-import { hasOperationPolicy, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
+import { hasOperationPolicy, operationDecision, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
 import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -37,7 +37,9 @@ import {
   claimWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
+  lookupWorkOrderMaterialByBarcode,
   markWorkOrderReady,
+  searchWorkOrderMaterials,
   setWorkOrderMaterials,
   startWorkOrder,
   updateWorkOrder,
@@ -92,6 +94,7 @@ import {
   listPendingWorkOrderControls,
   rejectWorkOrderControlRequest,
   requestWorkOrderControl,
+  withdrawWorkOrderControlRequest,
 } from "../services/workOrder/controlRequests";
 import { currentOnlineOrderStatus } from "../services/storeAdmin/onlineOrderTracking";
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
@@ -615,6 +618,14 @@ export const workOrderRouter = router({
   rejectControl: workordersManagerProcedure
     .input(z.object({ id: z.number().int().positive(), reason: workOrderControlReason }))
     .mutation(({ input, ctx }) => rejectWorkOrderControlRequest(input.id, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    }, input.reason)),
+
+  withdrawControl: workordersExecProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: z.string().trim().max(500).nullish() }))
+    .mutation(({ input, ctx }) => withdrawWorkOrderControlRequest(input.id, {
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
@@ -1439,6 +1450,7 @@ export const workOrderRouter = router({
           title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
           status: invoices.status,
           salePrice: invoices.total,
+          returnedTotal: invoices.returnedTotal,
           deposit: invoices.paidAmount,
           customerId: invoices.customerId,
           customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
@@ -1485,13 +1497,26 @@ export const workOrderRouter = router({
           .orderBy(desc(deliveryConsignments.id))
           .limit(1);
 
+        const rawInvoiceTotal = String(inv.salePrice);
+        const invFin = resolveWorkOrderHandoverFinancials(
+          { salePrice: inv.salePrice, deposit: "0", invoiceId: Number(inv.id) },
+          {
+            total: inv.salePrice,
+            returnedTotal: inv.returnedTotal,
+            paidAmount: inv.deposit,
+            status: inv.status,
+          },
+        );
+
         return {
           ...inv,
+          salePrice: invFin.salePrice,
+          deposit: invFin.deposit ?? "0.00",
           siblingWorkOrders,
           qrPayload: invoiceBarcodeSet({
             invoiceNumber: inv.orderNumber,
             invoiceDate: inv.invoiceDate.toISOString(),
-            total: String(inv.salePrice),
+            total: rawInvoiceTotal,
             branchId: Number(inv.branchId),
           }).qrPayload,
           version: 1,
@@ -2594,4 +2619,83 @@ export const workOrderRouter = router({
       input.workOrderId,
       { branchId: ctx.scopedBranchId, ownerId: ctx.scopedOwnerId },
     )),
+
+  searchMaterials: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        query: z.string().max(120),
+        limit: z.number().int().positive().max(100).default(20),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      if (
+        !operationDecision(ctx.user as OperationUser, "workOrders.setMaterials").allowed &&
+        !operationDecision(ctx.user as OperationUser, "workOrders.requestControl").allowed
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر البحث في مواد أمر الشغل",
+            why: "عملية تعديل مواد أمر الشغل غير مفوضة لهذا الحساب",
+            doThis: "اطلب من المدير منح صلاحية تعديل مواد أمر الشغل لحسابك",
+          }),
+        });
+      }
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر البحث في مواد أمر الشغل",
+            why: "لا يوجد فرع مُسنَد لهذا المستخدم",
+            doThis: "اطلب من مدير النظام إسناد فرع لحسابك ثم أعد المحاولة",
+          }),
+        });
+      }
+      return searchWorkOrderMaterials(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        role: ctx.user.role,
+        isOwner: Boolean(ctx.user.isOwner),
+      });
+    }),
+
+  lookupMaterialByBarcode: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        barcode: z.string().trim().min(1).max(64),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      if (
+        !operationDecision(ctx.user as OperationUser, "workOrders.setMaterials").allowed &&
+        !operationDecision(ctx.user as OperationUser, "workOrders.requestControl").allowed
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر البحث في مواد أمر الشغل",
+            why: "عملية تعديل مواد أمر الشغل غير مفوضة لهذا الحساب",
+            doThis: "اطلب من المدير منح صلاحية تعديل مواد أمر الشغل لحسابك",
+          }),
+        });
+      }
+      if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر قراءة باركود مادة أمر الشغل",
+            why: "لا يوجد فرع مُسنَد لهذا المستخدم",
+            doThis: "اطلب من مدير النظام إسناد فرع لحسابك ثم أعد المحاولة",
+          }),
+        });
+      }
+      return lookupWorkOrderMaterialByBarcode(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        role: ctx.user.role,
+        isOwner: Boolean(ctx.user.isOwner),
+      });
+    }),
 });

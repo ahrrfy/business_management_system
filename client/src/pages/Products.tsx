@@ -42,6 +42,7 @@ import { fmtAr, formatQuantity } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlternativeStockCard } from "@/components/stocktake/AlternativeStockBreakdown";
+import { LegacyBarcodeConflictsDialog } from "@/components/product/LegacyBarcodeConflictsDialog";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { categoryOptionElements } from "@/lib/categoryTree";
 import { useEffect, useMemo, useState } from "react";
@@ -171,6 +172,7 @@ export default function Products() {
   const setPickedBranch = (v: number | "") => setF({ branch: v === "" ? "" : String(v) });
 
   const [importOpen, setImportOpen] = useState(false);
+  const [legacyConflictsOpen, setLegacyConflictsOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState<number | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ productId: number; name: string } | null>(null);
@@ -571,6 +573,19 @@ export default function Products() {
             importLabel="استيراد Excel"
             add={can("catalog.createProduct") ? { href: "/products/new", label: "إضافة منتج" } : undefined}
           >
+            {can("catalog.legacyBarcodeConflicts", isElevated) && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setLegacyConflictsOpen(true)}
+                data-testid="products-legacy-barcode-conflicts-btn"
+              >
+                <AlertTriangle className="w-4 h-4 text-[var(--sem-warn)]" aria-hidden />
+                <span>تعارضات الباركود</span>
+              </Button>
+            )}
             {canQuickStudio && (
               <Button
                 type="button"
@@ -1036,6 +1051,11 @@ export default function Products() {
         target={deleteFor}
         onClose={() => setDeleteFor(null)}
         onDone={() => { utils.catalog.adminList.invalidate(); utils.catalog.posList.invalidate(); }}
+      />
+
+      <LegacyBarcodeConflictsDialog
+        open={legacyConflictsOpen}
+        onOpenChange={setLegacyConflictsOpen}
       />
 
       {/* نافذة الرفع السريع والتقاط الكاميرا والمعالجة بالذكاء لصفّ المنتج المختار أو الممسوح بالباركود */}

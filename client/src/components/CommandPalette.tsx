@@ -30,6 +30,15 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
+import {
+  canSeeGate,
+  INVOICE_LIST_GATE,
+  RECEPTION_STATION_GATE,
+  RETURNS_WORKSPACE_GATE,
+  WORK_ORDERS_HUB_GATE,
+  type RoleGate,
+} from "@/lib/navVisibility";
+import type { PermissionMap } from "@shared/permissions";
 
 /**
  * المسارات التي تملك ماسح باركود محلياً (POS/الاستقبال/بوابة العدّ/الكشك/الأرصدة/الملصقات)
@@ -52,30 +61,30 @@ export function hasLocalScanner(
 type SearchResult = RouterOutputs["globalSearch"]["search"][number];
 type EntityType = SearchResult["type"];
 
-type PageItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }>; keywords?: string };
+type PageItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }>; keywords?: string; gate?: RoleGate };
 
 const PAGES: PageItem[] = [
   { label: "لوحة التحكّم", href: "/", icon: LayoutDashboard, keywords: "dashboard home رئيسية" },
-  { label: "نقطة البيع — تجزئة", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة تجزئة retail" },
-  { label: "نقطة البيع — خدمات طباعة", href: "/pos?mode=PRINT_SERVICES", icon: ShoppingCart, keywords: "print pos طباعة خدمات نسخ" },
-  { label: "نقطة البيع — استقبال أوامر شغل", href: "/pos?mode=RECEPTION", icon: ShoppingCart, keywords: "reception استقبال تخصيص أمر شغل قنوات" },
-  { label: "صَندوق الوارد (القَنوات)", href: "/inbox", icon: InboxIcon, keywords: "inbox channels whatsapp instagram phone قنوات واتساب انستغرام اتصال محادثات" },
-  { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
-  { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
-  { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },
-  { label: "بوابة المرتجعات المركزية", href: "/returns", icon: RotateCcw, keywords: "returns sales purchases إرجاع مرتجع فواتير مفقودة تقصي" },
-  { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },
-  { label: "الموردون", href: "/suppliers", icon: Truck, keywords: "suppliers موردين" },
-  { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة خدمة" },
-  { label: "المخزون", href: "/inventory", icon: Boxes, keywords: "inventory stock حركات" },
-  { label: "تحويلات مَخزون بين الفروع", href: "/transfers", icon: Truck, keywords: "transfers stock نقل مخزون" },
-  { label: "تحويلات نَقدية بين الفروع", href: "/treasury/transfers", icon: Truck, keywords: "transfers cash نقل نقد" },
-  { label: "لوحة الخزينة", href: "/treasury", icon: Wallet, keywords: "treasury cash خزينة" },
-  { label: "المصروفات", href: "/expenses", icon: Wallet, keywords: "expenses مصاريف" },
-  { label: "أعمار الذمم (مدينة)", href: "/ar-aging", icon: Receipt, keywords: "ar aging ذمم تحصيل" },
-  { label: "كشف حساب عميل", href: "/customers-statement", icon: Users, keywords: "customer statement كشف" },
-  { label: "أعمار الذمم (دائنة)", href: "/ap-aging", icon: Receipt, keywords: "ap aging موردين" },
-  { label: "كشف حساب مورد", href: "/suppliers-statement", icon: Users, keywords: "supplier statement" },
+  { label: "نقطة البيع — تجزئة", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة تجزئة retail", gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" } },
+  { label: "نقطة البيع — خدمات طباعة", href: "/pos?mode=PRINT_SERVICES", icon: ShoppingCart, keywords: "print pos طباعة خدمات نسخ", gate: { roles: ["cashier", "manager"], module: "pos", level: "FULL" } },
+  { label: "نقطة البيع — استقبال أوامر شغل", href: "/pos?mode=RECEPTION", icon: ShoppingCart, keywords: "reception استقبال تخصيص أمر شغل قنوات", gate: RECEPTION_STATION_GATE },
+  { label: "صَندوق الوارد (القَنوات)", href: "/inbox", icon: InboxIcon, keywords: "inbox channels whatsapp instagram phone قنوات واتساب انستغرام اتصال محادثات", gate: { module: "channels", level: "READ" } },
+  { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات", gate: { module: "products", level: "READ" } },
+  { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير", gate: INVOICE_LIST_GATE },
+  { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر", gate: { module: "sales", level: "READ" } },
+  { label: "بوابة المرتجعات المركزية", href: "/returns", icon: RotateCcw, keywords: "returns sales purchases إرجاع مرتجع فواتير مفقودة تقصي", gate: RETURNS_WORKSPACE_GATE },
+  { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء", gate: { module: "purchases", level: "READ" } },
+  { label: "الموردون", href: "/suppliers", icon: Truck, keywords: "suppliers موردين", gate: { module: "suppliers", level: "READ" } },
+  { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة خدمة", gate: WORK_ORDERS_HUB_GATE },
+  { label: "المخزون", href: "/inventory", icon: Boxes, keywords: "inventory stock حركات", gate: { module: "inventory", level: "READ" } },
+  { label: "تحويلات مَخزون بين الفروع", href: "/transfers", icon: Truck, keywords: "transfers stock نقل مخزون", gate: { module: "inventory", level: "READ" } },
+  { label: "تحويلات نَقدية بين الفروع", href: "/treasury/transfers", icon: Truck, keywords: "transfers cash نقل نقد", gate: { operations: ["cashTransfers.list", "cashTransfers.send"], roles: ["manager", "accountant"], module: "treasury" } },
+  { label: "لوحة الخزينة", href: "/treasury", icon: Wallet, keywords: "treasury cash خزينة", gate: { roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" } },
+  { label: "المصروفات", href: "/expenses", icon: Wallet, keywords: "expenses مصاريف", gate: { operations: ["expenses.list", "expenses.create"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "expenses" } },
+  { label: "أعمار الذمم (مدينة)", href: "/ar-aging", icon: Receipt, keywords: "ar aging ذمم تحصيل", gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" } },
+  { label: "كشف حساب عميل", href: "/customers-statement", icon: Users, keywords: "customer statement كشف", gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" } },
+  { label: "أعمار الذمم (دائنة)", href: "/ap-aging", icon: Receipt, keywords: "ap aging موردين", gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" } },
+  { label: "كشف حساب مورد", href: "/suppliers-statement", icon: Users, keywords: "supplier statement", gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" } },
   { label: "حسابي (كلمة المرور)", href: "/account", icon: UserCog, keywords: "account profile password حساب" },
 ];
 
@@ -220,8 +229,26 @@ export function CommandPalette() {
       .filter((g) => g.items.length);
   }, [results.data]);
 
+  const me = trpc.auth.me.useQuery(undefined, { enabled: open });
+  const allowedPages = useMemo(() => {
+    if (!me.data) return PAGES;
+    const effRole = me.data.isOwner ? "admin" : me.data.role;
+    const effOverride = (me.data.isOwner ? null : me.data.permissionsOverride ?? null) as PermissionMap | null;
+    const effPolicy =
+      me.data.operationPolicyEnabled && !me.data.isOwner
+        ? me.data.resolvedOperationPolicy
+        : null;
+    const courierShellOnly =
+      (me.data.courierShellOnly ?? (effRole === "courier" && !me.data.operationPolicyEnabled)) &&
+      !me.data.isOwner;
+    return PAGES.filter((p) => {
+      if (courierShellOnly && p.href !== "/account") return false;
+      return canSeeGate(p.gate, effRole, effOverride, effPolicy);
+    });
+  }, [me.data]);
+
   const lc = term.toLowerCase();
-  const matchedPages = PAGES.filter((p) =>
+  const matchedPages = allowedPages.filter((p) =>
     !term || normalizeArabicSearch(`${p.label} ${p.keywords ?? ""}`).includes(normalizeArabicSearch(term)),
   );
 

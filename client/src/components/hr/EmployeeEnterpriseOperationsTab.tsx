@@ -14,6 +14,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import {
   Table,
   TableBody,
@@ -25,6 +26,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { confirm } from "@/lib/confirm";
 import { currentBaghdadMonth } from "@/lib/businessMonth";
+import { baghdadTodayYmd } from "@shared/hr";
 import { fmtDate } from "@/lib/date";
 import { iqd } from "@/lib/hr/ui";
 import { D, fmtAr, moneyInput } from "@/lib/money";
@@ -133,11 +135,9 @@ export function EmployeeEnterpriseOperationsTab({
   const [toBranchId, setToBranchId] = useState<string>("");
   const [toDepartment, setToDepartment] = useState("");
   const [toPosition, setToPosition] = useState("");
-  const [transferDate, setTransferDate] = useState(
-    new Date().toISOString().slice(0, 10),
-  );
-  const [transferEffectiveDate, setTransferEffectiveDate] = useState(
-    new Date().toISOString().slice(0, 10),
+  const [transferDate, setTransferDate] = useState(() => baghdadTodayYmd());
+  const [transferEffectiveDate, setTransferEffectiveDate] = useState(() =>
+    baghdadTodayYmd(),
   );
   const [transferDecisionNo, setTransferDecisionNo] = useState("");
   const [transferReason, setTransferReason] = useState("");
@@ -358,6 +358,7 @@ export function EmployeeEnterpriseOperationsTab({
                 لا توجد طلبات أو سلف مسجلة في هذا الشهر.
               </div>
             ) : (
+              <ScrollTableShell>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -544,6 +545,7 @@ export function EmployeeEnterpriseOperationsTab({
                   ))}
                 </TableBody>
               </Table>
+              </ScrollTableShell>
             )}
           </TabsContent>
 
@@ -574,6 +576,7 @@ export function EmployeeEnterpriseOperationsTab({
                 لا توجد تنقلات مسجلة للموظف.
               </div>
             ) : (
+              <ScrollTableShell>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -634,6 +637,7 @@ export function EmployeeEnterpriseOperationsTab({
                   ))}
                 </TableBody>
               </Table>
+              </ScrollTableShell>
             )}
           </TabsContent>
 
@@ -663,6 +667,7 @@ export function EmployeeEnterpriseOperationsTab({
                 لا توجد مكافآت مسجلة.
               </div>
             ) : (
+              <ScrollTableShell>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -750,6 +755,7 @@ export function EmployeeEnterpriseOperationsTab({
                   ))}
                 </TableBody>
               </Table>
+              </ScrollTableShell>
             )}
           </TabsContent>
 

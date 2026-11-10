@@ -13,6 +13,7 @@ import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import { DEAD_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, deliveryShipmentMembers, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
+import Decimal from "decimal.js";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
@@ -59,7 +60,7 @@ const DEFAULT_DELIVERY_LIST_LIMIT = 200;
 const MAX_DELIVERY_LIST_LIMIT = 500;
 const shipmentReferencesSql = sql<string>`(SELECT GROUP_CONCAT(CONCAT_WS(' ', si.invoiceNumber, si.id, leader.consignmentNumber, leader.externalTrackingRef) SEPARATOR ' ')
   FROM deliveryShipmentMembers sm JOIN deliveryConsignments member ON member.id = sm.consignmentId
-  JOIN invoices si ON si.id = member.invoiceId JOIN deliveryConsignments leader ON leader.id = sm.leaderConsignmentId
+  LEFT JOIN invoices si ON si.id = member.invoiceId JOIN deliveryConsignments leader ON leader.id = sm.leaderConsignmentId
   WHERE sm.leaderConsignmentId = (SELECT own.leaderConsignmentId FROM deliveryShipmentMembers own WHERE own.consignmentId = ${deliveryConsignments.id}))`;
 
 /** Batch enrichment keeps financial rows distinct while identifying their physical shipment. */
@@ -70,14 +71,31 @@ async function withShipmentSummaries<T extends { id: number }>(rows: T[]) {
   const leaderIds = Array.from(new Set(membership.map((row) => Number(row.leaderConsignmentId))));
   const leaders = db && leaderIds.length ? await db.select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber, tracking: deliveryConsignments.externalTrackingRef })
     .from(deliveryConsignments).where(inArray(deliveryConsignments.id, leaderIds)) : [];
-  const counts = db && leaderIds.length ? await db.select({ leaderId: deliveryShipmentMembers.leaderConsignmentId, count: sql<number>`COUNT(*)` })
-    .from(deliveryShipmentMembers).where(inArray(deliveryShipmentMembers.leaderConsignmentId, leaderIds)).groupBy(deliveryShipmentMembers.leaderConsignmentId) : [];
+  const memberRows = db && leaderIds.length ? await db.select({
+    leaderId: deliveryShipmentMembers.leaderConsignmentId,
+    status: deliveryConsignments.status,
+    parcelStatus: deliveryConsignments.parcelStatus,
+    openDue: consignmentOpenCodDueSql,
+  }).from(deliveryShipmentMembers)
+    .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId))
+    .where(inArray(deliveryShipmentMembers.leaderConsignmentId, leaderIds)) : [];
   const byId = new Map(membership.map((member) => [Number(member.consignmentId), Number(member.leaderConsignmentId)]));
-  const summaries = new Map(leaders.map((leader) => [Number(leader.id), { ...leader, count: Number(counts.find((row) => Number(row.leaderId) === Number(leader.id))?.count ?? 1) }]));
+  const summaries = new Map(leaders.map((leader) => {
+    const lid = Number(leader.id);
+    const groupRows = memberRows.filter((row) => Number(row.leaderId) === lid);
+    const collectibleDue = round2(groupRows.reduce((sum, row) => {
+      if (["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.status) || ["CANCELLED", "RETURNED"].includes(row.parcelStatus)) {
+        return sum;
+      }
+      return sum.plus(money(row.openDue ?? "0"));
+    }, money(0))).toFixed(2);
+    return [lid, { ...leader, count: Math.max(1, groupRows.length), collectibleDue }] as const;
+  }));
   return rows.map((row) => {
     const summary = summaries.get(byId.get(row.id) ?? 0);
     return { ...row, shipmentLeaderConsignmentId: summary?.id ?? null, shipmentInvoiceCount: summary?.count ?? 1,
-      shipmentNumber: summary?.number ?? null, shipmentTrackingRef: summary?.tracking ?? null };
+      shipmentNumber: summary?.number ?? null, shipmentTrackingRef: summary?.tracking ?? null,
+      shipmentCollectibleDue: summary?.collectibleDue ?? null };
   });
 }
 
@@ -298,6 +316,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       feeCollection: deliveryConsignments.feeCollection,
       sourceType: deliveryConsignments.sourceType,
       feeSettledAt: deliveryConsignments.feeSettledAt,
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
       courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
       parcelStatus: deliveryConsignments.parcelStatus,
       moneyStatus: deliveryConsignments.moneyStatus,
@@ -332,11 +351,14 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     consignmentIds: rows.map((row) => Number(row.id)), useCommission: party?.useCommission === true,
     includePending: true, allowBlockedPreview: true, feePolicy });
   const enriched = rows.map((r) => {
+    const id = Number(r.id);
     const potentialDue = r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
       ? money(r.parcelStatus === "DELIVERED" ? r.feeDue : r.feeSettledAt ? "0" : r.deliveryFee) : money(0);
-    const cash = quoteFee(potentialDue, money(r.orderTotal ?? "0"));
-    return { ...r, id: Number(r.id), feeWithholdingCash: cash.plus(detached.allocations.get(Number(r.id)) ?? 0).toFixed(2),
-      feeWithholdingBlocked: detached.blockedIds.has(Number(r.id)) || detached.uncoveredIds.has(Number(r.id)) };
+    const ownQuoted = quoteFee(potentialDue, money(r.orderTotal ?? "0"));
+    const projected = detached.projectedFromSource.get(id) ?? money(0);
+    const cash = round2(Decimal.max(0, ownQuoted.minus(projected)));
+    return { ...r, id, feeWithholdingCash: round2(cash.plus(detached.allocations.get(id) ?? 0)).toFixed(2),
+      feeWithholdingBlocked: detached.blockedIds.has(id) || detached.uncoveredIds.has(id) };
   });
   return buildPageResult(await withShipmentSummaries(enriched), effLimit);
 }
@@ -588,6 +610,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       shortfallAssigned: consignmentShortfallAssignedSql,
+      cashInCourierCustody: custody,
       remainingDue: remainingDueSql,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,
@@ -1557,6 +1580,6 @@ export async function predictiveSearchConsignments(
     return true;
   });
 
-  return deduplicated
-    .slice(0, effLimit);
+  return withShipmentSummaries(deduplicated.slice(0, effLimit));
+
 }

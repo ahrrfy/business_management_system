@@ -15,7 +15,15 @@ import { ExcessFeeRefundPanel } from "./ExcessFeeRefundPanel";
 type Row =
   RouterOutputs["delivery"]["paymentRefunds"]["list"]["pending"][number];
 /** Real pending receipts and provider execution, including original fee owners removed from a shipment. */
-export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
+export function DeliveryPaymentRefunds({
+  branchId,
+  initialDocumentNumber,
+  defaultShiftId,
+}: {
+  branchId: number;
+  initialDocumentNumber?: string | null;
+  defaultShiftId?: number | null;
+}) {
   const me = trpc.auth.me.useQuery(),
     q = trpc.delivery.paymentRefunds.list.useQuery({ branchId });
   const request = trpc.delivery.paymentRefunds.request.useMutation(),
@@ -164,6 +172,8 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
       <ExcessFeeRefundPanel
         key={branchId}
         branchId={branchId}
+        initialDocumentNumber={initialDocumentNumber}
+        defaultShiftId={defaultShiftId}
         onChanged={() => q.refetch()}
       />
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">

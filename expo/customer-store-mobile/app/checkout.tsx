@@ -45,6 +45,7 @@ import {
   formatIqd,
   formatLatinNumber,
   quoteStorefrontOrder,
+  resolveStorefrontLocationUrl,
   type StorefrontOrderQuote,
 } from "@/lib/storefront-api";
 import { governorates } from "@/shared/governorates";
@@ -53,22 +54,69 @@ import { saveRecentOrder } from "@/lib/recent-orders";
 import { loadVerifiedCustomerSession, type VerifiedCustomerSession } from "@/lib/customer-session";
 import { enableTransactionalPush } from "@/lib/customer-notifications";
 
-function parseCoordinatesOrUrl(input: string): { lat: number; lng: number } | null {
-  const trimmed = input.trim();
-  const rawMatch = trimmed.match(/(-?\d{1,2}\.\d+)[,\s]+(-?\d{1,3}\.\d+)/);
-  if (rawMatch) {
-    const lat = parseFloat(rawMatch[1]);
-    const lng = parseFloat(rawMatch[2]);
-    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
-    }
+const SAVED_DELIVERY_LOCATION_KEY = "@al_arabiya/delivery-location-v1";
+
+function normalizeCoordinateDigits(raw: string): string {
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code >= 0x0660 && code <= 0x0669) out += String(code - 0x0660);
+    else if (code >= 0x06f0 && code <= 0x06f9) out += String(code - 0x06f0);
+    else if (code === 0x060c || code === 0x061b) out += ",";
+    else if (code === 0x066b) out += ".";
+    else out += raw.charAt(i);
   }
-  const urlMatch = trimmed.match(/(?:[?&]q=|@)(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/);
-  if (urlMatch) {
-    const lat = parseFloat(urlMatch[1]);
-    const lng = parseFloat(urlMatch[2]);
-    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+  return out.trim();
+}
+
+function validRoundedCoords(lat: number, lng: number): { lat: number; lng: number } | null {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  if (Math.abs(lat) < 1e-6 && Math.abs(lng) < 1e-6) return null;
+  return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+}
+
+function parseCoordinatesOrUrl(input: string): { lat: number; lng: number } | null {
+  const normalized = normalizeCoordinateDigits(input);
+  if (!normalized) return null;
+  const pinRegex = /!3d([+-]?\d{1,2}(?:\.\d+)?)!4d([+-]?\d{1,3}(?:\.\d+)?)/g;
+  let pinMatch: RegExpExecArray | null = null;
+  let lastPin: { lat: number; lng: number } | null = null;
+  while ((pinMatch = pinRegex.exec(normalized)) !== null) {
+    const candidate = validRoundedCoords(parseFloat(pinMatch[1]), parseFloat(pinMatch[2]));
+    if (candidate) lastPin = candidate;
+  }
+  if (lastPin) return lastPin;
+
+  const queryMatch = normalized.match(
+    /(?:[?&](?:q|query|ll|daddr|destination|center)=|geo:|\/maps\/(?:search|place)\/)(?:loc:)?([+-]?\d{1,2}(?:\.\d+)?)[,\s+]+([+-]?\d{1,3}(?:\.\d+)?)/i,
+  );
+  if (queryMatch) {
+    const parsed = validRoundedCoords(parseFloat(queryMatch[1]), parseFloat(queryMatch[2]));
+    if (parsed) return parsed;
+  }
+
+  const atMatch = normalized.match(/@([+-]?\d{1,2}(?:\.\d+)?),([+-]?\d{1,3}(?:\.\d+)?)/);
+  if (atMatch) {
+    const parsed = validRoundedCoords(parseFloat(atMatch[1]), parseFloat(atMatch[2]));
+    if (parsed) return parsed;
+  }
+
+  const rawMatch = normalized.match(/(?:^|[^\d+-])([+-]?\d{1,2}\.\d{3,})[,\s]+([+-]?\d{1,3}\.\d{3,})(?=$|[^\d.])/);
+  if (rawMatch) {
+    return validRoundedCoords(parseFloat(rawMatch[1]), parseFloat(rawMatch[2]));
+  }
+  return null;
+}
+
+function extractShortGoogleMapsUrl(input: string): string | null {
+  const normalized = normalizeCoordinateDigits(input);
+  const urlMatches = normalized.match(/https?:\/\/[^\s<>"']+/gi);
+  if (!urlMatches) return null;
+  for (let i = 0; i < urlMatches.length; i++) {
+    const candidate = urlMatches[i].replace(/[).,;!?]+$/, "");
+    if (/^https:\/\/(?:maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(candidate)) {
+      return candidate;
     }
   }
   return null;
@@ -91,8 +139,39 @@ export default function CheckoutScreen() {
   const [longitude, setLongitude] = useState<number | null>(null);
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [pastedLocation, setPastedLocation] = useState("");
+  const [resolvingLocation, setResolvingLocation] = useState(false);
   const [locationFeedback, setLocationFeedback] = useState<string | null>(null);
   const [governorate, setGovernorate] = useState("baghdad");
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(SAVED_DELIVERY_LOCATION_KEY)
+      .then((raw) => {
+        if (!active || !raw) return;
+        const saved = JSON.parse(raw) as {
+          governorate?: string;
+          address?: string;
+          latitude?: number | null;
+          longitude?: number | null;
+        };
+        if (saved.governorate && governorates.some((g) => g.id === saved.governorate)) {
+          setGovernorate((curr) => (curr === "baghdad" ? saved.governorate! : curr));
+        }
+        if (typeof saved.address === "string" && saved.address.trim()) {
+          setAddress((curr) => curr || saved.address!);
+        }
+        if (typeof saved.latitude === "number" && typeof saved.longitude === "number") {
+          const valid = validRoundedCoords(saved.latitude, saved.longitude);
+          if (valid) {
+            setLatitude((curr) => curr ?? valid.lat);
+            setLongitude((curr) => curr ?? valid.lng);
+          }
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   const [quote, setQuote] = useState<StorefrontOrderQuote | null>(null);
   const [quoteCartFingerprint, setQuoteCartFingerprint] = useState<string | null>(null);
   const [couponDraft, setCouponDraft] = useState("");
@@ -235,6 +314,8 @@ export default function CheckoutScreen() {
         phone: customerPhone,
         governorate,
         address: address.trim(),
+        latitude,
+        longitude,
         couponCode: activeQuote.couponCode,
         total: activeQuote.total,
         selectionDetails: checkoutSelectionFingerprint(lines),
@@ -277,6 +358,10 @@ export default function CheckoutScreen() {
         }),
         clearPendingCheckoutAttempt(),
         clearActiveCouponCode(AsyncStorage),
+        AsyncStorage.setItem(
+          SAVED_DELIVERY_LOCATION_KEY,
+          JSON.stringify({ governorate, address: address.trim(), latitude, longitude }),
+        ),
       ]);
       void enableTransactionalPush(customerSessionToken ?? undefined);
       clearCart();
@@ -702,22 +787,30 @@ export default function CheckoutScreen() {
             <TextInput
               autoCapitalize="none"
               autoCorrect={false}
-              onChangeText={setPastedLocation}
-              placeholder="https://maps.app.goo.gl/... أو 33.315, 44.366"
+              onChangeText={(val) => {
+                setPastedLocation(val);
+                if (locationFeedback) setLocationFeedback(null);
+              }}
+              placeholder="https://maps.app.goo.gl/... أو 33.315241, 44.366067"
               placeholderTextColor="#71817B"
               style={styles.locationModalInput}
               textAlign="left"
               value={pastedLocation}
             />
+            {locationFeedback ? (
+              <Text style={styles.locationFeedbackText}>{locationFeedback}</Text>
+            ) : null}
             <View style={styles.locationModalButtonsRow}>
               <TouchableOpacity
+                disabled={resolvingLocation}
                 onPress={() => setShowLocationModal(false)}
                 style={styles.locationModalCancelBtn}
               >
                 <Text style={styles.locationModalCancelBtnText}>إلغاء</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => {
+                disabled={resolvingLocation || !pastedLocation.trim()}
+                onPress={async () => {
                   const coords = parseCoordinatesOrUrl(pastedLocation);
                   if (coords) {
                     setLatitude(coords.lat);
@@ -725,13 +818,33 @@ export default function CheckoutScreen() {
                     setShowLocationModal(false);
                     setPastedLocation("");
                     setLocationFeedback("تم تثبيت موقع الخريطة بنجاح");
-                  } else {
-                    setLocationFeedback("الرابط أو الإحداثيات غير صحيحة. يرجى التأكد.");
+                    return;
                   }
+                  const shortUrl = extractShortGoogleMapsUrl(pastedLocation);
+                  if (shortUrl) {
+                    setResolvingLocation(true);
+                    setLocationFeedback(null);
+                    try {
+                      const resolved = await resolveStorefrontLocationUrl(shortUrl);
+                      setLatitude(resolved.lat);
+                      setLongitude(resolved.lng);
+                      setShowLocationModal(false);
+                      setPastedLocation("");
+                      setLocationFeedback("تم فك الرابط المختصر وتثبيت موقع الخريطة بنجاح");
+                    } catch {
+                      setLocationFeedback("تعذر فك الرابط المختصر تلقائياً. افتح الرابط في خرائط Google وانسخ الإحداثيات الرقمية.");
+                    } finally {
+                      setResolvingLocation(false);
+                    }
+                    return;
+                  }
+                  setLocationFeedback("الرابط أو الإحداثيات غير صحيحة. يرجى التأكد.");
                 }}
                 style={styles.locationModalConfirmBtn}
               >
-                <Text style={styles.locationModalConfirmBtnText}>تثبيت الموقع</Text>
+                <Text style={styles.locationModalConfirmBtnText}>
+                  {resolvingLocation ? "جارٍ الفحص…" : "تثبيت الموقع"}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>

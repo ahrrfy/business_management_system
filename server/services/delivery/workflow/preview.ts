@@ -4,6 +4,7 @@ import {
   customers,
   deliveryConsignments,
   deliveryLedgerEntries,
+  deliveryShipmentMembers,
   invoices,
   onlineOrders,
   receipts,
@@ -81,15 +82,7 @@ export async function resolveWorkflowSourceTx(
   raw: string,
   branchId?: number,
 ): Promise<SourceRef> {
-  let code = normalizeKnownSystemBarcode(raw).trim();
-  try {
-    const url = new URL(code, "http://localhost");
-    code = normalizeKnownSystemBarcode(
-      url.searchParams.get("payload") ?? url.searchParams.get("order") ?? code,
-    );
-  } catch {
-    /* A plain barcode has no URL envelope. */
-  }
+  const code = normalizeKnownSystemBarcode(raw).trim();
   const physical = /^(AE|CHG)[-|](\d+)(?:\||$)/i.exec(code);
   if (
     physical &&
@@ -138,7 +131,8 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(invoices.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "invoice" as const, id: row.id })),
     );
@@ -156,7 +150,8 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(workOrders.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "workOrder" as const, id: row.id })),
     );
@@ -178,14 +173,19 @@ export async function resolveWorkflowSourceTx(
           branchId == null ? undefined : eq(onlineOrders.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
       ...rows.map((row) => ({ kind: "onlineOrder" as const, id: row.id })),
     );
   }
   if (namespaceAllowsTarget(lookup.namespace, "CONSIGNMENT")) {
     const rows = await tx
-      .select({ id: deliveryConsignments.id })
+      .select({
+        id: deliveryConsignments.id,
+        status: deliveryConsignments.status,
+        consignmentNumber: deliveryConsignments.consignmentNumber,
+      })
       .from(deliveryConsignments)
       .where(
         and(
@@ -211,9 +211,20 @@ export async function resolveWorkflowSourceTx(
             : eq(deliveryConsignments.branchId, branchId),
         ),
       )
-      .limit(3);
+      .orderBy(sql`id DESC`)
+      .limit(8);
     candidates.push(
-      ...rows.map((row) => ({ kind: "consignment" as const, id: row.id })),
+      ...[...rows]
+        .sort((a, b) => {
+          const aExact = [lookup.systemCode, lookup.documentCode, docBarcode("CN", lookup.documentCode)].includes(a.consignmentNumber) ? 0 : 1;
+          const bExact = [lookup.systemCode, lookup.documentCode, docBarcode("CN", lookup.documentCode)].includes(b.consignmentNumber) ? 0 : 1;
+          if (aExact !== bExact) return aExact - bExact;
+          const aDead = ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(a.status) ? 1 : 0;
+          const bDead = ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(b.status) ? 1 : 0;
+          return aDead !== bDead ? aDead - bDead : b.id - a.id;
+        })
+        .slice(0, 3)
+        .map((row) => ({ kind: "consignment" as const, id: row.id })),
     );
   }
   if (!candidates.length)
@@ -223,7 +234,7 @@ export async function resolveWorkflowSourceTx(
     );
   if (candidates.length === 1) return candidates[0]!;
   // Unified transaction numbering can identify several linked stages, but never unrelated sources.
-  const previews = [];
+  const previews: WorkflowScanPreview[] = [];
   for (const candidate of candidates)
     previews.push(
       await loadWorkflowPreviewTx(tx, candidate, undefined, branchId),
@@ -231,6 +242,23 @@ export async function resolveWorkflowSourceTx(
   const keys = new Set(
     previews.map((p) => p.group?.key ?? p.source.canonicalKey),
   );
+  if (keys.size !== 1) {
+    // Prefer active operational sources when a closed/cancelled tracking ref collides with a live document.
+    const livePairs = candidates
+      .map((c, idx) => ({ c, p: previews[idx]! }))
+      .filter(({ c, p }) => !(c.kind === "consignment" && ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(p.status)));
+    const liveKeys = new Set(livePairs.map(({ p }) => p.group?.key ?? p.source.canonicalKey));
+    if (liveKeys.size === 1) {
+      return livePairs.find(({ c }) => c.kind === "workOrder" || c.kind === "onlineOrder")?.c ?? livePairs[0]!.c;
+    }
+    if (lookup.namespace === "NUMERIC") {
+      const systemPairs = livePairs.filter(({ c }) => c.kind !== "consignment");
+      const systemKeys = new Set(systemPairs.map(({ p }) => p.group?.key ?? p.source.canonicalKey));
+      if (systemKeys.size === 1) {
+        return systemPairs.find(({ c }) => c.kind === "workOrder" || c.kind === "onlineOrder")?.c ?? systemPairs[0]!.c;
+      }
+    }
+  }
   if (keys.size !== 1)
     throw fulfillmentError(
       "الرقم يطابق مستندات مختلفة؛ امسح الباركود الكامل مع بادئة النوع",
@@ -673,13 +701,39 @@ export async function loadWorkflowPreviewTx(
     }
   }
   const members = cn ? await loadShipmentMembersTx(tx, cn.id) : [];
+  const [shipmentMembership] = cn
+    ? await tx
+        .select({
+          leaderConsignmentId: deliveryShipmentMembers.leaderConsignmentId,
+        })
+        .from(deliveryShipmentMembers)
+        .where(eq(deliveryShipmentMembers.consignmentId, cn.id))
+        .limit(1)
+    : [];
+  const resolvedLeaderConsignmentId = cn
+    ? Number(shipmentMembership?.leaderConsignmentId ?? members[0]?.id ?? cn.id)
+    : null;
+  const leaderMember =
+    (resolvedLeaderConsignmentId != null
+      ? members.find(
+          (member) => Number(member.id) === resolvedLeaderConsignmentId,
+        )
+      : undefined) ??
+    members[0] ??
+    cn ??
+    undefined;
   const operationalMembers = operationalShipmentMembers(members);
+  const operationalMemberIds = new Set(
+    operationalMembers.map((member) => Number(member.id)),
+  );
   const physicalHandoverIds = await physicalHandoverConsignmentIdsTx(
     tx,
     operationalMembers.map((member) => Number(member.id)),
   );
   const feeSource =
-    members.find((member) => money(member.deliveryFee).gt(0)) ?? members[0];
+    members.find((member) => money(member.deliveryFee).gt(0)) ??
+    leaderMember ??
+    members[0];
   if (members.some((member) => member.branchId !== branchId))
     throw fulfillmentError(
       "تضم الشحنة علاقة من فرع مختلف؛ راجع المسؤول",
@@ -762,18 +816,27 @@ export async function loadWorkflowPreviewTx(
       paid = money(0);
     }
     for (const member of members) {
+      const isOperationalCollectable =
+        operationalMemberIds.has(Number(member.id)) &&
+        member.returnDeclaredAt == null;
       const row =
         member.invoiceId == null
           ? undefined
           : await readInvoice(member.invoiceId);
-      cod = cod.plus(assignedGoodsCodDue(row, await creditCollectionChoiceTx(tx, member.id)));
+      if (isOperationalCollectable) {
+        cod = cod.plus(
+          assignedGoodsCodDue(row, await creditCollectionChoiceTx(tx, member.id)),
+        );
+      }
       if (row?.paymentMode === "CREDIT") creditRemaining = creditRemaining.plus(positive(money(row.total).minus(row.returnedTotal).minus(row.paidAmount)));
       if (row && !execution) {
         total = total.plus(positive(money(row.total).minus(row.returnedTotal)));
         paid = paid.plus(row.paidAmount);
       }
-      const claims = await loadAssignedChargeClaimsTx(tx, member.id);
-      serviceCharges = serviceCharges.plus(claims.remaining);
+      if (isOperationalCollectable) {
+        const claims = await loadAssignedChargeClaimsTx(tx, member.id);
+        serviceCharges = serviceCharges.plus(claims.remaining);
+      }
     }
   }
   if (request && !cn) {
@@ -862,6 +925,19 @@ export async function loadWorkflowPreviewTx(
     paidAmount: workflowMoney(paid),
     remainingAmount: workflowMoney(total.minus(paid)),
     codAmount: workflowMoney(cod),
+    ...(invoice && members.length > 1
+      ? {
+          sourceCodAmount: workflowMoney(
+            assignedGoodsCodDue(
+              invoice,
+              await creditCollectionChoiceTx(
+                tx,
+                members.find((m) => m.invoiceId === invoice.id)?.id ?? cn!.id,
+              ),
+            ),
+          ),
+        }
+      : {}),
     cashInCourierCustody: cn
       ? workflowMoney(
           money(
@@ -959,7 +1035,7 @@ export async function loadWorkflowPreviewTx(
     const received =
       member.sourceType === "AFTERCARE_EXECUTION"
         ? member.parcelStatus === "RETURNED"
-        : receipt != null;
+        : receipt != null || member.parcelStatus === "RETURNED";
     const inv =
       member.invoiceId == null
         ? undefined
@@ -1016,6 +1092,14 @@ export async function loadWorkflowPreviewTx(
       heldCustomerOwned: commercialActionRequired,
       commercialActionRequired,
       sourceClosureRequired,
+      postDeliveryCommercialEligible:
+        !received &&
+        member.sourceType !== "AFTERCARE_EXECUTION" &&
+        member.parcelStatus === "DELIVERED" &&
+        member.returnDeclaredAt == null &&
+        inv != null &&
+        !isDeadInvoiceStatus(inv.status) &&
+        inv.sourceType !== "WORKORDER",
     });
     if (!(await heldCustomerParcelReissueTx(tx, member)))
       allHeldReissuable = false;
@@ -1043,6 +1127,9 @@ export async function loadWorkflowPreviewTx(
           (member) => member.heldCustomerOwned,
         ),
         commercialActionRequired: pendingCommercial,
+        postDeliveryCommercialEligible: returnMembers.some(
+          (member) => member.postDeliveryCommercialEligible === true,
+        ),
         sourceClosureRequired: pendingSourceClosure,
         refundActionRequired:
           pendingCommercial &&
@@ -1118,13 +1205,16 @@ export async function loadWorkflowPreviewTx(
       charge && !cn
         ? ["APPROVED", "COMPLETED"].includes(charge.status) &&
           money(charge.amount).gt(charge.paidAmount)
-        : !!activeCn && !execution && cn!.returnDeclaredAt == null,
+        : Boolean(cn) &&
+          !execution &&
+          operationalMembers.length > 0 &&
+          operationalMembers.every((member) => member.returnDeclaredAt == null),
       execution
         ? "دفعة المعالجة بلا تحصيل من العميل"
         : "لا توجد مطالبة توصيل قائمة قابلة للتحصيل",
     ],
     cancelAssignment: [
-      !!activeCn &&
+      Boolean(cn) &&
         operationalMembers.length > 0 &&
         operationalMembers.every(
           (member) =>
@@ -1144,15 +1234,21 @@ export async function loadWorkflowPreviewTx(
       !!cn &&
         !execution &&
         (allHeldReissuable ||
-          ((cn.status === "CANCELLED" || !!activeCn) &&
-            cn.returnDeclaredAt == null)),
+          ((cn.status === "CANCELLED" ||
+            !!activeCn ||
+            operationalMembers.length > 0) &&
+            operationalMembers.every(
+              (member) => member.returnDeclaredAt == null,
+            ) &&
+            (operationalMembers.length > 0 || cn.returnDeclaredAt == null))),
       pendingCommercial
         ? "الطرد مستلم، لكن تحصيل الناقل أو تاريخه المالي/أجرته يحتاج تسوية مستقلة قبل إعادة الإصدار؛ لا تعاد حركة المخزون"
         : "إعادة الإسناد تتطلب إلغاءً محكوماً أو شحنة مفتوحة أو عهدة عائدة مستلمة مثبتة",
     ],
     declareReturn: [
-      !!activeCn &&
-        cn!.returnDeclaredAt == null &&
+      Boolean(cn) &&
+        operationalMembers.length > 0 &&
+        operationalMembers.every((member) => member.returnDeclaredAt == null) &&
         !returnMembers.every((member) => member.received),
       "لا توجد شحنة بالطريق تقبل إعلان رجوع",
     ],
@@ -1195,15 +1291,32 @@ export async function loadWorkflowPreviewTx(
     cn || request
       ? {
           key: cn
-            ? `shipment:${members[0]?.id ?? cn.id}`
+            ? `shipment:${resolvedLeaderConsignmentId ?? cn.id}`
             : `fulfillmentRequest:${request!.id}`,
-          leaderConsignmentId: members[0]?.id ?? null,
+          leaderConsignmentId: resolvedLeaderConsignmentId,
           consignmentNumber:
-            members[0]?.consignmentNumber ?? cn?.consignmentNumber ?? null,
+            leaderMember?.consignmentNumber ?? cn?.consignmentNumber ?? null,
           consignmentIds: members.map((r) => r.id),
           invoiceIds,
           fulfillmentRequestId: request?.id ?? null,
-          partyId: cn?.partyId ?? request?.partyId ?? null,
+          partyId:
+            operationalMembers[0]?.partyId ??
+            leaderMember?.partyId ??
+            cn?.partyId ??
+            request?.partyId ?? null,
+          ...(returnMembers.length > 1
+            ? {
+                members: returnMembers.map((m, idx) => ({
+                  consignmentId: m.consignmentId,
+                  consignmentNumber: m.consignmentNumber,
+                  invoiceId: m.invoiceId,
+                  invoiceNumber: m.invoiceNumber,
+                  workOrderId: m.workOrderId,
+                  workOrderNumber: m.workOrderNumber,
+                  codAmount: workflowMoney(money(members[idx]?.codAmount ?? 0)),
+                })),
+              }
+            : {}),
         }
       : undefined;
   const printSource: WorkflowScanPreview["printSource"] = execution
@@ -1333,7 +1446,11 @@ export async function loadWorkflowPreviewTx(
   const custodyStates = allCustodyStates.filter(
     ([, baseQuantity]) => baseQuantity > 0,
   );
-  const parcelStatuses = new Set(members.map((member) => member.parcelStatus));
+  const statusMembers =
+    operationalMembers.length > 0 ? operationalMembers : members;
+  const parcelStatuses = new Set(
+    statusMembers.map((member) => member.parcelStatus),
+  );
   const parcelStatus =
     parcelStatuses.size === 0
       ? null
@@ -1362,7 +1479,7 @@ export async function loadWorkflowPreviewTx(
       )!,
     );
   const shipmentSourceId =
-    group?.leaderConsignmentId ?? members[0]?.id ?? cn?.id;
+    group?.leaderConsignmentId ?? leaderMember?.id ?? cn?.id;
   if (shipmentSourceId != null)
     snapshotSources.push(
       and(
@@ -1723,11 +1840,11 @@ export async function loadWorkflowPreviewTx(
     },
     parcel: {
       shipmentNumber:
-        members[0]?.consignmentNumber ?? cn?.consignmentNumber ?? null,
+        leaderMember?.consignmentNumber ?? cn?.consignmentNumber ?? null,
       consignmentCount: members.length,
       parcelStatus,
       dispatchedAt:
-        members[0]?.dispatchedAt?.toISOString() ??
+        leaderMember?.dispatchedAt?.toISOString() ??
         cn?.dispatchedAt?.toISOString() ??
         null,
       physicallyReturned: physicallyReceived,

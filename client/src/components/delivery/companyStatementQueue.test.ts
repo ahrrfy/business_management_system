@@ -77,6 +77,14 @@ describe("طابور كشف شركة التوصيل بالباركود", () => {
     expect(D("100").minus(statementShipmentFees(rows.slice(0, 2), { 1: "0", 2: "100" }).total).toFixed(2)).toBe("95.00");
     expect(statementShipmentFees(rows, { 1: "0", 2: "3", 3: "100" }).insufficient).toBe(true);
     expect(statementShipmentFees([{ ...rows[0], remainingDue: "0" }, ...rows.slice(1)], { 1: "0", 2: "100", 3: "100" }).needsExplicit).toBe(true);
+
+    const overflowRows = [
+      { ...candidate(10, "10"), shipmentLeaderConsignmentId: 10, remainingDue: "2000", feeWithholdingCash: "2000", sourceType: "ONLINE_ORDER", feeCollection: "SHOP" },
+      { ...candidate(11, "10"), shipmentLeaderConsignmentId: 10, remainingDue: "25000", feeWithholdingCash: "3000" },
+    ];
+    const overflowPreview = statementShipmentFees(overflowRows, { 10: "1000", 11: "25000" });
+    expect(overflowPreview.total.toFixed(2)).toBe("5000.00");
+    expect(overflowPreview.insufficient).toBe(false);
   });
   it("uses the server's current due instead of rebuilding a historical COD claim", () => {
     expect(statementQueueRemaining({ ...candidate(1, "1"), remainingDue: "1250.10" }).toFixed(2)).toBe("1250.10");
@@ -189,6 +197,26 @@ describe("طابور كشف شركة التوصيل بالباركود", () => {
 
   it("يحسب المتبقّي الحي بعد المقبوض الكاونتري والعجز المثبت", () => {
     expect(statementQueueRemaining(candidate(1, "0441446")).toFixed(2)).toBe("84250.00");
+  });
+
+  it("يدعم مسح ملصقات النظام ذوات البادئة (CN-/INV- وحتى بتخطيط لوحة مفاتيح عربي) دون مطابقة الأرقام العارية", () => {
+    const rows = [
+      { ...candidate(99, "TRK-7788"), consignmentNumber: "CN-99", invoiceNumber: "990" },
+    ];
+    expect(resolveCompanyStatementBarcode(rows, "CN-99", new Set())).toMatchObject({
+      kind: "ADDED",
+      candidate: { id: 99 },
+    });
+    expect(resolveCompanyStatementBarcode(rows, "INV-990", new Set())).toMatchObject({
+      kind: "ADDED",
+      candidate: { id: 99 },
+    });
+    expect(resolveCompanyStatementBarcode(rows, "ؤى-99", new Set())).toMatchObject({
+      kind: "ADDED",
+      candidate: { id: 99 },
+    });
+    expect(resolveCompanyStatementBarcode(rows, "99", new Set()).kind).toBe("NOT_FOUND");
+    expect(resolveCompanyStatementBarcode(rows, "990", new Set()).kind).toBe("NOT_FOUND");
   });
 
 });

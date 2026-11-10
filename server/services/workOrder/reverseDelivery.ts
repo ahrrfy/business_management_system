@@ -3,6 +3,7 @@
  * الطلب غير المعتمد صفر الأثر، والحقيقة النقدية مشتقة من أدلة IN/OUT لا من رأس الفاتورة.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { assertNoActiveAftercareForInvoiceTx } from "../fulfillment/aftercareSources";
 import { and, desc, eq, inArray, isNull, like, notLike, or, sql } from "drizzle-orm";
 import {
@@ -48,6 +49,7 @@ export interface ReverseWorkOrderDeliveryInput {
   reason: string;
   reopen?: boolean;
   refundShiftId?: number | null;
+  forceTreasury?: boolean;
   refundSources: WorkOrderRefundSourcePlan[];
   clientRequestId: string;
 }
@@ -457,7 +459,26 @@ async function resolveLockedReceptionCashSource(
   branchId: number,
   explicitShiftId: number | null,
   actor: Actor & { role?: string },
+  forceTreasury = false,
 ): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
+  if (forceTreasury) {
+    if (!actorMayDrawFromTreasury(actor)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر الصرف من الخزينة الإدارية",
+          why: "الصرف المباشر من الخزينة الإدارية يتطلب صلاحية مدير فرع أو مسؤول نظام",
+          doThis: "اختر وردية استقبال مفتوحة للرد من الدرج أو اطلب اعتماد المدير للصرف من الخزينة",
+        }),
+      });
+    }
+    assertTreasuryOutException("WORK_ORDER_REVERSE_DELIVERY_COMPENSATION");
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId, shiftId: null, cashBucket: "TREASURY", paymentMethod: "CASH",
+      status: "COMPLETED", approvalStatus: "APPROVED",
+    });
+    return { shiftId: null, cashBucket: "TREASURY" };
+  }
   const open = await tx.select({ id: shifts.id }).from(shifts)
     .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
   const chosen = explicitShiftId != null
@@ -501,7 +522,7 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
     .from(workOrders).where(eq(workOrders.id, Number(input.workOrderId))).limit(1))[0];
   if (!hint) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
   const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH")
-    ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor)
+    ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor, input.forceTreasury === true)
     : null;
   if (hint.invoiceId != null) {
     await reverseEvidence(tx, {
@@ -551,7 +572,9 @@ export async function reverseWorkOrderDeliveryInTx(
   }
   const fingerprint = idempotencyHash({
     workOrderId, expectedVersion, reason, reopen: input.reopen === true,
-    refundShiftId: input.refundShiftId ?? null, refundSources: requestedPlans,
+    refundShiftId: input.refundShiftId ?? null,
+    ...(input.forceTreasury ? { forceTreasury: true } : {}),
+    refundSources: requestedPlans,
     approvedControlRequestId: control.approvedControlRequestId,
   });
   const replayInvoiceId = await checkIdempotency(
@@ -693,6 +716,7 @@ export async function reverseWorkOrderDeliveryInTx(
   }
   await tx.update(workOrders).set(input.reopen === true ? {
     status: "READY", invoiceId: null, deliveredAt: null,
+    deposit: "0.00", depositReceiptId: null, paymentMethod: "CASH",
     cancelReason: null, cancelledAt: null, cancelledBy: null,
     kanbanState: "NORMAL", blockedReason: null,
   } : {

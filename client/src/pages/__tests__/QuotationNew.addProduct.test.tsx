@@ -203,6 +203,9 @@ vi.mock("@/lib/trpc", () => ({
       forPurchase: {
         useQuery: () => ({ data: [], isLoading: false, isFetching: false }),
       },
+      warehouseList: {
+        useQuery: () => ({ data: [], isLoading: false, isFetching: false }),
+      },
       byUnitIds: {
         useQuery: () => ({ data: mockState.correctionCatalogRows, isLoading: false }),
       },

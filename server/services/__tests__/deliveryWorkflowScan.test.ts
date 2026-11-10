@@ -358,5 +358,33 @@ describe("typed barcode workflow preview", () => {
       customerId: 1,
     });
     expect(normalizeKnownSystemBarcode("ُِ-1")).toBe("AE-1");
+
+    const fromVerifyRefUrl = await previewWorkflowScan(
+      {
+        raw: "https://srv1548487.hstgr.cloud/verify?ref=AE-1",
+        station: "dispatch",
+        branchId: 1,
+      },
+      actor,
+    );
+    expect(fromVerifyRefUrl.source).toMatchObject({
+      kind: "aftercareExecution",
+      id: 1,
+      number: "AE-1",
+    });
+
+    const fromArabicVerifyUrl = await previewWorkflowScan(
+      {
+        raw: "اففحس:ظظsrv1548487.hstgr.cloudظverify؟p=}ألأ-١",
+        station: "collect",
+        branchId: 1,
+      },
+      actor,
+    );
+    expect(fromArabicVerifyUrl.source).toMatchObject({
+      kind: "charge",
+      id: 1,
+      number: "CHG-1",
+    });
   });
 });

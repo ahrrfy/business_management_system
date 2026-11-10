@@ -54,6 +54,7 @@ export interface ProductSearchBarProps {
   inputClassName?: string;
   autoFocus?: boolean;
   onScanStatus?: (status: "success" | "error") => void;
+  catalogMode?: "sale" | "warehouse";
 }
 
 interface NormalizedRow {
@@ -110,8 +111,10 @@ export function ProductSearchBar({
   inputClassName,
   autoFocus = false,
   onScanStatus,
+  catalogMode = "sale",
 }: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  const isWarehouse = !isPurchase && catalogMode === "warehouse";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر خدمات الطباعة المفعّل عليها showInAdvancedSales.
@@ -157,7 +160,12 @@ export function ProductSearchBar({
       includeQuotationServices: isQuotation,
       customerId,
     },
-    { enabled: !isPurchase && canSearch, staleTime: 0 }
+    { enabled: !isPurchase && !isWarehouse && canSearch, staleTime: 0 }
+  );
+  // Warehouse-side query (Transfers)
+  const whQ = trpc.catalog.warehouseList.useQuery(
+    { branchId, tier, query: term, limit: 50, includeBundles: true },
+    { enabled: isWarehouse && canSearch, staleTime: 5_000 }
   );
   // Purchase-side query
   const purQ = trpc.catalog.forPurchase.useQuery(
@@ -166,12 +174,13 @@ export function ProductSearchBar({
   );
   /** النتائج مطابقة للنص الحالي (لا تأجيل ولا جلب معلّق وطوله صالح) ⇒ Enter يضيف بأمان */
   const settled =
-    term === query.trim() && query.trim().length >= 2 && !(isPurchase ? purQ.isFetching : posQ.isFetching);
+    term === query.trim() && query.trim().length >= 2 && !(isPurchase ? purQ.isFetching : isWarehouse ? whQ.isFetching : posQ.isFetching);
 
   const utils = trpc.useUtils();
 
   // ما يُعرض/يُبحر فيه: عند النزول تحت حرفين تُخفى النتائج القديمة العالقة
   // كي لا تُعرض مضلِّلةً ولا يضيفها Enter/الأسهم خطأً.
+  const activePosRows = isWarehouse ? whQ.data : posQ.data;
   const results: NormalizedRow[] = useMemo(() => {
     if (query.trim().length < 2) return [];
     if (isPurchase) {
@@ -206,7 +215,7 @@ export function ProductSearchBar({
         costBase: r.costPriceBase,
       }));
     }
-    return (posQ.data ?? []).map((r) => ({
+    return (activePosRows ?? []).map((r) => ({
       productId: r.productId,
       variantId: r.variantId,
       productUnitId: r.productUnitId,
@@ -234,7 +243,7 @@ export function ProductSearchBar({
       // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
       costBase: r.costPriceBase ?? "0",
     }));
-  }, [isPurchase, posQ.data, purQ.data, query, purchaseCurrency, purchaseAgreedRate]);
+  }, [isPurchase, activePosRows, purQ.data, query, purchaseCurrency, purchaseAgreedRate]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -306,7 +315,15 @@ export function ProductSearchBar({
     try {
       let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
       try {
-        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier, customerId });
+        row =
+          isPurchase || isWarehouse
+            ? await utils.catalog.warehouseByBarcode.fetch({
+                barcode: code,
+                branchId,
+                tier,
+                includeBundles: isWarehouse,
+              })
+            : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier, customerId });
       } catch {
         if (!isCurrentRequest()) return "STALE";
         // إذا كان المستخدم لا يملك صلاحية كتالوج المنتجات أو حدث خطأ، ننتقل للفحص الاحتياطي
@@ -316,11 +333,15 @@ export function ProductSearchBar({
 
       if (row) {
         if (isPurchase) {
-          // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
-          // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
+          // warehouseByBarcode يثبت المالك الأساسي/البديل أولاً (بما فيه المواد الخام ومستلزمات التشغيل)؛
+          // ثم نأخذ بيانات التكلفة من بوابة الشراء بمعرّف الوحدة الدقيق.
           let purchaseRows: Awaited<ReturnType<typeof utils.catalog.forPurchase.fetch>> = [];
           try {
-            purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+            purchaseRows = await utils.catalog.forPurchase.fetch({
+              branchId,
+              unitIds: [row.productUnitId],
+              limit: 1,
+            });
           } catch {
             if (!isCurrentRequest()) return "STALE";
             purchaseRows = [];

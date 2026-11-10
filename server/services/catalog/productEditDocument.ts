@@ -11,6 +11,7 @@
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../../db";
+import type { StockUsage } from "@shared/stockUsage";
 import type { VariantKind } from "../../../shared/variantDisplay";
 import type { PriceTier } from "../pricing";
 
@@ -84,14 +85,13 @@ export interface ProductForVariantEdit {
   isCustomizable: boolean;
   allowAutoCartRecommendations: boolean;
   isService: boolean;
+  stockUsage: StockUsage | null;
   /** «يُباع بالطلب» (0318): يُسمح ببيعه قبل توريده؛ يُغذَّى بشراءٍ من مورّد أو إنتاجٍ داخليّ. */
   allowBackorder: boolean;
   /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
   isBundle: boolean;
   isActive: boolean;
-  // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيهُ العرض في نقاط البيع قابلٌ للتحرير بعد الإنشاء.
-  // كان مُقتصراً على ServiceForm ⇒ لا وسيلةَ لإخفاء خدمةٍ عن كاشير معيّن دون تعطيلها كلياً.
-  // ProductEdit يعرضهما تبديلَين مماثلَين لتبديلَي ServiceForm للاتساق.
+  showInStore: boolean;
   showInReception: boolean;
   showInPrintPos: boolean;
   showInQuotations: boolean;
@@ -176,9 +176,11 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
       isCustomizable: !!p.isCustomizable,
       allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
       isService: !!p.isService,
+      stockUsage: (p.stockUsage as StockUsage | null) ?? null,
       allowBackorder: !!p.allowBackorder,
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
+      showInStore: !!p.showInStore,
       showInReception: !!p.showInReception,
       showInPrintPos: !!p.showInPrintPos,
       showInQuotations: !!p.showInQuotations,
@@ -276,9 +278,11 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
     isCustomizable: !!p.isCustomizable,
     allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
     isService: !!p.isService,
+    stockUsage: (p.stockUsage as StockUsage | null) ?? null,
     allowBackorder: !!p.allowBackorder,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
+    showInStore: !!p.showInStore,
     showInReception: !!p.showInReception,
     showInPrintPos: !!p.showInPrintPos,
     showInQuotations: !!p.showInQuotations,

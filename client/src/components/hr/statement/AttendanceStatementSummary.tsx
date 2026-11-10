@@ -50,9 +50,12 @@ export function AttendanceStatementSummary({
           </div>
           {Number(d.liveAmountDue) !== totalDue && (
             <div className="text-[11px] text-muted-foreground">
-              الاشتقاق ببيانات اليوم يُعطي {iqd(d.liveAmountDue)} د.ع — الفرق
-              أثرُ ما تغيّر بعد الاعتماد (ترقيةٌ أو تصحيحُ بصمة أو تبديلُ جدول)،{" "}
-              <b>ولا يُصرف</b>.
+              الاشتقاق ببيانات اليوم يُعطي{" "}
+              <bdi dir="ltr" className="tabular-nums">
+                {iqd(d.liveAmountDue)}
+              </bdi>{" "}
+              د.ع — الفرق أثرُ ما تغيّر بعد الاعتماد (ترقيةٌ أو تصحيحُ بصمة أو
+              تبديلُ جدول)، <b>ولا يُصرف</b>.
             </div>
           )}
         </div>
@@ -110,24 +113,34 @@ export function AttendanceStatementSummary({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
         {[
           {
-            l: "ساعات الدوام المطلوبة",
-            sub: "حسب جدول الموظف للشهر",
-            v: `${d.totals.scheduledHours} س`,
+            l: d.totals.isPartialMonth
+              ? "ساعات الدوام المطلوبة حتى اليوم"
+              : "ساعات الدوام المطلوبة",
+            sub: d.totals.isPartialMonth
+              ? `من أصل ${d.totals.scheduledHours} س للشهر`
+              : "حسب جدول الموظف للشهر",
+            num: d.totals.isPartialMonth
+              ? (d.totals.scheduledHoursToDate ?? d.totals.scheduledHours)
+              : d.totals.scheduledHours,
+            unit: "س",
           },
           {
             l: "الساعات المدفوعة المستحقّة",
             sub: "الداخلة في أجر الدوام الأساس",
-            v: `${d.totals.payableHours} س`,
+            num: d.totals.payableHours,
+            unit: "س",
           },
           {
             l: "الساعات الإضافية (أوفر تايم)",
             sub: "ما زاد عن المطلوب اليومي",
-            v: `${d.totals.overtimeHours} س`,
+            num: d.totals.overtimeHours,
+            unit: "س",
           },
           {
             l: "أيام الغياب",
             sub: "أيام عمل بلا حضور أو إجازة",
-            v: `${d.totals.absentDays} يوم`,
+            num: String(d.totals.absentDays),
+            unit: "يوم",
           },
         ].map((x) => (
           <div key={x.l} className="rounded-md border p-2.5 bg-muted/15">
@@ -135,8 +148,11 @@ export function AttendanceStatementSummary({
             <div className="text-[10px] text-muted-foreground mb-1">
               {x.sub}
             </div>
-            <div className="tabular-nums font-bold text-base" dir="ltr">
-              {x.v}
+            <div className="font-bold text-base">
+              <bdi dir="ltr" className="tabular-nums">
+                {x.num}
+              </bdi>{" "}
+              <span className="text-sm font-semibold">{x.unit}</span>
             </div>
           </div>
         ))}

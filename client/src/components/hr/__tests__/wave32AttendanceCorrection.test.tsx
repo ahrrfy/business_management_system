@@ -91,4 +91,18 @@ describe("attendance correction completion", () => {
     act(() => submit.mock.calls[0][1].onSuccess());
     expect(correction.fix).toBeNull();
   });
+  it("clears stale checkIn/checkOut when saving ABSENT or LEAVE status (BUG-028)", () => {
+    act(() => correction.setFix({ ...draft("2026-10-03"), status: "LEAVE" }));
+    save();
+    expect(submit.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        employeeId: 3,
+        attendanceDate: "2026-10-03",
+        hours: 0,
+        status: "LEAVE",
+        checkIn: undefined,
+        checkOut: undefined,
+      }),
+    );
+  });
 });

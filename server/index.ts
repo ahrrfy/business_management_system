@@ -415,7 +415,10 @@ async function startServer() {
       skip: (req) =>
         req.path === "/healthz" ||
         req.path.startsWith("/assets/") ||
-        req.path.startsWith("/api/webhooks"),
+        req.path.startsWith("/api/webhooks") ||
+        (process.env.NODE_ENV === "development" &&
+          req.method === "GET" &&
+          !req.path.startsWith("/api")),
       thresholdFor: (req) => {
         const effectiveHost = isPublicStorefrontRequest(req)
           ? "alarabiya.online"

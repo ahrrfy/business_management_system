@@ -6,6 +6,7 @@ import {
 } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { createPortal } from "react-dom";
+import { useState } from "react";
 import {
   Check,
   Copy,
@@ -13,6 +14,7 @@ import {
   HandCoins,
   MessageCircle,
   Printer,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +24,7 @@ import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { DraftStrip } from "@/components/reception/DraftStrip";
+import { ReceptionQuickReturnCancelModal } from "@/components/reception/ReceptionQuickReturnCancelModal";
 import { type ReceptionServerDraftPointer } from "@/lib/receptionWorkspaceState";
 import {
   type CartLine,
@@ -155,6 +158,12 @@ export function ReceptionWorkspaceHeader({
   resumeDraft,
   printDraftTicketById,
 }: ReceptionWorkspaceHeaderInput) {
+  const [quickReturnOpen, setQuickReturnOpen] = useState(false);
+  const canOpenQuickReturn =
+    !offline &&
+    (canAction("returns.create") ||
+      canAction("sales.cancel") ||
+      canAction("workOrders.requestControl"));
   return (
     <div
       className={cn(
@@ -347,10 +356,28 @@ export function ReceptionWorkspaceHeader({
             >
               إنهاء الوردية
             </Button>
+            {canOpenQuickReturn && (
+              <button
+                type="button"
+                onClick={() => setQuickReturnOpen(true)}
+                title="مرتجع أو إلغاء سريع لفاتورة أو طلب"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 text-sm font-bold text-destructive hover:bg-destructive/20"
+              >
+                <RotateCcw aria-hidden className="size-4" />
+                <span>مرتجع / إلغاء</span>
+              </button>
+            )}
           </>,
           headerActionsNode,
         )}
 
+      {canOpenQuickReturn && (
+        <ReceptionQuickReturnCancelModal
+          branchId={branchId}
+          open={quickReturnOpen}
+          onOpenChange={setQuickReturnOpen}
+        />
+      )}
       <DraftStrip
         branchId={branchId}
         meUserId={Number(me.data?.id ?? 0)}

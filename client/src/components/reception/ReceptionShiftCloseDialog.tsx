@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
-import { Check } from "lucide-react";
+import { Check, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import { fmtDate } from "@/lib/date";
 import { fmt, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -15,6 +17,7 @@ import {
   type ShiftVarianceCode,
 } from "@shared/shiftCashGovernance";
 import { ShiftCashReconciliationMini } from "../pos/ShiftCashReconciliationMini";
+import { readShiftOutboxSummary } from "@/lib/offline/outbox";
 
 export interface ReceptionShiftCloseDialogProps {
   open: boolean;
@@ -38,7 +41,23 @@ export function ReceptionShiftCloseDialog({
   const [countEntered, setCountEntered] = useState(false);
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
   const [varianceReason, setVarianceReason] = useState("");
-  const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
+  const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
+  const [showManagerApproval, setShowManagerApproval] = useState(false);
+  const [outboxSummary, setOutboxSummary] = useState<{ queued: number; queuedTotal: number }>({ queued: 0, queuedTotal: 0 });
+
+  useEffect(() => {
+    if (!open) {
+      setOutboxSummary({ queued: 0, queuedTotal: 0 });
+      return;
+    }
+    let active = true;
+    void readShiftOutboxSummary(shift.id).then((res) => {
+      if (active) setOutboxSummary(res);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, shift.id]);
 
   useEffect(() => {
     if (!open) {
@@ -46,7 +65,8 @@ export function ReceptionShiftCloseDialog({
       setCountEntered(false);
       setVarianceReasonCode("");
       setVarianceReason("");
-      setManagerApprovedByUserId("");
+      setManagerApproval(null);
+      setShowManagerApproval(false);
     }
   }, [open, shift.id]);
 
@@ -106,13 +126,9 @@ export function ReceptionShiftCloseDialog({
   const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
 
-  const approversQ = trpc.shifts.eligibleVarianceApprovers.useQuery(undefined, {
-    enabled: open && hasRecVariance && !isElevatedRole,
-  });
-
   const canCloseWithVariance = isElevatedRole
     ? !!(varianceReasonCode && varianceReason.trim())
-    : !!(varianceReasonCode && varianceReason.trim() && managerApprovedByUserId);
+    : !!(varianceReasonCode && varianceReason.trim() && managerApproval);
 
   if (!open) return null;
 
@@ -128,6 +144,11 @@ export function ReceptionShiftCloseDialog({
       >
         <h3 className="mb-1 text-lg font-extrabold">إنهاء الوردية وعدّ النقدية</h3>
         <p className="mb-4 text-xs text-muted-foreground">{fmtDate(new Date())}</p>
+        {outboxSummary.queued > 0 && (
+          <div role="alert" className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs font-semibold text-amber-800 dark:text-amber-300">
+            تنبيه: توجد {outboxSummary.queued} عملية أوفلاين غير مُزامَنة لهذه الوردية بصافي نقدي {formatIqd(outboxSummary.queuedTotal)} — يُنصح بإتمام المزامنة قبل إغلاق الصندوق لتجنب فروقات الجرد.
+          </div>
+        )}
         {reportQ.isLoading ? (
           <div className="py-6 text-center text-muted-foreground">جارٍ تجهيز ملخص اليوم…</div>
         ) : (
@@ -247,28 +268,31 @@ export function ReceptionShiftCloseDialog({
                 <div className="space-y-2.5">
                   {!isElevatedRole && (
                     <div>
-                      <label className="block text-xs font-bold mb-1">المدير المعتمد للفرق:</label>
-                      <select
-                        value={managerApprovedByUserId}
-                        onChange={(e) => setManagerApprovedByUserId(e.target.value ? Number(e.target.value) : "")}
-                        className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
-                      >
-                        <option value="">-- اختر مديراً للاعتماد --</option>
-                        {(approversQ.data ?? []).map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} ({m.role === "admin" ? "إدارة عامة" : "مدير فرع"})
-                          </option>
-                        ))}
-                      </select>
+                      <label className="block text-xs font-bold mb-1">اعتماد المدير للفرق:</label>
+                      {managerApproval ? (
+                        <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-xs">
+                          <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
+                            <ShieldCheck aria-hidden className="size-4 shrink-0" />
+                            تم التحقق من اعتماد المدير
+                          </span>
+                          <Button type="button" variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setManagerApproval(null)}>
+                            إلغاء
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button type="button" variant="outline" size="sm" className="w-full text-xs font-bold" onClick={() => setShowManagerApproval(true)}>
+                          طلب مصادقة المدير لاعتماد فرق الوردية
+                        </Button>
+                      )}
                     </div>
                   )}
 
                   <div>
-                    <label className="block text-xs font-bold mb-1">سبب الفرق:</label>
-                    <select
+                    <label htmlFor="rec-variance-reason-code" className="block text-xs font-bold mb-1">سبب الفرق:</label>
+                    <AppSelect
+                      id="rec-variance-reason-code"
                       value={varianceReasonCode}
-                      onChange={(e) => setVarianceReasonCode(e.target.value as ShiftVarianceCode)}
-                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
+                      onValueChange={(val) => setVarianceReasonCode((val || "") as ShiftVarianceCode | "")}
                     >
                       <option value="">-- اختر سبب الفرق --</option>
                       {SHIFT_VARIANCE_CODES.map((code) => (
@@ -276,7 +300,7 @@ export function ReceptionShiftCloseDialog({
                           {SHIFT_VARIANCE_LABELS[code]}
                         </option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
 
                   <div>
@@ -306,7 +330,7 @@ export function ReceptionShiftCloseDialog({
                     countedCash: counted,
                     varianceReasonCode: hasRecVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
                     varianceReason: hasRecVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
-                    managerApprovedByUserId: hasRecVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
+                    managerApproval: hasRecVariance && !isElevatedRole && managerApproval ? managerApproval : undefined,
                   });
                 }}
               >
@@ -326,6 +350,18 @@ export function ReceptionShiftCloseDialog({
           </>
         )}
       </div>
+      {showManagerApproval && (
+        <ManagerApprovalDialog
+          zIndexClass="z-[120]"
+          title="اعتماد مدير — فرق نقدية الوردية"
+          description="إنهاء الوردية بفرق نقدي يتطلب مصادقة مدير الفرع أو الإدارة العامة برمز PIN أو الشارة أو كلمة المرور."
+          onCancel={() => setShowManagerApproval(false)}
+          onApprove={(approval) => {
+            setManagerApproval(approval);
+            setShowManagerApproval(false);
+          }}
+        />
+      )}
     </div>
   );
 }

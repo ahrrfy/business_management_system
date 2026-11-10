@@ -13,7 +13,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { expenseOperationAccess } from "@/lib/expenseOperationAccess";
@@ -28,6 +28,16 @@ import { printExpenseReceipt } from "@/components/expenses/printExpenseReceipt";
 import { APPROVAL_LABEL, CATEGORY_LABEL, expenseCategoryText, fundingDetail, fundingKindOf, FUNDING_META, FUNDING_ORDER, isApprovedAwaitingExecution, METHOD_LABEL, metric, PAGE_SIZE, SHIFT_STATUS_LABEL, SHIFT_TYPE_LABEL, STATUS_LABEL, warningsOf, type AuditFocus, type ExpenseRow, type ExpenseTotals } from "@/components/expenses/expenseView";
 import { ExpenseRejectDialog } from "@/components/expenses/ExpenseRejectDialog";
 import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrectionDialog";
+import { AppSelect } from "@/components/ui/AppSelect";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 export default function Expenses() {
   const utils = trpc.useUtils();
@@ -56,6 +66,11 @@ export default function Expenses() {
   const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
     null,
   );
+  const [drawerExecTarget, setDrawerExecTarget] = useState<{
+    row: ExpenseRow;
+    drawers: Array<{ id: number; shiftType: string; availableCash: string }>;
+    selectedShiftId: string;
+  } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [auditOnly, setAuditOnly] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
@@ -609,18 +624,47 @@ export default function Expenses() {
         disabledReason: "توجد عملية تنفيذ قيد المعالجة",
         onSelect: () =>
           void (async () => {
+            let drawers: Array<{ id: number; shiftType: string; availableCash: string }> = [];
+            try {
+              drawers = await utils.expenses.openDrawers.fetch({
+                branchId: Number(r.branchId),
+              });
+            } catch (e) {
+              notify.err(e);
+              return;
+            }
+            if (drawers.length === 0) {
+              notify.err(
+                "لا توجد وردية نشطة باسمك في هذا الفرع؛ افتح وردية ممولة أولاً أو استخدم الدفع المباشر من الخزينة.",
+              );
+              return;
+            }
+            const chosenShift =
+              drawers.find((d) => D(d.availableCash).gte(D(r.amount))) ?? drawers[0]!;
+            if (drawers.length > 1) {
+              setDrawerExecTarget({
+                row: r,
+                drawers,
+                selectedShiftId: String(chosenShift.id),
+              });
+              return;
+            }
+            const shiftKind = SHIFT_TYPE_LABEL[chosenShift.shiftType] ?? chosenShift.shiftType;
             if (
               !(await confirm({
                 variant: "warning",
                 title: "تنفيذ المصروف من درج الوردية",
-                description: `سيُخصم ${fmt(r.amount)} د.ع من ورديتك أنت، وتُسجل أنت منفذَ التسليم. إذا لم يكفِ الرصيد فموّل الوردية أو اختر الصرف المباشر من الخزينة.`,
+                description: `سيُخصم ${fmt(r.amount)} د.ع من ورديتك #${chosenShift.id} (${shiftKind} — المتاح ${fmt(chosenShift.availableCash)} د.ع)، وتُسجل أنت منفذَ التسليم.`,
                 confirmText: "تنفيذ من ورديتي",
                 cancelText: "تراجع",
               }))
             )
               return;
             execWinRef.current = { win: preopenDocumentWindow("width=420,height=760"), row: r };
-            executeFromOwnDrawer.mutate({ expenseId: Number(r.id) });
+            executeFromOwnDrawer.mutate({
+              expenseId: Number(r.id),
+              shiftId: Number(chosenShift.id),
+            });
           })(),
       },
       {
@@ -1050,6 +1094,80 @@ export default function Expenses() {
         target={correctionTarget}
         onClose={() => setCorrectionTarget(null)}
       />
+      <Dialog
+        open={drawerExecTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDrawerExecTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>اختيار الوردية لصرف المصروف المعتمد</DialogTitle>
+            <DialogDescription className="text-right text-xs">
+              حدد ورديتك النشطة المطلوب خصم مبلغ{" "}
+              {drawerExecTarget ? fmt(drawerExecTarget.row.amount) : "0"} د.ع منها وتسجيلها في سند الصرف.
+            </DialogDescription>
+          </DialogHeader>
+          {drawerExecTarget ? (
+            <div className="space-y-2 py-1">
+              <Label htmlFor="exec-expense-shift-select" className="text-xs">
+                ورديتك النشطة في الفرع
+              </Label>
+              <AppSelect
+                id="exec-expense-shift-select"
+                className="h-9"
+                value={drawerExecTarget.selectedShiftId}
+                onValueChange={(val) =>
+                  setDrawerExecTarget((cur) =>
+                    cur ? { ...cur, selectedShiftId: val } : null,
+                  )
+                }
+                aria-label="ورديتك النشطة في الفرع"
+              >
+                {drawerExecTarget.drawers.map((d) => (
+                  <option key={d.id} value={String(d.id)}>
+                    وردية #{d.id} ({SHIFT_TYPE_LABEL[d.shiftType] ?? d.shiftType}) — المتاح {fmt(d.availableCash)} د.ع
+                  </option>
+                ))}
+              </AppSelect>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={executeFromOwnDrawer.isPending}
+              onClick={() => setDrawerExecTarget(null)}
+            >
+              تراجع
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={
+                executeFromOwnDrawer.isPending ||
+                !drawerExecTarget?.selectedShiftId
+              }
+              onClick={() => {
+                if (!drawerExecTarget) return;
+                const { row, selectedShiftId } = drawerExecTarget;
+                setDrawerExecTarget(null);
+                execWinRef.current = {
+                  win: preopenDocumentWindow("width=420,height=760"),
+                  row,
+                };
+                executeFromOwnDrawer.mutate({
+                  expenseId: Number(row.id),
+                  shiftId: Number(selectedShiftId),
+                });
+              }}
+            >
+              تنفيذ من الوردية المحددة
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

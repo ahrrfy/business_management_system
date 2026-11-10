@@ -1607,6 +1607,7 @@ export async function enrichShiftListProvenance<
       amount: receipts.amount,
       referenceNumber: receipts.referenceNumber,
       invoiceId: receipts.invoiceId,
+      workOrderId: receipts.workOrderId,
       invoiceShiftId: invoices.shiftId,
       expenseId: expenses.id,
     })
@@ -1656,12 +1657,17 @@ export async function enrichShiftListProvenance<
         }
       } else {
         const ref = r.referenceNumber ?? "";
-        if (ref.startsWith("CD-") || ref.startsWith("CH-")) {
+        if (ref.startsWith("CH-")) {
+          // ترحيل تصفير الوردية عند الإغلاق لا ينتقص من النقد المتوقع قبل الإغلاق.
+          continue;
+        } else if (ref.startsWith("CD-")) {
           drops = drops.plus(amt);
         } else if (r.expenseId != null) {
           expensesSum = expensesSum.plus(amt);
-        } else {
+        } else if (r.invoiceId != null || r.workOrderId != null) {
           refunds = refunds.plus(amt);
+        } else {
+          otherOut = otherOut.plus(amt);
         }
       }
     }

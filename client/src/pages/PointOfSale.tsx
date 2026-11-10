@@ -10,7 +10,8 @@ import {
 } from "@/lib/posRoute";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canSeeGate } from "@/lib/navVisibility";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
@@ -97,28 +98,35 @@ export default function PointOfSale() {
   );
 
   const me = trpc.auth.me.useQuery();
-  const myRole = me.data?.role as RoleKey | undefined;
-  const myPerms = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const myRole = (me.data?.isOwner ? "admin" : me.data?.role) as RoleKey | undefined;
+  const myPerms = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const myOperationPolicy =
+    me.data?.operationPolicyEnabled && !me.data.isOwner
+      ? me.data.resolvedOperationPolicy
+      : null;
   // P1 (ورشة عَدائية ٢٤/٦/٢٦): لا نَحسب visibleModes/accessDenied قبل اِكتمال me ⇒ سَنَّتظر
   // الدور قبل عَرض الـtabs/المحتوى. يَحلّ ٤ مَشاكل: وَميض tab RECEPTION، وَميض Forbidden عند
   // الوصول المُباشر بـURL لـadmin، وحدّة canSee الدلالية، ودَور مُخصَّص يَتأخّر في الوصول.
   const meLoading = me.isLoading;
 
   const visibleModes = useMemo(
-    () => (meLoading ? [] : MODES.filter((m) => canSeeMode(m.v, myRole, myPerms))),
-    [meLoading, myRole, myPerms],
+    () => (meLoading ? [] : MODES.filter((m) => canSeeMode(m.v, myRole, myPerms, myOperationPolicy))),
+    [meLoading, myRole, myPerms, myOperationPolicy],
   );
   const activeModeMeta = MODES.find((m) => m.v === activeMode);
-  const canReadReservations = !meLoading && moduleAccessAllowed(
+  const canReadReservations = !meLoading && canSeeGate(
+    {
+      roles: [...RESERVATION_READ_ROLES],
+      module: "reservations",
+      level: "READ",
+    },
     myRole ?? "user",
     myPerms,
-    "reservations",
-    "READ",
-    RESERVATION_READ_ROLES,
+    myOperationPolicy,
   );
   const canSeeActiveMode =
-    activeModeMeta != null && canSeeMode(activeModeMeta.v, myRole, myPerms);
-  const canSeeReception = canSeeMode("RECEPTION", myRole, myPerms);
+    activeModeMeta != null && canSeeMode(activeModeMeta.v, myRole, myPerms, myOperationPolicy);
+  const canSeeReception = canSeeMode("RECEPTION", myRole, myPerms, myOperationPolicy);
   const embeddedReservations = isEmbeddedReservationsWorkspace(
     reservationsWorkspace,
     canSeeReception,
@@ -136,7 +144,7 @@ export default function PointOfSale() {
     if (next === activeMode && !reservationsWorkspace) return;
     if (meLoading) return; // لا تَبديل قَبل اِكتمال الدور.
     const meta = MODES.find((m) => m.v === next);
-    if (!meta || !canSeeMode(meta.v, myRole, myPerms)) return;
+    if (!meta || !canSeeMode(meta.v, myRole, myPerms, myOperationPolicy)) return;
     const url = buildPosModeUrl(
       {
         search,
@@ -145,7 +153,7 @@ export default function PointOfSale() {
       next,
     );
     navigate(url, { replace: true });
-  }, [activeMode, meLoading, myPerms, myRole, navigate, reservationsWorkspace, search]);
+  }, [activeMode, meLoading, myOperationPolicy, myPerms, myRole, navigate, reservationsWorkspace, search]);
 
   // اختصارات الـtab (Ctrl+1/2/3) — تَحترم حارس الدور وحالة التَحميل.
   useEffect(() => {

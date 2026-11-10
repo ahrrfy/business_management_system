@@ -65,8 +65,8 @@ describe("supplier barcode web closure", () => {
   it("لا يضيف محرر مواد أمر العمل نتيجة بحث قديمة عند Enter أو مسح HID", () => {
     const code = source("client/src/components/workOrders/WorkOrderMaterialsEditor.tsx");
     expect(code).toContain("onScan={(code) => void resolveBarcodeOrSettledSearch(code, false)}");
-    expect(code).toContain("utils.catalog.byBarcode.fetch");
-    expect(code).toContain("!posList.isFetching");
+    expect(code).toContain("utils.workOrders.lookupMaterialByBarcode.fetch");
+    expect(code).toContain("!materialList.isFetching");
     expect(code).toContain("searchRef.current?.value.trim() === code");
   });
 

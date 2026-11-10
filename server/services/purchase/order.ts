@@ -1,11 +1,12 @@
 // دورة حياة أمر الشراء قبل الاستلام: الإنشاء (بالدينار أو بتثبيت دولاري) والإلغاء.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, inArray, like, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, sql } from "drizzle-orm";
 import {
   branches,
   productVariants,
   products,
+  purchaseOrderControlRequests,
   purchaseOrderItems,
   purchaseOrders,
   shifts,
@@ -40,7 +41,11 @@ import type {
   PurchaseSettlementType,
   UpdatePurchaseOrderInput,
 } from "./types";
-import { submitPurchaseOrderForApproval } from "./controls";
+import {
+  computeCashPurchaseShortageSummaryTx,
+  requestPurchaseOrderControlTx,
+  submitPurchaseOrderForApproval,
+} from "./controls";
 import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
 import {
   appendPurchaseOrderEventTx,
@@ -55,7 +60,9 @@ import {
   readDeclaredPurchaseCashSourceTx,
   type DeclaredPurchaseCashSource,
 } from "./supplierPayments";
-import { capturePurchaseTenderTx } from "./tender";
+import { capturePurchaseTenderTx, readPurchaseTenderTx } from "./tender";
+import { loadPurchasePaymentEvidence } from "./paymentEvidence";
+import type { PurchaseTenderInput } from "@shared/purchaseTender";
 
 async function captureOrderCashSourceTx(
   tx: Tx,
@@ -274,7 +281,7 @@ async function captureShippingSourceTx(
     });
   const creatorId = Number(previous?.createdBy ?? actor.userId);
   const shiftId =
-    requestedShift ?? (await openShiftIdTx(tx, creatorId, branchId, "RETAIL"));
+    requestedShift ?? (await openShiftIdTx(tx, creatorId, branchId));
   const [shift] =
     shiftId == null
       ? []
@@ -323,7 +330,9 @@ async function assertPurchasableVariants(
   const flags = await tx
     .select({
       isBundle: products.isBundle,
+      isService: products.isService,
       isConsignment: products.isConsignment,
+      productType: products.productType,
       productName: products.name,
       sku: productVariants.sku,
     })
@@ -331,6 +340,16 @@ async function assertPurchasableVariants(
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(inArray(productVariants.id, uniqueVariantIds));
   for (const f of flags) {
+    if (f.isService || f.productType === "DIGITAL_CARD") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر إدراج الصنف «${f.productName} — ${f.sku}» في أمر الشراء`,
+          why: "لا يُشترى صنف خدمي أو بطاقة رقمية بأمر شراء مخزني",
+          doThis: "أزل الصنف الخدمي أو البطاقة الرقمية واختر صنفاً مخزنياً مملوكاً",
+        }),
+      });
+    }
     if (f.isBundle) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1398,6 +1417,363 @@ export async function updatePurchaseOrder(
  * أي قيد دفتر/AP/مخزون/إيصال؛ كل التأثيرات المالية والمخزنية تحدث في receivePurchase فقط).
  * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
  */
+export interface RevisePurchaseOrderPaymentSourceInput {
+  purchaseOrderId: number;
+  expectedVersion: number;
+  reason: string;
+  tender?: PurchaseTenderInput | null;
+  cashSource?: PurchaseCashSourceInput | null;
+  clientRequestId?: string;
+}
+
+export async function revisePurchaseOrderPaymentSource(
+  input: RevisePurchaseOrderPaymentSourceInput,
+  actor: Actor,
+) {
+  const reason = input.reason.trim();
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ مراجعة مصدر السداد",
+        why: "سبب تصحيح مصدر السداد مطلوب بطول من 3 إلى 500 حرف",
+        doThis: "اكتب سبباً واضحاً لتغيير مصدر السداد ثم أعد الحفظ",
+      }),
+    });
+  }
+  if (
+    (input.tender == null && input.cashSource == null) ||
+    (input.tender != null && input.cashSource != null)
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ مراجعة مصدر السداد",
+        why: "لم يُحدَّد مصدر سداد واحد واضح في الطلب",
+        doThis: "اختر مصدر سداد واحداً (درج الوردية أو الخزينة أو بطاقة الشركة) ثم أعد المحاولة",
+      }),
+    });
+  }
+
+  return withTx(async (tx) => {
+    const [poPreview] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId))
+      .limit(1);
+    if (!poPreview) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تصحيح مصدر السداد",
+          why: "أمر الشراء المطلوب غير موجود",
+          doThis: "تحقّق من رقم أمر الشراء وحدّث الصفحة ثم أعد المحاولة",
+        }),
+      });
+    }
+    assertPurchaseBranch(poPreview, actor);
+
+    const [branch] = await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.id, Number(poPreview.branchId)))
+      .for("update")
+      .limit(1);
+    if (!branch) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تصحيح مصدر السداد",
+          why: "فرع أمر الشراء غير موجود في السجلات",
+          doThis: "تحقّق من بيانات الفرع مع مدير النظام ثم أعد المحاولة",
+        }),
+      });
+    }
+
+    const [po] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId))
+      .for("update")
+      .limit(1);
+    if (!po) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تصحيح مصدر السداد",
+          why: "أمر الشراء المطلوب غير موجود",
+          doThis: "تحقّق من رقم أمر الشراء وحدّث الصفحة ثم أعد المحاولة",
+        }),
+      });
+    }
+    assertPurchaseBranch(po, actor);
+
+    const opHash = idempotencyHash({
+      purchaseOrderId: input.purchaseOrderId,
+      expectedVersion: input.expectedVersion,
+      reason,
+      tender: input.tender ?? null,
+      cashSource: input.cashSource ?? null,
+    });
+    if (input.clientRequestId) {
+      const replayRevisionId = await checkIdempotency(
+        tx,
+        "purchase.order.revisePaymentSource",
+        input.clientRequestId,
+        opHash,
+        { requireStoredHash: true },
+      );
+      if (replayRevisionId != null) {
+        const shortageWarning = await computeCashPurchaseShortageSummaryTx(tx, po);
+        return {
+          purchaseOrderId: Number(po.id),
+          poNumber: po.poNumber,
+          status: po.status,
+          version: Number(po.version),
+          revisionId: replayRevisionId,
+          shortageWarning,
+          idempotent: true as const,
+        };
+      }
+    }
+
+    if (Number(po.version) !== input.expectedVersion) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر حفظ مراجعة مصدر السداد",
+          why: "تغيّرت نسخة أمر الشراء من مستخدم أو إجراء آخر قبل الحفظ",
+          doThis: "حدّث الصفحة لقراءة آخر نسخة من أمر الشراء ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (po.status !== "DRAFT" && po.status !== "SENT") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تصحيح مصدر السداد",
+          why: "أمر الشراء ليس في حالة مسودة أو بانتظار الاعتماد قبل الترحيل",
+          doThis: "راجع حالة أمر الشراء؛ الأوامر المرحَّلة أو الملغاة لا يُعدَّل مصدر سدادها",
+        }),
+      });
+    }
+    if (po.settlementType !== "CASH" || po.agreedCurrency === "USD") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تصحيح مصدر السداد النقدي",
+          why: "تصحيح مصدر السداد النقدي متاح لأوامر الشراء النقدية بالدينار العراقي فقط",
+          doThis: "استعمل مسار سداد الذمم للأوامر الآجلة أو مسار الصيرفة لأوامر الدولار",
+        }),
+      });
+    }
+
+    const existingItems = await tx
+      .select({ receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    if (existingItems.some((item) => (item.receivedBaseQuantity ?? 0) > 0)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تغيير مصدر السداد",
+          why: "تم استلام البضاعة على أمر الشراء بالفعل",
+          doThis: "راجع مستندات الاستلام والقيود الفعلية المسجّلة على الأمر",
+        }),
+      });
+    }
+    if (money(po.paidAmount).gt(0) || money(po.paidUsd ?? "0").gt(0)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مصدر السداد",
+          why: "أمر الشراء عليه دفعة مالية مسجّلة بالفعل",
+          doThis: "راجع سندات الدفع المرتبطة بالأمر بدلاً من تعديل مصدر السداد",
+        }),
+      });
+    }
+
+    const previousRevisionId =
+      po.currentRevisionId == null ? null : Number(po.currentRevisionId);
+    const prevTender = await readPurchaseTenderTx(
+      tx,
+      Number(po.id),
+      previousRevisionId,
+    );
+    const actualEvidence = await loadPurchasePaymentEvidence(
+      tx,
+      {
+        id: Number(po.id),
+        branchId: Number(po.branchId),
+        supplierId: Number(po.supplierId),
+      },
+      prevTender,
+    );
+    const activeReceipts = actualEvidence.filter(
+      (r) =>
+        r.status === "COMPLETED" &&
+        (r.allocatedAmount == null || money(r.allocatedAmount).gt(0)),
+    );
+    if (activeReceipts.length > 0) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تغيير مصدر سداد أمر الشراء",
+          why: "يوجد سند دفع فعلي مكتمل مرتبط بهذا الأمر في الدفاتر",
+          doThis:
+            "راجع السند الفعلي المرتبط بالأمر؛ لا يُستبدل مصدر دفع نفّذ فعلاً",
+        }),
+      });
+    }
+
+    const declaredTender =
+      input.tender != null
+        ? await capturePurchaseTenderTx(
+            tx,
+            {
+              tender: input.tender,
+              settlementType: po.settlementType,
+              supplierId: Number(po.supplierId),
+              branchId: Number(po.branchId),
+              previous: {
+                id: Number(po.id),
+                currentRevisionId: previousRevisionId,
+                createdBy: po.createdBy == null ? null : Number(po.createdBy),
+                supplierId: Number(po.supplierId),
+                settlementType: po.settlementType,
+              },
+            },
+            actor,
+          )
+        : null;
+    const declaredCashSource = declaredTender
+      ? null
+      : await captureOrderCashSourceTx(
+          tx,
+          po.settlementType,
+          input.cashSource,
+          actor,
+          Number(po.branchId),
+          po,
+        );
+
+    await tx
+      .update(purchaseOrders)
+      .set({
+        lastEditedBy: actor.userId,
+        version: sql`${purchaseOrders.version} + 1`,
+      })
+      .where(eq(purchaseOrders.id, input.purchaseOrderId));
+
+    const revision = await createPurchaseOrderRevisionTx(tx, {
+      purchaseOrderId: input.purchaseOrderId,
+      actorUserId: actor.userId,
+      reason,
+      allowHistoricalCycle: true,
+      cashSource: declaredCashSource,
+      tender: declaredTender,
+    });
+    await replacePurchaseOrderRevisionAllocationsTx(tx, {
+      branchId: Number(po.branchId),
+      previousRevisionId,
+      revisionItems: revision.revisionItems,
+      allocations: undefined,
+    });
+    await tx
+      .update(purchaseOrders)
+      .set({
+        currentRevisionId: revision.revisionId,
+        lastEditedBy: actor.userId,
+      })
+      .where(eq(purchaseOrders.id, input.purchaseOrderId));
+
+    const [governed] = await tx
+      .select({ version: purchaseOrders.version })
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId))
+      .limit(1);
+
+    await appendPurchaseOrderEventTx(tx, {
+      eventKey: `PO-PAYMENT-SOURCE-REVISED:${input.purchaseOrderId}:${revision.revisionNo}`,
+      purchaseOrderId: input.purchaseOrderId,
+      revisionId: revision.revisionId,
+      branchId: Number(po.branchId),
+      eventType: "PAYMENT_SOURCE_REVISED",
+      reason,
+      actorUserId: actor.userId,
+      payload: {
+        previousRevisionId,
+        revisionNo: revision.revisionNo,
+        previousVersion: input.expectedVersion,
+        version: Number(governed.version),
+        ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
+        ...(declaredTender ? { tender: declaredTender } : {}),
+      },
+    });
+
+    let controlRequestId: number | null = null;
+    if (po.status === "SENT") {
+      await tx
+        .update(purchaseOrderControlRequests)
+        .set({
+          status: "STALE",
+          pendingGuard: null,
+          reviewedBy: actor.userId,
+          reviewReason: "أُلغي تلقائياً بسبب إنشاء مراجعة مصححة لمصدر السداد",
+          reviewedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(purchaseOrderControlRequests.purchaseOrderId, input.purchaseOrderId),
+            eq(purchaseOrderControlRequests.kind, "APPROVE_REVISION"),
+            eq(purchaseOrderControlRequests.status, "PENDING"),
+          ),
+        );
+      const req = await requestPurchaseOrderControlTx(
+        tx,
+        {
+          purchaseOrderId: input.purchaseOrderId,
+          revisionId: revision.revisionId,
+          expectedVersion: Number(governed.version),
+          kind: "APPROVE_REVISION",
+          requestKey: input.clientRequestId
+            ? `revise-pay:${input.clientRequestId}`.slice(0, 64)
+            : `revise-pay:${po.id}:r${revision.revisionNo}`,
+          reason,
+        },
+        actor,
+      );
+      controlRequestId = req.requestId;
+    }
+
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(
+        tx,
+        "purchase.order.revisePaymentSource",
+        input.clientRequestId,
+        revision.revisionId,
+        opHash,
+      );
+    }
+
+    const shortageWarning = await computeCashPurchaseShortageSummaryTx(tx, {
+      ...po,
+      currentRevisionId: revision.revisionId,
+    });
+    return {
+      purchaseOrderId: Number(po.id),
+      poNumber: po.poNumber,
+      status: po.status,
+      version: Number(governed.version),
+      revisionId: revision.revisionId,
+      revisionNo: revision.revisionNo,
+      controlRequestId,
+      shortageWarning,
+      idempotent: false as const,
+    };
+  });
+}
+
 export async function cancelPurchaseOrder(
   purchaseOrderId: number,
   actor: Actor & { role?: string },

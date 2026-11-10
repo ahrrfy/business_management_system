@@ -73,6 +73,23 @@ export const DELIVERY_EVENT_TYPES = [
   // ── النظام ──
   /** `staleSweep.ts` — شاهدُ جمودٍ لا حركة: الطرد تجاوز عتبة الركود بلا تقدّم. */
   "STALE_ESCALATED",
+  "WORKFLOW_RETURN_RECEIVED",
+  "WORKFLOW_PHYSICAL_RETURN_RECEIPT",
+  "PARCEL_RETURNED",
+  "RETURN_SETTLEMENT",
+  "WORKFLOW_CUSTOMER_COLLECTION_CONFIRMED",
+  "COD_CLAIM_CHANGED",
+  "COD_CLAIM_ACKNOWLEDGED",
+  "CREDIT_COLLECTION_TERMS",
+  "FULFILLMENT_CHARGES_ASSIGNED",
+  "CUSTOMER_EXCESS_HELD",
+  "AFTERCARE_DISPATCHED",
+  "AFTERCARE_PRE_PICKUP_CANCELLED",
+  "AFTERCARE_RETURN_DECLARED",
+  "AFTERCARE_DELIVERED",
+  "AFTERCARE_RETURNED",
+  "AFTERCARE_FAILED",
+  "AUTO_FAILED_SLA",
 ] as const;
 
 export type DeliveryEventType = (typeof DELIVERY_EVENT_TYPES)[number];
@@ -105,6 +122,23 @@ export const DELIVERY_EVENT_LABEL: Readonly<Record<DeliveryEventType, string>> =
   MONEY_SETTLED: "توريد كامل للنقد",
   MONEY_WRITTEN_OFF: "شطب عجزه",
   STALE_ESCALATED: "متصعد لركوده",
+  WORKFLOW_RETURN_RECEIVED: "استلم الطرد الراجع وفحصت عهدته",
+  WORKFLOW_PHYSICAL_RETURN_RECEIPT: "توثيق محضر استلام المرتجع",
+  PARCEL_RETURNED: "أعيد الطرد كاملا بمرتجع تجاري",
+  RETURN_SETTLEMENT: "تسوية مرتجع أو تصحيح على الإرسالية",
+  WORKFLOW_CUSTOMER_COLLECTION_CONFIRMED: "أكد استلام العميل وتحصيل القيمة",
+  COD_CLAIM_CHANGED: "تعديل قيمة المطالبة عند التسليم",
+  COD_CLAIM_ACKNOWLEDGED: "أقر المندوب بتعديل المطالبة",
+  CREDIT_COLLECTION_TERMS: "تحديث شروط تحصيل الرصيد الآجل",
+  FULFILLMENT_CHARGES_ASSIGNED: "ربط أجور التجهيز بالإرسالية",
+  CUSTOMER_EXCESS_HELD: "احتجاز فائض مدفوعات العميل كأمانة",
+  AFTERCARE_DISPATCHED: "أسندت دفعة المعالجة للتوصيل",
+  AFTERCARE_PRE_PICKUP_CANCELLED: "ألغي إسناد المعالجة قبل الالتقاط",
+  AFTERCARE_RETURN_DECLARED: "أعلن رجوع دفعة المعالجة",
+  AFTERCARE_DELIVERED: "سلمت دفعة المعالجة للعميل",
+  AFTERCARE_RETURNED: "أعيدت دفعة المعالجة للفرع",
+  AFTERCARE_FAILED: "تعذر تسليم دفعة المعالجة",
+  AUTO_FAILED_SLA: "تعذر آلي لانقضاء مهلة التوصيل",
 });
 
 export function isDeliveryEventType(v: unknown): v is DeliveryEventType {
@@ -171,6 +205,9 @@ export const DELIVERY_EVENT_SOURCES = [
    * `server/services/delivery/staleSweep.ts` لا قرارُ قاموس.
    */
   "SYSTEM_STALE_SWEEP",
+  "ZERO_LIVE_INVOICE_BALANCE",
+  "LEGACY_ONLINE_ORDER",
+  "INVOICE_CORRECTION",
 ] as const;
 
 export type DeliveryEventSource = (typeof DELIVERY_EVENT_SOURCES)[number];
@@ -186,6 +223,9 @@ export const DELIVERY_EVENT_SOURCE_LABEL: Readonly<Record<DeliveryEventSource, s
     STAFF_RETURN: "إرجاع بقرار موظف",
     COUNTER: "قبض كاونتري",
     SYSTEM_STALE_SWEEP: "الكناس الدوري",
+    ZERO_LIVE_INVOICE_BALANCE: "بلا رصيد متبق على الفاتورة",
+    LEGACY_ONLINE_ORDER: "طلب متجر سابق",
+    INVOICE_CORRECTION: "تصحيح فاتورة",
   });
 
 export function isDeliveryEventSource(v: unknown): v is DeliveryEventSource {

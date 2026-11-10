@@ -104,8 +104,11 @@ export const bundlesRouter = router({
       const conds = [
         eq(products.isBundle, false),
         eq(products.isService, false),
+        eq(products.isConsignment, false),
         eq(products.isActive, true),
         eq(productVariants.isActive, true),
+        sql`(${products.productType} IS NULL OR ${products.productType} <> 'DIGITAL_CARD')`,
+        sql`(${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL'))`,
       ];
       if (hasCat) conds.push(eq(products.categoryId, Number(input.categoryId)));
       if (hasQ) conds.push(sql`(${products.name} LIKE ${term} OR ${productVariants.sku} LIKE ${term})`);
@@ -146,8 +149,14 @@ export const bundlesRouter = router({
           variantId: productVariants.id,
           productId: productVariants.productId,
           productName: products.name,
+          variantName: productVariants.variantName,
+          color: productVariants.color,
+          size: productVariants.size,
           sku: productVariants.sku,
           costPrice: productVariants.costPrice,
+          productUnitId: productUnits.id,
+          unitName: productUnits.unitName,
+          conversionFactor: productUnits.conversionFactor,
         })
         .from(productUnits)
         .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -155,10 +164,14 @@ export const bundlesRouter = router({
         .where(
           and(
             eq(productUnits.id, owner.productUnitId),
+            eq(productUnits.isActive, true),
             eq(products.isBundle, false),
             eq(products.isService, false),
+            eq(products.isConsignment, false),
             eq(products.isActive, true),
             eq(productVariants.isActive, true),
+            sql`(${products.productType} IS NULL OR ${products.productType} <> 'DIGITAL_CARD')`,
+            sql`(${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL'))`,
           ),
         )
         .limit(1);
@@ -169,8 +182,14 @@ export const bundlesRouter = router({
           variantId: Number(r.variantId),
           productId: Number(r.productId),
           productName: r.productName,
+          variantName: r.variantName,
+          color: r.color,
+          size: r.size,
           sku: r.sku,
           costPrice: String(r.costPrice ?? "0"),
+          productUnitId: Number(r.productUnitId),
+          unitName: r.unitName,
+          conversionFactor: String(r.conversionFactor ?? "1"),
         },
       };
     }),

@@ -16,11 +16,11 @@ import {
   withdrawSalesControlRequest,
 } from "../services/sale/controlRequests";
 import {
+  invoiceListProcedure,
   router,
   salesCorrectionComparisonProcedure,
   salesCorrectionProcedure,
   salesManagerProcedure,
-  salesReadProcedure,
 } from "../trpc";
 import { recordGovernedReturnExecution } from "../services/sale/controlAudit";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -199,7 +199,7 @@ export const salesControlRouter = router({
       requestType: "SALES_EXCHANGE",
     }, actor(ctx))),
 
-  list: salesReadProcedure
+  list: invoiceListProcedure
     .input(z.object({
       status: z.enum(SALES_CONTROL_STATUSES).optional(),
       mine: z.boolean().optional(),
@@ -298,7 +298,7 @@ export const salesControlRouter = router({
    * يجب أن يستطيع **سحبه**، وإلّا بقي كاشيرُ الاستبدال حبيسَ طلبٍ لا يملك إغلاقه.
    * والخدمة تحصر السحب بصاحب الطلب حصراً، فالبوّابة الأوسع لا توسّع الأثر.
    */
-  withdraw: salesCorrectionProcedure
+  withdraw: invoiceListProcedure
     .input(z.object({
       requestId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),

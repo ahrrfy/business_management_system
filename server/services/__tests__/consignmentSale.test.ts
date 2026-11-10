@@ -4,7 +4,9 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
+import { setStock } from "../inventoryService";
 import { createSupplier } from "../supplierService";
+import { withTx } from "../tx";
 import { createConsignmentNote } from "../consignment/noteService";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
@@ -41,9 +43,10 @@ async function mkConsignProduct(consignorId: number, share = "4000", sell = "500
 }
 async function ownedProduct(cost = "900", sell = "1850") {
   const sku = `OWN-${Math.random().toString(36).slice(2, 7)}`;
-  await createProduct({ name: "قلم", variants: [{ sku, costPrice: cost, openingStock: 100, units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: sell }] }] }] }, actor);
+  await createProduct({ name: "قلم", variants: [{ sku, costPrice: cost, units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: sell }] }] }] }, actor);
   const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, sku)))[0];
   const u = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+  await withTx((tx) => setStock(tx, { variantId: Number(v.id), branchId: 1, targetQuantity: 100, referenceType: "OPENING", documentNumber: `OPEN-${v.id}`, notes: "رصيد اختبار", createdBy: actor.userId }));
   return { variantId: Number(v.id), productUnitId: Number(u.id) };
 }
 async function deposit(consignorId: number, variantId: number, productUnitId: number, qty: string) {

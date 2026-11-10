@@ -29,6 +29,8 @@ export interface PredictiveConsignmentSearchInputProps {
   onBarcodeEnter?: (raw: string) => void;
   /** تقييد البحث بجهة محددة (اختياري) */
   partyId?: number | null;
+  /** تقييد البحث بفرع العمل النشط (اختياري) */
+  branchId?: number | null;
   /** طرود محملة مسبقاً في الذاكرة لتصفيتها فورياً (اختياري) */
   localCandidates?: readonly any[];
   /** نص التلميح */
@@ -64,6 +66,7 @@ export function PredictiveConsignmentSearchInput({
   onSelect,
   onBarcodeEnter,
   partyId,
+  branchId,
   localCandidates,
   placeholder = "بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…",
   autoFocus = false,
@@ -89,6 +92,7 @@ export function PredictiveConsignmentSearchInput({
     {
       query: debouncedQuery.trim(),
       partyId: partyId ? Number(partyId) : undefined,
+      branchId: branchId ? Number(branchId) : undefined,
       limit: 12,
     },
     {
@@ -118,7 +122,8 @@ export function PredictiveConsignmentSearchInput({
         const normName = normalizeArabic(name);
         const inv = String(row.invoiceNumber ?? row.invoiceId ?? "");
         const cn = String(row.consignmentNumber ?? "");
-        const ext = String(row.externalTrackingRef ?? "");
+        const shipNum = String(row.shipmentNumber ?? "");
+        const ext = String(row.externalTrackingRef ?? row.shipmentTrackingRef ?? "");
         const ord = String(row.orderNumber ?? "");
         const addr = String(row.address ?? row.deliveryAddress ?? "");
         const normAddr = normalizeArabic(addr);
@@ -130,7 +135,11 @@ export function PredictiveConsignmentSearchInput({
           matchedOn.push("PHONE");
           matched = true;
         }
-        if (cn.toLowerCase().includes(normQ) || (digits.length >= 2 && cn.includes(digits))) {
+        if (
+          cn.toLowerCase().includes(normQ) ||
+          (digits.length >= 2 && cn.includes(digits)) ||
+          (shipNum && (shipNum.toLowerCase().includes(normQ) || (digits.length >= 2 && shipNum.includes(digits))))
+        ) {
           matchedOn.push("CONSIGNMENT_NUMBER");
           matched = true;
         }
@@ -270,17 +279,23 @@ export function PredictiveConsignmentSearchInput({
     inputRef.current?.focus();
   };
 
+  const submitBarcode = (code: string) => {
+    if (!onBarcodeEnter) return setSearchTerm(code);
+    setSearchTerm("");
+    setIsOpen(false);
+    setHighlightedIndex(-1);
+    onBarcodeEnter(code);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!isOpen || combinedResults.length === 0) {
-      if (e.key === "Escape") {
-        handleClear();
-      } else if (e.key === "Enter" && searchTerm.trim()) {
+      if (e.key === "Escape") handleClear();
+      else if (e.key === "Enter" && searchTerm.trim()) {
         e.preventDefault();
-        onBarcodeEnter?.(searchTerm.trim());
+        if (onBarcodeEnter) submitBarcode(searchTerm.trim());
       }
       return;
     }
-
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlightedIndex((prev) => (prev < combinedResults.length - 1 ? prev + 1 : 0));
@@ -289,13 +304,9 @@ export function PredictiveConsignmentSearchInput({
       setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : combinedResults.length - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (highlightedIndex >= 0 && combinedResults[highlightedIndex]) {
-        handleSelectItem(combinedResults[highlightedIndex]);
-      } else if (onBarcodeEnter && searchTerm.trim()) {
-        onBarcodeEnter(searchTerm.trim());
-      } else if (combinedResults.length > 0 && combinedResults[0]) {
-        handleSelectItem(combinedResults[0]);
-      }
+      if (highlightedIndex >= 0 && combinedResults[highlightedIndex]) handleSelectItem(combinedResults[highlightedIndex]);
+      else if (onBarcodeEnter && searchTerm.trim()) submitBarcode(searchTerm.trim());
+      else if (combinedResults[0]) handleSelectItem(combinedResults[0]);
     } else if (e.key === "Escape") {
       e.preventDefault();
       setIsOpen(false);
@@ -327,15 +338,7 @@ export function PredictiveConsignmentSearchInput({
         placeholder={placeholder}
         aria-label={placeholder}
         onChange={(val) => setSearchTerm(val)}
-        onScan={(code) => {
-          if (onBarcodeEnter) {
-            setIsOpen(false);
-            setHighlightedIndex(-1);
-            onBarcodeEnter(code);
-          } else {
-            setSearchTerm(code);
-          }
-        }}
+        onScan={submitBarcode}
         onFocus={() => {
           if (searchTerm.trim().length >= 2) setIsOpen(true);
         }}

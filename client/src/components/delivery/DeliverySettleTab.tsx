@@ -49,6 +49,11 @@ export function DeliverySettleTab() {
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
   );
+  const fallbackShift = trpc.shifts.current.useQuery(
+    { branchId },
+    { enabled: branchId > 0 && currentShift.isSuccess && !currentShift.data },
+  );
+  const activeShift = currentShift.data ?? fallbackShift.data ?? null;
   const canRemit = lifecycleActionAllowed(me.data, "delivery.recordRemittance", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -246,7 +251,7 @@ export function DeliverySettleTab() {
           amount: r.paidTotal,
           paymentMethod: "CASH",
           cashierName: me.data?.name ?? null,
-          shiftId: currentShift.data?.id ?? null,
+          shiftId: activeShift?.id ?? null,
           notes: `صرف أجور ${r.count} إرسالية`,
         },
         win ? { into: win } : undefined,
@@ -318,9 +323,16 @@ export function DeliverySettleTab() {
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 
   const remainingOf = (c: OpenConsignment) => statementQueueRemaining(c);
-  const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
-    && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
-    && remainingOf(c) .gt(0);
+  const remittableOf = (c: OpenConsignment) =>
+    Boolean(c.physicalReturnReceived) && c.parcelStatus !== "DELIVERED"
+      ? D(c.cashInCourierCustody ?? 0)
+      : remainingOf(c);
+  const isRemittable = (c: OpenConsignment) =>
+    (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL") &&
+    ((c.parcelStatus === "DELIVERED" &&
+      (c.cashInCourierCustody == null || D(c.cashInCourierCustody).gt(0)) &&
+      remainingOf(c).gt(0)) ||
+      (Boolean(c.physicalReturnReceived) && D(c.cashInCourierCustody ?? 0).gt(0)));
 
   const statementMode = partyRow?.partyType === "COMPANY" || statementNumber.trim().length > 0;
   const isStatementConfirmable = (c: OpenConsignment) => c.status === "DISPATCHED"
@@ -340,7 +352,7 @@ export function DeliverySettleTab() {
     let collected = D(0), expected = D(0), leftInTransit = 0, selectedCount = 0;
     for (const c of list) {
       if (!isSettleable(c)) continue;
-      const remaining = remainingOf(c);
+      const remaining = statementMode ? remainingOf(c) : remittableOf(c);
       const st = get(c);
       if (st.outcome === "COLLECTED" ) {
         selectedCount += 1;
@@ -394,7 +406,7 @@ export function DeliverySettleTab() {
       notify.err("راجع مبالغ الكشف ومسؤولية الفروق أو بيانات الفاتورة المتغيرة قبل الحفظ");
       return;
     }
-    const lines = selected.map((c) => ({ consignmentId: c.id, collectedAmount: remainingOf(c).toFixed(2) }));
+    const lines = selected.map((c) => ({ consignmentId: c.id, collectedAmount: remittableOf(c).toFixed(2) }));
     const validLines = statementMode ? statementLines! : lines.filter((line) => D(line.collectedAmount) .gt(0));
     if (validLines.length === 0) {
       notify.err("لا أسطر للتسوية — حدّد ما حُصِّل فعلاً");
@@ -418,6 +430,7 @@ export function DeliverySettleTab() {
       stmtWinRef.current = { win: preopenDocumentWindow(), count: validLines.length };
       const submitted = {
         partyId: Number(partyId),
+        ...(activeShift?.id ? { targetShiftId: activeShift.id } : {}),
         statementNumber: statementNumber.trim(),
         appendToStatement,
         statementDate: appendToStatement ? null : statementDate || null,
@@ -434,6 +447,7 @@ export function DeliverySettleTab() {
     remitWinRef.current = preopenDocumentWindow();
     const submitted = {
       partyId: Number(partyId),
+      ...(activeShift?.id ? { targetShiftId: activeShift.id } : {}),
       lines: validLines,
       countedCash: countedCash.toFixed(2),
       clientRequestId: remitReqId,
@@ -454,7 +468,7 @@ export function DeliverySettleTab() {
         current[id]?.outcome === "COLLECTED"
           ? current[id]
           : { outcome: "COLLECTED" as const,
-              collected: remainingOf(list.find((c)=> c.id=== id)!).toFixed(2),
+              collected: (statementMode ? remainingOf(list.find((c)=> c.id=== id)!) : remittableOf(list.find((c)=> c.id=== id)!)).toFixed(2),
             },
       ),
     );
@@ -512,17 +526,17 @@ export function DeliverySettleTab() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!canPayPartyFees || payPartyFees.isPending || !currentShift.data?.id}
-                  title={!currentShift.data?.id ? "افتح وردية استقبال لصرف الأجور من درج موثَّق" : `صرف ${fmt(partyRow.feeDueTotal)} د.ع مستحقة`}
+                  disabled={!canPayPartyFees || payPartyFees.isPending || !activeShift?.id}
+                  title={!activeShift?.id ? "افتح وردية لصرف الأجور من درج موثَّق" : `صرف ${fmt(partyRow.feeDueTotal)} د.ع مستحقة`}
                   onClick={async () => {
                     const ok = await confirm({
                       title: "صرف كل الأجور المستحقة",
-                      description: `صرف ${fmt(partyRow.feeDueTotal)} د.ع عن ${partyName} بسندٍ واحد من وردية الاستقبال #${currentShift.data?.id}.`,
+                      description: `صرف ${fmt(partyRow.feeDueTotal)} د.ع عن ${partyName} بسندٍ واحد من الوردية #${activeShift?.id}.`,
                       confirmText: "صرف",
                     });
-                    if (!ok || !currentShift.data?.id) return;
+                    if (!ok || !activeShift?.id) return;
                     feeWinRef.current = preopenDocumentWindow();
-                    payPartyFees.mutate({ partyId: Number(partyId), shiftId: currentShift.data.id, clientRequestId: crypto.randomUUID() });
+                    payPartyFees.mutate({ partyId: Number(partyId), shiftId: activeShift.id, clientRequestId: crypto.randomUUID() });
                   }}
                 >
                   <Wallet aria-hidden className="size-3.5" />
@@ -594,7 +608,7 @@ export function DeliverySettleTab() {
                 ...r,
                 ...Object.fromEntries(members.filter((member) => current === "COLLECTED" || r[member.id]?.outcome !== "COLLECTED").map((member) => [member.id, {
                   outcome: current === "COLLECTED" ? "NONE" : "COLLECTED",
-                  collected: current === "COLLECTED" ? "0" : remainingOf(member).toFixed(2),
+                  collected: current === "COLLECTED" ? "0" : (statementMode ? remainingOf(member) : remittableOf(member)).toFixed(2),
                 }] as const)),
               }));
             }}
@@ -618,7 +632,7 @@ export function DeliverySettleTab() {
             displayedCount={ displayedEligible.length}
             selectionDisabled={listStillLoading || companyStatement.isPending || remit.isPending || pendingStatement != null || pendingRemittance != null
             }
-            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: remainingOf(c).toFixed(2), selected: get(c).outcome === "COLLECTED", collected: get(c).outcome === "COLLECTED" ? (parseStatementAmount(get(c).collected)?.toFixed(2) ?? "0") : "0" }))}
+            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: (statementMode ? remainingOf(c) : remittableOf(c)).toFixed(2), selected: get(c).outcome === "COLLECTED", collected: get(c).outcome === "COLLECTED" ? (parseStatementAmount(get(c).collected)?.toFixed(2) ?? "0") : "0" }))}
           />
 
           {partyRow?.partyType === "COMPANY" && (

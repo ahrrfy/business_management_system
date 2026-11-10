@@ -263,6 +263,8 @@ export interface CreateSaleInput {
    *  الحارس الاعتياديّ يرفض ذلك؛ هنا يُقصَر `paidNow` على الإجمالي كالمعتاد، والفائض يعالجه
    *  `correctSale` بعد إعادة الترحيل (ردّاً نقدياً أو رصيداً دائناً — قرار المالك الهجين). */
   allowPreCollectedOverpay?: boolean;
+  /** تصحيح الفاتورة (داخلي بحت): يسمح بإبقاء أسطر مقيّدة الاستخدام ضمن وحدتها وكميتها الأساس الأصلية. */
+  grandfatheredRestrictedLineCaps?: ReadonlyMap<string, number>;
 }
 
 export interface CreateSaleResult {

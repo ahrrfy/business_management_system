@@ -7,6 +7,7 @@ import { fmtDate } from "./date";
 import { D, fmtAr } from "./money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { buildGoogleMapsUrl } from "@shared/geoCoordinates";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
@@ -574,6 +575,7 @@ export function buildCustomerDispatchMessage(d: CustomerDispatchMessageData): st
  *  - COD المطلوب تحصيله (إلزاميّ — بلا حجم صحيح لا معنى للإسناد)
  *  - أجرة التوصيل الاقتراحيّة (يعرف المندوب ما سيقبضه فوق COD في نمط COURIER)
  */
+
 export interface CourierAssignmentMessageData {
   consignmentNumber: string;
   orderNumber?: string | null;
@@ -581,6 +583,8 @@ export interface CourierAssignmentMessageData {
   customerName?: string | null;
   customerPhone?: string | null;
   deliveryAddress?: string | null;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
   codAmount: string | number;
   deliveryFee?: string | number | null;
   /** COURIER يجمع الأجرة مع COD ⇒ نعرض الإجماليّ صراحةً. غيرها ⇒ COD فقط. */
@@ -601,6 +605,8 @@ export function buildCourierAssignmentMessage(d: CourierAssignmentMessageData): 
   if (d.customerName) L.push(`المستلم: ${d.customerName}`);
   if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
   if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
+  const assignMapUrl = buildGoogleMapsUrl(d.latitude, d.longitude);
+  if (assignMapUrl) L.push(`موقع الخريطة: ${assignMapUrl}`);
   L.push("");
   if (cod > 0) {
     L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
@@ -761,6 +767,8 @@ export interface CourierUrgentDispatchData {
   customerName?: string | null;
   customerPhone?: string | null;
   deliveryAddress?: string | null;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
   codAmount: string | number;
   deliveryFee?: string | number | null;
   feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
@@ -782,6 +790,8 @@ export function buildCourierUrgentDispatchMessage(d: CourierUrgentDispatchData):
   if (d.customerName) L.push(`المستلم: ${d.customerName}`);
   if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
   if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
+  const urgentMapUrl = buildGoogleMapsUrl(d.latitude, d.longitude);
+  if (urgentMapUrl) L.push(`موقع الخريطة: ${urgentMapUrl}`);
   L.push("");
   L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
   if (feeD > 0) {
@@ -799,6 +809,8 @@ export interface CourierAddressUpdateData {
   orderNumber?: string | null;
   customerName?: string | null;
   newAddress: string;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
   notes?: string | null;
 }
 
@@ -813,6 +825,8 @@ export function buildCourierAddressUpdateMessage(d: CourierAddressUpdateData): s
   if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
   L.push("");
   L.push(`*العنوان الجديد المعتمد*: ${d.newAddress}`);
+  const updatedMapUrl = buildGoogleMapsUrl(d.latitude, d.longitude);
+  if (updatedMapUrl) L.push(`موقع الخريطة: ${updatedMapUrl}`);
   if (d.notes) L.push(`ملاحظات: ${d.notes}`);
   L.push("", "يرجى اعتماد هذا العنوان المحدّث للتسليم.", COMPANY_NAME);
   return L.join("\n");

@@ -29,6 +29,7 @@ export interface CompanyStatementScanQueueProps {
   claimSnapshots?: Readonly<Record<number, string>>;
   decisionsById?: Readonly<Record<number, StatementDecision>>;
   disabled?: boolean;
+  removeDisabled?: boolean;
   onQueue: (candidate: CompanyStatementQueueCandidate, defaultCollected: string) => void;
   onRemove: (consignmentId: number) => void;
   onCollectedChange: (consignmentId: number, value: string) => void;
@@ -42,6 +43,7 @@ export function CompanyStatementScanQueue({
   claimSnapshots,
   decisionsById = {},
   disabled = false,
+  removeDisabled = disabled,
   onQueue,
   onRemove,
   onCollectedChange,
@@ -117,12 +119,12 @@ export function CompanyStatementScanQueue({
           onSubmit={scan}
           debounceMs={0}
           disabled={disabled}
-          placeholder={disabled ? "أدخل رقم الكشف أولاً" : "امسح باركود البوليصة المطبوع في كشف الشركة (Enter)"}
+          placeholder={disabled ? "أدخل رقم الكشف أولاً" : "امسح باركود البوليصة المطبوع في كشف الشركة"}
           dir="ltr"
           barcode={true}
           size="default"
           className="h-11 flex-1"
-          inputClassName="text-center font-mono text-base font-bold"
+          inputClassName="text-center font-mono text-base font-bold placeholder:font-sans placeholder:text-sm placeholder:font-normal"
         />
         <Button type="button" onClick={() => scan(barcode)} disabled={disabled || !barcode.trim()} className="h-11">
           مسح وإضافة
@@ -166,7 +168,7 @@ export function CompanyStatementScanQueue({
                   <MoneyInput ariaLabel={`مبلغ الكشف: ${deliverySourceView(candidate).reference}`} value={value}
                     disabled={disabled} onChange={(next) => onCollectedChange(candidate.id, next)} className="h-9" />
                 </div>
-                <Button type="button" size="icon" variant="ghost" disabled={disabled}
+                <Button type="button" size="icon" variant="ghost" disabled={removeDisabled}
                   onClick={() => {
                     for (const member of shipmentStatementCandidates(candidates, candidate.id)) {
                       acceptedIdsRef.current.delete(member.id);

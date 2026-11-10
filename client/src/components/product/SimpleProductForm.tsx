@@ -2,6 +2,7 @@ import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAcc
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { Package, X } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,9 +26,20 @@ import { AiProductContentAssistant } from "@/components/product/AiProductContent
 import { ImageFirstProductAssistant } from "@/components/product/ImageFirstProductAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
+import {
+  PostSaveProductBanner,
+  type PostSaveProductSummary,
+} from "@/components/product/PostSaveProductBanner";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { normalizeConversionFactor } from "@shared/productContentAi";
+import {
+  STOCK_USAGES,
+  STOCK_USAGE_DESCRIPTIONS,
+  STOCK_USAGE_LABELS,
+  isSellableStockUsage,
+  type StockUsage,
+} from "@shared/stockUsage";
 
 /**
  * SimpleProductForm — إضافة «سلعة بسيطة» بلا ألوان/قياسات: منتجٌ واحد (متغيّر واحد) بعدّة وحدات.
@@ -89,7 +101,11 @@ function SimpleNewCostCoach({
   );
 }
 
-export default function SimpleProductForm() {
+export default function SimpleProductForm({
+  rawMaterialPreset = false,
+}: {
+  rawMaterialPreset?: boolean;
+} = {}) {
   const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
@@ -116,13 +132,22 @@ export default function SimpleProductForm() {
   const [stockByBranch, setStockByBranch] = useState<Record<number, string>>({});
   const [minStock, setMinStock] = useState("0");
   const [reorderPoint, setReorderPoint] = useState("0");
-  const [isCustomizable, setIsCustomizable] = useState(false);
+  const [isCustomizable, setIsCustomizable] = useState(rawMaterialPreset);
   const [isActive, setIsActive] = useState(true);
+  const [stockUsage, setStockUsage] = useState<StockUsage>(
+    rawMaterialPreset ? "MATERIAL_ONLY" : "SALE_ONLY",
+  );
+  const [showInStore, setShowInStore] = useState(false);
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [autoSkuSuffix, setAutoSkuSuffix] = useState(() => Math.random().toString(36).slice(2, 6).toUpperCase());
+  const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
   // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   // لقطةُ الاتّساخ المرجعية: الحالةُ الأوّلية، ثمّ **ما أُرسل فعلاً** بعد حفظٍ ناجح (سباق Codex #978).
-  const formSignature = JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, units, costPrice, stockByBranch, minStock, reorderPoint, isCustomizable, isActive, consignment });
+  const formSignature = JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, units, costPrice, stockByBranch, minStock, reorderPoint, isCustomizable, isActive, stockUsage, showInStore, consignment });
+  const liveSigRef = useRef(formSignature);
+  liveSigRef.current = formSignature;
   const [initialSignature] = useState(formSignature);
   const [savedSignature, setSavedSignature] = useState<string | null>(null);
   const isDirty = formSignature !== (savedSignature ?? initialSignature);
@@ -225,7 +250,7 @@ export default function SimpleProductForm() {
     const explicit = sku.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
     if (explicit) return explicit;
     const slug = finalName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const suffix = autoSkuSuffix;
     if (slug) return `PR-${slug}-${suffix}`;
     if (baseBarcode) return baseBarcode;
     return `PR-${suffix}`;
@@ -245,8 +270,11 @@ export default function SimpleProductForm() {
     if (units.some((u) => !u.isBase && !(Number(u.factor.trim()) > 1)))
       return "الوحدة الأكبر من الأساس (درزن/كرتون) تحتاج معامل تحويل صحيحاً أكبر من ١ (درزن = ١٢).";
     if (!costPrice.trim()) return "سعر التكلفة مطلوب.";
+    const effectiveUsage: StockUsage | null = consignment.isConsignment ? null : stockUsage;
     const anyPrice = units.some((u) => u.retail.trim() || u.wholesale.trim() || u.government.trim());
-    if (!anyPrice) return "حدّد سعر بيع واحداً على الأقل (المفرد افتراضاً).";
+    if (isSellableStockUsage(effectiveUsage) && !anyPrice) {
+      return "حدّد سعر بيع واحداً على الأقل (المفرد افتراضاً).";
+    }
     // تكرار الباركود داخل النموذج (وحدات + بدائل) ضمن فضاء تفرّد واحد.
     const codes: string[] = [];
     for (const u of units) {
@@ -277,7 +305,7 @@ export default function SimpleProductForm() {
   }
 
   /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
-  async function save(): Promise<unknown> {
+  async function submitCreate(): Promise<{ res: unknown; submitted: string; usedSku: string }> {
     if (!can("catalog.createProduct")) throw new Error("العملية غير مفوضة لحسابك");
     const err = validate();
     if (err) throw new Error(err);
@@ -320,7 +348,10 @@ export default function SimpleProductForm() {
       };
     });
     const submitted = formSignature;
+    const usedSku = autoSku();
+    const effectiveUsage = consignment.isConsignment ? null : stockUsage;
     const res = await create.mutateAsync({
+      clientRequestId,
       name: finalName,
       productType: productType.trim() || null,
       brand: brand.trim() || null,
@@ -329,11 +360,14 @@ export default function SimpleProductForm() {
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isCustomizable,
       isService: false,
+      stockUsage: effectiveUsage,
+      rawMaterial: effectiveUsage === "MATERIAL_ONLY",
+      showInStore: isSellableStockUsage(effectiveUsage) ? showInStore : false,
       isConsignment: consignment.isConsignment,
       consignorId: consignment.isConsignment ? consignment.consignorId : null,
       variants: [
         {
-          sku: autoSku(),
+          sku: usedSku,
           costPrice: costPrice.trim(),
           minStock: clampInt(minStock),
           reorderPoint: clampInt(reorderPoint),
@@ -345,9 +379,86 @@ export default function SimpleProductForm() {
         },
       ],
     });
+    setClientRequestId(crypto.randomUUID());
+    setAutoSkuSuffix(Math.random().toString(36).slice(2, 6).toUpperCase());
     setSavedSignature(submitted);
-    await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
+    await Promise.all([
+      utils.catalog.posList.invalidate(),
+      utils.catalog.adminList.invalidate(),
+      utils.catalog.forPurchase.invalidate(),
+      utils.catalog.materialsForRecipe.invalidate(),
+    ]);
+    return { res, submitted, usedSku };
+  }
+
+  async function save(): Promise<unknown> {
+    const { res } = await submitCreate();
     setLeaveTo("/products");
+    return res;
+  }
+
+  async function saveAndNew(): Promise<unknown> {
+    const savedName = finalName;
+    const savedUsage = consignment.isConsignment ? undefined : stockUsage;
+    const { res, submitted, usedSku } = await submitCreate();
+    const createdId = Number(
+      (res as { productId?: number; id?: number })?.productId ??
+        (res as { id?: number })?.id ??
+        0,
+    );
+    if (createdId > 0) {
+      setLastSaved({
+        productId: createdId,
+        name: savedName,
+        sku: usedSku,
+        stockUsage: savedUsage,
+      });
+    }
+    if (liveSigRef.current === submitted) {
+      const resetUnits: SimpleUnit[] = [
+        { id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
+      ];
+      unitSeq.current = 2;
+      const nextUsage: StockUsage = rawMaterialPreset ? "MATERIAL_ONLY" : "SALE_ONLY";
+      setName("");
+      setProductType("");
+      setBrand("");
+      setModelName("");
+      setDescription("");
+      setCategoryId("");
+      setSku("");
+      setUnits(resetUnits);
+      setCostPrice("");
+      setStockByBranch({});
+      setMinStock("0");
+      setReorderPoint("0");
+      setIsCustomizable(rawMaterialPreset);
+      setIsActive(true);
+      setStockUsage(nextUsage);
+      setShowInStore(false);
+      setConsignment({ isConsignment: false, consignorId: null });
+      setSavedSignature(
+        JSON.stringify({
+          name: "",
+          productType: "",
+          brand: "",
+          modelName: "",
+          description: "",
+          categoryId: "",
+          sku: "",
+          units: resetUnits,
+          costPrice: "",
+          stockByBranch: {},
+          minStock: "0",
+          reorderPoint: "0",
+          isCustomizable: rawMaterialPreset,
+          isActive: true,
+          stockUsage: nextUsage,
+          showInStore: false,
+          consignment: { isConsignment: false, consignorId: null },
+        }),
+      );
+    }
     return res;
   }
 
@@ -356,12 +467,14 @@ export default function SimpleProductForm() {
 
   return (
     <div className="space-y-4">
+      <PostSaveProductBanner saved={lastSaved} onDismiss={() => setLastSaved(null)} />
       <RecordForm
         mode="create"
         isDirty={isDirty}
         blockedBy={!can("catalog.createProduct") ? ["العملية غير مفوضة لحسابك"] : validationReason ? [validationReason] : []}
         isPending={create.isPending}
         onSave={save}
+        onSaveAndNew={saveAndNew}
         onCancel={() => navigate("/products")}
         saveLabel="حفظ المنتج"
         savedMessage="تم حفظ المنتج"
@@ -439,14 +552,14 @@ export default function SimpleProductForm() {
             <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="ط. ٢٠٢٦" dir="auto" />
           </Field>
           <Field label="الفئة / التصنيف">
-            <select
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+            <AppSelect
+              value={String(categoryId)}
+              onValueChange={(val) => setCategoryId(val === "" ? "" : Number(val))}
+              aria-label="الفئة / التصنيف"
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
-            </select>
+              {categoryOptionElements(categoriesQ.data ?? [])}
+            </AppSelect>
           </Field>
           <Field label="رمز المنتج (SKU)" hint="يُولَّد تلقائياً وفريداً إن تُرك فارغاً." className="md:col-span-2">
             <Input id="simple-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
@@ -645,6 +758,49 @@ export default function SimpleProductForm() {
               <div className="flex items-center gap-2 h-9">
                 <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
                 <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
+              </div>
+            </Field>
+            {!consignment.isConsignment && (
+              <Field
+                label="تصنيف الاستخدام المخزني"
+                hint={STOCK_USAGE_DESCRIPTIONS[stockUsage]}
+              >
+                <AppSelect
+                  value={stockUsage}
+                  onValueChange={(val) => {
+                    const next = val as StockUsage;
+                    setStockUsage(next);
+                    if (!isSellableStockUsage(next)) setShowInStore(false);
+                  }}
+                  aria-label="تصنيف الاستخدام المخزني"
+                >
+                  {STOCK_USAGES.map((u) => (
+                    <option key={u} value={u}>
+                      {STOCK_USAGE_LABELS[u]}
+                    </option>
+                  ))}
+                </AppSelect>
+              </Field>
+            )}
+            <Field
+              label="النشر في المتجر الإلكتروني"
+              hint={
+                !isSellableStockUsage(consignment.isConsignment ? null : stockUsage)
+                  ? "غير متاح للمادة الخام أو مستلزمات التشغيل الداخلي."
+                  : showInStore
+                    ? "معروض في المتجر عند استيفاء جاهزية السعر والصورة."
+                    : "مخفيّ عن المتجر افتراضياً حتى يُفعَّل صراحةً."
+              }
+            >
+              <div className="flex items-center gap-2 h-9">
+                <Switch
+                  checked={showInStore && isSellableStockUsage(consignment.isConsignment ? null : stockUsage)}
+                  onCheckedChange={setShowInStore}
+                  disabled={!isSellableStockUsage(consignment.isConsignment ? null : stockUsage)}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {showInStore && isSellableStockUsage(consignment.isConsignment ? null : stockUsage) ? "منشور" : "مخفيّ"}
+                </span>
               </div>
             </Field>
           </div>

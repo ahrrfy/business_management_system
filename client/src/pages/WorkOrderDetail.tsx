@@ -887,6 +887,13 @@ export default function WorkOrderDetail() {
           payReference={payReference}
           setPayReference={setPayReference}
           deliveryMgrApproval={deliveryMgrApproval}
+          canSelfApproveDebt={role === "admin" || role === "manager"}
+          deliveryAddToDebt={deliveryAddToDebt}
+          onToggleSelfDebt={(next) => {
+            setDeliveryAddToDebt(next);
+            if (!next) setDeliveryMgrApproval(null);
+            setError("");
+          }}
           onClearMgrApproval={() => {
             setDeliveryMgrApproval(null);
             setDeliveryAddToDebt(false);
@@ -1067,7 +1074,8 @@ export default function WorkOrderDetail() {
               const payNow = payAmountD.gt(0);
               const unpaidRemainder = positiveDiff(remainingDue.toFixed(2), payAmountD.toFixed(2));
               const hasUnpaidRemainder = unpaidRemainder.gt(0);
-              if (hasUnpaidRemainder && (!deliveryAddToDebt || !deliveryMgrApproval)) {
+              const canSelfApproveDebt = role === "admin" || role === "manager";
+              if (hasUnpaidRemainder && (!deliveryAddToDebt || (!canSelfApproveDebt && !deliveryMgrApproval))) {
                 setError(`لا يمكن تسليم الطلب بمتبقٍ غير مستحصل (${fmt(unpaidRemainder.toFixed(2))} د.ع) دون اعتماد المسؤول لإضافته إلى ذمة العميل.`);
                 return;
               }

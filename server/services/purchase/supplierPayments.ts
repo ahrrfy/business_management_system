@@ -57,6 +57,8 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   authorizeExternalTreasuryDisbursement,
+  computeDrawerCashBalance,
+  computeTreasuryCashBalance,
   lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
 import {
@@ -746,9 +748,41 @@ async function lockRequestedPaymentInstrument(
   };
 }
 
+export async function isPurchaseTreasuryAllowedTx(
+  tx: Tx,
+  actor: Actor,
+): Promise<boolean> {
+  return treasurySourceAllowed(tx, actor);
+}
+
 export async function listSupplierPaymentCashSources(
   branchId: number,
   actor: Actor,
+  options: { includeBalances: true },
+): Promise<{
+  drawers: Array<{
+    id: number;
+    shiftType: (typeof shifts.$inferSelect)["shiftType"];
+    availableCash: string;
+  }>;
+  canUseTreasury: boolean;
+  treasuryAvailableCash: string | null;
+}>;
+export async function listSupplierPaymentCashSources(
+  branchId: number,
+  actor: Actor,
+  options?: { includeBalances?: false },
+): Promise<{
+  drawers: Array<{
+    id: number;
+    shiftType: (typeof shifts.$inferSelect)["shiftType"];
+  }>;
+  canUseTreasury: boolean;
+}>;
+export async function listSupplierPaymentCashSources(
+  branchId: number,
+  actor: Actor,
+  options?: { includeBalances?: boolean },
 ) {
   assertPurchaseBranch({ branchId }, actor);
   return withTx(
@@ -763,19 +797,55 @@ export async function listSupplierPaymentCashSources(
           "FORBIDDEN",
         );
       }
+      const rawDrawers = await tx
+        .select({
+          id: shifts.id,
+          shiftType: shifts.shiftType,
+          openingBalance: shifts.openingBalance,
+        })
+        .from(shifts)
+        .where(
+          and(
+            eq(shifts.branchId, branchId),
+            eq(shifts.userId, actor.userId),
+            eq(shifts.status, "OPEN"),
+          ),
+        )
+        .orderBy(asc(shifts.id));
+      const canUseTreasury = await treasurySourceAllowed(tx, actor);
+      if (!options?.includeBalances) {
+        return {
+          drawers: rawDrawers.map((row) => ({
+            id: Number(row.id),
+            shiftType: row.shiftType,
+          })),
+          canUseTreasury,
+        };
+      }
+      const drawers: Array<{
+        id: number;
+        shiftType: (typeof rawDrawers)[number]["shiftType"];
+        availableCash: string;
+      }> = [];
+      for (const row of rawDrawers) {
+        const available = await computeDrawerCashBalance(
+          tx,
+          Number(row.id),
+          row.openingBalance ?? "0",
+        );
+        drawers.push({
+          id: Number(row.id),
+          shiftType: row.shiftType,
+          availableCash: toDbMoney(available),
+        });
+      }
+      const treasuryAvailableCash = canUseTreasury
+        ? toDbMoney(await computeTreasuryCashBalance(tx, branchId))
+        : null;
       return {
-        drawers: await tx
-          .select({ id: shifts.id, shiftType: shifts.shiftType })
-          .from(shifts)
-          .where(
-            and(
-              eq(shifts.branchId, branchId),
-              eq(shifts.userId, actor.userId),
-              eq(shifts.status, "OPEN"),
-            ),
-          )
-          .orderBy(asc(shifts.id)),
-        canUseTreasury: await treasurySourceAllowed(tx, actor),
+        drawers,
+        canUseTreasury,
+        treasuryAvailableCash,
       };
     },
     { gate: "NONE" },
@@ -3345,7 +3415,102 @@ export async function resolveCashPurchaseSettlementPlanTx(
       : null;
   const reviewerApproval = await resolveApprovalActor(tx, input.reviewer);
 
+  const tender = await readPurchaseTenderTx(
+    tx,
+    Number(input.purchaseOrder.id),
+    input.purchaseOrder.currentRevisionId == null
+      ? null
+      : Number(input.purchaseOrder.currentRevisionId),
+  );
+  if (tender?.mode === "CARD") {
+    throw purchaseTenderError(
+      "تعذر استبدال البطاقة بالنقد",
+      "طريقة سداد النسخة المعتمدة هي بطاقة الشركة",
+    );
+  }
+  if (tender?.mode === "DRAWER" && tender.shiftId == null) {
+    throw purchaseTenderError(
+      "تعذر صرف المتبقي من الفاتورة",
+      "مصدر الوردية المحدد لا يتضمن درجاً صالحاً؛ حدد الوردية صراحةً بمراجعة جديدة لمصدر السداد ولا تحول الصرف إلى الخزنة تلقائياً",
+    );
+  }
+  const legacyDeclared = tender
+    ? null
+    : await readDeclaredPurchaseCashSourceTx(
+        tx,
+        Number(input.purchaseOrder.id),
+        input.purchaseOrder.currentRevisionId == null
+          ? null
+          : Number(input.purchaseOrder.currentRevisionId),
+      );
+
   if (input.explicitCashSource != null) {
+    if (
+      input.explicitCashSource.mode === "DRAWER" &&
+      input.explicitCashSource.shiftId != null
+    ) {
+      const [explicitShift] = await tx
+        .select({
+          id: shifts.id,
+          userId: shifts.userId,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, Number(input.explicitCashSource.shiftId)))
+        .limit(1);
+      if (
+        explicitShift &&
+        (creatorUserId == null || Number(explicitShift.userId) !== creatorUserId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر خصم سداد الفاتورة النقدية من هذا الدرج",
+            why: "يُمنع الصرف من درج المعتمِد أو أي مستخدم آخر؛ الخصم محصور بوردية منشئ الأمر فقط",
+            doThis:
+              "استخدم وردية منشئ الأمر المثبتة في المراجعة، أو صحّح مصدر السداد بمراجعة جديدة إلى الخزينة الرئيسية",
+          }),
+        });
+      }
+    }
+    if (tender != null) {
+      const matchesTender =
+        input.explicitCashSource.mode === tender.mode &&
+        (tender.mode === "TREASURY"
+          ? input.explicitCashSource.shiftId == null
+          : input.explicitCashSource.shiftId == null ||
+            Number(input.explicitCashSource.shiftId) === Number(tender.shiftId));
+      if (!matchesTender) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تغيير مصدر سداد البضاعة أثناء الاعتماد",
+            why: "مصدر السداد المرسل لا يطابق المصدر المثبّت في مراجعة الأمر",
+            doThis:
+              "صحّح مصدر السداد بمراجعة جديدة محكومة (تصحيح مصدر السداد) قبل الاعتماد",
+          }),
+        });
+      }
+    } else if (legacyDeclared != null && legacyDeclared.explicit !== false) {
+      const matchesLegacy =
+        input.explicitCashSource.mode === legacyDeclared.mode &&
+        (legacyDeclared.mode === "TREASURY"
+          ? input.explicitCashSource.shiftId == null
+          : input.explicitCashSource.shiftId == null ||
+            Number(input.explicitCashSource.shiftId) ===
+              Number(legacyDeclared.shiftId));
+      if (!matchesLegacy) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تغيير مصدر سداد البضاعة أثناء الاعتماد",
+            why: "مصدر السداد المرسل يتعارض مع المصدر المثبّت في مراجعة الأمر",
+            doThis:
+              "صحّح مصدر السداد بمراجعة جديدة محكومة قبل إعادة الاعتماد",
+          }),
+        });
+      }
+    }
+
     if (input.explicitCashSource.mode === "TREASURY") {
       if (input.explicitCashSource.shiftId != null) {
         throw cashSourceError("مصدر الخزينة لا يقبل رقم وردية", "BAD_REQUEST");
@@ -3357,7 +3522,7 @@ export async function resolveCashPurchaseSettlementPlanTx(
             what: "تعذر ترحيل وتسوية الفاتورة النقدية من الخزينة",
             why: "التنفيذ النقدي من الخزينة الرئيسية محصور بحساب مالك نشط",
             doThis:
-              "ليعتمد المالك النشط الفاتورة النقدية، أو اختر وردية منشئ الفاتورة المفتوحة",
+              "ليعتمد المالك النشط الفاتورة النقدية، أو صحّح مصدر السداد إلى وردية المنشئ",
           }),
         });
       }
@@ -3373,26 +3538,22 @@ export async function resolveCashPurchaseSettlementPlanTx(
     let resolvedShiftId: number | null =
       input.explicitCashSource.shiftId != null
         ? Number(input.explicitCashSource.shiftId)
-        : null;
-    if (resolvedShiftId == null) {
-      if (reviewerApproval.isOwner) {
-        resolvedShiftId =
-          (await openShiftIdTx(tx, input.reviewer.userId, branchId)) ??
-          (creatorUserId != null
-            ? await openShiftIdTx(tx, creatorUserId, branchId)
-            : null);
-      } else if (creatorUserId != null) {
-        resolvedShiftId = await openShiftIdTx(tx, creatorUserId, branchId);
-      }
+        : tender?.mode === "DRAWER"
+          ? (tender.shiftId ?? null)
+          : legacyDeclared?.mode === "DRAWER"
+            ? (legacyDeclared.shiftId ?? null)
+            : null;
+    if (resolvedShiftId == null && creatorUserId != null) {
+      resolvedShiftId = await openShiftIdTx(tx, creatorUserId, branchId);
     }
     if (!resolvedShiftId || resolvedShiftId <= 0) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
-          why: "لا توجد وردية مفتوحة صالحة للصرف النقدي في هذا الفرع",
+          why: "لا توجد وردية مفتوحة لمنشئ أمر الشراء في هذا الفرع",
           doThis:
-            "افتح وردية صالحة أولاً، أو اعتمد الفاتورة من الخزينة الرئيسية بحساب المالك النشط",
+            "ليفتح منشئ الأمر ورديته وموّلها، أو صحّح مصدر السداد بمراجعة جديدة إلى الخزينة الرئيسية",
         }),
       });
     }
@@ -3406,32 +3567,35 @@ export async function resolveCashPurchaseSettlementPlanTx(
       .from(shifts)
       .where(eq(shifts.id, resolvedShiftId))
       .limit(1);
-    if (
-      !shift ||
-      shift.status !== "OPEN" ||
-      Number(shift.branchId) !== branchId
-    ) {
+    if (!shift) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
-          why: "الوردية المحددة غير مفتوحة أو لا تتبع فرع الفاتورة",
-          doThis: "اختر وردية مفتوحة في نفس الفرع أو الخزينة الرئيسية",
+          why: "الوردية المحددة غير موجودة",
+          doThis: "صحّح مصدر السداد بمراجعة جديدة قبل الاعتماد",
         }),
       });
     }
     const shiftOwnerId = Number(shift.userId);
-    const allowedOwner =
-      (creatorUserId != null && shiftOwnerId === creatorUserId) ||
-      (reviewerApproval.isOwner && shiftOwnerId === input.reviewer.userId);
-    if (!allowedOwner) {
+    if (creatorUserId == null || shiftOwnerId !== creatorUserId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
           what: "تعذر خصم سداد الفاتورة النقدية من هذا الدرج",
-          why: "لا يُخصم سداد الفاتورة النقدية من درج معتمد مستقل لا يخص منشئ الفاتورة",
+          why: "يُمنع الصرف من درج المعتمِد أو أي مستخدم آخر؛ الخصم محصور بوردية منشئ الأمر فقط",
           doThis:
-            "استخدم درج منشئ الفاتورة المفتوح أو اعتمد الصرف من الخزينة الرئيسية بحساب المالك النشط",
+            "استخدم وردية منشئ الأمر المثبتة في المراجعة، أو صحّح مصدر السداد بمراجعة جديدة إلى الخزينة الرئيسية",
+        }),
+      });
+    }
+    if (shift.status !== "OPEN" || Number(shift.branchId) !== branchId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
+          why: "وردية منشئ الفاتورة غير مفتوحة أو لا تتبع فرع الفاتورة",
+          doThis: "ليفتح المنشئ ورديته أو صحّح مصدر السداد بمراجعة جديدة",
         }),
       });
     }
@@ -3442,38 +3606,14 @@ export async function resolveCashPurchaseSettlementPlanTx(
     };
   }
 
-  const tender = await readPurchaseTenderTx(
-    tx,
-    Number(input.purchaseOrder.id),
-    input.purchaseOrder.currentRevisionId == null
-      ? null
-      : Number(input.purchaseOrder.currentRevisionId),
-  );
-  if (tender?.mode === "CARD")
-    throw purchaseTenderError(
-      "تعذر استبدال البطاقة بالنقد",
-      "طريقة سداد النسخة المعتمدة هي بطاقة الشركة",
-    );
-  if (tender?.mode === "DRAWER" && tender.shiftId == null) {
-    throw purchaseTenderError(
-      "تعذر صرف المتبقي من الفاتورة",
-      "مصدر الوردية المحدد لا يتضمن درجاً صالحاً؛ حدد الوردية صراحةً ولا تحول الصرف إلى الخزنة تلقائياً",
-    );
-  }
   const declared: DeclaredPurchaseCashSource | null = tender
     ? {
         mode: tender.mode,
         shiftId: tender.mode === "DRAWER" ? (tender.shiftId ?? null) : null,
-        payerUserId: creatorUserId ?? input.reviewer.userId,
+        payerUserId: creatorUserId ?? 0,
         explicit: true,
       }
-    : await readDeclaredPurchaseCashSourceTx(
-        tx,
-        Number(input.purchaseOrder.id),
-        input.purchaseOrder.currentRevisionId == null
-          ? null
-          : Number(input.purchaseOrder.currentRevisionId),
-      );
+    : legacyDeclared;
   if (declared?.mode === "TREASURY") {
     if (!reviewerApproval.isOwner) {
       throw new TRPCError({
@@ -3491,7 +3631,17 @@ export async function resolveCashPurchaseSettlementPlanTx(
       payerUserId: input.reviewer.userId,
     };
   }
-  if (declared?.mode === "DRAWER" && declared.shiftId != null) {
+  if (declared?.mode === "DRAWER") {
+    if (declared.shiftId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
+          why: "مراجعة الأمر لا تحدد رقم وردية منشئ الفاتورة",
+          doThis: "صحّح مصدر السداد بمراجعة جديدة لتثبيت وردية المنشئ أو الخزينة",
+        }),
+      });
+    }
     const [shift] = await tx
       .select({
         id: shifts.id,
@@ -3502,11 +3652,22 @@ export async function resolveCashPurchaseSettlementPlanTx(
       .from(shifts)
       .where(eq(shifts.id, declared.shiftId))
       .limit(1);
+    if (shift && (creatorUserId == null || Number(shift.userId) !== creatorUserId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر خصم سداد الفاتورة النقدية من هذا الدرج",
+          why: "الوردية المثبتة لا تخص منشئ أمر الشراء",
+          doThis: "صحّح مصدر السداد بمراجعة جديدة إلى وردية المنشئ أو الخزينة الرئيسية",
+        }),
+      });
+    }
     const isDeclaredShiftValid =
       Boolean(shift) &&
       shift!.status === "OPEN" &&
       Number(shift!.branchId) === branchId &&
-      Number(shift!.userId) === declared.payerUserId;
+      creatorUserId != null &&
+      Number(shift!.userId) === creatorUserId;
     if (isDeclaredShiftValid) {
       return {
         mode: "DRAWER",
@@ -3519,9 +3680,9 @@ export async function resolveCashPurchaseSettlementPlanTx(
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذر ترحيل وتسوية الفاتورة النقدية",
-          why: "وردية منشئ الفاتورة النقدية المحددة صراحةً أُغلقت أو لم تعد صالحة للصرف",
+          why: "وردية منشئ الفاتورة المثبتة في مراجعة الأمر أُغلقت أو لم تعد صالحة للصرف",
           doThis:
-            "حدد مصدر الصرف صراحةً عند الاعتماد (الخزينة الرئيسية للمالك النشط، أو وردية مفتوحة صالحة)",
+            "صحّح مصدر السداد بمراجعة جديدة (إلى وردية نشطة للمنشئ أو الخزينة الرئيسية) ثم أعد الاعتماد",
         }),
       });
     }
@@ -3537,7 +3698,7 @@ export async function resolveCashPurchaseSettlementPlanTx(
       };
     }
   }
-  if (reviewerApproval.isOwner) {
+  if (!tender && !declared?.explicit && reviewerApproval.isOwner) {
     return {
       mode: "TREASURY",
       shiftId: null,
@@ -3548,9 +3709,9 @@ export async function resolveCashPurchaseSettlementPlanTx(
     code: "PRECONDITION_FAILED",
     message: appErrorMessage({
       what: "تعذر ترحيل وتسوية الفاتورة النقدية",
-      why: "لا توجد وردية مفتوحة لمنشئ الفاتورة النقدية، والصرف من الخزينة الرئيسية محصور بحساب مالك نشط",
+      why: "لا توجد وردية مفتوحة لمنشئ الفاتورة النقدية، ولم يُختر الصرف من الخزينة أو البطاقة صراحةً في مراجعة الأمر",
       doThis:
-        "ليعتمد المالك النشط الفاتورة من الخزينة الرئيسية، أو ليرسلها المنشئ من ورديته المفتوحة",
+        "صحّح مصدر السداد بمراجعة جديدة لاختيار الخزينة الرئيسية أو البطاقة صراحةً، أو ليفتح المنشئ ورديته",
     }),
   });
 }
@@ -3573,9 +3734,16 @@ export async function prelockCashPurchaseSettlementInTx(
       ? null
       : Number(input.purchaseOrder.currentRevisionId),
   );
-  // Prior allocations run under the exclusive governance gate. There may be no
-  // new money out; never demand or substitute a live drawer for a fully paid PO.
-  if (tender?.previousReceiptId != null || tender?.mode === "CARD") return null;
+  // Prior allocations run under the exclusive governance gate. When fully covered
+  // without a drawer shift or paid by card, no cash source lock is needed.
+  if (
+    tender?.mode === "CARD" ||
+    (tender?.previousReceiptId != null &&
+      tender.mode === "DRAWER" &&
+      tender.shiftId == null)
+  ) {
+    return null;
+  }
   const plan = await resolveCashPurchaseSettlementPlanTx(tx, input);
   await lockCashSourceForUpdate(tx, {
     branchId: Number(input.purchaseOrder.branchId),
@@ -3801,6 +3969,17 @@ export async function settlePostedCashPurchaseInvoiceInTx(
         explicitCashSource: input.cashSource,
       });
   if (isCard) {
+    if (input.cashSource != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تغيير مصدر سداد البضاعة أثناء الاعتماد",
+          why: "مصدر السداد المثبّت في مراجعة الأمر هو بطاقة الشركة ولا يقبل مصدر نقد يدوي عند الاعتماد",
+          doThis:
+            "صحّح مصدر السداد بمراجعة جديدة محكومة (تصحيح مصدر السداد) قبل الاعتماد",
+        }),
+      });
+    }
     await assertPurchaseCardAccountTx(tx, tender.accountId);
     // Serialise same-account submissions before checking the documentary key.
     await tx

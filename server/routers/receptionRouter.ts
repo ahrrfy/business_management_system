@@ -199,8 +199,8 @@ export const receptionRouter = router({
       z.object({
         branchId: z.number().int().positive().nullish(),
         shiftIds: z.array(z.number().int().positive()).max(20).optional(),
-        sinceDays: z.number().int().min(0).max(30).optional(),
-        q: z.string().trim().max(80).optional(),
+        sinceDays: z.number().int().min(0).max(90).optional(),
+        q: z.string().trim().max(500).optional(),
         deliveryState: z.enum(["ALL", "NOT_DISPATCHED", "DISPATCHED", "DELIVERED"]).optional(),
         paymentState: z.enum(["ALL", "UNSETTLED", "UNPAID", "PARTIAL", "PAID"]).optional(),
         method: payMethodEnum.optional(),
@@ -542,6 +542,20 @@ export const receptionRouter = router({
       }
       if (input.collectNow && input.collectNow.method !== "CASH" && !input.collectNow.reference?.trim()) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب",
+        });
+      }
+      if (
+        input.collectNow &&
+        input.collectNow.method !== "CASH" &&
+        !input.collectNow.externalPaymentAttemptId
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تثبيت دفعة البطاقة أو التحويل دون محاولة دفع خارجية مؤكدة",
+            why: "التحصيل الإلكتروني في الاستقبال يتطلب تسجيل وتأكيد محاولة الدفع الخارجي قبل التثبيت",
+            doThis: "أكّد عملية البطاقة أو التحويل من حقل مرجع الدفع أولاً ثم أعد التثبيت",
+          }),
         });
       }
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران

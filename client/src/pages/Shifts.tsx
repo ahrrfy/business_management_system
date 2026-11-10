@@ -383,7 +383,7 @@ export default function Shifts() {
           invoiceCount: rep.invoiceCount,
           salesTotal: rep.salesTotal,
           payments,
-          expectedCash: sh.expectedCash ?? sh.openingBalance,
+          expectedCash: rep.expectedCash ?? sh.expectedCash ?? sh.openingBalance,
           countedCash: sh.countedCash ?? "0",
           variance: sh.variance ?? "0",
         });

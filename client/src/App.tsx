@@ -32,7 +32,7 @@ import { trpc } from "@/lib/trpc";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { AUDIT_LOGS_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { AUDIT_LOGS_GATE, BARCODE_WORKFLOW_STATION_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -379,9 +379,13 @@ export default function App() {
       <Route path="/print-pos">
         <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
-      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
+      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION مع حفظ معاملات الاستعلام (مثل draftId) */}
       <Route path="/reception">
-        <Redirect to="/pos?mode=RECEPTION" />
+        {() => {
+          const qs = typeof window !== "undefined" ? window.location.search.replace(/^\?/, "") : "";
+          const extra = qs ? `&${qs}` : "";
+          return <Redirect to={`/pos?mode=RECEPTION${extra}`} />;
+        }}
       </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">
@@ -506,7 +510,7 @@ export default function App() {
         {/* استعادة الشاشات المستقلة لمحطة الاستقبال بناءً على طلب المستخدم */}
         <Route path="/reception/orders"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOrdersPage /></RequireRole></Shell></Route>
         <Route path="/reception/invoices"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionInvoicesPage /></RequireRole></Shell></Route>
-        <Route path="/reception/workflow"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
+        <Route path="/reception/workflow"><Shell><RequireRole gate={BARCODE_WORKFLOW_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
         <Route path="/reception/handover"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionHandoverPage /></RequireRole></Shell></Route>
         <Route path="/reception/drafts"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionDraftsPage /></RequireRole></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>

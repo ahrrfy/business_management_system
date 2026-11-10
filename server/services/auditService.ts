@@ -72,6 +72,11 @@ function noteAuditWrite(): void {
   const scope = mutationAuditScope.getStore();
   if (scope) scope.writes += 1;
 }
+
+/** يُعلِم النطاق أنّ الحركة إمّا سُجِّلت ذرّياً في الطلب الأصلي (إعادة idempotent) فلا يُنشأ سطرٌ عامٌّ ثانٍ. */
+export function noteIdempotentAuditReplay(): void {
+  noteAuditWrite();
+}
 export async function withMutationAuditScope<T>(work: () => Promise<T>): Promise<{
   value: T;
   specializedAuditWritten: boolean;

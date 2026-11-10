@@ -130,8 +130,7 @@ export default function InvoiceDetail() {
   // حوار الإلغاء (قرار مالك ١٢/٨): جهة الصرف إلزاميّة + سبب اختياريّ + تأكيد بكتابة رقم الفاتورة.
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"] | "MIXED">("CASH");
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelConfirmText, setCancelConfirmText] = useState("");
+  const [cancelReason, setCancelReason] = useState("تراجع الزبون");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
   const workflowPrinter = useWorkflowDocumentPrinter(inv.data?.branchId);
   const actionPrintWinRef = useRef<Window | null>(null);
@@ -182,7 +181,7 @@ export default function InvoiceDetail() {
       const win = actionPrintWinRef.current; actionPrintWinRef.current = null;
       if (r.mode === "EXECUTED" && inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: r.refundAmount ?? "0", pendingRefundAmount: r.pendingRefundAmount ?? "0", pendingRefundRef: r.refundVoucherNumber ?? null, refundMethod: cancelMethod, reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
       else { try { win?.close(); } catch { /* noop */ } }
-      setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
+      setError(""); setCancelOpen(false); setCancelReason("");
       await Promise.all(
         r.mode === "EXECUTED"
           ? [
@@ -201,7 +200,7 @@ export default function InvoiceDetail() {
       const win = actionPrintWinRef.current; actionPrintWinRef.current = null;
       if (inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: "0", reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
       setDone("تم إلغاء فاتورة الدفع عند الاستلام وتسوية آثارها بلا صرف نقدي.");
-      setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
+      setError(""); setCancelOpen(false); setCancelReason("");
       await Promise.all([utils.sales.get.invalidate({ invoiceId }), invalidateFinancialQueries(queryClient, inv.data?.branchId)]);
       setCancelRequestId(crypto.randomUUID());
     },
@@ -806,35 +805,10 @@ export default function InvoiceDetail() {
             data.status !== "RETURNED" &&
             data.status !== "SUPERSEDED" &&
             data.sourceType !== "WORKORDER" && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm">
-                    <RotateCcw aria-hidden className="size-4" />
-                    تسجيل مرتجع
-                    <ChevronDown aria-hidden className="size-3 ms-1 opacity-60" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setReturnDrawerMode("FULL")}>
-                    <RotateCcw aria-hidden className="size-4 text-destructive" />
-                    مرتجع كامل للفاتورة (كافة البنود المتبقية)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setReturnDrawerMode("PARTIAL")}>
-                    <RotateCcw aria-hidden className="size-4 text-primary" />
-                    مرتجع جزئي (تحديد أصناف وكميات)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      navigate(
-                        `/returns?portal=sales&invoice=${encodeURIComponent(data.invoiceNumber)}&mode=FULL`,
-                      )
-                    }
-                  >
-                    <FileText aria-hidden className="size-4" />
-                    فتح في بوابة المرتجعات الكاملة
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <Button variant="outline" size="sm" onClick={() => setReturnDrawerMode("FULL")}>
+                <RotateCcw aria-hidden className="size-4" />
+                مرتجع
+              </Button>
             )}
           {canCancelCurrentInvoice && isCancellable && (
             <Button
@@ -843,7 +817,7 @@ export default function InvoiceDetail() {
               onClick={() => {
                 setCancelMethod((data.paymentMethod as (typeof METHODS)[number]["v"] | null) ?? "CASH");
                 setCancelReason("");
-                setCancelConfirmText("");
+               
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1066,8 +1040,7 @@ export default function InvoiceDetail() {
             <DialogTitle>تعديل بيانات الفاتورة</DialogTitle>
             <DialogDescription>
               تُحفظ الملاحظات غير المالية مباشرة. أمّا تاريخ الاستحقاق فيُرسل
-              كطلب صفري الأثر ولا يتغير إلا بعد اعتماد مدير مستقل عن الطالب
-              ومنشئ الفاتورة. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة».
+              للمراجعة ولا يتغير إلا بعد موافقة المدير. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة».
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1190,37 +1163,22 @@ export default function InvoiceDetail() {
                 سيُنشأ طلب اعتماد أولاً. بعد قبوله ينفذ المراجع المستقل رد البطاقة على الجهاز ويثبت مرجعه؛ لا تنفذ الرد من هذه الشاشة.
               </p>
             )}
-            <div className="space-y-1">
-              <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
-              <Input
-                id="cancel-reason"
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                maxLength={500}
-                placeholder="خطأ إدخال / طلب زبون / …"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="cancel-confirm">
-                للتأكيد اكتب رقم الفاتورة:{" "}
-                <span dir="ltr" className="font-mono font-semibold">{data.invoiceNumber}</span>
-              </Label>
-              <Input
-                id="cancel-confirm"
-                value={cancelConfirmText}
-                onChange={(e) => setCancelConfirmText(e.target.value)}
-                autoComplete="off"
-                placeholder={data.invoiceNumber}
-              />
+            <div className="space-y-1.5">
+              <Label htmlFor="cancel-reason">سبب الإلغاء</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {["تراجع الزبون", "خطأ في الإدخال", "تغيير الطلب", "طلب مكرر"].map((preset) => (
+                  <Button key={preset} type="button" size="sm" variant={cancelReason.trim() === preset ? "default" : "outline"} className="h-7 px-2.5 text-xs" onClick={() => setCancelReason(preset)}>{preset}</Button>
+                ))}
+              </div>
+              <Input id="cancel-reason" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} maxLength={500} placeholder="سبب الإلغاء..." />
             </div>
           </div>
 
           <DialogFooter className="gap-2 sm:justify-between">
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button variant="destructive"
-              disabled={cancellationPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
+              disabled={cancellationPending || cancelReason.trim().length < 3}
               onClick={() => {
-                if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 actionPrintWinRef.current = preopenDocumentWindow();
                 if (useLimitedCancellation) {
                   cancelUnpaidCod.mutate({ invoiceId, reason: cancelReason.trim(), clientRequestId: cancelRequestId });

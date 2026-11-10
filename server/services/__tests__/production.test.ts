@@ -328,7 +328,7 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
       }],
     }, actor);
     const [product] = await db().select().from(s.products).where(eq(s.products.id, created.productId));
-    expect(product.productType).toBe("PRINT_SERVICE");
+    expect(product.productType).toBeNull();
     expect(product.isService).toBe(false);
 
     const [variant] = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, created.productId));

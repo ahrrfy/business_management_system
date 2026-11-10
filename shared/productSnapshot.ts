@@ -21,6 +21,8 @@
  *    لا استيراد من `server/**` هنا.
  */
 
+import type { StockUsage } from "./stockUsage";
+
 /** وسمُ الصيغة — يُرفض أيُّ مستندٍ لا يحمله عند الاستعادة (لقطةٌ من كيانٍ آخر أو صيغةٍ أقدم). */
 export const PRODUCT_SNAPSHOT_KIND = "product.editDocument.v1" as const;
 
@@ -94,9 +96,11 @@ export type ProductSnapshotDocument = {
   isCustomizable: boolean;
   allowAutoCartRecommendations: boolean;
   isService: boolean;
+  stockUsage?: StockUsage | null;
   allowBackorder: boolean;
   isBundle: boolean;
   isActive: boolean;
+  showInStore?: boolean;
   showInReception: boolean;
   showInPrintPos: boolean;
   showInQuotations: boolean;

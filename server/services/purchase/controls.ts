@@ -7,6 +7,7 @@ import {
   purchaseOrderEvents,
   purchaseOrderItems,
   purchaseOrders,
+  shifts,
   users,
 } from "../../../drizzle/schema";
 import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
@@ -20,7 +21,7 @@ import {
   payloadHashMatches,
   recordIdempotencyKey,
 } from "../idempotency";
-import { money } from "../money";
+import { money, toDbMoney } from "../money";
 import { restoreVariantsToActiveOpeningStocktakes } from "../stocktake/openingEligibility";
 import { requireDb, withTx, withGovernanceTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
@@ -35,9 +36,18 @@ import {
   recognizeShippingAndCustomsInTx,
 } from "./automaticInvoicePosting";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
-import { prelockCashPurchaseSettlementInTx } from "./supplierPayments";
+import {
+  prelockCashPurchaseSettlementInTx,
+  readDeclaredPurchaseCashSourceTx,
+} from "./supplierPayments";
+import { readPurchaseTenderTx } from "./tender";
+import { readPurchasePriorPaymentEvidence } from "./priorPayment";
 import type { PurchaseCashSourceInput } from "./types";
-import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import {
+  computeDrawerCashBalance,
+  computeTreasuryCashBalance,
+  lockCashSourceForUpdate,
+} from "../cash/cashAvailability";
 
 export type PurchaseOrderControlKind =
   | "APPROVE_REVISION"
@@ -129,7 +139,262 @@ async function assertRequisitionOrEmergencyTx(
   return { emergency, settings };
 }
 
-async function requestPurchaseOrderControlTx(
+export interface CashPurchaseGoodsPaymentSummary {
+  goodsTotal: string;
+  sourceMode: "DRAWER" | "TREASURY" | "CARD" | null;
+  shiftId: number | null;
+  shiftStatus: string | null;
+  cardLastFour: string | null;
+  referenceNumber: string | null;
+  priorVoucherId: number | null;
+  priorVoucherNumber: string | null;
+  priorAppliedAmount: string;
+  availableCash: string | null;
+  remainingPayable: string;
+  shortageAmount: string;
+  hasShortage: boolean;
+  warningMessage: string | null;
+  shipping: {
+    shippingTotal: string;
+    fundingSource: "DRAWER" | "TREASURY" | "ACCRUAL" | null;
+    shiftId: number | null;
+    recordedReceiptId: number | null;
+    voucherStatus: "NONE" | "RECORDED" | "PENDING_DISBURSEMENT" | "CONFLICT";
+    availableCash: string | null;
+    shortageAmount: string;
+    hasShortage: boolean;
+  };
+}
+
+export async function computeCashPurchaseShortageSummaryTx(
+  tx: Tx,
+  po: Pick<
+    typeof purchaseOrders.$inferSelect,
+    | "id"
+    | "branchId"
+    | "supplierId"
+    | "createdBy"
+    | "currentRevisionId"
+    | "settlementType"
+    | "agreedCurrency"
+    | "subtotal"
+    | "taxAmount"
+    | "shippingCost"
+    | "customsCost"
+    | "shippingFundingSource"
+    | "shippingFundingShiftId"
+    | "total"
+  >,
+): Promise<CashPurchaseGoodsPaymentSummary | null> {
+  if (po.settlementType !== "CASH" || po.agreedCurrency === "USD") {
+    return null;
+  }
+  const branchId = Number(po.branchId);
+  const revisionId =
+    po.currentRevisionId == null ? null : Number(po.currentRevisionId);
+  const tender = await readPurchaseTenderTx(tx, Number(po.id), revisionId);
+  const legacyDeclared = tender
+    ? null
+    : await readDeclaredPurchaseCashSourceTx(tx, Number(po.id), revisionId);
+
+  const goodsTotalDec = money(po.subtotal ?? "0").plus(
+    money(po.taxAmount ?? "0"),
+  );
+  let priorVoucherId: number | null = null;
+  let priorVoucherNumber: string | null = null;
+  let priorAppliedDec = money(0);
+  if (tender?.previousReceiptId != null) {
+    priorVoucherId = Number(tender.previousReceiptId);
+    try {
+      const priorEv = await readPurchasePriorPaymentEvidence(
+        tx,
+        priorVoucherId,
+        false,
+      );
+      if (
+        !priorEv.native &&
+        Number(priorEv.receipt.partyId) === Number(po.supplierId) &&
+        Number(priorEv.receipt.branchId) === branchId &&
+        money(priorEv.availableAmount).gt(0)
+      ) {
+        priorVoucherNumber = priorEv.receipt.voucherNumber ?? null;
+        const avail = money(priorEv.availableAmount);
+        priorAppliedDec = goodsTotalDec.lt(avail) ? goodsTotalDec : avail;
+      }
+    } catch {
+      priorAppliedDec = money(0);
+    }
+  }
+
+  const remainingDec = goodsTotalDec.minus(priorAppliedDec).gt(0)
+    ? goodsTotalDec.minus(priorAppliedDec)
+    : money(0);
+
+  const sourceMode: "DRAWER" | "TREASURY" | "CARD" | null =
+    tender?.mode ?? legacyDeclared?.mode ?? null;
+  const shiftId =
+    sourceMode === "DRAWER"
+      ? (tender?.mode === "DRAWER"
+          ? (tender.shiftId ?? null)
+          : (legacyDeclared?.shiftId ?? null))
+      : null;
+  let shiftStatus: string | null = null;
+  let availableCashDec: ReturnType<typeof money> | null = null;
+
+  if (sourceMode === "DRAWER") {
+    if (shiftId != null) {
+      const [shiftRow] = await tx
+        .select({
+          id: shifts.id,
+          status: shifts.status,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+          openingBalance: shifts.openingBalance,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, shiftId))
+        .limit(1);
+      if (shiftRow) {
+        shiftStatus = shiftRow.status;
+        if (
+          shiftRow.status === "OPEN" &&
+          Number(shiftRow.branchId) === branchId &&
+          (po.createdBy == null ||
+            Number(shiftRow.userId) === Number(po.createdBy))
+        ) {
+          availableCashDec = await computeDrawerCashBalance(
+            tx,
+            Number(shiftRow.id),
+            shiftRow.openingBalance ?? "0",
+          );
+        } else {
+          availableCashDec = money(0);
+        }
+      } else {
+        availableCashDec = money(0);
+      }
+    } else {
+      availableCashDec = money(0);
+    }
+  } else if (sourceMode === "TREASURY") {
+    availableCashDec = await computeTreasuryCashBalance(tx, branchId);
+  } else if (sourceMode === null && remainingDec.gt(0)) {
+    availableCashDec = money(0);
+  }
+
+  const shortageDec =
+    availableCashDec != null && remainingDec.gt(availableCashDec)
+      ? remainingDec.minus(availableCashDec)
+      : money(0);
+  const hasShortage = shortageDec.gt(0);
+  const warningMessage = hasShortage
+    ? sourceMode === "TREASURY"
+      ? `تنبيه عجز نقدي: المتبقي لسداد البضاعة (${toDbMoney(remainingDec)} د.ع) يتجاوز الرصيد المتاح في الخزينة (${toDbMoney(availableCashDec ?? 0)} د.ع) بعجز قدره ${toDbMoney(shortageDec)} د.ع. سيُعاد فحص الرصيد ذرياً عند الاعتماد.`
+      : shiftId != null && shiftStatus && shiftStatus !== "OPEN"
+        ? `تنبيه: وردية المنشئ المثبّتة (#${shiftId}) في حالة (${shiftStatus}) ومتبقي سداد البضاعة ${toDbMoney(remainingDec)} د.ع؛ صحّح مصدر السداد أو افتح وموّل الوردية قبل الاعتماد.`
+        : `تنبيه عجز في الدرج: المتبقي لسداد البضاعة (${toDbMoney(remainingDec)} د.ع) يتجاوز رصيد درج المنشئ المتاح (${toDbMoney(availableCashDec ?? 0)} د.ع) بعجز قدره ${toDbMoney(shortageDec)} د.ع. أُرسل الطلب للاعتماد لكن سيفشل الاعتماد ذرياً ما لم يُموَّل الدرج أولاً.`
+    : null;
+
+  const shippingTotalDec = money(po.shippingCost ?? "0").plus(
+    money(po.customsCost ?? "0"),
+  );
+  const shippingFundingSource = po.shippingFundingSource ?? null;
+  const shippingShiftId = po.shippingFundingShiftId ?? null;
+  let recordedReceiptId: number | null = null;
+  let voucherStatus: "NONE" | "RECORDED" | "PENDING_DISBURSEMENT" | "CONFLICT" =
+    shippingTotalDec.gt(0) ? "PENDING_DISBURSEMENT" : "NONE";
+  if (
+    shippingTotalDec.gt(0) &&
+    shippingFundingSource === "DRAWER" &&
+    po.createdBy != null
+  ) {
+    try {
+      recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
+        purchaseOrderId: Number(po.id),
+        branchId,
+        creatorId: Number(po.createdBy),
+        amount: shippingTotalDec.toFixed(2),
+        shiftId: shippingShiftId,
+      });
+      if (recordedReceiptId != null) {
+        voucherStatus = "RECORDED";
+      }
+    } catch {
+      voucherStatus = "CONFLICT";
+    }
+  }
+  let shippingAvailableDec: ReturnType<typeof money> | null = null;
+  if (
+    shippingTotalDec.gt(0) &&
+    voucherStatus === "PENDING_DISBURSEMENT" &&
+    shippingFundingSource === "DRAWER"
+  ) {
+    if (shippingShiftId != null) {
+      const [sRow] = await tx
+        .select({
+          id: shifts.id,
+          status: shifts.status,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+          openingBalance: shifts.openingBalance,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, shippingShiftId))
+        .limit(1);
+      if (
+        sRow &&
+        sRow.status === "OPEN" &&
+        Number(sRow.branchId) === branchId &&
+        (po.createdBy == null || Number(sRow.userId) === Number(po.createdBy))
+      ) {
+        shippingAvailableDec = await computeDrawerCashBalance(
+          tx,
+          Number(sRow.id),
+          sRow.openingBalance ?? "0",
+        );
+      } else {
+        shippingAvailableDec = money(0);
+      }
+    } else {
+      shippingAvailableDec = money(0);
+    }
+  }
+  const shippingShortageDec =
+    shippingAvailableDec != null && shippingTotalDec.gt(shippingAvailableDec)
+      ? shippingTotalDec.minus(shippingAvailableDec)
+      : money(0);
+
+  return {
+    goodsTotal: toDbMoney(goodsTotalDec),
+    sourceMode,
+    shiftId,
+    shiftStatus,
+    cardLastFour: tender?.mode === "CARD" ? tender.cardLastFour : null,
+    referenceNumber: tender?.mode === "CARD" ? tender.referenceNumber : null,
+    priorVoucherId,
+    priorVoucherNumber,
+    priorAppliedAmount: toDbMoney(priorAppliedDec),
+    availableCash:
+      availableCashDec != null ? toDbMoney(availableCashDec) : null,
+    remainingPayable: toDbMoney(remainingDec),
+    shortageAmount: toDbMoney(shortageDec),
+    hasShortage,
+    warningMessage,
+    shipping: {
+      shippingTotal: toDbMoney(shippingTotalDec),
+      fundingSource: shippingFundingSource,
+      shiftId: shippingShiftId,
+      recordedReceiptId,
+      voucherStatus,
+      availableCash:
+        shippingAvailableDec != null ? toDbMoney(shippingAvailableDec) : null,
+      shortageAmount: toDbMoney(shippingShortageDec),
+      hasShortage: shippingShortageDec.gt(0),
+    },
+  };
+}
+
+export async function requestPurchaseOrderControlTx(
   tx: Tx,
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
@@ -332,10 +597,13 @@ export async function submitPurchaseOrderForApproval(
           message: "سجل إرسال أمر الشراء غير متسق",
         });
       }
+      const replayShortage = await computeCashPurchaseShortageSummaryTx(tx, po);
       return {
         purchaseOrderId: input.purchaseOrderId,
         requestId: replay,
         status: request.status,
+        shortageWarning: replayShortage?.hasShortage ? replayShortage : null,
+        goodsPaymentSummary: replayShortage,
         idempotent: true as const,
       };
     }
@@ -409,11 +677,14 @@ export async function submitPurchaseOrderForApproval(
       request.requestId,
       submitHash,
     );
+    const shortageSummary = await computeCashPurchaseShortageSummaryTx(tx, po);
     return {
       purchaseOrderId: input.purchaseOrderId,
       requestId: request.requestId,
       status: "PENDING" as const,
       version: Number(updated.version),
+      shortageWarning: shortageSummary?.hasShortage ? shortageSummary : null,
+      goodsPaymentSummary: shortageSummary,
       idempotent: false as const,
     };
   });

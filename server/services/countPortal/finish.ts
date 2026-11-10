@@ -4,6 +4,8 @@ import { and, eq } from "drizzle-orm";
 import { stocktakeAssignments, stocktakeSessions } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import { loadStocktakeProgress } from "../stocktake/internal";
+import { syncSingleFullStocktakeSessionTx } from "../stocktake/liveScope";
+import { lockStocktakeBranch } from "../stocktake/overlapGuard";
 import type { PortalIdentity } from "./identity";
 import { SESSION_UNAVAILABLE_MSG, IDENTITY_EXPIRED_MSG, COUNTING_ENDED_MSG } from "./shared";
 
@@ -20,8 +22,9 @@ export type FinishAssignmentResult = {
  * تنتقل الجلسة آلياً إلى REVIEW مع submittedAt. idempotent عند إعادة الاستدعاء.
  */
 export async function finishAssignment(identity: PortalIdentity): Promise<FinishAssignmentResult> {
-  return withTx(async (tx) => {
-    // قفل الجلسة أولاً ثم تكليفاتها — نفس ترتيب الأقفال في approve لتجنّب deadlock.
+  const outcome = await withTx(async (tx) => {
+    // ترتيب الأقفال الحاكم لنطاق الجرد: الفرع -> الجلسة -> التكليفات.
+    await lockStocktakeBranch(tx, Number(identity.session.branchId));
     const sessionRows = await tx
       .select()
       .from(stocktakeSessions)
@@ -39,7 +42,6 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
     const me = assignments.find((a) => Number(a.id) === Number(identity.assignment.id));
     if (!me) throw new TRPCError({ code: "UNAUTHORIZED", message: IDENTITY_EXPIRED_MSG });
 
-    // مسلَّم مسبقاً (أو عبر forceReview) ⇒ نجاح بلا أثر.
     if (me.status === "SUBMITTED") {
       return { ok: true as const, sessionMovedToReview: false, alreadySubmitted: true };
     }
@@ -50,14 +52,14 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
       throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
     }
 
-    // The shared session only moves to review after every scoped product has a
-    // first/recount value. Worker hand-off alone must never close it early.
+    if (session.scopeType === "FULL") {
+      await syncSingleFullStocktakeSessionTx(tx, session);
+    }
+
     const { total, counted } = await loadStocktakeProgress(tx, Number(session.id));
     if (counted < total) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${counted}/${total})`,
-      });
+      // نلتزم بالسطور الملحقة حديثاً كي تظهر للعدّاد فوراً قبل رفع خطأ عدم الاكتمال.
+      return { ok: false as const, counted, total };
     }
 
     const now = new Date();
@@ -66,7 +68,6 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
       .set({ status: "SUBMITTED", submittedAt: now, lastActivityAt: now })
       .where(eq(stocktakeAssignments.id, me.id));
 
-    // آخر تكليف يُسلَّم ⇒ الجلسة تنتقل آلياً لقيد المراجعة.
     await tx
       .update(stocktakeAssignments)
       .set({ status: "SUBMITTED", submittedAt: now, lastActivityAt: now })
@@ -78,4 +79,11 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
 
     return { ok: true as const, sessionMovedToReview: true, alreadySubmitted: false };
   });
+  if (!outcome.ok) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${outcome.counted}/${outcome.total})`,
+    });
+  }
+  return outcome;
 }

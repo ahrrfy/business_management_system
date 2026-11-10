@@ -165,4 +165,39 @@ describe("company consignment operational eligibility", () => {
     expect(host.textContent).toContain("سجّل التحصيل");
     expect(host.querySelector("select")).toBeNull();
   });
+  it("exposes grouped shipment collection for collectible in-transit and delivered cash shipments while hiding credit-only delivered shipments", () => {
+    const groupedInTransit = {
+      ...healthy,
+      shipmentLeaderConsignmentId: 10,
+      shipmentInvoiceCount: 2,
+    } as Row;
+    render(groupedInTransit);
+    expect(host.textContent).toContain("الشحنة · 2 فواتير");
+    expect(host.textContent).toContain("سجّل التحصيل");
+
+    const groupedZeroLeaderWithSiblingCod = {
+      ...groupedInTransit,
+      remainingDue: "0.00",
+      shipmentCollectibleDue: "25000.00",
+    } as Row;
+    render(groupedZeroLeaderWithSiblingCod);
+    expect(host.textContent).toContain("سجّل التحصيل");
+
+    const groupedDeliveredCredit = {
+      ...groupedInTransit,
+      parcelStatus: "DELIVERED",
+      cashInCourierCustody: "0.00",
+    } as Row;
+    render(groupedDeliveredCredit);
+    expect(host.textContent).not.toContain("سجّل التحصيل");
+
+    const groupedDeliveredCash = {
+      ...groupedInTransit,
+      parcelStatus: "DELIVERED",
+      cashInCourierCustody: "1000.00",
+    } as Row;
+    render(groupedDeliveredCash);
+    expect(host.textContent).toContain("الشحنة · 2 فواتير");
+    expect(host.textContent).toContain("سجّل التحصيل");
+  });
 });

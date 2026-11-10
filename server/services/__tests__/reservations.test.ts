@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
+import { setStock } from "../inventoryService";
 import { withTx } from "../tx";
 import {
   cancelReservation, convertReservationToSale, createReservation, expireDueReservations,
@@ -46,8 +47,11 @@ async function mkProduct(sku: string, opening: number, withDozen = false) {
     { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "1500" }] },
   ];
   if (withDozen) units.push({ unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "16000" }] });
-  await createProduct({ name: `منتج ${sku}`, variants: [{ sku, costPrice: "1000", openingStock: opening, units }] }, actor);
+  await createProduct({ name: `منتج ${sku}`, variants: [{ sku, costPrice: "1000", units }] }, actor);
   const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, sku)))[0];
+  if (opening > 0) {
+    await withTx((tx) => setStock(tx, { variantId: Number(v.id), branchId: 1, targetQuantity: opening, referenceType: "OPENING", documentNumber: `OPEN-${v.id}`, notes: "رصيد اختبار", createdBy: actor.userId }));
+  }
   const allUnits = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
   const base = allUnits.find((u) => u.isBaseUnit)!;
   const dozen = allUnits.find((u) => !u.isBaseUnit);

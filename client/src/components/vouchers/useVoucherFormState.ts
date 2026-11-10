@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { isVoucherCategoryRoleCompatible } from "@shared/voucherCategoryAccounting";
 import {
@@ -125,6 +125,19 @@ export function useVoucherFormState(props: VoucherFormProps) {
 
   // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
   const [invoiceId, setInvoiceId] = useState<number | null>(null);
+  const prevInvoiceBranchRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      prevInvoiceBranchRef.current != null &&
+      branchId != null &&
+      prevInvoiceBranchRef.current !== branchId
+    ) {
+      setInvoiceId(null);
+    }
+    if (branchId != null) {
+      prevInvoiceBranchRef.current = branchId;
+    }
+  }, [branchId]);
 
   const [err, setErr] = useState("");
 

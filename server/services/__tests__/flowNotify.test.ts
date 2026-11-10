@@ -18,7 +18,9 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetKeyCacheForTests, encryptSecret } from "../cryptoService";
 import { createProduct } from "../catalogService";
+import { setStock } from "../inventoryService";
 import { createSupplier } from "../supplierService";
+import { withTx } from "../tx";
 import { createSale } from "../sale/create";
 import { createConsignmentNote } from "../consignment/noteService";
 import {
@@ -735,12 +737,13 @@ describe("purchase_thanks — createSale", () => {
     await createProduct(
       {
         name: "دفتر اختبار T4.2",
-        variants: [{ sku, costPrice: cost, openingStock: 100, units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: sell }] }] }],
+        variants: [{ sku, costPrice: cost, units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: sell }] }] }],
       },
       actor,
     );
     const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, sku)))[0];
     const u = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    await withTx((tx) => setStock(tx, { variantId: Number(v.id), branchId: 1, targetQuantity: 100, referenceType: "OPENING", documentNumber: `OPEN-${v.id}`, notes: "رصيد اختبار", createdBy: actor.userId }));
     return { variantId: Number(v.id), productUnitId: Number(u.id) };
   }
 

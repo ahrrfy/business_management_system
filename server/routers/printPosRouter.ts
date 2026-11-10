@@ -10,7 +10,8 @@ import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { customers, invoiceItems, invoices } from "../../drizzle/schema";
+import { customers, invoiceItems, invoices, shifts } from "../../drizzle/schema";
+import { collectOnReceptionInvoice } from "../services/reception/collect";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
 import { listPrintServices } from "../services/catalogService";
@@ -90,6 +91,7 @@ export const printPosRouter = router({
   initiateExternalPayment: posCashierProcedure
     .input(z.object({
       branchId: z.number().int().positive(),
+      channel: z.enum(["PRINT_POS", "SALES_COLLECTION"]).optional(),
       method: externalMethod,
       amount: positiveMoneyString,
       reference: z.string().trim().min(1).max(100),
@@ -103,13 +105,18 @@ export const printPosRouter = router({
       }
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       return initiateExternalPaymentAttempt(
-        { ...input, method: input.method as PosExternalPaymentMethod, branchId, channel: "PRINT_POS" },
+        { ...input, method: input.method as PosExternalPaymentMethod, branchId, channel: input.channel ?? "PRINT_POS" },
         { userId: ctx.user.id, branchId, role: ctx.user.role },
       );
     }),
 
   confirmExternalPayment: posCashierProcedure
-    .input(z.object({ branchId: z.number().int().positive(), attemptId: z.number().int().positive(), deviceId: z.string().trim().min(1).max(64) }))
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      channel: z.enum(["PRINT_POS", "SALES_COLLECTION"]).optional(),
+      attemptId: z.number().int().positive(),
+      deviceId: z.string().trim().min(1).max(64),
+    }))
     .mutation(async ({ input, ctx }) => {
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
@@ -117,9 +124,52 @@ export const printPosRouter = router({
       }
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       return confirmExternalPaymentAttempt(
-        { attemptId: input.attemptId, branchId, channel: "PRINT_POS", deviceId: input.deviceId },
+        { attemptId: input.attemptId, branchId, channel: input.channel ?? "PRINT_POS", deviceId: input.deviceId },
         { userId: ctx.user.id, branchId, role: ctx.user.role },
       );
+    }),
+
+  /** تحصيل المتبقي على فاتورة طباعة محجوزة عبر نفس محرك التحصيل المحمي (collectOnReceptionInvoice). */
+  collectHeldSale: posCashierProcedure
+    .input(z.object({
+      invoiceId: z.number().int().positive(),
+      amount: positiveMoneyString,
+      method: z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]),
+      reference: z.string().trim().min(1).max(100).optional(),
+      externalPaymentAttemptId: z.number().int().positive().optional(),
+      externalPaymentDeviceId: z.string().trim().min(1).max(64).optional(),
+      clientRequestId: z.string().trim().min(1).max(80),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تحصيل الطلب المحجوز",
+            why: "لا يوجد فرع مُسنَد لحساب الكاشير الحالي",
+            doThis: "اطلب من الإدارة إسناد حسابك إلى الفرع قبل التحصيل",
+          }),
+        });
+      }
+      const branchId = ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
+      const res = await collectOnReceptionInvoice(
+        input,
+        { userId: ctx.user.id, branchId, role: ctx.user.role } as never,
+      );
+      if (branchId != null) {
+        publishRealtimeEvent(
+          REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+          {
+            heldOrderId: input.invoiceId,
+            branchId,
+            action: "RESUMED",
+            lockedByUserId: null,
+          },
+          { branchId },
+        );
+      }
+      return res;
     }),
 
   /** بيع خدمات الطباعة: فاتورة + خصم مواد بصمت + قيد + ذمم — ذرّياً (createPrintSale). */
@@ -252,12 +302,14 @@ export const printPosRouter = router({
           customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp})`,
         })
         .from(invoices)
+        .innerJoin(shifts, eq(invoices.shiftId, shifts.id))
         .leftJoin(customers, eq(invoices.customerId, customers.id))
         .where(
           and(
             effectiveBranchId != null ? eq(invoices.branchId, effectiveBranchId) : sql`1=1`,
             inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
             eq(invoices.sourceType, "POS"),
+            eq(shifts.shiftType, "PRINT_SERVICES"),
           ),
         )
         .orderBy(desc(invoices.id))
@@ -501,10 +553,12 @@ export const printPosRouter = router({
         amount: positiveMoneyString,
         method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
         reference: z.string().trim().min(1).max(100).nullish(),
+        shiftId: z.number().int().positive().nullish(),
         externalPaymentAttemptId: z.number().int().positive().nullish(),
         externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
       }).nullish(),
       overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
+      overpayRefundShiftId: z.number().int().positive().nullish(),
       clientRequestId: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -572,6 +626,7 @@ export const printPosRouter = router({
         notes: [input.reason ? `[سبب التعديل: ${input.reason}]` : null, input.notes?.trim() ?? inv.notes ?? null].filter(Boolean).join(" - ") || undefined,
         additionalPayment: input.additionalPayment,
         overpayHandling: input.overpayHandling,
+        overpayRefundShiftId: input.overpayRefundShiftId ?? undefined,
         clientRequestId: input.clientRequestId,
       }, actor);
 

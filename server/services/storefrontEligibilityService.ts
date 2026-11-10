@@ -1,4 +1,5 @@
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { isSellableStockUsage, type StockUsage } from "@shared/stockUsage";
 import {
   branchStock,
   categories,
@@ -18,6 +19,7 @@ import {
 export type StorefrontReadinessReason =
   | "PRODUCT_INACTIVE"
   | "PRODUCT_HIDDEN"
+  | "NOT_SELLABLE_USAGE"
   | "CATEGORY_HIDDEN"
   | "NO_ACTIVE_VARIANT"
   | "NO_STORE_SALE_UNIT"
@@ -50,6 +52,7 @@ export interface StorefrontEligibilityProductInput {
   isActive: boolean;
   isService: boolean;
   showInStore: boolean;
+  stockUsage?: StockUsage | null;
   /** المنتج بلا فئة صالح؛ أما الفئة المعطلة/المخفية فتغلق النشر والجاهزية. */
   categoryVisible?: boolean;
   variants: StorefrontEligibilityVariantInput[];
@@ -103,6 +106,7 @@ export function evaluateStorefrontProductEligibility(
   const productReasons: StorefrontReadinessReason[] = [];
   if (!input.isActive) productReasons.push("PRODUCT_INACTIVE");
   if (!input.showInStore) productReasons.push("PRODUCT_HIDDEN");
+  if (!input.isService && !isSellableStockUsage(input.stockUsage)) productReasons.push("NOT_SELLABLE_USAGE");
   if (input.categoryVisible === false) productReasons.push("CATEGORY_HIDDEN");
   if (productReasons.length) {
     return { publishable: false, available: false, reasons: productReasons };
@@ -151,6 +155,11 @@ export function storefrontPublishableCondition() {
   return and(
     eq(products.isActive, true),
     eq(products.showInStore, true),
+    or(
+      eq(products.isService, true),
+      isNull(products.stockUsage),
+      inArray(products.stockUsage, ["SALE_ONLY", "SALE_AND_MATERIAL"]),
+    )!,
     or(
       isNull(products.categoryId),
       and(eq(categories.isActive, true), eq(categories.showInStore, true)),

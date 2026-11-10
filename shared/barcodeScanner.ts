@@ -20,13 +20,14 @@ const ARABIC_101_TO_ASCII: Readonly<Record<string, string>> = Object.freeze({
 
   // ZXCV
   "ئ": "z", "ء": "x", "ؤ": "c", "ر": "v", "لا": "b", "ى": "n", "ة": "m", "و": ",", "ز": ".", "ظ": "/",
-  "ْ": "X", "}": "C", "{": "V", "لآ": "B", "آ": "N", "’": "M", ",": "<", ".": ">", "؟": "?",
+  "ْ": "X", "}": "C", "{": "V", "لآ": "B", "آ": "N", "’": "M", ",": "<", ".": ">", "؟": "?", "٪": "%",
 });
 
 const ARABIC_INDIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
 const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
 const MULTI_CHAR_KEYS = ["لإ", "لأ", "لآ", "لا"] as const;
 const HAS_ARABIC_LAYOUT_OUTPUT = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff÷×‘’]/;
+const HAS_ARABIC_SHIFT_ASCII_PREFIX = /^[{}[\]/]{1,4}[-|]\d/;
 
 function latinDigit(char: string): string | null {
   const arabicIndex = ARABIC_INDIC_DIGITS.indexOf(char);
@@ -43,13 +44,13 @@ const INVISIBLE_FORMAT_MARKS = /[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u
  */
 const AIM_CODE_IDENTIFIER = /^\][A-Za-z][A-Za-z0-9]/;
 
-export function normalizeBarcodeScannerInput(raw: string): string {
+export function normalizeBarcodeScannerInput(raw: string, options?: { forcePhysicalBurstLayout?: boolean }): string {
   if (!raw) return "";
   const cleaned = raw.replace(INVISIBLE_FORMAT_MARKS, "").trim();
   // جرّد AIM المرسل حرفياً قبل كشف التخطيط: الأرقام العربية/الفارسية تقع ضمن مجال Unicode
   // العربي، فلا ينبغي أن تجعل `]C1` نفسها تتحوّل إلى `DC1` قبل أن نستطيع التعرّف عليها.
   const scannerPayload = cleaned.replace(AIM_CODE_IDENTIFIER, "").trim();
-  const translateLayout = HAS_ARABIC_LAYOUT_OUTPUT.test(scannerPayload);
+  const translateLayout = Boolean(options?.forcePhysicalBurstLayout) || HAS_ARABIC_LAYOUT_OUTPUT.test(scannerPayload) || HAS_ARABIC_SHIFT_ASCII_PREFIX.test(scannerPayload);
   let normalized = "";
   for (let index = 0; index < scannerPayload.length;) {
     const multi = translateLayout
@@ -82,22 +83,87 @@ export function normalizeBarcodeScannerInput(raw: string): string {
  * - بطاقات وتراخيص: CUST-, EMP-, USER-, ALR-
  */
 export const KNOWN_SYSTEM_PREFIXES = [
-  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "RV", "PV", "CUST", "EMP", "USER", "ALR", "FR", "AE", "CHG",
+  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "RV", "PV", "CUST", "EMP", "USER", "ALR", "FR", "AE", "CHG", "FC", "AC", "TRK", "SHP", "DR", "STMT",
 ] as const;
 
 export function looksLikeSystemBarcode(raw: string): boolean {
   if (!raw) return false;
   const normalized = normalizeBarcodeScannerInput(raw);
-  return new RegExp(`^(?:${KNOWN_SYSTEM_PREFIXES.join("|")})(?:[-|]|\\d)`, "i").test(normalized);
+  return new RegExp(`^(?:${KNOWN_SYSTEM_PREFIXES.join("|")})(?:[-|\\s]+\\d|\\d|[-|][A-Za-z0-9])`, "i").test(normalized);
 }
 
 export const normalizeArabicKeyboardToAscii = normalizeBarcodeScannerInput;
 
-export function normalizeKnownSystemBarcode(raw: string): string {
+const URL_ENVELOPE_PARAMS = ["payload", "p", "ref", "order", "id", "number"] as const;
+const URL_ENVELOPE_QUERY_RE = /[?&](?:payload|p|ref|order|id|number)=([^&#]+)/i;
+const URL_ENVELOPE_VERIFY_PATH_RE = /\/verify\/([^/?#]+)(?:[/?#]|$)/i;
+const URL_ENVELOPE_KEY_PREFIX_RE = /^(?:payload|p|ref|order|id|number)=/i;
+
+/**
+ * يستخرج حمولة الباركود من أغلفة روابط التحقق (QR URLs) مثل:
+ * `?payload=...`، `?p=...`، `?ref=...`، `?order=...`، `?id=...`، `?number=...`، أو `/verify/<code>`،
+ * بما في ذلك الروابط المقروءة تحت تخطيط لوحة المفاتيح العربية (101) مثل `اففحس:ظظ...`،
+ * دون المساس بأي بحث عربي يدوي عادي.
+ */
+export function unwrapBarcodeScanEnvelope(raw: string): string {
   if (!raw) return "";
-  const normalized = normalizeBarcodeScannerInput(raw);
+  const trimmed = raw.replace(INVISIBLE_FORMAT_MARKS, "").trim();
+  if (!trimmed || trimmed.length > 2000) return raw;
+  const asciiCandidate = normalizeBarcodeScannerInput(trimmed);
+  const looksLikeUrlEnvelope =
+    /^https?[:;]\/\//i.test(asciiCandidate) ||
+    URL_ENVELOPE_QUERY_RE.test(asciiCandidate) ||
+    URL_ENVELOPE_VERIFY_PATH_RE.test(asciiCandidate);
+  if (!looksLikeUrlEnvelope) return raw;
+
+  try {
+    const normalizedUrlCandidate = asciiCandidate.replace(/^https?;\/\//i, (m) => m.replace(";", ":"));
+    const url = new URL(normalizedUrlCandidate, "http://localhost");
+    for (const key of URL_ENVELOPE_PARAMS) {
+      const val = url.searchParams.get(key)?.trim();
+      if (val) return val;
+    }
+    const verifyMatch = url.pathname.match(/\/verify\/([^/?#]+)$/i);
+    if (verifyMatch?.[1]) {
+      return decodeURIComponent(verifyMatch[1]).replace(URL_ENVELOPE_KEY_PREFIX_RE, "").trim();
+    }
+  } catch {
+    // متابعة للتحليل البديل بـ regex
+  }
+
+  const queryMatch = asciiCandidate.match(URL_ENVELOPE_QUERY_RE);
+  if (queryMatch?.[1]) {
+    try {
+      return decodeURIComponent(queryMatch[1]).trim();
+    } catch {
+      return queryMatch[1].trim();
+    }
+  }
+
+  const pathMatch = asciiCandidate.match(URL_ENVELOPE_VERIFY_PATH_RE);
+  if (pathMatch?.[1]) {
+    try {
+      return decodeURIComponent(pathMatch[1]).replace(URL_ENVELOPE_KEY_PREFIX_RE, "").trim();
+    } catch {
+      return pathMatch[1].replace(URL_ENVELOPE_KEY_PREFIX_RE, "").trim();
+    }
+  }
+
+  return raw;
+}
+
+export function normalizeKnownSystemBarcode(raw: string, options?: { physicalBurst?: boolean }): string {
+  if (!raw) return "";
+  const unwrapped = unwrapBarcodeScanEnvelope(raw);
+  const normalized = normalizeBarcodeScannerInput(unwrapped, { forcePhysicalBurstLayout: options?.physicalBurst });
   if (!looksLikeSystemBarcode(normalized)) {
+    if (unwrapped !== raw) return normalized;
+    if (options?.physicalBurst) return normalized;
     return raw.startsWith("]") ? normalized : raw;
+  }
+  const spaceMatch = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})\\s+([A-Za-z0-9].*)$`, "i"));
+  if (spaceMatch) {
+    return `${spaceMatch[1].toUpperCase()}-${spaceMatch[2].trim()}`;
   }
   const match = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})([-|]?.*)$`, "i"));
   if (match) {

@@ -1,6 +1,7 @@
 // قراءة منتج كاملاً لتغذية شاشة التعديل.
 import { and, eq, inArray } from "drizzle-orm";
 import { bundleComponents, productPrices, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
+import type { StockUsage } from "@shared/stockUsage";
 import { getDb } from "../../db";
 import type { PriceTier } from "../pricing";
 
@@ -10,8 +11,10 @@ export interface ProductForEdit {
   categoryId: number | null;
   isCustomizable: boolean;
   isService: boolean;
+  stockUsage: StockUsage | null;
   isBundle: boolean;
   isActive: boolean;
+  showInStore: boolean;
   // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض). الوسم يُقفَل في التعديل (يُدار وقت الإنشاء).
   isConsignment: boolean;
   consignorId: number | null;
@@ -122,8 +125,10 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
     isService: !!p.isService,
+    stockUsage: (p.stockUsage as StockUsage | null) ?? null,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
+    showInStore: !!p.showInStore,
     isConsignment: !!p.isConsignment,
     consignorId: p.consignorId != null ? Number(p.consignorId) : null,
     consignorName,

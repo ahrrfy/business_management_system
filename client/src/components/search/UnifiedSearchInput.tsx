@@ -329,6 +329,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
             sizeClasses,
             barcode ? barcodeSearchInputClass : "pr-8",
             localValue ? "pl-8" : "pl-3",
+            !localValue && dir === "ltr" && /[\u0600-\u06ff]/.test(effectivePlaceholder) ? "placeholder:[direction:rtl]" : undefined,
             wrapperClassName !== undefined ? className : undefined,
             inputClassName,
           )}

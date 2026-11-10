@@ -14,6 +14,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: {
   workOrders: {
     get: { useQuery: () => ({ data: mock.wo, refetch: mock.detailRefetch }) },
     controlPreflight: { useQuery: () => ({ data: mock.preflight && { ...mock.preflight, controlRequired: { commercial: !mock.direct } }, error: mock.preflightError, refetch: mock.preflightRefetch }) },
+    searchMaterials: { useQuery: () => ({ data: [], isFetching: false }) },
     update: { useMutation: () => ({ mutate: mock.update }) },
     setMaterials: { useMutation: () => ({ mutate: mock.materials }) },
     requestControl: { useMutation: () => ({ mutate: mock.request }) },

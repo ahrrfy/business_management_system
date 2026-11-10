@@ -484,29 +484,31 @@ function LegacyReturnContext({
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       {!source && <WorkflowResetButton onReset={onClear} disabled={frozen} />}
-      <Card className="gap-0 p-4">
-        <h2 className="mb-3 font-extrabold">نوع الإجراء</h2>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {(["FULL", "PARTIAL"] as const).map((value) => (
-            <Button
-              key={value}
-              variant={mode === value ? "destructive" : "outline"}
-              disabled={frozen}
-              onClick={() => onModeChange(value)}
-            >
-              {value === "FULL" ? (
-                <>
-                  <Ban className="size-4" aria-hidden /> إلغاء / مرتجع كامل
-                </>
-              ) : (
-                <>
-                  <RefreshCcw className="size-4" aria-hidden /> مرتجع جزئي
-                </>
-              )}
-            </Button>
-          ))}
-        </div>
-      </Card>
+      {source?.kind === "invoice" && (
+        <Card className="gap-0 p-4">
+          <h2 className="mb-3 font-extrabold">نوع الإجراء</h2>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {(["FULL", "PARTIAL"] as const).map((value) => (
+              <Button
+                key={value}
+                variant={mode === value ? "destructive" : "outline"}
+                disabled={frozen}
+                onClick={() => onModeChange(value)}
+              >
+                {value === "FULL" ? (
+                  <>
+                    <Ban className="size-4" aria-hidden /> إلغاء / مرتجع كامل
+                  </>
+                ) : (
+                  <>
+                    <RefreshCcw className="size-4" aria-hidden /> مرتجع جزئي
+                  </>
+                )}
+              </Button>
+            ))}
+          </div>
+        </Card>
+      )}
       {pending && (
         <div role="status" className="space-y-2 rounded border p-3 text-sm">
           <p>
@@ -535,8 +537,9 @@ function LegacyReturnContext({
               onSubmit={(value) => {
                 if (value.trim()) void onLookup(value.trim());
               }}
-              placeholder="رقم الطلب أو الفاتورة (Enter)"
-              className="flex-1 text-center font-bold"
+              placeholder="امسح أو أدخل رقم الطلب أو الفاتورة"
+              className="flex-1"
+              inputClassName="text-center font-mono font-bold placeholder:font-sans placeholder:font-normal"
               dir="ltr"
               barcode
             />
@@ -616,13 +619,16 @@ function LegacyReturnContext({
                 initialMode={mode}
                 onDone={() => {
                   notify.ok("تم تسجيل المرتجع بنجاح");
+                  void utils.returns.invalidate();
+                  void utils.sales.invalidate();
                   void utils.workOrders.invalidate();
                   void utils.delivery.invalidate();
                   if (mounted.current) onClear();
                 }}
               />
             </>
-          ) : mode === "PARTIAL" ? (
+          ) : (source.kind ?? "workOrder") === "workOrder" &&
+            mode === "PARTIAL" ? (
             <div className="space-y-3 text-sm">
               <p>
                 لإرجاع بنود وكميات محددة امسح الفاتورة الأصلية. إلغاء الطلب غير

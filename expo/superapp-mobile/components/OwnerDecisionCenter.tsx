@@ -128,33 +128,21 @@ export function OwnerDecisionCenter() {
     setDecisionFeedback(null);
   };
 
-  const handleBiometricApprove = async () => {
+  const handleOpenApprovalsInbox = async () => {
     if (!selected) return;
     setIsApproving(true);
     try {
       await unlockLocalSession();
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setDecisionFeedback(`تم توثيق بصمة المالك واعتماد القرار «${selected.title}» محلياً.`);
-      setTimeout(() => {
-        setDecisionFeedback(null);
-        setSelected(null);
-      }, 1400);
+      void Haptics.selectionAsync();
+      setSelected(null);
+      setDecisionFeedback(null);
+      router.push("/operations/approvals");
     } catch {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setDecisionFeedback("تعذر استكمال المصادقة. يرجى المحاولة ثانية.");
+      setDecisionFeedback("تعذر استكمال المصادقة لفتح صندوق الاعتمادات. يرجى المحاولة ثانية.");
     } finally {
       setIsApproving(false);
     }
-  };
-
-  const handleReject = () => {
-    if (!selected) return;
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    setDecisionFeedback(`تم تسجيل رفض «${selected.title}» وإشعار مقدم الطلب.`);
-    setTimeout(() => {
-      setDecisionFeedback(null);
-      setSelected(null);
-    }, 1400);
   };
 
   return (
@@ -401,35 +389,23 @@ export function OwnerDecisionCenter() {
             </View>
 
             {decisionFeedback ? (
-              <ExperienceState compact detail="تم توثيق هذا الإجراء في سجل التدقيق." state="success" title={decisionFeedback} />
-            ) : (
-              <View style={styles.decisionActionRow}>
-                <Pressable
-                  accessibilityHint="يتحقق من بصمة المالك ويعتمد القرار فورياً"
-                  accessibilityLabel="اعتماد سريع بالبصمة"
-                  accessibilityRole="button"
-                  disabled={isApproving}
-                  onPress={() => void handleBiometricApprove()}
-                  style={({ pressed }) => [styles.biometricApproveBtn, pressed && styles.pressed, isApproving && styles.disabled]}
-                >
-                  <Ionicons color={colors.surface} name="finger-print" size={20} />
-                  <Text style={styles.biometricApproveText}>
-                    {isApproving ? "جار المصادقة…" : "اعتماد بالبصمة"}
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  accessibilityHint="يسجل رفض الطلب مع إشعار مقدمه"
-                  accessibilityLabel="رفض الطلب"
-                  accessibilityRole="button"
-                  onPress={handleReject}
-                  style={styles.rejectBtn}
-                >
-                  <Ionicons color={colors.danger} name="close-circle-outline" size={18} />
-                  <Text style={styles.rejectText}>رفض مسبب</Text>
-                </Pressable>
-              </View>
-            )}
+              <ExperienceState compact detail="تحقق من بصمة الجهاز ثم تابع من صندوق الاعتمادات." state="error" title={decisionFeedback} />
+            ) : null}
+            <View style={styles.decisionActionRow}>
+              <Pressable
+                accessibilityHint="يفتح صندوق الاعتمادات الفعلي لاتخاذ قرار موثق على الخادم"
+                accessibilityLabel="فتح صندوق الاعتمادات لاتخاذ القرار"
+                accessibilityRole="button"
+                disabled={isApproving}
+                onPress={() => void handleOpenApprovalsInbox()}
+                style={({ pressed }) => [styles.biometricApproveBtn, pressed && styles.pressed, isApproving && styles.disabled]}
+              >
+                <Ionicons color={colors.surface} name="shield-checkmark-outline" size={20} />
+                <Text style={styles.biometricApproveText}>
+                  {isApproving ? "جار المصادقة…" : "مراجعة واعتماد في صندوق القرارات"}
+                </Text>
+              </Pressable>
+            </View>
 
             <View style={styles.sheetNoticeRow}>
               <Ionicons color={colors.info} name="shield-checkmark-outline" size={20} />

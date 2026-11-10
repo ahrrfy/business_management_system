@@ -46,7 +46,9 @@ import {
 } from "./loyaltyService";
 import {
   confirmCouponReservationForOnlineOrder,
+  lockCouponForSale,
   releaseCouponReservationForOnlineOrder,
+  reserveCouponForOnlineOrder,
 } from "../couponService";
 import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 import {
@@ -226,6 +228,8 @@ export async function listOnlineOrders(opts: {
     deliveryWaivedAmount: String(r.deliveryWaivedAmount ?? "0"),
     deliveryPartyId: r.deliveryPartyId != null ? Number(r.deliveryPartyId) : null,
     cancelReason: r.cancelReason ?? null,
+    latitude: r.latitude != null ? String(r.latitude) : null,
+    longitude: r.longitude != null ? String(r.longitude) : null,
     itemCount: Number(r.itemCount),
     createdAt: r.createdAt,
     reservationExpiresAt: r.reservationExpiresAt ? new Date(r.reservationExpiresAt) : null,
@@ -2047,8 +2051,40 @@ export async function reviveAndConfirmOnlineOrder(
       })
       .where(eq(onlineOrders.id, input.id));
 
-    // 4. إعادة تثبيت الكوبون إن وجد
-    await confirmCouponReservationForOnlineOrder(tx, input.id);
+    // 4. إعادة تثبيت الكوبون إن وجد (أو إعادة حجزه تحت القفل إن كان قد حُرّر عند الإلغاء)
+    const confirmedReservations = await confirmCouponReservationForOnlineOrder(tx, input.id);
+    if (
+      confirmedReservations === 0 &&
+      order.couponCode &&
+      (money(order.couponDiscount ?? "0").gt(0) ||
+        (order.deliveryFree && money(order.deliveryWaivedAmount ?? "0").gt(0)))
+    ) {
+      const todayYmd = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Baghdad",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+      const lockedCoupon = await lockCouponForSale(tx, {
+        code: order.couponCode,
+        branchId: Number(order.branchId),
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        subtotal: order.subtotal,
+        reservationOnlineOrderId: input.id,
+        todayYmd,
+      });
+      const reservationDiscount = money(order.couponDiscount ?? "0").gt(0)
+        ? String(order.couponDiscount)
+        : String(order.deliveryWaivedAmount ?? "0");
+      await reserveCouponForOnlineOrder(tx, lockedCoupon, {
+        onlineOrderId: input.id,
+        customerId: Number(order.customerId),
+        branchId: Number(order.branchId),
+        discountAmount: reservationDiscount,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+      await confirmCouponReservationForOnlineOrder(tx, input.id);
+    }
 
     // 5. إشعار المتجر بتحديث الحالة
     await enqueueStorefrontOrderStatusPush(tx, {

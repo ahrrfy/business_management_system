@@ -542,4 +542,20 @@ describe("الدوام المجزّأ والاستراحة / الزمنية (com
     expect(sched["الأحد"]).toEqual({ hours: 8, rate: 5000, start: "14:00", startTime: "14:00" });
     expect(sched["الاثنين"]).toEqual({ hours: 0, rate: null });
   });
+
+  it("يقبل الاستراحة العابرة لمنتصف الليل بين فترتين (مثلاً 20:00→23:00 ثم 00:00→03:00) ويستعيد الساعات عند استغراق خصم التأخير كامل المدى (BUG-026)", () => {
+    const splitCross = buildDefaultSplitSessions("20:00", "03:00", { crossMidnight: true });
+    const summary = computeSessionsSummary(splitCross);
+    expect(summary.violation).toBeNull();
+    expect(summary.totalHours).toBe(6);
+    expect(summary.breakMinutes).toBe(60);
+
+    const fullLate = parseAttendanceDayDetails({
+      status: "LATE",
+      storedHours: "0.00",
+      notes: "[تأخير: 60 دقيقة - خصم 60 دقيقة]",
+      reviewReason: "manual_late_override",
+    });
+    expect(fullLate.grossHours).toBe(1);
+  });
 });

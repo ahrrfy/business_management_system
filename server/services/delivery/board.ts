@@ -128,6 +128,7 @@ export async function listPartyBoardTx(
     .innerJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
     .where(and(
       inArray(deliveryConsignments.partyId, partyIds),
+      cnBranch,
       staleOpenParcelCondition(sql`${deliveryParties.maxOpenParcelAgeDays}`),
     ))
     .groupBy(deliveryConsignments.partyId);
@@ -234,6 +235,7 @@ export async function suggestPartyForZoneTx(
     .where(and(
       sql`LOWER(${deliveryConsignments.governorate}) = LOWER(${governorate})`,
       eq(deliveryConsignments.branchId, input.branchId),
+      sql`${deliveryConsignments.parcelStatus} <> 'CANCELLED'`,
       gte(deliveryConsignments.dispatchedAt, sql`DATE_SUB(NOW(), INTERVAL ${ZONE_SUGGESTION_HISTORY_DAYS} DAY)`),
       eq(deliveryParties.isActive, true),
       or(isNull(deliveryParties.branchId), eq(deliveryParties.branchId, input.branchId)),

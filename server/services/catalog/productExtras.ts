@@ -32,6 +32,7 @@ export async function listMaterialsForRecipe(query?: string, limit = 100): Promi
     eq(productVariants.isActive, true),
     eq(productUnits.isBaseUnit, true),
     notPrintService,
+    sql`(${products.stockUsage} IS NULL OR ${products.stockUsage} IN ('MATERIAL_ONLY', 'SALE_AND_MATERIAL'))`,
   ];
   const q = (query ?? "").trim();
   if (q) {

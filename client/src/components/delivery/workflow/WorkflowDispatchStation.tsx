@@ -71,6 +71,7 @@ export function WorkflowDispatchStation({
   onLookupReset,
   onAftercare,
   onRefunds,
+  onNavigateToStation,
 }: {
   branchId: number;
   userId: number;
@@ -80,6 +81,10 @@ export function WorkflowDispatchStation({
   onLookupReset?: () => void;
   onAftercare?: (raw: string) => void;
   onRefunds?: (codes: string[]) => void;
+  onNavigateToStation?: (
+    station: "cancelAssignment" | "collect" | "return" | "edit",
+    raw: string,
+  ) => void;
 }) {
   const [draft, setDraft] = useState(() => readDispatchDraft(userId, branchId));
   const draftRef = useRef(draft);
@@ -147,8 +152,32 @@ export function WorkflowDispatchStation({
   const unresolvedCodes = draft.codes.filter(
     (code) => !rows.some((row) => row.raw === code),
   );
+  useEffect(() => {
+    const freshSources = batch.data?.sources;
+    if (!freshSources?.length || submitLock.current) return;
+    const byKey = new Map(
+      freshSources.map((src) => [src.source.canonicalKey, src]),
+    );
+    const changed = rowsRef.current.some((row) => {
+      const fresh = byKey.get(row.preview.source.canonicalKey);
+      return (
+        fresh &&
+        (fresh.source.version !== row.preview.source.version ||
+          fresh.status !== row.preview.status ||
+          JSON.stringify(fresh.actions) !== JSON.stringify(row.preview.actions))
+      );
+    });
+    if (!changed) return;
+    const updated = rowsRef.current.map((row) => ({
+      ...row,
+      preview: byKey.get(row.preview.source.canonicalKey) ?? row.preview,
+    }));
+    rowsRef.current = updated;
+    setRows(updated);
+  }, [batch.data?.sources]);
+
   const drivers = deliveryDriverOptions(selectedParty, branchId);
-  const needsDriver = requiresDeliveryDriver(selectedParty);
+  const needsDriver = requiresDeliveryDriver(selectedParty, branchId);
 
   const persistDraft = useCallback(
     (update: (current: WorkflowDispatchDraft) => WorkflowDispatchDraft) => {
@@ -215,7 +244,14 @@ export function WorkflowDispatchStation({
       setRows(next);
       if (pruneCodes) {
         queuedCodes.current = new Set(next.map((row) => row.raw));
-        persistDraft((old) => ({ ...old, codes: next.map((row) => row.raw), collectCreditOnDelivery: undefined }));
+        persistDraft((old) => ({
+          ...old,
+          codes: next.map((row) => row.raw),
+          collectCreditOnDelivery: undefined,
+          ...(next.length === 0
+            ? { name: "", phone: "", address: "", tracking: "", notes: "" }
+            : {}),
+        }));
       }
     },
     [persistDraft],
@@ -326,6 +362,13 @@ export function WorkflowDispatchStation({
                   : preview.source.kind === "aftercareExecution"
                     ? "SHOP"
                     : preview.money.feeCollection,
+              }));
+            else
+              persistDraft((old) => ({
+                ...old,
+                name: old.name || preview.recipient.name || "",
+                phone: old.phone || preview.recipient.phone || "",
+                address: old.address || preview.recipient.address || "",
               }));
             setMessage(`أضيف ${preview.source.number}`);
             setInput("");
@@ -748,6 +791,116 @@ export function WorkflowDispatchStation({
                     نقص / تعويض
                   </Button>
                 )}
+                {onNavigateToStation &&
+                  !preview.actions.find((a) => a.action === "dispatch")
+                    ?.allowed && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {preview.actions.some(
+                        (a) => a.action === "collect" && a.allowed,
+                      ) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 px-2 text-xs"
+                          disabled={formFrozen}
+                          onClick={() => {
+                            syncRows(
+                              rowsRef.current.filter(
+                                (r) =>
+                                  r.preview.source.canonicalKey !==
+                                  preview.source.canonicalKey,
+                              ),
+                              true,
+                            );
+                            onNavigateToStation("collect", raw);
+                          }}
+                        >
+                          التحصيل والتوريد
+                        </Button>
+                      )}
+                      {preview.actions.some(
+                        (a) =>
+                          (a.action === "cancelAssignment" ||
+                            a.action === "declareReturn" ||
+                            a.action === "reassign") &&
+                          a.allowed,
+                      ) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={formFrozen}
+                          onClick={() => {
+                            syncRows(
+                              rowsRef.current.filter(
+                                (r) =>
+                                  r.preview.source.canonicalKey !==
+                                  preview.source.canonicalKey,
+                              ),
+                              true,
+                            );
+                            onNavigateToStation("cancelAssignment", raw);
+                          }}
+                        >
+                          إلغاء / إعادة إسناد
+                        </Button>
+                      )}
+                      {(preview.actions.some(
+                        (a) => a.action === "return" && a.allowed,
+                      ) ||
+                        preview.returnState?.members.some(
+                          (m) => m.canReceive,
+                        ) ||
+                        preview.returnState?.postDeliveryCommercialEligible) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={formFrozen}
+                          onClick={() => {
+                            syncRows(
+                              rowsRef.current.filter(
+                                (r) =>
+                                  r.preview.source.canonicalKey !==
+                                  preview.source.canonicalKey,
+                              ),
+                              true,
+                            );
+                            onNavigateToStation("return", raw);
+                          }}
+                        >
+                          استلام المرتجع
+                        </Button>
+                      )}
+                      {preview.actions.some(
+                        (a) => a.action === "edit" && a.allowed,
+                      ) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={formFrozen}
+                          onClick={() => {
+                            syncRows(
+                              rowsRef.current.filter(
+                                (r) =>
+                                  r.preview.source.canonicalKey !==
+                                  preview.source.canonicalKey,
+                              ),
+                              true,
+                            );
+                            onNavigateToStation("edit", raw);
+                          }}
+                        >
+                          تصحيح الفاتورة
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 <Button
                   type="button"
                   size="icon"
@@ -993,11 +1146,16 @@ export function WorkflowDispatchStation({
           {selectedParty?.partyType === "COMPANY" && (
             <label className="space-y-1 text-sm sm:col-span-2">
               رقم بوليصة شركة التوصيل
-              <Input
+              <UnifiedSearchInput
                 value={draft.tracking}
                 disabled={formFrozen}
-                onChange={(e) => change("tracking", e.target.value)}
-                maxLength={100}
+                onChange={(value) => change("tracking", value)}
+                onScan={(value) => change("tracking", value.trim())}
+                onSubmit={(value) => change("tracking", value.trim())}
+                placeholder="امسح أو أدخل رقم البوليصة"
+                aria-label="رقم بوليصة شركة التوصيل"
+                barcode
+                debounceMs={0}
                 dir="ltr"
               />
             </label>

@@ -75,6 +75,11 @@ export function OfflineOutboxRow({
           {item.lastError && !error ? (
             <p className="text-destructive">{item.lastError}</p>
           ) : null}
+          {(error ?? item.lastError ?? "").includes("تصنيف استخدام") ? (
+            <p className="rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1 text-[11px] text-[var(--sem-warn)]">
+              تعارض مع تصنيف استخدام الصنف المحدَّث بعد التقاط العملية دون اتصال — حُفظ الطلب في طابور الاسترداد الخادمي لمراجعة المدير أو تحديث تصنيف الصنف ثم إعادة المحاولة.
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <button
               type="button"

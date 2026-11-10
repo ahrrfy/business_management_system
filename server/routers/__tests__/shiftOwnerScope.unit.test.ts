@@ -15,6 +15,7 @@ vi.mock("../../trpc", async () => {
     treasuryCashierProcedure: t.procedure,
     treasuryHandoverRecipientsProcedure: t.procedure,
     treasuryReadProcedure: t.procedure,
+    salesCashierProcedure: t.procedure,
   };
 });
 vi.mock("../../db", () => ({
@@ -38,6 +39,7 @@ vi.mock("../../services/shiftService", () => ({
   getOpenShift: vi.fn(), openShift: vi.fn(), closeShift: vi.fn(),
 }));
 vi.mock("../../services/auditService", () => ({ logAudit: vi.fn() }));
+vi.mock("../saleRouter", () => ({ verifyManagerApproval: vi.fn() }));
 vi.mock("../../services/legacyNegativeShiftService", () => ({ remediateAndCloseLegacyNegativeShifts: vi.fn() }));
 vi.mock("../../services/cashDropService", () => ({ createCashDrop: vi.fn() }));
 vi.mock("../../services/shiftFundingService", () => ({

@@ -1125,11 +1125,23 @@ export async function approveWorkOrderCancellationRefund(
     const wo = (
       await tx.select().from(workOrders).where(eq(workOrders.id, workOrderId)).for("update").limit(1)
     )[0];
+    const noteParts = refund.internalNote.split(":");
+    const refundKind = noteParts[1];
+    const noteWorkOrderId = Number(noteParts[2] ?? 0);
+    /**
+     * ٢٠/٨ (تصويب مراجعة Codex) — `reverseDelivery` يُنشئ ردوداً غير نقدية بنوعَي
+     * `REVERSE_LIABILITY`/`REVERSE_AR`، وكان هذا الحارس يرفض كلَّ ما ليس DIRECT/APPLIED
+     * بـCONFLICT ⇒ **لا تصير COMPLETED أبداً ولا تُرحَّل قيداً**: مالُ الزبون محتجَزٌ إلى
+     * الأبد وفاتورتُه مرتجعةٌ سلفاً. وهما يسلكان مسار DIRECT نفسه (مصدرٌ مُشفَّرٌ بهويّته
+     * ومبلغٌ مطابق) ويختلفان في **الحساب المقابل** وحده.
+     */
+    const REVERSE_KINDS = ["REVERSE_LIABILITY", "REVERSE_AR"] as const;
+    const isReverseKind = (REVERSE_KINDS as readonly string[]).includes(String(refundKind));
     if (
       !wo ||
-      (wo.status !== "CANCELLED" && wo.status !== "READY") ||
+      (wo.status !== "CANCELLED" && wo.status !== "READY" && !isReverseKind && !feeRefund) ||
       Number(wo.branchId) !== Number(refund.branchId) ||
-      Number(wo.customerId ?? 0) !== Number(refund.partyId ?? 0)
+      (refund.partyId != null && Number(wo.customerId ?? 0) !== Number(refund.partyId))
     ) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -1142,8 +1154,6 @@ export async function approveWorkOrderCancellationRefund(
         }),
       });
     }
-
-    const noteParts = refund.internalNote.split(":");
     if (feeRefund && wo.status === "READY")
       await loadExcessFeeSourceTx(
         tx,
@@ -1151,17 +1161,6 @@ export async function approveWorkOrderCancellationRefund(
         { ...actor, branchId: Number(refund.branchId) },
         { lock: true, allowedPendingReceiptId: receiptId },
       );
-    const refundKind = noteParts[1];
-    const noteWorkOrderId = Number(noteParts[2] ?? 0);
-    /**
-     * ٢٠/٨ (تصويب مراجعة Codex) — `reverseDelivery` يُنشئ ردوداً غير نقدية بنوعَي
-     * `REVERSE_LIABILITY`/`REVERSE_AR`، وكان هذا الحارس يرفض كلَّ ما ليس DIRECT/APPLIED
-     * بـCONFLICT ⇒ **لا تصير COMPLETED أبداً ولا تُرحَّل قيداً**: مالُ الزبون محتجَزٌ إلى
-     * الأبد وفاتورتُه مرتجعةٌ سلفاً. وهما يسلكان مسار DIRECT نفسه (مصدرٌ مُشفَّرٌ بهويّته
-     * ومبلغٌ مطابق) ويختلفان في **الحساب المقابل** وحده.
-     */
-    const REVERSE_KINDS = ["REVERSE_LIABILITY", "REVERSE_AR"] as const;
-    const isReverseKind = (REVERSE_KINDS as readonly string[]).includes(String(refundKind));
     /** المصدرُ مُشفَّرٌ بهويّته في NOTE — كما في DIRECT تماماً. */
     const resolvesLikeDirect = refundKind === "DIRECT" || refundKind === "FEE" || isReverseKind;
     if (

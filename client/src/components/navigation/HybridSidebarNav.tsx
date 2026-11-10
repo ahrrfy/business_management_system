@@ -199,10 +199,13 @@ export function HybridSidebarNav({
     return item ? [item] : [];
   });
   const favoritePaths = new Set(workspace.favorites);
+  const primaryPaths = new Set(
+    primaryNav.flatMap((item) => [item.href, item.activePath]),
+  );
   const recentLinks = workspace.recent
     .flatMap((path) => {
       const item = navByPath.get(path);
-      return item && !favoritePaths.has(path) ? [item] : [];
+      return item && !favoritePaths.has(path) && !primaryPaths.has(path) ? [item] : [];
     })
     .slice(0, 3);
   const favoritesFull = workspace.favorites.length >= NAV_FAVORITES_LIMIT;

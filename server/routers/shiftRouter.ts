@@ -9,6 +9,8 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { SHIFT_VARIANCE_CODES } from "@shared/shiftCashGovernance";
+import { managerApprovalSchema } from "@shared/managerApproval";
+import { verifyManagerApproval } from "./saleRouter";
 import { closeShift, enrichShiftListProvenance, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { remediateAndCloseLegacyNegativeShifts } from "../services/legacyNegativeShiftService";
 import { createCashDrop } from "../services/cashDropService";
@@ -300,35 +302,6 @@ export const shiftRouter = router({
       return elevated ? res : { ...res, treasuryBalanceAfter: null };
     }),
 
-  /** قائمة المديرين والمسؤولين المؤهلين لاعتماد فروقات الوردية في الفرع. */
-  eligibleVarianceApprovers: treasuryCashierProcedure.query(async ({ ctx }) => {
-    const db = getDb();
-    if (!db) return [];
-    const rows = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        role: users.role,
-        branchId: users.branchId,
-      })
-      .from(users)
-      .where(
-        and(
-          eq(users.isActive, true),
-          or(
-            eq(users.role, "admin"),
-            and(
-              eq(users.role, "manager"),
-              ctx.user.branchId != null
-                ? eq(users.branchId, Number(ctx.user.branchId))
-                : sql`TRUE`,
-            ),
-          ),
-        ),
-      );
-    return rows;
-  }),
-
   close: treasuryCashierProcedure
     .input(
       z.object({
@@ -339,6 +312,7 @@ export const shiftRouter = router({
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
         varianceReasonCode: z.enum(SHIFT_VARIANCE_CODES).nullish(),
         varianceReason: z.string().trim().max(500).nullish(),
+        managerApproval: managerApprovalSchema.nullish(),
         managerApprovedByUserId: z.number().int().positive().nullish(),
         // مسار مالك استثنائي لورديات سالبة سبقت تفعيل الحارس. لا يَقبل مبلغ تمويل من العميل؛
         // الخدمة تعيد حساب العجز وتضيف خزينة←درج بالقيمة الدقيقة ثم تغلق بصفر.
@@ -413,39 +387,21 @@ export const shiftRouter = router({
       let verifiedManagerId: number | null = null;
       if (ctx.user.role === "admin" || ctx.user.role === "manager") {
         verifiedManagerId = ctx.user.id;
+      } else if (input.managerApproval) {
+        verifiedManagerId = await verifyManagerApproval(
+          input.managerApproval,
+          ctx,
+          ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined,
+        );
       } else if (input.managerApprovedByUserId) {
-        const db = getDb();
-        if (!db) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-        }
-        const approver = (
-          await db
-            .select({ id: users.id, role: users.role, branchId: users.branchId, isActive: users.isActive })
-            .from(users)
-            .where(eq(users.id, input.managerApprovedByUserId))
-            .limit(1)
-        )[0];
-        if (!approver || approver.isActive === false || (approver.role !== "admin" && approver.role !== "manager")) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: appErrorMessage({
-              what: "تعذّر اعتماد إغلاق الوردية بفرق نقدي",
-              why: "المعتمد المحدد ليس مديراً أو مسؤولاً نشطاً مصرحاً له بالاعتماد",
-              doThis: "اختر مديراً نشطاً مصرحاً له لاعتماد فرق النقدية",
-            }),
-          });
-        }
-        if (approver.role !== "admin" && ctx.user.branchId != null && approver.branchId !== ctx.user.branchId) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: appErrorMessage({
-              what: "تعذّر اعتماد إغلاق الوردية من هذا الحساب",
-              why: "المدير المعتمد يتبع فرعاً آخر غير فرع الوردية",
-              doThis: "اطلب اعتماد فرق الوردية من مدير فرعك أو من الإدارة العامة",
-            }),
-          });
-        }
-        verifiedManagerId = approver.id;
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد إغلاق الوردية بفرق نقدي",
+            why: "لا يُقبل اعتماد فرق الوردية بمجرد اختيار اسم المدير دون تحقق أمني من رمز PIN أو شارة المدير",
+            doThis: "اطلب من المدير المصادقة برمز PIN أو الشارة أو كلمة المرور عبر نافذة الاعتماد",
+          }),
+        });
       }
 
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم سند التسليم (CH) يحرّر GET_LOCK قبل الالتزام ⇒ إغلاقان

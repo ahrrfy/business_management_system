@@ -93,11 +93,12 @@ export function MobileStockAuditCard() {
   const handleSubmitAudit = () => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
-    const randSuffix = Math.floor(100 + Math.random() * 900);
-    const reqNumber = `SAR-${dateStr}-${randSuffix}`;
-
-    setAdjustmentSubmitted(reqNumber);
+    const timeLabel = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "Asia/Baghdad",
+    }).format(now);
+    setAdjustmentSubmitted(timeLabel);
     setModalVisible(false);
   };
 
@@ -108,9 +109,9 @@ export function MobileStockAuditCard() {
           <Ionicons color={colors.brand} name="barcode-outline" size={24} />
         </View>
         <View style={styles.headerText}>
-          <Text style={styles.title}>جرد المخزون الفوري بالباركود</Text>
+          <Text style={styles.title}>مسودة مطابقة الرف بالباركود</Text>
           <Text style={styles.subtitle}>
-            مطابقة رصيد الرفوف مع الخادم وإنشاء طلبات التسوية المعلقة (SOD-04)
+            ورقة عمل ميدانية محلية لعدّ الرفوف — جلسات الجرد الرسمية تُرفع عبر شاشة الجرد
           </Text>
         </View>
       </View>
@@ -118,14 +119,14 @@ export function MobileStockAuditCard() {
       {adjustmentSubmitted ? (
         <View style={styles.submittedContainer}>
           <View style={styles.submittedTop}>
-            <Ionicons color={colors.success} name="checkmark-done-circle" size={20} />
-            <Text style={styles.submittedTitle}>تم رفع طلب التسوية للمدير المالي</Text>
+            <Ionicons color={colors.success} name="clipboard-outline" size={20} />
+            <Text style={styles.submittedTitle}>تم حفظ مسودة العدّ المحلي على الجهاز</Text>
           </View>
           <Text style={styles.submittedSubtitle}>
-            رقم الطلب الرقابي: {adjustmentSubmitted}
+            وقت حفظ المسودة: {adjustmentSubmitted}
           </Text>
           <Text style={styles.submittedNotice}>
-            وفق قواعد الفصل الرقابي (SOD-04)، تم تسجيل الفروقات كطلب تسوية معلق لاعتماده من الإدارة دون تعديل الرصيد منفرداً.
+            هذه المسودة محلية للمراجعة الميدانية ولا تعدّل أرصدة الخادم؛ لإنشاء جلسة جرد رسمية افتح وحدة الجرد في النظام.
           </Text>
           <Pressable
             accessibilityLabel="بدء جلسة جرد رف جديد"
@@ -272,7 +273,7 @@ export function MobileStockAuditCard() {
                 onPress={handleSubmitAudit}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed]}
               >
-                <Text style={styles.confirmButtonText}>رفع طلب التسوية (SOD-04)</Text>
+                <Text style={styles.confirmButtonText}>حفظ مسودة المطابقة محلياً</Text>
                 <Ionicons color={colors.surface} name="cloud-upload-outline" size={18} />
               </Pressable>
             </View>

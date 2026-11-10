@@ -242,7 +242,13 @@ export default function PrintPOS() {
   const paymentInputAmount = Number(tab.payInput || 0);
   const paymentIsCredit = paymentInputAmount > 0 && paymentInputAmount < total;
   const extraChargeD = checkoutExtraTotal(tab.extraCharges);
-  const externalPaymentAmount = D(paymentIsCredit ? paymentInputAmount : total).plus(extraChargeD).toFixed(2);
+  const editPreCollectedD = tab.editingInvoice ? D(tab.editingInvoice.preCollected || 0) : D(0);
+  const editRemainingDueD = tab.editingInvoice
+    ? D(Math.max(0, D(total).minus(editPreCollectedD).toNumber()))
+    : D(0);
+  const externalPaymentAmount = tab.editingInvoice
+    ? (tab.payInput.trim() !== "" ? D(Math.max(0, paymentInputAmount)) : editRemainingDueD).toFixed(2)
+    : D(paymentIsCredit ? paymentInputAmount : total).plus(extraChargeD).toFixed(2);
   const externalPaymentFingerprint = `${tab.method}|${externalPaymentAmount}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalFullPaymentFingerprint = `${tab.method}|${D(total).plus(extraChargeD).toFixed(2)}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalPaymentConfirmed = tab.method === "CASH"
@@ -553,6 +559,11 @@ export default function PrintPOS() {
     const extra =
       leg && cart.length>0 && tab.splitLegs?.[0]?.id === leg.id ? extraChargeD : D(0);
     const amountStr = leg ? legAmtD!.plus(extra).toFixed(2) : externalPaymentAmount;
+    if (!leg && Number(amountStr) <= 0) {
+      setMessage({ kind: "err", text: "لا يوجد مبلغ إضافي مستحق لتأكيده إلكترونياً." });
+      return;
+    }
+    const extChannel = tab.editingInvoice ? "SALES_COLLECTION" as const : "PRINT_POS" as const;
     const fingerprint = leg ? computeSplitLegFingerprint(leg, extra) : externalPaymentFingerprint;
     const priorExt = leg ? leg.externalPayment : tab.externalPayment;
     const prior = priorExt?.fingerprint === fingerprint ? priorExt : null;
@@ -579,6 +590,7 @@ export default function PrintPOS() {
       if (!attemptId) {
         const initiated = await initiateExternalPayment.mutateAsync({
           branchId,
+          channel: extChannel,
           method,
           amount: amountStr,
           reference,
@@ -588,7 +600,7 @@ export default function PrintPOS() {
         attemptId = initiated.attemptId;
         writeExt("INITIATED", attemptId);
       }
-      await confirmExternalPaymentMutation.mutateAsync({ branchId, attemptId, deviceId });
+      await confirmExternalPaymentMutation.mutateAsync({ branchId, channel: extChannel, attemptId, deviceId });
       writeExt("CONFIRMED", attemptId);
       setMessage({ kind: "ok", text: `تأكّد الدفع الخارجي وثُبّت المرجع ${reference}.` });
     } catch (error) {
@@ -852,7 +864,14 @@ export default function PrintPOS() {
 
     // إذا كانت هناك فاتورة محجوزة قيد التعديل
     if (tab.editingInvoice) {
-      const additionalPaid = Number(tab.payInput || 0);
+      const additionalPaid = tab.payInput.trim() !== ""
+        ? Number(tab.payInput || 0)
+        : (tab.method !== "CASH" && externalPaymentConfirmed ? Number(externalPaymentAmount) : 0);
+      if (additionalPaid > 0 && tab.method !== "CASH" && !externalPaymentConfirmed) {
+        releaseReservedPrintWindow();
+        setMessage({ kind: "err", text: "أكّد الدفع الخارجي للفرق الإضافي قبل حفظ التعديل." });
+        return;
+      }
       const additionalAmount = additionalPaid > 0 ? additionalPaid.toFixed(2) : undefined;
       correctSaleMut.mutate({
         originalInvoiceId: tab.editingInvoice.id,
@@ -871,10 +890,12 @@ export default function PrintPOS() {
           amount: additionalAmount,
           method: tab.method as any,
           reference: tab.paymentRef || undefined,
+          shiftId: shift.id,
           externalPaymentAttemptId: tab.externalPayment?.attemptId,
           externalPaymentDeviceId: tab.externalPayment?.deviceId,
         } : null,
         overpayHandling: "CASH_REFUND",
+        overpayRefundShiftId: shift.id,
         clientRequestId,
       });
       return;

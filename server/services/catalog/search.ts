@@ -10,34 +10,65 @@ import { PRINT_SERVICE_TYPE } from "../printSaleService";
 // خدمات الطباعة (productType=PRINT_SERVICE) مُستثناة من كاشير الباركود/الشراء: لا مخزون لها،
 // وتُباع عبر شاشة «نقطة بيع الطباعة» فقط. (NULL = منتج عادي ⇒ يبقى ظاهراً.)
 const DIGITAL_CARD_TYPE = "DIGITAL_CARD";
-const ordinaryCatalogProduct = sql`(
+const notDigitalCard = sql`(${products.productType} IS NULL OR ${products.productType} <> ${DIGITAL_CARD_TYPE})`;
+const sellableStockUsageSql = sql`(
+  ${products.isService} = TRUE OR
+  ${products.stockUsage} IS NULL OR
+  ${products.stockUsage} IN ('SALE_ONLY', 'SALE_AND_MATERIAL')
+)`;
+const notPrintServiceAndDigital = sql`(
   ${products.productType} IS NULL OR
   (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE})
+)`;
+const ordinaryCatalogProduct = sql`(
+  ${notPrintServiceAndDigital}
+  AND ${sellableStockUsageSql}
 )`;
 const activeOnly = and(
   eq(products.isActive, true),
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true),
-  ordinaryCatalogProduct
+  ordinaryCatalogProduct,
 );
+
+// رؤية المخزن/الملصقات/دفتر الصنف: كلّ الأصناف النشطة (بما فيها المواد الخام ومستلزمات التشغيل) بعيداً عن فلتر البيع.
+function warehouseVisibility(opts?: { includeBundles?: boolean; includeServices?: boolean }) {
+  return and(
+    eq(products.isActive, true),
+    eq(productVariants.isActive, true),
+    eq(productUnits.isActive, true),
+    notDigitalCard,
+    ...(opts?.includeServices ? [] : [eq(products.isService, false)]),
+    ...(opts?.includeBundles === false ? [eq(products.isBundle, false)] : []),
+  )!;
+}
 
 // رؤية كاشير الاستقبال: كالعادي + خدمات الطباعة المفعَّل عليها showInReception (تُباع عبر createPrintSale).
 const receptionVisible = sql`(
-  ${products.productType} IS NULL OR
-  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
-  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
+  (
+    ${products.productType} IS NULL OR
+    (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+    (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
+  )
+  AND ${sellableStockUsageSql}
 )`;
 // رؤية فاتورة البيع المتقدّمة: كالعادي + خدمات الطباعة المفعَّل عليها showInAdvancedSales.
 const advancedSaleVisible = sql`(
-  ${products.productType} IS NULL OR
-  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
-  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInAdvancedSales} = TRUE)
+  (
+    ${products.productType} IS NULL OR
+    (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+    (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInAdvancedSales} = TRUE)
+  )
+  AND ${sellableStockUsageSql}
 )`;
 // رؤية عروض الأسعار: كالعادي + خدمات الطباعة المفعَّل عليها showInQuotations.
 const quotationVisible = sql`(
-  ${products.productType} IS NULL OR
-  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
-  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInQuotations} = TRUE)
+  (
+    ${products.productType} IS NULL OR
+    (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+    (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInQuotations} = TRUE)
+  )
+  AND ${sellableStockUsageSql}
 )`;
 function posVisibility(mode: "default" | "reception" | "advancedSale" | "quotation") {
   const baseConds = [
@@ -276,7 +307,9 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
 // تصدير داخلي للحزمة فقط (يستهلكه pos/purchase/adminList/productExtras) — لا يُعاد تصديره من
 // البرميل catalogService.ts.
 export {
-  ordinaryCatalogProduct as notPrintService,
+  notPrintServiceAndDigital as notPrintService,
+  sellableStockUsageSql,
+  warehouseVisibility,
   activeOnly,
   posVisibility,
   buildCatalogSearchWhere,

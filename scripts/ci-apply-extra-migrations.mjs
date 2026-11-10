@@ -260,6 +260,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0425_delivery_company_statement_batches.sql",
   "drizzle/migrations/0426_digital_cycle_settlements.sql",
   "drizzle/migrations/0427_fractional_recipe_inventory.sql",
+  "drizzle/migrations/0428_catalog_stock_usage_and_locks.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

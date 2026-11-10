@@ -9,6 +9,7 @@ import {
   executeApprovedExpense,
   getExpenseTrace,
   listExpenses,
+  listOpenExpenseDrawers,
   rejectExpense,
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
@@ -169,6 +170,17 @@ const recurringFreq = z.enum([
 
 export const expenseRouter = router({
   categories: expenseCategoryRouter,
+
+  openDrawers: expensesReadProcedure
+    .input(z.object({ branchId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      listOpenExpenseDrawers(ctx.scopedBranchId ?? input.branchId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
 
   list: expensesReadProcedure
     .input(
@@ -366,6 +378,10 @@ export const expenseRouter = router({
                 payee: input.payee ?? null,
                 branchId,
                 cashSource: input.cashSource ?? null,
+                shiftId:
+                  (res as { shiftId?: number | null })?.shiftId ??
+                  input.shiftId ??
+                  null,
               },
             });
           }
@@ -386,25 +402,49 @@ export const expenseRouter = router({
   /** الاعتماد قرار رقابي فقط؛ لا يحرك نقداً ولا ينشئ قيداً. */
   approve: ownerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) =>
-      approveExpense(input.expenseId, {
+    .mutation(async ({ input, ctx }) => {
+      const res = await approveExpense(input.expenseId, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
         isOwner: ctx.user.isOwner === true,
-      }),
-    ),
+      });
+      if (!res.idempotent) {
+        await logAudit(ctx, {
+          action: "expense.approve",
+          entityType: "expense",
+          entityId: input.expenseId,
+          newValue: {
+            approvedBy: ctx.user.id,
+            receiptId: res.receiptId,
+            workflowStatus:
+              "workflowStatus" in res ? res.workflowStatus : res.status,
+          },
+        });
+      }
+      return res;
+    }),
 
   /** منشئ الطلب ينفذ التسليم فعلياً من درج ورديته بعد الاعتماد. */
   executeFromOwnDrawer: expensesCashierProcedure
-    .input(z.object({ expenseId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) =>
-      executeApprovedExpense(input.expenseId, "OWN_DRAWER", {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId ?? 0),
-        role: ctx.user.role,
-        isOwner: ctx.user.isOwner === true,
+    .input(
+      z.object({
+        expenseId: z.number().int().positive(),
+        shiftId: z.number().int().positive().nullish(),
       }),
+    )
+    .mutation(({ input, ctx }) =>
+      executeApprovedExpense(
+        input.expenseId,
+        "OWN_DRAWER",
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner === true,
+        },
+        { shiftId: input.shiftId },
+      ),
     ),
 
   /** أمين/مدير الخزينة ينفذ الدفع المباشر، أو طريقة الدفع غير النقدية. */

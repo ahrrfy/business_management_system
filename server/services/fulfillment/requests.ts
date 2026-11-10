@@ -1004,7 +1004,15 @@ export async function reassignFulfillmentRequestInTx(
   )
     throw fulfillmentError("الإرسالية لا تنتمي إلى طلب التجهيز", "FORBIDDEN");
   const partyId = input.partyId ?? leader.partyId;
-  await validateDeliveryDriverTx(tx, {partyId,assignedUserId:input.assignedUserId}, request.branchId);
+  const targetParty = await validateDeliveryDriverTx(tx, {partyId,assignedUserId:input.assignedUserId}, request.branchId);
+  const effectiveTrackingRef =
+    targetParty.partyType === "COMPANY"
+      ? (input.externalTrackingRef?.trim() ||
+          (partyId === leader.partyId ? leader.externalTrackingRef?.trim() : "")) ||
+        undefined
+      : undefined;
+  if (targetParty.partyType === "COMPANY" && !effectiveTrackingRef)
+    throw fulfillmentError("اكتب رقم بوليصة الشركة الجديدة صراحةً قبل إعادة الإسناد");
   const members = await loadShipmentMembersTx(tx, leader.id, {
     currentRead: true,
   });
@@ -1081,10 +1089,7 @@ export async function reassignFulfillmentRequestInTx(
           recipientName: request.recipientName,
           recipientPhone: request.recipientPhone,
           deliveryAddress: request.deliveryAddress,
-          externalTrackingRef:
-            input.externalTrackingRef ??
-            leader.externalTrackingRef ??
-            undefined,
+          externalTrackingRef: effectiveTrackingRef ?? undefined,
           assignedUserId: input.assignedUserId,
           clientRequestId: input.clientRequestId,
           partialDispatchConfirmed: request.status === "PARTIALLY_RELEASED",
@@ -1103,10 +1108,7 @@ export async function reassignFulfillmentRequestInTx(
         },
         {
           ...input,
-          externalTrackingRef:
-            input.externalTrackingRef ??
-            leader.externalTrackingRef ??
-            undefined,
+          externalTrackingRef: effectiveTrackingRef ?? undefined,
           reassignConsignmentId: leader.id,
           heldReturnReissue,
         },

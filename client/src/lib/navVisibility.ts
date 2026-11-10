@@ -45,6 +45,14 @@ export const RECEPTION_STATION_GATE: RoleGate = {
   level: "FULL",
 };
 
+/** بوابة محطة مسار العمل بالباركود — متاحة لموظفي الاستقبال ولكاشير ومشرفي ومراجعي التوصيل والمخزن. */
+export const BARCODE_WORKFLOW_STATION_GATE: RoleGate = {
+  anyOf: [
+    RECEPTION_STATION_GATE,
+    { roles: ["cashier", "manager", "accountant", "auditor"], module: "store", level: "READ" },
+  ],
+};
+
 /** The credit screen initially creates approvals and loads its customer selectors. */
 export const CREDIT_APPROVAL_CREATE_GATE: RoleGate = {
   allOf: ["creditApproval.create", "creditApproval.customerOptions", "creditApproval.listForCustomer"]
@@ -221,6 +229,7 @@ export function canSeeGate(
       (operation) =>
         operation.delegable &&
         (operation.navigationModule ?? operation.module)?.split("|").includes(gate.module!) &&
+        (gate.level !== "FULL" || operation.level === "FULL" || operation.kind === "mutation") &&
         // A cashier's shift helpers share treasury, but do not authorize its financial pages.
         (gate.module !== "treasury" || operation.domain === "treasury" ||
           ["cashTransfers.list", "cashTransfers.send", "vouchers.list", "vouchers.create", "voucherCategories.list", "shifts.list"].includes(operation.path)) &&

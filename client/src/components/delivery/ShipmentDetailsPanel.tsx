@@ -14,6 +14,7 @@ import { fmt, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { InvoiceDispatchDialog } from "./InvoiceDispatchDialog";
+import { CollectConsignmentDialog } from "./CollectConsignmentDialog";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
@@ -40,6 +41,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
   const [driver, setDriver] = useState("");
   const [rail, setRail] = useState<RefundRailPickerState | null>(null);
   const [redispatchOpen, setRedispatchOpen] = useState(false);
+  const [collectOpen, setCollectOpen] = useState(false);
   const [physicalHeld, setPhysicalHeld] = useState(false);
   const request = useRef({ fingerprint: "", key: crypto.randomUUID() });
   const leader = shipment.members.find((row) => row.id === shipment.leaderConsignmentId)!;
@@ -149,6 +151,35 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
         ))}
       </div>
       <p className="text-xs leading-6 text-muted-foreground">{returnDeclared ? "قيمة الفواتير بانتظار استلام المرتجع" : "المتبقي لتحصيل الشحنة"}: <b className="text-foreground">{fmt((returnDeclared ? invoiceRemaining : remaining).toFixed(2))} د.ع</b> · أجرة الشحنة مرة واحدة: {fmt(shipment.deliveryFee)} د.ع · البوليصة: <span dir="ltr">{leader.externalTrackingRef ?? "—"}</span></p>
+      {!returnDeclared && !cancelled && remaining.gt(0) && (lifecycleActionAllowed(me.data, "delivery.recordRemittance", legacy) || lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", legacy)) && (
+        <Button size="sm" variant="default" className="font-bold" onClick={() => setCollectOpen(true)}>
+          قبض وتوريد الشحنة للدرج
+        </Button>
+      )}
+      {collectOpen && (
+        <CollectConsignmentDialog
+          consignment={{
+            id: shipment.leaderConsignmentId,
+            consignmentNumber: shipment.consignmentNumber,
+            partyId: Number(leader.partyId),
+            customerName: leader.recipientName,
+            recipientPhone: leader.recipientPhone,
+            codDue: shipment.collectibleAmount,
+            codAmount: shipment.collectibleAmount,
+            parcelStatus: leader.parcelStatus,
+            shipmentLeaderConsignmentId: shipment.leaderConsignmentId,
+            shipmentInvoiceCount: shipment.memberCount,
+            shipmentNumber: shipment.consignmentNumber,
+            shipmentTrackingRef: leader.externalTrackingRef,
+          }}
+          open={collectOpen}
+          onOpenChange={setCollectOpen}
+          onCompleted={() => {
+            setCollectOpen(false);
+            void Promise.all([utils.delivery.invalidate(), utils.sales.invalidate(), utils.reception.invalidate()]);
+          }}
+        />
+      )}
       {returnDeclared && open && <p className="text-sm text-muted-foreground">أُعلن رجوع الشحنة وتوقف توقع تحصيلها. بعد وصولها وفحصها نفّذ «استلام وإرجاع الشحنة كاملة» لإعادة المخزون ومعالجة الفواتير.</p>}
       {cancelled && lifecycleActionAllowed(me.data, "delivery.dispatchInvoice", legacy) && <Button size="sm" variant="outline" onClick={() => setRedispatchOpen(true)}>إعادة إسناد الشحنة كاملة</Button>}
       <InvoiceDispatchDialog invoice={redispatchOpen && redispatchAnchor ? { id: Number(redispatchAnchor.invoiceId), invoiceNumber: redispatchAnchor.invoiceNumber, branchId: Number(leader.branchId), total: redispatchAnchor.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />

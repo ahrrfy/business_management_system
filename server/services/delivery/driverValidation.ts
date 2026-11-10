@@ -25,16 +25,25 @@ export async function validateDeliveryDriverTx(
   )
     throw fulfillmentError("اختر جهة توصيل نشطة ضمن الفرع");
   const drivers = await tx
-    .select({ userId: deliveryPartyMembers.userId })
+    .select({
+      userId: deliveryPartyMembers.userId,
+      expiresAt: users.accessExpiresAt,
+    })
     .from(deliveryPartyMembers)
+    .innerJoin(users, eq(users.id, deliveryPartyMembers.userId))
     .where(
       and(
         eq(deliveryPartyMembers.partyId, party.id),
         eq(deliveryPartyMembers.memberRole, "DRIVER"),
         eq(deliveryPartyMembers.isActive, true),
+        eq(users.isActive, true),
+        eq(users.branchId, branchId),
       ),
     )
     .for("share");
+  const eligibleBranchDrivers = drivers.filter(
+    (driver) => driver.expiresAt == null || driver.expiresAt.getTime() > Date.now(),
+  );
   if (party.userId != null) {
     const [linked] = await tx
       .select({
@@ -57,7 +66,7 @@ export async function validateDeliveryDriverTx(
   }
   if (
     party.partyType === "INDIVIDUAL" &&
-    (party.userId != null || drivers.length > 0) &&
+    (party.userId != null || eligibleBranchDrivers.length > 0) &&
     input.assignedUserId == null
   )
     throw fulfillmentError("اختر المندوب الموظف صراحةً قبل تأكيد الإرسال");

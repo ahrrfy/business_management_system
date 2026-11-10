@@ -10,11 +10,12 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { ProductBarcodeMatchKind } from "@shared/productScan";
-import { BARCODE_DIGIT_CORE_MIN_LENGTH, barcodeDigitCore, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import { BARCODE_DIGIT_CORE_MIN_LENGTH, barcodeComparisonKey, barcodeDigitCore, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type DB, type Tx } from "../../db";
-import { productUnits, productUnitBarcodes, productVariants, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
+import { catalogBarcodeWriteLock, productUnits, productUnitBarcodes, productVariants, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
 import { foldDigitsSql } from "../../lib/similarMatch";
+import { withTx } from "../tx";
 
 type DbOrTx = DB | Tx;
 
@@ -369,27 +370,54 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
  *  يمرّ على الأساسيّ والبديل معاً، ويسمح بتجاهل وحدات معيّنة (لحالات التحديث الذاتيّ).
  *  رجوعه فارغ ⇒ آمن للإدراج/التحديث. يرى الإرثَ الملوَّث أيضاً: «10095» الجديد يصطدم بـ«10095 »
  *  المخزَّن على سلعةٍ أخرى — وإلّا صار للرمز الواحد مالكان يفصل بينهما مسافةٌ لا يراها أحد. */
+/**
+ * CATALOG-SURGICAL-20261107 — قفلُ صفِّ كتابةٍ موحّد لملكية الباركود عبر الكتالوج.
+ *
+ * يُسلسِل كلَّ كتّاب هوية الباركود (الإنشاء، التعديل، الاستعادة، الاستيراد، Product Studio، ونقل الجرد)
+ * في فضاءٍ واحد يشمل الباركود الأساسي والبديل والـUPC/EAN المطبَّع، ويضمن مع القراءة الحديثة
+ * (`FOR SHARE`) داخل المعاملة فوزَ مالكٍ واحدٍ فقط عند تسابق اتصالَين متزامنَين.
+ */
+export async function acquireCatalogBarcodeWriteLock(tx: Tx): Promise<void> {
+  await tx.execute(sql`INSERT IGNORE INTO catalogBarcodeWriteLock (id) VALUES (1)`);
+  await tx
+    .select({ id: catalogBarcodeWriteLock.id })
+    .from(catalogBarcodeWriteLock)
+    .where(eq(catalogBarcodeWriteLock.id, 1))
+    .for("update");
+}
+
 export async function findBarcodeClashes(
   tx: DbOrTx,
   codes: string[],
-  opts?: { ignorePrimaryUnitIds?: number[]; ignoreAliasIds?: number[]; ignoreProductIds?: number[] },
+  opts?: {
+    ignorePrimaryUnitIds?: number[];
+    ignoreAliasIds?: number[];
+    ignoreAliasUnitIds?: number[];
+    ignoreAliasByCodeUnitId?: ReadonlyMap<string, number>;
+    ignoreProductIds?: number[];
+    forShare?: boolean;
+  },
 ): Promise<Array<{ code: string; takenBy: string; source: "primary" | "alias" }>> {
   const clean = Array.from(new Set(codes.flatMap(barcodeIdentityCandidates).filter(Boolean)));
   if (!clean.length) return [];
   const ignorePrim = opts?.ignorePrimaryUnitIds ?? [];
   const ignoreAli = opts?.ignoreAliasIds ?? [];
+  const ignoreAliUnits = opts?.ignoreAliasUnitIds ?? [];
+  const ignoreAliasByCodeUnitId = opts?.ignoreAliasByCodeUnitId;
   const ignoreProducts = opts?.ignoreProductIds ?? [];
 
-  const primary = await tx
+  const primaryQuery = tx
     .select({ id: productUnits.id, code: productUnits.barcode, productId: products.id, productName: products.name, sku: productVariants.sku })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(or(inArray(productUnits.barcode, clean), normalizedMatchAny(productUnits.barcode, clean)));
+  const primary = opts?.forShare ? await primaryQuery.for("share") : await primaryQuery;
 
-  const aliases = await tx
+  const aliasQuery = tx
     .select({
       id: productUnitBarcodes.id,
+      productUnitId: productUnitBarcodes.productUnitId,
       code: productUnitBarcodes.barcode,
       productId: products.id,
       productName: products.name,
@@ -400,6 +428,7 @@ export async function findBarcodeClashes(
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(or(inArray(productUnitBarcodes.barcode, clean), normalizedMatchAny(productUnitBarcodes.barcode, clean)));
+  const aliases = opts?.forShare ? await aliasQuery.for("share") : await aliasQuery;
 
   const out: Array<{ code: string; takenBy: string; source: "primary" | "alias" }> = [];
   for (const r of primary) {
@@ -410,6 +439,15 @@ export async function findBarcodeClashes(
   }
   for (const r of aliases) {
     if (ignoreAli.includes(Number(r.id))) continue;
+    if (ignoreAliUnits.includes(Number(r.productUnitId))) continue;
+    if (
+      ignoreAliasByCodeUnitId &&
+      barcodeIdentityCandidates(r.code).some(
+        (cand) => ignoreAliasByCodeUnitId.get(barcodeComparisonKey(cand)) === Number(r.productUnitId),
+      )
+    ) {
+      continue;
+    }
     if (ignoreProducts.includes(Number(r.productId))) continue;
     out.push({ code: r.code, takenBy: `${r.productName} (${r.sku}) — بديل`, source: "alias" });
   }
@@ -463,7 +501,11 @@ export async function assertBarcodeFree(code: string, opts?: { ignoreUnitId?: nu
     if (owner && owner.productUnitId === opts.ignoreUnitId) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "هذا الباركود هو الأساسيّ لهذه الوحدة نفسها — لا حاجة لإضافته كبديل.",
+        message: appErrorMessage({
+          what: "تعذّر إضافة الباركود البديل",
+          why: "هذا الباركود هو الأساسيّ لهذه الوحدة نفسها بالفعل",
+          doThis: "أدخل رمزاً بديلاً مختلفاً عن الباركود الأساسي للوحدة",
+        }),
       });
     }
   }
@@ -600,56 +642,229 @@ export async function assertNoActiveStocktakeForVariant(
   }
 }
 
-/** يضيف باركوداً بديلاً — يفحص التفرّد العالميّ وتجميد الجرد النشط قبل الإدراج. */
-export async function addUnitBarcodeAlias(
+/** يضيف باركوداً بديلاً داخل معاملة ذرّية تحت قفل ملكية الباركود الموحّد. */
+export async function addUnitBarcodeAliasTx(
+  tx: Tx,
   productUnitId: number,
   barcode: string,
   note: string | null,
   createdBy: number | null,
+  opts?: { lockAlreadyHeld?: boolean },
 ) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مُهيّأة." });
-  const identity = canonicalizeBarcodeInput(barcode); // الهوية (فحص التفرّد العالميّ)
-  await assertBarcodeFree(identity, { ignoreUnitId: productUnitId });
-  // تحقّق أنّ الوحدة نفسها موجودة (تجنّب FK error غامضاً للمستخدم) وافحص عدم ارتباطها بجرد نشط.
-  const [unit] = await db
-    .select({ id: productUnits.id, variantId: productUnits.variantId })
+  const identity = canonicalizeBarcodeInput(barcode);
+  if (!identity) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الباركود البديل",
+        why: "الباركود المدخل فارغ بعد التنظيف",
+        doThis: "أدخل رمز باركود صحيحاً أو امسحه بالماسح ثم أعد المحاولة",
+      }),
+    });
+  }
+  if (identity.length > 64) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الباركود البديل",
+        why: "الباركود أطول من 64 خانة مسموحة",
+        doThis: "اختصر رمز الباركود إلى 64 خانة أو أقل ثم أعد الحفظ",
+      }),
+    });
+  }
+  if (!opts?.lockAlreadyHeld) {
+    await acquireCatalogBarcodeWriteLock(tx);
+  }
+  const [unit] = await tx
+    .select({ id: productUnits.id, variantId: productUnits.variantId, barcode: productUnits.barcode })
     .from(productUnits)
     .where(eq(productUnits.id, productUnitId))
+    .for("share")
     .limit(1);
   if (!unit) throw new TRPCError({ code: "NOT_FOUND", message: "وحدة المنتج غير موجودة." });
   if (unit.variantId) {
-    await assertNoActiveStocktakeForVariant(db, unit.variantId, "إضافة باركود بديل");
+    await assertNoActiveStocktakeForVariant(tx, unit.variantId, "إضافة باركود بديل");
   }
-  await db.insert(productUnitBarcodes).values({
+  if (unit.barcode) {
+    const ownKeys = new Set(barcodeIdentityCandidates(unit.barcode).map(barcodeComparisonKey));
+    const newKeys = barcodeIdentityCandidates(identity).map(barcodeComparisonKey);
+    if (newKeys.some((k) => ownKeys.has(k))) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "هذا الباركود هو الأساسيّ لهذه الوحدة نفسها — لا حاجة لإضافته كبديل.",
+      });
+    }
+  }
+  const clashes = await findBarcodeClashes(tx, [identity], { forShare: true });
+  if (clashes[0]) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: `تعذّر إضافة الباركود البديل ${identity}`,
+        why: `الباركود ${identity} مُستعمَل في «${clashes[0].takenBy}»`,
+        doThis: "غيّر الرمز البديل أو أزله من الصنف الآخر أولاً ثم أعد الحفظ",
+      }),
+    });
+  }
+  await tx.insert(productUnitBarcodes).values({
     productUnitId,
-    barcode: canonicalizeBarcodeForStorage(barcode), // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)
+    barcode: canonicalizeBarcodeForStorage(barcode),
     note: note?.trim() || null,
     createdBy,
   });
   return { ok: true };
 }
 
-/** يحذف باركوداً بديلاً بمعرّفه — مجمّد أثناء الجرد النشط. */
-export async function removeUnitBarcodeAlias(id: number) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مُهيّأة." });
-  const [row] = await db
+/** يضيف باركوداً بديلاً — يفحص التفرّد العالميّ وتجميد الجرد النشط قبل الإدراج داخل withTx. */
+export async function addUnitBarcodeAlias(
+  productUnitId: number,
+  barcode: string,
+  note: string | null,
+  createdBy: number | null,
+) {
+  return withTx((tx) => addUnitBarcodeAliasTx(tx, productUnitId, barcode, note, createdBy));
+}
+
+/** يحذف باركوداً بديلاً بمعرّفه داخل معاملة ذرّية — مجمّد أثناء الجرد النشط. */
+export async function removeUnitBarcodeAliasTx(
+  tx: Tx,
+  id: number,
+  opts?: { lockAlreadyHeld?: boolean },
+) {
+  if (!opts?.lockAlreadyHeld) {
+    await acquireCatalogBarcodeWriteLock(tx);
+  }
+  const [row] = await tx
     .select({ id: productUnitBarcodes.id, productUnitId: productUnitBarcodes.productUnitId })
     .from(productUnitBarcodes)
     .where(eq(productUnitBarcodes.id, id))
+    .for("update")
     .limit(1);
   if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الباركود البديل غير موجود." });
 
-  const [unit] = await db
+  const [unit] = await tx
     .select({ variantId: productUnits.variantId })
     .from(productUnits)
     .where(eq(productUnits.id, row.productUnitId))
+    .for("share")
     .limit(1);
   if (unit?.variantId) {
-    await assertNoActiveStocktakeForVariant(db, unit.variantId, "حذف باركود بديل");
+    await assertNoActiveStocktakeForVariant(tx, unit.variantId, "حذف باركود بديل");
   }
 
-  await db.delete(productUnitBarcodes).where(eq(productUnitBarcodes.id, id));
+  await tx.delete(productUnitBarcodes).where(eq(productUnitBarcodes.id, id));
   return { ok: true };
+}
+
+export async function removeUnitBarcodeAlias(id: number) {
+  return withTx((tx) => removeUnitBarcodeAliasTx(tx, id));
+}
+
+export interface LegacyBarcodeConflictOwner {
+  productUnitId: number;
+  productId: number;
+  productName: string;
+  variantId: number;
+  sku: string | null;
+  unitName: string;
+  barcode: string;
+  source: "PRIMARY" | "ALIAS";
+}
+
+export interface LegacyBarcodeConflict {
+  normalizedKey: string;
+  owners: LegacyBarcodeConflictOwner[];
+}
+
+/**
+ * CATALOG-SURGICAL-20261107 — كاشف تعارضات الباركود الإرثية عبر الكتالوج (للمراجعة والتصحيح).
+ * يرصد أي هوية باركود مطبّعة (بما فيها تكافؤ UPC-A / EAN-13) مملوكة لأكثر من وحدة منتج مميزة.
+ */
+export async function listLegacyBarcodeConflicts(
+  exec?: DbOrTx,
+  opts?: { productId?: number },
+): Promise<LegacyBarcodeConflict[]> {
+  const db = exec ?? getDb();
+  if (!db) return [];
+
+  const primaries = await db
+    .select({
+      productUnitId: productUnits.id,
+      productId: products.id,
+      productName: products.name,
+      variantId: productVariants.id,
+      sku: productVariants.sku,
+      unitName: productUnits.unitName,
+      barcode: productUnits.barcode,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(sql`${productUnits.barcode} IS NOT NULL AND ${productUnits.barcode} <> ''`);
+
+  const aliases = await db
+    .select({
+      productUnitId: productUnitBarcodes.productUnitId,
+      productId: products.id,
+      productName: products.name,
+      variantId: productVariants.id,
+      sku: productVariants.sku,
+      unitName: productUnits.unitName,
+      barcode: productUnitBarcodes.barcode,
+    })
+    .from(productUnitBarcodes)
+    .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id));
+
+  const byIdentity = new Map<string, Map<number, LegacyBarcodeConflictOwner>>();
+  const register = (row: {
+    productUnitId: number;
+    productId: number;
+    productName: string;
+    variantId: number;
+    sku: string | null;
+    unitName: string;
+    barcode: string | null;
+  }, source: "PRIMARY" | "ALIAS") => {
+    const raw = (row.barcode ?? "").trim();
+    if (!raw) return;
+    const keys = barcodeIdentityCandidates(raw).map(barcodeComparisonKey).filter(Boolean);
+    for (const key of keys) {
+      let owners = byIdentity.get(key);
+      if (!owners) {
+        owners = new Map();
+        byIdentity.set(key, owners);
+      }
+      const uid = Number(row.productUnitId);
+      if (!owners.has(uid)) {
+        owners.set(uid, {
+          productUnitId: uid,
+          productId: Number(row.productId),
+          productName: row.productName,
+          variantId: Number(row.variantId),
+          sku: row.sku ?? null,
+          unitName: row.unitName,
+          barcode: raw,
+          source,
+        });
+      }
+    }
+  };
+
+  for (const r of primaries) register(r, "PRIMARY");
+  for (const r of aliases) register(r, "ALIAS");
+
+  const out: LegacyBarcodeConflict[] = [];
+  const seenOwnerSets = new Set<string>();
+  for (const [normalizedKey, ownersMap] of Array.from(byIdentity.entries())) {
+    if (ownersMap.size < 2) continue;
+    const owners = Array.from(ownersMap.values()).sort((a, b) => a.productUnitId - b.productUnitId);
+    if (opts?.productId != null && !owners.some((o) => o.productId === opts.productId)) continue;
+    const signature = `${owners.map((o) => `${o.productUnitId}:${o.barcode}`).join("|")}`;
+    if (seenOwnerSets.has(signature)) continue;
+    seenOwnerSets.add(signature);
+    out.push({ normalizedKey, owners });
+  }
+  return out;
 }

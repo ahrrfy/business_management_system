@@ -130,7 +130,14 @@ export default function SalesInvoice() {
   const [corrMatch, corrParams] = useRoute("/invoices/:id/correct");
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
-  const correctionFromReception = new URLSearchParams(useSearch()).get("from") === "reception-edit";
+  const correctionSearchParams = new URLSearchParams(useSearch());
+  const correctionFromReception = correctionSearchParams.get("from") === "reception-edit";
+  const rawCorrectionReturnTo = correctionSearchParams.get("returnTo") ?? "";
+  const correctionReturnTarget =
+    rawCorrectionReturnTo.startsWith("/reception/workflow") ||
+    rawCorrectionReturnTo.startsWith("/delivery?")
+      ? rawCorrectionReturnTo
+      : "/reception/workflow?section=edit";
   const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection && salesOperationAllowed(me.data, "sales.get", true) },
   );
   const correctionUnitIds = useMemo(
@@ -536,7 +543,7 @@ export default function SalesInvoice() {
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
       bypassUnsavedGuard();
-      navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
+      navigate(correctionFromReception ? correctionReturnTarget : `/invoices/${correctInvoiceId}`);
     },
     onError: handleCorrectionError,
   });
@@ -551,7 +558,7 @@ export default function SalesInvoice() {
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
       bypassUnsavedGuard();
-      navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
+      navigate(correctionFromReception ? correctionReturnTarget : `/invoices/${correctInvoiceId}`);
     },
     onError: handleCorrectionError,
   });
@@ -1148,8 +1155,8 @@ export default function SalesInvoice() {
             : `${typeInfo.label} متقدّمة`
         }
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
-        backHref="/invoices"
-        backLabel="رجوع للفواتير"
+        backHref={isCorrection && correctionFromReception ? correctionReturnTarget : "/invoices"}
+        backLabel={isCorrection && correctionFromReception ? "رجوع لمحطة الباركود" : "رجوع للفواتير"}
         actions={
           <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}

@@ -1,24 +1,40 @@
 // إنشاء منتج جديد: التحقّق المسبق من التفرّد وباركودات محجوزة، ثم الإنشاء الذرّي الكامل
-// (متغيّرات/وحدات/أسعار/رصيد افتتاحي/صور/وصفة مواد خدمة الطباعة).
+// (متغيّرات/وحدات/أسعار/وصفة مواد/مفتاح الإعادة وسجلّ التدقيق برصيد صفري إلزامي).
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
+  branches,
   productPrices,
   productUnits,
   productUnitBarcodes,
   productVariants,
   products,
   suppliers,
+  users,
 } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import type { PermissionMap } from "@shared/permissions";
+import type { UnitPricing } from "@shared/priceSanity";
+import {
+  canCarryStockUsage,
+  resolveCreateStockUsage,
+  type StockUsage,
+} from "@shared/stockUsage";
+import { logAuditTx, noteIdempotentAuditReplay, type AuditMetadata } from "../auditService";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
-import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { acquireCatalogBarcodeWriteLock, checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
+import {
+  assertStorefrontPublishReadyTx,
+  assertUniqueNormalizedVariantCombos,
+  assertUniqueUnitNamesAndTiers,
+  assertVariantSanityOrThrow,
+} from "./productUpdateGuards";
 import { assertValidUnitFactors } from "./unitFactors";
-import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { setStock } from "../inventoryService";
 import { toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
@@ -63,6 +79,16 @@ export interface CreateProductInput {
   showInAdvancedSales?: boolean;
   allowAutoCartRecommendations?: boolean;
   isActive?: boolean;
+  /** تصنيف الاستخدام للصنف المخزني المملوك (`SALE_ONLY` | `MATERIAL_ONLY` | `SALE_AND_MATERIAL` | `OPERATING_SUPPLY`). */
+  stockUsage?: StockUsage | null;
+  /** إعداد «مادة خام» في شاشة الإضافة — يجعل الافتراضي `MATERIAL_ONLY` و`isService=false`. */
+  rawMaterial?: boolean;
+  /** النشر الصريح في المتجر الإلكتروني؛ الافتراضي عند الإضافة اليدوية `false` (مخفي حتى يُنشَر). */
+  showInStore?: boolean;
+  /** نموذج الجاهزية للمفرد يطلب سعر مفرد أكبر من صفر لوحدة الأساس. */
+  requireRetailReady?: boolean;
+  /** مفتاح عدم التكرار الذرّي (يرتبط بالفاعل وبصمة الحمولة). */
+  clientRequestId?: string | null;
   // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب: متغيّر واحد، وحدة أساس واحدة، ومكوّنات في `bundleComponents`.
   // التكلفة لن تُقرأ من costPrice (تُحسب لحظة البيع من مجموع مكوّناته)، والمخزون الافتتاحي يُتجاهَل (لا branchStock للبكج).
   isBundle?: boolean;
@@ -78,6 +104,7 @@ export interface CreateProductInput {
   recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
   variants: Array<{
     sku: string;
+    variantKind?: "VARIANT" | "ALTERNATIVE";
     variantName?: string | null;
     color?: string | null;
     colorHex?: string | null;
@@ -142,7 +169,7 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
     // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).
     // بدون فحص البدائل يمكن كتابة أساسيّ لسلعة يطابق بديلاً لسلعة أخرى ⇒ resolveBarcodeOwner
     // يرجع لسلعتين مختلفتين حسب أيّهما مُسجَّل أولاً (سيناريو Codex P1).
-    const clashes = await findBarcodeClashes(tx, Array.from(seenCode));
+    const clashes = await findBarcodeClashes(tx, Array.from(seenCode), { forShare: true });
     if (clashes[0]) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -207,8 +234,53 @@ export async function assertConsignmentValid(
   }
 }
 
-/** Create a product with its variants, units and prices in one transaction. */
-export async function createProduct(input: CreateProductInput, actor: Actor) {
+export type CreateProductActor = Actor & {
+  permissionsOverride?: PermissionMap | null;
+};
+
+export interface CreateProductOptions {
+  audit?: AuditMetadata;
+}
+
+function assertNonNegativeMoneyDecimal(raw: string, fieldLabel: string): void {
+  const trimmed = (raw ?? "").trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${fieldLabel}»`,
+        why: "المبالغ المالية بالدينار العراقي يجب أن تكون غير سالبة وبمنزلتين عشريتين كحدّ أقصى",
+        doThis: "أدخل مبلغاً رقمياً صالحاً غير سالب (مثل 0 أو 1500 أو 1250.50) ثم أعد الحفظ",
+      }),
+    });
+  }
+  const dec = new Decimal(trimmed);
+  if (!dec.isFinite() || dec.isNegative() || dec.decimalPlaces() > 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `قيمة مالية غير صالحة في «${fieldLabel}»`,
+        why: "المبلغ المالي خارج النطاق المسموح أو يتجاوز منزلتين عشريتين",
+        doThis: "صحّح المبلغ ثم أعد الحفظ",
+      }),
+    });
+  }
+}
+
+function isIdempotencyDupError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+  const code = e?.code ?? e?.cause?.code;
+  if (code !== "ER_DUP_ENTRY") return false;
+  const msg = `${e?.message ?? ""} ${e?.cause?.message ?? ""}`;
+  return msg.includes("uq_idempotency_op_key") || msg.includes("idempotencyKeys");
+}
+
+/** Create a product with its variants, units and prices in one transaction (zero opening stock). */
+export async function createProduct(
+  input: CreateProductInput,
+  actor: CreateProductActor = { userId: 0, branchId: 0 },
+  options?: CreateProductOptions,
+): Promise<{ productId: number; replayed?: boolean }> {
   // لا ينشر كاتب الكتالوج القديم صوراً MANUAL+APPROVED. الصور الجديدة تمر حصراً بمهمة
   // Product Studio ثم R2 والمراجعة؛ الحارس في الخدمة كي يشمل الراوتر وكل مستدعٍ داخلي.
   assertCreateHasNoLegacyMedia(input);
@@ -251,180 +323,396 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصفة الإنتاج لا تُدار على البكج — استعمل bundleComponents" });
     }
   }
-  return withTx(async (tx) => {
-    const composedName = composeProductName(input);
-    if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
-    await assertCatalogUniqueness(tx, input);
-    await assertConsignmentValid(tx, input, input.variants.map((v) => v.costPrice));
-    // print-catalog: التوجيه لنقطة الطباعة يفرض النوع التشغيلي PRINT_SERVICE فقط.
-    // نحترم false الصريحة حتى يكون البند نفسه ناتجاً مخزنياً قابلاً للشراء أو الإنتاج.
-    // عند غياب isService نحافظ على التوافق السابق: بند الطباعة يكون بلا مخزون افتراضياً.
-    const isService = input.isService ?? !!input.printService;
-    // «يُباع بالطلب» (0318): يُرفض على الخدمة/البكج/الأمانة برسالةٍ تشرح السبب، بدل ارتداد
-    // CHECK القاعدة بنصٍّ خامّ. الثلاثة بلا رصيدٍ ذاتيّ (أو رصيدُها ليس ملكاً لنا).
-    const allowBackorder = input.allowBackorder === true;
-    if (allowBackorder) {
-      if (isService)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
-      if (isBundle)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
-      if (input.isConsignment)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
-    }
-    // م٦: الظهورُ في شبكة الطباعة من `printService` (الإرث) أو من `showInPrintPos` الصريح (تناظر التعديل)؛
-    // كلاهما يُزامن `productType='PRINT_SERVICE'` كي لا يظهر بندٌ في الشبكة ثمّ يرفضه `createPrintSale`.
-    const showInPrintPos = !!input.printService || !!input.showInPrintPos;
-    const isPrintServiceProduct = !!input.printService || input.productType === PRINT_SERVICE_TYPE || (isService && (showInPrintPos || !!input.showInReception || !!input.showInQuotations || !!input.showInAdvancedSales));
-    const pRes = await tx.insert(products).values({
-      name: composedName,
-      productType: isPrintServiceProduct ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
-      brand: input.brand?.trim() || null,
-      modelName: input.modelName?.trim() || null,
-      description: input.description?.trim() || null,
-      internalName: input.internalName?.trim() || composedName,
-      storeTitle: input.storeTitle?.trim() || composedName,
-      seoTitle: input.seoTitle?.trim() || composedName,
-      shortTitle: input.shortTitle?.trim() || composedName.slice(0, 160),
-      posLabel: input.posLabel?.trim() || composedName.slice(0, 120),
-      invoiceLabel: input.invoiceLabel?.trim() || composedName,
-      marketingCopy: input.marketingCopy?.trim() || null,
-      categoryId: input.categoryId ?? null,
-      isCustomizable: input.isCustomizable ?? false,
-      isService,
-      allowBackorder,
-      showInReception: !!input.showInReception,
-      // 0262 (٢٤/٨): الرؤية في شبكة الطباعة صارت قراراً مستقلاً — يظلّ `printService` يوسم
-      // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي
-      // الوقتِ نفسه يُشعل `showInPrintPos=TRUE` كي تظهر الخدمةُ فوراً في الشبكة.
-      showInPrintPos,
-      showInQuotations: !!input.showInQuotations,
-      showInAdvancedSales: !!input.showInAdvancedSales,
-      // م٦: غيابُهما يُبقي افتراض المخطّط (التوصيات مفعَّلة، المنتج فعّال) — نمط PATCH كمسار التعديل.
-      ...(input.allowAutoCartRecommendations !== undefined ? { allowAutoCartRecommendations: input.allowAutoCartRecommendations } : {}),
-      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      isBundle,
-      isConsignment: !!input.isConsignment,
-      consignorId: input.isConsignment ? (input.consignorId ?? null) : null,
-    });
-    const productId = extractInsertId(pRes);
-
-    // print-catalog: نَلتقط متغيّر البَند الأوّل ووحدته الأساس لِربط الوصفة (الخدمات أحاديّة المتغيّر).
-    let recipeOutputVariantId: number | null = null;
-    let recipeOutputUnitId: number | null = null;
-    // bundles: نَلتقط متغيّر البكج الوحيد لِربط وصفة المكوّنات به بعد الحلقة.
-    let bundleParentVariantId: number | null = null;
-
-    for (const v of input.variants) {
-      if (!v.units.some((u) => u.isBaseUnit)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة (isBaseUnit)` });
-      }
-      assertValidUnitFactors(v.units);
-      const vRes = await tx.insert(productVariants).values({
-        productId,
-        sku: v.sku.trim(),
-        variantName: v.variantName ?? null,
-        color: v.color ?? null,
-        colorHex: v.colorHex?.trim() || null,
-        size: v.size ?? null,
-        costPrice: toDbMoney(v.costPrice),
-        minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
-        // product-variants: نقطة إعادة الطلب + ظهور مستقل لكل متغيّر.
-        reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
-        isActive: v.isActive ?? true,
+  // CATALOG-SURGICAL-20261107 (الدفعة ١): يبدأ تعريف الصنف برصيد صفري. نرفض الافتتاح الموجب/السالب
+  // في الحقلين القديم (`openingStock`) وقائمة الفروع (`openingStockByBranch`)، ونقبل الصفر والإغفال للتوافق.
+  for (const v of input.variants) {
+    const hasNonZeroLegacy =
+      v.openingStock !== undefined &&
+      (!Number.isFinite(v.openingStock) || v.openingStock !== 0);
+    const hasNonZeroBranch = (v.openingStockByBranch ?? []).some(
+      (ob) => !Number.isFinite(ob.qty) || ob.qty !== 0,
+    );
+    if (hasNonZeroLegacy || hasNonZeroBranch) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يُسمح بإدخال رصيد افتتاحي غير صفري عند تعريف الصنف",
+          why: "تعريف الصنف يبدأ دائماً برصيد صفري لفصل بيانات الكتالوج عن الحركات المخزنية والمالية الموثّقة",
+          doThis: "احفظ الصنف برصيد صفر ثم أدخل الكمية عبر فاتورة شراء أو جرد افتتاحي معتمد أو تسوية مخزون أو أمر إنتاج أو إيداع أمانة",
+        }),
       });
-      const variantId = extractInsertId(vRes);
-      if (recipeOutputVariantId == null) recipeOutputVariantId = variantId;
-      // bundles: البكج أحاديّ المتغيّر (فُرض قبل المعاملة) — نلتقطه هنا لِحفظ وصفته لاحقاً.
-      if (isBundle && bundleParentVariantId == null) bundleParentVariantId = variantId;
-
-      for (const u of v.units) {
-        const uRes = await tx.insert(productUnits).values({
-          variantId,
-          unitName: u.unitName,
-          conversionFactor: u.conversionFactor,
-          // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)؛ التفرّد فُحص أعلاه بالهوية المُطبَّعة،
-          // والمطابقة تبقى عبر `barcodeNormalized` المولَّد (§الباركود، ١٥/٩).
-          barcode: canonicalizeBarcodeForStorage(u.barcode ?? "") || null,
-          isBaseUnit: u.isBaseUnit ?? false,
-          isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
-        });
-        const productUnitId = extractInsertId(uRes);
-        // print-catalog: وحدة أساس متغيّر البَند الأوّل = مخرَج الوصفة.
-        if (recipeOutputVariantId === variantId && (u.isBaseUnit ?? false) && recipeOutputUnitId == null) {
-          recipeOutputUnitId = productUnitId;
-        }
-        for (const p of u.prices ?? []) {
-          await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
-        }
-        // باركودات بديلة تُدرَج ذرّياً في نفس المعاملة — تفرّدها تم التحقّق منه في assertCatalogUniqueness.
-        for (const a of u.barcodeAliases ?? []) {
-          const identity = canonicalizeBarcodeInput(a.barcode ?? ""); // حارس الفراغ (يسقط المسافة/الفارغ)
-          if (!identity) continue;
-          await tx.insert(productUnitBarcodes).values({
-            productUnitId,
-            barcode: canonicalizeBarcodeForStorage(a.barcode ?? ""), // يُحفَظ حرفيّاً بصيغة المصنع
-            note: (a.note ?? "").trim() || null,
-            createdBy: actor.userId,
-          });
-        }
-      }
-
-      // المخزون الافتتاحي كحركة OPENING مُسجَّلة. product-variants: رصيد مستقل لكل فرع
-      // (`openingStockByBranch`)؛ وإلا fallback لرقم أحاديّ في فرع الموظف (توافق خلفي).
-      const perBranch =
-        v.openingStockByBranch && v.openingStockByBranch.length
-          ? v.openingStockByBranch
-          : v.openingStock && v.openingStock > 0
-            ? [{ branchId: actor.branchId, qty: v.openingStock }]
-            : [];
-      for (const ob of perBranch) {
-        const qty = Math.max(0, Math.trunc(ob.qty));
-        if (qty > 0) {
-          await setStock(tx, {
-            variantId,
-            branchId: ob.branchId,
-            targetQuantity: qty,
-            referenceType: "OPENING",
-            documentNumber: `OPEN-${variantId}`,
-            notes: "رصيد افتتاحي",
-            createdBy: actor.userId,
-          });
-        }
-      }
-
     }
+  }
 
-    // print-catalog: وصفة المواد الخام للخدمة — تُربَط بمتغيّر البَند الأوّل ووحدته الأساس.
-    // تمرّ بالنواة المشتركة كي تُفرض صلاحية المواد/الدقة/فرادة الوصفة النشطة في كل المداخل.
-    const recipe = input.recipe ?? [];
-    if (recipe.length) {
-      if (recipeOutputVariantId == null || recipeOutputUnitId == null) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "تَعذّر ربط وصفة المواد: لا متغيّر/وحدة أساس للبَند" });
+  const isService = input.isService ?? (!input.rawMaterial && !!input.printService);
+  if (input.rawMaterial && (isService || isBundle || input.isConsignment)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "المادة الخام يجب أن تكون صنفاً مخزنياً مملوكاً",
+        why: "لا يجوز جمع إعداد المادة الخام مع الخدمة أو البكج أو بضاعة الأمانة",
+        doThis: "أنشئ المادة الخام كصنف مخزني مملوك، أو اختر نوع السجلّ المناسب",
+      }),
+    });
+  }
+  const canHaveStockUsage = canCarryStockUsage({
+    isService,
+    isBundle,
+    isConsignment: !!input.isConsignment,
+  });
+  if (!canHaveStockUsage && input.stockUsage != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تصنيف الاستخدام المخزني يخصّ الأصناف المخزنية المملوكة فقط",
+        why: "الخدمات والبكجات وبضاعة الأمانة تتبع مساراتها المستقلة ولا تحمل تصنيف stockUsage",
+        doThis: "اترك حقل الاستخدام المخزني فارغاً لهذا النوع ثم أعد الحفظ",
+      }),
+    });
+  }
+  const effectiveStockUsage = resolveCreateStockUsage({
+    isService,
+    isBundle,
+    isConsignment: !!input.isConsignment,
+    stockUsage: input.stockUsage,
+    isRawMaterialPreset: !!input.rawMaterial,
+  });
+
+  // التحقّق من فريدية التركيبات العادية بعد التطبيع + صحة المبالغ ومعاملات الوحدات وفئات التسعير.
+  assertUniqueNormalizedVariantCombos(input.variants);
+  for (const v of input.variants) {
+    const variantLabel = [v.color?.trim(), v.size?.trim()].filter(Boolean).join(" / ") || v.sku;
+    assertNonNegativeMoneyDecimal(v.costPrice, `تكلفة المتغيّر ${variantLabel}`);
+    const baseCount = v.units.filter((u) => u.isBaseUnit).length;
+    if (baseCount !== 1) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر حفظ المتغيّر «${v.sku}»`,
+          why: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة (isBaseUnit) بمعامل تحويل 1`,
+          doThis: "حدّد وحدة أساس واحدة فقط لهذا المتغيّر ثم أعد الحفظ",
+        }),
+      });
+    }
+    assertValidUnitFactors(v.units);
+    assertUniqueUnitNamesAndTiers(variantLabel, v.units);
+    for (const u of v.units) {
+      for (const p of u.prices ?? []) {
+        assertNonNegativeMoneyDecimal(p.price, `سعر ${p.priceTier} للوحدة ${u.unitName}`);
       }
-      await createRecipeInTx(
+    }
+    const pricings: UnitPricing[] = v.units.map((u) => ({
+      unitName: u.unitName,
+      conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+      isBaseUnit: !!u.isBaseUnit,
+      retail: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+      wholesale: u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+      government: u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+    }));
+    assertVariantSanityOrThrow(variantLabel, v.costPrice, pricings);
+    if (input.requireRetailReady === true && (v.isActive ?? true)) {
+      const baseUnit = v.units.find((u) => u.isBaseUnit);
+      const retailRaw = baseUnit?.prices?.find((p) => p.priceTier === "RETAIL")?.price?.trim() ?? "";
+      if (!retailRaw || !new Decimal(retailRaw).gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `سعر المفرد لوحدة الأساس مطلوب للمتغيّر «${variantLabel}»`,
+            why: "اخترتَ وضع الجاهزية للبيع المفرد دون إدخال سعر مفرد أكبر من صفر",
+            doThis: "أدخل سعر البيع المفرد لوحدة الأساس، أو فعّل خيار التسعير المؤجّل الصريح قبل الحفظ",
+          }),
+        });
+      }
+    }
+  }
+
+  const trimmedClientRequestId = input.clientRequestId?.trim() || null;
+  if (trimmedClientRequestId && trimmedClientRequestId.length > 128) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "معرّف الطلب غير صالح",
+        why: "طول clientRequestId يتجاوز الحدّ الأقصى (128 محرفاً)",
+        doThis: "أعد المحاولة من شاشة إضافة الصنف بمعرّف طلب قياسي",
+      }),
+    });
+  }
+  const idempotencyOp = `catalog.createProduct:${actor.userId}`;
+  const { clientRequestId: _ignoredReqId, ...payloadWithoutReqId } = input;
+  const payloadHash = trimmedClientRequestId ? idempotencyHash(payloadWithoutReqId) : null;
+
+  try {
+    return await withTx(async (tx) => {
+      // قفل صف كتابة الكتالوج الواحد يُسلسِل فحص/كتابة ملكية الباركود وتزامن الإعادة معاً.
+      await acquireCatalogBarcodeWriteLock(tx);
+
+      if (trimmedClientRequestId) {
+        const existingProductId = await checkIdempotency(
+          tx,
+          idempotencyOp,
+          trimmedClientRequestId,
+          payloadHash,
+          { requireStoredHash: true, forUpdate: true },
+        );
+        if (existingProductId != null) {
+          noteIdempotentAuditReplay();
+          return { productId: existingProductId, replayed: true };
+        }
+      }
+
+      const composedName = composeProductName(input);
+      if (!composedName) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر حفظ المنتج الجديد",
+            why: "اسم المنتج مطلوب ولم يُكتَب مباشرةً أو عبر حقول النوع والماركة والموديل",
+            doThis: "اكتب اسم المنتج أو املأ النوع/الماركة/الموديل ثم أعد الحفظ",
+          }),
+        });
+      }
+      await assertCatalogUniqueness(tx, input);
+      await assertConsignmentValid(
+        tx,
+        { ...input, isService, printService: isService && !!input.printService },
+        input.variants.map((v) => v.costPrice),
+      );
+
+      const allowBackorder = input.allowBackorder === true;
+      if (allowBackorder) {
+        if (isService)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
+        if (isBundle)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
+        if (input.isConsignment)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
+      }
+
+      // اتّساق نشاط الصنف البسيط مع متغيّره الوحيد عديم الأبعاد.
+      const isSingleSimpleVariant =
+        input.variants.length === 1 &&
+        (input.variants[0].variantKind ?? "VARIANT") !== "ALTERNATIVE" &&
+        !input.variants[0].color?.trim() &&
+        !input.variants[0].size?.trim();
+      const resolvedSimpleActive = isSingleSimpleVariant
+        ? input.isActive !== undefined && input.variants[0].isActive !== undefined
+          ? input.isActive && input.variants[0].isActive
+          : (input.isActive ?? input.variants[0].isActive ?? true)
+        : undefined;
+      const effectiveProductIsActive = resolvedSimpleActive ?? (input.isActive ?? true);
+
+      // تمييز خدمة الطباعة الفورية عن الناتج المجهّز المخزني: `PRINT_SERVICE` للخدمات غير المخزنية فقط.
+      const showInPrintPos = !!input.printService || !!input.showInPrintPos;
+      const isPrintServiceProduct =
+        isService &&
+        (!!input.printService ||
+          input.productType === PRINT_SERVICE_TYPE ||
+          showInPrintPos ||
+          !!input.showInReception ||
+          !!input.showInQuotations ||
+          !!input.showInAdvancedSales);
+
+      // الإضافة اليدوية تبدأ مخفية عن المتجر (`false`)، والنشر الصريح يخضع لبوابة الصلاحية والجاهزية.
+      const effectiveShowInStore = input.showInStore === true;
+      if (effectiveShowInStore) {
+        await assertStorefrontPublishReadyTx(tx, {
+          actor,
+          requirePermission: Boolean(actor.role),
+          isActive: effectiveProductIsActive,
+          isService,
+          stockUsage: effectiveStockUsage,
+          categoryId: input.categoryId ?? null,
+          variants: input.variants.map((v, idx) => ({
+            isActive: idx === 0 && resolvedSimpleActive !== undefined ? resolvedSimpleActive : (v.isActive ?? true),
+            units: v.units.map((u) => ({
+              isActive: true,
+              isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
+              conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+              retailPrice: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+            })),
+          })),
+        });
+      }
+
+      const pRes = await tx.insert(products).values({
+        name: composedName,
+        productType: isPrintServiceProduct ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
+        brand: input.brand?.trim() || null,
+        modelName: input.modelName?.trim() || null,
+        description: input.description?.trim() || null,
+        internalName: input.internalName?.trim() || composedName,
+        storeTitle: input.storeTitle?.trim() || composedName,
+        seoTitle: input.seoTitle?.trim() || composedName,
+        shortTitle: input.shortTitle?.trim() || composedName.slice(0, 160),
+        posLabel: input.posLabel?.trim() || composedName.slice(0, 120),
+        invoiceLabel: input.invoiceLabel?.trim() || composedName,
+        marketingCopy: input.marketingCopy?.trim() || null,
+        categoryId: input.categoryId ?? null,
+        isCustomizable: input.isCustomizable ?? false,
+        isService,
+        stockUsage: effectiveStockUsage,
+        allowBackorder,
+        showInReception: !!input.showInReception,
+        showInPrintPos,
+        showInQuotations: !!input.showInQuotations,
+        showInAdvancedSales: !!input.showInAdvancedSales,
+        showInStore: effectiveShowInStore,
+        ...(input.allowAutoCartRecommendations !== undefined ? { allowAutoCartRecommendations: input.allowAutoCartRecommendations } : {}),
+        isActive: effectiveProductIsActive,
+        isBundle,
+        isConsignment: !!input.isConsignment,
+        consignorId: input.isConsignment ? (input.consignorId ?? null) : null,
+      });
+      const productId = extractInsertId(pRes);
+
+      let recipeOutputVariantId: number | null = null;
+      let recipeOutputUnitId: number | null = null;
+      let bundleParentVariantId: number | null = null;
+
+      for (let vIdx = 0; vIdx < input.variants.length; vIdx++) {
+        const v = input.variants[vIdx];
+        const variantKind = v.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
+        const variantName = v.variantName?.trim() || null;
+        if (variantKind === "ALTERNATIVE") {
+          if (!variantName) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `البديل «${v.sku}» يلزمه اسمٌ مميّز (الماركة/المنشأ).` });
+          }
+          const hasBc = v.units.some((u) => Boolean(canonicalizeBarcodeInput(u.barcode ?? "")));
+          if (!hasBc) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `لا بديلَ بلا باركود: «${variantName}» — أسنِد باركوداً لوحدةٍ منه قبل الحفظ.` });
+          }
+        }
+        const vRes = await tx.insert(productVariants).values({
+          productId,
+          sku: v.sku.trim(),
+          variantKind,
+          variantName,
+          color: v.color?.trim() || null,
+          colorHex: v.colorHex?.trim() || null,
+          size: v.size?.trim() || null,
+          costPrice: toDbMoney(v.costPrice),
+          minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
+          reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
+          isActive: vIdx === 0 && resolvedSimpleActive !== undefined ? resolvedSimpleActive : (v.isActive ?? true),
+        });
+        const variantId = extractInsertId(vRes);
+        if (recipeOutputVariantId == null) recipeOutputVariantId = variantId;
+        if (isBundle && bundleParentVariantId == null) bundleParentVariantId = variantId;
+
+        for (const u of v.units) {
+          const uRes = await tx.insert(productUnits).values({
+            variantId,
+            unitName: u.unitName.trim(),
+            conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor.trim(),
+            barcode: canonicalizeBarcodeForStorage(u.barcode ?? "") || null,
+            isBaseUnit: u.isBaseUnit ?? false,
+            isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
+          });
+          const productUnitId = extractInsertId(uRes);
+          if (recipeOutputVariantId === variantId && (u.isBaseUnit ?? false) && recipeOutputUnitId == null) {
+            recipeOutputUnitId = productUnitId;
+          }
+          for (const p of u.prices ?? []) {
+            await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
+          }
+          for (const a of u.barcodeAliases ?? []) {
+            const identity = canonicalizeBarcodeInput(a.barcode ?? "");
+            if (!identity) continue;
+            await tx.insert(productUnitBarcodes).values({
+              productUnitId,
+              barcode: canonicalizeBarcodeForStorage(a.barcode ?? ""),
+              note: (a.note ?? "").trim() || null,
+              createdBy: actor.userId,
+            });
+          }
+        }
+      }
+
+      const recipe = input.recipe ?? [];
+      if (recipe.length) {
+        if (recipeOutputVariantId == null || recipeOutputUnitId == null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "تَعذّر ربط وصفة المواد: لا متغيّر/وحدة أساس للبَند" });
+        }
+        await createRecipeInTx(
+          tx,
+          {
+            name: `[طباعة] ${composedName} #${productId}`,
+            outputVariantId: recipeOutputVariantId,
+            outputProductUnitId: recipeOutputUnitId,
+            laborPerOutputBase: "0",
+            wasteStdPct: "0",
+            lines: recipe,
+          },
+          actor,
+        );
+      }
+
+      if (isBundle) {
+        if (bundleParentVariantId == null) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تحديد متغيّر البكج بعد الإنشاء" });
+        }
+        await replaceBundleComponents(tx, bundleParentVariantId, input.bundleComponents ?? []);
+      }
+
+      if (trimmedClientRequestId) {
+        await recordIdempotencyKey(tx, idempotencyOp, trimmedClientRequestId, productId, payloadHash);
+      }
+
+      // حفظ سجلّ التدقيق ذرّياً داخل نفس المعاملة (مع فحص وجود المرجع للتوافق مع اختبارات الوحدات التركيبية).
+      const [existingUser] =
+        actor.userId > 0
+          ? await tx.select({ id: users.id }).from(users).where(eq(users.id, actor.userId)).limit(1)
+          : [];
+      const rawBranchId = options?.audit?.branchId ?? (actor.branchId > 0 ? actor.branchId : null);
+      const [existingBranch] =
+        rawBranchId != null && rawBranchId > 0
+          ? await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, rawBranchId)).limit(1)
+          : [];
+      await logAuditTx(
         tx,
         {
-          name: `[طباعة] ${composedName} #${productId}`,
-          outputVariantId: recipeOutputVariantId,
-          outputProductUnitId: recipeOutputUnitId,
-          laborPerOutputBase: "0",
-          wasteStdPct: "0",
-          lines: recipe,
+          userId: existingUser ? actor.userId : null,
+          branchId: existingBranch ? rawBranchId : null,
+          ipAddress: options?.audit?.ipAddress ?? null,
+          screenPath: options?.audit?.screenPath ?? null,
+          actor: existingUser
+            ? options?.audit?.actor
+            : { source: "user", label: `user#${actor.userId}` },
         },
-        actor,
+        {
+          action: "product.create",
+          entityType: "product",
+          entityId: productId,
+          newValue: {
+            name: composedName,
+            brand: input.brand ?? null,
+            modelName: input.modelName ?? null,
+            stockUsage: effectiveStockUsage,
+            isService,
+            isBundle,
+            isConsignment: !!input.isConsignment,
+            showInStore: effectiveShowInStore,
+          },
+        },
       );
-    }
 
-    // bundles: حفظ وصفة المكوّنات بعد إنشاء متغيّر البكج (متغيّر واحد بحكم القيود أعلاه).
-    // replaceBundleComponents يفرض B1..B6 داخلياً (نَست ممنوع، تفعيل، كميّة صحيحة موجبة، فرادة).
-    if (isBundle) {
-      if (bundleParentVariantId == null) {
-        // احترازي — لن يحصل بحكم قيد variants.length===1، لكن نُفصح عن السبب صراحةً بدل NULL خفيّ.
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تحديد متغيّر البكج بعد الإنشاء" });
+      return { productId };
+    });
+  } catch (err) {
+    if (trimmedClientRequestId && isIdempotencyDupError(err)) {
+      const winnerId = await withTx(
+        (tx2) =>
+          checkIdempotency(tx2, idempotencyOp, trimmedClientRequestId, payloadHash, {
+            requireStoredHash: true,
+            forUpdate: true,
+          }),
+        { gate: "NONE" },
+      );
+      if (winnerId != null) {
+        noteIdempotentAuditReplay();
+        return { productId: winnerId, replayed: true };
       }
-      await replaceBundleComponents(tx, bundleParentVariantId, input.bundleComponents ?? []);
     }
-
-    return { productId };
-  });
+    throw err;
+  }
 }

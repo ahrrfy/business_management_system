@@ -25,8 +25,17 @@ export type {
   ReceivePurchaseInput,
   PurchaseSettlementType,
 } from "./purchase/types";
-export { createPurchaseOrder, updatePurchaseOrder, confirmPurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
 export {
+  createPurchaseOrder,
+  updatePurchaseOrder,
+  confirmPurchaseOrder,
+  revisePurchaseOrderPaymentSource,
+  cancelPurchaseOrder,
+  type RevisePurchaseOrderPaymentSourceInput,
+} from "./purchase/order";
+export {
+  computeCashPurchaseShortageSummaryTx,
+  type CashPurchaseGoodsPaymentSummary,
   decidePurchaseOrderControl,
   getPurchaseOrderControlRequest,
   listPendingPurchaseOrderControls,

@@ -207,10 +207,10 @@ export function AttendanceCorrectionDialog({
                     lateMin && lateMin > 0 && fix.status === "PRESENT"
                       ? "LATE"
                       : fix.status,
-                  checkIn: fix.checkIn || undefined,
-                  checkOut: fix.checkOut || undefined,
+                  checkIn: isPaidFixStatus ? fix.checkIn || undefined : undefined,
+                  checkOut: isPaidFixStatus ? fix.checkOut || undefined : undefined,
                   checkOutDate:
-                    fix.crossMidnight && fix.checkOut
+                    isPaidFixStatus && fix.crossMidnight && fix.checkOut
                       ? nextDateStr(fix.date)
                       : undefined,
                   lateDeductionMinutes: lateMin,

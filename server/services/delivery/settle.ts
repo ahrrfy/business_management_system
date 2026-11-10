@@ -43,6 +43,28 @@ import { withTx } from "../tx";
 import { partyCashInHandTx } from "./cashSource";
 import { consignmentBackedBalance } from "./guards";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
+
+async function openPartyShortfallTx(tx: Tx, partyId: number): Promise<Decimal> {
+  const row = (
+    await tx
+      .select({
+        v: sql<string>`COALESCE(SUM(CASE
+          WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_SETTLED' THEN -${deliveryLedgerEntries.amount}
+          ELSE 0 END), 0)`,
+      })
+      .from(deliveryLedgerEntries)
+      .where(
+        and(
+          eq(deliveryLedgerEntries.partyId, partyId),
+          effectiveDeliveryLedgerEntrySql(),
+          inArray(deliveryLedgerEntries.entryType, ["SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED"]),
+        ),
+      )
+  )[0];
+  const owed = round2(money(row?.v ?? "0"));
+  return owed.gt(0) ? owed : money(0);
+}
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
@@ -61,7 +83,7 @@ export interface SettleInput {
   branchId: number;
   partyId: number;
   amount: string;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
@@ -104,7 +126,7 @@ export async function settleDeliveryBalance(
       branchId: Number(input.branchId),
       partyId: Number(input.partyId),
       amount: toDbMoney(amount),
-      shiftType: input.shiftType ?? "RECEPTION",
+      shiftType: input.shiftType ?? "RECEPTION", ...(input.targetShiftId != null ? { targetShiftId: Number(input.targetShiftId) } : {}),
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(
@@ -257,16 +279,32 @@ export async function settleDeliveryBalance(
       createdBy: actor.userId,
     });
     const receiptId = extractInsertId(rIn);
+    const openShortfall = await openPartyShortfallTx(tx, input.partyId);
+    const shortfallPortion = round2(Decimal.min(amount, openShortfall));
+    const cashPortion = round2(amount.minus(shortfallPortion));
     await adjustDeliveryBalance(tx, input.partyId, amount.neg());
-    await appendDeliveryLedgerEntry(tx, {
-      eventKey: `PARTY:${input.partyId}:COD_REMITTED:RECEIPT:${receiptId}`,
-      partyId: input.partyId,
-      branchId: input.branchId,
-      entryType: "COD_REMITTED",
-      amount: toDbMoney(amount),
-      actorUserId: actor.userId,
-      notes: input.notes ?? "Loose delivery custody remittance",
-    });
+    if (shortfallPortion.gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `PARTY:${input.partyId}:SHORTFALL_SETTLED:RECEIPT:${receiptId}`,
+        partyId: input.partyId,
+        branchId: input.branchId,
+        entryType: "SHORTFALL_SETTLED",
+        amount: toDbMoney(shortfallPortion),
+        actorUserId: actor.userId,
+        notes: input.notes ?? "Loose delivery shortfall settlement",
+      });
+    }
+    if (cashPortion.gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `PARTY:${input.partyId}:COD_REMITTED:RECEIPT:${receiptId}`,
+        partyId: input.partyId,
+        branchId: input.branchId,
+        entryType: "COD_REMITTED",
+        amount: toDbMoney(cashPortion),
+        actorUserId: actor.userId,
+        notes: input.notes ?? "Loose delivery custody remittance",
+      });
+    }
     await postEntry(tx, {
       entryType: "DELIVERY_REMIT",
       dedupeKey: `DELIVERY_SETTLE:${receiptId}`,
@@ -953,16 +991,33 @@ export async function writeOffDeliveryShortfallInTx(
   }
 
   // الشطب المجمّع (السائب): شطبٌ بلا نقد — خسارة فقط (cost-only) ⇒ لا إيصال درج.
+  const looseWriteoffShortfall = await openPartyShortfallTx(tx, input.partyId);
+  const writeoffShortfallPortion = round2(Decimal.min(amount, looseWriteoffShortfall));
+  const writeoffCashPortion = round2(amount.minus(writeoffShortfallPortion));
+  const writeoffEventToken = input.clientRequestId ?? crypto.randomUUID();
   await adjustDeliveryBalance(tx, input.partyId, amount.neg());
-  await appendDeliveryLedgerEntry(tx, {
-    eventKey: `PARTY:${input.partyId}:COD_WRITTEN_OFF:${input.clientRequestId ?? crypto.randomUUID()}`,
-    partyId: input.partyId,
-    branchId: input.branchId,
-    entryType: "COD_WRITTEN_OFF",
-    amount: toDbMoney(amount),
-    actorUserId: actor.userId,
-    notes: evidence.summary.slice(0, 500),
-  });
+  if (writeoffShortfallPortion.gt(0)) {
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `PARTY:${input.partyId}:SHORTFALL_SETTLED:WRITEOFF:${writeoffEventToken}`,
+      partyId: input.partyId,
+      branchId: input.branchId,
+      entryType: "SHORTFALL_SETTLED",
+      amount: toDbMoney(writeoffShortfallPortion),
+      actorUserId: actor.userId,
+      notes: evidence.summary.slice(0, 500),
+    });
+  }
+  if (writeoffCashPortion.gt(0)) {
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `PARTY:${input.partyId}:COD_WRITTEN_OFF:${writeoffEventToken}`,
+      partyId: input.partyId,
+      branchId: input.branchId,
+      entryType: "COD_WRITTEN_OFF",
+      amount: toDbMoney(writeoffCashPortion),
+      actorUserId: actor.userId,
+      notes: evidence.summary.slice(0, 500),
+    });
+  }
   await postEntry(tx, {
     entryType: "DELIVERY_WRITEOFF",
     postingIntent: deliveryWriteoffIntent(amount),
@@ -1002,7 +1057,7 @@ export interface RecoverWriteOffInput {
   branchId: number;
   partyId: number;
   amount: string;
-  shiftType?: "RECEPTION" | "RETAIL";
+  shiftType?: "RECEPTION" | "RETAIL" | "PRINT_SERVICES";
   /**
    * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
    * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
@@ -1032,6 +1087,8 @@ export async function recoverDeliveryWriteOff(
       branchId: Number(input.branchId),
       partyId: Number(input.partyId),
       amount: toDbMoney(amount),
+      ...(input.shiftType && input.shiftType !== "RECEPTION" ? { shiftType: input.shiftType } : {}),
+      ...(input.targetShiftId != null ? { targetShiftId: Number(input.targetShiftId) } : {}),
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(

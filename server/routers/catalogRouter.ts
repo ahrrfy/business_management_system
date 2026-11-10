@@ -14,12 +14,16 @@ import {
   listByUnitIds,
   listForPos,
   listForPurchase,
+  listForWarehouse,
+  listLabelsByProductIds,
+  listLabelsByUnitIds,
   listMaterialsForRecipe,
   listProductImages,
   listProductsAdmin,
   listStockByUnitIds,
   listUnitsForVariant,
   lookupByBarcode,
+  lookupWarehouseByBarcode,
   setProductActive,
   updateProduct,
 } from "../services/catalogService";
@@ -41,6 +45,7 @@ import {
 } from "../services/catalog/productVersioning";
 import {
   addUnitBarcodeAlias,
+  listLegacyBarcodeConflicts,
   listUnitBarcodes,
   listUnitBarcodesMany,
   removeUnitBarcodeAlias,
@@ -55,9 +60,10 @@ import {
   reassignProducts,
   updateCategory,
 } from "../services/categoryService";
-import { logAudit } from "../services/auditService";
+import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
-import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
+import { getProductOpenCommitments } from "../services/catalog/openCommitments";
+import { trySyncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import {
   canSeeCostForUser,
   productsManagerProcedure,
@@ -66,7 +72,8 @@ import {
   router,
 } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
-import { barcodeString, optionalBarcodeString, barcodeStorageString, optionalBarcodeStorageString } from "../lib/schemas";
+import { barcodeString, optionalBarcodeString, barcodeStorageString, optionalBarcodeStorageString, nonNegMoneyString } from "../lib/schemas";
+import { STOCK_USAGE_VALUES } from "@shared/stockUsage";
 import type { UnitPricing } from "../../shared/priceSanity";
 import {
   extractProductFactsFromImage,
@@ -140,9 +147,11 @@ function redactPosCostOne<T extends { costPriceBase?: string | null }>(
   return { ...row, costPriceBase: null };
 }
 
+const stockUsageSchema = z.enum(STOCK_USAGE_VALUES);
+
 const priceSchema = z.object({
   priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]),
-  price: z.string(),
+  price: nonNegMoneyString,
 });
 const customizationOptionSchema = z.object({
   value: z.string().min(1).max(120),
@@ -215,16 +224,15 @@ const unitSchema = z.object({
 });
 const variantSchema = z.object({
   sku: z.string().min(1),
+  variantKind: z.enum(["VARIANT", "ALTERNATIVE"]).optional(),
   variantName: z.string().optional(),
   color: z.string().optional(),
-  // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
   colorHex: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح")
     .nullish(),
   size: z.string().optional(),
-  costPrice: z.string(),
-  // v3-add-screens.
+  costPrice: nonNegMoneyString,
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   openingStock: z.number().int().min(0).optional(),
   // product-variants: نقطة إعادة الطلب + الظهور المستقل لكل متغيّر (الأعمدة موجودة في المخطّط).
@@ -265,10 +273,10 @@ const editVariantSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح")
     .nullish(),
   size: z.string().nullish(),
-  costPrice: z.string(),
+  costPrice: nonNegMoneyString,
   // priceSanity L1.7: سبب تغيير التكلفة (يُفرَض إن الشذوذ blocker/catastrophic خادمياً).
   costChangeReason: z.string().max(500).nullish(),
-  baseRetail: z.string().optional(),
+  baseRetail: z.union([z.literal(""), nonNegMoneyString]).optional(),
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
   isActive: z.boolean().optional(),
@@ -480,6 +488,83 @@ export const catalogRouter = router({
       return redactPosCost(rows, ctx.user);
     }),
 
+  // قراءات المخزن والملصقات ودفتر الصنف — مفصولة عن بحث الكاشير لتشمل الخام ومستلزمات التشغيل.
+  warehouseList: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        query: z.string().optional(),
+        limit: z.number().int().positive().max(1000).default(200),
+        includeBundles: z.boolean().optional(),
+        includeServices: z.boolean().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const rows = await listForWarehouse(
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+        input.query,
+        input.limit,
+        { includeBundles: input.includeBundles, includeServices: input.includeServices },
+      );
+      return redactPosCost(rows, ctx.user);
+    }),
+
+  warehouseByBarcode: productsReadProcedure
+    .input(
+      z.object({
+        barcode: barcodeString,
+        branchId: z.number().int().positive(),
+        tier,
+        includeBundles: z.boolean().optional(),
+        includeServices: z.boolean().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const row = await lookupWarehouseByBarcode(
+        input.barcode,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+        { includeBundles: input.includeBundles, includeServices: input.includeServices },
+      );
+      return redactPosCostOne(row, ctx.user);
+    }),
+
+  labelsByUnitIds: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        productUnitIds: z.array(z.number().int().positive()).max(500),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const rows = await listLabelsByUnitIds(
+        input.productUnitIds,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+      );
+      return redactPosCost(rows, ctx.user);
+    }),
+
+  labelsByProductIds: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        productIds: z.array(z.number().int().positive()).max(50),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const rows = await listLabelsByProductIds(
+        input.productIds,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+      );
+      return redactPosCost(rows, ctx.user);
+    }),
+
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
   adminList: productsReadProcedure
@@ -494,6 +579,7 @@ export const catalogRouter = router({
         showInPrintPos: z.boolean().optional(),
         showInQuotations: z.boolean().optional(),
         showInAdvancedSales: z.boolean().optional(),
+        stockUsage: stockUsageSchema.optional(),
         imageFilter: z.enum(["HAS_IMAGE", "NO_IMAGE", "VARIANT_NO_IMAGE"]).optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
@@ -521,7 +607,7 @@ export const catalogRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await setProductActive(input.productId, input.isActive, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        branchId: ctx.user.branchId ?? 0,
       });
       await logAudit(ctx, {
         action: input.isActive ? "product.activate" : "product.deactivate",
@@ -536,6 +622,10 @@ export const catalogRouter = router({
   usage: productsReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => getProductUsage(input.productId)),
+
+  openCommitments: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => getProductOpenCommitments(input.productId)),
 
   // حذف نهائي — للمنتج «النظيف» فقط (يُمنع مع رسالة عربية تسرد الارتباطات إن وُجدت). مدير فأعلى —
   // نفس مستوى setProductActive (تغيير جذري في الكتالوج).
@@ -777,6 +867,10 @@ export const catalogRouter = router({
         branchId: z.number().int().positive(),
         query: z.string().optional(),
         limit: z.number().int().positive().max(500).default(50),
+        unitIds: z.array(z.number().int().positive()).max(500).optional(),
+        materialOnly: z.boolean().optional(),
+        stockExpenseOnly: z.boolean().optional(),
+        excludeOperatingSupply: z.boolean().optional(),
       }),
     )
     .query(({ input, ctx }) =>
@@ -784,6 +878,12 @@ export const catalogRouter = router({
         scopeBranch(ctx, input.branchId),
         input.query,
         input.limit,
+        {
+          unitIds: input.unitIds,
+          materialOnly: input.materialOnly,
+          stockExpenseOnly: input.stockExpenseOnly,
+          excludeOperatingSupply: input.excludeOperatingSupply,
+        },
       ),
     ),
 
@@ -815,6 +915,11 @@ export const catalogRouter = router({
         showInAdvancedSales: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        stockUsage: stockUsageSchema.nullish(),
+        rawMaterial: z.boolean().optional(),
+        showInStore: z.boolean().optional(),
+        requireRetailReady: z.boolean().optional(),
+        clientRequestId: z.string().trim().min(1).max(128).optional(),
         recipe: z
           .array(
             z.object({
@@ -858,7 +963,8 @@ export const catalogRouter = router({
       for (const v of input.variants) {
         const pricings: UnitPricing[] = v.units.map((u) => ({
           unitName: u.unitName,
-          conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+          conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+          isBaseUnit: !!u.isBaseUnit,
           retail:
             u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
           wholesale:
@@ -869,22 +975,19 @@ export const catalogRouter = router({
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
       const res = await createProduct(
-        { ...input, name: input.name ?? "" } as any,
-        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 },
-      );
-      // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد.
-      await syncActiveFullStocktakeScopes();
-      await logAudit(ctx, {
-        action: "product.create",
-        entityType: "product",
-        entityId: (res as { productId?: number })?.productId,
-        newValue: {
-          name: input.name,
-          brand: input.brand ?? null,
-          modelName: input.modelName ?? null,
+        { ...input, name: input.name ?? "" },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? 0,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+          permissionsOverride: (ctx.user.permissionsOverride ?? null) as any,
         },
-      });
-      return res;
+        { audit: auditMetadataFromContext(ctx) },
+      );
+      // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد مع كشف التعليق إن تعذّر.
+      const syncRes = await trySyncActiveFullStocktakeScopes();
+      return { ...res, ...syncRes };
     }),
 
   // print-catalog: مواد خام لمنتقي وصفة الخدمة (يكشف الكلفة ⇒ مدير فأعلى).
@@ -924,6 +1027,8 @@ export const catalogRouter = router({
         categoryId: z.number().int().positive().nullish(),
         isCustomizable: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        stockUsage: stockUsageSchema.nullish(),
+        showInStore: z.boolean().optional(),
         variants: z
           .array(
             z.object({
@@ -932,7 +1037,7 @@ export const catalogRouter = router({
               variantName: z.string().nullish(),
               color: z.string().nullish(),
               size: z.string().nullish(),
-              costPrice: z.string(),
+              costPrice: nonNegMoneyString,
               // priceSanity L1.7: سبب تغيير التكلفة (إلزاميّ خادمياً إن الشذوذ blocker/catastrophic).
               costChangeReason: z.string().max(500).nullish(),
               units: z
@@ -958,7 +1063,8 @@ export const catalogRouter = router({
       for (const v of input.variants) {
         const pricings: UnitPricing[] = v.units.map((u) => ({
           unitName: u.unitName,
-          conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+          conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+          isBaseUnit: !!u.isBaseUnit,
           retail:
             u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
           wholesale:
@@ -1003,9 +1109,12 @@ export const catalogRouter = router({
         })) ?? [];
       const res = await updateProduct(input, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        permissionsOverride: (ctx.user.permissionsOverride ?? null) as any,
       });
-      await syncActiveFullStocktakeScopes();
+      const syncRes = await trySyncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -1036,7 +1145,7 @@ export const catalogRouter = router({
           })),
         },
       });
-      return res;
+      return { ...res, ...syncRes };
     }),
 
   /** قالب التخصيص المنظم لصفحة إدارة المنتج — يقرأه المدير فقط. */
@@ -1159,6 +1268,8 @@ export const catalogRouter = router({
         isCustomizable: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        stockUsage: stockUsageSchema.nullish(),
+        showInStore: z.boolean().optional(),
         // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): تحرير التوجيه بعد الإنشاء.
         // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
         showInReception: z.boolean().optional(),
@@ -1204,9 +1315,8 @@ export const catalogRouter = router({
             u.isBaseUnit && v.baseRetail ? v.baseRetail : priceOf("RETAIL");
           return {
             unitName: u.unitName,
-            conversionFactor: u.isBaseUnit
-              ? 1
-              : Number(u.conversionFactor) || 0,
+            conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor,
+            isBaseUnit: u.isBaseUnit,
             retail,
             wholesale: priceOf("WHOLESALE"),
             government: priceOf("GOVERNMENT"),
@@ -1229,17 +1339,14 @@ export const catalogRouter = router({
       }
       const res = await updateProductWithVariants(input, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        branchId: ctx.user.branchId ?? 0,
         role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        permissionsOverride: (ctx.user.permissionsOverride ?? null) as any,
       });
-      // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
-      await syncActiveFullStocktakeScopes();
-      // بدائل الباركود (توسعة ٣/٨): بعد نجاح الحفظ الرئيسي — انظر تعليق reconcileEditBarcodeAliases.
-      const aliasWarnings = await reconcileEditBarcodeAliases(
-        input.productId,
-        input.variants,
-        ctx.user.id,
-      );
+      // بدائل الباركود صارت تُوفَّق ذرّياً داخل المعاملة نفسها.
+      const aliasWarnings: string[] = [];
+      const syncRes = await trySyncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -1288,7 +1395,7 @@ export const catalogRouter = router({
           })),
         },
       });
-      return { ...res, aliasWarnings };
+      return { ...res, aliasWarnings, ...syncRes };
     }),
 
   // ═══ م٦ ق٨ — سجلّ النسخ والاستعادة (تكشف التكلفة ⇒ مدير فأعلى، كـgetForVariantEdit) ═══
@@ -1320,12 +1427,11 @@ export const catalogRouter = router({
       // — لا مخزونَ يتحرّك بالاستعادة، والدَّينُ الموروث (الافتراض ١ للأدمن بلا فرع) يُغلَق مع أخواته الإحدى عشرة معاً.
       const res = await restoreProductVersion(input, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        branchId: ctx.user.branchId ?? 0,
         role: ctx.user.role,
         isOwner: ctx.user.isOwner,
       });
-      // الاستعادة قد تُعيد تفعيل متغيّرٍ أو تُغيّر تصنيفاً ⇒ نفس مزامنة الجرد الشامل الحيّ بعد أيّ تعديل.
-      await syncActiveFullStocktakeScopes();
+      const syncRes = await trySyncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.restoreVersion",
         entityType: "product",
@@ -1336,7 +1442,7 @@ export const catalogRouter = router({
           reason: input.reason ?? null,
         },
       });
-      return res;
+      return { ...res, ...syncRes };
     }),
 
   assignBarcode: productsManagerProcedure
@@ -1463,6 +1569,11 @@ export const catalogRouter = router({
   listUnitBarcodes: productsReadProcedure
     .input(z.object({ productUnitId: z.number().int().positive() }))
     .query(({ input }) => listUnitBarcodes(input.productUnitId)),
+
+  /** مراجعة القراءة فقط للتصادمات التاريخية للباركود بعد التطبيع المعياري. */
+  legacyBarcodeConflicts: productsManagerProcedure.query(() =>
+    listLegacyBarcodeConflicts(),
+  ),
 
   /** بدائل عدّة وحدات دفعةً واحدة — منتقي «أيّ باركود يُطبع؟» في شاشة الملصقات (بلا N+1). */
   listUnitBarcodesMany: productsReadProcedure

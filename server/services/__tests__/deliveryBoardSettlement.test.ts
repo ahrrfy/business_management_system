@@ -317,6 +317,48 @@ describe("اقتراح الجهة بالمنطقة — دليلٌ لا تخمي�
   });
 });
 
+describe("تحصيل متعدد الفواتير مع وجود طرد مسلم بالآجل دون نقد بيد المندوب", () => {
+  it("يستثني الطرود المسلمة بلا تحصيل نقدي (COD_COLLECTED=0) ويسوي الفواتير المحصلة جماعياً مع احترام targetShiftId", async () => {
+    const printShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "PRINT_SERVICES" }, { userId: 2, branchId: 1 });
+    const a = await saleWithDelivery("multi-1", "2"); // 2000
+    const b = await saleWithDelivery("multi-2", "3"); // 3000
+    const creditDelivered = await saleWithDelivery("multi-credit", "4"); // 4000
+    await confirmDelivered(a.consignmentId, "2000");
+    await confirmDelivered(b.consignmentId, "3000");
+    // الطرد الثالث سُلّم للزبون بالآجل دون قبض نقدي بيد المندوب (COD_COLLECTED = 0)
+    await db().update(s.deliveryConsignments)
+      .set({ parcelStatus: "DELIVERED" })
+      .where(eq(s.deliveryConsignments.id, creditDelivered.consignmentId));
+
+    const p = await preview();
+    expect(p.lines.map((l) => l.consignmentId)).toEqual([a.consignmentId, b.consignmentId]);
+    expect(p.expectedCash).toBe("5000.00");
+    expect(p.net).toBe("5000.00");
+
+    const res = await withTx((tx) =>
+      settleDailyTx(
+        tx,
+        {
+          partyId: PARTY,
+          branchId: 1,
+          countedCash: "5000",
+          shiftType: "PRINT_SERVICES",
+          targetShiftId: printShift.shiftId,
+          expectedLines: p.lines.map((l) => ({ consignmentId: l.consignmentId, remaining: l.remaining })),
+          clientRequestId: "settle-multi-print-shift",
+        },
+        CASHIER,
+      ),
+    );
+    expect(res.status).toBe("BALANCED");
+    expect(res.netRemitted).toBe("5000.00");
+    expect(await partyBalance()).toBe("0.00");
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, res.receiptId!)))[0];
+    expect(Number(receipt.shiftId)).toBe(printShift.shiftId);
+    expect(await reconcileDeliveryFloat()).toEqual([]);
+  });
+});
+
 describe("listOpenConsignments — ظهور الفواتير المسندة للمندوب فورياً وبذمته", () => {
   it("الفاتورة المسندة حديثاً للمندوب الفردي تظهر فوراً في قائمته المفتوحة بحالة OUT_FOR_DELIVERY", async () => {
     await openReception();

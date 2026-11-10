@@ -3,6 +3,7 @@ import { iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink } from "@/lib/intlPhone";
+import { baghdadCurrentMonth } from "@shared/hr";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAttendanceCorrection } from "./useAttendanceCorrection";
 
@@ -15,9 +16,10 @@ export function useEmployeeStatement({
 }) {
   const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const [period, setPeriod] = useState(() =>
-    new Date().toISOString().slice(0, 7),
-  );
+  const me = trpc.auth?.me?.useQuery
+    ? trpc.auth.me.useQuery(undefined, { staleTime: 60_000 })
+    : { data: undefined };
+  const [period, setPeriod] = useState(() => baghdadCurrentMonth());
   const correction = useAttendanceCorrection();
   const {
     fix,
@@ -79,11 +81,20 @@ export function useEmployeeStatement({
     },
   });
 
+  const isSelfRecordBlocked = Boolean(
+    me.data &&
+      me.data.role !== "admin" &&
+      !me.data.isOwner &&
+      d?.employee?.userId != null &&
+      Number(d.employee.userId) === Number(me.data.id),
+  );
+
   useEffect(() => {
     const key = `${employeeId}:${period}`;
     if (
       d?.needsHealing &&
       !d?.payrollSnapshot &&
+      !isSelfRecordBlocked &&
       can("attendance.recomputeRates") &&
       autoHealedKeyRef.current !== key
     ) {
@@ -91,7 +102,7 @@ export function useEmployeeStatement({
       manualRecomputeRef.current = false;
       recompute.mutate({ period, employeeId });
     }
-  }, [d?.needsHealing, d?.payrollSnapshot, employeeId, period, can]);
+  }, [d?.needsHealing, d?.payrollSnapshot, isSelfRecordBlocked, employeeId, period, can]);
 
   /*
    * المستحقّ من الخادم بأساسه (`amountDue`/`dueBasis`) لا من حساب الحضور دائماً: المُعفى
@@ -115,7 +126,9 @@ export function useEmployeeStatement({
         `كشف حضور ودوام — ${d.employee.name}`,
         `الشهر: ${d.period}`,
         d.dueBasis === "exempt" ? "راتب ثابت — لا يخضع للحضور" : null,
-        `الساعات المدفوعة: ${d.totals.payableHours} من أصل ${d.totals.scheduledHours} ساعة مطلوبة`,
+        d.totals.isPartialMonth
+          ? `الساعات المدفوعة: ${d.totals.payableHours} من أصل ${d.totals.scheduledHoursToDate ?? d.totals.scheduledHours} ساعة مطلوبة حتى اليوم (من أصل ${d.totals.scheduledHours} للشهر)`
+          : `الساعات المدفوعة: ${d.totals.payableHours} من أصل ${d.totals.scheduledHours} ساعة مطلوبة`,
         d.totals.absentDays > 0
           ? `أيام الغياب: ${d.totals.absentDays} يوم`
           : null,

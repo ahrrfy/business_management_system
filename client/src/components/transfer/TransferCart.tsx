@@ -151,7 +151,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card">
       <div className="shrink-0 border-b px-3.5 py-3">
-        <ProductSearchBar invoiceType="SALE" branchId={branchId} tier="RETAIL" onAddProduct={addLine} onNotify={onNotify} />
+        <ProductSearchBar invoiceType="SALE" catalogMode="warehouse" branchId={branchId} tier="RETAIL" onAddProduct={addLine} onNotify={onNotify} />
       </div>
 
       <div className="flex shrink-0 items-center justify-between border-b bg-muted px-3.5 py-1.5">
@@ -280,7 +280,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
         </table>
       </div>
 
-      <BulkPicker open={bulkOpen} onClose={() => setBulkOpen(false)} onAddItems={addMany} invoiceType="SALE" branchId={branchId} tier="RETAIL" />
+      <BulkPicker open={bulkOpen} onClose={() => setBulkOpen(false)} onAddItems={addMany} invoiceType="SALE" catalogMode="warehouse" branchId={branchId} tier="RETAIL" />
     </section>
   );
 }

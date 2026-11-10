@@ -9,23 +9,13 @@ import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawe
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { Button } from "@/components/ui/button";
-import { SubmitButton } from "@/components/ui/SubmitButton";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
+  PurchaseQuickApproveDialog,
+  type QuickApprovalTarget,
+} from "@/components/purchases/PurchaseQuickApproveDialog";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
-import {
-  PurchaseCashSourceField,
-  usePurchaseCashSourceState,
-} from "@/components/purchases/PurchaseCashSourceField";
 import { QuickSupplierPaymentDialog } from "@/components/purchases/QuickSupplierPaymentDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -196,52 +186,7 @@ export default function Purchases() {
   }, [pendingControls.data?.rows]);
 
   const [quickPaymentTarget, setQuickPaymentTarget] = useState<PurchaseRow | null>(null);
-  const [quickApprovalTarget, setQuickApprovalTarget] = useState<{
-    id: number;
-    poNumber: string;
-    controlRequestId?: number;
-    creatorId?: number | null;
-    version: number;
-    settlementType: "CASH" | "CREDIT";
-    branchId: number;
-    agreedCurrency: string | null;
-    total: string | null;
-  } | null>(null);
-  const [quickApprovalReason, setQuickApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
-  const isQuickCashIqd =
-    quickApprovalTarget != null &&
-    quickApprovalTarget.settlementType === "CASH" &&
-    quickApprovalTarget.agreedCurrency !== "USD";
-  const quickCashSourceState = usePurchaseCashSourceState({
-    branchId: quickApprovalTarget?.branchId,
-    enabled: isQuickCashIqd,
-    context: "approval",
-    isCreator:
-      quickApprovalTarget?.creatorId != null &&
-      me.data?.id != null &&
-      Number(quickApprovalTarget.creatorId) === Number(me.data.id),
-  });
-
-  const decideControlMut = trpc.purchases.decideControl.useMutation({
-    onSuccess: async (res) => {
-      const wasCash = quickApprovalTarget?.settlementType === "CASH";
-      notify.ok(
-        res.status === "APPROVED"
-          ? wasCash
-            ? "تم اعتماد الفاتورة النقدية واستلام البضاعة وسداد المورد بالكامل — الذمة المتبقية 0.00"
-            : "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
-          : "تم تحديث حالة طلب الاعتماد",
-      );
-      setQuickApprovalTarget(null);
-      quickCashSourceState.reset();
-      await Promise.all([
-        utils.purchases.list.invalidate(),
-        utils.purchases.pendingControls.invalidate(),
-        utils.purchases.integrityReport.invalidate(),
-      ]);
-    },
-    onError: (err) => notify.err(err),
-  });
+  const [quickApprovalTarget, setQuickApprovalTarget] = useState<QuickApprovalTarget | null>(null);
 
   const autoSettleSupplierMut = trpc.purchases.reconcileSettlement.useMutation({
     onSuccess: async (res) => {
@@ -368,11 +313,17 @@ export default function Purchases() {
   });
 
   const confirmMut = trpc.purchases.confirmOrder.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       await Promise.all([
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
       ]);
+      if (
+        res.shortageWarning?.hasShortage &&
+        res.shortageWarning.warningMessage
+      ) {
+        notify.warn(res.shortageWarning.warningMessage);
+      }
       notify.ok(
         "أُرسلت الفاتورة للاعتماد المستقل؛ الاعتماد النهائي سيضيف كامل الكميات إلى المخزون",
       );
@@ -941,15 +892,12 @@ export default function Purchases() {
                               ? "اعتماد واستلام وسداد نقدي"
                               : "اعتماد واستلام البضاعة",
                           hidden: !canDirectApprove,
-                          disabled:
-                            decideControlMut.isPending ||
-                            controlStateUnavailable,
+                          disabled: controlStateUnavailable,
                           disabledReason: controlStateUnavailable
                             ? "تعذّر التحقق من طلبات التحكم"
                             : undefined,
                           onSelect: () => {
                             if (!activeControl) return;
-                            quickCashSourceState.reset();
                             setQuickApprovalTarget({
                               id: p.id,
                               poNumber: p.poNumber,
@@ -961,7 +909,6 @@ export default function Purchases() {
                               agreedCurrency: p.agreedCurrency,
                               total: p.total,
                             });
-                            setQuickApprovalReason("اعتماد واستلام البضاعة كاملة");
                           },
                           gate: {
                             roles: ["manager", "purchasing"],
@@ -1178,89 +1125,18 @@ export default function Purchases() {
           onSuccess={() => void utils.purchases.list.invalidate()}
         />
       ) : null}
-      <Dialog
-        open={quickApprovalTarget != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setQuickApprovalTarget(null);
-            quickCashSourceState.reset();
-          }
+      <PurchaseQuickApproveDialog
+        target={quickApprovalTarget}
+        currentUserId={me.data?.id ?? null}
+        onClose={() => setQuickApprovalTarget(null)}
+        onApproved={async () => {
+          await Promise.all([
+            utils.purchases.list.invalidate(),
+            utils.purchases.pendingControls.invalidate(),
+            utils.purchases.integrityReport.invalidate(),
+          ]);
         }}
-      >
-        <DialogContent className="sm:max-w-md" dir="rtl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <CheckCircle2 aria-hidden className="size-5 text-primary" />
-              <span>اعتماد واستلام أمر الشراء {quickApprovalTarget?.poNumber}</span>
-            </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              اعتماد هذا الأمر يعني تأكيد استلام كامل الأصناف في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 py-1">
-            <div className="space-y-1">
-              <Label htmlFor="row-approve-reason" className="text-xs">
-                بيان الاعتماد / السبب
-              </Label>
-              <Input
-                id="row-approve-reason"
-                value={quickApprovalReason}
-                onChange={(e) => setQuickApprovalReason(e.target.value)}
-                className="text-xs"
-                placeholder="اعتماد واستلام البضاعة كاملة"
-              />
-            </div>
-            {isQuickCashIqd ? (
-              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
-                <p className="font-medium">
-                  هذه فاتورة شراء نقدية: اعتمادها يرحل البضاعة ويسدد كامل قيمتها فورا في نفس العملية وتصبح الذمة المتبقية 0.00.
-                </p>
-                <PurchaseCashSourceField
-                  idPrefix="quick-approve"
-                  context="approval"
-                  state={quickCashSourceState}
-                />
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setQuickApprovalTarget(null);
-                quickCashSourceState.reset();
-              }}
-              disabled={decideControlMut.isPending}
-            >
-              إلغاء
-            </Button>
-            <SubmitButton
-              size="sm"
-              pending={decideControlMut.isPending}
-              onClick={() => {
-                if (!quickApprovalTarget?.controlRequestId) return;
-                decideControlMut.mutate({
-                  requestId: quickApprovalTarget.controlRequestId,
-                  decisionKey: `decide-row-${quickApprovalTarget.controlRequestId}-${crypto.randomUUID()}`,
-                  approve: true,
-                  reason: quickApprovalReason.trim() || "اعتماد واستلام البضاعة كاملة",
-                  confirmedFullReceipt: true,
-                  cashSource: isQuickCashIqd ? quickCashSourceState.payload : undefined,
-                });
-              }}
-              disabled={
-                quickApprovalReason.trim().length < 3 ||
-                quickCashSourceState.isActionBlocked
-              }
-            >
-              {isQuickCashIqd
-                ? "اعتماد واستلام وسداد نقدي فوري"
-                : "تأكيد الاعتماد والاستلام"}
-            </SubmitButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
     </div>
   );
 }

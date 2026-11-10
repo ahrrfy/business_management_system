@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createProduct } from "../catalogService";
+import { setStock } from "../inventoryService";
 import {
   createReservation,
   extendReservation,
@@ -55,13 +56,13 @@ beforeEach(async () => {
     variants: [{
       sku: "RSV-NEAR",
       costPrice: "1000",
-      openingStock: 100,
       units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "1500" }] }],
     }],
   }, actor);
   const variant = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "RSV-NEAR")))[0];
   variantId = Number(variant.id);
   unitId = Number((await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, variantId)))[0].id);
+  await withTx((tx) => setStock(tx, { variantId, branchId: 1, targetQuantity: 100, referenceType: "OPENING", documentNumber: `OPEN-${variantId}`, notes: "رصيد اختبار", createdBy: actor.userId }));
   await db().insert(s.waHubSettings).values({ id: 1, flowReservationNearExpiry: true });
 });
 

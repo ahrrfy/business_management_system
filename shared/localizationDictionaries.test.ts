@@ -198,6 +198,11 @@ describe("تمايز مفهومَي التوصيل", () => {
       "MONEY_PARTIAL",
       "MONEY_SETTLED",
       "MONEY_WRITTEN_OFF",
+      "FULFILLMENT_CHARGES_ASSIGNED",
+      "WORKFLOW_RETURN_RECEIVED",
+      "WORKFLOW_CUSTOMER_COLLECTION_CONFIRMED",
+      "COD_CLAIM_CHANGED",
+      "AFTERCARE_DISPATCHED",
     ]) {
       expect(DELIVERY_EVENT_TYPES as readonly string[]).toContain(live);
     }

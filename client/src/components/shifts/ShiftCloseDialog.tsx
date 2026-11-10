@@ -21,6 +21,7 @@ import {
   SHIFT_VARIANCE_LABELS,
   type ShiftVarianceCode,
 } from "@shared/shiftCashGovernance";
+import { readShiftOutboxSummary } from "@/lib/offline/outbox";
 
 const fmtDT = (d: string | number | Date | null | undefined) => fmtDateTime(d);
 
@@ -90,10 +91,22 @@ export function ShiftCloseDialog({
 }: ShiftCloseDialogProps) {
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
   const [varianceReason, setVarianceReason] = useState("");
+  const [outboxSummary, setOutboxSummary] = useState<{ queued: number; queuedTotal: number }>({ queued: 0, queuedTotal: 0 });
 
   useEffect(() => {
     setVarianceReasonCode("");
     setVarianceReason("");
+    if (closingShiftId == null) {
+      setOutboxSummary({ queued: 0, queuedTotal: 0 });
+      return;
+    }
+    let active = true;
+    void readShiftOutboxSummary(closingShiftId).then((res) => {
+      if (active) setOutboxSummary(res);
+    });
+    return () => {
+      active = false;
+    };
   }, [closingShiftId]);
 
   return (
@@ -117,6 +130,11 @@ export function ShiftCloseDialog({
           <LoadingState />
         ) : (
           <>
+            {outboxSummary.queued > 0 && (
+              <div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                تنبيه: توجد {outboxSummary.queued} عملية أوفلاين غير مُزامَنة على هذا الجهاز لهذه الوردية بصافي أثر نقدي ({fmtMoney(outboxSummary.queuedTotal)} د.ع) لم تدخل معادلة الإغلاق بعد.
+              </div>
+            )}
             <div className="rounded-xl border bg-muted/30 px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-semibold">

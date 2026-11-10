@@ -1,6 +1,7 @@
 import { readEconomicVariant, type EconomicInventoryScope } from "./economicOwnership";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { isMaterialStockUsage, isSellableStockUsage } from "@shared/stockUsage";
 import { asc, inArray } from "drizzle-orm";
 
 import { productVariants, products } from "../../../drizzle/schema";
@@ -18,6 +19,7 @@ export interface StockedOwnedMaterialOptions {
    */
   allowInactiveVariantIds?: readonly number[];
   economicScope?: EconomicInventoryScope;
+  usageCheck?: "material" | "sellable" | "none";
 }
 
 /**
@@ -78,6 +80,7 @@ export async function assertStockedOwnedMaterials(
       isService: products.isService,
       isBundle: products.isBundle,
       isConsignment: products.isConsignment,
+      stockUsage: products.stockUsage,
     })
     .from(products)
     .where(inArray(products.id, productIds))
@@ -171,6 +174,27 @@ export async function assertStockedOwnedMaterials(
           what: `تعذّر استهلاك ${context} «${name}»`,
           why: "الصنف بضاعة أمانة وليست أصلاً مملوكاً للمنشأة",
           doThis: "استخدم مادة مملوكة أو سوِّ وضع الأمانة أولاً",
+        }),
+      });
+    }
+    const usageCheck = options.usageCheck ?? "material";
+    if (!allowInactive.has(id) && usageCheck === "material" && !isMaterialStockUsage(product.stockUsage)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر استهلاك ${context} «${name}»`,
+          why: "تصنيف استخدام الصنف المخزني لا يسمح باستهلاكه كمادة إنتاج (مخصّص للبيع فقط أو مستلزم تشغيل)",
+          doThis: "اختر مادة خاماً أو صنفاً مزدوج الاستخدام، أو حدّث تصنيف الاستخدام للصنف",
+        }),
+      });
+    }
+    if (!allowInactive.has(id) && usageCheck === "sellable" && !isSellableStockUsage(product.stockUsage)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر بيع ${context} «${name}»`,
+          why: "تصنيف استخدام المكوّن المخزني لا يسمح بالبيع (مادة خام أو مستلزم تشغيل)",
+          doThis: "استبدل المكوّن بصنف قابل للبيع أو حدّث تصنيف استخدامه",
         }),
       });
     }

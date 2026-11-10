@@ -73,6 +73,7 @@ export interface DeclareShipmentReturnInput extends Omit<
   statementNumber?: string | null;
 }
 export interface ReturnShipmentInput extends ShipmentReasonInput {
+  workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL" | null;
   refundShiftId?: number | null;
 }
 export interface ReassignShipmentDriverInput extends ShipmentOperationInput {
@@ -287,7 +288,7 @@ export async function confirmShipmentDelivery(
         );
       if (rows.some((row) => row.parcelStatus === "DELIVERED"))
         reject("تضم الشحنة حالة تسليم جزئية غير متسقة");
-      const invoiceIds = rows.map((row) => Number(row.invoiceId));
+      const invoiceIds = [0, ...rows.flatMap((row) => row.invoiceId == null ? [] : [Number(row.invoiceId)])];
       const invoiceRows = await tx
         .select()
         .from(invoices)
@@ -435,7 +436,7 @@ export async function returnShipment(
         .where(
           inArray(
             invoices.id,
-            rows.map((row) => Number(row.invoiceId)),
+            [0, ...rows.flatMap((row) => row.invoiceId == null ? [] : [Number(row.invoiceId)])],
           ),
         )
         .for("update");
@@ -453,6 +454,7 @@ export async function returnShipment(
             ...actor,
             returnReason: input.reason,
             refundShiftId: input.refundShiftId,
+            workOrderDisposition: input.workOrderDisposition ?? null,
             clientRequestId: memberKey(input, Number(row.id)),
           },
           tx,
@@ -469,7 +471,7 @@ export async function returnShipment(
         );
     },
     async (tx, rows) => {
-      const invoiceIds = rows.map((row) => Number(row.invoiceId));
+      const invoiceIds = [0, ...rows.flatMap((row) => row.invoiceId == null ? [] : [Number(row.invoiceId)])];
       const invoiceRows = await tx
         .select({ id: invoices.id, paidAmount: invoices.paidAmount })
         .from(invoices)
@@ -487,7 +489,7 @@ export async function returnShipment(
           and(
             inArray(
               receipts.invoiceId,
-              unsettledFees.map((row) => Number(row.invoiceId)),
+              [0, ...unsettledFees.flatMap((row) => row.invoiceId == null ? [] : [Number(row.invoiceId)])],
             ),
             inArray(
               receipts.referenceNumber,

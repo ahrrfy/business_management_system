@@ -10,6 +10,9 @@ import { payDeliveryFee, payPartyDeliveryFees } from "../delivery/fees";
 import { listOpenConsignments, listPartyRemittances } from "../delivery/queries";
 import { previewDailySettlementTx, settleDailyTx } from "../delivery/dailySettlement";
 import { returnByBarcode } from "../delivery/barcodeReturnService";
+import { mutateWorkflowAssignment } from "../delivery/workflow/assignment";
+import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "../delivery/workflow/preview";
+import { cancelInvoiceDeliveryTx, invoiceDeliveryAmendmentTx } from "../delivery/invoiceAmendment";
 import {
   confirmShipmentDelivery,
   cancelShipmentAssignment,
@@ -1527,5 +1530,346 @@ describe("one physical shipment with independent invoice accounting", () => {
       insufficient?.drawers.find((row) => row.shiftId === shift.shiftId)
         ?.sufficient,
     ).toBe(false);
+  });
+
+  it("withholds full shipment fee across siblings when positive leader COD is smaller than shipment fee", async () => {
+    await db().update(s.deliveryParties).set({ partyType: "INDIVIDUAL" }).where(eq(s.deliveryParties.id, 1));
+    await db().update(s.invoices).set({ paidAmount: "98.00" }).where(eq(s.invoices.id, 1));
+    await db().update(s.customers).set({ currentBalance: "202.00" }).where(eq(s.customers.id, 1));
+    await db().update(s.deliveryConsignments)
+      .set({ sourceType: "ONLINE_ORDER", codAmount: "2.00", deliveryFee: "5.00" })
+      .where(eq(s.deliveryConsignments.id, 11));
+
+    const openBeforeConfirm = await listOpenConsignments(1, 1);
+    expect(openBeforeConfirm.rows.map((r) => [r.id, r.feeWithholdingCash, r.feeWithholdingBlocked, r.shipmentCollectibleDue])).toEqual([
+      [11, "2.00", false, "202.00"],
+      [12, "3.00", false, "202.00"],
+    ]);
+
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
+    await confirmShipmentDelivery({
+      consignmentId: 11,
+      collectedAmount: "202.00",
+      evidence: "تأكيد استلام العميل",
+      clientRequestId: "small-leader-cod-confirm",
+    }, actor);
+
+    const openAfterConfirm = await listOpenConsignments(1, 1);
+    expect(openAfterConfirm.rows.map((r) => [r.id, r.feeWithholdingCash, r.feeWithholdingBlocked])).toEqual([
+      [11, "2.00", false],
+      [12, "3.00", false],
+    ]);
+
+    const preview = await withTx((tx) =>
+      previewDailySettlementTx(tx, { partyId: 1, branchId: 1 }, actor),
+    );
+    expect(preview).toMatchObject({
+      expectedCash: "202.00",
+      deductions: "5.00",
+      net: "197.00",
+    });
+    expect(preview.lines).toMatchObject([
+      { consignmentId: 11, remaining: "2.00", feeWithholding: "2.00" },
+      { consignmentId: 12, remaining: "200.00", feeWithholding: "3.00" },
+    ]);
+
+    const settled = await withTx((tx) =>
+      settleDailyTx(tx, {
+        partyId: 1,
+        branchId: 1,
+        countedCash: "197.00",
+        targetShiftId: shift.shiftId,
+        clientRequestId: "small-leader-cod-settle-daily",
+      }, actor),
+    );
+    expect(settled).toMatchObject({
+      collectedTotal: "202.00",
+      feesTotal: "5.00",
+      netRemitted: "197.00",
+      status: "BALANCED",
+    });
+
+    const state = await snapshot();
+    expect(state.party[0]?.currentBalance).toBe("0.00");
+    expect(state.receipts.map((r) => [r.direction, r.amount])).toEqual([
+      ["IN", "202.00"],
+      ["OUT", "5.00"],
+    ]);
+    const remLines = await db().select().from(s.deliveryRemittanceLines);
+    expect(remLines.map((l) => [l.consignmentId, l.grossApplied, l.feeOffset, l.cashReceived])).toEqual([
+      [11, "2.00", "2.00", "0.00"],
+      [12, "200.00", "3.00", "197.00"],
+    ]);
+    expect(state.ledger.filter((e) => e.entryType === "FEE_OFFSET")).toHaveLength(1);
+    expect(state.cn.map((c) => [c.id, c.status, c.moneyStatus, Boolean(c.feeSettledAt)])).toEqual([
+      [11, "DELIVERED", "SETTLED", true],
+      [12, "DELIVERED", "SETTLED", false],
+    ]);
+  });
+
+  it("withholds order-based commission across siblings when positive leader COD is smaller than commission", async () => {
+    await db().update(s.invoices).set({ paidAmount: "98.00" }).where(eq(s.invoices.id, 1));
+    await db().update(s.customers).set({ currentBalance: "202.00" }).where(eq(s.customers.id, 1));
+    await db().update(s.deliveryConsignments)
+      .set({ sourceType: "ONLINE_ORDER", codAmount: "2.00", deliveryFee: "10.00" })
+      .where(eq(s.deliveryConsignments.id, 11));
+    await db().update(s.deliveryParties).set({ useCommissionForSettlement: true }).where(eq(s.deliveryParties.id, 1));
+    await db().insert(s.courierCommissionRules).values({
+      partyId: 1,
+      ruleType: "PERCENT_OF_ORDER",
+      percentValue: "5.00",
+      isActive: true,
+    });
+
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
+    await confirmShipmentDelivery({
+      consignmentId: 11,
+      collectedAmount: "202.00",
+      evidence: "تأكيد استلام العميل",
+      clientRequestId: "small-leader-commission-confirm",
+    }, actor);
+
+    const openAfterConfirm = await listOpenConsignments(1, 1);
+    expect(openAfterConfirm.rows.map((r) => [r.id, r.feeWithholdingCash, r.feeWithholdingBlocked])).toEqual([
+      [11, "2.00", false],
+      [12, "3.00", false],
+    ]);
+
+    const rem = await recordDeliveryRemittance({
+      branchId: 1,
+      partyId: 1,
+      requireFullShipment: true,
+      targetShiftId: shift.shiftId,
+      lines: [
+        { consignmentId: 11, collectedAmount: "2.00" },
+        { consignmentId: 12, collectedAmount: "200.00" },
+      ],
+      countedCash: "197.00",
+      clientRequestId: "small-leader-commission-remit",
+    }, actor);
+    expect(rem).toMatchObject({
+      collectedTotal: "202.00",
+      feesTotal: "5.00",
+      netRemitted: "197.00",
+    });
+
+    const state = await snapshot();
+    expect(state.party[0]?.currentBalance).toBe("0.00");
+    expect(state.ledger.filter((e) => e.entryType === "FEE_OFFSET").map((e) => e.amount)).toEqual(["10.00"]);
+    expect(state.receipts.map((r) => [r.direction, r.amount])).toEqual([
+      ["IN", "202.00"],
+      ["OUT", "5.00"],
+    ]);
+  });
+
+  it("settles a delivery company 3-invoice shipment (small leader COD + follower COD + zero-COD invoice) in 1 step via recordCompanyStatement", async () => {
+    await db().insert(s.invoices).values({
+      id: 3,
+      invoiceNumber: "SHIPMENT-INV-3",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "50.00",
+      total: "50.00",
+      paidAmount: "50.00",
+      status: "PAID",
+      createdBy: 1,
+    });
+    await db().update(s.invoices).set({ paidAmount: "98.00" }).where(eq(s.invoices.id, 1));
+    await db().update(s.customers).set({ currentBalance: "202.00" }).where(eq(s.customers.id, 1));
+    await db().update(s.deliveryConsignments)
+      .set({ sourceType: "ONLINE_ORDER", codAmount: "2.00", deliveryFee: "5.00" })
+      .where(eq(s.deliveryConsignments.id, 11));
+    await db().insert(s.deliveryConsignments).values({
+      id: 13,
+      consignmentNumber: "SHIPMENT-CN-13",
+      partyId: 1,
+      branchId: 1,
+      invoiceId: 3,
+      sourceId: 3,
+      sourceType: "INVOICE",
+      endCustomerId: 1,
+      codAmount: "0.00",
+      deliveryFee: "0.00",
+      feeCollection: "COURIER",
+      moneyStatus: "NOT_APPLICABLE",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      dispatchedBy: 1,
+    });
+    await db().insert(s.deliveryShipmentMembers).values({
+      consignmentId: 13,
+      leaderConsignmentId: 11,
+      createdBy: 1,
+    });
+
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
+    const stmt = await recordCompanyStatement({
+      branchId: 1,
+      partyId: 1,
+      targetShiftId: shift.shiftId,
+      statementNumber: "STMT-MULTI-3INV",
+      deductionsTotal: "5.00",
+      countedCash: "197.00",
+      lines: [
+        { consignmentId: 11, collectedAmount: "2.00", expectedDue: "2.00", expectedProven: "0.00" },
+        { consignmentId: 12, collectedAmount: "200.00", expectedDue: "200.00", expectedProven: "0.00" },
+        { consignmentId: 13, collectedAmount: "0.00", expectedDue: "0.00", expectedProven: "0.00", zeroDeliveryConfirmed: true },
+      ],
+      clientRequestId: "stmt-multi-3inv-req",
+    }, actor);
+
+    expect(stmt).toMatchObject({
+      statementNumber: "STMT-MULTI-3INV",
+      deliveriesConfirmed: 3,
+      collectedTotal: "202.00",
+      netRemitted: "197.00",
+    });
+
+    const state = await snapshot();
+    expect(state.party[0]?.currentBalance).toBe("0.00");
+    expect(state.cn.map((c) => [c.id, c.parcelStatus, c.status, c.moneyStatus])).toEqual([
+      [11, "DELIVERED", "DELIVERED", "SETTLED"],
+      [12, "DELIVERED", "DELIVERED", "SETTLED"],
+      [13, "DELIVERED", "DELIVERED", "NOT_APPLICABLE"],
+    ]);
+    expect(state.receipts.map((r) => [r.direction, r.amount])).toEqual([
+      ["IN", "202.00"],
+      ["OUT", "5.00"],
+    ]);
+  });
+
+  it("allows 1-step workflow reassign on OUT_FOR_DELIVERY without handover and clears stale carrier tracking when switching COMPANY -> INDIVIDUAL", async () => {
+    await db().insert(s.deliveryParties).values({
+      id: 2,
+      name: "مندوب خاص",
+      partyType: "INDIVIDUAL",
+      branchId: 1,
+      currentBalance: "0.00",
+      isActive: true,
+    });
+    await db().insert(s.users).values({
+      id: 3,
+      openId: "ind-driver",
+      role: "courier",
+      branchId: 1,
+    });
+    await db().insert(s.deliveryPartyMembers).values({
+      partyId: 2,
+      userId: 3,
+      memberRole: "DRIVER",
+      isActive: true,
+      createdBy: 1,
+    });
+    const managerActor = { userId: 1, branchId: 1, role: "admin" };
+    await db().update(s.users).set({ role: "admin" }).where(eq(s.users.id, 1));
+
+    const preview = await withTx((tx) =>
+      currentWorkflowActorTx(tx, managerActor, 1).then((a) => loadWorkflowPreviewTx(tx, { kind: "consignment", id: 11 }, a.current, 1)),
+    );
+    expect(preview.actions.find((a) => a.action === "reassign")?.allowed).toBe(true);
+
+    const reassigned = await mutateWorkflowAssignment(
+      {
+        source: {
+          kind: "consignment",
+          id: 11,
+          expectedVersion: preview.source.version,
+        },
+        branchId: 1,
+        action: "reassign",
+        reason: "تحويل فوري لمندوب المكتبة قبل خروج الطرد",
+        partyId: 2,
+        assignedUserId: 3,
+        clientRequestId: "part-j-1step-reassign-ind",
+      },
+      managerActor,
+    );
+    expect(reassigned.consignmentId).toBe(11);
+
+    const allConsignments = await db().select().from(s.deliveryConsignments);
+    const activeRows = allConsignments.filter((c) => c.status === "DISPATCHED");
+    expect(activeRows).toHaveLength(2);
+    expect(activeRows.every((c) => c.partyId === 2)).toBe(true);
+    expect(activeRows.every((c) => c.externalTrackingRef == null)).toBe(true);
+  });
+
+  it("preserves workOrderDisposition RETURN_TO_READY through returnByBarcode on a multi-invoice shipment containing a work order", async () => {
+    await db().insert(s.workOrders).values({
+      id: 50,
+      orderNumber: "WO-50",
+      branchId: 1,
+      customerId: 1,
+      contactName: "عميل الشحنة",
+      contactPhone: "07701234567",
+      title: "مطبوعات تجريبية",
+      status: "DELIVERED",
+      hasDelivery: true,
+      salePrice: "100.00",
+      deposit: "0.00",
+      invoiceId: 1,
+      createdBy: 1,
+    });
+    await db()
+      .update(s.invoices)
+      .set({ sourceType: "WORKORDER" })
+      .where(eq(s.invoices.id, 1));
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ workOrderId: 50, sourceType: "WORK_ORDER", sourceId: 50 })
+      .where(eq(s.deliveryConsignments.id, 11));
+
+    const res = await returnByBarcode(
+      {
+        barcode: "SHIPMENT-CN-11",
+        returnReason: "تأجيل استلام من العميل مع بقاء الطلب جاهزاً",
+        workOrderDisposition: "RETURN_TO_READY",
+        clientRequestId: "part-j-wo-return-ready",
+      },
+      actor,
+    );
+    expect(res.consignmentId).toBe(11);
+
+    const [wo] = await db()
+      .select()
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, 50));
+    expect(wo?.status).toBe("READY");
+
+    const [inv1] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, 1));
+    expect(inv1?.status).toBe("PENDING");
+  });
+
+  it("preserves shipment leader codClaimVersion on member cancel while closing member consignment", async () => {
+    const [leaderBefore] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, 11));
+    expect(leaderBefore?.codClaimVersion).toBe(1);
+
+    await withTx(async (tx) => {
+      const state = await invoiceDeliveryAmendmentTx(tx, 2);
+      expect(state).not.toBeNull();
+      await cancelInvoiceDeliveryTx(
+        tx,
+        state!,
+        actor,
+        "part-j-member-cancel-continuity",
+        "إلغاء الفاتورة الثانية ضمن الشحنة الموحدة",
+      );
+    });
+
+    const [leaderAfter] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, 11));
+    const [memberAfter] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, 12));
+    expect(memberAfter?.status).toBe("CANCELLED");
+    expect(leaderAfter?.codClaimVersion).toBe(1);
   });
 });

@@ -506,6 +506,9 @@ export async function createPrintSaleInTx(
         id: products.id,
         isActive: products.isActive,
         productType: products.productType,
+        showInPrintPos: products.showInPrintPos,
+        isBundle: products.isBundle,
+        stockUsage: products.stockUsage,
         productName: products.name,
         invoiceLabel: products.invoiceLabel,
         shortTitle: products.shortTitle,
@@ -546,8 +549,18 @@ export async function createPrintSaleInTx(
       if (product.isActive !== true) {
         throwDisabledPrintService(l.variantId);
       }
-      if (product.productType !== PRINT_SERVICE_TYPE) {
+      if (product.isBundle || (product.productType !== PRINT_SERVICE_TYPE && product.showInPrintPos !== true)) {
         throwNonPrintService();
+      }
+      if (!product.isService && product.stockUsage != null && product.stockUsage !== "SALE_ONLY" && product.stockUsage !== "SALE_AND_MATERIAL") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر بيع «${product.productName}» في شاشة الطباعة`,
+            why: "تصنيف استخدام الصنف المخزني (مادة خام أو مستلزم تشغيل) لا يسمح ببيعه",
+            doThis: "استخدم خدمة طباعة فورية أو صنفاً قابلاً للبيع",
+          }),
+        });
       }
       const wasService = discoveredNonStockVariantIds.includes(l.variantId);
       if ((product.isService === true) !== wasService) {
@@ -626,6 +639,8 @@ export async function createPrintSaleInTx(
         id,
         isActive: row.isActive,
         productIsActive: product.isActive,
+        isBundle: product.isBundle,
+        showInPrintPos: product.showInPrintPos,
         productType: product.productType,
         productName: product.productName,
         invoiceLabel: product.invoiceLabel,
@@ -642,7 +657,7 @@ export async function createPrintSaleInTx(
       if (variant.isActive !== true || variant.productIsActive !== true) {
         throwDisabledPrintService(l.variantId);
       }
-      if (variant.productType !== PRINT_SERVICE_TYPE) {
+      if (variant.isBundle || (variant.productType !== PRINT_SERVICE_TYPE && variant.showInPrintPos !== true)) {
         throwNonPrintService();
       }
     }

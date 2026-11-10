@@ -10,8 +10,12 @@ type Party = {
   linkedUserName: string | null;
 };
 
-export function requiresDeliveryDriver(party: Party | null | undefined): boolean {
-  return party?.partyType === "INDIVIDUAL" && (party.userId != null || party.hasActiveDriverMembership);
+export function requiresDeliveryDriver(party: Party | null | undefined, branchId?: number): boolean {
+  if (party?.partyType !== "INDIVIDUAL") return false;
+  if (branchId != null) {
+    return party.userId != null || deliveryDriverOptions(party, branchId).length > 0;
+  }
+  return party.userId != null || party.hasActiveDriverMembership;
 }
 
 /** Readonly server metadata excludes inactive/expired users; never select a default. */

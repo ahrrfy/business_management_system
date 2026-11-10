@@ -31,6 +31,7 @@ import {
   loadStocktakeProgress,
   lockSession,
 } from "./internal";
+import { syncSingleFullStocktakeSessionTx } from "./liveScope";
 import { loadReviewCore, willAdjust } from "./reviewCore";
 import {
   assertNoActiveStocktakeOverlap,
@@ -619,13 +620,12 @@ export async function approveStocktake(
   });
 }
 
-/** إقفال العدّ يدوياً: كل التكليفات ACTIVE ⇒ SUBMITTED والجلسة ⇒ REVIEW (مراجعة جزئية مسموحة). */
+/** إقفال العدّ يدوياً: يحدّث نطاق الجلسة الشاملة تحت أقفالها ويثبّت أي سطور عدّ جديدة قبل فحص الاكتمال. */
 export async function forceStocktakeReview(
   sessionId: number,
   _actor: StkActor,
 ): Promise<{ ok: true }> {
-  return withTx(async (tx) => {
-    const s = await lockSession(tx, sessionId);
+  const outcome = await withStocktakeScopeTx(sessionId, async (tx, s) => {
     if (s.status === "REVIEW") return { ok: true as const }; // idempotent
     if (s.status !== "COUNTING") {
       throw new TRPCError({
@@ -633,12 +633,18 @@ export async function forceStocktakeReview(
         message: "إقفال العدّ متاح على جلسة قيد العدّ فقط",
       });
     }
+    await tx
+      .select({ id: stocktakeAssignments.id })
+      .from(stocktakeAssignments)
+      .where(eq(stocktakeAssignments.sessionId, sessionId))
+      .for("update");
+    if (s.scopeType === "FULL") {
+      await syncSingleFullStocktakeSessionTx(tx, s);
+    }
     const { total, counted } = await loadStocktakeProgress(tx, sessionId);
     if (counted < total) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: `لا يمكن إنهاء العدّ قبل عدّ كل المنتجات (${counted}/${total})`,
-      });
+      // نُنهي المعاملة بالتزام (COMMIT) كي تبقى سطور العدّ الجديدة مُثبّتة ليعدّها الفريق قبل الإقفال.
+      return { ok: false as const, counted, total };
     }
     const now = new Date();
     await tx
@@ -656,6 +662,13 @@ export async function forceStocktakeReview(
       .where(eq(stocktakeSessions.id, sessionId));
     return { ok: true as const };
   });
+  if (!outcome.ok) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `لا يمكن إنهاء العدّ قبل عدّ كل المنتجات (${outcome.counted}/${outcome.total})`,
+    });
+  }
+  return outcome;
 }
 
 /** إلغاء جلسة (أدمن): لا أثر مخزونياً — الجلسة لم تُسوَّ بعد. المعتمدة لا تُلغى. */

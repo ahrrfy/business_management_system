@@ -144,7 +144,11 @@ function stateFromOrder(
       // كاذب أسوأ من إخفائه، لكن ProductTable يعرض العمود دائماً في وضع الشراء ⇒ صفرٌ محايد.
       stockBase: 0,
       price: String(unitPrice),
-      costBase: String(unitPrice),
+      costBase: (() => {
+        const iqdPrice = D(it.listUnitPrice ?? it.unitPrice ?? "0");
+        const cf = D(it.conversionFactor ?? "1");
+        return (cf.gt(0) ? iqdPrice.dividedBy(cf) : iqdPrice).toDecimalPlaces(2).toFixed(2);
+      })(),
       discount: "0",
       discountType: "percent",
       note: "",
@@ -480,7 +484,15 @@ export default function PurchaseEdit() {
       return;
     }
     res.prices.forEach((price, idx) => {
-      dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: price });
+      const iqdPrice =
+        state.currency === "USD" && safeMoney(state.agreedRate).gt(0)
+          ? D(price).times(safeMoney(state.agreedRate))
+          : D(price);
+      const cf = D(state.items[idx]?.conversionFactor ?? "1");
+      const baseCost = (cf.gt(0) ? iqdPrice.dividedBy(cf) : iqdPrice)
+        .toDecimalPlaces(2)
+        .toFixed(2);
+      dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: baseCost });
       dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price });
     });
     if (D(res.residual).isZero()) {
@@ -643,13 +655,7 @@ export default function PurchaseEdit() {
       poReference: state.poReference,
       supplierName: data.supplierName ?? "—",
       items: state.items,
-      docTotals: {
-        grossSubtotal: totals.subtotal,
-        subtotal: totals.subtotal,
-        discount: invoiceDiscountAmount.toString(),
-        tax: totals.totalTax,
-        total: docTotals.total,
-      },
+      docTotals,
       landed,
       taxRatePercent: state.taxRatePercent,
     });

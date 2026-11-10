@@ -4,6 +4,8 @@ import { and, asc, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   branches,
+  productVariants,
+  products,
   purchaseControlSettings,
   purchaseOrderRequisitionAllocations,
   purchaseOrderRevisionItems,
@@ -237,6 +239,45 @@ async function insertRequisitionItemsTx(
   items: PurchaseRequisitionItemDraft[],
 ) {
   if (items.length === 0) return;
+  const variantIds = Array.from(new Set(items.map((item) => Number(item.variantId)))).sort((a, b) => a - b);
+  const rows = await tx
+    .select({
+      variantId: productVariants.id,
+      variantActive: productVariants.isActive,
+      productName: products.name,
+      productActive: products.isActive,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
+      productType: products.productType,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productVariants.id, variantIds));
+  const byVariant = new Map(rows.map((r) => [Number(r.variantId), r]));
+  for (const vid of variantIds) {
+    const r = byVariant.get(vid);
+    if (!r) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر حفظ بنود طلب الشراء",
+          why: `الصنف #${vid} غير موجود`,
+          doThis: "أعد اختيار الصنف من قائمة المشتريات ثم أعد الحفظ",
+        }),
+      });
+    }
+    if (!r.productActive || !r.variantActive || r.isService || r.isBundle || r.isConsignment || r.productType === "DIGITAL_CARD") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إدراج «${r.productName}» في طلب الشراء`,
+          why: "الصنف معطّل أو غير مخزني مملوك (خدمة أو بكج أو أمانة أو بطاقة رقمية)",
+          doThis: "اختر صنفاً مخزنياً مملوكاً نشطاً (للبيع أو خام أو مستلزم تشغيل)",
+        }),
+      });
+    }
+  }
   await tx.insert(purchaseRequisitionItems).values(
     items.map((item, index) => ({
       requisitionId,
@@ -1132,7 +1173,75 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
     allocations?: PurchaseRevisionAllocationDraft[];
   },
 ) {
-  const allocations = input.allocations ?? [];
+  const previous = input.previousRevisionId
+    ? await tx
+        .select({
+          requisitionItemId:
+            purchaseOrderRequisitionAllocations.requisitionItemId,
+          quantity: purchaseOrderRequisitionAllocations.allocatedBaseQuantity,
+          variantId: purchaseOrderRevisionItems.variantId,
+          productUnitId: purchaseOrderRevisionItems.productUnitId,
+        })
+        .from(purchaseOrderRequisitionAllocations)
+        .innerJoin(
+          purchaseOrderRevisionItems,
+          eq(
+            purchaseOrderRequisitionAllocations.purchaseOrderRevisionItemId,
+            purchaseOrderRevisionItems.id,
+          ),
+        )
+        .where(
+          eq(purchaseOrderRevisionItems.revisionId, input.previousRevisionId),
+        )
+    : [];
+  let allocations: PurchaseRevisionAllocationDraft[];
+  if (input.allocations !== undefined) {
+    allocations = input.allocations;
+  } else if (previous.length > 0 && input.revisionItems.length > 0) {
+    const currentShapes = await tx
+      .select({
+        id: purchaseOrderRevisionItems.id,
+        lineNo: purchaseOrderRevisionItems.lineNo,
+        variantId: purchaseOrderRevisionItems.variantId,
+        productUnitId: purchaseOrderRevisionItems.productUnitId,
+        baseQuantity: purchaseOrderRevisionItems.baseQuantity,
+      })
+      .from(purchaseOrderRevisionItems)
+      .where(
+        inArray(
+          purchaseOrderRevisionItems.id,
+          input.revisionItems.map((line) => line.id),
+        ),
+      );
+    const remainingByLineNo = new Map<number, number>(
+      currentShapes.map((row) => [Number(row.lineNo), Number(row.baseQuantity)]),
+    );
+    const carried: PurchaseRevisionAllocationDraft[] = [];
+    for (const prev of previous) {
+      let needed = Number(prev.quantity);
+      for (const row of currentShapes) {
+        if (needed <= 0) break;
+        if (
+          Number(row.variantId) !== Number(prev.variantId) ||
+          Number(row.productUnitId) !== Number(prev.productUnitId)
+        )
+          continue;
+        const left = remainingByLineNo.get(Number(row.lineNo)) ?? 0;
+        if (left <= 0) continue;
+        const take = Math.min(needed, left);
+        carried.push({
+          lineNo: Number(row.lineNo),
+          requisitionItemId: Number(prev.requisitionItemId),
+          allocatedBaseQuantity: take,
+        });
+        remainingByLineNo.set(Number(row.lineNo), left - take);
+        needed -= take;
+      }
+    }
+    allocations = carried;
+  } else {
+    allocations = [];
+  }
   const lineByNo = new Map(
     input.revisionItems.map((line) => [line.lineNo, line]),
   );
@@ -1184,25 +1293,6 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
       });
     }
   }
-  const previous = input.previousRevisionId
-    ? await tx
-        .select({
-          requisitionItemId:
-            purchaseOrderRequisitionAllocations.requisitionItemId,
-          quantity: purchaseOrderRequisitionAllocations.allocatedBaseQuantity,
-        })
-        .from(purchaseOrderRequisitionAllocations)
-        .innerJoin(
-          purchaseOrderRevisionItems,
-          eq(
-            purchaseOrderRequisitionAllocations.purchaseOrderRevisionItemId,
-            purchaseOrderRevisionItems.id,
-          ),
-        )
-        .where(
-          eq(purchaseOrderRevisionItems.revisionId, input.previousRevisionId),
-        )
-    : [];
   const previousByRequisitionItem = new Map<number, number>();
   for (const allocation of previous) {
     const id = Number(allocation.requisitionItemId);
