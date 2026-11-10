@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -43,6 +44,21 @@ const SETTINGS_SECTIONS = [
 
 /** حدّ افتراضي لعدد النسخ الاحتياطية المعروضة — السجلّ الكامل قد يكبر كثيراً مع النسخ اليومي التلقائي. */
 const BACKUPS_VISIBLE_STEP = 15;
+const BACKUP_ATTEMPT_LABEL = {
+  STARTED: "بدأت بلا إيصال إكمال",
+  COMPLETED: "اكتملت المحاولة",
+  FAILED: "فشلت المحاولة",
+} as const;
+const BACKUP_ENCRYPTION_LABEL = {
+  MISSING: "التشفير غير مسجّل",
+  UNVERIFIED: "التشفير غير متحقق",
+  RECORDED: "التشفير موثّق",
+} as const;
+const BACKUP_OFFSITE_LABEL = {
+  MISSING: "الخارجي غير مسجّل",
+  UNVERIFIED: "الخارجي غير متحقق",
+  RECORDED: "الخارجي موثّق عند النسخ",
+} as const;
 
 export default function Settings() {
   const utils = trpc.useUtils();
@@ -144,14 +160,15 @@ export default function Settings() {
   };
 
   const backupNow = trpc.system.backupNow.useMutation({
-    onSuccess: async (r) => {
-      notify.ok(r.created ? `أُنشئت نسخة: ${r.created.name}` : "تمّت النسخة الاحتياطية");
-      await refresh();
+    onSuccess: (r) => {
+      if (r.created) notify.ok(`أُنشئت نسخة: ${r.created.name}`);
+      else notify.err("تعذّر إثبات ملف النسخة التي طلبتها.");
     },
     onError: (e) => notify.err(e.message || "فشلت النسخة"),
+    onSettled: refresh,
   });
   const deleteBackup = trpc.system.deleteBackup.useMutation({
-    onSuccess: async () => { notify.ok("حُذفت النسخة"); await refresh(); },
+    onSuccess: async () => { notify.ok("حُذف ملف SQL المحلي"); await refresh(); },
     onError: (e) => notify.err(e.message || "تعذّر الحذف"),
   });
 
@@ -174,6 +191,7 @@ export default function Settings() {
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
+  const onlineMaintenanceBlockReason = info.data?.onlineMaintenanceBlockReason;
 
   async function startBackupDownload(
     source: () => Promise<BackupDownloadFile | null>,
@@ -254,6 +272,9 @@ export default function Settings() {
 
   const c = info.data?.counts;
   const list = backups.data?.backups ?? [];
+  const latestAttempt = backups.data?.latestAttempt;
+  const latestOffsite = backups.data?.latestOffsite;
+  const latestRestore = backups.data?.latestRestore;
 
   return (
     <div className="space-y-4">
@@ -291,10 +312,8 @@ export default function Settings() {
             <InfoField label="المنتجات" value={c ? String(c.products) : "…"} kind="number" />
             <InfoField label="العملاء" value={c ? String(c.customers) : "…"} kind="number" />
             <InfoField label="الفواتير" value={c ? String(c.invoices) : "…"} kind="number" />
-            <InfoField label="النسخ" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
-            <InfoField label="آخر نسخة" value={fmtDateTime(info.data?.backups.latest ?? null)} kind="datetime" />
+            <InfoField label="ملفات SQL المحلية" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
             <InfoField label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} kind="status" tone={bridge.enabled ? "positive" : "default"} />
-            <InfoField label="النسخ التلقائي" value={`يومياً 02:00${info.data?.schedule.offsiteConfigured ? " + خارجي" : ""}`} />
           </InfoGrid>
         </CardContent>
       </Card>
@@ -303,19 +322,31 @@ export default function Settings() {
       <Card id="sec-backup" className="scroll-mt-4">
         <CardHeader className="flex flex-row items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-base">النسخ الاحتياطي</CardTitle>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending || backupDownload !== null}>
-              {backupNow.isPending ? "جارٍ…" : "نسخة الآن"}
-            </Button>
-            <Button onClick={backupAndDownload} disabled={backupNow.isPending || backupDownload !== null}>
-              نسخة + تنزيل للجهاز
-            </Button>
-          </div>
+          {isAdmin && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending || backupDownload !== null}>
+                {backupNow.isPending ? "جارٍ…" : "نسخة الآن"}
+              </Button>
+              <Button onClick={backupAndDownload} disabled={backupNow.isPending || backupDownload !== null}>
+                نسخة + تنزيل للجهاز
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            نسخة كاملة (mysqldump ذرّي) تطابق قاعدة الإنتاج. التنزيل يحفظ الملف على جهازك. النسخ اليومي 02:00 تلقائي.
+            يظهر لكل نسخة ما سُجّل عن ملف قاعدة البيانات والتشفير والنقل الخارجي وتجربة استعادة SQL. استعادة المرفقات وتشغيل النظام تحتاج إلى تحقق مستقل.
           </p>
+          {backups.data && (
+            <InfoGrid>
+              <InfoField
+                label="آخر محاولة نسخ"
+                value={latestAttempt ? `${BACKUP_ATTEMPT_LABEL[latestAttempt.status]} · ${fmtDateTime(latestAttempt.finishedAt ?? latestAttempt.startedAt)}` : "لا يوجد إيصال محاولة"}
+              />
+              <InfoField label="آخر نسخ خارجي موثّق" value={latestOffsite ? fmtDateTime(latestOffsite.at) : "لا يوجد دليل نقل"} />
+              <InfoField label="آخر استعادة SQL مجرّبة" value={latestRestore ? fmtDateTime(latestRestore.at) : "لا يوجد تقرير مطابق"} />
+            </InfoGrid>
+          )}
           {backupDownload && (
             <div
               role="status"
@@ -352,10 +383,12 @@ export default function Settings() {
               <p className="text-xs text-muted-foreground">قد يظهر حجم الملف صفراً أثناء التنزيل؛ يُحفظ نهائياً عند اكتماله.</p>
             </div>
           )}
-          {backups.isLoading ? (
+          {!isAdmin ? (
+            <p className="text-sm text-muted-foreground">سجل النسخ وإدارته متاحان لمسؤول النظام.</p>
+          ) : backups.isLoading ? (
             <LoadingState />
-          ) : list.length === 0 ? (
-            <p className="text-sm text-muted-foreground">لا نسخ بعد — اضغط «نسخة الآن».</p>
+          ) : backups.isError ? null : list.length === 0 ? (
+            <p className="text-sm text-muted-foreground">لا ملفات أو إيصالات نسخ في السجل.</p>
           ) : (
             <ScrollTableShell bordered={false}>
               <Table>
@@ -363,18 +396,40 @@ export default function Settings() {
                   <TableRow>
                     <TableHead className="text-right">الملف</TableHead>
                     <TableHead className="text-left">الحجم</TableHead>
-                    <TableHead className="text-left">التاريخ</TableHead>
+                    <TableHead className="px-3 text-right">التاريخ</TableHead>
+                    <TableHead className="px-3 text-start">حالة النسخة</TableHead>
                     <TableHead className="text-center">إجراءات</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {list.slice(0, backupsVisible).map((b) => (
                     <TableRow key={b.name}>
-                      <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
-                      <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
-                      <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
+                      <TableCell className="font-mono text-xs whitespace-normal break-all" dir="ltr">{b.name}</TableCell>
+                      <TableCell className="text-left tabular-nums">{b.sizeKb > 0 ? fmtKb(b.sizeKb) : "—"}</TableCell>
+                      <TableCell className="px-3 text-right tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
+                      <TableCell className="px-3 text-start">
+                        <div className="flex min-w-52 flex-wrap gap-1">
+                          {b.attempt && (
+                            <Badge variant={b.attempt.status === "FAILED" ? "destructive" : "outline"}>
+                              {BACKUP_ATTEMPT_LABEL[b.attempt.status]}
+                            </Badge>
+                          )}
+                          <Badge variant={b.sqlAvailable !== false ? "outline" : "secondary"}>
+                            {b.sqlAvailable !== false ? "ملف SQL متوفر" : "ملف SQL غير متوفر محلياً"}
+                          </Badge>
+                          <Badge variant={b.encryption?.at ? "outline" : "secondary"} title={b.encryption?.at ? fmtDateTime(b.encryption.at) : undefined}>
+                            {BACKUP_ENCRYPTION_LABEL[b.encryption?.status ?? "MISSING"]}
+                          </Badge>
+                          <Badge variant={b.offsite?.at ? "outline" : "secondary"} title={b.offsite?.at ? fmtDateTime(b.offsite.at) : undefined}>
+                            {BACKUP_OFFSITE_LABEL[b.offsite?.status ?? "MISSING"]}
+                          </Badge>
+                          <Badge variant={b.restoredAt ? "outline" : "secondary"} title={b.restoredAt ? fmtDateTime(b.restoredAt) : undefined}>
+                            {b.restoredAt ? "استعادة SQL مجرّبة" : "الاستعادة غير مثبتة"}
+                          </Badge>
+                        </div>
+                      </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        <RowActions
+                        {b.sqlAvailable !== false ? <RowActions
                           mode="menu"
                           actions={[
                             { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null, onSelect: () => { void startBackupDownload(async () => b, b.name); } },
@@ -387,7 +442,7 @@ export default function Settings() {
                                     icon: RotateCcw,
                                     gate: { adminOnly: true },
                                     disabled: !onlineMaintenanceEnabled,
-                                    disabledReason: "الاستعادة عبر الويب معطّلة إنتاجياً؛ استخدم نافذة الصيانة",
+                                    disabledReason: onlineMaintenanceBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
                                     onSelect: () => setDanger({ kind: "restore-server", name: b.name }),
                                   },
                                 ]
@@ -395,7 +450,7 @@ export default function Settings() {
                             {
                               key: "delete",
                               kind: "delete",
-                              label: "حذف",
+                              label: "حذف SQL المحلي",
                               icon: Trash2,
                               variant: "destructive",
                               gate: { adminOnly: true },
@@ -403,12 +458,12 @@ export default function Settings() {
                               // سببٌ مخصّص كشقيقه restore أعلاه — يُصيَّر في title على العنصر المعطَّل (RowActions).
                               disabledReason: "جارٍ حذف النسخة",
                               onSelect: async () => {
-                                if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
+                                if (!(await confirmDelete({ description: `حذف ملف SQL المحلي «${b.name}»؟` }))) return;
                                 deleteBackup.mutate({ name: b.name });
                               },
                             },
                           ]}
-                        />
+                        /> : "—"}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -435,10 +490,8 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
             </p>
-            {!onlineMaintenanceEnabled && (
-              <p role="status" className="text-xs text-warning">
-                الاستعادة عبر الويب معطّلة في الإنتاج. أوقف عمال الويب ونفّذها من سطر الأوامر داخل نافذة صيانة.
-              </p>
+            {onlineMaintenanceBlockReason && (
+              <p role="status" className="text-xs text-warning">{onlineMaintenanceBlockReason}</p>
             )}
             <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
             <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>

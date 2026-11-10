@@ -1,11 +1,15 @@
 import express from "express";
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyBodyParsers } from "../bodyParsers";
 import { backupRouter } from "../../backupRoutes";
+import * as authSession from "../../auth/session";
+import * as maintenance from "../../services/maintenanceService";
 
 const servers: ReturnType<typeof createServer>[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
 
@@ -30,7 +34,51 @@ describe("restore upload body parser boundary", () => {
       body: Buffer.alloc(2 * 1024 * 1024, 120),
     });
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("مدير") });
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("مالك") });
+  });
+
+  it.each([
+    { env: "production", control: undefined, isOwner: true, reason: "الإنتاج" },
+    { env: "development", control: "mysql://unused@127.0.0.1/control", isOwner: true, reason: "تعدّد الشركات" },
+    { env: "development", control: undefined, isOwner: false, reason: "مالك" },
+  ])("يرفض الرفع عند حارس السياسة قبل التحقق من التصريح أو قراءة الدفق ($reason)", async ({ env, control, isOwner, reason }) => {
+    vi.stubEnv("NODE_ENV", env);
+    vi.stubEnv("CONTROL_DATABASE_URL", control);
+    vi.spyOn(authSession, "getSessionContext").mockResolvedValue({
+      user: { id: 1, isOwner, role: "admin" } as authSession.SessionContext["user"],
+      sessionId: 10,
+      nativeClientId: null,
+    });
+    const verifyTicket = vi.spyOn(maintenance, "verifyRestoreUploadTicket");
+    const readUpload = vi.spyOn(maintenance, "quarantineUploadStream");
+    const app = express();
+    applyBodyParsers(app);
+    app.use("/api/backups", backupRouter());
+
+    const response = await fetch(`${await listen(app)}/api/backups/restore-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/sql" },
+      body: "synthetic input",
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining(reason) });
+    expect(verifyTicket).not.toHaveBeenCalled();
+    expect(readUpload).not.toHaveBeenCalled();
+  });
+
+  it("يطلب تصريح رفع صالحاً للمالك في بيئة أحادية خارج الإنتاج", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("CONTROL_DATABASE_URL", undefined);
+    vi.spyOn(authSession, "getSessionContext").mockResolvedValue({
+      user: { id: 1, isOwner: true, role: "admin" } as authSession.SessionContext["user"],
+      sessionId: 10,
+      nativeClientId: null,
+    });
+    const app = express();
+    applyBodyParsers(app);
+    app.use("/api/backups", backupRouter());
+    const response = await fetch(`${await listen(app)}/api/backups/restore-upload`, { method: "POST" });
+    expect(response.status).toBe(401);
   });
 
   it("لا يقرأ جسم restore قبل وصوله إلى حارس المسار", async () => {

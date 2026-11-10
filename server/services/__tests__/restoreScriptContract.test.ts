@@ -81,17 +81,21 @@ describe("restore script streaming contract", () => {
   });
 
   it("يعطّل الصيانة المدمرة عبر الويب في الإنتاج بلا مفتاح تجاوز", async () => {
-    const source = await readFile(
-      path.resolve(process.cwd(), "server/routers/systemRouter.ts"),
-      "utf8",
-    );
-    const guard = source.slice(
-      source.indexOf("function assertSingleTenantOnly"),
-      source.indexOf("export const systemRouter"),
+    const [service, router, upload] = await Promise.all([
+      readFile("server/services/maintenanceService.ts", "utf8"),
+      readFile("server/routers/systemRouter.ts", "utf8"),
+      readFile("server/backupRoutes.ts", "utf8"),
+    ]);
+    const guard = service.slice(
+      service.indexOf("function getOnlineMaintenanceBlockReason"),
+      service.indexOf("class OnlineMaintenanceBlockedError"),
     );
     expect(guard).toContain('process.env.NODE_ENV === "production"');
+    expect(guard).toContain("isMultiTenantModeActive()");
     expect(guard).not.toContain("ALLOW_ONLINE_DB_MAINTENANCE");
-    expect(source).not.toContain("ALLOW_ONLINE_DB_MAINTENANCE");
+    expect(router).toContain("maint.getOnlineMaintenanceBlockReason()");
+    expect(upload).toContain("getOnlineMaintenanceBlockReason()");
+    expect(service).toMatch(/function runRestore[^\n]*\n\s*assertOnlineMaintenanceAllowed\(\);/);
   });
 
   it("يشغّل الويب بحساب قاعدة محصور ويمسح سر root الموروث", async () => {

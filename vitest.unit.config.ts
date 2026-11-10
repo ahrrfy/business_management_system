@@ -140,6 +140,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/storefront/StorefrontSearch.test.tsx",
       "server/routers/__tests__/backupDownload.test.ts",
       "server/services/__tests__/backupDownloadService.test.ts",
+      "server/services/__tests__/backupReadiness.test.ts",
       "client/src/lib/backupDownload.test.ts",
       "client/src/components/returns/ReturnComposer.recovery.test.tsx",
       "client/src/components/returns/SalesReturnPortal.unpaid.test.tsx",
