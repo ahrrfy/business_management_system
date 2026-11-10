@@ -139,6 +139,7 @@ const PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS = new Set<string>([
   "storefront.trackConversion",
   "storefront.trackRecommendationClick",
   "storefront.trackPushInteraction",
+  "storefront.resolveLocationUrl",
 ]);
 
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {

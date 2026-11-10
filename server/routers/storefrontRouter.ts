@@ -667,7 +667,7 @@ export const storefrontRouter = router({
     .mutation(({ input }) => cancelOnlineOrderByGuestToken(input.trackingToken)),
 
   /** فك روابط خرائط Google المختصرة خادمياً بحماية SSRF لاستخراج إحداثيات التوصيل الدقيقة. */
-  resolveLocationUrl: storefrontPublicReadProcedure
+  resolveLocationUrl: storefrontPublicWriteProcedure
     .input(z.object({ url: z.string().trim().min(10).max(2048) }))
     .mutation(async ({ input }) => {
       const direct = parseGeoCoordinates(input.url);
