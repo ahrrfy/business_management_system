@@ -6,7 +6,10 @@ import React from "react";
 import { AlertTriangle, Package, ShieldCheck, Truck, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmt } from "@/lib/money";
-import type { DeliveryPartySummary } from "./DeliveryPartyExposureBadge";
+import {
+  computePartySummaryExposure,
+  type DeliveryPartySummary,
+} from "./DeliveryPartyExposureBadge";
 
 interface Props {
   parties: DeliveryPartySummary[];
@@ -20,21 +23,35 @@ export function DeliveryOperationalIntelligenceBar({ parties, className = "" }: 
 
   let totalOpenParcels = 0;
   let totalInTransitCod = 0;
+  let totalCashInHand = 0;
+  let totalOpenCod = 0;
+  let partiesWithObligations = 0;
   let overLimitCount = 0;
   let nearLimitCount = 0;
 
   for (const p of parties) {
     const open = p.openConsignments ?? 0;
-    const amount = Number(p.parcelsInTransitAmount ?? "0");
+    const {
+      inTransitAmount,
+      cashInHandAmount,
+      deliveredUncollectedAmount,
+      totalExposureAmount,
+    } = computePartySummaryExposure(p);
+    const feeOwed = Number(p.feesOwedAmount ?? "0");
     totalOpenParcels += open;
-    totalInTransitCod += amount;
+    totalInTransitCod += inTransitAmount + deliveredUncollectedAmount;
+    totalCashInHand += cashInHandAmount;
+    totalOpenCod += totalExposureAmount;
+    if (open > 0 || totalExposureAmount > 0 || feeOwed > 0) {
+      partiesWithObligations++;
+    }
 
     if (p.floatLimit) {
       const limit = Number(p.floatLimit);
       if (limit > 0) {
-        if (amount > limit) {
+        if (totalExposureAmount > limit) {
           overLimitCount++;
-        } else if (amount >= limit * 0.8) {
+        } else if (totalExposureAmount >= limit * 0.8) {
           nearLimitCount++;
         }
       }
@@ -54,12 +71,13 @@ export function DeliveryOperationalIntelligenceBar({ parties, className = "" }: 
           </div>
           <div>
             <p className="text-[11px] text-muted-foreground font-medium">المناديب النشطون</p>
-            <div className="flex items-baseline gap-1 mt-0.5">
+            <div className="flex items-baseline gap-1 mt-0.5 flex-wrap">
               <span className="text-base font-extrabold font-mono text-foreground">
                 {activePartiesCount}
               </span>
               <span className="text-[10px] text-muted-foreground">
-                ({individualCount} داخلي · {companyCount} شركة)
+                ({individualCount} داخلي · {companyCount} شركة
+                {partiesWithObligations > 0 ? ` · ${partiesWithObligations} بذمة مفتوحة` : ""})
               </span>
             </div>
           </div>
@@ -90,10 +108,15 @@ export function DeliveryOperationalIntelligenceBar({ parties, className = "" }: 
             <p className="text-[11px] text-muted-foreground font-medium">مبالغ بعهدة المناديب (COD)</p>
             <div className="flex items-baseline gap-1 mt-0.5">
               <span className="text-base font-extrabold font-mono text-foreground">
-                {fmt(totalInTransitCod)}
+                {fmt(totalOpenCod)}
               </span>
               <span className="text-[10px] text-muted-foreground">د.ع</span>
             </div>
+            {totalCashInHand > 0 && (
+              <p className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                نقد بيده: {fmt(totalCashInHand)} · بالطريق: {fmt(totalInTransitCod)}
+              </p>
+            )}
           </div>
         </div>
 

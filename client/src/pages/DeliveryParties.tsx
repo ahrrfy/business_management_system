@@ -68,7 +68,8 @@ export default function DeliveryParties() {
     p.openConsignments > 0
     || hasOpenBalance(p)
     || Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? "0") > 0;
-  const visibleRows = outstandingOnly ? allRows.filter(isPartyOutstanding) : allRows;
+  const boardMatchingRows = allRows.filter((p) => p.isActive || isPartyOutstanding(p));
+  const visibleRows = outstandingOnly ? boardMatchingRows.filter(isPartyOutstanding) : boardMatchingRows;
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">

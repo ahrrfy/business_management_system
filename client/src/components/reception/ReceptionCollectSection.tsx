@@ -75,6 +75,7 @@ import {
 } from "@/lib/deliveryOperations";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
+import { formatPartyObligationOptionLabel } from "@/components/delivery/DeliveryPartyExposureBadge";
 import { docBarcode } from "@shared/documentNumber";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { deliverySourceView } from "@shared/deliverySource";
@@ -1706,15 +1707,12 @@ export function ReceptionCollectSection({
           {collectIndividualCouriers.length > 0 && (
             <optgroup label="── المناديب الداخليين (سائقون بعُهدة نقدية) ──">
               {collectIndividualCouriers.map((p) => {
-                const bal = Number(
-                  (obligationsQ.data ?? []).find(
-                    (o: PartyObligation) => o.partyId === p.id,
-                  )?.codDueTotal ?? 0,
+                const ob = (obligationsQ.data ?? []).find(
+                  (o: PartyObligation) => o.partyId === p.id,
                 );
                 return (
                   <option key={p.id} value={String(p.id)}>
-                    {p.name} (مندوب)
-                    {bal > 0 ? ` — عهدة: ${fmt(String(bal))} د.ع` : ""}
+                    {formatPartyObligationOptionLabel(p.name, "مندوب", ob)}
                   </option>
                 );
               })}
@@ -1723,15 +1721,12 @@ export function ReceptionCollectSection({
           {collectCompanyCouriers.length > 0 && (
             <optgroup label="── شركات ومكاتب التوصيل (مطابقة كشوفات دورية) ──">
               {collectCompanyCouriers.map((p) => {
-                const bal = Number(
-                  (obligationsQ.data ?? []).find(
-                    (o: PartyObligation) => o.partyId === p.id,
-                  )?.codDueTotal ?? 0,
+                const ob = (obligationsQ.data ?? []).find(
+                  (o: PartyObligation) => o.partyId === p.id,
                 );
                 return (
                   <option key={p.id} value={String(p.id)}>
-                    {p.name} (شركة)
-                    {bal > 0 ? ` — رصيد معلق: ${fmt(String(bal))} د.ع` : ""}
+                    {formatPartyObligationOptionLabel(p.name, "شركة", ob)}
                   </option>
                 );
               })}

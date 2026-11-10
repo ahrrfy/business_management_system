@@ -9,6 +9,73 @@ import type { RouterOutputs } from "@/lib/trpc";
 
 export type DeliveryPartySummary = RouterOutputs["delivery"]["listParties"][number];
 
+export interface PartyObligationSummaryLike {
+  currentBalance?: string | number | null;
+  parcelsInTransitAmount?: string | number | null;
+  deliveredUncollectedAmount?: string | number | null;
+  codDueTotal?: string | number | null;
+  feeDueTotal?: string | number | null;
+}
+
+export function computePartySummaryExposure(party: DeliveryPartySummary): {
+  inTransitAmount: number;
+  cashInHandAmount: number;
+  deliveredUncollectedAmount: number;
+  totalExposureAmount: number;
+} {
+  const inTransitAmount = Number(party.parcelsInTransitAmount ?? "0");
+  const cashInHandAmount =
+    Number(party.cashInHandStored ?? "0") +
+    Number(party.shortfallOwedAmount ?? "0");
+  const deliveredUncollectedAmount = Number(
+    party.deliveredUncollectedAmount ?? "0",
+  );
+  const totalExposureAmount =
+    inTransitAmount + cashInHandAmount + deliveredUncollectedAmount;
+  return {
+    inTransitAmount,
+    cashInHandAmount,
+    deliveredUncollectedAmount,
+    totalExposureAmount,
+  };
+}
+
+export function formatPartyObligationOptionLabel(
+  name: string,
+  roleTag: string | null,
+  obligation?: PartyObligationSummaryLike | null,
+): string {
+  const baseName = roleTag ? `${name} (${roleTag})` : name;
+  if (!obligation) return baseName;
+  const cashInHand = Number(obligation.currentBalance ?? 0);
+  const hasExplicitTransit =
+    obligation.parcelsInTransitAmount !== undefined ||
+    obligation.deliveredUncollectedAmount !== undefined;
+  const explicitTransit =
+    Number(obligation.parcelsInTransitAmount ?? 0) +
+    Number(obligation.deliveredUncollectedAmount ?? 0);
+  const codTotal = Number(obligation.codDueTotal ?? 0);
+  const inTransit = hasExplicitTransit
+    ? explicitTransit
+    : Math.max(0, codTotal - cashInHand);
+  const totalCod = codTotal > 0 ? codTotal : cashInHand + inTransit;
+  const feeDue = Number(obligation.feeDueTotal ?? 0);
+
+  if (cashInHand > 0 && inTransit > 0) {
+    return `${baseName} — نقد بيده: ${fmt(cashInHand)} · بالطريق: ${fmt(inTransit)} د.ع (إجمالي ${fmt(totalCod)})`;
+  }
+  if (cashInHand <= 0 && inTransit > 0) {
+    return `${baseName} — طرود بالطريق: ${fmt(inTransit)} د.ع (نقد بيده: 0)`;
+  }
+  if (cashInHand > 0) {
+    return `${baseName} — نقد بيده: ${fmt(cashInHand)} د.ع`;
+  }
+  if (feeDue > 0) {
+    return `${baseName} — أجور له: ${fmt(feeDue)} د.ع`;
+  }
+  return baseName;
+}
+
 interface Props {
   party: DeliveryPartySummary | null | undefined;
   compact?: boolean;
@@ -18,19 +85,34 @@ export function DeliveryPartyExposureBadge({ party, compact = false }: Props) {
   if (!party) return null;
 
   const openCount = party.openConsignments ?? 0;
-  const inTransitAmount = Number(party.parcelsInTransitAmount ?? "0");
+  const {
+    inTransitAmount,
+    cashInHandAmount,
+    deliveredUncollectedAmount,
+    totalExposureAmount,
+  } = computePartySummaryExposure(party);
+  const streetAmount = inTransitAmount + deliveredUncollectedAmount;
   const floatLimit = party.floatLimit ? Number(party.floatLimit) : null;
-  const isOverLimit = floatLimit !== null && floatLimit > 0 && inTransitAmount > floatLimit;
+  const isOverLimit =
+    floatLimit !== null && floatLimit > 0 && totalExposureAmount > floatLimit;
   const isNearLimit =
-    floatLimit !== null && floatLimit > 0 && !isOverLimit && inTransitAmount >= floatLimit * 0.8;
+    floatLimit !== null &&
+    floatLimit > 0 &&
+    !isOverLimit &&
+    totalExposureAmount >= floatLimit * 0.8;
 
   if (compact) {
     return (
       <div className="inline-flex items-center gap-1.5 text-xs">
-        <span className="text-muted-foreground">العهدة:</span>
+        <span className="text-muted-foreground">العهدة المفتوحة:</span>
         <span className="font-bold text-foreground font-mono">{openCount} طرد</span>
         <span className="text-muted-foreground">·</span>
-        <span className="font-bold text-foreground font-mono">{fmt(inTransitAmount)} د.ع</span>
+        <span className="font-bold text-foreground font-mono">{fmt(totalExposureAmount)} د.ع</span>
+        {cashInHandAmount > 0 && streetAmount > 0 && (
+          <span className="text-[10px] text-muted-foreground font-mono">
+            (بيده {fmt(cashInHandAmount)} · بالطريق {fmt(streetAmount)})
+          </span>
+        )}
         {isOverLimit && (
           <Badge variant="destructive" className="h-5 px-1.5 text-[10px] gap-1 font-bold animate-pulse">
             <ShieldAlert aria-hidden className="size-3 shrink-0" />
@@ -54,11 +136,16 @@ export function DeliveryPartyExposureBadge({ party, compact = false }: Props) {
           <Truck aria-hidden className="size-3.5 text-primary shrink-0" />
           <span>مؤشر عهدة المندوب الميدانية:</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-muted-foreground font-medium">الطرود المفتوحة:</span>
           <span className="font-mono font-bold">{openCount} طرد</span>
-          <span className="text-muted-foreground font-medium">· المبالغ:</span>
-          <span className="font-mono font-bold">{fmt(inTransitAmount)} د.ع</span>
+          <span className="text-muted-foreground font-medium">· إجمالي COD المفتوح:</span>
+          <span className="font-mono font-bold">{fmt(totalExposureAmount)} د.ع</span>
+          {cashInHandAmount > 0 && (
+            <span className="text-[11px] text-muted-foreground font-mono">
+              (نقد بيده: {fmt(cashInHandAmount)} · بالطريق: {fmt(streetAmount)})
+            </span>
+          )}
         </div>
       </div>
 

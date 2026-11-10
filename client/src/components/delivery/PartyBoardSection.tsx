@@ -38,12 +38,16 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   const hasSettleRole = lifecycleActionAllowed(me.data, "delivery.settleDaily", !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]));
   // فرعُ التسوية = فرعُ الفاعل المُسنَد. غيابُه (أدمن/مالك عابرُ الفروع) ⇒ اللوحةُ مجمَّعةٌ لكلّ الفروع بينما
   // النقدُ يدخل درجَ فرعٍ بعينه: نحجب «سوِّ اليوم» حتى لا تُفتَح معاينةٌ فرعُها ≠ فرعُ صفوف اللوحة (Codex #1012 P2).
-  const settleBranchId = me.data?.branchId ?? null;
+  const rawUrlBranch =
+    typeof window !== "undefined"
+      ? Number(new URLSearchParams(window.location.search).get("branchId"))
+      : 0;
+  const settleBranchId = me.data?.branchId ?? (rawUrlBranch > 0 ? rawUrlBranch : null);
   const canSettle = hasSettleRole && (settleBranchId != null || role === "admin");
   // علَما الطرح التدريجيّ (مصدر الحقيقة: الخادم): يحكمان عرضَ «نقد بيده» في اللوحة (المصدر الفعّال).
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, { staleTime: 5 * 60_000 });
   const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
-  const board = trpc.delivery.partyBoard.useQuery(undefined);
+  const board = trpc.delivery.partyBoard.useQuery(rawUrlBranch > 0 ? { branchId: rawUrlBranch } : undefined);
 
   useRealtimeEvent(
     [
