@@ -368,8 +368,7 @@ export async function listMyDeliveries(
     const consignmentDue = Decimal.max(
       money(r.codAmount)
         .minus(money(r.collectedAmount ?? "0"))
-        .minus(money(r.counterSettledAmount ?? "0"))
-        .minus(money(r.shortfallAssigned ?? "0")),
+        .minus(money(r.counterSettledAmount ?? "0")),
       0,
     );
     // Delivery settles the customer's invoice before the party remits its custody.

@@ -70,7 +70,7 @@ export async function getPurchasesReport(opts: {
         ae.supplierId AS supplierId,
         s.name AS supplierName,
         COUNT(DISTINCT ae.purchaseOrderId) AS orders,
-        CAST(COALESCE(SUM(CASE WHEN ae.entryType = 'PURCHASE' OR (ae.entryType = 'RETURN' AND ae.amount < 0) THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END), 0) AS CHAR) AS total,
+        CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END), 0) AS CHAR) AS total,
         CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN ae.amount ELSE 0 END), 0) AS CHAR) AS paid,
         CAST(GREATEST(COALESCE(SUM(CASE
           WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount

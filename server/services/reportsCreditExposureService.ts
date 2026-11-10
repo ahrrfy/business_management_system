@@ -155,10 +155,9 @@ export async function getCreditExposure(opts: { branchId?: number; limit?: numbe
     const d61_90 = money(r.d61_90 ?? 0);
     const days = Number(r.daysOverdue ?? 0) || 0;
 
-    // creditLimit = 0 يعني «نقدي فقط» (CASH_ONLY) لا سقف ائتمان متجاوَزاً؛ التجاوز يقتصر على حدٍّ ائتمانيّ موجب (> 0).
-    const overLimit = limitVal != null && limitVal.greaterThan(0) && balance.greaterThan(limitVal);
+    const overLimit = limitVal != null && balance.greaterThan(limitVal);
     const overAmt = overLimit && limitVal ? balance.sub(limitVal) : money(0);
-    const available = limitVal && limitVal.greaterThan(0) ? limitVal.sub(balance) : null;
+    const available = limitVal ? limitVal.sub(balance) : null;
     const utilizationPct =
       limitVal && limitVal.greaterThan(0)
         ? Number(balance.div(limitVal).times(100).toDecimalPlaces(1))

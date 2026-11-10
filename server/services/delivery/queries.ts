@@ -1288,7 +1288,7 @@ export async function listStaleParties(branchId: number | null) {
           CAST(dc.codAmount AS DECIMAL(15,2))
           - CAST(dc.collectedAmount AS DECIMAL(15,2))
           - CAST(dc.counterSettledAmount AS DECIMAL(15,2))
-          - COALESCE((SELECT SUM(CASE WHEN dl.entryType = 'SHORTFALL_ASSIGNED' THEN CAST(dl.amount AS DECIMAL(15,2)) WHEN dl.entryType = 'SHORTFALL_SETTLED' THEN -CAST(dl.amount AS DECIMAL(15,2)) ELSE 0 END) FROM deliveryLedger dl WHERE dl.consignmentId = dc.id AND dl.entryType IN ('SHORTFALL_ASSIGNED', 'SHORTFALL_SETTLED')), 0), 0)), 0)
+          - COALESCE((SELECT SUM(CASE WHEN dl.entryType = 'SHORTFALL_ASSIGNED' THEN CAST(dl.amount AS DECIMAL(15,2)) WHEN dl.entryType = 'SHORTFALL_SETTLED' THEN -CAST(dl.amount AS DECIMAL(15,2)) ELSE 0 END) FROM ${deliveryLedgerEntries} dl WHERE dl.consignmentId = dc.id AND dl.entryType IN ('SHORTFALL_ASSIGNED', 'SHORTFALL_SETTLED')), 0), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
           AND dc.dispatchedAt IS NOT NULL

@@ -186,8 +186,8 @@ async function fetchSharedDashboardMetrics(
     INNER JOIN productVariants v ON v.id = bs.variantId
     INNER JOIN products p ON p.id = v.productId
     LEFT JOIN variantBranchThresholds vbt ON vbt.variantId = v.id AND vbt.branchId = bs.branchId
-    WHERE COALESCE(vbt.minQty, v.minStock) > 0
-      AND bs.quantity <= COALESCE(vbt.minQty, v.minStock)
+    WHERE COALESCE(vbt.minStock, v.minStock) > 0
+      AND bs.quantity <= COALESCE(vbt.minStock, v.minStock)
       AND v.isActive = TRUE
       AND p.isActive = TRUE
       AND p.isService = FALSE

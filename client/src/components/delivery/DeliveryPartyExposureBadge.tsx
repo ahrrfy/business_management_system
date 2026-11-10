@@ -22,21 +22,25 @@ export interface PartyObligationSummaryLike {
 export function computePartySummaryExposure(party: DeliveryPartySummary): {
   inTransitAmount: number;
   cashInHandAmount: number;
+  shortfallOwedAmount: number;
   deliveredUncollectedAmount: number;
   totalExposureAmount: number;
 } {
   const inTransitAmount = Number(party.parcelsInTransitAmount ?? "0");
-  const cashInHandAmount =
-    Number(party.cashInHandStored ?? "0") +
-    Number(party.shortfallOwedAmount ?? "0");
+  const cashInHandAmount = Number(party.cashInHandStored ?? "0");
+  const shortfallOwedAmount = Number(party.shortfallOwedAmount ?? "0");
   const deliveredUncollectedAmount = Number(
     party.deliveredUncollectedAmount ?? "0",
   );
   const totalExposureAmount =
-    inTransitAmount + cashInHandAmount + deliveredUncollectedAmount;
+    inTransitAmount +
+    cashInHandAmount +
+    shortfallOwedAmount +
+    deliveredUncollectedAmount;
   return {
     inTransitAmount,
     cashInHandAmount,
+    shortfallOwedAmount,
     deliveredUncollectedAmount,
     totalExposureAmount,
   };
@@ -98,6 +102,7 @@ export function DeliveryPartyExposureBadge({ party, compact = false }: Props) {
   const {
     inTransitAmount,
     cashInHandAmount,
+    shortfallOwedAmount,
     deliveredUncollectedAmount,
     totalExposureAmount,
   } = computePartySummaryExposure(party);
@@ -118,9 +123,13 @@ export function DeliveryPartyExposureBadge({ party, compact = false }: Props) {
         <span className="font-bold text-foreground font-mono">{openCount} طرد</span>
         <span className="text-muted-foreground">·</span>
         <span className="font-bold text-foreground font-mono">{fmt(totalExposureAmount)} د.ع</span>
-        {cashInHandAmount > 0 && streetAmount > 0 && (
+        {(cashInHandAmount > 0 || shortfallOwedAmount > 0) && streetAmount > 0 && (
           <span className="text-[10px] text-muted-foreground font-mono">
-            (بيده {fmt(cashInHandAmount)} · بالطريق {fmt(streetAmount)})
+            (
+            {cashInHandAmount > 0 ? `بيده ${fmt(cashInHandAmount)}` : ""}
+            {cashInHandAmount > 0 && shortfallOwedAmount > 0 ? " · " : ""}
+            {shortfallOwedAmount > 0 ? `عجز ${fmt(shortfallOwedAmount)}` : ""}
+            {" · "}بالطريق {fmt(streetAmount)})
           </span>
         )}
         {isOverLimit && (
@@ -151,9 +160,13 @@ export function DeliveryPartyExposureBadge({ party, compact = false }: Props) {
           <span className="font-mono font-bold">{openCount} طرد</span>
           <span className="text-muted-foreground font-medium">· إجمالي COD المفتوح:</span>
           <span className="font-mono font-bold">{fmt(totalExposureAmount)} د.ع</span>
-          {cashInHandAmount > 0 && (
+          {(cashInHandAmount > 0 || shortfallOwedAmount > 0) && (
             <span className="text-[11px] text-muted-foreground font-mono">
-              (نقد بيده: {fmt(cashInHandAmount)} · بالطريق: {fmt(streetAmount)})
+              (
+              {cashInHandAmount > 0 ? `نقد بيده: ${fmt(cashInHandAmount)}` : ""}
+              {cashInHandAmount > 0 && shortfallOwedAmount > 0 ? " · " : ""}
+              {shortfallOwedAmount > 0 ? `عجز: ${fmt(shortfallOwedAmount)}` : ""}
+              {" · "}بالطريق: {fmt(streetAmount)})
             </span>
           )}
         </div>
