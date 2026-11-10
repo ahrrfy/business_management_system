@@ -71,16 +71,16 @@ export async function getPurchasesReport(opts: {
         s.name AS supplierName,
         COUNT(DISTINCT ae.purchaseOrderId) AS orders,
         CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END), 0) AS CHAR) AS total,
-        CAST(COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount ELSE 0 END), 0) AS CHAR) AS paid,
+        CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN ae.amount ELSE 0 END), 0) AS CHAR) AS paid,
         CAST(GREATEST(COALESCE(SUM(CASE
           WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
-          WHEN ae.entryType = 'PAYMENT_OUT' THEN -ae.amount
+          WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
           ${GRNI_PURCHASE_VOLUME_CASE}
           ELSE 0 END), 0), 0) AS CHAR) AS unpaid
       FROM accountingEntries ae
       JOIN suppliers s ON s.id = ae.supplierId
       WHERE ae.supplierId IS NOT NULL
-        AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT') OR ${GRNI_LEDGER_ENTRY_COND})
+        AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE') OR ${GRNI_LEDGER_ENTRY_COND})
         AND ${isSupplierApLedgerEntrySql({ entryType: sql`ae.entryType`, dedupeKey: sql`ae.dedupeKey` })}
         AND ae.entryDate >= ${opts.from} AND ae.entryDate <= ${opts.to}
         ${branchPo}

@@ -47,13 +47,16 @@ export default function DeliveryParties() {
   // مرآة deliveryCashierProcedure بما فيها المنح الصريح.
   const canSettle = lifecycleActionAllowed(me.data, "delivery.settle", !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]));
   const utils = trpc.useUtils();
-  const list = trpc.delivery.listParties.useQuery({});
   const [showCreate, setShowCreate] = useState(false);
   const [settleFor, setSettleFor] = useState<Party | null>(null);
   const [writeOffFor, setWriteOffFor] = useState<Party | null>(null);
   // «ذمة قائمة» (م١ PR-C): نقدٌ بيد الجهة أو طرودٌ مفتوحة أو أجورٌ لها — فلتر اللوحة (filterOutstanding)، محفوظ في querystring.
   // detail: لوحة تفاصيل الجهة (٩/٨) — في الرابط كي تفتحها روابط الفواتير مباشرة.
-  const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "", detail: "" });
+  const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "", detail: "", branchId: "" });
+  const parsedBranchId = f.branchId ? Number(f.branchId) : undefined;
+  const list = trpc.delivery.listParties.useQuery({
+    branchId: parsedBranchId && Number.isFinite(parsedBranchId) && parsedBranchId > 0 ? parsedBranchId : undefined,
+  });
   // ٩/٨: الكشف المطبوع السريع استُبدل بلوحة التفاصيل (كشف حيّ يشمل أمانات الأجرة التي كان
   // الكشف القديم يُسقطها صامتاً + جمع Decimal بدل Number العائم + المرجع = رقم الفاتورة الفعلي).
   const detailFor = f.detail ? (list.data ?? []).find((p) => String(p.id) === f.detail) ?? null : null;
@@ -68,7 +71,8 @@ export default function DeliveryParties() {
     p.openConsignments > 0
     || hasOpenBalance(p)
     || Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? "0") > 0;
-  const visibleRows = outstandingOnly ? allRows.filter(isPartyOutstanding) : allRows;
+  const boardMatchingRows = allRows.filter((p) => p.isActive || isPartyOutstanding(p));
+  const visibleRows = outstandingOnly ? boardMatchingRows.filter(isPartyOutstanding) : boardMatchingRows;
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">

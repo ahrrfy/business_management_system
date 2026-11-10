@@ -3,7 +3,10 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DeliveryOperationalIntelligenceBar } from "./DeliveryOperationalIntelligenceBar";
-import type { DeliveryPartySummary } from "./DeliveryPartyExposureBadge";
+import {
+  formatPartyObligationOptionLabel,
+  type DeliveryPartySummary,
+} from "./DeliveryPartyExposureBadge";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -106,5 +109,51 @@ describe("DeliveryOperationalIntelligenceBar", () => {
 
     expect(host.textContent).toContain("سقوف العهدة والائتمان");
     expect(host.textContent).toContain("1 تجاوز السقف");
+  });
+
+  it("يدمج النقد بيد المندوب مع الطرود بالطريق ضمن إجمالي COD المفتوح ويفصل بينهما", () => {
+    const mixedParties: DeliveryPartySummary[] = [
+      {
+        ...testParties[0]!,
+        id: 10,
+        name: "ابراهيم احمد",
+        currentBalance: "143000.00",
+        cashInHandStored: "143000.00",
+        parcelsInTransitAmount: "72000.00",
+        openConsignments: 17,
+        floatLimit: "200000.00",
+      },
+    ];
+    act(() => {
+      root.render(<DeliveryOperationalIntelligenceBar parties={mixedParties} />);
+    });
+
+    // 143,000 + 72,000 = 215,000 د.ع (يتجاوز السقف 200,000)
+    expect(host.textContent).toContain("215,000");
+    expect(host.textContent).toContain("نقد بيده: 143,000");
+    expect(host.textContent).toContain("بالطريق: 72,000");
+    expect(host.textContent).toContain("1 تجاوز السقف");
+  });
+
+  it("يوحّد صياغة خيار الجهة في القوائم المنسدلة بين التحصيل بالباركود وتسوية الجهات", () => {
+    expect(
+      formatPartyObligationOptionLabel("ابراهيم احمد", "مندوب", {
+        currentBalance: "143000.00",
+        parcelsInTransitAmount: "72000.00",
+        deliveredUncollectedAmount: "0.00",
+        codDueTotal: "215000.00",
+      }),
+    ).toBe(
+      "ابراهيم احمد (مندوب) — نقد بيده: 143,000 · بالطريق: 72,000 د.ع (إجمالي 215,000)",
+    );
+
+    expect(
+      formatPartyObligationOptionLabel("احمد صبار حسن", "مندوب", {
+        currentBalance: "0.00",
+        parcelsInTransitAmount: "85750.00",
+        deliveredUncollectedAmount: "0.00",
+        codDueTotal: "85750.00",
+      }),
+    ).toBe("احمد صبار حسن (مندوب) — طرود بالطريق: 85,750 د.ع (نقد بيده: 0)");
   });
 });

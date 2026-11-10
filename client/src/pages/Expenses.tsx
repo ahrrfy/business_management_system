@@ -838,7 +838,7 @@ export default function Expenses() {
               </p>
               <p className="text-[11px] text-muted-foreground">
                 {Number(totals.count ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
-                عملية ضمن الفلتر
+                إجمالي السجلات ضمن الفلتر
               </p>
             </div>
             <span className="rounded-md bg-primary/10 p-1.5 text-primary">

@@ -86,10 +86,22 @@ export default function ARAging() {
   const unbilledOf = (r: { currentBalance: string | null; unpaidTotal: string | null }) =>
     D(r.currentBalance || 0).minus(D(r.unpaidTotal || 0));
 
+  // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ + فئة العميل، ثم الفرز.
+  const filtered = useMemo(() => {
+    const q = f.q.trim();
+    const out = (aging.data ?? []).filter((r) => {
+      if (q && !(r.customerName.includes(q) || (r.phone ?? "").includes(q))) return false;
+      if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
+      if (f.ctype && (r.customerType ?? "") !== f.ctype) return false;
+      return true;
+    });
+    return out;
+  }, [aging.data, f.q, f.bucket, f.ctype]);
+
   // §٥: نجمع بدقّة Decimal (لا Number()) ⇒ لا انجراف float عبر مئات الصفوف.
-  // المجاميع على **كامل** البيانات (صورة الذمم الكلية) لا على نتيجة الفلاتر العميلية.
+  // المجاميع تتبع الصفوف المعروضة (filtered) لتتطابق البطاقات السبع مع الجدول والتصدير والطباعة.
   const totals = useMemo(() => {
-    const rows = aging.data ?? [];
+    const rows = filtered;
     const acc = rows.reduce(
       (a, r) => ({
         d0_30: a.d0_30.plus(D(r.d0_30 || 0)),
@@ -110,7 +122,7 @@ export default function ARAging() {
       currentBalance: acc.currentBalance.toFixed(2),
       unbilled: acc.currentBalance.minus(acc.unpaidTotal).toFixed(2),
     };
-  }, [aging.data]);
+  }, [filtered]);
 
   // فئات العملاء الموجودة فعلاً في البيانات (قيم enum عربية أصلاً — فرد/تاجر/مؤسسة/شركة/حكومي).
   const typeOptions = useMemo(() => {
@@ -118,18 +130,6 @@ export default function ARAging() {
     for (const r of aging.data ?? []) if (r.customerType) s.add(r.customerType);
     return Array.from(s);
   }, [aging.data]);
-
-  // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ + فئة العميل، ثم الفرز.
-  const filtered = useMemo(() => {
-    const q = f.q.trim();
-    const out = (aging.data ?? []).filter((r) => {
-      if (q && !(r.customerName.includes(q) || (r.phone ?? "").includes(q))) return false;
-      if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
-      if (f.ctype && (r.customerType ?? "") !== f.ctype) return false;
-      return true;
-    });
-    return out;
-  }, [aging.data, f.q, f.bucket, f.ctype]);
 
   const output = useMemo(() => buildAgingOutput(filtered, {
     kind: "AR", branchName: canCrossBranches ? (branches.data?.find((b) => String(b.id) === f.branch)?.name ?? (f.branch || "كل الفروع")) : "فرع الحساب",

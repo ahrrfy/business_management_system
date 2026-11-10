@@ -904,7 +904,7 @@ export function buildSalesListConds(
     conds.push(sql`${INVOICE_OPEN_BALANCE} <= 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   }
-  if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.customerId) conds.push(sql`COALESCE(${invoices.customerId}, ${workOrders.customerId}) = ${input.customerId}`);
   if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
   // ⚠️ فلترا التوصيل يتطلّبان join على deliveryConsignments **وonlineOrders** في كل مستهلك
   // لهذه الشروط (list وlistPage وlistSummary) — uq_consignment_invoice + طلبٌ واحد لكل فاتورة

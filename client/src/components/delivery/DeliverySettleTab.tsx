@@ -11,6 +11,7 @@ import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTime
 import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
 import { DeliveryObligationsCard } from "@/components/delivery/DeliveryObligationsCard";
+import { formatPartyObligationOptionLabel } from "@/components/delivery/DeliveryPartyExposureBadge";
 import { DeliveryRemittanceHistoryCard } from "@/components/delivery/DeliveryRemittanceHistoryCard";
 import { DeliverySettleSummaryCard } from "@/components/delivery/DeliverySettleSummaryCard";
 import { DeliveryConsignmentsTable } from "@/components/delivery/DeliveryConsignmentsTable";
@@ -44,7 +45,9 @@ type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][num
 export function DeliverySettleTab() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ? Number(me.data.branchId) : 0;
+  const settleSearch = useSearch();
+  const rawUrlBranch = Number(new URLSearchParams(settleSearch).get("branchId"));
+  const branchId = me.data?.branchId ? Number(me.data.branchId) : rawUrlBranch > 0 ? rawUrlBranch : 0;
   const currentShift = trpc.shifts.current.useQuery(
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
@@ -73,10 +76,9 @@ export function DeliverySettleTab() {
 
   const canRecordStatement = lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canRemit);
   const canPayPartyFees = lifecycleActionAllowed(me.data, "delivery.payPartyFees", !!me.data);
-  const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
-  const obligations = trpc.delivery.obligations.useQuery(undefined);
+  const obligations = trpc.delivery.obligations.useQuery(branchId > 0 ? { branchId } : undefined);
   const staleParties = trpc.delivery.staleParties.useQuery(undefined);
 
   useRealtimeEvent(
@@ -96,7 +98,7 @@ export function DeliverySettleTab() {
   );
 
   const cons = trpc.delivery.openConsignments.useInfiniteQuery(
-    { partyId: Number(partyId), limit: 500 },
+    { partyId: Number(partyId), ...(branchId > 0 ? { branchId } : {}), limit: 500 },
     {
       enabled: !!partyId,
       getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -351,7 +353,10 @@ export function DeliverySettleTab() {
     let fees = D(0);
     let collected = D(0), expected = D(0), leftInTransit = 0, selectedCount = 0;
     for (const c of list) {
-      if (!isSettleable(c)) continue;
+      if (!isSettleable(c)) {
+        if (remainingOf(c).gt(0)) leftInTransit += 1;
+        continue;
+      }
       const remaining = statementMode ? remainingOf(c) : remittableOf(c);
       const st = get(c);
       if (st.outcome === "COLLECTED" ) {
@@ -516,7 +521,7 @@ export function DeliverySettleTab() {
           >
             <option value="">— اختر —</option>
             {(obligations.data ?? []).map((p) => (
-              <option key={p.partyId} value={p.partyId}>{p.name} — نقد بيده {fmt(p.currentBalance)} د.ع</option>
+              <option key={p.partyId} value={p.partyId}>{formatPartyObligationOptionLabel(p.name, p.partyType === "COMPANY" ? "شركة" : "مندوب", p)}</option>
             ))}
           </AppSelect>
           {partyId && partyName && (

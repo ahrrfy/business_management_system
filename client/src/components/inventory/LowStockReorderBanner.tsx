@@ -19,7 +19,9 @@ export function LowStockReorderBanner({
 
   if (lowCount === 0 && outOfStockCount === 0) return null;
 
-  const totalProblematic = lowCount + outOfStockCount;
+  // lowCount في شاشة المخزون يحصي كل الأصناف ذات الكمية <= الحد الأدنى (ويشمل المنتهي <= 0)،
+  // لذا نستخدم عدد الأصناف الفعلي (lowVariantIds) أو الحد الأعلى بدلاً من جمعهما مرّتين.
+  const totalProblematic = Math.max(lowVariantIds.length, lowCount, outOfStockCount);
 
   const handleCreateReorder = (unassigned: boolean) => {
     if (lowVariantIds.length === 0) return;

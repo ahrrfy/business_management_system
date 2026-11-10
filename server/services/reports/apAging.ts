@@ -876,6 +876,7 @@ export async function getSupplierStatement(
           orderDate: p.orderDate,
           expectedDeliveryDate: p.expectedDeliveryDate,
           total: String(p.total),
+          periodTotal: String(p.periodTotal ?? p.total),
           paidAmount: String(p.paidAmount),
           settlement: p.settlement,
           settlementType: p.settlementType,

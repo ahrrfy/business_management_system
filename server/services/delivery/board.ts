@@ -29,7 +29,7 @@ import {
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
 import { deliveryCashSource } from "./cashSource";
-import { loadPartyExposureInputsTx } from "./exposureInputs";
+import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
 import { consignmentShortfallAssignedSql, staleOpenParcelCondition } from "./openParcelPredicates";
 import type { DeliveryTxActor } from "./types";
 
@@ -69,6 +69,7 @@ export async function listPartyBoardTx(
       id: deliveryParties.id,
       name: deliveryParties.name,
       partyType: deliveryParties.partyType,
+      branchId: deliveryParties.branchId,
       currentBalance: deliveryParties.currentBalance,
       isActive: deliveryParties.isActive,
       maxOpenParcelAgeDays: deliveryParties.maxOpenParcelAgeDays,
@@ -88,8 +89,8 @@ export async function listPartyBoardTx(
     - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2))
     - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2))
     - ${consignmentShortfallAssignedSql}, 0)`;
-  const isAssigned = sql`${deliveryConsignments.parcelStatus} IN ('ASSIGNED','ACCEPTED','PICKED_UP') AND ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`;
-  const isInTransit = sql`${deliveryConsignments.parcelStatus} = 'OUT_FOR_DELIVERY' AND ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`;
+  const isAssigned = sql`${deliveryConsignments.parcelStatus} IN ('ASSIGNED','ACCEPTED','PICKED_UP') AND ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') AND ${deliveryConsignments.returnDeclaredAt} IS NULL`;
+  const isInTransit = sql`${deliveryConsignments.parcelStatus} = 'OUT_FOR_DELIVERY' AND ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') AND ${deliveryConsignments.returnDeclaredAt} IS NULL`;
   const isDeliveredUnremitted = sql`${deliveryConsignments.parcelStatus} = 'DELIVERED'
     AND ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')
     AND ${deliveryConsignments.returnDeclaredAt} IS NULL`;
@@ -119,7 +120,7 @@ export async function listPartyBoardTx(
 
   // ── مدخلاتُ الدالّة النقيّة (المصدر الواحد `exposureInputs.ts`): الطرود الحيّة بعهدتها من
   // الدفتر + مجاميع الدفتر لكلّ نوع على مستوى الجهة كلّها (العمودُ المخزَّن جهويٌّ لا فرعيّ) ────
-  const exposureInputs = await loadPartyExposureInputsTx(tx, partyIds, branchId);
+  const exposureInputs = await loadScopedPartyExposureInputsTx(tx, partyIds, branchId);
 
   // ── الطرود المتأخّرة (نفس مسند حارس الإسناد — مصدرٌ واحد) ───────────────────────────
   const stale = await tx
@@ -145,7 +146,10 @@ export async function listPartyBoardTx(
     const ledger = inputs?.ledger ?? [];
     // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
     const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
-    const custodyStored = fmt(p.currentBalance);
+    const custodyStored =
+      branchId == null || p.branchId != null
+        ? fmt(p.currentBalance)
+        : custodyLedger;
     const exposure = computePartyExposure({
       cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
       parcels: inputs?.parcels ?? [],

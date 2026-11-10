@@ -38,13 +38,25 @@ export default function PurchasesReport() {
     return allRows.filter((r) => (r.supplierName ?? "").includes(s));
   }, [allRows, search]);
   const totals = q.data?.totals;
+  const displayTotals = useMemo(() => {
+    if (!totals) return undefined;
+    if (!search.trim()) return totals;
+    let count = 0, total = 0, paid = 0, unpaid = 0;
+    for (const r of rows) {
+      count += Number(r.orders || 0);
+      total += Number(r.total || 0);
+      paid += Number(r.paid || 0);
+      unpaid += Number(r.unpaid || 0);
+    }
+    return { count, total: total.toFixed(2), paid: paid.toFixed(2), unpaid: unpaid.toFixed(2) };
+  }, [totals, search, rows]);
 
-  const kpis: KpiItem[] = totals
+  const kpis: KpiItem[] = displayTotals
     ? [
-        { label: "عدد الأوامر", value: totals.count },
-        { label: "الإجمالي", value: fmtAr(totals.total), tone: "info" },
-        { label: "المدفوع", value: fmtAr(totals.paid), tone: "positive" },
-        { label: "المتبقّي", value: fmtAr(totals.unpaid), tone: "warning" },
+        { label: "عدد الأوامر", value: displayTotals.count },
+        { label: "الإجمالي", value: fmtAr(displayTotals.total), tone: "info" },
+        { label: "المدفوع", value: fmtAr(displayTotals.paid), tone: "positive" },
+        { label: "المتبقّي", value: fmtAr(displayTotals.unpaid), tone: "warning" },
       ]
     : [];
 
@@ -84,12 +96,12 @@ export default function PurchasesReport() {
         paid: fmtAr(r.paid),
         unpaid: fmtAr(r.unpaid),
       })),
-      summary: totals
+      summary: displayTotals
         ? [
-            { label: "عدد الأوامر", value: String(totals.count) },
-            { label: "المدفوع", value: fmtAr(totals.paid) },
-            { label: "المتبقّي", value: fmtAr(totals.unpaid) },
-            { label: "الإجمالي", value: fmtAr(totals.total), large: true, bold: true },
+            { label: "عدد الأوامر", value: String(displayTotals.count) },
+            { label: "المدفوع", value: fmtAr(displayTotals.paid) },
+            { label: "المتبقّي", value: fmtAr(displayTotals.unpaid) },
+            { label: "الإجمالي", value: fmtAr(displayTotals.total), large: true, bold: true },
           ]
         : undefined,
     });

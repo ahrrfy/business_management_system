@@ -160,9 +160,19 @@ export const deliveryRouter = router({
   paymentRefunds: deliveryFeeRefundRouter,
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
   listParties: deliveryReadProcedure
-    .input(z.object({ activeOnly: z.boolean().optional(), search: z.string().optional() }).optional())
+    .input(
+      z.object({
+        activeOnly: z.boolean().optional(),
+        search: z.string().optional(),
+        branchId: z.number().int().positive().optional(),
+      }).optional(),
+    )
     .query(({ input, ctx }) =>
-      listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: input?.activeOnly, search: input?.search }),
+      listDeliveryParties({
+        branchId: ctx.user.role === "admin" ? input?.branchId ?? ctx.scopedBranchId : ctx.scopedBranchId,
+        activeOnly: input?.activeOnly,
+        search: input?.search,
+      }),
     ),
 
   getParty: deliveryReadProcedure
@@ -361,7 +371,7 @@ export const deliveryRouter = router({
       limit: z.number().int().positive().max(500).optional(),
       cursor: z.number().int().positive().optional(),
     }).optional())
-    .query(({ input, ctx }) => listInTransitConsignments(ctx.scopedBranchId, input?.partyId ?? null, { limit: input?.limit, cursor: input?.cursor })),
+    .query(({ input, ctx }) => listInTransitConsignments(ctx.user.role === "admin" ? input?.branchId ?? ctx.scopedBranchId : ctx.scopedBranchId, input?.partyId ?? null, { limit: input?.limit, cursor: input?.cursor })),
 
   openConsignments: deliveryReadProcedure
     .input(z.object({

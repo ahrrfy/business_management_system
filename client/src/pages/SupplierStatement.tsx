@@ -361,7 +361,7 @@ export default function SupplierStatement() {
         ref: p.poNumber,
         description: `فاتورة شراء — بضاعة · ${settlement.intentLabel}`,
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
-        debit: null as string | null, credit: p.total as string | null,
+        debit: null as string | null, credit: ((p as { periodTotal?: string }).periodTotal ?? p.total) as string | null,
         filterGroup: "buy" as const,
         openHref: `/purchases/${p.id}`,
         paymentStatus: settlement.status,

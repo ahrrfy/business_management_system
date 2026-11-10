@@ -184,9 +184,13 @@ async function fetchSharedDashboardMetrics(
     SELECT COUNT(*) AS c
     FROM branchStock bs
     INNER JOIN productVariants v ON v.id = bs.variantId
-    WHERE v.minStock > 0
-      AND bs.quantity <= v.minStock
+    INNER JOIN products p ON p.id = v.productId
+    LEFT JOIN variantBranchThresholds vbt ON vbt.variantId = v.id AND vbt.branchId = bs.branchId
+    WHERE COALESCE(vbt.minStock, v.minStock) > 0
+      AND bs.quantity <= COALESCE(vbt.minStock, v.minStock)
       AND v.isActive = TRUE
+      AND p.isActive = TRUE
+      AND p.isService = FALSE
       ${branchFilterStock}
   `);
   const lowData = (lowRows as any)[0] ?? lowRows;
@@ -250,6 +254,14 @@ async function fetchSharedDashboardMetrics(
     SELECT COUNT(*) AS c
     FROM workOrders wo
     WHERE wo.workOrderStatus NOT IN ('DELIVERED', 'CANCELLED')
+      AND NOT (
+        wo.workOrderStatus = 'READY'
+        AND EXISTS (
+          SELECT 1 FROM deliveryConsignments dc
+          WHERE dc.workOrderId = wo.id
+            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+        )
+      )
       AND wo.dueDate IS NOT NULL
       AND wo.dueDate < UTC_DATE()
       ${branchFilterWo}
