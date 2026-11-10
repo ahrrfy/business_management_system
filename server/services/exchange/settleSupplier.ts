@@ -138,7 +138,8 @@ export async function settleSupplierViaExchange(
     const accountSettlement = automatic ? await prepareSupplierBookExchangeTx(tx, {
       supplierId: input.supplierId, branchId: input.branchId,
       currency: input.currency, amount: toDbMoney(walletAmount), date: voucherDate,
-    }) : null;
+      requestId: input.clientRequestId!,
+    }, actor) : null;
     const invoiceSettlement = automatic ? null : await prepareExchangeInvoiceSettlementTx(tx, {
       order: purchaseOrder, supplier, settledIqd: toDbMoney(settledIqd), settledUsd: toDbMoney(settledUsd),
     }, actor);

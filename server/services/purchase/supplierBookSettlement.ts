@@ -128,6 +128,8 @@ export type BookSource = {
   exchangeId: number | null;
   kind: "PAYMENT" | "CREDIT";
   date: string;
+  /** A verified account credit can be applied now without backdating its allocations. */
+  eligibleThrough?: string;
   amount: string;
   snapshot: unknown;
 };
@@ -145,6 +147,7 @@ type PlannedSource = BookSource & {
 };
 type ContextOptions = {
   exchangeAccount?: boolean;
+  verifiedAccountCreditsAt?: string;
   futurePayment?: {
     amount: string;
     date: string;
@@ -238,7 +241,7 @@ export function buildSupplierBookFifo(
         if (left.isZero()) break;
         if (
           (!isExceptionReturnCreditSnapshot(canonical(source.snapshot)) &&
-            target.date > source.date) ||
+            target.date > (source.eligibleThrough ?? source.date)) ||
           !target.remaining.gt(0)
         )
           continue;
@@ -259,8 +262,8 @@ export function buildSupplierBookFifo(
         : `القيد رقم ${source.entryId}`;
       fail(
         source.entryId === PREVIEW_SOURCE_ID
-          ? `يبقى من الدفعة ${toDbMoney(left)} د.ع بلا مستحق مثبت في تاريخ السند`
-          : `يبقى ${toDbMoney(left)} د.ع من ${document} بلا مستحق مثبت في تاريخه. راجع الدفعة السابقة قبل تسجيل سداد جديد`,
+          ? `تعذر توزيع الدفعة بالكامل؛ يبقى ${toDbMoney(left)} د.ع بلا مستحق مثبت في تاريخ السند`
+          : `تعذر توزيع ${document} بالكامل؛ يبقى ${toDbMoney(left)} د.ع بلا مستحق مثبت في تاريخه`,
       );
     }
     planned.push({
@@ -1120,14 +1123,23 @@ async function loadContext(
         fail(`مصدر الصرافة ${receipt.id} لا يمثل تسديد IQD دفترياً مثبتاً`);
     } else if (exchange.length)
       fail(`ملكية إيصال ${receipt.id} تتعارض مع الصرافة`);
+    const date = day(entry.entryDate);
+    const applyOn = options.verifiedAccountCreditsAt;
+    const accountDate = applyOn && date <= applyOn ? applyOn : undefined;
     candidate.push({
       entryId: entry.id,
       receiptId: receipt.id,
       exchangeId: exchange[0]?.id ?? null,
       kind: "PAYMENT",
-      date: day(entry.entryDate),
+      date,
+      ...(accountDate ? { eligibleThrough: accountDate } : {}),
       amount: entry.amount,
-      snapshot: { entry, receipt, exchange: exchange[0] ?? null },
+      snapshot: {
+        entry,
+        receipt,
+        exchange: exchange[0] ?? null,
+        ...(accountDate ? { accountAllocationDate: accountDate } : {}),
+      },
     });
   }
   for (const source of bookSources.filter((s) =>
@@ -1330,8 +1342,8 @@ export type AccountExchangePlan = {
   evidenceHash: string;
 };
 
-/** Use the same proved payable balances as supplier vouchers, without adopting
- * historic payments or reclassifying invoices as a side effect of new money. */
+/** Match verified prior account credits as of today's payment, then allocate
+ * the new amount. Only the latter owns a new wallet movement and receipt. */
 export async function prepareSupplierBookExchangeTx(
   tx: Tx,
   input: {
@@ -1340,23 +1352,47 @@ export async function prepareSupplierBookExchangeTx(
     currency: "IQD" | "USD";
     amount: string;
     date: string;
+    requestId: string;
   },
+  actor: Actor,
 ): Promise<AccountExchangePlan> {
   assertGovernanceGateHeld(tx);
-  const c = await loadContext(tx, input, { exchangeAccount: true });
-  if (c.classify.length || c.sources.length)
-    fail(
-      "للمورد دفعات أو فواتير قديمة لم تُطابق بعد؛ أكمل مراجعتها قبل تسجيل دفعة جديدة",
-    );
+  const scope = { supplierId: input.supplierId, branchId: input.branchId };
+  const options: ContextOptions = {
+    exchangeAccount: true,
+    verifiedAccountCreditsAt: input.date,
+  };
+  let c = await loadContext(tx, scope, options);
   const amount = money(input.amount);
   const usd = input.currency === "USD";
   const available = usd
-    ? money(c.usdBefore)
+    ? money(c.usdAfter)
     : money(c.financial.supplier.currentBalance);
   if (!amount.gt(0) || amount.gt(available))
     fail(
       `المبلغ يتجاوز المستحق المتاح: ${toDbMoney(available)} ${usd ? "دولار" : "د.ع"}`,
     );
+
+  const hasUnmatched = () =>
+    c.classify.length > 0 ||
+    c.sources.some(
+      (source) => !source.retainedSourceId || source.allocations.length > 0,
+    );
+  if (hasUnmatched()) {
+    await adoptSupplierBookSettlementInTx(
+      tx,
+      {
+        ...scope,
+        requestKey: `EX-ACCOUNT-PRIOR:${hash(input.requestId).slice(0, 48)}`,
+        expectedPlanHash: c.planHash,
+      },
+      actor,
+      options,
+    );
+    c = await loadContext(tx, scope, options);
+    if (hasUnmatched())
+      fail("لم يكتمل توزيع الدفعات السابقة المثبتة على حساب المورد");
+  }
 
   const invoiceById = new Map(
     c.invoices.map((invoice) => [Number(invoice.id), invoice]),
@@ -1471,10 +1507,17 @@ export async function prepareSupplierBookExchangeTx(
 export async function previewSupplierBookSettlement(input: {
   supplierId: number;
   branchId: number;
+  accountDate?: string;
 }) {
   return withTx(
     async (tx) => {
-      const c = await loadContext(tx, input);
+      const c = await loadContext(
+        tx,
+        { supplierId: input.supplierId, branchId: input.branchId },
+        {
+          verifiedAccountCreditsAt: input.accountDate,
+        },
+      );
       return {
         planHash: c.planHash,
         supplierId: input.supplierId,
@@ -1506,6 +1549,7 @@ const liveVoucherPlans = new WeakMap<
     tx: Tx;
     receiptId?: number;
     beforeBalance: string;
+    verifiedAccountCreditsAt?: string;
     allocations?: SupplierVoucherAllocation[];
     planHash: string;
   }
@@ -1662,13 +1706,17 @@ export async function prepareSupplierBookVoucherTx(
   }
   if (money(input.amount).gt(money(supplier.currentBalance).minus(reserved)))
     fail("المبلغ يتجاوز صافي الذمة المتاح بعد حجوزات سندات الصرف المعلقة");
+  const voucherDate =
+    input.voucherDate ?? new Date().toISOString().slice(0, 10);
+  const verifiedAccountCreditsAt = input.allocations ? undefined : voucherDate;
   const c = await loadContext(
     tx,
     { supplierId: input.supplierId, branchId: input.branchId },
     {
+      verifiedAccountCreditsAt,
       futurePayment: {
         amount: toDbMoney(money(input.amount)),
-        date: input.voucherDate ?? new Date().toISOString().slice(0, 10),
+        date: voucherDate,
         allocations: input.allocations,
       },
     },
@@ -1687,6 +1735,7 @@ export async function prepareSupplierBookVoucherTx(
     tx,
     receiptId: input.receiptId,
     beforeBalance: supplier.currentBalance,
+    verifiedAccountCreditsAt,
     allocations: input.allocations?.map((a) => ({ ...a })),
     planHash: hash(plan),
   });
@@ -1748,7 +1797,7 @@ export async function applySupplierBookVoucherTx(
     fail("أصل سند الصرف أو أثر الذمة لا يطابق خطة التسوية");
   const contextOptions: ContextOptions = prepared.allocations
     ? { manualSource: { entryId: entry.id, allocations: prepared.allocations } }
-    : {};
+    : { verifiedAccountCreditsAt: prepared.verifiedAccountCreditsAt };
   const c = await loadContext(
     tx,
     {
@@ -1911,9 +1960,9 @@ async function adoptSupplierBookSettlementInTx(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
-        what: "تعذر اعتماد الروابط الدفترية",
-        why: "يلزم مالك نشط مثبت في قاعدة البيانات",
-        doThis: "نفذ القرار بحساب مالك مخول",
+        what: contextOptions.exchangeAccount ? "يلزم حساب المالك لهذه الدفعة" : "تعذر اعتماد الروابط الدفترية",
+        why: contextOptions.exchangeAccount ? "للمورد دفعات سابقة مثبتة يلزم ربطها بحسابه أولاً" : "يلزم مالك نشط مثبت في قاعدة البيانات",
+        doThis: contextOptions.exchangeAccount ? "سجّل هذه الدفعة بحساب المالك؛ يطابق النظام السندات السابقة تلقائياً" : "نفذ القرار بحساب مالك مخول",
       }),
     });
   const entityId = auditEntity(

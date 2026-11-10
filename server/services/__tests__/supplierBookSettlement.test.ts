@@ -16,6 +16,7 @@ import {
   buildSupplierBookFifo,
 } from "../purchase/supplierBookSettlement";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
+import { approveVoucher, createVoucher } from "../voucherService";
 import { getAPAging } from "../reports/apAging";
 import { getArApAgingDetail } from "../reportsAgingDetailService";
 const db = () => getDb()!;
@@ -405,6 +406,61 @@ describe("owned full-source supplier book settlement", () => {
     );
     expect(await originals()).toEqual(before);
   });
+  it("automatically applies a prior proved account payment only when the new supplier voucher is approved", async () => {
+    const prior = await fixture({
+      total: "100000.00",
+      opening: "0.00",
+      payment: "20000.00",
+    });
+    const earlier = new Date("2026-01-01T00:00:00Z");
+    await db()
+      .update(s.accountingEntries)
+      .set({ entryDate: earlier })
+      .where(eq(s.accountingEntries.id, prior.entryId));
+    await db()
+      .update(s.receipts)
+      .set({ voucherDate: earlier })
+      .where(eq(s.receipts.id, prior.receiptId));
+    const result = await createVoucher(
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        partyType: "SUPPLIER",
+        partyId: 1,
+        paymentMethod: "CARD",
+        amount: "30000.00",
+        cardLastFour: "1234",
+        referenceNumber: "BOOK-CURRENT-ACCOUNT-CARD",
+        description: "دفعة حساب المورد",
+        clientRequestId: "book-current-account-card-request",
+      },
+      { userId: 7, branchId: 1, role: "accountant" },
+    );
+    expect(result.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(
+      await db().select().from(s.supplierBookSettlementSources),
+    ).toHaveLength(0);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "80000.00",
+    );
+    await approveVoucher(result.receiptId, actor);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "50000.00",
+    );
+    expect(await db().select().from(s.supplierBookSettlementSources)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceReceiptId: prior.receiptId,
+          amount: "20000.00",
+        }),
+        expect.objectContaining({
+          sourceReceiptId: result.receiptId,
+          amount: "30000.00",
+        }),
+      ]),
+    );
+  });
+
   it("retains a proved USD return on a paid legacy invoice as an account credit without rewriting its payment", async () => {
     await fixture({
       total: "1450.12",

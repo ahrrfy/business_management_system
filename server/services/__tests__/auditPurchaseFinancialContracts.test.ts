@@ -352,6 +352,90 @@ describe("audit 11-F01/11-F02 — canonical exchange purchase settlement", () =>
     );
   });
 
+  it("applies an earlier proved account payment today without a second cash movement or bypassing owner review", async () => {
+    const source = await postedPurchase();
+    const earlier = new Date("2026-01-01T00:00:00Z");
+    const oldReceiptId = extractInsertId(
+      await db().insert(s.receipts).values({
+        direction: "OUT",
+        branchId: 1,
+        partyType: "SUPPLIER",
+        partyId: 1,
+        amount: "14500.00",
+        paymentMethod: "CARD",
+        voucherNumber: "AUDIT-PRIOR-SUPPLIER",
+        voucherDate: earlier,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedAt: earlier,
+        approvedBy: owner.userId,
+        createdBy: maker.userId,
+      }),
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      entryDate: earlier,
+      branchId: 1,
+      supplierId: 1,
+      amount: "14500.00",
+      receiptId: oldReceiptId,
+      createdBy: maker.userId,
+    });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "130500.00" })
+      .where(eq(s.suppliers.id, 1));
+    const before = await financialState(source.order.id);
+    const command = {
+      allocationMode: "ACCOUNT" as const,
+      currency: "IQD" as const,
+      branchId: 1,
+      supplierId: 1,
+      exchangeHouseId: 1,
+      walletAmount: "43500",
+      clientRequestId: randomUUID(),
+    };
+    await expect(
+      settleSupplierViaExchange(command, manager),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      settleSupplierViaExchange({ ...command, exchangeHouseId: 999 }, owner),
+    ).rejects.toBeDefined();
+    expect(await financialState(source.order.id)).toEqual(before);
+    expect(
+      await db().select().from(s.supplierBookSettlementSources),
+    ).toHaveLength(0);
+
+    const paid = await settleSupplierViaExchange(command, owner);
+    const after = await financialState(source.order.id);
+    expect(after.receipts).toHaveLength(before.receipts.length + 1);
+    expect(after.supplier.currentBalance).toBe("87000.00");
+    expect(after.supplier.currentBalanceUsd).toBe("60.00");
+    expect(after.house.balanceIqd).toBe("956500.00");
+    const [priorBook, newBook] = await db()
+      .select()
+      .from(s.supplierBookSettlementSources)
+      .orderBy(asc(s.supplierBookSettlementSources.id));
+    expect(priorBook).toMatchObject({
+      sourceReceiptId: oldReceiptId,
+      amount: "14500.00",
+    });
+    expect(
+      JSON.parse(priorBook.sourceSnapshot).accountAllocationDate,
+    ).toBeDefined();
+    expect(newBook).toMatchObject({
+      sourceReceiptId: paid.receiptId,
+      amount: "43500.00",
+    });
+    await reverseExchangeTransaction(paid.txnId, owner);
+    const reversed = await financialState(source.order.id);
+    expect(reversed.supplier.currentBalance).toBe(
+      before.supplier.currentBalance,
+    );
+    expect(reversed.supplier.currentBalanceUsd).toBe("90.00");
+    expect(reversed.house.balanceIqd).toBe(before.house.balanceIqd);
+  });
+
   it("allocates a dollar wallet payment across two dollar invoices at their own book rates", async () => {
     const first = await postedPurchase();
     const second = await postedPurchase({ rate: "1500" });
