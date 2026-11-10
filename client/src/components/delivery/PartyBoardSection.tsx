@@ -42,12 +42,19 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
     typeof window !== "undefined"
       ? Number(new URLSearchParams(window.location.search).get("branchId"))
       : 0;
-  const settleBranchId = me.data?.branchId ?? (rawUrlBranch > 0 ? rawUrlBranch : null);
+  const urlBranchId = rawUrlBranch > 0 ? rawUrlBranch : null;
+  const settleBranchId =
+    role === "admin"
+      ? (urlBranchId ?? me.data?.branchId ?? null)
+      : (me.data?.branchId ?? urlBranchId);
   const canSettle = hasSettleRole && (settleBranchId != null || role === "admin");
+  const effectiveBranchId = settleBranchId ?? undefined;
   // علَما الطرح التدريجيّ (مصدر الحقيقة: الخادم): يحكمان عرضَ «نقد بيده» في اللوحة (المصدر الفعّال).
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, { staleTime: 5 * 60_000 });
   const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
-  const board = trpc.delivery.partyBoard.useQuery(rawUrlBranch > 0 ? { branchId: rawUrlBranch } : undefined);
+  const board = trpc.delivery.partyBoard.useQuery(
+    effectiveBranchId != null ? { branchId: effectiveBranchId } : undefined,
+  );
 
   useRealtimeEvent(
     [
@@ -60,7 +67,6 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
     },
   );
   const [settleFor, setSettleFor] = useState<PartyBoardRow | null>(null);
-  const effectiveBranchId = settleBranchId ?? undefined;
   const preview = trpc.delivery.settlementPreview.useQuery(
     { partyId: settleFor?.partyId ?? 0, branchId: effectiveBranchId },
     { enabled: settleFor != null && (settleBranchId != null || role === "admin"), staleTime: 0 },
