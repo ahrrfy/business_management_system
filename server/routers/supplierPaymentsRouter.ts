@@ -46,7 +46,7 @@ export const supplierPaymentsRouter = router({
   cashSources: purchasesManagerProcedure
     .input(z.object({ branchId: z.number().int().positive() }))
     .query(({ input, ctx }) =>
-      listSupplierPaymentCashSources(input.branchId, actor(ctx)),
+      listSupplierPaymentCashSources(input.branchId, actor(ctx), { includeBalances: true }),
     ),
   requestPayment: purchasesManagerProcedure
     .input(

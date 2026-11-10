@@ -1842,7 +1842,7 @@ describe("one physical shipment with independent invoice accounting", () => {
     expect(inv1?.status).toBe("PENDING");
   });
 
-  it("bumps shipment leader codClaimVersion when a non-leader member invoice is cancelled via cancelInvoiceDeliveryTx", async () => {
+  it("preserves shipment leader codClaimVersion on member cancel while closing member consignment", async () => {
     const [leaderBefore] = await db()
       .select()
       .from(s.deliveryConsignments)
@@ -1856,7 +1856,7 @@ describe("one physical shipment with independent invoice accounting", () => {
         tx,
         state!,
         actor,
-        "part-j-member-cancel-bump",
+        "part-j-member-cancel-continuity",
         "إلغاء الفاتورة الثانية ضمن الشحنة الموحدة",
       );
     });
@@ -1870,6 +1870,6 @@ describe("one physical shipment with independent invoice accounting", () => {
       .from(s.deliveryConsignments)
       .where(eq(s.deliveryConsignments.id, 12));
     expect(memberAfter?.status).toBe("CANCELLED");
-    expect(leaderAfter?.codClaimVersion).toBe(2);
+    expect(leaderAfter?.codClaimVersion).toBe(1);
   });
 });

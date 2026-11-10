@@ -417,7 +417,7 @@ async function lockOwnRetailShift(
         code: "FORBIDDEN",
         message: appErrorMessage({
           what: "تعذّر صرف المصروف من الوردية المحددة",
-          why: "المصروف النقدي من الدرج يُصرف من وردية المُنشئ النشطة في نفس الفرع فقط",
+          why: "المصروف النقدي من الدرج يُصرف من درج وردية المُنشئ فقط (في نفس الفرع)",
           doThis: "اختر ورديتك المفتوحة في نفس الفرع أو اصرف من الخزينة وفق صلاحيتك",
         }),
       });
@@ -612,7 +612,7 @@ async function createStockExpenseTx(
   for (const id of varIds) {
     const v = existByVar.get(id)!;
     const p = prodById.get(Number(v.productId));
-    if (!p || !p.isActive || !v.variantActive || p.isService || p.isBundle || p.isConsignment || p.productType === "DIGITAL_CARD") {
+    if (!p || !p.isActive || !v.variantActive || p.isService || p.isBundle || p.productType === "DIGITAL_CARD") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({

@@ -20,6 +20,8 @@ import {
   type CreateProductInput,
 } from "../catalogService";
 import { createExpense } from "../expenseService";
+import { updateProductWithVariants } from "../productEditService";
+import { createPrintSale } from "../printSaleService";
 
 const TABLES = [
   "auditLogs",
@@ -31,7 +33,10 @@ const TABLES = [
   "expenseStockItems",
   "expenses",
   "expenseCategories",
+  "invoiceItems",
+  "invoices",
   "receipts",
+  "shifts",
   "bundleComponents",
   "productImages",
   "productPrices",
@@ -369,5 +374,134 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
     });
     expect(lookup.item).not.toBeNull();
     expect(Number(lookup.item?.conversionFactor)).toBe(12);
+  });
+
+  it("يصون المتغيرات الإرثية المتطابقة عند التعديل عبر updateProductWithVariants ويبيع الناتج المخزني المفعّل للطباعة", async () => {
+    // 1) Codex #1: منتج تاريخي فيه متغيّران عاديّان تتطابق أبعادهما بعد التطبيع يظل قابلاً للتعديل دون كسر
+    await db().insert(s.products).values({
+      id: 50,
+      name: "ملف تعليق إرثي",
+      categoryId: 1,
+      stockUsage: "SALE_ONLY",
+      showInStore: false,
+      isActive: true,
+    });
+    await db().insert(s.productVariants).values([
+      { id: 501, productId: 50, sku: "LEG-501", color: "أحمر", size: "A4", costPrice: "500.00", isActive: true },
+      { id: 502, productId: 50, sku: "LEG-502", color: "احمر", size: "a4", costPrice: "500.00", isActive: true },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 5001, variantId: 501, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-LEG-501" },
+      { id: 5002, variantId: 502, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-LEG-502" },
+    ]);
+    await db().insert(s.productPrices).values([
+      { productUnitId: 5001, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 5002, priceTier: "RETAIL", price: "1000.00" },
+    ]);
+
+    await updateProductWithVariants(
+      {
+        productId: 50,
+        name: "ملف تعليق إرثي — محدّث",
+        unitTemplate: [
+          {
+            unitName: "قطعة",
+            conversionFactor: "1",
+            isBaseUnit: true,
+            prices: [{ priceTier: "RETAIL", price: "1250.00" }],
+          },
+        ],
+        variants: [
+          { id: 501, sku: "LEG-501", color: "أحمر", size: "A4", costPrice: "500.00", unitBarcodes: { قطعة: "BC-LEG-501" } },
+          { id: 502, sku: "LEG-502", color: "احمر", size: "a4", costPrice: "500.00", unitBarcodes: { قطعة: "BC-LEG-502" } },
+        ],
+      },
+      actor,
+    );
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 50,
+          unitTemplate: [
+            {
+              unitName: "قطعة",
+              conversionFactor: "1",
+              isBaseUnit: true,
+              prices: [{ priceTier: "RETAIL", price: "1250.00" }],
+            },
+          ],
+          variants: [
+            { id: 501, sku: "LEG-501", color: "أحمر", size: "A4", costPrice: "500.00", unitBarcodes: { قطعة: "BC-LEG-501" } },
+            { id: 502, sku: "LEG-502", color: "احمر", size: "a4", costPrice: "500.00", unitBarcodes: { قطعة: "BC-LEG-502" } },
+            { sku: "LEG-503", color: "أحمر", size: "A4", costPrice: "500.00", unitBarcodes: { قطعة: "BC-LEG-503" } },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // 2) Codex #3: ناتج مخزني مفعّل في شاشة الطباعة (isService=false, productType=null, showInPrintPos=true) يمرّ في createPrintSale
+    const stockedPrint = await createProduct(
+      {
+        name: "ملزمة مطبوعة جاهزة",
+        categoryId: 1,
+        isService: false,
+        showInPrintPos: true,
+        variants: [
+          {
+            sku: "SVC-STOCKED-PRINT",
+            costPrice: "1000.00",
+            units: [
+              {
+                unitName: "نسخة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                barcode: "BC-STOCKED-PRINT",
+                prices: [{ priceTier: "RETAIL", price: "2500.00" }],
+              },
+            ],
+          },
+        ],
+      },
+      actor,
+    );
+    const allVars = await db().select().from(s.productVariants);
+    const stockedPrintVar = allVars.find((v) => Number(v.productId) === stockedPrint.productId)!;
+    const allUnits = await db().select().from(s.productUnits);
+    const stockedPrintUnit = allUnits.find((u) => Number(u.variantId) === Number(stockedPrintVar.id))!;
+
+    await db().insert(s.branchStock).values({
+      branchId: 1,
+      variantId: Number(stockedPrintVar.id),
+      quantity: 20,
+    });
+    await db().insert(s.shifts).values({
+      id: 901,
+      branchId: 1,
+      userId: 1,
+      shiftType: "PRINT_SERVICES",
+      openingBalance: "0.00",
+      status: "OPEN",
+      openGuard: "1:1:PRINT_SERVICES",
+    });
+
+    const saleRes = await createPrintSale(
+      {
+        branchId: 1,
+        shiftId: 901,
+        payment: { method: "CASH", amount: "5000.00" },
+        lines: [
+          {
+            variantId: Number(stockedPrintVar.id),
+            productUnitId: Number(stockedPrintUnit.id),
+            quantity: "2",
+          },
+        ],
+      },
+      actor,
+    );
+    expect(saleRes.invoiceId).toBeGreaterThan(0);
+    expect(saleRes.total).toBe("5000.00");
   });
 });

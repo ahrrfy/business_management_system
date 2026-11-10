@@ -812,7 +812,16 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
           size: row.size ?? null,
         })),
     ];
-    assertUniqueNormalizedVariantCombos(resolvedComboCandidates);
+    assertUniqueNormalizedVariantCombos(resolvedComboCandidates, dbVariantById);
+
+    // اتّساق التفعيل للصنف البسيط أحاديّ المتغيّر عديم الأبعاد.
+    const firstCombo = resolvedComboCandidates[0];
+    const isSingleSimpleProduct =
+      allDbVariants.length <= 1 &&
+      input.variants.length === 1 &&
+      firstCombo?.variantKind !== "ALTERNATIVE" &&
+      !firstCombo?.color &&
+      !firstCombo?.size;
 
     for (const v of input.variants) {
       if (v.id == null) continue;
@@ -836,17 +845,9 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         },
         { variantKind: kind, variantName: vName, color, size },
         existingRow.sku || vName || `#${existingRow.id}`,
+        { allowClearingSoleRegularVariantDimensions: isSingleSimpleProduct },
       );
     }
-
-    // اتّساق التفعيل للصنف البسيط أحاديّ المتغيّر عديم الأبعاد.
-    const firstCombo = resolvedComboCandidates[0];
-    const isSingleSimpleProduct =
-      allDbVariants.length <= 1 &&
-      input.variants.length === 1 &&
-      firstCombo?.variantKind !== "ALTERNATIVE" &&
-      !firstCombo?.color &&
-      !firstCombo?.size;
     let syncedSimpleActive: boolean | undefined;
     if (isSingleSimpleProduct) {
       const v0 = input.variants[0];
@@ -877,6 +878,10 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         await assertStorefrontPublishReadyTx(tx, {
           actor,
           requirePermission: Boolean(actor.role),
+          previouslyPublished: {
+            showInStore: Boolean(p.showInStore),
+            categoryId: p.categoryId != null ? Number(p.categoryId) : null,
+          },
           isActive: effectiveProductIsActive,
           isService: willBeService,
           stockUsage: effectiveStockUsage,

@@ -416,17 +416,23 @@ function validateProductGroups(
         const f = Number(u.conversionFactor);
         if (u.isBaseUnit && f !== 1) {
           for (const rn of v.rowNumbers)
-            failures.set(
-              rn,
-              `وحدة الأساس «${u.unitName}» يجب أن يكون معامل تحويلها ١`,
-            );
+            if (!failures.has(rn))
+              failures.set(
+                rn,
+                `وحدة الأساس «${u.unitName}» يجب أن يكون معامل تحويلها ١`,
+              );
         }
-        if (!u.isBaseUnit && (!/^[1-9]\d*$/.test(u.conversionFactor.trim()) || !Number.isInteger(f) || f <= 1)) {
+        const invalidPositiveInt =
+          !/^[1-9]\d*$/.test(u.conversionFactor.trim()) || !Number.isInteger(f) || f < 1;
+        const nonBaseFactorMustExceedOne =
+          !u.isBaseUnit && (u.isBaseUnit === false || baseUnits.length === 1) && f <= 1;
+        if (!u.isBaseUnit && (invalidPositiveInt || nonBaseFactorMustExceedOne)) {
           for (const rn of v.rowNumbers)
-            failures.set(
-              rn,
-              `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً أكبر من ١`,
-            );
+            if (!failures.has(rn))
+              failures.set(
+                rn,
+                `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً أكبر من ١`,
+              );
         }
         if (u.barcode) {
           const keys = barcodeIdentityCandidates(u.barcode).map(barcodeComparisonKey);

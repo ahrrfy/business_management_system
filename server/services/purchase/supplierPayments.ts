@@ -758,6 +758,31 @@ export async function isPurchaseTreasuryAllowedTx(
 export async function listSupplierPaymentCashSources(
   branchId: number,
   actor: Actor,
+  options: { includeBalances: true },
+): Promise<{
+  drawers: Array<{
+    id: number;
+    shiftType: (typeof shifts.$inferSelect)["shiftType"];
+    availableCash: string;
+  }>;
+  canUseTreasury: boolean;
+  treasuryAvailableCash: string | null;
+}>;
+export async function listSupplierPaymentCashSources(
+  branchId: number,
+  actor: Actor,
+  options?: { includeBalances?: false },
+): Promise<{
+  drawers: Array<{
+    id: number;
+    shiftType: (typeof shifts.$inferSelect)["shiftType"];
+  }>;
+  canUseTreasury: boolean;
+}>;
+export async function listSupplierPaymentCashSources(
+  branchId: number,
+  actor: Actor,
+  options?: { includeBalances?: boolean },
 ) {
   assertPurchaseBranch({ branchId }, actor);
   return withTx(
@@ -787,6 +812,16 @@ export async function listSupplierPaymentCashSources(
           ),
         )
         .orderBy(asc(shifts.id));
+      const canUseTreasury = await treasurySourceAllowed(tx, actor);
+      if (!options?.includeBalances) {
+        return {
+          drawers: rawDrawers.map((row) => ({
+            id: Number(row.id),
+            shiftType: row.shiftType,
+          })),
+          canUseTreasury,
+        };
+      }
       const drawers: Array<{
         id: number;
         shiftType: (typeof rawDrawers)[number]["shiftType"];
@@ -804,7 +839,6 @@ export async function listSupplierPaymentCashSources(
           availableCash: toDbMoney(available),
         });
       }
-      const canUseTreasury = await treasurySourceAllowed(tx, actor);
       const treasuryAvailableCash = canUseTreasury
         ? toDbMoney(await computeTreasuryCashBalance(tx, branchId))
         : null;
@@ -3397,7 +3431,7 @@ export async function resolveCashPurchaseSettlementPlanTx(
   if (tender?.mode === "DRAWER" && tender.shiftId == null) {
     throw purchaseTenderError(
       "تعذر صرف المتبقي من الفاتورة",
-      "مصدر الوردية المحدد لا يتضمن درجاً صالحاً؛ صحّح مصدر السداد بمراجعة جديدة ولا تحول الصرف إلى الخزنة تلقائياً",
+      "مصدر الوردية المحدد لا يتضمن درجاً صالحاً؛ حدد الوردية صراحةً بمراجعة جديدة لمصدر السداد ولا تحول الصرف إلى الخزنة تلقائياً",
     );
   }
   const legacyDeclared = tender
@@ -3411,6 +3445,33 @@ export async function resolveCashPurchaseSettlementPlanTx(
       );
 
   if (input.explicitCashSource != null) {
+    if (
+      input.explicitCashSource.mode === "DRAWER" &&
+      input.explicitCashSource.shiftId != null
+    ) {
+      const [explicitShift] = await tx
+        .select({
+          id: shifts.id,
+          userId: shifts.userId,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, Number(input.explicitCashSource.shiftId)))
+        .limit(1);
+      if (
+        explicitShift &&
+        (creatorUserId == null || Number(explicitShift.userId) !== creatorUserId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر خصم سداد الفاتورة النقدية من هذا الدرج",
+            why: "يُمنع الصرف من درج المعتمِد أو أي مستخدم آخر؛ الخصم محصور بوردية منشئ الأمر فقط",
+            doThis:
+              "استخدم وردية منشئ الأمر المثبتة في المراجعة، أو صحّح مصدر السداد بمراجعة جديدة إلى الخزينة الرئيسية",
+          }),
+        });
+      }
+    }
     if (tender != null) {
       const matchesTender =
         input.explicitCashSource.mode === tender.mode &&
@@ -3601,13 +3662,20 @@ export async function resolveCashPurchaseSettlementPlanTx(
         }),
       });
     }
-    if (
-      !shift ||
-      shift.status !== "OPEN" ||
-      Number(shift.branchId) !== branchId ||
-      creatorUserId == null ||
-      Number(shift.userId) !== creatorUserId
-    ) {
+    const isDeclaredShiftValid =
+      Boolean(shift) &&
+      shift!.status === "OPEN" &&
+      Number(shift!.branchId) === branchId &&
+      creatorUserId != null &&
+      Number(shift!.userId) === creatorUserId;
+    if (isDeclaredShiftValid) {
+      return {
+        mode: "DRAWER",
+        shiftId: Number(shift!.id),
+        payerUserId: Number(shift!.userId),
+      };
+    }
+    if (declared.explicit) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
@@ -3618,11 +3686,6 @@ export async function resolveCashPurchaseSettlementPlanTx(
         }),
       });
     }
-    return {
-      mode: "DRAWER",
-      shiftId: Number(shift.id),
-      payerUserId: Number(shift.userId),
-    };
   }
 
   if (creatorUserId != null) {
@@ -3634,6 +3697,13 @@ export async function resolveCashPurchaseSettlementPlanTx(
         payerUserId: creatorUserId,
       };
     }
+  }
+  if (!tender && !declared?.explicit && reviewerApproval.isOwner) {
+    return {
+      mode: "TREASURY",
+      shiftId: null,
+      payerUserId: input.reviewer.userId,
+    };
   }
   throw new TRPCError({
     code: "PRECONDITION_FAILED",

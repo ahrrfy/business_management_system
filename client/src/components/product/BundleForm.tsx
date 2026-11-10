@@ -84,6 +84,7 @@ export default function BundleForm() {
   const [bulkCategoryId, setBulkCategoryId] = useState<number | "">("");
   const [error, setError] = useState("");
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [autoSkuSuffix, setAutoSkuSuffix] = useState(() => Math.random().toString(36).slice(2, 6).toUpperCase());
   const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
   const formSignature = JSON.stringify({
     name,
@@ -316,7 +317,7 @@ export default function BundleForm() {
     ];
     // SKU مولَّد تلقائياً — البكج نادراً ما يحتاج SKU يدوي.
     const slug = finalName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const suffix = autoSkuSuffix;
     const usedSku = slug ? `BDL-${slug}-${suffix}` : `BDL-${suffix}`;
     const submitted = formSignature;
 
@@ -354,6 +355,7 @@ export default function BundleForm() {
       })),
     });
     setClientRequestId(crypto.randomUUID());
+    setAutoSkuSuffix(Math.random().toString(36).slice(2, 6).toUpperCase());
     setSavedSig(submitted);
     await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
     return { res, usedSku };

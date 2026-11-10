@@ -639,6 +639,8 @@ export async function createPrintSaleInTx(
         id,
         isActive: row.isActive,
         productIsActive: product.isActive,
+        isBundle: product.isBundle,
+        showInPrintPos: product.showInPrintPos,
         productType: product.productType,
         productName: product.productName,
         invoiceLabel: product.invoiceLabel,
@@ -655,7 +657,7 @@ export async function createPrintSaleInTx(
       if (variant.isActive !== true || variant.productIsActive !== true) {
         throwDisabledPrintService(l.variantId);
       }
-      if (variant.productType !== PRINT_SERVICE_TYPE) {
+      if (variant.isBundle || (variant.productType !== PRINT_SERVICE_TYPE && variant.showInPrintPos !== true)) {
         throwNonPrintService();
       }
     }

@@ -187,7 +187,7 @@ export async function assertReceptionLinesEligibleTx(
         });
       }
     } else if (line.lineKind === "PRINT") {
-      const printAllowed = r.productType === PRINT_SERVICE_TYPE || r.showInPrintPos === true || r.showInReception === true;
+      const printAllowed = r.stockUsage == null || r.productType === PRINT_SERVICE_TYPE || r.showInPrintPos === true || r.showInReception === true;
       if (r.isBundle || !printAllowed || (!r.isService && !isSellableStockUsage(r.stockUsage))) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",

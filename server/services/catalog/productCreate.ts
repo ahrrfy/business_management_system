@@ -278,7 +278,7 @@ function isIdempotencyDupError(err: unknown): boolean {
 /** Create a product with its variants, units and prices in one transaction (zero opening stock). */
 export async function createProduct(
   input: CreateProductInput,
-  actor: CreateProductActor,
+  actor: CreateProductActor = { userId: 0, branchId: 0 },
   options?: CreateProductOptions,
 ): Promise<{ productId: number; replayed?: boolean }> {
   // لا ينشر كاتب الكتالوج القديم صوراً MANUAL+APPROVED. الصور الجديدة تمر حصراً بمهمة

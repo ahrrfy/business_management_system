@@ -667,9 +667,19 @@ export async function assertVariantIdentityImmutableIfUsed(
   prev: { variantKind?: string | null; color?: string | null; size?: string | null; variantName?: string | null },
   next: { variantKind?: string | null; color?: string | null; size?: string | null; variantName?: string | null },
   label: string,
+  options?: { allowClearingSoleRegularVariantDimensions?: boolean },
 ): Promise<void> {
   const prevKind = prev.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
   const nextKind = next.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
+  if (
+    options?.allowClearingSoleRegularVariantDimensions &&
+    prevKind === "VARIANT" &&
+    nextKind === "VARIANT" &&
+    !next.color &&
+    !next.size
+  ) {
+    return;
+  }
   const identityChanged =
     prevKind !== nextKind ||
     (nextKind === "VARIANT" &&
@@ -782,6 +792,7 @@ export async function assertStorefrontPublishReadyTx(
   args: {
     actor?: { role?: string; isOwner?: boolean; permissionsOverride?: PermissionMap | null };
     requirePermission?: boolean;
+    previouslyPublished?: { showInStore: boolean; categoryId: number | null };
     isActive: boolean;
     isService: boolean;
     stockUsage: StockUsage | null | undefined;
@@ -797,7 +808,8 @@ export async function assertStorefrontPublishReadyTx(
     }>;
   },
 ): Promise<void> {
-  if (args.requirePermission && args.actor?.role) {
+  const wasAlreadyPublished = args.previouslyPublished?.showInStore === true;
+  if (args.requirePermission && !wasAlreadyPublished && args.actor?.role) {
     const allowed =
       args.actor.isOwner === true ||
       args.actor.role === "admin" ||
@@ -830,7 +842,7 @@ export async function assertStorefrontPublishReadyTx(
       }),
     });
   }
-  if (!args.isService && !isSellableStockUsage(args.stockUsage)) {
+  if (args.isService || !isSellableStockUsage(args.stockUsage)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
@@ -842,30 +854,38 @@ export async function assertStorefrontPublishReadyTx(
       }),
     });
   }
-  if (args.categoryId == null) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "لا يمكن نشر الصنف في المتجر بدون فئة نشطة وظاهرة",
-        why: "النشر العلني في المتجر يشترط تحديد فئة نشطة ومسموح عرضها في المتجر",
-        doThis: "اختر فئة نشطة ظاهرة في المتجر للصنف ثم أعد النشر",
-      }),
-    });
-  }
-  const [cat] = await tx
-    .select({ id: categories.id, isActive: categories.isActive, showInStore: categories.showInStore })
-    .from(categories)
-    .where(eq(categories.id, args.categoryId))
-    .limit(1);
-  if (!cat || !cat.isActive || !cat.showInStore) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "فئة الصنف مخفية أو معطّلة في المتجر",
-        why: "لا يمكن نشر صنف ينتمي إلى فئة غير مفعّلة أو مخفية عن واجهة المتجر",
-        doThis: "فعّل إظهار الفئة في المتجر أو انقل الصنف إلى فئة منشورة ثم أعد المحاولة",
-      }),
-    });
+  const legacyUncategorizedGrandfathered =
+    wasAlreadyPublished && args.previouslyPublished?.categoryId == null && args.categoryId == null;
+  if (!legacyUncategorizedGrandfathered) {
+    if (args.categoryId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن نشر الصنف في المتجر بدون فئة نشطة وظاهرة",
+          why: "النشر العلني في المتجر يشترط تحديد فئة نشطة ومسموح عرضها في المتجر",
+          doThis: "اختر فئة نشطة ظاهرة في المتجر للصنف ثم أعد النشر",
+        }),
+      });
+    }
+    const unchangedLegacyCategory =
+      wasAlreadyPublished && args.previouslyPublished?.categoryId === args.categoryId;
+    if (!unchangedLegacyCategory) {
+      const [cat] = await tx
+        .select({ id: categories.id, isActive: categories.isActive, showInStore: categories.showInStore })
+        .from(categories)
+        .where(eq(categories.id, args.categoryId))
+        .limit(1);
+      if (!cat || !cat.isActive || !cat.showInStore) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "فئة الصنف مخفية أو معطّلة في المتجر",
+            why: "لا يمكن نشر صنف ينتمي إلى فئة غير مفعّلة أو مخفية عن واجهة المتجر",
+            doThis: "فعّل إظهار الفئة في المتجر أو انقل الصنف إلى فئة منشورة ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
   }
 
   const activeVariants = args.variants.filter((v) => v.isActive);
@@ -880,29 +900,31 @@ export async function assertStorefrontPublishReadyTx(
     });
   }
 
-  const hasReadyStoreUnit = activeVariants.some((v) =>
-    v.units.some((u) => {
-      if (!u.isActive || !u.isStoreSaleUnit) return false;
-      const priceRaw = (u.retailPrice ?? "").trim();
-      if (!priceRaw) return false;
-      try {
-        const factor = new Decimal(u.conversionFactor);
-        const retail = new Decimal(priceRaw);
-        return factor.isInteger() && factor.gte(1) && retail.gt(0);
-      } catch {
-        return false;
-      }
-    }),
-  );
-  if (!hasReadyStoreUnit) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "الصنف يفتقر إلى وحدة بيع متجر بسعر مفرد صالح",
-        why: "النشر في المتجر يشترط وجود وحدة مفعّلة للبيع في المتجر بسعر مفرد أكبر من صفر",
-        doThis: "فعّل خيار «وحدة بيع بالمتجر» وأدخل سعر المفرد للوحدة ثم أعد النشر",
+  if (!wasAlreadyPublished) {
+    const hasReadyStoreUnit = activeVariants.some((v) =>
+      v.units.some((u) => {
+        if (!u.isActive || !u.isStoreSaleUnit) return false;
+        const priceRaw = (u.retailPrice ?? "").trim();
+        if (!priceRaw) return false;
+        try {
+          const factor = new Decimal(u.conversionFactor);
+          const retail = new Decimal(priceRaw);
+          return factor.isInteger() && factor.gte(1) && retail.gt(0);
+        } catch {
+          return false;
+        }
       }),
-    });
+    );
+    if (!hasReadyStoreUnit) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الصنف يفتقر إلى وحدة بيع متجر بسعر مفرد صالح",
+          why: "النشر في المتجر يشترط وجود وحدة مفعّلة للبيع في المتجر بسعر مفرد أكبر من صفر",
+          doThis: "فعّل خيار «وحدة بيع بالمتجر» وأدخل سعر المفرد للوحدة ثم أعد النشر",
+        }),
+      });
+    }
   }
 }
 

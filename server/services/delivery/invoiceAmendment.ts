@@ -360,7 +360,6 @@ export async function cancelInvoiceDeliveryTx(
       status: "CANCELLED",
       parcelStatus: "CANCELLED",
       moneyStatus: "CANCELLED",
-      codClaimVersion: sql`${deliveryConsignments.codClaimVersion} + 1`,
       assignedUserId: null,
       cancelledAt: new Date(),
       cancelledBy: actor.userId,
@@ -373,7 +372,6 @@ export async function cancelInvoiceDeliveryTx(
       ),
     })
     .where(eq(deliveryConsignments.id, Number(state.cn.id)));
-  await bumpShipmentLeaderClaimVersionTx(tx, Number(state.cn.id));
   await appendDeliveryEvent(tx, {
     eventKey: `CN:${state.cn.id}:INVOICE_CANCELLED:${key}`,
     consignmentId: Number(state.cn.id),

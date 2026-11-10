@@ -139,6 +139,7 @@ export default function SimpleProductForm({
   );
   const [showInStore, setShowInStore] = useState(false);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [autoSkuSuffix, setAutoSkuSuffix] = useState(() => Math.random().toString(36).slice(2, 6).toUpperCase());
   const [lastSaved, setLastSaved] = useState<PostSaveProductSummary | null>(null);
   // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
@@ -249,7 +250,7 @@ export default function SimpleProductForm({
     const explicit = sku.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
     if (explicit) return explicit;
     const slug = finalName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const suffix = autoSkuSuffix;
     if (slug) return `PR-${slug}-${suffix}`;
     if (baseBarcode) return baseBarcode;
     return `PR-${suffix}`;
@@ -379,6 +380,7 @@ export default function SimpleProductForm({
       ],
     });
     setClientRequestId(crypto.randomUUID());
+    setAutoSkuSuffix(Math.random().toString(36).slice(2, 6).toUpperCase());
     setSavedSignature(submitted);
     await Promise.all([
       utils.catalog.posList.invalidate(),

@@ -57,7 +57,6 @@ import { nextCounterValue } from "../numbering";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
 import {
-  isPurchaseTreasuryAllowedTx,
   readDeclaredPurchaseCashSourceTx,
   type DeclaredPurchaseCashSource,
 } from "./supplierPayments";
@@ -127,7 +126,7 @@ async function captureOrderCashSourceTx(
           mode: "DRAWER",
           shiftId: openShiftId,
           payerUserId: creatorId,
-          explicit: true,
+          explicit: false,
         }
       : null;
   }
@@ -140,30 +139,6 @@ async function captureOrderCashSourceTx(
           why: "الخزينة الرئيسية لا تقبل رقم وردية",
           doThis:
             "اختر الخزينة الرئيسية دون رقم وردية، أو اختر درج الوردية المفتوحة",
-        }),
-      });
-    }
-    const prevDeclared =
-      previous && previous.settlementType === "CASH"
-        ? await readDeclaredPurchaseCashSourceTx(
-            tx,
-            Number(previous.id),
-            previous.currentRevisionId == null
-              ? null
-              : Number(previous.currentRevisionId),
-          )
-        : null;
-    if (
-      prevDeclared?.mode !== "TREASURY" &&
-      !(await isPurchaseTreasuryAllowedTx(tx, actor))
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "تعذر حفظ مصدر الصرف من الخزينة",
-          why: "اختيار الخزينة يتطلب صلاحية الخزينة الكاملة أو حساب مالك نشط",
-          doThis:
-            "اختر درج ورديتك المفتوحة أو اطلب من مخول الخزينة حفظ مصدر الصرف",
         }),
       });
     }

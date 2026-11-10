@@ -219,6 +219,10 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
       await assertStorefrontPublishReadyTx(tx, {
         actor,
         requirePermission: Boolean(actor.role),
+        previouslyPublished: {
+          showInStore: Boolean(p.showInStore),
+          categoryId: p.categoryId != null ? Number(p.categoryId) : null,
+        },
         isActive: effectiveProductIsActive,
         isService: !!p.isService,
         stockUsage: effectiveStockUsage,
