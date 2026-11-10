@@ -48,7 +48,17 @@ import { logAuditTx } from "../auditService";
 import { supplierApEffectSql } from "../ledger/supplierApEffect";
 import { adjustSupplierBalanceUsd } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
-import { withGovernanceTx, withTx, type Actor } from "../tx";
+import {
+  assertGovernanceGateHeld,
+  withGovernanceTx,
+  withTx,
+  type Actor,
+} from "../tx";
+import {
+  assertNativePurchaseSettlementEvidence,
+  assertSupplierInvoicePayable,
+} from "./supplierPayments";
+import { cumulativeCurrencyDelta } from "./supplierVoucherCurrency";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { loadPurchaseSettlements } from "./settlementProjection";
 import {
@@ -57,7 +67,10 @@ import {
   loadSupplierBookInvoiceTotals,
   purchaseAdvanceAvailableAmount,
 } from "./supplierBookProjection";
-import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
+import {
+  loadSupplierFormalCreditTotals,
+  refreshPoCreditSiblingGates,
+} from "./supplierFormalCreditProjection";
 import {
   requestPurchaseIntegrityResolutionInTx,
   decidePurchaseIntegrityResolutionInTx,
@@ -79,7 +92,8 @@ function fail(why: string): never {
     message: appErrorMessage({
       what: "تعذرت التسوية الدفترية للمورد",
       why,
-      doThis: "راجع دليل المصدر ثم أعد المعاينة؛ لم تُسجل حركة مالية جديدة",
+      doThis:
+        "راجع الفواتير والدفعات في كشف المورد قبل إعادة المحاولة. لم تُسجّل حركة مالية جديدة",
     }),
   });
 }
@@ -114,6 +128,8 @@ export type BookSource = {
   exchangeId: number | null;
   kind: "PAYMENT" | "CREDIT";
   date: string;
+  /** A verified account credit can be applied now without backdating its allocations. */
+  eligibleThrough?: string;
   amount: string;
   snapshot: unknown;
 };
@@ -130,6 +146,8 @@ type PlannedSource = BookSource & {
   unallocatedAmount: string;
 };
 type ContextOptions = {
+  exchangeAccount?: boolean;
+  verifiedAccountCreditsAt?: string;
   futurePayment?: {
     amount: string;
     date: string;
@@ -223,7 +241,7 @@ export function buildSupplierBookFifo(
         if (left.isZero()) break;
         if (
           (!isExceptionReturnCreditSnapshot(canonical(source.snapshot)) &&
-            target.date > source.date) ||
+            target.date > (source.eligibleThrough ?? source.date)) ||
           !target.remaining.gt(0)
         )
           continue;
@@ -235,10 +253,19 @@ export function buildSupplierBookFifo(
         source.kind === "CREDIT" &&
         isExceptionReturnCreditSnapshot(canonical(source.snapshot))
       )
-    )
+    ) {
+      const receipt = (
+        source.snapshot as { receipt?: { voucherNumber?: string | null } }
+      ).receipt;
+      const document = receipt?.voucherNumber
+        ? `السند ${receipt.voucherNumber}`
+        : `القيد رقم ${source.entryId}`;
       fail(
-        `المصدر ${source.entryId} يضم رصيداً غير قابل للتخصيص بالكامل؛ لا يجوز اختلاق فاتورة له`,
+        source.entryId === PREVIEW_SOURCE_ID
+          ? `تعذر توزيع الدفعة بالكامل؛ يبقى ${toDbMoney(left)} د.ع بلا مستحق مثبت في تاريخ السند`
+          : `تعذر توزيع ${document} بالكامل؛ يبقى ${toDbMoney(left)} د.ع بلا مستحق مثبت في تاريخه`,
       );
+    }
     planned.push({
       ...source,
       allocations: assigned,
@@ -462,8 +489,16 @@ async function loadContext(
         ),
       )),
   ];
-  if (pending.length)
-    fail("يوجد طلب مالي معلق للمورد؛ احسمه قبل قبول روابط تاريخية");
+  if (
+    pending.length ||
+    (options.exchangeAccount &&
+      originalReceipts.some(
+        (receipt) => receipt.approvalStatus === "PENDING_APPROVAL",
+      ))
+  )
+    fail(
+      "يوجد طلب مالي للمورد ينتظر الاعتماد أو الرفض؛ احسمه أولاً حتى لا تُدفع الذمة مرتين",
+    );
   const [ledger] = await tx
     .select({
       amount: sql<string>`COALESCE(SUM(${supplierApEffectSql({ entryType: accountingEntries.entryType, amount: accountingEntries.amount, liabilityAccount: accountingEntries.purchaseLiabilityAccount, dedupeKey: accountingEntries.dedupeKey })}),0)`,
@@ -476,12 +511,22 @@ async function loadContext(
     ...invoices.map((i) => i.branchId),
     ...entries.filter((e) => e.branchId != null).map((e) => e.branchId!),
   ]);
-  if (branchIds.size !== 1 || !branchIds.has(input.branchId))
-    fail("لا يمكن إسناد افتتاحي بلا فرع داخل مورد متعدد الفروع تلقائياً");
+  const openingOnly =
+    options.exchangeAccount && !branchIds.size && !invoices.length;
+  if (!openingOnly && (branchIds.size !== 1 || !branchIds.has(input.branchId)))
+    fail(
+      "سجلات هذا الحساب لا تتبع فرع السداد وحده؛ راجع كشف المورد وحدّد الذمة لكل فرع قبل الصرف",
+    );
   const links = await invoiceOrders(tx, invoices);
   const formalCredits = await loadSupplierFormalCreditTotals(tx, ids);
   const targets: BookTarget[] = [];
   const classify: Invoice[] = [];
+  const retainedReturns: {
+    invoiceId: number;
+    returnIds: number[];
+    iqd: string;
+    usd: string;
+  }[] = [];
   for (const invoice of invoices) {
     if (
       invoice.status !== "POSTED" ||
@@ -496,7 +541,8 @@ async function loadContext(
       !order ||
       order.branchId !== input.branchId ||
       order.settlementType !== "CREDIT" ||
-      !["CONFIRMED", "RECEIVED"].includes(order.status)
+      !["CONFIRMED", "RECEIVED"].includes(order.status) ||
+      (options.exchangeAccount && invoice.draftState === "VOIDED")
     ) {
       // Fully paid CASH documents keep their original independently proven settlement.
       if (order?.settlementType === "CASH") continue;
@@ -583,13 +629,10 @@ async function loadContext(
       );
     const credit = money(formalCredits.get(invoice.id) ?? 0);
     const booked = book.get(invoice.id);
-    const used = paidNative
+    const paid = paidNative
       .plus(invoice.legacySettledAmount)
-      .plus(credit)
-      .plus(booked?.paidAmount ?? 0)
-      .plus(booked?.creditedAmount ?? 0);
-    if (used.gt(invoice.totalAmount))
-      fail(`تجاوزت تسويات الفاتورة ${invoice.id} قيمتها`);
+      .plus(booked?.paidAmount ?? 0);
+    const used = paid.plus(credit).plus(booked?.creditedAmount ?? 0);
     const currencyTotal =
       invoice.currency === "USD"
         ? money(invoice.usdTotal ?? 0)
@@ -606,11 +649,94 @@ async function loadContext(
               .div(invoice.totalAmount),
           )
         : money(invoice.legacySettledAmount);
-    const currencyUsed = paidNativeCurrency
-      .plus(creditCurrency)
+    const paidCurrency = paidNativeCurrency
       .plus(legacyCurrency)
-      .plus(booked?.paidCurrencyAmount ?? 0)
+      .plus(booked?.paidCurrencyAmount ?? 0);
+    const currencyUsed = paidCurrency
+      .plus(creditCurrency)
       .plus(booked?.creditedCurrencyAmount ?? 0);
+    if (used.gt(invoice.totalAmount) || currencyUsed.gt(currencyTotal)) {
+      // A verified PO-only return on a fully paid legacy USD invoice is an
+      // account credit. The payment and return keep their original ownership.
+      const returnRows = formal.filter(
+        (row) =>
+          row.purchaseOrderId === order.id &&
+          row.supplierInvoiceId == null &&
+          row.settlement === "CREDIT" &&
+          money(row.creditOffsetAmount).gt(0),
+      );
+      const exclusiveInvoice =
+        invoices.filter(
+          (row) =>
+            row.status === "POSTED" &&
+            row.draftState !== "VOIDED" &&
+            row.liabilityClass !== "LEGACY_CASH_CLEARING" &&
+            links.get(row.id)?.has(order.id),
+        ).length === 1;
+      const proved =
+        invoice.origin === "LEGACY" &&
+        invoice.liabilityClass === "LEGACY_AP" &&
+        invoice.paymentGate === "SETTLED" &&
+        invoice.currency === "USD" &&
+        order.agreedCurrency === "USD" &&
+        exclusiveInvoice &&
+        paid.eq(invoice.totalAmount) &&
+        paidCurrency.eq(currencyTotal) &&
+        money(booked?.creditedAmount).isZero() &&
+        money(booked?.creditedCurrencyAmount).isZero() &&
+        credit.gt(0) &&
+        creditCurrency.gt(0) &&
+        money(order.returnedUsd).eq(creditCurrency) &&
+        returnRows.length > 0 &&
+        returnRows
+          .reduce((sum, row) => sum.plus(row.creditOffsetAmount), money(0))
+          .eq(credit) &&
+        new Set(returnRows.map((row) => row.accountingEntryId)).size ===
+          returnRows.length &&
+        returnRows.every((row) => {
+          const entry = entries.find((e) => e.id === row.accountingEntryId);
+          return (
+            row.origin === "LEGACY" &&
+            row.status === "POSTED" &&
+            row.branchId === input.branchId &&
+            row.cashRefundReceiptId == null &&
+            money(row.cashRefundAmount).isZero() &&
+            !reversed.some(
+              (reversal) => reversal.purchaseReturnId === row.id,
+            ) &&
+            !bookSources.some(
+              (source) =>
+                source.sourceAccountingEntryId === row.accountingEntryId,
+            ) &&
+            entry?.entryType === "RETURN" &&
+            entry.purchaseLiabilityAccount === "AP" &&
+            entry.receiptId == null &&
+            entry.branchId === input.branchId &&
+            entry.purchaseOrderId === order.id &&
+            money(entry.amount).negated().eq(row.creditOffsetAmount)
+          );
+        });
+      if (proved) {
+        retainedReturns.push({
+          invoiceId: invoice.id,
+          returnIds: returnRows.map((row) => row.id),
+          iqd: toDbMoney(credit),
+          usd: toDbMoney(creditCurrency),
+        });
+        continue;
+      }
+      const overage = used.gt(invoice.totalAmount)
+        ? `${toDbMoney(used.minus(invoice.totalAmount))} د.ع`
+        : `${toDbMoney(currencyUsed.minus(currencyTotal))} دولار`;
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر سداد المورد",
+          why: `تجاوزت تسويات الفاتورة ${invoice.invoiceNumber} (رقم السجل ${invoice.id}) قيمتها بـ ${overage}`,
+          doThis: `راجع دفعات الفاتورة ومرتجعاتها في أمر الشراء ${order.poNumber} وكشف المورد. لم يُسجَّل هذا السداد`,
+        }),
+      });
+    }
     targets.push({
       supplierInvoiceId: invoice.id,
       openingEntryId: null,
@@ -997,14 +1123,23 @@ async function loadContext(
         fail(`مصدر الصرافة ${receipt.id} لا يمثل تسديد IQD دفترياً مثبتاً`);
     } else if (exchange.length)
       fail(`ملكية إيصال ${receipt.id} تتعارض مع الصرافة`);
+    const date = day(entry.entryDate);
+    const applyOn = options.verifiedAccountCreditsAt;
+    const accountDate = applyOn && date <= applyOn ? applyOn : undefined;
     candidate.push({
       entryId: entry.id,
       receiptId: receipt.id,
       exchangeId: exchange[0]?.id ?? null,
       kind: "PAYMENT",
-      date: day(entry.entryDate),
+      date,
+      ...(accountDate ? { eligibleThrough: accountDate } : {}),
       amount: entry.amount,
-      snapshot: { entry, receipt, exchange: exchange[0] ?? null },
+      snapshot: {
+        entry,
+        receipt,
+        exchange: exchange[0] ?? null,
+        ...(accountDate ? { accountAllocationDate: accountDate } : {}),
+      },
     });
   }
   for (const source of bookSources.filter((s) =>
@@ -1103,8 +1238,17 @@ async function loadContext(
     ).size > 200
   )
     fail("التوزيع أكبر من حد الاعتماد الذري؛ قسم نطاق المراجعة");
+  const retainedReturnIqd = retainedReturns.reduce(
+    (sum, row) => sum.plus(row.iqd),
+    money(0),
+  );
+  const retainedReturnUsd = retainedReturns.reduce(
+    (sum, row) => sum.plus(row.usd),
+    money(0),
+  );
   if (
     !money(plan.remaining)
+      .minus(retainedReturnIqd)
       .minus(unusedAdvances)
       .minus(
         plan.sources.reduce(
@@ -1130,7 +1274,7 @@ async function loadContext(
     )
     .reduce(
       (sum, t) => sum.plus(t.currencyTotal).minus(t.currencyUsed),
-      money(0),
+      retainedReturnUsd.negated(),
     );
   if (!usdBefore.eq(supplier.currentBalanceUsd))
     fail(
@@ -1169,6 +1313,7 @@ async function loadContext(
     bookSources,
     exceptionAllocations,
     plan,
+    ...(retainedReturns.length ? { retainedReturns } : {}),
     classify: classify.map((i) => i.id),
   });
   return {
@@ -1179,30 +1324,215 @@ async function loadContext(
     orders,
     links,
     classify,
+    targets,
+    retainedReturns,
     usdBefore: toDbMoney(usdBefore),
     usdAfter: toDbMoney(usdAfter),
     usdDelta: toDbMoney(usdDelta),
   };
 }
 
+export type AccountExchangePlan = {
+  supplierId: number;
+  branchId: number;
+  amountIqd: string;
+  tenderUsd: string;
+  bookUsd: string;
+  allocations: BookAllocation[];
+  evidenceHash: string;
+};
+
+/** Match verified prior account credits as of today's payment, then allocate
+ * the new amount. Only the latter owns a new wallet movement and receipt. */
+export async function prepareSupplierBookExchangeTx(
+  tx: Tx,
+  input: {
+    supplierId: number;
+    branchId: number;
+    currency: "IQD" | "USD";
+    amount: string;
+    date: string;
+    requestId: string;
+  },
+  actor: Actor,
+): Promise<AccountExchangePlan> {
+  assertGovernanceGateHeld(tx);
+  const scope = { supplierId: input.supplierId, branchId: input.branchId };
+  const options: ContextOptions = {
+    exchangeAccount: true,
+    verifiedAccountCreditsAt: input.date,
+  };
+  let c = await loadContext(tx, scope, options);
+  const amount = money(input.amount);
+  const usd = input.currency === "USD";
+  const available = usd
+    ? money(c.usdAfter)
+    : money(c.financial.supplier.currentBalance);
+  if (!amount.gt(0) || amount.gt(available))
+    fail(
+      `المبلغ يتجاوز المستحق المتاح: ${toDbMoney(available)} ${usd ? "دولار" : "د.ع"}`,
+    );
+
+  const hasUnmatched = () =>
+    c.classify.length > 0 ||
+    c.sources.some(
+      (source) => !source.retainedSourceId || source.allocations.length > 0,
+    );
+  if (hasUnmatched()) {
+    await adoptSupplierBookSettlementInTx(
+      tx,
+      {
+        ...scope,
+        requestKey: `EX-ACCOUNT-PRIOR:${hash(input.requestId).slice(0, 48)}`,
+        expectedPlanHash: c.planHash,
+      },
+      actor,
+      options,
+    );
+    c = await loadContext(tx, scope, options);
+    if (hasUnmatched())
+      fail("لم يكتمل توزيع الدفعات السابقة المثبتة على حساب المورد");
+  }
+
+  const invoiceById = new Map(
+    c.invoices.map((invoice) => [Number(invoice.id), invoice]),
+  );
+  const targets = c.targets.filter(
+    (target) => target.date <= input.date && money(target.amount).gt(0),
+  );
+  let allocations: BookAllocation[];
+  if (!usd) {
+    const eligible = targets.reduce(
+      (sum, target) => sum.plus(target.amount),
+      money(0),
+    );
+    if (amount.gt(eligible))
+      fail(`المستحق القابل للسداد حتى اليوم ${toDbMoney(eligible)} د.ع`);
+    const plan = buildSupplierBookFifo(targets, [
+      {
+        entryId: PREVIEW_SOURCE_ID,
+        receiptId: null,
+        exchangeId: null,
+        kind: "PAYMENT",
+        date: input.date,
+        amount: input.amount,
+        snapshot: { previewOnly: true },
+      },
+    ]);
+    allocations = plan.sources[0].allocations;
+  } else {
+    allocations = [];
+    let left = amount;
+    for (const target of targets.sort(
+      (a, b) => a.date.localeCompare(b.date) || a.order - b.order,
+    )) {
+      if (left.isZero()) break;
+      if (
+        target.supplierInvoiceId == null ||
+        invoiceById.get(target.supplierInvoiceId)?.currency !== "USD"
+      )
+        continue;
+      const capacity = money(target.currencyTotal).minus(target.currencyUsed);
+      if (!capacity.gt(0)) continue;
+      const take = toDbMoney(Decimal.min(left, capacity));
+      const carrying = cumulativeCurrencyDelta(
+        target.currencyTotal,
+        target.total,
+        target.currencyUsed,
+        toDbMoney(money(target.total).minus(target.amount)),
+        take,
+      );
+      const targetSnapshot = canonical(target.snapshot);
+      allocations.push({
+        supplierInvoiceId: target.supplierInvoiceId,
+        openingEntryId: null,
+        amount: carrying,
+        currencyAmount: take,
+        targetSnapshot,
+        targetHash: sha256(targetSnapshot),
+      });
+      left = left.minus(take);
+    }
+    if (!left.isZero())
+      fail(
+        `المستحق من فواتير الدولار حتى اليوم ${toDbMoney(amount.minus(left))} دولار`,
+      );
+  }
+
+  const touched = allocations.flatMap((row) =>
+    row.supplierInvoiceId == null
+      ? []
+      : [invoiceById.get(row.supplierInvoiceId)!],
+  );
+  if (allocations.length > 200)
+    fail("الدفعة تغطي أكثر من 200 مستحق؛ سجّلها على دفعتين");
+  for (const invoice of touched) assertSupplierInvoicePayable(invoice);
+  const orderIds = new Set(
+    touched.flatMap((invoice) => Array.from(c.links.get(invoice.id) ?? [])),
+  );
+  await assertNativePurchaseSettlementEvidence(tx, {
+    supplier: c.financial.supplier,
+    orders: c.orders.filter((order) => orderIds.has(order.id)),
+    invoices: touched,
+  });
+
+  const amountIqd = toDbMoney(
+    allocations.reduce((sum, row) => sum.plus(row.amount), money(0)),
+  );
+  const bookUsd = toDbMoney(
+    allocations.reduce(
+      (sum, row) =>
+        row.supplierInvoiceId != null &&
+        invoiceById.get(row.supplierInvoiceId)?.currency === "USD"
+          ? sum.plus(row.currencyAmount)
+          : sum,
+      money(0),
+    ),
+  );
+  if (usd ? !money(bookUsd).eq(amount) : !money(amountIqd).eq(amount))
+    fail("مجموع التوزيع لا يساوي المبلغ المدفوع");
+  if (money(bookUsd).gt(c.usdBefore))
+    fail("توزيع المبلغ يتجاوز ما تبقّى من فواتير الدولار");
+  return {
+    supplierId: input.supplierId,
+    branchId: input.branchId,
+    amountIqd,
+    tenderUsd: usd ? toDbMoney(amount) : "0.00",
+    bookUsd,
+    allocations,
+    evidenceHash: c.planHash,
+  };
+}
+
 export async function previewSupplierBookSettlement(input: {
   supplierId: number;
   branchId: number;
+  accountDate?: string;
 }) {
-  return withTx(async (tx) => {
-    const c = await loadContext(tx, input);
-    return {
-      planHash: c.planHash,
-      supplierId: input.supplierId,
-      branchId: input.branchId,
-      sources: c.sources,
-      remaining: c.remaining,
-      usdBefore: c.usdBefore,
-      usdAfter: c.usdAfter,
-      usdDelta: c.usdDelta,
-      classifyInvoiceIds: c.classify.map((i) => i.id),
-    };
-  });
+  return withTx(
+    async (tx) => {
+      const c = await loadContext(
+        tx,
+        { supplierId: input.supplierId, branchId: input.branchId },
+        {
+          verifiedAccountCreditsAt: input.accountDate,
+        },
+      );
+      return {
+        planHash: c.planHash,
+        supplierId: input.supplierId,
+        branchId: input.branchId,
+        sources: c.sources,
+        remaining: c.remaining,
+        usdBefore: c.usdBefore,
+        usdAfter: c.usdAfter,
+        usdDelta: c.usdDelta,
+        classifyInvoiceIds: c.classify.map((i) => i.id),
+        retainedReturnCredits: c.retainedReturns,
+      };
+    },
+    { gate: "NONE" },
+  );
 }
 
 export type LiveSupplierBookVoucherPlan = {
@@ -1219,6 +1549,7 @@ const liveVoucherPlans = new WeakMap<
     tx: Tx;
     receiptId?: number;
     beforeBalance: string;
+    verifiedAccountCreditsAt?: string;
     allocations?: SupplierVoucherAllocation[];
     planHash: string;
   }
@@ -1375,13 +1706,17 @@ export async function prepareSupplierBookVoucherTx(
   }
   if (money(input.amount).gt(money(supplier.currentBalance).minus(reserved)))
     fail("المبلغ يتجاوز صافي الذمة المتاح بعد حجوزات سندات الصرف المعلقة");
+  const voucherDate =
+    input.voucherDate ?? new Date().toISOString().slice(0, 10);
+  const verifiedAccountCreditsAt = input.allocations ? undefined : voucherDate;
   const c = await loadContext(
     tx,
     { supplierId: input.supplierId, branchId: input.branchId },
     {
+      verifiedAccountCreditsAt,
       futurePayment: {
         amount: toDbMoney(money(input.amount)),
-        date: input.voucherDate ?? new Date().toISOString().slice(0, 10),
+        date: voucherDate,
         allocations: input.allocations,
       },
     },
@@ -1400,6 +1735,7 @@ export async function prepareSupplierBookVoucherTx(
     tx,
     receiptId: input.receiptId,
     beforeBalance: supplier.currentBalance,
+    verifiedAccountCreditsAt,
     allocations: input.allocations?.map((a) => ({ ...a })),
     planHash: hash(plan),
   });
@@ -1461,7 +1797,7 @@ export async function applySupplierBookVoucherTx(
     fail("أصل سند الصرف أو أثر الذمة لا يطابق خطة التسوية");
   const contextOptions: ContextOptions = prepared.allocations
     ? { manualSource: { entryId: entry.id, allocations: prepared.allocations } }
-    : {};
+    : { verifiedAccountCreditsAt: prepared.verifiedAccountCreditsAt };
   const c = await loadContext(
     tx,
     {
@@ -1569,6 +1905,14 @@ export async function refreshTargets(tx: Tx, invoiceIds: number[]) {
       })
       .where(eq(supplierInvoices.id, invoice.id));
   }
+  for (const supplierId of Array.from(
+    new Set(invoices.map((row) => row.supplierId)),
+  ))
+    await refreshPoCreditSiblingGates(tx, {
+      orderIds: poIds,
+      supplierId,
+      updatedInvoiceIds: invoiceIds,
+    });
 }
 
 type AdoptionInput = {
@@ -1616,9 +1960,9 @@ async function adoptSupplierBookSettlementInTx(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
-        what: "تعذر اعتماد الروابط الدفترية",
-        why: "يلزم مالك نشط مثبت في قاعدة البيانات",
-        doThis: "نفذ القرار بحساب مالك مخول",
+        what: contextOptions.exchangeAccount ? "يلزم حساب المالك لهذه الدفعة" : "تعذر اعتماد الروابط الدفترية",
+        why: contextOptions.exchangeAccount ? "للمورد دفعات سابقة مثبتة يلزم ربطها بحسابه أولاً" : "يلزم مالك نشط مثبت في قاعدة البيانات",
+        doThis: contextOptions.exchangeAccount ? "سجّل هذه الدفعة بحساب المالك؛ يطابق النظام السندات السابقة تلقائياً" : "نفذ القرار بحساب مالك مخول",
       }),
     });
   const entityId = auditEntity(

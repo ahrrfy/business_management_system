@@ -14,10 +14,13 @@ import {
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2, toDbMoney } from "../money";
-import type { Actor } from "../tx";
+import { assertGovernanceGateHeld, type Actor } from "../tx";
 import { sha256, stableCanonical } from "../purchase/grniAccounting";
 import { assertPurchaseBranch } from "../purchase/internal";
-import { refreshTargets } from "../purchase/supplierBookSettlement";
+import {
+  refreshTargets,
+  type AccountExchangePlan,
+} from "../purchase/supplierBookSettlement";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
 import {
   assertNativePurchaseSettlementEvidence,
@@ -34,7 +37,7 @@ function invalid(why: string): never {
       what: "تعذر تسديد فاتورة المورد عبر الصيرفة",
       why,
       doThis:
-        "اختر أمر الشراء الدولاري الصحيح وراجع فاتورة المورد وتخصيصات سدادها؛ أكمل أي طلب سداد أو قضية مطابقة معلقة قبل الصرف",
+        "راجع الفواتير والدفعات في كشف المورد قبل إعادة المحاولة. لم يُسجّل سداد جديد",
     }),
   });
 }
@@ -69,7 +72,7 @@ export async function prepareExchangeInvoiceSettlementTx(
       .limit(1);
     if (governed)
       invalid(
-        "للمورد فواتير محكومة؛ لا يمكن إطفاء ذمتها دون تحديد أمر الشراء وتخصيص الفاتورة",
+        "يجب توزيع الدفعة على فواتير المورد؛ استخدم تسجيل السداد من شاشة الصيرفة لتوزيعها تلقائياً",
       );
     return null;
   }
@@ -273,4 +276,112 @@ export async function applyExchangeInvoiceSettlementTx(
     targetHash: sha256(targetSnapshot),
   });
   await refreshTargets(tx, [Number(prepared.invoice.id)]);
+}
+
+/** A single exchange receipt and AP entry own all the automatically applied installments. */
+export async function applyExchangeAccountSettlementTx(
+  tx: Tx,
+  plan: AccountExchangePlan,
+  source: { txnId: number; receiptId: number; accountingEntryId: number },
+  actor: Actor,
+) {
+  assertGovernanceGateHeld(tx);
+  const [entry] = await tx
+    .select()
+    .from(accountingEntries)
+    .where(eq(accountingEntries.id, source.accountingEntryId))
+    .limit(1);
+  const [receipt] = await tx
+    .select()
+    .from(receipts)
+    .where(eq(receipts.id, source.receiptId))
+    .limit(1);
+  const [exchange] = await tx
+    .select()
+    .from(exchangeTransactions)
+    .where(eq(exchangeTransactions.id, source.txnId))
+    .limit(1);
+  if (
+    !entry ||
+    !receipt ||
+    !exchange ||
+    entry.entryType !== "EXCHANGE_SETTLE" ||
+    entry.purchaseOrderId != null ||
+    entry.branchId !== plan.branchId ||
+    entry.supplierId !== plan.supplierId ||
+    entry.receiptId !== source.receiptId ||
+    entry.exchangeHouseId !== exchange.exchangeHouseId ||
+    receipt.partyType !== "SUPPLIER" ||
+    receipt.partyId !== plan.supplierId ||
+    receipt.branchId !== plan.branchId ||
+    receipt.direction !== "OUT" ||
+    receipt.paymentMethod !== "EXCHANGE" ||
+    receipt.cashBucket != null ||
+    receipt.status !== "COMPLETED" ||
+    receipt.approvalStatus !== "APPROVED" ||
+    exchange.purchaseOrderId != null ||
+    exchange.type !== "SETTLE" ||
+    exchange.branchId !== plan.branchId ||
+    exchange.supplierId !== plan.supplierId ||
+    exchange.status !== "ACTIVE" ||
+    exchange.receiptId !== source.receiptId ||
+    !money(exchange.settledUsd).eq(plan.tenderUsd) ||
+    ![entry.amount, receipt.amount, exchange.settledIqd].every((value) =>
+      money(value).eq(plan.amountIqd),
+    ) ||
+    !plan.allocations
+      .reduce((sum, row) => sum.plus(row.amount), money(0))
+      .eq(plan.amountIqd)
+  )
+    invalid("سند الصيرفة وقيده لا يطابقان توزيع الدفعة على حساب المورد");
+
+  const sourceSnapshot = stableCanonical(
+    JSON.parse(
+      JSON.stringify({
+        purpose: "EXCHANGE_ACCOUNT_SETTLEMENT",
+        version: 1,
+        evidenceHash: plan.evidenceHash,
+        bookUsd: plan.bookUsd,
+        entry,
+        receipt,
+        exchange,
+      }),
+    ),
+  );
+  const sourceId = extractInsertId(
+    await tx.insert(supplierBookSettlementSources).values({
+      supplierId: plan.supplierId,
+      branchId: plan.branchId,
+      sourceAccountingEntryId: source.accountingEntryId,
+      sourceReceiptId: source.receiptId,
+      sourceExchangeTransactionId: source.txnId,
+      kind: "PAYMENT",
+      amount: plan.amountIqd,
+      sourceSnapshot,
+      sourceHash: sha256(sourceSnapshot),
+      planHash: sha256(
+        stableCanonical({ sourceSnapshot, allocations: plan.allocations }),
+      ),
+      adoptionKey: `exchange-account:${source.txnId}`,
+      adoptedBy: actor.userId,
+      reversalHistory: "[]",
+    }),
+  );
+  await tx.insert(supplierBookSettlementAllocations).values(
+    plan.allocations.map((row) => ({
+      sourceId,
+      supplierInvoiceId: row.supplierInvoiceId,
+      openingEntryId: row.openingEntryId,
+      allocatedAmount: row.amount,
+      allocatedCurrencyAmount: row.currencyAmount,
+      targetSnapshot: row.targetSnapshot,
+      targetHash: row.targetHash,
+    })),
+  );
+  await refreshTargets(
+    tx,
+    plan.allocations.flatMap((row) =>
+      row.supplierInvoiceId == null ? [] : [row.supplierInvoiceId],
+    ),
+  );
 }

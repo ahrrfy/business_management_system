@@ -4,11 +4,11 @@ import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustExchangeBalanceIqd, adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDateStr, toDbMoney } from "../money";
-import { withTx, type Actor } from "../tx";
+import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
@@ -17,13 +17,15 @@ import { calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
 import { assertPurchaseBranch } from "../purchase/internal";
 import { appErrorMessage } from "@shared/errors";
-import { applyExchangeInvoiceSettlementTx, prepareExchangeInvoiceSettlementTx } from "./supplierInvoiceSettlement";
+import { applyExchangeAccountSettlementTx, applyExchangeInvoiceSettlementTx, prepareExchangeInvoiceSettlementTx } from "./supplierInvoiceSettlement";
+import { prepareSupplierBookExchangeTx } from "../purchase/supplierBookSettlement";
 
 export interface SettleSupplierInput {
   exchangeHouseId: number;
   branchId: number;
   supplierId: number;
   purchaseOrderId?: number | null;
+  allocationMode?: "ACCOUNT";
   currency: "USD" | "IQD";
   /** المبلغ المخصوم من المحفظة (المبدأ) بعملة المحفظة. */
   walletAmount: string;
@@ -46,10 +48,27 @@ export async function settleSupplierViaExchange(
   input: SettleSupplierInput,
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; fxDiff: string; receiptId: number | null; voucherNumber: string | null }> {
-  return withTx(async (tx) => {
+  const automatic = input.allocationMode === "ACCOUNT";
+  if (automatic && (!input.clientRequestId || input.purchaseOrderId != null ||
+    input.settledUsd != null || input.settledIqd != null)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تسجيل دفعة لحساب المورد",
+      why: "الدفع التلقائي يقبل مبلغاً واحداً بعملة المحفظة",
+      doThis: "أعد تسجيل الدفعة من شاشة تسديد المورد عبر الصيرفة",
+    }) });
+  }
+  const payloadHash = automatic ? idempotencyHash({
+    allocationMode: input.allocationMode,
+    branchId: input.branchId, supplierId: input.supplierId, exchangeHouseId: input.exchangeHouseId,
+    currency: input.currency, walletAmount: toDbMoney(input.walletAmount),
+    commission: toDbMoney(input.commission ?? 0), exchangeRate: input.exchangeRate ?? null,
+    notes: input.notes ?? null,
+  }) : undefined;
+  const transaction = automatic ? withGovernanceTx : withTx;
+  return transaction(async (tx) => {
     assertPurchaseBranch({ branchId: input.branchId }, actor);
     if (input.clientRequestId) {
-      const existing = await findIdempotentRefId(tx, "exchange.settle", input.clientRequestId);
+      const existing = await checkIdempotency(tx, "exchange.settle", input.clientRequestId, payloadHash, { requireStoredHash: automatic });
       if (existing != null) {
         const t = (await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, existing)).limit(1))[0];
         if (t?.branchId != null) assertPurchaseBranch({ branchId: Number(t.branchId) }, actor);
@@ -61,7 +80,9 @@ export async function settleSupplierViaExchange(
     }
     const walletAmount = round2(input.walletAmount);
     let settledIqd = round2(input.settledIqd ?? 0);
-    const settledUsd = round2(input.settledUsd ?? 0);
+    let settledUsd = round2(input.settledUsd ?? 0);
+    const postedAt = new Date();
+    const voucherDate = toDateStr(postedAt);
     const commission = round2(input.commission ?? 0);
     if (walletAmount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ التسديد يجب أن يكون موجباً" });
     if (commission.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمولة لا تكون سالبة" });
@@ -109,15 +130,29 @@ export async function settleSupplierViaExchange(
     }
     const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update").limit(1))[0];
     if (!supplier) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد غير موجود" });
-    const invoiceSettlement = await prepareExchangeInvoiceSettlementTx(tx, {
+    if (automatic && !supplier.isActive)
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر سداد المورد", why: "حساب المورد غير نشط",
+        doThis: "راجع حالة المورد قبل تسجيل الدفعة",
+      }) });
+    const accountSettlement = automatic ? await prepareSupplierBookExchangeTx(tx, {
+      supplierId: input.supplierId, branchId: input.branchId,
+      currency: input.currency, amount: toDbMoney(walletAmount), date: voucherDate,
+      requestId: input.clientRequestId!,
+    }, actor) : null;
+    const invoiceSettlement = automatic ? null : await prepareExchangeInvoiceSettlementTx(tx, {
       order: purchaseOrder, supplier, settledIqd: toDbMoney(settledIqd), settledUsd: toDbMoney(settledUsd),
     }, actor);
-    if (invoiceSettlement) settledIqd = money(invoiceSettlement.amountIqd);
+    if (accountSettlement) {
+      settledIqd = money(accountSettlement.amountIqd);
+      settledUsd = money(accountSettlement.tenderUsd);
+    } else if (invoiceSettlement) settledIqd = money(invoiceSettlement.amountIqd);
+    const bookUsd = accountSettlement ? money(accountSettlement.bookUsd) : settledUsd;
     if (settledIqd.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الدين المُسوّى يجب أن يكون موجباً" });
     if (settledIqd.gt(money(supplier.currentBalance))) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التسديد تتجاوز رصيد المورد الدفتري" });
     }
-    if (settledUsd.gt(0) && settledUsd.gt(money(supplier.currentBalanceUsd))) {
+    if (bookUsd.gt(0) && bookUsd.gt(money(supplier.currentBalanceUsd))) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدولار يتجاوز رصيد المورد الدولاري" });
     }
 
@@ -179,7 +214,11 @@ export async function settleSupplierViaExchange(
       if (totalUsdOut.gt(availUsd) && availUsd.gte(0) && !input.confirmNegative) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `التسديد سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${totalUsdOut.toFixed(2)}$ مطلوب). أرسل confirmNegative=true للتجاوز.`,
+          message: appErrorMessage({
+            what: "رصيد محفظة الدولار لا يكفي",
+            why: `المتاح ${availUsd.toFixed(2)} $ والمطلوب مع العمولة ${totalUsdOut.toFixed(2)} $. سيصبح الفرق ديناً للصيرفة`,
+            doThis: "راجع المبلغ قبل تأكيد السداد",
+          }),
         });
       }
       await persistSignedUsdControl(tx, input.exchangeHouseId, finalUsdMovement);
@@ -198,7 +237,11 @@ export async function settleSupplierViaExchange(
       if (totalIqdOut.gt(availIqd) && availIqd.gte(0) && !input.confirmNegative) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `التسديد سيجعل رصيد الدينار لدى الصيرفة سالباً (${availIqd.toFixed(2)} متاح مقابل ${totalIqdOut.toFixed(2)} مطلوب). أرسل confirmNegative=true للتجاوز.`,
+          message: appErrorMessage({
+            what: "رصيد محفظة الدينار لا يكفي",
+            why: `المتاح ${availIqd.toFixed(2)} د.ع والمطلوب مع العمولة ${totalIqdOut.toFixed(2)} د.ع. سيصبح الفرق ديناً للصيرفة`,
+            doThis: "راجع المبلغ قبل تأكيد السداد",
+          }),
         });
       }
       await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, totalIqdOut.negated());
@@ -213,8 +256,8 @@ export async function settleSupplierViaExchange(
 
     // إطفاء دين المورد (التسديد الفعلي — هنا فقط).
     await adjustSupplierBalance(tx, input.supplierId, settledIqd.negated());
-    if (settledUsd.gt(0)) {
-      await adjustSupplierBalanceUsd(tx, input.supplierId, settledUsd.negated());
+    if (bookUsd.gt(0)) {
+      await adjustSupplierBalanceUsd(tx, input.supplierId, bookUsd.negated());
     }
     if (purchaseOrder && !invoiceSettlement) {
       await tx.update(purchaseOrders)
@@ -257,7 +300,6 @@ export async function settleSupplierViaExchange(
 
     // سند الصرف والقيد وعملية الصيرفة في transaction واحدة: إما أن تُحفظ الأطراف كلها أو لا شيء.
     const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", input.branchId);
-    const voucherDate = toDateStr();
     const description = `تسديد مورد «${supplier.name}» عبر صيرفة «${house.name}»`;
     assertNonPhysicalOutReceipt({
       classification: "NON_CASH_METHOD", paymentMethod: "EXCHANGE", cashBucket: null,
@@ -285,8 +327,9 @@ export async function settleSupplierViaExchange(
     } as const;
 
     // قيد التسديد (حركة إطفاء ذمّة، مُستثناة من الإيراد) مربوط بالسند.
-    await postEntry(tx, {
+    const accountingEntryId = await postEntry(tx, {
       entryType: "EXCHANGE_SETTLE",
+      entryDate: postedAt,
       branchId: input.branchId,
       createdBy: actor.userId,
       receiptId,
@@ -305,7 +348,9 @@ export async function settleSupplierViaExchange(
       ),
     });
 
-    if (invoiceSettlement) {
+    if (accountSettlement) {
+      await applyExchangeAccountSettlementTx(tx, accountSettlement, { txnId, receiptId, accountingEntryId }, actor);
+    } else if (invoiceSettlement) {
       await applyExchangeInvoiceSettlementTx(tx, invoiceSettlement, {
         txnId, receiptId, entryDedupeKey: `EXSET:${txnNumber}`,
       }, actor);
@@ -383,7 +428,7 @@ export async function settleSupplierViaExchange(
     });
 
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "exchange.settle", input.clientRequestId, txnId);
+      await recordIdempotencyKey(tx, "exchange.settle", input.clientRequestId, txnId, payloadHash);
     }
     return { txnId, txnNumber, fxDiff: toDbMoney(fxDiff), receiptId, voucherNumber };
   });

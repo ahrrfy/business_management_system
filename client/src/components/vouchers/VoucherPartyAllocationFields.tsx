@@ -86,8 +86,8 @@ export function VoucherPartyAllocationFields({
                 (isReceipt ? "AR ينقص بقيمة السند" : "AR يَزيد (استرداد)")}
               {partyType === "SUPPLIER" &&
                 (isReceipt
-                  ? "AP يَزيد (استلام نقد)"
-                  : "AP يَنقص (دفعة للمورّد)")}
+                  ? "مبلغ وارد من المورد"
+                  : "دفعة من حساب الشركة للمورد")}
               {partyType === "DELIVERY_PARTY" &&
                 (isReceipt ? "تحصيل عهدة COD" : "صرف مستحقات توصيل")}
             </span>
@@ -196,13 +196,14 @@ export function VoucherPartyAllocationFields({
               onSupplierChange={setSupplierId}
             />
             {!isReceipt && supplierId != null ? (
-              <p className="text-xs text-muted-foreground">
-                عند اعتماد سند الصرف وتنفيذه، ينخفض رصيد ذمة المورد بقيمة السند وتسوى فواتيره المفتوحة تلقائيا من الاقدم. للتخصيص اليدوي على فواتير محددة أو بالدولار افتح{" "}
-                <Link href="/purchases/supplier-payments" className="underline font-medium">
-                  حوكمة سداد الموردين
-                </Link>
-                .
-              </p>
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p>بعد اعتماد السند وصرفه، يوزّع النظام الدفعة بالدينار على أقدم مستحقات المورد.</p>
+                <p>
+                  للدفع من محفظة الصيرفة، افتح{" "}
+                  <Link href={`/exchange?tab=settle&supplierId=${supplierId}`} className="underline font-medium">تسديد مورد عبر الصيرفة</Link>.
+                  {" "}لا تسجّل دفعة الصيرفة مرة أخرى كسند نقد أو بطاقة.
+                </p>
+              </div>
             ) : null}
           </>
         )}
