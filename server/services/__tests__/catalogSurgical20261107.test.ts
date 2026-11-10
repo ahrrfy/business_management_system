@@ -17,6 +17,7 @@ import {
   listForPos,
   listForPurchase,
   listMaterialsForRecipe,
+  updateProduct,
   type CreateProductInput,
 } from "../catalogService";
 import { createExpense } from "../expenseService";
@@ -503,5 +504,57 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
     );
     expect(saleRes.invoiceId).toBeGreaterThan(0);
     expect(saleRes.total).toBe("5000.00");
+
+    // 3) Codex P2 (productUpdate.ts): لا يُسمح لوحدة بأخذ بديلٍ مملوكٍ لوحدةٍ أخرى داخل نفس الصنف
+    await db().insert(s.productUnitBarcodes).values({
+      productUnitId: 5002,
+      barcode: "ALIAS-OWNED-BY-5002",
+      createdBy: 1,
+    });
+    await expect(
+      updateProduct(
+        {
+          productId: 50,
+          name: "ملف تعليق إرثي — محدّث",
+          variants: [
+            {
+              id: 501,
+              sku: "LEG-501",
+              color: "أحمر",
+              size: "A4",
+              costPrice: "500.00",
+              units: [
+                {
+                  id: 5001,
+                  unitName: "قطعة",
+                  conversionFactor: "1",
+                  isBaseUnit: true,
+                  barcode: "ALIAS-OWNED-BY-5002",
+                  prices: [{ priceTier: "RETAIL", price: "1250.00" }],
+                },
+              ],
+            },
+            {
+              id: 502,
+              sku: "LEG-502",
+              color: "احمر",
+              size: "a4",
+              costPrice: "500.00",
+              units: [
+                {
+                  id: 5002,
+                  unitName: "قطعة",
+                  conversionFactor: "1",
+                  isBaseUnit: true,
+                  barcode: "BC-LEG-502",
+                  prices: [{ priceTier: "RETAIL", price: "1250.00" }],
+                },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

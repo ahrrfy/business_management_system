@@ -286,10 +286,19 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
     // `updateProductWithVariants` أصلاً.
     const editCodes: string[] = [];
     const ownUnitIds: number[] = [];
+    const ignoreAliasByCodeUnitId = new Map<string, number>();
     for (const v of input.variants)
       for (const u of v.units) {
         const b = canonicalizeBarcodeInput(u.barcode ?? "");
-        if (b) editCodes.push(b);
+        if (b) {
+          editCodes.push(b);
+          if (u.id != null) {
+            const targetUnitId = Number(u.id);
+            for (const cand of barcodeIdentityCandidates(b)) {
+              ignoreAliasByCodeUnitId.set(barcodeComparisonKey(cand), targetUnitId);
+            }
+          }
+        }
         if (u.id != null) ownUnitIds.push(Number(u.id));
       }
     const seenEditCodes = new Set<string>();
@@ -306,7 +315,7 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
     if (editCodes.length) {
       const clashes = await findBarcodeClashes(tx, editCodes, {
         ignorePrimaryUnitIds: ownUnitIds,
-        ignoreAliasUnitIds: ownUnitIds,
+        ignoreAliasByCodeUnitId,
         forShare: true,
       });
       if (clashes[0])

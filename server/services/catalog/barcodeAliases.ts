@@ -393,6 +393,7 @@ export async function findBarcodeClashes(
     ignorePrimaryUnitIds?: number[];
     ignoreAliasIds?: number[];
     ignoreAliasUnitIds?: number[];
+    ignoreAliasByCodeUnitId?: ReadonlyMap<string, number>;
     ignoreProductIds?: number[];
     forShare?: boolean;
   },
@@ -402,6 +403,7 @@ export async function findBarcodeClashes(
   const ignorePrim = opts?.ignorePrimaryUnitIds ?? [];
   const ignoreAli = opts?.ignoreAliasIds ?? [];
   const ignoreAliUnits = opts?.ignoreAliasUnitIds ?? [];
+  const ignoreAliasByCodeUnitId = opts?.ignoreAliasByCodeUnitId;
   const ignoreProducts = opts?.ignoreProductIds ?? [];
 
   const primaryQuery = tx
@@ -438,6 +440,14 @@ export async function findBarcodeClashes(
   for (const r of aliases) {
     if (ignoreAli.includes(Number(r.id))) continue;
     if (ignoreAliUnits.includes(Number(r.productUnitId))) continue;
+    if (
+      ignoreAliasByCodeUnitId &&
+      barcodeIdentityCandidates(r.code).some(
+        (cand) => ignoreAliasByCodeUnitId.get(barcodeComparisonKey(cand)) === Number(r.productUnitId),
+      )
+    ) {
+      continue;
+    }
     if (ignoreProducts.includes(Number(r.productId))) continue;
     out.push({ code: r.code, takenBy: `${r.productName} (${r.sku}) — بديل`, source: "alias" });
   }
