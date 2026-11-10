@@ -1,6 +1,7 @@
 import {
   loadSupplierFormalCreditTotals,
   supplierFormalCreditTotalsSql,
+  refreshPoCreditSiblingGates,
 } from "./supplierFormalCreditProjection";
 import {
   loadSupplierBookInvoiceTotals,
@@ -2765,6 +2766,11 @@ export async function decideSupplierPaymentRefund(
         })
         .where(eq(supplierInvoices.id, Number(invoice.id)));
     }
+    await refreshPoCreditSiblingGates(tx, {
+      orderIds: refundPurchaseOrderIds,
+      supplierId: Number(payment.supplierId),
+      updatedInvoiceIds: affectedInvoiceIds,
+    });
     await adjustSupplierBalance(tx, Number(payment.supplierId), amount);
     if (payment.currency === "USD")
       await adjustSupplierBalanceUsd(

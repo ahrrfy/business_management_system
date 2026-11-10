@@ -405,6 +405,126 @@ describe("owned full-source supplier book settlement", () => {
     );
     expect(await originals()).toEqual(before);
   });
+  it("retains a proved USD return on a paid legacy invoice as an account credit without rewriting its payment", async () => {
+    await fixture({
+      total: "1450.12",
+      opening: "0.00",
+      payment: "1450.12",
+      usd: true,
+    });
+    await adopt();
+    const [paid] = await db().select().from(s.supplierInvoices);
+    const [order] = await db().select().from(s.purchaseOrders);
+    const secondOrder = extractInsertId(
+      await db()
+        .insert(s.purchaseOrders)
+        .values({
+          ...order,
+          id: 2,
+          poNumber: "BOOK-PO-OPEN",
+          paidAmount: "0.00",
+          paidUsd: "0.00",
+        }),
+    );
+    const purchase = extractInsertId(
+      await db().insert(s.accountingEntries).values({
+        entryType: "PURCHASE",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderId: secondOrder,
+        entryDate: new Date("2026-01-02T00:00:00Z"),
+        amount: "1450.12",
+        purchaseLiabilityAccount: "AP",
+        createdBy: 7,
+      }),
+    );
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        ...paid,
+        id: 2,
+        invoiceNumber: "BOOK-OPEN-USD",
+        clientRequestId: "BOOK-OPEN-USD",
+        legacyPurchaseOrderId: secondOrder,
+        postingEntryId: purchase,
+        paymentGate: "OPEN",
+      });
+    const returnEntryId = extractInsertId(
+      await db().insert(s.accountingEntries).values({
+        entryType: "RETURN",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderId: order.id,
+        entryDate: new Date("2026-01-04T00:00:00Z"),
+        amount: "-145.01",
+        purchaseLiabilityAccount: "AP",
+        createdBy: 7,
+      }),
+    );
+    const returnId = extractInsertId(
+      await db().insert(s.purchaseReturns).values({
+        returnNumber: "BOOK-PAID-USD-RETURN",
+        clientRequestId: "BOOK-PAID-USD-RETURN",
+        origin: "LEGACY",
+        purchaseOrderId: order.id,
+        supplierId: 1,
+        branchId: 1,
+        settlement: "CREDIT",
+        netAmount: "145.01",
+        totalAmount: "145.01",
+        creditOffsetAmount: "145.01",
+        accountingEntryId: returnEntryId,
+        createdBy: 7,
+        createdByNameSnapshot: "Maker",
+      }),
+    );
+    await db()
+      .update(s.purchaseOrders)
+      .set({ returnedUsd: "0.10" })
+      .where(eq(s.purchaseOrders.id, order.id));
+    await db()
+      .update(s.suppliers)
+      .set({
+        currentBalance: "1305.11",
+        currentBalanceUsd: "0.90",
+      })
+      .where(eq(s.suppliers.id, 1));
+
+    const before = await originals();
+    const plan = await previewSupplierBookSettlement({
+      supplierId: 1,
+      branchId: 1,
+    });
+    expect(plan.retainedReturnCredits).toEqual([
+      { invoiceId: 1, returnIds: [returnId], iqd: "145.01", usd: "0.10" },
+    ]);
+    expect(plan.usdBefore).toBe("0.90");
+    await expect(
+      withGovernanceTx((tx) =>
+        prepareSupplierBookVoucherTx(
+          tx,
+          {
+            supplierId: 1,
+            branchId: 1,
+            amount: "500.00",
+            voucherDate: "2026-01-05",
+          },
+          actor,
+        ),
+      ),
+    ).resolves.toMatchObject({ mode: "BOOK", amount: "500.00" });
+    expect(await originals()).toEqual(before);
+
+    // Same totals are not enough: remove the ledger classification proof.
+    await db()
+      .update(s.accountingEntries)
+      .set({ purchaseLiabilityAccount: null })
+      .where(eq(s.accountingEntries.id, returnEntryId));
+    await expect(
+      previewSupplierBookSettlement({ supplierId: 1, branchId: 1 }),
+    ).rejects.toThrow(/تجاوزت تسويات الفاتورة/);
+  });
+
   it("separates unbound credit and allows an exact zero USD book residual without a tender payment", async () => {
     await fixture({
       opening: "0.00",
@@ -657,7 +777,7 @@ describe("owned full-source supplier book settlement", () => {
     ]);
     expect(plan.sources[0].allocations[0].openingEntryId).toBe(10);
   });
-  it("settles the individual invoice while its shared purchase order remains partly unpaid", async () => {
+  it("keeps a settled invoice closed and applies a PO-only credit to the remaining invoice", async () => {
     await fixture({ opening: "0.00", payment: "100.00" });
     const [first] = await db().select().from(s.supplierInvoices);
     await db()
@@ -705,6 +825,59 @@ describe("owned full-source supplier book settlement", () => {
     expect((await db().select().from(s.purchaseOrders))[0].paidAmount).toBe(
       "100.00",
     );
+
+    const returnEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "RETURN",
+          entryDate: new Date("2026-01-04T00:00:00Z"),
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderId: 1,
+          amount: "-40.00",
+        }),
+    );
+    await db().insert(s.purchaseReturns).values({
+      returnNumber: "BOOK-PO-CREDIT-PAID-SIBLING",
+      clientRequestId: "book-po-credit-paid-sibling",
+      origin: "LEGACY",
+      purchaseOrderId: 1,
+      supplierId: 1,
+      branchId: 1,
+      settlement: "CREDIT",
+      netAmount: "40.00",
+      totalAmount: "40.00",
+      creditOffsetAmount: "40.00",
+      accountingEntryId: returnEntryId,
+      createdBy: 7,
+      createdByNameSnapshot: "Maker",
+    });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "60.00" })
+      .where(eq(s.suppliers.id, 1));
+    const plan = await previewSupplierBookSettlement({
+      supplierId: 1,
+      branchId: 1,
+    });
+    expect(plan.remaining).toBe("60.00");
+    const before = await originals();
+    await expect(
+      withGovernanceTx((tx) =>
+        prepareSupplierBookVoucherTx(
+          tx,
+          {
+            supplierId: 1,
+            branchId: 1,
+            amount: "60.00",
+            voucherDate: "2026-01-05",
+          },
+          actor,
+        ),
+      ),
+    ).resolves.toMatchObject({ mode: "BOOK", amount: "60.00" });
+    expect(await originals()).toEqual(before);
   });
   it("proves, classifies, and settles multi-batch LEGACY_UNKNOWN invoices on a single PO with a PO-only credit return", async () => {
     await fixture({ opening: "0.00", payment: "80.00" });
