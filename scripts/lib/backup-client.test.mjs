@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import * as identity from "./db-target.mjs";
@@ -108,17 +110,31 @@ async function selectThroughBackup(options) {
     new URL("../backup.mjs", import.meta.url),
     "utf8",
   );
+  let exitReason;
   const context = vm.createContext({
     execFileSync: f.execute,
-    console: { error() {} },
+    // Run receipt setup without creating files or registering exit listeners.
+    basename,
+    join,
+    mkdirSync() {},
+    parseDbTarget: identity.parseDbTarget,
+    randomUUID,
+    renameSync() {},
+    writeFileSync() {},
+    console: {
+      error(_label, reason) {
+        exitReason = reason;
+      },
+    },
     process: {
       argv: [],
       env: {
         BACKUP_TARGET_URL: "mysql://root:synthetic@127.0.0.1:3310/erp",
         DB_CONTAINER: "erp-mysql",
       },
+      once() {},
       exit(code) {
-        throw new Error(`EXIT:${code}`);
+        throw new Error(exitReason ?? String(code));
       },
     },
     resolveDbTarget: f.resolveTarget,
@@ -142,7 +158,7 @@ async function selectThroughBackup(options) {
   });
   const selection = source.slice(
     source.indexOf("const container ="),
-    source.indexOf("const ts ="),
+    source.indexOf("const partial ="),
   );
   const command = await vm.runInContext(
     `(async()=>{${selection};return {command:dumpCmd,args:dumpArgs};})()`,
@@ -184,7 +200,7 @@ test("an old native client falls back to verified Docker rather than executing u
 test("an old native client without a matching DB container reports a configuration error", async () => {
   await assert.rejects(
     selectThroughBackup({ native: "8.0.45", containerAvailable: false }),
-    /BACKUP_CLIENT_CONFIG|EXIT:1/,
+    /BACKUP_CLIENT_CONFIG/,
   );
 });
 test("a capable native client retains the native host/port path", async () => {
@@ -206,13 +222,13 @@ test("a capable existing DB-container client remains usable without another imag
 test("missing prepared artifact fails before the stream without an implicit pull", async () => {
   await assert.rejects(
     selectThroughBackup({ imageCached: false }),
-    /BACKUP_CLIENT_NOT_PREPARED|EXIT:1/,
+    /BACKUP_CLIENT_NOT_PREPARED/,
   );
 });
 test("a wrong cached artifact digest is refused", async () => {
   await assert.rejects(
     selectThroughBackup({ imageValid: false }),
-    /BACKUP_CLIENT_IMAGE_MISMATCH|EXIT:1/,
+    /BACKUP_CLIENT_IMAGE_MISMATCH/,
   );
 });
 for (const artifactHelp of [oldHelp, modernHelp.replace("8.4.9", "8.4.10")])

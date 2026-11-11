@@ -11,7 +11,7 @@
 //   على مضيفها ⇒ هدف النسخة = هدف الحذف/الاستعادة دائماً (يمنع نسخ خادم خاطئ ثم تصفير الخادم الحقيقي).
 //
 // العقد مع المستهلكين (maintenanceService.runBackup / reset / restore / cron):
-//   النجاح = رمز خروج 0 + ملف `<db>-<ts>.sql` جديد في BACKUP_DIR. لا أحد يحلّل stdout.
+//   النجاح = رمز خروج 0 + ملف SQL جديد وإيصال محاولته. --print-receipt يحدد الملف لهذا الاستدعاء.
 //   أي فشل ⇒ رمز ≠0 **ولا يبقى ملف جزئي/فارغ** (وإلا عُدَّ نسخة صالحة لدى بوّابة الهجرة وشاشة الاستعادة).
 //   التشفير يُنتج ملفاً مرافقاً `.sql.gpg` (للدفع/السحب الخارجي) ولا يمسّ ملف `.sql` المحلي.
 //
@@ -21,11 +21,11 @@ import "dotenv/config";
 import { publishEncryptedBackup, mirrorPublishedBackup } from "./lib/backup-publication.mjs";
 import { encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { createWriteStream, mkdirSync, statSync, unlinkSync, renameSync } from "node:fs";
+import { createWriteStream, mkdirSync, statSync, unlinkSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { assertDbTarget, targetEnvironment } from "./lib/db-target.mjs";
+import { assertDbTarget, parseDbTarget, targetEnvironment } from "./lib/db-target.mjs";
 import { resolveBackupClient, backupDumpCommand, completeBackupDump } from "./lib/backup-client.mjs";
 
 // ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
@@ -83,7 +83,7 @@ const noRotate = process.argv.includes("--no-rotate");
 // BACKUP_TARGET_URL, and is harmless for root-operated scheduled backups.
 const COMMON_DUMP = ["--single-transaction", "--routines", "--events", "--no-tablespaces"];
 const SOURCE_DATA_FLAG = "--source-data=2";
-let db, dumpCmd, dumpArgs, dumpCleanup, resolvedTarget, selected;
+let db, dumpCmd, dumpArgs, dumpCleanup, resolvedTarget, selected, out, saveAttempt;
 // Standalone/cron backups follow DATABASE_URL too; never fall back to another server's credentials.
 const targetUrl = process.env.BACKUP_TARGET_URL ?? process.env.DATABASE_URL;
 try {
@@ -91,6 +91,26 @@ try {
     throw new Error(
       "DATABASE_URL or BACKUP_TARGET_URL is required to identify the backup target",
     );
+  const targetName = parseDbTarget(targetUrl).db;
+  const startedAt = new Date().toISOString();
+  const ts = startedAt.replace(/[:.]/g, "-");
+  mkdirSync(backupDir, { recursive: true });
+  out = join(backupDir, `${targetName}-${ts}-${randomUUID().slice(0, 8)}.sql`);
+  const attemptPath = `${out}.attempt.json`;
+  saveAttempt = (status) => {
+    const pending = `${attemptPath}.${randomUUID()}.partial`;
+    const finishedAt = status === "STARTED" ? null : new Date().toISOString();
+    writeFileSync(pending, JSON.stringify({
+      version: 1, file: basename(out), status, startedAt, finishedAt,
+    }) + "\n", { mode: 0o600, flag: "wx" });
+    renameSync(pending, attemptPath);
+  };
+  saveAttempt("STARTED");
+  process.once("exit", (code) => {
+    if (code === 0) return;
+    try { saveAttempt("FAILED"); }
+    catch { console.error("BACKUP_ATTEMPT_RECEIPT_WRITE_FAILED"); }
+  });
   selected = await resolveBackupClient(targetUrl, { container });
   resolvedTarget = selected.target;
   db = resolvedTarget.db;
@@ -106,9 +126,6 @@ try {
   console.error("✗ تعذّر إثبات هدف النسخة:", error?.message ?? error);
   process.exit(1);
 }
-const ts = new Date().toISOString().replace(/[:.]/g, "-");
-mkdirSync(backupDir, { recursive: true });
-const out = join(backupDir, `${db}-${ts}-${randomUUID().slice(0, 8)}.sql`);
 const partial = `${out}.partial`;
 process.once("exit", () => dumpCleanup?.());
 
@@ -228,6 +245,10 @@ if (!noRotate) {
     }
   }
   console.log("Retention paused: no existing backup or recovery evidence removed.");
+}
+saveAttempt("COMPLETED");
+if (process.argv.includes("--print-receipt")) {
+  console.log(`ERP_BACKUP_RESULT: ${basename(out)}`);
 }
 // تحذير إن كان حجم النسخة صغيراً بشكل غير متوقّع (مؤشّر فقد بيانات).
 try {

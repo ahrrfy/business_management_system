@@ -9,6 +9,8 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { SignJWT, jwtVerify } from "jose";
+import { isMultiTenantModeActive } from "../db";
+import { inspectBackupReadiness, isBackupSqlName, readBackupAttempt } from "../lib/backupEvidence";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { resolveCompanyById } from "../tenancy/registry";
 
@@ -63,9 +65,10 @@ export async function listBackupFiles(): Promise<BackupFile[]> {
   // الملَفّ `<dbName>-<ts>.sql`) — لا تَسريب أَسماء/أَحجام نُسَخ شَركات أُخرى عَبر هذه القائمة.
   const prefix = await backupFilePrefix();
   const out: BackupFile[] = [];
-  for (const name of entries.filter((f) => f.endsWith(".sql") && (!prefix || f.startsWith(prefix)))) {
+  for (const name of entries.filter((f) => isBackupSqlName(f) && (!prefix || f.startsWith(prefix)))) {
     try {
-      const s = await stat(path.join(backupsDir(), name));
+      const s = await lstat(path.join(backupsDir(), name));
+      if (!s.isFile()) continue;
       out.push({ name, sizeKb: Math.round(s.size / 1024), createdAt: s.mtime.toISOString() });
     } catch {
       /* تجاهل ملفاً تعذّر فحصه */
@@ -90,7 +93,7 @@ export async function backupsStats() {
  */
 export async function resolveBackupFile(name: string): Promise<string | null> {
   // قائمة بيضاء صارمة: أحرف/أرقام و . _ - فقط ثم .sql ⇒ ترفض صراحةً الفواصل و«..» وأحرف التحكّم والاقتباس و«:».
-  if (!name || name.includes("..") || !/^[A-Za-z0-9._-]+\.sql$/.test(name)) {
+  if (!isBackupSqlName(name)) {
     return null;
   }
   // تَعدّد الشركات: مَلَفّ لا يَحمِل بادِئة قاعدة الشَركة الحالية ⇒ كَأَنّه غَير مَوجود (لا
@@ -100,7 +103,7 @@ export async function resolveBackupFile(name: string): Promise<string | null> {
   const abs = path.join(backupsDir(), path.basename(name));
   if (path.dirname(abs) !== backupsDir()) return null;
   try {
-    const s = await stat(abs);
+    const s = await lstat(abs);
     if (!s.isFile()) return null;
   } catch {
     return null;
@@ -115,21 +118,55 @@ export async function deleteBackup(name: string): Promise<boolean> {
   return true;
 }
 
-/** نسخة احتياطية الآن (شركة السِياق الحالي، أو DATABASE_URL في النَشر الأُحادي). يعيد الملف المُنشأ. */
-export async function runBackup(): Promise<BackupFile | null> {
-  const before = new Set((await listBackupFiles()).map((b) => b.name));
+export async function backupReadiness() {
+  const prefix = await backupFilePrefix();
+  if (isMultiTenantModeActive() && !prefix) {
+    throw new Error("تعذّر تحديد الشركة لسجل النسخ.");
+  }
+  return inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix);
+}
+
+/** يعود إلى إيصال العملية نفسها حتى عند تزامن النسخ المجدول واليدوي. */
+export async function runBackup(): Promise<BackupFile> {
   const company = await currentCompanyInfo();
-  await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs")], {
+  const { stdout } = await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs"), "--print-receipt"], {
     env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
+    encoding: "utf8",
     maxBuffer: 1024 * 1024 * 64,
   });
-  const after = await listBackupFiles();
-  return after.find((b) => !before.has(b.name)) ?? after[0] ?? null;
+  const name = /^ERP_BACKUP_RESULT: ([A-Za-z0-9_.$-]+\.sql)\r?$/m.exec(stdout)?.[1];
+  const abs = name ? await resolveBackupFile(name) : null;
+  const attempt = name && abs ? await readBackupAttempt(backupsDir(), name) : null;
+  if (!name || !abs || attempt?.status !== "COMPLETED") {
+    throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  const file = await lstat(abs);
+  if (!file.isFile() || file.size < 512) {
+    throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
+}
+
+export function getOnlineMaintenanceBlockReason(): string | null {
+  if (isMultiTenantModeActive()) {
+    return "الصيانة المدمّرة عبر الويب معطّلة في وضع تعدّد الشركات. تواصل مع مسؤول الخادم.";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return "الاستعادة والتصفير عبر الويب معطّلان في الإنتاج. نفّذ الصيانة من الخادم بعد إيقاف عمال الويب.";
+  }
+  return null;
+}
+
+export class OnlineMaintenanceBlockedError extends Error {}
+
+function assertOnlineMaintenanceAllowed() {
+  const reason = getOnlineMaintenanceBlockReason();
+  if (reason) throw new OnlineMaintenanceBlockedError(reason);
 }
 
 /**
  * ⛔ مُعطَّلتان بِالكامِل في وَضع تَعدّد الشركات (`isMultiTenantModeActive()`) — يُتحقَّق مِن
- * هذا عِند حَدّ التَصريح (`systemRouter.ts`) قَبل الوُصول لهاتين الدالّتين أَصلاً، لا هُنا.
+ * هذا عِند حدود التصريح والاستقبال، ويُعاد فحصه قبل تشغيل السكربت.
  *
  * السَبب: `restore.mjs`/`reset.mjs` يُنفّذان عَبر `docker exec ... mysql -uroot` (صَلاحية
  * كامِلة عَلى كُل قَواعِد الخادِم، لا مُقيَّدة بِقاعِدة الشَركة) واستِعادة `restoreUpload`
@@ -144,6 +181,7 @@ export async function runBackup(): Promise<BackupFile | null> {
  * (`pnpm db:backup:all-companies` + استِعادة يَدوية مَوجَّهة لِقاعِدة الشَركة تَحديداً).
  */
 export async function runRestore(absFile: string): Promise<void> {
+  assertOnlineMaintenanceAllowed();
   await execFileP(process.execPath, [path.join(scriptsDir(), "restore.mjs"), absFile, "--confirm", "RESTORE"], {
     env: { ...process.env, MAINTENANCE_LOCK_HELD_BY_PARENT: "1" },
     maxBuffer: 1024 * 1024 * 16,
@@ -152,6 +190,7 @@ export async function runRestore(absFile: string): Promise<void> {
 
 /** تصفير «نظام فارغ» (reset.mjs يأخذ نسخة أمان أولاً). ⛔ راجع تحذير runRestore أعلاه — نفس القيد. */
 export async function runReset(seed: boolean): Promise<void> {
+  assertOnlineMaintenanceAllowed();
   const args = [path.join(scriptsDir(), "reset.mjs"), "--confirm", "RESET"];
   if (seed) args.push("--seed");
   await execFileP(process.execPath, args, {
