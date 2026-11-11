@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, readdir, mkdir, rename } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, mkdir, rename, rm, rmdir, symlink, unlink } from "node:fs/promises";
 import { existsSync, writeFileSync, renameSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { publishEncryptedBackup, mirrorPublishedBackup, fingerprint } from "./lib/backup-publication.mjs";
 import { createAgentProcessProbe, encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
+import { prepareEncryptedRestore } from "./decrypt-restore-archive.mjs";
 
 function linuxProbeFixture() {
   const state = { processState: "S", startTime: "100", uid: "1001", signalError: null, readError: null, malformed: false, statReads: 0, race: false, exitWhileReading: false };
@@ -260,59 +261,91 @@ test("actual GPG AES256 encrypt, offsite copy, decrypt and wrong-key rejection o
   const gpg = process.env.BACKUP_TEST_GPG;
   if (!gpg) return t.skip("Set BACKUP_TEST_GPG for an isolated real encryption roundtrip");
   const { sqlFile, directory } = await fixture();
+  async function stageOutput() {
+    const staging = await mkdtemp(join(tmpdir(), "erp-restore-decrypted-"));
+    const restored = join(staging, "decrypted.sql");
+    t.after(async () => {
+      await rm(restored, { force: true });
+      await rmdir(staging);
+    });
+    return restored;
+  }
   const home = join(directory, "gpg-home");
   await mkdir(home);
-  const wrongHome = join(directory, "wrong-key-home");
-  await mkdir(wrongHome);
   const msys = process.env.BACKUP_TEST_GPG_MSYS === "1";
   const gpgconf = join(dirname(gpg), process.platform === "win32" ? "gpgconf.exe" : "gpgconf");
   const connectAgent = join(dirname(gpg), process.platform === "win32" ? "gpg-connect-agent.exe" : "gpg-connect-agent");
   const gpgPath = value => process.env.BACKUP_TEST_GPG_MSYS === "1"
     ? value.replace(/^([A-Za-z]):[\\/]/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll("\\", "/") : value;
-  const isolatedEnv = isolated => Object.fromEntries(Object.entries({ PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
-    TEMP: process.env.TEMP, TMP: process.env.TMP, HOME: isolated, GNUPGHOME: isolated, LC_ALL: "C" }).filter(([, value]) => value !== undefined));
+  const osEnvironment = Object.fromEntries(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR"]
+    .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+  const isolatedEnv = isolated => ({ ...osEnvironment, HOME: isolated, USERPROFILE: isolated, GNUPGHOME: isolated, LC_ALL: "C" });
   const control = (command, args, isolated = home) => spawnSync(command, ["--homedir", isolated, ...args].map(gpgPath),
-    { encoding: "utf8", timeout: 5000, env: isolatedEnv(isolated) });
-  const run = (args, isolated = home, passphrase = "synthetic-test-key-only") => spawnSync(gpg,
-    ["--homedir", isolated, "--batch", "--pinentry-mode", "loopback", "--passphrase-fd", "0", ...args].map(gpgPath),
-    { input: passphrase, maxBuffer: 1024 * 1024, env: isolatedEnv(isolated) });
+    { encoding: "utf8", timeout: 12000, env: isolatedEnv(isolated) });
   let ownedHome;
   let ownedPid;
   const ownedProbe = createAgentProcessProbe();
+  let agentStarted = false;
   try {
-  // Another private home/agent must survive the backup helper unchanged.
-  await writeFile(join(home, "preserve-marker"), "unrelated home stays intact");
-  assert.equal(control(gpgconf, ["--launch", "gpg-agent"]).status, 0);
-  const otherBefore = control(connectAgent, ["--no-autostart", "GETINFO pid", "/bye"]);
-  assert.equal(otherBefore.status, 0);
-  await publishEncryptedBackup({ sqlFile, encrypt(partialFile) {
-    return encryptBackupWithOwnedAgent({ sqlFile, partialFile, passphrase: "synthetic-test-key-only", gpg, msys,
-      run(command, args, options) {
-        ownedHome = options.env.GNUPGHOME;
-        if (args.includes("--symmetric")) assert.equal(ownedProbe(ownedPid), true);
-        const result = spawnSync(command, args, options);
-        if (basename(command) === "ps.exe" && result.status === 0) ownedPid = Number(result.stdout.trim().split(/\r?\n/)[1].trim().split(/\s+/)[3]);
-        if (!msys && args.includes("GETINFO pid")) ownedPid = Number(result.stdout.match(/^D (\d+)\r?$/m)?.[1]);
-        return result;
-      },
+    // Another private home/agent must survive the backup helper unchanged.
+    await writeFile(join(home, "preserve-marker"), "unrelated home stays intact");
+    const started = control(gpgconf, ["--launch", "gpg-agent"]);
+    agentStarted = started.status === 0;
+    assert.equal(started.status, 0, started.error?.code ?? started.stderr);
+    const otherBefore = control(connectAgent, ["--no-autostart", "GETINFO pid", "/bye"]);
+    assert.equal(otherBefore.status, 0);
+    await publishEncryptedBackup({ sqlFile, encrypt(partialFile) {
+      return encryptBackupWithOwnedAgent({ sqlFile, partialFile, passphrase: "synthetic-test-key-only", gpg, msys,
+        run(command, args, options) {
+          ownedHome = options.env.GNUPGHOME;
+          if (args.includes("--symmetric")) assert.equal(ownedProbe(ownedPid), true);
+          const result = spawnSync(command, args, options);
+          if (basename(command) === "ps.exe" && result.status === 0) ownedPid = Number(result.stdout.trim().split(/\r?\n/)[1].trim().split(/\s+/)[3]);
+          if (!msys && args.includes("GETINFO pid")) ownedPid = Number(result.stdout.match(/^D (\d+)\r?$/m)?.[1]);
+          return result;
+        },
+      });
+    } });
+    assert.equal(existsSync(ownedHome), false);
+    assert.equal(ownedProbe(ownedPid), false);
+    const otherAfter = control(connectAgent, ["--no-autostart", "GETINFO pid", "/bye"]);
+    assert.equal(otherAfter.status, 0);
+    assert.equal(otherAfter.stdout, otherBefore.stdout);
+    assert.equal(await readFile(join(home, "preserve-marker"), "utf8"), "unrelated home stays intact");
+    const mirror = join(directory, "mirror");
+    await mirrorPublishedBackup(`${sqlFile}.gpg`, mirror);
+    const encrypted = join(mirror, basename(`${sqlFile}.gpg`));
+    const restoreOptions = {
+      archive: encrypted, requireManifest: true,
+      passphrase: "synthetic-test-key-only", gpgOptions: { gpg, msys },
+    };
+    const restored = await stageOutput();
+    await prepareEncryptedRestore({ ...restoreOptions, sqlFile: restored });
+    assert.deepEqual(await readFile(restored), await readFile(sqlFile));
+    await assert.rejects(prepareEncryptedRestore({
+      ...restoreOptions, sqlFile: await stageOutput(), passphrase: "wrong-key",
+    }), /BACKUP_RESTORE_DECRYPTION_FAILED/);
+    const uploaded = join(directory, "upload.sql.gpg");
+    await writeFile(uploaded, await readFile(encrypted));
+    const restoredUpload = await stageOutput();
+    const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+    const tempAlias = join(directory, "restore-temp-alias");
+    await symlink(realpathSync(tmpdir()), tempAlias, directoryLinkType);
+    t.after(() => unlink(tempAlias));
+    await prepareEncryptedRestore({
+      ...restoreOptions, archive: uploaded, requireManifest: false,
+      sqlFile: join(tempAlias, basename(dirname(restoredUpload)), basename(restoredUpload)),
     });
-  } });
-  assert.equal(existsSync(ownedHome), false);
-  assert.equal(ownedProbe(ownedPid), false);
-  const otherAfter = control(connectAgent, ["--no-autostart", "GETINFO pid", "/bye"]);
-  assert.equal(otherAfter.status, 0);
-  assert.equal(otherAfter.stdout, otherBefore.stdout);
-  assert.equal(await readFile(join(home, "preserve-marker"), "utf8"), "unrelated home stays intact");
-  const mirror = join(directory, "mirror");
-  await mirrorPublishedBackup(`${sqlFile}.gpg`, mirror);
-  const encrypted = join(mirror, basename(`${sqlFile}.gpg`));
-    const r = run(["--decrypt", encrypted]);
-    assert.equal(r.status, 0);
-    assert.deepEqual(r.stdout, await readFile(sqlFile));
-    const wrong = run(["--decrypt", encrypted], wrongHome, "wrong-key");
-    assert.notEqual(wrong.status, 0);
+    assert.deepEqual(await readFile(restoredUpload), await readFile(sqlFile));
+    const directoryLink = join(directory, "restore-directory-link");
+    await symlink(dirname(restoredUpload), directoryLink, directoryLinkType);
+    t.after(() => unlink(directoryLink));
+    await assert.rejects(prepareEncryptedRestore({
+      ...restoreOptions, sqlFile: join(directoryLink, "decrypted.sql"),
+    }), /BACKUP_RESTORE_INPUT_INVALID/);
   } finally {
-    for (const isolated of [home, wrongHome]) assert.equal(control(gpgconf, ["--kill", "gpg-agent"], isolated).status, 0);
+    const stopped = control(gpgconf, ["--kill", "gpg-agent"]);
+    if (agentStarted) assert.equal(stopped.status, 0, stopped.error?.code ?? stopped.stderr);
   }
   assert.ok((await readdir(directory)).length > 0);
 });

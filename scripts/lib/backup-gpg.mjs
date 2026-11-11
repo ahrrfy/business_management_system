@@ -79,11 +79,11 @@ function assertOwnedHome(home, base, identity) {
   return canonical;
 }
 
-export async function encryptBackupWithOwnedAgent({
-  sqlFile, partialFile, passphrase, gpg = "gpg", gpgconf = "gpgconf", connectAgent = "gpg-connect-agent",
+async function withOwnedBackupAgent({
+  gpg = "gpg", gpgconf = "gpgconf", connectAgent = "gpg-connect-agent",
   msys = false, environment = process.env, run = spawnSync, alive = createAgentProcessProbe(),
   wait = ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), now = Date.now, shutdownTimeoutMs = 5000,
-}) {
+}, perform) {
   const base = realpathSync(tmpdir());
   const home = realpathSync(mkdtempSync(join(base, "erp-backup-gpg-")));
   chmodSync(home, 0o700);
@@ -129,8 +129,8 @@ export async function encryptBackupWithOwnedAgent({
     pid = readAgentPid();
     if (!alive(pid)) throw fail("BACKUP_GPG_PID_NOT_LIVE");
     confirmedLive = true;
-    checked(gpg, args(["--homedir", home, "--batch", "--pinentry-mode", "loopback", "--passphrase-fd", "0",
-      "--symmetric", "--cipher-algo", "AES256", "-o", partialFile, sqlFile]), "BACKUP_ENCRYPTION_FAILED", { input: passphrase, timeout: 15 * 60_000 });
+    perform((values, code, input) => checked(gpg, args(["--no-options", "--homedir", home, "--batch",
+      "--pinentry-mode", "loopback", "--passphrase-fd", "0", ...values]), code, { input, timeout: 15 * 60_000 }));
   } catch (error) {
     primaryFailure = error;
   } finally {
@@ -163,4 +163,25 @@ export async function encryptBackupWithOwnedAgent({
     }
   }
   if (primaryFailure) throw primaryFailure;
+}
+
+export function encryptBackupWithOwnedAgent({ sqlFile, partialFile, passphrase, ...options }) {
+  return withOwnedBackupAgent(options, run => run(
+    ["--symmetric", "--cipher-algo", "AES256", "-o", partialFile, sqlFile],
+    "BACKUP_ENCRYPTION_FAILED", passphrase,
+  ));
+}
+
+export function decryptBackupWithOwnedAgent({ archive, sqlFile, passphrase, maxBytes, ...options }) {
+  return withOwnedBackupAgent(options, run => {
+    const status = run([
+      "--no-symkey-cache", "--no-auto-key-retrieve", "--status-fd", "1", "--max-output", String(maxBytes),
+      "--output", sqlFile, "--decrypt", "--", archive,
+    ], "BACKUP_RESTORE_DECRYPTION_FAILED", passphrase);
+    const integrity = /^\[GNUPG:\] GOODMDC\r?$/m.test(status) ||
+      /^\[GNUPG:\] DECRYPTION_INFO \d+ \d+ [1-9]\d*\r?$/m.test(status);
+    if (!integrity || !/^\[GNUPG:\] DECRYPTION_OKAY\r?$/m.test(status)) {
+      throw fail("BACKUP_RESTORE_DECRYPTION_FAILED");
+    }
+  });
 }

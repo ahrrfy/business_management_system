@@ -26,6 +26,7 @@ function fmtKb(kb: number): string {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} م.ب` : `${kb} ك.ب`;
 }
 const MAX_RESTORE_UPLOAD_BYTES = 200 * 1024 * 1024;
+const isEncryptedBackup = (name: string) => /\.sql\.gpg$/i.test(name);
 
 type DangerAction =
   | { kind: "restore-server"; name: string }
@@ -53,6 +54,11 @@ const BACKUP_ENCRYPTION_LABEL = {
   MISSING: "التشفير غير مسجّل",
   UNVERIFIED: "التشفير غير متحقق",
   RECORDED: "التشفير موثّق",
+} as const;
+const BACKUP_RESTORE_FAILURE_LABEL = {
+  KEY_REQUIRED: "مفتاح فك التشفير مطلوب",
+  DECRYPTION_FAILED: "تعذّر فك التشفير",
+  FAILED: "تعذّر تمرين الاستعادة",
 } as const;
 const BACKUP_OFFSITE_LABEL = {
   MISSING: "الخارجي غير مسجّل",
@@ -192,6 +198,7 @@ export default function Settings() {
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
   const onlineMaintenanceBlockReason = info.data?.onlineMaintenanceBlockReason;
+  const encryptedRestoreBlockReason = backups.data?.encryptedRestoreBlockReason;
 
   async function startBackupDownload(
     source: () => Promise<BackupDownloadFile | null>,
@@ -229,8 +236,13 @@ export default function Settings() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".sql")) { notify.err("اختر ملف .sql صالحاً"); return; }
-    if (file.size < 512) { notify.err("الملف صغير أو تالف"); return; }
+    if (!/\.sql(?:\.gpg)?$/i.test(file.name)) { notify.err("اختر ملف .sql أو .sql.gpg"); return; }
+    const encrypted = isEncryptedBackup(file.name);
+    if (encrypted && encryptedRestoreBlockReason) {
+      notify.err(encryptedRestoreBlockReason);
+      return;
+    }
+    if (file.size < (encrypted ? 1 : 512)) { notify.err("الملف صغير أو تالف"); return; }
     if (file.size > MAX_RESTORE_UPLOAD_BYTES) { notify.err("الملف أكبر من الحدّ المسموح (200 م.ب)"); return; }
     setDanger({ kind: "restore-upload", file });
   }
@@ -250,7 +262,7 @@ export default function Settings() {
           method: "POST",
           headers: {
             Authorization: `Bearer ${authorization.ticket}`,
-            "Content-Type": "application/sql",
+            "Content-Type": isEncryptedBackup(danger.file.name) ? "application/octet-stream" : "application/sql",
             "X-ERP-CSRF": "1",
             ...screenAttributionHeaders(),
           },
@@ -335,7 +347,7 @@ export default function Settings() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            يظهر لكل نسخة ما سُجّل عن ملف قاعدة البيانات والتشفير والنقل الخارجي وتجربة استعادة SQL. استعادة المرفقات وتشغيل النظام تحتاج إلى تحقق مستقل.
+            يعرض السجل حالة ملف SQL والتشفير والنقل الخارجي، ونتيجة تمرين الاستعادة وفحص مراجع المرفقات والوسائط عند توفرها.
           </p>
           {backups.data && (
             <InfoGrid>
@@ -402,8 +414,10 @@ export default function Settings() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {list.slice(0, backupsVisible).map((b) => (
-                    <TableRow key={b.name}>
+                  {list.slice(0, backupsVisible).map((b) => {
+                    const hasSql = b.sqlAvailable !== false;
+                    const hasOwnerArchive = isOwner && (b.encryption?.status === "RECORDED" || b.offsite?.status === "RECORDED");
+                    return <TableRow key={b.name}>
                       <TableCell className="font-mono text-xs whitespace-normal break-all" dir="ltr">{b.name}</TableCell>
                       <TableCell className="text-left tabular-nums">{b.sizeKb > 0 ? fmtKb(b.sizeKb) : "—"}</TableCell>
                       <TableCell className="px-3 text-right tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
@@ -423,22 +437,41 @@ export default function Settings() {
                           <Badge variant={b.offsite?.at ? "outline" : "secondary"} title={b.offsite?.at ? fmtDateTime(b.offsite.at) : undefined}>
                             {BACKUP_OFFSITE_LABEL[b.offsite?.status ?? "MISSING"]}
                           </Badge>
-                          <Badge variant={b.restoredAt ? "outline" : "secondary"} title={b.restoredAt ? fmtDateTime(b.restoredAt) : undefined}>
-                            {b.restoredAt ? "استعادة SQL مجرّبة" : "الاستعادة غير مثبتة"}
+                          <Badge
+                            variant={b.restoredAt ? "outline" : "secondary"}
+                            title={b.restoredAt || b.restoreFailure ? fmtDateTime(b.restoredAt ?? b.restoreFailure?.at) : undefined}
+                          >
+                            {b.restoredAt ? "استعادة SQL مجرّبة" : b.restoreFailure
+                              ? BACKUP_RESTORE_FAILURE_LABEL[b.restoreFailure.code]
+                              : "الاستعادة غير مثبتة"}
                           </Badge>
+                          {b.attachmentCheck && (
+                            <Badge
+                              variant={b.attachmentCheck.inlineVerified + b.attachmentCheck.mirroredVerified === b.attachmentCheck.references
+                                ? "outline" : "secondary"}
+                              title={`داخل قاعدة البيانات ${b.attachmentCheck.inlineVerified}، المرآة المحلية ${b.attachmentCheck.mirroredVerified}`}
+                            >
+                              {b.attachmentCheck.references === 0
+                                ? "لا مراجع مرفقات في الحقول المفحوصة"
+                                : `مراجع موثّقة للمرفقات والوسائط ${b.attachmentCheck.inlineVerified + b.attachmentCheck.mirroredVerified} من ${b.attachmentCheck.references}`}
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        {b.sqlAvailable !== false ? <RowActions
+                        {hasSql || hasOwnerArchive ? <RowActions
                           mode="menu"
                           actions={[
-                            { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null, onSelect: () => { void startBackupDownload(async () => b, b.name); } },
-                            ...(isOwner
+                            ...(hasSql ? [{
+                              key: "download", kind: "export" as const, label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null,
+                              onSelect: () => { void startBackupDownload(async () => b, b.name); },
+                            }] : []),
+                            ...(isOwner && hasSql
                               ? [
                                   {
                                     key: "restore",
                                     kind: "reverse" as const,
-                                    label: "استعادة",
+                                    label: "استعادة SQL",
                                     icon: RotateCcw,
                                     gate: { adminOnly: true },
                                     disabled: !onlineMaintenanceEnabled,
@@ -447,12 +480,22 @@ export default function Settings() {
                                   },
                                 ]
                               : []),
-                            {
+                            ...(hasOwnerArchive ? [{
+                              key: "restore-encrypted",
+                              kind: "reverse" as const,
+                              label: "استعادة النسخة المشفّرة",
+                              icon: RotateCcw,
+                              gate: { adminOnly: true },
+                              disabled: !onlineMaintenanceEnabled || !!encryptedRestoreBlockReason,
+                              disabledReason: onlineMaintenanceBlockReason ?? encryptedRestoreBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
+                              onSelect: () => setDanger({ kind: "restore-server", name: `${b.name}.gpg` }),
+                            }] : []),
+                            ...(hasSql ? [{
                               key: "delete",
-                              kind: "delete",
+                              kind: "delete" as const,
                               label: "حذف SQL المحلي",
                               icon: Trash2,
-                              variant: "destructive",
+                              variant: "destructive" as const,
                               gate: { adminOnly: true },
                               disabled: deleteBackup.isPending,
                               // سببٌ مخصّص كشقيقه restore أعلاه — يُصيَّر في title على العنصر المعطَّل (RowActions).
@@ -461,12 +504,12 @@ export default function Settings() {
                                 if (!(await confirmDelete({ description: `حذف ملف SQL المحلي «${b.name}»؟` }))) return;
                                 deleteBackup.mutate({ name: b.name });
                               },
-                            },
+                            }] : []),
                           ]}
                         /> : "—"}
                       </TableCell>
-                    </TableRow>
-                  ))}
+                    </TableRow>;
+                  })}
                 </TableBody>
               </Table>
             </ScrollTableShell>
@@ -488,13 +531,16 @@ export default function Settings() {
           <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
+              اختر ملف SQL أو نسخة مشفّرة (.sql.gpg). يستخدم الخادم عبارة GPG المحفوظة محلياً، ويأخذ نسخة أمان قبل الاستعادة.
             </p>
             {onlineMaintenanceBlockReason && (
               <p role="status" className="text-xs text-warning">{onlineMaintenanceBlockReason}</p>
             )}
-            <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
-            <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
+            {isOwner && onlineMaintenanceEnabled && encryptedRestoreBlockReason && (
+              <p role="status" className="text-xs text-warning">{encryptedRestoreBlockReason}</p>
+            )}
+            <input ref={fileRef} type="file" accept=".sql,.sql.gpg" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
+            <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف نسخة للاستعادة…</Button>
           </CardContent>
         </Card>
 

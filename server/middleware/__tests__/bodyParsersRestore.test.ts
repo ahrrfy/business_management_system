@@ -1,9 +1,11 @@
 import express from "express";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyBodyParsers } from "../bodyParsers";
 import { backupRouter } from "../../backupRoutes";
 import * as authSession from "../../auth/session";
+import * as audit from "../../services/auditService";
 import * as maintenance from "../../services/maintenanceService";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -79,6 +81,48 @@ describe("restore upload body parser boundary", () => {
     app.use("/api/backups", backupRouter());
     const response = await fetch(`${await listen(app)}/api/backups/restore-upload`, { method: "POST" });
     expect(response.status).toBe(401);
+  });
+
+  it("يمرر النسخة المشفّرة من المالك بعد التحقق من نوعها وتصريحها لمرة واحدة", async () => {
+    const dbName = "owner_archive_test";
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("CONTROL_DATABASE_URL", undefined);
+    vi.stubEnv("DATABASE_URL", `mysql://unused@127.0.0.1:1/${dbName}`);
+    vi.stubEnv("JWT_SECRET", "synthetic-restore-ticket-test-secret");
+    vi.stubEnv("BACKUP_GPG_PASSPHRASE", "synthetic-key");
+    vi.spyOn(authSession, "getSessionContext").mockResolvedValue({
+      user: { id: 1, isOwner: true, role: "admin" } as authSession.SessionContext["user"],
+      sessionId: 10,
+      nativeClientId: null,
+    });
+    vi.spyOn(audit, "logAudit").mockResolvedValue(true);
+    const body = Buffer.alloc(257, 120);
+    const run = vi.spyOn(maintenance, "runRestore").mockImplementation(async (file, options) => {
+      expect(file).toMatch(/upload\.sql\.gpg$/);
+      expect(options).toEqual({ requireArchiveManifest: false });
+      await expect(readFile(file)).resolves.toEqual(body);
+    });
+    const fileName = "owner-backup.sql.gpg";
+    const ticket = await maintenance.issueRestoreUploadTicket({
+      userId: 1, sessionId: 10, dbName, fileName, fileSize: body.length,
+    });
+    const app = express();
+    applyBodyParsers(app);
+    app.use("/api/backups", backupRouter());
+    const url = `${await listen(app)}/api/backups/restore-upload`;
+    const upload = (type: string) => fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ticket}`, "Content-Type": type },
+      body,
+    });
+
+    expect((await upload("application/sql")).status).toBe(415);
+    expect(run).not.toHaveBeenCalled();
+    const response = await upload("application/octet-stream");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, source: fileName });
+    expect((await upload("application/octet-stream")).status).toBe(409);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("لا يقرأ جسم restore قبل وصوله إلى حارس المسار", async () => {

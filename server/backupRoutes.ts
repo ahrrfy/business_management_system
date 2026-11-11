@@ -10,7 +10,9 @@ import {
   cleanupTmp,
   consumeRestoreUploadTicket,
   currentDbName,
+  getEncryptedRestoreBlockReason,
   getOnlineMaintenanceBlockReason,
+  isEncryptedRestoreFile,
   OnlineMaintenanceBlockedError,
   quarantineUploadStream,
   resolveBackupFile,
@@ -111,8 +113,12 @@ export function backupRouter(): Router {
     ) {
       return res.status(401).json({ error: "تصريح رفع الاستعادة غير صالح أو منتهي." });
     }
-    if (req.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/sql") {
-      return res.status(415).json({ error: "نوع الملف غير صالح؛ المطلوب application/sql." });
+    const encrypted = isEncryptedRestoreFile(ticket.fileName);
+    const encryptedBlock = encrypted ? getEncryptedRestoreBlockReason() : null;
+    if (encryptedBlock) return res.status(400).json({ error: encryptedBlock });
+    const contentType = encrypted ? "application/octet-stream" : "application/sql";
+    if (req.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== contentType) {
+      return res.status(415).json({ error: `نوع الملف لا يطابق تصريح الاستعادة. النوع المطلوب ${contentType}.` });
     }
     const contentLength = Number(req.get("content-length"));
     if (!Number.isSafeInteger(contentLength) || contentLength !== ticket.fileSize) {
@@ -126,12 +132,12 @@ export function backupRouter(): Router {
     let tmp: string | null = null;
     try {
       releaseLock = await acquireRestoreLock();
-      tmp = await quarantineUploadStream(req, ticket.fileSize);
+      tmp = await quarantineUploadStream(req, ticket.fileSize, encrypted);
       await logAudit(
         { user: session.user, req },
         { action: "system.restore.upload.begin", entityType: "system", entityId: ticket.fileName },
       );
-      await runRestore(tmp);
+      await runRestore(tmp, { requireArchiveManifest: false });
       await logAudit(
         { user: session.user, req },
         { action: "system.restore.upload", entityType: "system", entityId: ticket.fileName },
