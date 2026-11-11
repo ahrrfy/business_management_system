@@ -213,7 +213,8 @@ jobs:
   quality-build:
     needs: scope
     if: ${{ needs.scope.outputs.heavy == 'true' }}
-    runs-on: ubuntu-latest
+    # يطابق إصدار Ubuntu في الإنتاج لفحص عقد PM2/systemd.
+    runs-on: ubuntu-24.04
     # الاختبارات في شرائحها أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
     timeout-minutes: 45
     services:

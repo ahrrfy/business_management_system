@@ -65,7 +65,7 @@ describe("dependency security coverage", () => {
     expect(overrides["source-map-js"]).toBe("1.2.2");
     expect(overrides["shell-quote"]).toBe("^1.12.0");
     expect(overrides["http-cache-semantics"]).toBe("4.3.0");
-    expect(overrides["node-forge"]).toBe("1.4.1");
+    expect(overrides["node-forge"]).toBe("1.4.3");
     expect(overrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(overrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
     expect(overrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
@@ -86,7 +86,7 @@ describe("dependency security coverage", () => {
     expect(superappOverrides["compression"]).toBe("1.8.2");
     expect(superappOverrides["source-map-js"]).toBe("1.2.2");
     expect(superappOverrides["shell-quote"]).toBe("^1.12.0");
-    expect(superappOverrides["node-forge"]).toBe("1.4.1");
+    expect(superappOverrides["node-forge"]).toBe("1.4.3");
     expect(superappOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(superappOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
     expect(superappOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
@@ -190,7 +190,7 @@ describe("dependency security coverage", () => {
       for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
         if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
         const nodeForge = /^      node-forge:\s*(.+)$/.exec(line)?.[1]?.trim();
-        if (nodeForge) expect(nodeForge).toBe("1.4.1");
+        if (nodeForge) expect(nodeForge).toBe("1.4.3");
         const globVer = /^      glob:\s*(.+)$/.exec(line)?.[1]?.trim();
         if (globVer && !globVer.startsWith("7.")) {
           expect(globVer.startsWith("14.0.2")).toBe(true);
