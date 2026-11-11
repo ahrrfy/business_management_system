@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectBackupReadiness } from "../../lib/backupEvidence";
-import { OnlineMaintenanceBlockedError, runBackup, runRestore } from "../maintenanceService";
+import { OnlineMaintenanceBlockedError, resolveStoredRestoreFile, runBackup, runRestore } from "../maintenanceService";
 
 const execBackup = vi.hoisted(() => vi.fn<
   (executable: string, args: string[], options: object) => Promise<{ stdout: string }>
@@ -135,6 +135,47 @@ describe("backup readiness evidence", () => {
     });
   });
 
+  it("records a missing GPG key only for the matching unchanged source archive", async () => {
+    await writeCopy(local, backup);
+    const file = path.join(reports, backup + ".restore.json");
+    const evidence = {
+      status: "NOT_RESTORE_VERIFIED", failure: "BACKUP_KEY_REQUIRED", productionContact: false,
+      finishedAt: restoredAt, sourceBefore: fingerprint(encrypted), sourceAfter: fingerprint(encrypted),
+    };
+    await writeFile(file, JSON.stringify(evidence));
+    const result = await inspectBackupReadiness(local, undefined, null);
+    expect(result.latestRestore).toBeNull();
+    expect(result.backups[0]).toMatchObject({
+      restoredAt: null, restoreFailure: { code: "KEY_REQUIRED", at: restoredAt }, attachmentCheck: null,
+    });
+
+    await writeFile(file, JSON.stringify({ ...evidence, sourceAfter: fingerprint("changed") }));
+    const changed = await inspectBackupReadiness(local, undefined, null);
+    expect(changed.backups[0].restoreFailure).toBeNull();
+  });
+
+  it("only publishes consistent attachment counts bound to a successful SQL drill", async () => {
+    await writeCopy(local, backup);
+    const file = path.join(reports, backup + ".restore.json");
+    const attachmentCheck = {
+      scope: "KNOWN_FILE_REFERENCES_V1", references: 7, inlineVerified: 2, mirroredVerified: 1,
+    };
+    const evidence = {
+      status: "SQL_RESTORED_CORE_READS_PASSED", productionContact: false, stopped: true,
+      finishedAt: restoredAt, sourceBefore: fingerprint(encrypted), sourceAfter: fingerprint(encrypted),
+      sqlFingerprint: fingerprint(sql), attachmentCheck: { ...attachmentCheck, privatePath: "not published" },
+    };
+    await writeFile(file, JSON.stringify(evidence));
+    const result = await inspectBackupReadiness(local, undefined, null);
+    expect(result.backups[0].attachmentCheck).toEqual(attachmentCheck);
+
+    await writeFile(file, JSON.stringify({
+      ...evidence, attachmentCheck: { ...attachmentCheck, mirroredVerified: 8 },
+    }));
+    const inconsistent = await inspectBackupReadiness(local, undefined, null);
+    expect(inconsistent.backups[0]).toMatchObject({ restoredAt, attachmentCheck: null });
+  });
+
   it("returns the file identified by its own backup process when a second backup is also published", async () => {
     const other = "erp-concurrent.sql";
     await Promise.all([
@@ -155,6 +196,64 @@ describe("backup readiness evidence", () => {
       .mockResolvedValueOnce({ stdout: "ERP_BACKUP_RESULT: " + backup });
     await expect(runBackup()).rejects.toThrow("تعذّر إثبات");
     await expect(runBackup()).rejects.toThrow("تعذّر إثبات");
+  });
+
+  it("restores recorded ciphertext through the SQL executor and clears the temporary plaintext", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("DATABASE_URL", "mysql://unused@127.0.0.1:1/owner_archive_test");
+    vi.stubEnv("BACKUP_GPG_PASSPHRASE", "synthetic-key");
+    vi.stubEnv("BACKUP_OFFSITE_DIR", offsite);
+    await writeCopy(offsite, backup);
+    const name = backup + ".gpg";
+    const archive = path.join(offsite, name);
+    await expect(resolveStoredRestoreFile(name)).resolves.toBe(archive);
+    await expect(resolveStoredRestoreFile("../" + name)).resolves.toBeNull();
+    let sqlFile = "";
+    execBackup.mockImplementationOnce(async (_exe, [script, input, output, flag]) => {
+      expect(path.basename(script)).toBe("decrypt-restore-archive.mjs");
+      expect(input).toBe(archive);
+      expect(flag).toBe("--require-manifest");
+      sqlFile = output;
+      await writeFile(output, sql);
+      return { stdout: "" };
+    }).mockImplementationOnce(async (_exe, [script, input, confirm, value]) => {
+      expect(path.basename(script)).toBe("restore.mjs");
+      expect([input, confirm, value]).toEqual([sqlFile, "--confirm", "RESTORE"]);
+      await expect(readFile(input, "utf8")).resolves.toBe(sql);
+      return { stdout: "" };
+    });
+
+    await runRestore(archive);
+    expect(execBackup).toHaveBeenCalledTimes(2);
+    await expect(readFile(sqlFile)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(archive, "utf8")).resolves.toBe(encrypted);
+  });
+
+  it("removes partial plaintext and never imports SQL when decryption fails", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("DATABASE_URL", "mysql://unused@127.0.0.1:1/owner_archive_test");
+    vi.stubEnv("BACKUP_GPG_PASSPHRASE", "wrong-synthetic-key");
+    let sqlFile = "";
+    execBackup.mockImplementationOnce(async (_exe, [, , output]) => {
+      sqlFile = output;
+      await writeFile(output, "partial SQL");
+      throw Object.assign(new Error("decryption failed"), { stderr: "BACKUP_RESTORE_DECRYPTION_FAILED" });
+    });
+    await expect(runRestore(path.join(local, backup + ".gpg"))).rejects.toThrow("تعذّر تجهيز النسخة المشفّرة");
+    expect(execBackup).toHaveBeenCalledTimes(1);
+    await expect(readFile(sqlFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires a loopback database and the local key before preparing ciphertext", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const archive = path.join(local, backup + ".gpg");
+    vi.stubEnv("DATABASE_URL", "mysql://unused@remote.invalid:1/owner_archive_test");
+    vi.stubEnv("BACKUP_GPG_PASSPHRASE", "synthetic-key");
+    await expect(runRestore(archive)).rejects.toThrow("MySQL");
+    vi.stubEnv("DATABASE_URL", "mysql://unused@127.0.0.1:1/owner_archive_test");
+    vi.stubEnv("BACKUP_GPG_PASSPHRASE", undefined);
+    await expect(runRestore(archive)).rejects.toThrow("GPG");
+    expect(execBackup).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -5,7 +5,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID, createDecipheriv } from "node:crypto";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { fingerprint } from "./lib/backup-publication.mjs";
+import { fingerprint, readEncryptedPublication, sameFingerprint } from "./lib/backup-publication.mjs";
+import { verifyRecoveryAttachments } from "./lib/recovery-attachments.mjs";
 import { prepareRecoveryMysql, bootstrapRecoveryAdmin, assertPrivateRecoveryDirectory } from "./lib/recovery-mysql.mjs";
 
 export function assertLocalEndpoint(endpoint) {
@@ -39,7 +40,7 @@ export async function main(args = process.argv.slice(2)) {
   if (!source.endsWith(encrypted ? ".sql.gpg" : ".sql") || !(await stat(source)).isFile()) throw new Error("LOCAL_BACKUP_REQUIRED");
   const dir = resolve(value("--evidence"));
   await mkdir(dir, { mode: 0o700 }); // Must be new; never overwrite prior evidence.
-  if (args.includes("--bootstrap-admin")) await assertPrivateRecoveryDirectory(dir);
+  if (encrypted || args.includes("--bootstrap-admin")) await assertPrivateRecoveryDirectory(dir);
   // Parse only the explicitly supplied escrow file. Never load its database/host settings.
   const keys = args.includes("--secrets-file")
     ? (await import("dotenv")).parse(await readFile(resolve(value("--secrets-file")))) : {};
@@ -65,27 +66,31 @@ export async function main(args = process.argv.slice(2)) {
   };
   const report = { version: 1, source, startedAt: new Date().toISOString(), container: name,
     status: "NOT_RESTORE_VERIFIED", productionContact: false, deletions: false,
-    encryptedBackup: "NOT_TESTED_SQL_INPUT", applicationRecovery: "NOT_TESTED",
+    encryptedBackup: encrypted ? "GPG_NOT_TESTED" : "NOT_TESTED_SQL_INPUT", applicationRecovery: "NOT_TESTED",
     escrow: "NOT_VERIFIED", media: { status: "NOT_FULLY_VERIFIED", columns: [] } };
   let created = false;
   try {
     assertLocalEndpoint(docker(["context", "inspect", context, "--format", "{{.Endpoints.docker.Host}}"]));
     report.sourceBefore = await fingerprint(source);
     if (report.sourceBefore.size < 512) throw new Error("SOURCE_TOO_SMALL");
+    let publication;
     if (encrypted) {
-      if (!keys.BACKUP_GPG_PASSPHRASE || !args.includes("--gpg")) throw new Error("EXPLICIT_GPG_AND_KEY_REQUIRED");
+      publication = await readEncryptedPublication(source, report.sourceBefore);
+      if (!args.includes("--gpg")) throw new Error("EXPLICIT_GPG_REQUIRED");
+      if (!keys.BACKUP_GPG_PASSPHRASE) throw new Error("BACKUP_KEY_REQUIRED");
       const home = join(dir, "gpg-home");
       await mkdir(home, { mode: 0o700 });
       sqlFile = join(dir, "restored-source.sql");
       const gp = p => args.includes("--gpg-msys")
         ? p.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replaceAll("\\", "/") : p;
-      const result = spawnSync(value("--gpg"), ["--homedir", home, "--batch", "--no-symkey-cache", "--pinentry-mode", "loopback", "--passphrase-fd", "0", "--output", sqlFile, "--decrypt", source].map(gp),
+      const result = spawnSync(value("--gpg"), ["--no-options", "--homedir", home, "--batch", "--no-auto-key-retrieve", "--no-symkey-cache", "--pinentry-mode", "loopback", "--passphrase-fd", "0", "--output", sqlFile, "--decrypt", source].map(gp),
         { input: keys.BACKUP_GPG_PASSPHRASE, timeout: 120000, maxBuffer: 1024 * 1024 });
       if (result.status !== 0) throw new Error("BACKUP_KEY_OR_CIPHERTEXT_FAILED");
       report.encryptedBackup = "GPG_AUTHENTICATED_DECRYPTION_PASSED";
       report.escrow = "LOCAL_FILE_BACKUP_KEY_VERIFIED";
     }
     report.sqlFingerprint = await fingerprint(sqlFile);
+    if (publication && !sameFingerprint(report.sqlFingerprint, publication.source)) throw new Error("DECRYPTED_SQL_FINGERPRINT_MISMATCH");
     // Pin an already installed image ID; never pull or reuse an existing container.
     const image = docker(["image", "inspect", "mysql:8.0.46", "--format", "{{.Id}}"]);
     report.image = image;
@@ -150,6 +155,7 @@ export async function main(args = process.argv.slice(2)) {
         report.media.columns.push({ table, column, counts: counts.split("\t").map(Number) });
       }
     }
+    report.attachmentCheck = await verifyRecoveryAttachments(sql, columns, args.includes("--attachment-mirror") ? value("--attachment-mirror") : undefined);
     report.sourceAfter = await fingerprint(source);
     if (report.sourceAfter.sha256 !== report.sourceBefore.sha256 || report.sourceAfter.size !== report.sourceBefore.size)
       throw new Error("SOURCE_CHANGED_DURING_DRILL");
@@ -164,6 +170,7 @@ export async function main(args = process.argv.slice(2)) {
       try { guard(); docker(["stop", "--time", "30", name]); report.stopped = !inspect().State.Running; }
       catch { report.stopped = false; report.stopFailure = "MANUAL_REVIEW_REQUIRED"; }
     }
+    if (report.sourceBefore && !report.sourceAfter) report.sourceAfter = await fingerprint(source).catch(() => undefined);
     report.finishedAt = new Date().toISOString();
     await writeFile(join(dir, "report.json"), JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
     // New sandbox credential only, never a production secret. Kept out of the public report.

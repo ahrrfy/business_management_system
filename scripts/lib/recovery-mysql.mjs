@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
-export async function assertPrivateRecoveryDirectory(directory) {
+export async function assertPrivateRecoveryDirectory(directory, { restrictNewWindowsDirectory = false } = {}) {
   if (process.platform !== "win32") {
     if (((await stat(directory)).mode & 0o077) !== 0) throw Error("PRIVATE_EVIDENCE_DIRECTORY_REQUIRED");
     return;
@@ -12,7 +12,24 @@ export async function assertPrivateRecoveryDirectory(directory) {
   const script = `$ErrorActionPreference='Stop';
 $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
 $allowed=@($current,'S-1-5-18','S-1-5-32-544');
-$acl=Get-Acl -LiteralPath $env:RECOVERY_PRIVATE_DIR;
+$target=$env:RECOVERY_PRIVATE_DIR;
+$acl=Get-Acl -LiteralPath $target;
+if($env:RECOVERY_RESTRICT_NEW_DIRECTORY -eq '1'){
+ $item=Get-Item -LiteralPath $target -Force;
+ if(!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){exit 1}
+ if(@(Get-ChildItem -LiteralPath $target -Force).Count -ne 0){exit 1}
+ if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $allowed){exit 1}
+ $acl.SetAccessRuleProtection($true,$false);
+ foreach($rule in @($acl.Access)){$acl.RemoveAccessRuleSpecific($rule)}
+ $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit;
+ foreach($sid in $allowed){
+  $principal=[Security.Principal.SecurityIdentifier]::new($sid);
+  $rule=[Security.AccessControl.FileSystemAccessRule]::new($principal,'FullControl',$inherit,'None','Allow');
+  $acl.AddAccessRule($rule);
+ }
+ Set-Acl -LiteralPath $target -AclObject $acl;
+ $acl=Get-Acl -LiteralPath $target;
+}
 foreach($rule in $acl.Access){
  if($rule.AccessControlType -eq 'Allow'){
   $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
@@ -20,10 +37,15 @@ foreach($rule in $acl.Access){
  }
 }
 exit 0`;
-  const r = spawnSync(join(process.env.SystemRoot ?? "C:/Windows", "System32/WindowsPowerShell/v1.0/powershell.exe"),
+  const systemRoot = process.env.SystemRoot ?? "C:/Windows";
+  const r = spawnSync(join(systemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    { env: { ...process.env, RECOVERY_PRIVATE_DIR: directory,
-      PSModulePath: join(process.env.SystemRoot ?? "C:/Windows", "System32/WindowsPowerShell/v1.0/Modules") },
+    { env: {
+      SystemRoot: systemRoot,
+      RECOVERY_PRIVATE_DIR: directory,
+      RECOVERY_RESTRICT_NEW_DIRECTORY: restrictNewWindowsDirectory ? "1" : "0",
+      PSModulePath: join(systemRoot, "System32/WindowsPowerShell/v1.0/Modules"),
+    },
       timeout: 10000, stdio: "ignore" });
   if (r.status !== 0) throw Error("PRIVATE_EVIDENCE_DIRECTORY_REQUIRED");
 }

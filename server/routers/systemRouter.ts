@@ -100,7 +100,7 @@ export const systemRouter = router({
       assertOnlineMaintenanceAllowed();
       await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
-      const abs = await maint.resolveBackupFile(input.name);
+      const abs = await maint.resolveStoredRestoreFile(input.name);
       if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
       const releaseLock = await maint.acquireRestoreLock();
       try {

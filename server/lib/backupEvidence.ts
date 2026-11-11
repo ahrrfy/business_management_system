@@ -20,15 +20,32 @@ const attemptSchema = z.object({
   startedAt: timestamp,
   finishedAt: timestamp.nullable(),
 });
-const restoreSchema = z.object({
-  status: z.literal("SQL_RESTORED_CORE_READS_PASSED"),
+const attachmentSchema = z.object({
+  scope: z.literal("KNOWN_FILE_REFERENCES_V1"),
+  references: z.number().int().nonnegative(),
+  inlineVerified: z.number().int().nonnegative(),
+  mirroredVerified: z.number().int().nonnegative(),
+}).refine(({ references, inlineVerified, mirroredVerified }) =>
+  inlineVerified + mirroredVerified <= references,
+);
+const restoreProof = z.object({
   productionContact: z.literal(false),
-  stopped: z.literal(true),
   finishedAt: timestamp,
   sourceBefore: fingerprint,
   sourceAfter: fingerprint,
-  sqlFingerprint: fingerprint,
 });
+const restoreSchema = z.discriminatedUnion("status", [
+  restoreProof.extend({
+    status: z.literal("SQL_RESTORED_CORE_READS_PASSED"),
+    stopped: z.literal(true),
+    sqlFingerprint: fingerprint,
+    attachmentCheck: attachmentSchema.optional().catch(undefined),
+  }),
+  restoreProof.extend({
+    status: z.literal("NOT_RESTORE_VERIFIED"),
+    failure: z.string().regex(/^[A-Z0-9_]+$/).max(64),
+  }),
+]);
 
 export function isBackupSqlName(name: string) {
   return /^[A-Za-z0-9_.$-]+\.sql$/.test(name) && !name.includes("..");
@@ -111,13 +128,40 @@ async function inspectArchive(directory: string, entries: Set<string>, name: str
   return { evidence: { status: "RECORDED", at: marker.mtime.toISOString() }, manifest: parsed.data };
 }
 
-async function readRestoreDate(directory: string, name: string, manifest: Manifest) {
+export async function resolveRecordedArchive(
+  directory: string,
+  offsitePath: string | undefined,
+  archiveName: string,
+): Promise<string | null> {
+  const name = archiveName.endsWith(".gpg") ? archiveName.slice(0, -4) : "";
+  if (!isBackupSqlName(name)) return null;
+  const entries = new Set([archiveName, `${archiveName}.manifest.json`]);
+  for (const root of [directory, offsitePath]) {
+    if (!root) continue;
+    const canonical = await realpath(root).catch(() => null);
+    if (!canonical) continue;
+    const { manifest } = await inspectArchive(canonical, entries, name);
+    if (manifest) return path.join(canonical, archiveName);
+  }
+  return null;
+}
+
+async function readRestoreEvidence(directory: string, name: string, manifest: Manifest) {
   const file = path.join(directory, `${name}.restore.json`);
   const report = restoreSchema.safeParse(await smallJson(file, await ordinaryFile(file)));
   if (!report.success) return null;
-  const { sourceBefore, sourceAfter, sqlFingerprint, finishedAt } = report.data;
-  if (!sameFile(sourceBefore, sourceAfter) || !sameFile(sqlFingerprint, manifest.source)) return null;
-  return sameFile(sourceBefore, manifest) || sameFile(sourceBefore, manifest.source) ? finishedAt : null;
+  const { sourceBefore, sourceAfter, finishedAt } = report.data;
+  if (!sameFile(sourceBefore, sourceAfter) ||
+      !(sameFile(sourceBefore, manifest) || sameFile(sourceBefore, manifest.source))) return null;
+
+  if (report.data.status === "NOT_RESTORE_VERIFIED") {
+    const code = report.data.failure === "BACKUP_KEY_REQUIRED" ? "KEY_REQUIRED"
+      : report.data.failure === "BACKUP_KEY_OR_CIPHERTEXT_FAILED" ? "DECRYPTION_FAILED"
+      : "FAILED";
+    return { restoredAt: null, failure: { code, at: finishedAt }, attachments: null } as const;
+  }
+  if (!sameFile(report.data.sqlFingerprint, manifest.source)) return null;
+  return { restoredAt: finishedAt, failure: null, attachments: report.data.attachmentCheck ?? null };
 }
 
 async function inspectBackup(
@@ -138,8 +182,8 @@ async function inspectBackup(
   const copyConflicts = local.manifest && offsite.manifest &&
     (!sameFile(local.manifest, offsite.manifest) || !sameFile(local.manifest.source, offsite.manifest.source));
   const manifest = local.manifest ?? offsite.manifest;
-  const restoredAt = manifest && reportNames.has(`${name}.restore.json`)
-    ? await readRestoreDate(reportDirectory, name, manifest)
+  const restore = manifest && reportNames.has(`${name}.restore.json`)
+    ? await readRestoreEvidence(reportDirectory, name, manifest)
     : null;
   if (!sql && !attempt && local.evidence.status === "MISSING" && offsite.evidence.status === "MISSING") return null;
   const sqlAvailable = !!sql && sql.size > 0;
@@ -151,7 +195,9 @@ async function inspectBackup(
     attempt,
     encryption: local.evidence,
     offsite: copyConflicts ? { status: "UNVERIFIED", at: null } as const : offsite.evidence,
-    restoredAt,
+    restoredAt: restore?.restoredAt ?? null,
+    restoreFailure: restore?.failure ?? null,
+    attachmentCheck: restore?.attachments ?? null,
   };
 }
 
