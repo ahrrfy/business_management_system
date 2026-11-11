@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, readdir, mkdir, rename, rm, rmdir } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, mkdir, rename, rm, rmdir, symlink, unlink } from "node:fs/promises";
 import { existsSync, writeFileSync, renameSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename, dirname } from "node:path";
@@ -328,10 +328,21 @@ test("actual GPG AES256 encrypt, offsite copy, decrypt and wrong-key rejection o
     const uploaded = join(directory, "upload.sql.gpg");
     await writeFile(uploaded, await readFile(encrypted));
     const restoredUpload = await stageOutput();
+    const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+    const tempAlias = join(directory, "restore-temp-alias");
+    await symlink(realpathSync(tmpdir()), tempAlias, directoryLinkType);
+    t.after(() => unlink(tempAlias));
     await prepareEncryptedRestore({
-      ...restoreOptions, archive: uploaded, sqlFile: restoredUpload, requireManifest: false,
+      ...restoreOptions, archive: uploaded, requireManifest: false,
+      sqlFile: join(tempAlias, basename(dirname(restoredUpload)), basename(restoredUpload)),
     });
     assert.deepEqual(await readFile(restoredUpload), await readFile(sqlFile));
+    const directoryLink = join(directory, "restore-directory-link");
+    await symlink(dirname(restoredUpload), directoryLink, directoryLinkType);
+    t.after(() => unlink(directoryLink));
+    await assert.rejects(prepareEncryptedRestore({
+      ...restoreOptions, sqlFile: join(directoryLink, "decrypted.sql"),
+    }), /BACKUP_RESTORE_INPUT_INVALID/);
   } finally {
     const stopped = control(gpgconf, ["--kill", "gpg-agent"]);
     if (agentStarted) assert.equal(stopped.status, 0, stopped.error?.code ?? stopped.stderr);

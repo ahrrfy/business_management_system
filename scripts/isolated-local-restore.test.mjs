@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, createCipheriv, createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
@@ -67,17 +67,27 @@ test("credits only mirrored objects whose bytes match their stored key", async t
   const good = key("matching bytes");
   const tampered = key("different expected bytes");
   const missing = key("missing bytes");
+  const physical = join(root, "physical");
+  const mirror = join(physical, "mirror");
   for (const object of [good, tampered]) {
-    const file = join(root, "objects", ...object.split("/"));
+    const file = join(mirror, "objects", ...object.split("/"));
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, "matching bytes");
   }
+  const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+  const parentAlias = join(root, "parent-alias");
+  await symlink(physical, parentAlias, directoryLinkType);
   const grouped = [good + "\t2", tampered + "\t1", missing + "\t1"].join("\n");
+  const columns = [["productImages", "objectKey"]];
   const result = await verifyRecoveryAttachments(query => query.includes("GROUP BY") ? grouped : "5\t1",
-    [["productImages", "objectKey"]], root);
+    columns, join(parentAlias, "mirror"));
   assert.deepEqual(result, {
     scope: "KNOWN_FILE_REFERENCES_V1", references: 5, inlineVerified: 1, mirroredVerified: 2,
   });
+  const mirrorLink = join(root, "mirror-link");
+  await symlink(mirror, mirrorLink, directoryLinkType);
+  await assert.rejects(verifyRecoveryAttachments(() => "0\t0", columns, mirrorLink),
+    /LOCAL_ATTACHMENT_MIRROR_REQUIRED/);
 });
 
 test("actual CI aggregation step rejects failure, cancellation and unexpected skip", () => {

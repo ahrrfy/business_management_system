@@ -25,11 +25,13 @@ export async function prepareEncryptedRestore({
     throw Error("BACKUP_RESTORE_INPUT_INVALID");
   }
 
-  const directory = path.dirname(sqlFile);
-  if (path.relative(directory, await realpath(directory))) throw Error("BACKUP_RESTORE_INPUT_INVALID");
-  const newStagingDirectory = path.basename(sqlFile) === "decrypted.sql" &&
+  const requestedDirectory = path.dirname(sqlFile);
+  if (!(await lstat(requestedDirectory)).isDirectory()) throw Error("BACKUP_RESTORE_INPUT_INVALID");
+  const directory = await realpath(requestedDirectory);
+  const outputFile = path.join(directory, path.basename(sqlFile));
+  const newStagingDirectory = path.basename(outputFile) === "decrypted.sql" &&
     /^erp-restore-decrypted-[A-Za-z0-9_-]+$/.test(path.basename(directory)) &&
-    path.relative(path.resolve(tmpdir()), path.dirname(directory)) === "";
+    path.relative(await realpath(tmpdir()), path.dirname(directory)) === "";
   await assertPrivateRecoveryDirectory(directory, { restrictNewWindowsDirectory: newStagingDirectory });
 
   const cipher = await fingerprint(archive);
@@ -38,10 +40,10 @@ export async function prepareEncryptedRestore({
   const maxBytes = publication?.source.size ?? maxSqlBytes;
   if (maxBytes > maxSqlBytes) throw Error("BACKUP_RESTORE_SQL_TOO_LARGE");
 
-  await decryptBackupWithOwnedAgent({ ...gpgOptions, archive, sqlFile, passphrase, maxBytes });
-  const output = await lstat(sqlFile);
+  await decryptBackupWithOwnedAgent({ ...gpgOptions, archive, sqlFile: outputFile, passphrase, maxBytes });
+  const output = await lstat(outputFile);
   if (!output.isFile() || output.size < 512 || output.size > maxBytes) throw Error("BACKUP_RESTORE_INPUT_INVALID");
-  if (publication && !sameFingerprint(await fingerprint(sqlFile), publication.source)) {
+  if (publication && !sameFingerprint(await fingerprint(outputFile), publication.source)) {
     throw Error("DECRYPTED_SQL_FINGERPRINT_MISMATCH");
   }
   if (!sameFingerprint(await fingerprint(archive), cipher)) throw Error("BACKUP_ARCHIVE_CHANGED");

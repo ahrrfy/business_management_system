@@ -35,13 +35,16 @@ const inlineSql = `CASE LOWER(header)
   ELSE 0 END`;
 
 async function mirrorRoot(mirror) {
-  if (!path.isAbsolute(mirror) || /^(?:\\\\|\/\/)/.test(mirror)) throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
-  const root = path.basename(mirror) === "objects" ? mirror : path.join(mirror, "objects");
-  const metadata = await lstat(root);
-  if (!metadata.isDirectory() || path.relative(path.resolve(root), await realpath(root))) {
-    throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
-  }
-  return path.resolve(root);
+  const networkPath = /^(?:\\\\|\/\/)/;
+  if (!path.isAbsolute(mirror) || networkPath.test(mirror)) throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
+  const selected = path.resolve(mirror);
+  if (!(await lstat(selected)).isDirectory()) throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
+  const directory = await realpath(selected);
+  if (networkPath.test(directory)) throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
+  if (path.basename(directory) === "objects") return directory;
+  const root = path.join(directory, "objects");
+  if (!(await lstat(root)).isDirectory()) throw Error("LOCAL_ATTACHMENT_MIRROR_REQUIRED");
+  return root;
 }
 
 export async function verifyRecoveryAttachments(sql, columns, mirror) {
