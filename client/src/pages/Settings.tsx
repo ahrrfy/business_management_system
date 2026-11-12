@@ -19,6 +19,8 @@ import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { saveBackupToDevice, type BackupDownloadFile, type BackupDownloadProgress } from "@/lib/backupDownload";
 import { fmtDateTime } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { OWNER_RESTORE_STATUS_PATH, ownerRestoreConfirmation, ownerRestoreStatus, ownerRestoreTicket } from "@shared/ownerRestore";
+import { useQuery } from "@tanstack/react-query";
 import { Download, FlaskConical, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -30,6 +32,7 @@ const isEncryptedBackup = (name: string) => /\.sql\.gpg$/i.test(name);
 
 type DangerAction =
   | { kind: "restore-server"; name: string }
+  | { kind: "restore-production"; name: string }
   | { kind: "restore-upload"; file: File }
   | { kind: "reset" };
 
@@ -77,6 +80,23 @@ const DRILL_FAILURE_LABEL = {
   CLEANUP_FAILED: "يحتاج تنظيف المختبر إلى مراجعة",
   FAILED: "تعذّر توثيق نتيجة التمرين",
 } as const;
+const OWNER_RESTORE_PHASE_LABEL = {
+  PREPARING: "جارٍ التحقق من النسخة المشفّرة",
+  MAINTENANCE: "جارٍ إيقاف الكتابة في قاعدة البيانات",
+  BACKING_UP: "جارٍ إنشاء نسخة الأمان المشفّرة",
+  RESTORING: "جارٍ استعادة قاعدة البيانات والتحقق منها",
+  ROLLING_BACK: "جارٍ الرجوع إلى نسخة الأمان",
+  RESTORED: "اكتملت الاستعادة والتحقق من قاعدة البيانات",
+  ROLLED_BACK: "تعذّرت الاستعادة وعاد النظام إلى نسخة الأمان",
+  FAILED: "توقّف الطلب قبل استبدال القاعدة",
+  RECOVERY_REQUIRED: "وضع الصيانة مستمر. راجع مسؤول الخادم لاستكمال التعافي",
+} as const;
+const OWNER_RESTORE_TERMINAL = new Set(["RESTORED", "ROLLED_BACK", "FAILED", "RECOVERY_REQUIRED"]);
+const OWNER_RESTORE_TICKET_KEY = "erp-owner-restore-ticket";
+const OWNER_RESTORE_DEFINER_MESSAGES: Readonly<Record<string, string>> = {
+  RESTORE_DEFINER_NOT_ALLOWED: "تحتوي النسخة على كائن MySQL معرّف بحساب خارج نطاق المستورد.",
+  RESTORE_LIVE_DEFINER_NOT_ALLOWED: "تحتوي القاعدة الحالية على كائن MySQL معرّف بحساب خارج نطاق المستورد.",
+};
 const BACKUP_OFFSITE_LABEL = {
   MISSING: "الخارجي غير مسجّل",
   UNVERIFIED: "الخارجي غير متحقق",
@@ -208,6 +228,36 @@ export default function Settings() {
     onError: (e) => notify.err(e.message || "فشلت الاستعادة"),
   });
   const restoreUpload = trpc.system.restoreUpload.useMutation();
+  const [ownerTicket, setOwnerTicket] = useState(() => {
+    try { return ownerRestoreTicket.safeParse(sessionStorage.getItem(OWNER_RESTORE_TICKET_KEY)).data ?? ""; }
+    catch { return ""; }
+  });
+  const ownerRestore = useQuery({
+    queryKey: ["system", "owner-restore-status", ownerTicket],
+    enabled: !!ownerTicket,
+    queryFn: async ({ signal }) => {
+      const result = await fetch(OWNER_RESTORE_STATUS_PATH, {
+        cache: "no-store", headers: { Authorization: `Bearer ${ownerTicket}` }, signal,
+      });
+      if (result.status === 404) return null;
+      if (!result.ok) throw Error("تعذّر قراءة حالة الاستعادة.");
+      return ownerRestoreStatus.parse(await result.json());
+    },
+    refetchInterval: query => query.state.data === null ||
+      (query.state.data && OWNER_RESTORE_TERMINAL.has(query.state.data.phase)) ? false : 2000,
+    retry: false,
+  });
+  const ownerRestoreActive = !!ownerTicket && (ownerRestore.data === undefined ||
+    !!ownerRestore.data && !OWNER_RESTORE_TERMINAL.has(ownerRestore.data.phase));
+  const ownerRestoreBlocked = ownerRestoreActive || ownerRestore.data?.phase === "RECOVERY_REQUIRED";
+  const startProductionRestore = trpc.system.startOwnerProductionRestore.useMutation({
+    onSuccess: ({ ticket }) => {
+      setOwnerTicket(ticket);
+      try { sessionStorage.setItem(OWNER_RESTORE_TICKET_KEY, ticket); } catch { /* The current page can still follow progress. */ }
+      setDanger(null);
+    },
+    onError: error => notify.err(error.message || "تعذّر بدء الاستعادة."),
+  });
   const startRestoreDrill = trpc.system.startRestoreDrill.useMutation({
     onSuccess: async () => {
       notify.ok("بدأ تمرين الاستعادة المعزول");
@@ -220,12 +270,13 @@ export default function Settings() {
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
     onError: (e) => notify.err(e.message || "فشل التصفير"),
   });
-  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || restoreUploadStreaming || resetSystem.isPending;
+  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || restoreUploadStreaming || resetSystem.isPending || startProductionRestore.isPending;
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
   const onlineMaintenanceBlockReason = info.data?.onlineMaintenanceBlockReason;
   const encryptedRestoreBlockReason = backups.data?.encryptedRestoreBlockReason;
+  const productionRestoreAvailable = backups.data?.ownerProductionRestoreAvailable === true;
   const restoreDrillBlockReason = backups.data?.restoreDrillBlockReason;
   const restoreDrillRunning = backups.data?.backups.some(row => row.drill?.status === "RUNNING") === true;
 
@@ -278,6 +329,7 @@ export default function Settings() {
   async function handleDangerConfirm({ password, seed, confirm }: { password: string; seed: boolean; confirm: string }) {
     if (!danger) return;
     if (danger.kind === "restore-server") restoreBackup.mutate({ name: danger.name, confirm, password });
+    else if (danger.kind === "restore-production") startProductionRestore.mutate({ name: danger.name, confirm, password });
     else if (danger.kind === "restore-upload") {
       setRestoreUploadStreaming(true);
       try {
@@ -378,6 +430,15 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">
             يعرض السجل حالة ملف SQL والتشفير والنقل الخارجي، ونتيجة تمرين الاستعادة وفحص مراجع المرفقات والوسائط عند توفرها.
           </p>
+          {isOwner && (ownerRestore.data || ownerRestoreActive) && (
+            <div role="status" className="space-y-1 rounded border p-3 text-sm">
+              <p>{ownerRestore.data ? OWNER_RESTORE_PHASE_LABEL[ownerRestore.data.phase] :
+                ownerRestore.isError ? "تعذّر قراءة حالة الاستعادة. جارٍ إعادة المحاولة." : "جارٍ قراءة حالة الاستعادة"}</p>
+              {ownerRestore.data && <p className="text-muted-foreground">النسخة المختارة <bdi className="break-all font-mono">{ownerRestore.data.name}.gpg</bdi></p>}
+              {ownerRestore.data?.safetyArchive && <p className="text-muted-foreground">نسخة الأمان <bdi className="break-all font-mono">{ownerRestore.data.safetyArchive}</bdi></p>}
+              {ownerRestore.data?.error && <p className="text-xs">{OWNER_RESTORE_DEFINER_MESSAGES[ownerRestore.data.error] ?? <bdi className="font-mono">{ownerRestore.data.error}</bdi>}</p>}
+            </div>
+          )}
           {backups.data && (
             <InfoGrid>
               <InfoField
@@ -537,9 +598,12 @@ export default function Settings() {
                               label: "استعادة النسخة المشفّرة",
                               icon: RotateCcw,
                               gate: { adminOnly: true },
-                              disabled: !onlineMaintenanceEnabled || !!encryptedRestoreBlockReason,
-                              disabledReason: onlineMaintenanceBlockReason ?? encryptedRestoreBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
-                              onSelect: () => setDanger({ kind: "restore-server", name: `${b.name}.gpg` }),
+                              disabled: ownerRestoreBlocked || (!productionRestoreAvailable && (!onlineMaintenanceEnabled || !!encryptedRestoreBlockReason)),
+                              disabledReason: ownerRestoreBlocked ? "وضع الصيانة قيد المعالجة." : productionRestoreAvailable ? undefined :
+                                onlineMaintenanceBlockReason ?? encryptedRestoreBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
+                              onSelect: () => setDanger(productionRestoreAvailable
+                                ? { kind: "restore-production", name: b.name }
+                                : { kind: "restore-server", name: `${b.name}.gpg` }),
                             }] : []),
                             ...(hasSql ? [{
                               key: "delete",
@@ -582,10 +646,14 @@ export default function Settings() {
           <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              اختر ملف SQL أو نسخة مشفّرة (.sql.gpg). يستخدم الخادم عبارة GPG المحفوظة محلياً، ويأخذ نسخة أمان قبل الاستعادة.
+              {productionRestoreAvailable
+                ? "لاستعادة نسخة مشفّرة، اخترها من سجل النسخ الاحتياطية."
+                : "اختر ملف SQL أو نسخة مشفّرة (.sql.gpg). يستخدم الخادم عبارة GPG المحفوظة محلياً، ويأخذ نسخة أمان قبل الاستعادة."}
             </p>
             {onlineMaintenanceBlockReason && (
-              <p role="status" className="text-xs text-warning">{onlineMaintenanceBlockReason}</p>
+              <p role="status" className="text-xs text-warning">{productionRestoreAvailable
+                ? "رفع ملفات الاستعادة معطّل في الإنتاج."
+                : onlineMaintenanceBlockReason}</p>
             )}
             {isOwner && onlineMaintenanceEnabled && encryptedRestoreBlockReason && (
               <p role="status" className="text-xs text-warning">{encryptedRestoreBlockReason}</p>
@@ -825,15 +893,20 @@ export default function Settings() {
         title={danger?.kind === "reset" ? "تصفير النظام" : "استعادة قاعدة البيانات"}
         description={
           danger?.kind === "restore-server" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى النسخة «${danger.name}».`
+            : danger?.kind === "restore-production" ? `ستتوقف الكتابة أثناء استبدال قاعدة البيانات بالنسخة «${danger.name}.gpg».`
             : danger?.kind === "restore-upload" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى الملف «${danger.file.name}».`
             : "سيُمسح كل ما أُدخل ويُبقى المستخدمون والفروع فقط."
         }
         warnings={
           danger?.kind === "reset"
             ? ["كل الفواتير والمخزون والعملاء والمنتجات ستُمسح.", "لا يمكن التراجع إلا باستعادة نسخة."]
-            : ["كل البيانات الحالية ستُستبدَل بمحتوى النسخة.", "نفّذها والمتجر مغلق (لا مستخدمين متّصلين)."]
+            : danger?.kind === "restore-production"
+              ? ["العمليات التي أُدخلت بعد تاريخ النسخة ستزول من القاعدة المستعادة.", "إذا فشل التطبيق، يحاول الخادم الرجوع إلى نسخة الأمان قبل فتح الكتابة."]
+              : ["كل البيانات الحالية ستُستبدَل بمحتوى النسخة.", "نفّذها والمتجر مغلق (لا مستخدمين متّصلين)."]
         }
-        confirmToken={confirmToken}
+        confirmToken={danger?.kind === "restore-production" ? ownerRestoreConfirmation(danger.name) : confirmToken}
+        confirmationLabel={danger?.kind === "restore-production" ? "اكتب عبارة التأكيد" : undefined}
+        passwordLabel={danger?.kind === "restore-production" ? "كلمة مرور المالك" : undefined}
         actionLabel={danger?.kind === "reset" ? "تصفير الآن" : "استعادة الآن"}
         showSeedToggle={danger?.kind === "reset"}
         pending={dangerPending}

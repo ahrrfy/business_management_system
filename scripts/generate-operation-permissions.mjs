@@ -305,6 +305,7 @@ const STAGES = [
   ],
 ];
 const EXACT_LABELS = {
+  "system.startOwnerProductionRestore": "استعادة نسخة مشفّرة في الإنتاج",
   "installments.adoptLegacyHistory": "مطابقة سجل التحصيل المثبت لخطة أقساط قديمة",
   "delivery.documents.prepareShipmentPrintBundle": "تجهيز حزمة طباعة الشحنة",
   "sales.checkoutCharges": "قبض أجور إضافية في كاشير التجزئة",
@@ -754,6 +755,7 @@ const WORDS = {
   reverse: "عكس",
   revert: "تراجع",
   restore: "استعادة",
+  owner: "المالك",
   drill: "تمرين",
   correct: "تصحيح",
   return: "مرتجع",
