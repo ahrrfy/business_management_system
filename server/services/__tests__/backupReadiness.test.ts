@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { inspectBackupReadiness } from "../../lib/backupEvidence";
-import { OnlineMaintenanceBlockedError, resolveStoredRestoreFile, runBackup, runRestore } from "../maintenanceService";
+import {
+  inspectBackupReadiness, resolveRecordedArchive, summarizeRestoreDrill, writeRestoreDrillAttempt,
+} from "../../lib/backupEvidence";
+import { OnlineMaintenanceBlockedError, resolveStoredRestoreFile, runBackup, runRestore, startRestoreDrill } from "../maintenanceService";
 
 const execBackup = vi.hoisted(() => vi.fn<
   (executable: string, args: string[], options: object) => Promise<{ stdout: string }>
@@ -176,6 +178,39 @@ describe("backup readiness evidence", () => {
     expect(inconsistent.backups[0]).toMatchObject({ restoredAt, attachmentCheck: null });
   });
 
+  it("binds an owner exercise to its archive, checks rollback evidence, and preserves incomplete attachment status", async () => {
+    await writeCopy(offsite, backup);
+    const archive = await resolveRecordedArchive(local, offsite, backup + ".gpg");
+    if (!archive) throw Error("Expected recorded test archive");
+    const lease = "123:00000000-0000-0000-0000-000000000001";
+    const attempt = { version: 1 as const, file: backup, source: fingerprint(encrypted), lease, startedAt };
+    await writeRestoreDrillAttempt(local, { ...attempt, finishedAt: null, result: null });
+    const running = await inspectBackupReadiness(local, offsite, null, lease);
+    expect(running.backups[0].drill?.status).toBe("RUNNING");
+    const interrupted = await inspectBackupReadiness(local, offsite, null);
+    expect(interrupted.backups[0].drill?.status).toBe("INTERRUPTED");
+    const proof = {
+      status: "SQL_RESTORED_CORE_READS_PASSED", productionContact: false, stopped: true,
+      screenExercise: true, candidateRemoved: true, encryptedBackup: "GPG_AUTHENTICATED_DECRYPTION_PASSED",
+      finishedAt, sourceBefore: fingerprint(encrypted), sourceAfter: fingerprint(encrypted), sqlFingerprint: fingerprint(sql),
+      tableCount: 9, rowCounts: { users: 1, branches: 2, invoices: 3, products: 4 },
+      rollback: { status: "VERIFIED", trigger: "INJECTED_HEALTH_FAILURE" },
+      attachmentCheck: { scope: "KNOWN_FILE_REFERENCES_V1", references: 2, inlineVerified: 1, mirroredVerified: 0 },
+    };
+    const result = summarizeRestoreDrill(proof, archive.manifest, true);
+    expect(result.status).toBe("PARTIAL");
+    expect(summarizeRestoreDrill({ ...proof, rollback: undefined }, archive.manifest, true).status).toBe("FAILED");
+    expect(summarizeRestoreDrill({ ...proof, sourceAfter: fingerprint("other") }, archive.manifest, true))
+      .toEqual({ status: "FAILED", code: "ARCHIVE_INVALID" });
+    await writeRestoreDrillAttempt(local, { ...attempt, finishedAt, result });
+    const done = await inspectBackupReadiness(local, offsite, null);
+    expect(done.backups[0]).toMatchObject({ restoredAt: finishedAt, drill: { status: "PARTIAL", tableCount: 9 } });
+    expect(done.latestRestore).toEqual({ name: backup, at: finishedAt });
+    await writeCopy(offsite, backup, "replacement archive");
+    const replaced = await inspectBackupReadiness(local, offsite, null);
+    expect(replaced.backups[0]).toMatchObject({ restoredAt: null, drill: null });
+  });
+
   it("returns the file identified by its own backup process when a second backup is also published", async () => {
     const other = "erp-concurrent.sql";
     await Promise.all([
@@ -263,6 +298,7 @@ describe("backup readiness evidence", () => {
     vi.stubEnv("NODE_ENV", mode);
     vi.stubEnv("CONTROL_DATABASE_URL", control);
     await expect(runRestore(path.join(local, backup))).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
+    await expect(startRestoreDrill(backup)).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
     expect(execBackup).not.toHaveBeenCalled();
   });
 });
