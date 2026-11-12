@@ -255,5 +255,13 @@ export const systemRouter = router({
       });
       return { ok: true as const, profile };
     }),
+  startRestoreDrill: ownerProcedure
+    .input(z.object({ name: z.string().max(180) }))
+    .mutation(async ({ ctx, input }) => {
+      assertOnlineMaintenanceAllowed();
+      const result = await maint.startRestoreDrill(input.name);
+      await logAudit(ctx, { action: "system.restore.drill.start", entityType: "system", entityId: result.name });
+      return result;
+    }),
 });
 

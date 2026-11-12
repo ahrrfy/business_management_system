@@ -4,10 +4,10 @@ import { fingerprint } from "./backup-publication.mjs";
 
 const explicitFields = new Set(["fileUrl", "fileKey", "cvFileKey", "imageUrl"]);
 const mediaFields = {
-  assetDocuments: ["dataUrl"],
-  productImages: ["url", "objectKey", "originalKey", "thumbDataUrl"],
-  productImageJobs: ["originalObjectKey", "processedObjectKey", "processedUrl"],
-  workOrderImages: ["url"],
+  assetdocuments: ["dataUrl"],
+  productimages: ["url", "objectKey", "originalKey", "thumbDataUrl"],
+  productimagejobs: ["originalObjectKey", "processedObjectKey", "processedUrl"],
+  workorderimages: ["url"],
 };
 const objectKey = /^single\/(?:studio|storefront-customizer)\/[A-Za-z0-9._/-]+\/([a-f0-9]{64})\.[a-z0-9]+$/;
 const maxMirrorObjects = 6000;
@@ -74,11 +74,12 @@ export async function verifyRecoveryAttachments(sql, columns, mirror) {
     return ok;
   }
 
-  const hasProductKeys = columns.some(([table, column]) => table === "productImages" && column === "objectKey");
+  const objectKeyTables = new Set(columns.filter(([, column]) => column === "objectKey").map(([table]) => table));
   for (const [table, column] of columns) {
-    if (!isAttachmentColumn(table, column)) continue;
+    const tableName = table.toLowerCase();
+    if (!isAttachmentColumn(tableName, column)) continue;
     const field = identifier(column);
-    const legacyUrl = table === "productImages" && column === "url" && hasProductKeys
+    const legacyUrl = tableName === "productimages" && column === "url" && objectKeyTables.has(table)
       ? " AND (`objectKey` IS NULL OR `objectKey`='')" : "";
     const from = `FROM ${identifier(table)} WHERE ${field} IS NOT NULL AND ${field}<>''${legacyUrl}`;
     const [references, inlineVerified] = sql(`

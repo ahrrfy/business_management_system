@@ -19,7 +19,7 @@ import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { saveBackupToDevice, type BackupDownloadFile, type BackupDownloadProgress } from "@/lib/backupDownload";
 import { fmtDateTime } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { Download, RotateCcw, Trash2 } from "lucide-react";
+import { Download, FlaskConical, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 function fmtKb(kb: number): string {
@@ -60,6 +60,23 @@ const BACKUP_RESTORE_FAILURE_LABEL = {
   DECRYPTION_FAILED: "تعذّر فك التشفير",
   FAILED: "تعذّر تمرين الاستعادة",
 } as const;
+const DRILL_STATUS_LABEL = {
+  RUNNING: "تمرين الاستعادة قيد التنفيذ",
+  INTERRUPTED: "انقطع تسجيل التمرين",
+  VERIFIED: "تمرين الاستعادة موثّق",
+  PARTIAL: "تحقّق SQL والرجوع، والمرفقات تحتاج متابعة",
+} as const;
+const DRILL_FAILURE_LABEL = {
+  KEY_REQUIRED: "مفتاح فك التشفير مطلوب",
+  ENGINE_REQUIRED: "محرك Docker المحلي غير متاح",
+  IMAGE_REQUIRED: "صورة MySQL المخصّصة للتمرين غير متاحة",
+  ARCHIVE_INVALID: "تعذّر مطابقة النسخة مع بيانها",
+  DECRYPTION_FAILED: "تعذّر فك التشفير",
+  IMPORT_FAILED: "تعذّر الاستيراد في المختبر",
+  ROLLBACK_FAILED: "تعذّر إثبات الرجوع في المختبر",
+  CLEANUP_FAILED: "يحتاج تنظيف المختبر إلى مراجعة",
+  FAILED: "تعذّر توثيق نتيجة التمرين",
+} as const;
 const BACKUP_OFFSITE_LABEL = {
   MISSING: "الخارجي غير مسجّل",
   UNVERIFIED: "الخارجي غير متحقق",
@@ -74,7 +91,10 @@ export default function Settings() {
   // #31B (تدقيق التثبيت): systemInfo/listBackups إجراءان adminProcedure — كانا يُطلَقان للمدير
   // (يفتح تبويب الإعدادات) فيرجعان 403 يظهر كخطأ اتصال كاذب. نُعطّلهما لغير الأدمن (مرآة الخادم).
   const info = trpc.system.systemInfo.useQuery(undefined, { enabled: isAdmin });
-  const backups = trpc.system.listBackups.useQuery(undefined, { enabled: isAdmin });
+  const backups = trpc.system.listBackups.useQuery(undefined, {
+    enabled: isAdmin,
+    refetchInterval: query => query.state.data?.backups.some(row => row.drill?.status === "RUNNING") ? 2000 : false,
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const [danger, setDanger] = useState<DangerAction | null>(null);
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
@@ -188,6 +208,13 @@ export default function Settings() {
     onError: (e) => notify.err(e.message || "فشلت الاستعادة"),
   });
   const restoreUpload = trpc.system.restoreUpload.useMutation();
+  const startRestoreDrill = trpc.system.startRestoreDrill.useMutation({
+    onSuccess: async () => {
+      notify.ok("بدأ تمرين الاستعادة المعزول");
+      await backups.refetch();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر بدء تمرين الاستعادة"),
+  });
   const [restoreUploadStreaming, setRestoreUploadStreaming] = useState(false);
   const resetSystem = trpc.system.resetSystem.useMutation({
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
@@ -199,6 +226,8 @@ export default function Settings() {
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
   const onlineMaintenanceBlockReason = info.data?.onlineMaintenanceBlockReason;
   const encryptedRestoreBlockReason = backups.data?.encryptedRestoreBlockReason;
+  const restoreDrillBlockReason = backups.data?.restoreDrillBlockReason;
+  const restoreDrillRunning = backups.data?.backups.some(row => row.drill?.status === "RUNNING") === true;
 
   async function startBackupDownload(
     source: () => Promise<BackupDownloadFile | null>,
@@ -417,6 +446,7 @@ export default function Settings() {
                   {list.slice(0, backupsVisible).map((b) => {
                     const hasSql = b.sqlAvailable !== false;
                     const hasOwnerArchive = isOwner && (b.encryption?.status === "RECORDED" || b.offsite?.status === "RECORDED");
+                    const drill = b.drill;
                     return <TableRow key={b.name}>
                       <TableCell className="font-mono text-xs whitespace-normal break-all" dir="ltr">{b.name}</TableCell>
                       <TableCell className="text-left tabular-nums">{b.sizeKb > 0 ? fmtKb(b.sizeKb) : "—"}</TableCell>
@@ -457,6 +487,18 @@ export default function Settings() {
                             </Badge>
                           )}
                         </div>
+                        {drill && (
+                          <div className="mt-1 space-y-0.5 text-xs" role="status">
+                            <p title={fmtDateTime(drill.at)}>
+                              {"code" in drill ? DRILL_FAILURE_LABEL[drill.code] : DRILL_STATUS_LABEL[drill.status]}
+                            </p>
+                            {"tableCount" in drill && (
+                              <p className="text-muted-foreground">
+                                نجح الرجوع في المختبر · {drill.tableCount} جدول · {drill.rowCounts.invoices} فاتورة
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
                         {hasSql || hasOwnerArchive ? <RowActions
@@ -481,6 +523,15 @@ export default function Settings() {
                                 ]
                               : []),
                             ...(hasOwnerArchive ? [{
+                              key: "restore-drill",
+                              kind: "view" as const,
+                              label: "تمرين استعادة معزول",
+                              icon: FlaskConical,
+                              gate: { adminOnly: true },
+                              disabled: restoreDrillBlockReason !== null || restoreDrillRunning || startRestoreDrill.isPending,
+                              disabledReason: restoreDrillBlockReason ?? (restoreDrillRunning ? "يوجد تمرين قيد التنفيذ." : undefined),
+                              onSelect: () => startRestoreDrill.mutate({ name: b.name }),
+                            }, {
                               key: "restore-encrypted",
                               kind: "reverse" as const,
                               label: "استعادة النسخة المشفّرة",

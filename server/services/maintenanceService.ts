@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { SignJWT, jwtVerify } from "jose";
 import { isMultiTenantModeActive } from "../db";
-import { inspectBackupReadiness, isBackupSqlName, readBackupAttempt, resolveRecordedArchive } from "../lib/backupEvidence";
+import {
+  inspectBackupReadiness, isBackupSqlName, readBackupAttempt, resolveRecordedArchive,
+  summarizeRestoreDrill, writeRestoreDrillAttempt, type RestoreDrillAttempt,
+} from "../lib/backupEvidence";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { resolveCompanyById } from "../tenancy/registry";
 
@@ -124,8 +127,9 @@ export async function backupReadiness() {
     throw new Error("تعذّر تحديد الشركة لسجل النسخ.");
   }
   return {
-    ...(await inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix)),
+    ...(await inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix, await activeRestoreLease())),
     encryptedRestoreBlockReason: getEncryptedRestoreBlockReason(),
+    restoreDrillBlockReason: getLocalRestoreBlockReason(),
   };
 }
 
@@ -167,7 +171,7 @@ export function isEncryptedRestoreFile(name: string): boolean {
 const localRestoreTargetMessage = "استعادة النسخة المشفّرة تتطلب قاعدة MySQL محلية.";
 const missingBackupKeyMessage = "اضبط عبارة GPG للنسخ الاحتياطية على الخادم المحلي أولاً.";
 
-export function getEncryptedRestoreBlockReason(): string | null {
+function getLocalRestoreBlockReason(): string | null {
   const onlineBlock = getOnlineMaintenanceBlockReason();
   if (onlineBlock) return onlineBlock;
   try {
@@ -178,7 +182,11 @@ export function getEncryptedRestoreBlockReason(): string | null {
   } catch {
     return localRestoreTargetMessage;
   }
-  return process.env.BACKUP_GPG_PASSPHRASE ? null : missingBackupKeyMessage;
+  return null;
+}
+
+export function getEncryptedRestoreBlockReason(): string | null {
+  return getLocalRestoreBlockReason() ?? (process.env.BACKUP_GPG_PASSPHRASE ? null : missingBackupKeyMessage);
 }
 
 function assertEncryptedRestoreReady() {
@@ -190,7 +198,74 @@ export async function resolveStoredRestoreFile(name: string): Promise<string | n
   if (!isEncryptedRestoreFile(name)) return resolveBackupFile(name);
   assertOnlineMaintenanceAllowed();
   assertEncryptedRestoreReady();
-  return resolveRecordedArchive(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), name);
+  return (await resolveRecordedArchive(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), name))?.file ?? null;
+}
+
+export async function startRestoreDrill(name: string) {
+  const reason = getLocalRestoreBlockReason();
+  if (reason) throw new OnlineMaintenanceBlockedError(reason);
+  const directory = backupsDir();
+  const archive = isBackupSqlName(name)
+    ? await resolveRecordedArchive(directory, process.env.BACKUP_OFFSITE_DIR?.trim(), `${name}.gpg`)
+    : null;
+  if (!archive) throw new RestoreUploadValidationError("اختر نسخة مشفّرة موثّقة من سجل النسخ.");
+
+  const releaseLock = await acquireRestoreLock();
+  let scratch: string | undefined;
+  try {
+    const lease = await activeRestoreLease();
+    if (!lease) throw Error("تعذّر إثبات قفل التمرين.");
+    const scratchDirectory = await mkdtemp(path.join(tmpdir(), "erp-restore-drill-"));
+    scratch = scratchDirectory;
+    const evidence = path.join(scratchDirectory, "evidence");
+    const attempt: RestoreDrillAttempt = {
+      version: 1, file: name, source: { size: archive.manifest.size, sha256: archive.manifest.sha256 },
+      lease, startedAt: new Date().toISOString(), finishedAt: null, result: null,
+    };
+    await writeRestoreDrillAttempt(directory, attempt);
+    const context = process.env.BACKUP_DRILL_DOCKER_CONTEXT?.trim() || (process.platform === "win32" ? "desktop-linux" : "default");
+    const args = [path.join(scriptsDir(), "isolated-local-restore.mjs"), "--screen-exercise",
+      "--encrypted", archive.file, "--context", context, "--evidence", evidence];
+    const mirror = process.env.BACKUP_ATTACHMENT_MIRROR_DIR?.trim();
+    if (mirror) args.push("--attachment-mirror", mirror);
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "ProgramFiles", "USERPROFILE",
+      "HOME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR", "DOCKER_CONFIG", "BACKUP_GPG_PASSPHRASE",
+      "INTEGRATIONS_ENCRYPTION_KEY"]) {
+      if (process.env[key] !== undefined) env[key] = process.env[key];
+    }
+    const work = async () => {
+      let workerSucceeded = true;
+      try {
+        await execFileP(process.execPath, args, { env, encoding: "utf8", maxBuffer: 64 * 1024, windowsHide: true });
+      } catch {
+        workerSucceeded = false; // A blocked attempt can still produce valid evidence.
+      }
+      const reportFile = path.join(evidence, "report.json");
+      let report: unknown;
+      try {
+        const metadata = await lstat(reportFile);
+        if (metadata.isFile() && metadata.size <= 64 * 1024) report = JSON.parse(await readFile(reportFile, "utf8"));
+      } catch { /* Missing or invalid worker report. */ }
+      await writeRestoreDrillAttempt(directory, {
+        ...attempt, finishedAt: new Date().toISOString(),
+        result: summarizeRestoreDrill(report, archive.manifest, workerSucceeded),
+      });
+    };
+    void work().finally(async () => {
+      for (const file of ["report.json", "exercise-target", "exercise-target.next"]) {
+        await unlink(path.join(evidence, file)).catch(() => {});
+      }
+      await rmdir(evidence).catch(() => {});
+      await rmdir(scratchDirectory).catch(() => {});
+      await releaseLock();
+    }).catch(() => console.error("Failed to record isolated restore exercise"));
+    return { ok: true as const, name };
+  } catch (error) {
+    if (scratch) await rmdir(scratch).catch(() => {});
+    await releaseLock();
+    throw error;
+  }
 }
 
 export class OnlineMaintenanceBlockedError extends Error {}
@@ -296,6 +371,12 @@ export async function sweepStaleRestoreArtifacts(now = Date.now()): Promise<numb
 
 export function restoreLockPath(): string {
   return RESTORE_LOCK_PATH;
+}
+
+async function activeRestoreLease(): Promise<string | undefined> {
+  const info = await lstat(RESTORE_LOCK_PATH).catch(() => null);
+  if (!info?.isFile() || info.size > 1024 || Date.now() - info.mtimeMs > RESTORE_LOCK_STALE_MS) return undefined;
+  return (await readFile(RESTORE_LOCK_PATH, "utf8").catch(() => "")).split("\n", 1)[0] || undefined;
 }
 
 export class RestoreUploadValidationError extends Error {
