@@ -348,8 +348,20 @@ export async function prepareCheckoutSnapshot(
 
     const authPromoByIdx = new Map<
       number,
-      { promotionId: number; discountAmount: Decimal; allowBelowCost: boolean }
+      {
+        promotionId: number;
+        discountAmount: Decimal;
+        refDiscountAmount: Decimal;
+        allowBelowCost: boolean;
+      }
     >();
+    const hasUpwardPriceOverride = preRegular.some(
+      (item) =>
+        item.line.isGift !== true &&
+        item.reference != null &&
+        item.reference.gt(0) &&
+        item.price.gt(item.reference),
+    );
     const claimedPromoIds = Array.from(
       new Set(
         preRegular
@@ -383,26 +395,41 @@ export async function prepareCheckoutSnapshot(
         requiredApplicationMode: "AUTO",
       });
       const allAutoRules = snapshotToEngineRules(autoSnapshot);
-      const baseEvalItems: CartEvalItem[] = preRegular.map((item, idx) => ({
-        lineKey: String(idx),
-        productId: Number(item.variant.productId),
-        variantId: item.line.variantId,
-        productUnitId: item.line.productUnitId,
-        categoryId:
-          item.variant.categoryId == null
-            ? null
-            : Number(item.variant.categoryId),
-        unitPrice: item.price.toFixed(2),
-        quantity: money(item.line.quantity).toNumber(),
-        isBaseUnit: Boolean(item.unit.isBaseUnit),
-        hasContractPrice:
-          item.contractPrice != null ||
-          item.line.promotionId == null ||
-          Number(item.line.promotionId) <= 0,
-        isBundle: Boolean(item.variant.isBundle),
-        isGift: item.line.isGift === true,
-        isService: Boolean(item.variant.isService),
-      }));
+      const buildEvalItems = (useRefCap: boolean): CartEvalItem[] =>
+        preRegular.map((item, idx) => {
+          const claimedPid =
+            item.line.promotionId != null
+              ? Number(item.line.promotionId)
+              : null;
+          const refUnit = item.reference ?? money(0);
+          const hasUnclaimedPriceOverride =
+            (claimedPid == null || claimedPid <= 0) &&
+            refUnit.gt(0) &&
+            !item.price.eq(refUnit) &&
+            !item.price.eq(refUnit.toDecimalPlaces(0, Decimal.ROUND_HALF_UP));
+          const evalPrice =
+            useRefCap && refUnit.gt(0)
+              ? Decimal.min(item.price, refUnit)
+              : item.price;
+          return {
+            lineKey: String(idx),
+            productId: Number(item.variant.productId),
+            variantId: item.line.variantId,
+            productUnitId: item.line.productUnitId,
+            categoryId:
+              item.variant.categoryId == null
+                ? null
+                : Number(item.variant.categoryId),
+            unitPrice: evalPrice.toFixed(2),
+            quantity: money(item.line.quantity).toNumber(),
+            isBaseUnit: Boolean(item.unit.isBaseUnit),
+            hasContractPrice:
+              item.contractPrice != null || hasUnclaimedPriceOverride,
+            isBundle: Boolean(item.variant.isBundle),
+            isGift: item.line.isGift === true,
+            isService: Boolean(item.variant.isService),
+          };
+        });
       const evalCtx = {
         branchId,
         customerTier: priceTier,
@@ -410,10 +437,13 @@ export async function prepareCheckoutSnapshot(
         todayYmd,
       };
       const autoEval = evaluateCartPromotions(
-        baseEvalItems,
+        buildEvalItems(false),
         allAutoRules,
         evalCtx,
       );
+      const refAutoEval = hasUpwardPriceOverride
+        ? evaluateCartPromotions(buildEvalItems(true), allAutoRules, evalCtx)
+        : autoEval;
       for (const alloc of Array.from(autoEval.lineAllocations.values())) {
         const lineIdx = Number(alloc.lineKey);
         const claimedPid = Number(preRegular[lineIdx]?.line.promotionId);
@@ -422,9 +452,15 @@ export async function prepareCheckoutSnapshot(
         if (!meta || !meta.isActive) continue;
         const disc = money(alloc.discountAmount.toFixed(2));
         if (disc.gt(0) && !authPromoByIdx.has(lineIdx)) {
+          const refAlloc = refAutoEval.lineAllocations.get(alloc.lineKey);
+          const refDisc =
+            refAlloc && refAlloc.promotionId === alloc.promotionId
+              ? Decimal.min(disc, money(refAlloc.discountAmount.toFixed(2)))
+              : money(0);
           authPromoByIdx.set(lineIdx, {
             promotionId: alloc.promotionId,
             discountAmount: disc,
+            refDiscountAmount: refDisc,
             allowBelowCost: meta.allowBelowCost === true,
           });
         }
@@ -441,10 +477,13 @@ export async function prepareCheckoutSnapshot(
               Decimal.min(money(priced.discountAmount), authPromo.discountAmount),
             )
           : money(0);
+      const recordedRefPromoDiscount = authPromo
+        ? Decimal.min(recordedPromoDiscount, authPromo.refDiscountAmount)
+        : money(0);
       const refUnit = reference ?? money(0);
       const lineRefAfterPromo = Decimal.max(
         money(0),
-        refUnit.times(money(line.quantity)).minus(recordedPromoDiscount),
+        refUnit.times(money(line.quantity)).minus(recordedRefPromoDiscount),
       );
       // The native sale repeats all pricing/cost/stock gates under its own locks at commit.
       const lineNeedsApproval =

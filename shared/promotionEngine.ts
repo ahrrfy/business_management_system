@@ -471,134 +471,242 @@ function evaluateSingleRuleDiscounts(
 
         if (requiredKeys.length === 0) break;
 
-        type PhysicalUnit = {
-          uid: number;
+        type LineBucket = {
+          origIdx: number;
           lineKey: string;
           unitPrice: Decimal;
           productId: number;
           variantId: number;
           productUnitId?: number | null;
           categoryId?: number | null;
+          remainingQty: number;
         };
-        const physicalUnits: PhysicalUnit[] = [];
-        let nextUid = 0;
-        for (const l of eligibleLines) {
+        const buckets: LineBucket[] = [];
+        let totalUnits = 0;
+        for (let origIdx = 0; origIdx < eligibleLines.length; origIdx++) {
+          const l = eligibleLines[origIdx]!;
           const wholeQty = Math.floor(l.quantity.toNumber());
-          for (let q = 0; q < wholeQty; q++) {
-            physicalUnits.push({
-              uid: nextUid++,
-              lineKey: l.lineKey,
-              unitPrice: l.unitPrice,
-              productId: l.productId,
-              variantId: l.variantId,
-              productUnitId: l.productUnitId,
-              categoryId: l.categoryId,
-            });
-          }
+          if (wholeQty <= 0) continue;
+          totalUnits += wholeQty;
+          buckets.push({
+            origIdx,
+            lineKey: l.lineKey,
+            unitPrice: l.unitPrice,
+            productId: l.productId,
+            variantId: l.variantId,
+            productUnitId: l.productUnitId,
+            categoryId: l.categoryId,
+            remainingQty: wholeQty,
+          });
         }
-        if (physicalUnits.length < requiredKeys.length) break;
+        if (totalUnits < requiredKeys.length) break;
 
         // Sort descending so highest-value eligible units form qualifying bundles first
-        physicalUnits.sort((a, b) => {
+        buckets.sort((a, b) => {
           const cmp = b.unitPrice.comparedTo(a.unitPrice);
-          return cmp !== 0 ? cmp : a.uid - b.uid;
+          return cmp !== 0 ? cmp : a.origIdx - b.origIdx;
         });
 
-        const matchesKey = (u: PhysicalUnit, rk: TargetKey): boolean => {
+        const matchesKey = (b: LineBucket, rk: TargetKey): boolean => {
           switch (rk.kind) {
             case "UNIT":
-              return u.productUnitId != null && u.productUnitId === rk.id;
+              return b.productUnitId != null && b.productUnitId === rk.id;
             case "VARIANT":
-              return u.variantId === rk.id;
+              return b.variantId === rk.id;
             case "PRODUCT":
-              return u.productId === rk.id;
+              return b.productId === rk.id;
             case "CATEGORY":
-              return u.categoryId != null && u.categoryId === rk.id;
+              return b.categoryId != null && b.categoryId === rk.id;
           }
         };
 
-        const consumedUids = new Set<number>();
-        const formedSets: Array<PhysicalUnit[]> = [];
+        const matchingBucketsBySlot: number[][] = [];
+        let impossibleSlot = false;
+        for (const rk of requiredKeys) {
+          const indices: number[] = [];
+          for (let bIdx = 0; bIdx < buckets.length; bIdx++) {
+            if (matchesKey(buckets[bIdx]!, rk)) indices.push(bIdx);
+          }
+          if (indices.length === 0) {
+            impossibleSlot = true;
+            break;
+          }
+          matchingBucketsBySlot.push(indices);
+        }
+        if (impossibleSlot) break;
+
+        const slotCursors = new Array<number>(requiredKeys.length).fill(0);
+        const bundledGrossByLine = new Map<string, Decimal>();
+        let totalBundleSavings = new Decimal(0);
+
         while (true) {
-          const setUnits: PhysicalUnit[] = [];
-          const tentativeUids = new Set<number>();
+          const tentativeUsage = new Map<number, number>();
           let complete = true;
-          for (const rk of requiredKeys) {
-            const candidate = physicalUnits.find(
-              (u) => !consumedUids.has(u.uid) && !tentativeUids.has(u.uid) && matchesKey(u, rk)
-            );
-            if (!candidate) {
+
+          for (let s = 0; s < requiredKeys.length; s++) {
+            const matches = matchingBucketsBySlot[s]!;
+            while (
+              slotCursors[s]! < matches.length &&
+              buckets[matches[slotCursors[s]!]!]!.remainingQty <= 0
+            ) {
+              slotCursors[s]! += 1;
+            }
+
+            let chosenBucketIdx = -1;
+            for (let c = slotCursors[s]!; c < matches.length; c++) {
+              const bIdx = matches[c]!;
+              const avail =
+                buckets[bIdx]!.remainingQty - (tentativeUsage.get(bIdx) ?? 0);
+              if (avail > 0) {
+                chosenBucketIdx = bIdx;
+                break;
+              }
+            }
+
+            if (chosenBucketIdx < 0) {
               complete = false;
               break;
             }
-            tentativeUids.add(candidate.uid);
-            setUnits.push(candidate);
+            tentativeUsage.set(
+              chosenBucketIdx,
+              (tentativeUsage.get(chosenBucketIdx) ?? 0) + 1
+            );
           }
+
           if (!complete) break;
-          for (const uid of Array.from(tentativeUids)) {
-            consumedUids.add(uid);
+
+          let batchCount = Infinity;
+          let setOriginal = new Decimal(0);
+          for (const [bIdx, usedCount] of Array.from(tentativeUsage.entries())) {
+            const bucket = buckets[bIdx]!;
+            const maxRepeats = Math.floor(bucket.remainingQty / usedCount);
+            if (maxRepeats < batchCount) batchCount = maxRepeats;
+            setOriginal = setOriginal.plus(bucket.unitPrice.mul(usedCount));
           }
-          formedSets.push(setUnits);
+          if (!Number.isFinite(batchCount) || batchCount <= 0) break;
+
+          for (const [bIdx, usedCount] of Array.from(tentativeUsage.entries())) {
+            buckets[bIdx]!.remainingQty -= batchCount * usedCount;
+          }
+
+          // Per-set ceiling: never surcharge a cheaper set to reduce another set's discount
+          if (setOriginal.gt(bundlePrice)) {
+            totalBundleSavings = totalBundleSavings.plus(
+              setOriginal.minus(bundlePrice).mul(batchCount)
+            );
+            for (const [bIdx, usedCount] of Array.from(tentativeUsage.entries())) {
+              const bucket = buckets[bIdx]!;
+              bundledGrossByLine.set(
+                bucket.lineKey,
+                (bundledGrossByLine.get(bucket.lineKey) ?? new Decimal(0)).plus(
+                  bucket.unitPrice.mul(usedCount * batchCount)
+                )
+              );
+            }
+          }
         }
 
-        if (formedSets.length > 0) {
-          const bundledGrossByLine = new Map<string, Decimal>();
-          let totalBundleSavings = new Decimal(0);
-
-          for (const setUnits of formedSets) {
-            const setOriginal = setUnits.reduce((acc, u) => acc.plus(u.unitPrice), new Decimal(0));
-            // Per-set ceiling: never surcharge a cheaper set to reduce another set's discount
-            if (setOriginal.gt(bundlePrice)) {
-              totalBundleSavings = totalBundleSavings.plus(setOriginal.minus(bundlePrice));
-              for (const u of setUnits) {
-                bundledGrossByLine.set(
-                  u.lineKey,
-                  (bundledGrossByLine.get(u.lineKey) ?? new Decimal(0)).plus(u.unitPrice)
-                );
-              }
-            }
-          }
-
-          if (totalBundleSavings.gt(0)) {
-            const linesForAllocation = Array.from(bundledGrossByLine.entries()).map(
-              ([lineKey, lineGross]) => ({ lineKey, lineGross })
-            );
-            const allocated = allocateByValue(linesForAllocation, totalBundleSavings);
-            for (const [lineKey, disc] of Array.from(allocated.entries())) {
-              if (disc.gt(0)) result.set(lineKey, disc);
-            }
+        if (totalBundleSavings.gt(0)) {
+          const linesForAllocation = Array.from(bundledGrossByLine.entries()).map(
+            ([lineKey, lineGross]) => ({ lineKey, lineGross })
+          );
+          const allocated = allocateByValue(linesForAllocation, totalBundleSavings);
+          for (const [lineKey, disc] of Array.from(allocated.entries())) {
+            if (disc.gt(0)) result.set(lineKey, disc);
           }
         }
       } else {
         // PICK_ANY_N: form floor(totalUnits / bundleQty) complete bundles only; excess units stay unbundled.
         const bundleQty = Math.max(1, Math.floor(rule.bundleQuantity ?? 1));
-        const flattenedUnits: Array<{ lineKey: string; unitPrice: Decimal }> = [];
-        for (const line of eligibleLines) {
+        const buckets: Array<{
+          origIdx: number;
+          lineKey: string;
+          unitPrice: Decimal;
+          remainingQty: number;
+        }> = [];
+        let totalUnits = 0;
+        for (let origIdx = 0; origIdx < eligibleLines.length; origIdx++) {
+          const line = eligibleLines[origIdx]!;
           const wholeQty = Math.floor(line.quantity.toNumber());
-          for (let q = 0; q < wholeQty; q++) {
-            flattenedUnits.push({ lineKey: line.lineKey, unitPrice: line.unitPrice });
-          }
+          if (wholeQty <= 0) continue;
+          totalUnits += wholeQty;
+          buckets.push({
+            origIdx,
+            lineKey: line.lineKey,
+            unitPrice: line.unitPrice,
+            remainingQty: wholeQty,
+          });
         }
 
-        if (flattenedUnits.length >= bundleQty) {
+        if (totalUnits >= bundleQty) {
           // Sort descending so highest-value eligible units form bundles first (adding a cheap item never penalizes customer)
-          flattenedUnits.sort((a, b) => b.unitPrice.minus(a.unitPrice).toNumber());
-          const numBundles = Math.floor(flattenedUnits.length / bundleQty);
+          buckets.sort((a, b) => {
+            const cmp = b.unitPrice.comparedTo(a.unitPrice);
+            return cmp !== 0 ? cmp : a.origIdx - b.origIdx;
+          });
 
+          let numBundlesLeft = Math.floor(totalUnits / bundleQty);
+          let cursor = 0;
           const bundledGrossByLine = new Map<string, Decimal>();
           let totalBundleSavings = new Decimal(0);
-          for (let bIdx = 0; bIdx < numBundles; bIdx++) {
-            const chunk = flattenedUnits.slice(bIdx * bundleQty, (bIdx + 1) * bundleQty);
-            const chunkOriginal = chunk.reduce((acc, u) => acc.plus(u.unitPrice), new Decimal(0));
-            // Per-set ceiling: skip any chunk whose original sum <= bundlePrice
-            if (chunkOriginal.gt(bundlePrice)) {
-              totalBundleSavings = totalBundleSavings.plus(chunkOriginal.minus(bundlePrice));
-              for (const u of chunk) {
+
+          while (numBundlesLeft > 0) {
+            while (cursor < buckets.length && buckets[cursor]!.remainingQty <= 0) {
+              cursor += 1;
+            }
+            if (cursor >= buckets.length) break;
+
+            const head = buckets[cursor]!;
+            if (head.remainingQty >= bundleQty) {
+              const fullFromHead = Math.min(
+                numBundlesLeft,
+                Math.floor(head.remainingQty / bundleQty)
+              );
+              const chunkOriginal = head.unitPrice.mul(bundleQty);
+              // Per-set ceiling: skip any chunk whose original sum <= bundlePrice
+              if (chunkOriginal.gt(bundlePrice)) {
+                totalBundleSavings = totalBundleSavings.plus(
+                  chunkOriginal.minus(bundlePrice).mul(fullFromHead)
+                );
                 bundledGrossByLine.set(
-                  u.lineKey,
-                  (bundledGrossByLine.get(u.lineKey) ?? new Decimal(0)).plus(u.unitPrice)
+                  head.lineKey,
+                  (bundledGrossByLine.get(head.lineKey) ?? new Decimal(0)).plus(
+                    chunkOriginal.mul(fullFromHead)
+                  )
                 );
               }
+              head.remainingQty -= fullFromHead * bundleQty;
+              numBundlesLeft -= fullFromHead;
+            } else {
+              let need = bundleQty;
+              let chunkOriginal = new Decimal(0);
+              const chunkContribs: Array<{ lineKey: string; gross: Decimal }> = [];
+              while (need > 0 && cursor < buckets.length) {
+                const cur = buckets[cursor]!;
+                if (cur.remainingQty <= 0) {
+                  cursor += 1;
+                  continue;
+                }
+                const take = Math.min(need, cur.remainingQty);
+                const contribGross = cur.unitPrice.mul(take);
+                chunkOriginal = chunkOriginal.plus(contribGross);
+                chunkContribs.push({ lineKey: cur.lineKey, gross: contribGross });
+                cur.remainingQty -= take;
+                need -= take;
+                if (cur.remainingQty <= 0) cursor += 1;
+              }
+              if (need === 0 && chunkOriginal.gt(bundlePrice)) {
+                totalBundleSavings = totalBundleSavings.plus(
+                  chunkOriginal.minus(bundlePrice)
+                );
+                for (const c of chunkContribs) {
+                  bundledGrossByLine.set(
+                    c.lineKey,
+                    (bundledGrossByLine.get(c.lineKey) ?? new Decimal(0)).plus(c.gross)
+                  );
+                }
+              }
+              numBundlesLeft -= 1;
             }
           }
 
@@ -624,23 +732,37 @@ function evaluateSingleRuleDiscounts(
       if (getDiscountPercent.lte(0)) break;
 
       const eligibleLines = filterByMinLine(matchingLines);
-      const flattenedUnits: Array<{ lineKey: string; unitPrice: Decimal }> = [];
-      for (const line of eligibleLines) {
+      const buckets: Array<{
+        origIdx: number;
+        lineKey: string;
+        unitPrice: Decimal;
+        qty: number;
+      }> = [];
+      let totalUnits = 0;
+      for (let origIdx = 0; origIdx < eligibleLines.length; origIdx++) {
+        const line = eligibleLines[origIdx]!;
         const qty = Math.floor(line.quantity.toNumber());
-        for (let i = 0; i < qty; i++) {
-          flattenedUnits.push({ lineKey: line.lineKey, unitPrice: line.unitPrice });
-        }
+        if (qty <= 0) continue;
+        totalUnits += qty;
+        buckets.push({ origIdx, lineKey: line.lineKey, unitPrice: line.unitPrice, qty });
       }
 
-      if (flattenedUnits.length >= groupSize) {
-        flattenedUnits.sort((a, b) => a.unitPrice.minus(b.unitPrice).toNumber());
-        const numSets = Math.floor(flattenedUnits.length / groupSize);
-        const numFreeItems = numSets * getQty;
-        const freeUnits = flattenedUnits.slice(0, numFreeItems);
-
+      if (totalUnits >= groupSize) {
+        buckets.sort((a, b) => {
+          const cmp = a.unitPrice.comparedTo(b.unitPrice);
+          return cmp !== 0 ? cmp : a.origIdx - b.origIdx;
+        });
+        const numSets = Math.floor(totalUnits / groupSize);
+        let remFreeItems = numSets * getQty;
         let bogoSavings = new Decimal(0);
-        for (const u of freeUnits) {
-          bogoSavings = bogoSavings.plus(u.unitPrice.mul(getDiscountPercent).div(100));
+
+        for (const b of buckets) {
+          if (remFreeItems <= 0) break;
+          const take = Math.min(remFreeItems, b.qty);
+          bogoSavings = bogoSavings.plus(
+            b.unitPrice.mul(getDiscountPercent).div(100).mul(take)
+          );
+          remFreeItems -= take;
         }
 
         if (rule.maxDiscountAmount != null && rule.maxDiscountAmount !== "") {

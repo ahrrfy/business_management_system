@@ -1403,6 +1403,237 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("TIERED_QTY المجمّع (POOL_ACROSS_TARGETS + FIXED_PRICE): يحتفظ بالأسطر المؤهلة ذات الخصم الصفري في تقييم الكوبون والعرض التلقائي", async () => {
+    await setStock(1, 1, 50); // قلم: سعر 10.00
+    await setStock(2, 1, 50); // دفتر: سعر 20.00
+
+    // 1. كوبون شرائح مجمّعة: 3 قطع فأكثر بسعر موحد 15.00 (الدفتر 20.00 يأخذ خصم 5.00، القلمان 10.00 يساهمان بالكمية بلا خصم ولا promotionId)
+    const couponPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "كوبون 3+ بسعر موحد 15",
+          type: "TIERED_QTY",
+          tieredMode: "POOL_ACROSS_TARGETS",
+          applicationMode: "COUPON",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 1 }, { productId: 2 }],
+          tiers: [{ minQuantity: "3", tierType: "FIXED_PRICE", fixedPrice: "15.00" }],
+        },
+        1,
+      ),
+    );
+    await db().insert(s.couponPrograms).values({
+      id: 91,
+      promotionId: couponPromoId,
+      name: "برنامج شرائح مجمعة",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2028-01-01"),
+      perCouponLimit: 10,
+      perCustomerLimit: 10,
+      codePrefix: "POOL",
+      createdBy: 1,
+    });
+    await db().insert(s.coupons).values({
+      id: 91,
+      programId: 91,
+      code: "POOL-3X15",
+      codeHash: hashCouponCode("POOL-3X15"),
+      status: "ACTIVE",
+    });
+
+    const shiftId = await openShift();
+    const couponSale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        priceTier: "RETAIL",
+        couponCode: "POOL-3X15",
+        lines: [
+          {
+            variantId: 2,
+            productUnitId: 2,
+            quantity: "1",
+            unitPriceOverride: "20.00",
+            discountAmount: "5.00",
+            promotionDiscount: "5.00",
+            promotionId: couponPromoId,
+          },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPriceOverride: "10.00",
+          },
+        ],
+        payment: { amount: "35.00", method: "CASH" },
+      } as any,
+      actor,
+    );
+    expect(couponSale.total).toBe("35.00");
+
+    // 2. عرض تلقائي مماثل لكاشير بدون صلاحية مدير: خصم 8.00 على الدفتر (40% > 15%) ينجح لأن القلمين يكملان نصاب الـ 3 قطع
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "cashier_pool",
+      name: "كاشير",
+      role: "cashier",
+      branchId: 1,
+      loginMethod: "local",
+    });
+    const cashierShiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 2,
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const cashierShiftId = insertId(cashierShiftRes);
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" } as any;
+
+    const autoPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "عرض تلقائي 3+ بسعر موحد 12",
+          type: "TIERED_QTY",
+          tieredMode: "POOL_ACROSS_TARGETS",
+          applicationMode: "AUTO",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 1 }, { productId: 2 }],
+          tiers: [{ minQuantity: "3", tierType: "FIXED_PRICE", fixedPrice: "12.00" }],
+        },
+        1,
+      ),
+    );
+
+    const autoSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: cashierShiftId,
+        sourceType: "POS",
+        priceTier: "RETAIL",
+        lines: [
+          {
+            variantId: 2,
+            productUnitId: 2,
+            quantity: "1",
+            unitPriceOverride: "20.00",
+            discountAmount: "8.00",
+            promotionDiscount: "8.00",
+            promotionId: autoPromoId,
+          },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPriceOverride: "10.00",
+          },
+        ],
+        payment: { amount: "32.00", method: "CASH" },
+      } as any,
+      cashierActor,
+    );
+    expect(autoSale.total).toBe("32.00");
+  });
+
+  it("بوابة H6: تمنع تضخيم unitPriceOverride لمحو خط الأساس المرجعي وتمرير خصم يدوي فوق 15% بلا موافقة مدير", async () => {
+    // صنف سعره المرجعي 1000.00 وتكلفته 50.00 (فوق التكلفة بكثير)
+    await db().insert(s.products).values({ id: 92, name: "حقيبة فاخرة", categoryId: 1 });
+    await db().insert(s.productVariants).values({ id: 92, productId: 92, sku: "BAG-92", costPrice: "50.00" });
+    await db().insert(s.productUnits).values({ id: 92, variantId: 92, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 92, priceTier: "RETAIL", price: "1000.00" });
+    await setStock(92, 1, 20);
+
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "cashier_override_h6",
+      name: "كاشير",
+      role: "cashier",
+      branchId: 1,
+      loginMethod: "local",
+    });
+    const shiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 2,
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const cashierShiftId = insertId(shiftRes);
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" } as any;
+
+    const halfOffId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "خصم 50% غير مسقوف",
+          type: "PERCENT",
+          discountPercent: "50",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 92 }],
+        },
+        1,
+      ),
+    );
+
+    // محاولة رفع unitPriceOverride إلى 2000 للحصول على promotionDiscount = 1000 وتمرير cashierDiscountAmount = 900 (صافي 100 > تكلفة 50)
+    await expect(
+      createSale(
+        {
+          branchId: 1,
+          shiftId: cashierShiftId,
+          sourceType: "POS",
+          priceTier: "RETAIL",
+          lines: [
+            {
+              variantId: 92,
+              productUnitId: 92,
+              quantity: "1",
+              unitPriceOverride: "2000.00",
+              discountAmount: "1900.00",
+              promotionDiscount: "1000.00",
+              cashierDiscountAmount: "900.00",
+              promotionId: halfOffId,
+            },
+          ],
+          payment: { amount: "100.00", method: "CASH" },
+        } as any,
+        cashierActor,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // وكذلك لو وُضع الخصم اليدوي على رأس الفاتورة invoiceDiscount = 900.00 بدل السطر
+    await expect(
+      createSale(
+        {
+          branchId: 1,
+          shiftId: cashierShiftId,
+          sourceType: "POS",
+          priceTier: "RETAIL",
+          invoiceDiscount: "900.00",
+          lines: [
+            {
+              variantId: 92,
+              productUnitId: 92,
+              quantity: "1",
+              unitPriceOverride: "2000.00",
+              discountAmount: "1000.00",
+              promotionDiscount: "1000.00",
+              promotionId: halfOffId,
+            },
+          ],
+          payment: { amount: "100.00", method: "CASH" },
+        } as any,
+        cashierActor,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
 });
 
 

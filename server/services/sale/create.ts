@@ -1255,6 +1255,7 @@ export async function createSaleInTx(
       promotionId: number;
       promotionName: string;
       discountAmount: Decimal;
+      refDiscountAmount: Decimal;
       allowBelowCost: boolean;
     }
   >();
@@ -1263,6 +1264,9 @@ export async function createSaleInTx(
     promotionName: string;
     source: "AUTO" | "COUPON";
   } | null = null;
+  const hasUpwardPriceOverride = prePricedLines.some(
+    (pl) => !pl.isGift && pl.refUnit.gt(0) && pl.unitPrice.gt(pl.refUnit),
+  );
 
   if (hasAnyPromoOrCoupon && prePricedLines.length > 0) {
     const evalChannel: "POS" | "STORE" =
@@ -1288,6 +1292,15 @@ export async function createSaleInTx(
       isGift: pl.isGift,
       isService: pl.kind === "SERVICE",
     }));
+    const refBaseEvalItems: CartEvalItem[] | null = hasUpwardPriceOverride
+      ? prePricedLines.map((pl, idx) => ({
+          ...baseEvalItems[idx]!,
+          unitPrice: (pl.refUnit.gt(0)
+            ? Decimal.min(pl.unitPrice, pl.refUnit)
+            : pl.unitPrice
+          ).toFixed(2),
+        }))
+      : null;
 
     if (lockedCoupon) {
       const couponSnapshot = await loadPromotionRuleSnapshot(tx, {
@@ -1304,29 +1317,55 @@ export async function createSaleInTx(
         const anyLineClaimedCoupon = prePricedLines.some(
           (pl) => Number(pl.l.promotionId) === lockedCoupon.promotionId,
         );
-        const couponEvalItems = baseEvalItems.map((item, idx) => ({
-          ...item,
-          hasContractPrice:
-            item.hasContractPrice ||
-            (anyLineClaimedCoupon &&
-              Number(prePricedLines[idx]!.l.promotionId) !==
-                lockedCoupon.promotionId),
-        }));
+        const buildCouponEvalItems = (items: CartEvalItem[]) =>
+          items.map((item, idx) => {
+            const claimedPid =
+              prePricedLines[idx]!.l.promotionId != null
+                ? Number(prePricedLines[idx]!.l.promotionId)
+                : null;
+            const claimedOtherPromo =
+              claimedPid != null &&
+              claimedPid > 0 &&
+              claimedPid !== lockedCoupon.promotionId;
+            return {
+              ...item,
+              hasContractPrice: item.hasContractPrice || claimedOtherPromo,
+            };
+          });
         const couponEval = evaluateCartPromotions(
-          couponEvalItems,
+          buildCouponEvalItems(baseEvalItems),
           couponRules,
           evalCtx,
         );
+        const refCouponEval = refBaseEvalItems
+          ? evaluateCartPromotions(
+              buildCouponEvalItems(refBaseEvalItems),
+              couponRules,
+              evalCtx,
+            )
+          : couponEval;
         const couponMeta = promoMetaById.get(lockedCoupon.promotionId);
         const couponPromoName = couponMeta?.name ?? lockedCoupon.code;
         for (const alloc of Array.from(couponEval.lineAllocations.values())) {
           const lineIdx = Number(alloc.lineKey);
+          if (
+            anyLineClaimedCoupon &&
+            Number(prePricedLines[lineIdx]?.l.promotionId) !==
+              lockedCoupon.promotionId
+          ) {
+            continue;
+          }
           const disc = money(alloc.discountAmount.toFixed(2));
           if (disc.gt(0)) {
+            const refAlloc = refCouponEval.lineAllocations.get(alloc.lineKey);
+            const refDisc = refAlloc
+              ? Decimal.min(disc, money(refAlloc.discountAmount.toFixed(2)))
+              : money(0);
             authoritativePromoByIdx.set(lineIdx, {
               promotionId: lockedCoupon.promotionId,
               promotionName: couponPromoName,
               discountAmount: disc,
+              refDiscountAmount: refDisc,
               allowBelowCost: couponMeta?.allowBelowCost === true,
             });
           }
@@ -1373,28 +1412,47 @@ export async function createSaleInTx(
       });
       const allAutoRules = snapshotToEngineRules(autoSnapshot);
       if (claimedAutoPromoIds.length > 0) {
-        const autoEvalItems = baseEvalItems.map((item, idx) => {
-          const claimedPid =
-            prePricedLines[idx]!.l.promotionId != null
-              ? Number(prePricedLines[idx]!.l.promotionId)
-              : null;
-          const isCouponClaim =
-            lockedCoupon != null && claimedPid === lockedCoupon.promotionId;
-          return {
-            ...item,
-            hasContractPrice:
-              item.hasContractPrice ||
-              authoritativePromoByIdx.has(idx) ||
-              claimedPid == null ||
-              claimedPid <= 0 ||
-              isCouponClaim,
-          };
-        });
+        const buildAutoEvalItems = (items: CartEvalItem[]) =>
+          items.map((item, idx) => {
+            const pl = prePricedLines[idx]!;
+            const claimedPid =
+              pl.l.promotionId != null ? Number(pl.l.promotionId) : null;
+            const isCouponClaim =
+              lockedCoupon != null && claimedPid === lockedCoupon.promotionId;
+            const hasUnclaimedPriceOverride =
+              (claimedPid == null || claimedPid <= 0) &&
+              pl.refUnit.gt(0) &&
+              !pl.unitPrice.eq(pl.refUnit) &&
+              !pl.unitPrice.eq(
+                pl.refUnit.toDecimalPlaces(0, Decimal.ROUND_HALF_UP),
+              );
+            const hasUnclaimedInvoiceManualDiscount =
+              (claimedPid == null || claimedPid <= 0) &&
+              money(pl.l.cashierDiscountAmount ?? "0").lte(0) &&
+              (money(pl.l.discountAmount ?? "0").gt(0) ||
+                money(pl.l.discountPercent ?? "0").gt(0));
+            return {
+              ...item,
+              hasContractPrice:
+                item.hasContractPrice ||
+                authoritativePromoByIdx.has(idx) ||
+                isCouponClaim ||
+                hasUnclaimedPriceOverride ||
+                hasUnclaimedInvoiceManualDiscount,
+            };
+          });
         const autoEval = evaluateCartPromotions(
-          autoEvalItems,
+          buildAutoEvalItems(baseEvalItems),
           allAutoRules,
           evalCtx,
         );
+        const refAutoEval = refBaseEvalItems
+          ? evaluateCartPromotions(
+              buildAutoEvalItems(refBaseEvalItems),
+              allAutoRules,
+              evalCtx,
+            )
+          : autoEval;
         for (const alloc of Array.from(autoEval.lineAllocations.values())) {
           const lineIdx = Number(alloc.lineKey);
           const claimedPid = Number(prePricedLines[lineIdx]?.l.promotionId);
@@ -1403,10 +1461,16 @@ export async function createSaleInTx(
           if (!meta || !meta.isActive) continue;
           const disc = money(alloc.discountAmount.toFixed(2));
           if (disc.gt(0) && !authoritativePromoByIdx.has(lineIdx)) {
+            const refAlloc = refAutoEval.lineAllocations.get(alloc.lineKey);
+            const refDisc =
+              refAlloc && refAlloc.promotionId === alloc.promotionId
+                ? Decimal.min(disc, money(refAlloc.discountAmount.toFixed(2)))
+                : money(0);
             authoritativePromoByIdx.set(lineIdx, {
               promotionId: alloc.promotionId,
               promotionName: meta.name,
               discountAmount: disc,
+              refDiscountAmount: refDisc,
               allowBelowCost: meta.allowBelowCost === true,
             });
           }
@@ -1448,6 +1512,7 @@ export async function createSaleInTx(
     // M4 (F19/F20): 1. حلّ العرض الترويجي الإداري والتحقق منه سلطوياً وسقفه بقيمة المحرك
     let recordedPromotionId: number | null = null;
     let recordedPromoDiscount = money(0);
+    let recordedRefPromoDiscount = money(0);
     let promoAllowBelowCost = false;
 
     const authPromo = !isGift ? authoritativePromoByIdx.get(idx) : undefined;
@@ -1467,6 +1532,10 @@ export async function createSaleInTx(
       } else {
         recordedPromoDiscount = authPromo.discountAmount;
       }
+      recordedRefPromoDiscount = Decimal.min(
+        recordedPromoDiscount,
+        authPromo.refDiscountAmount,
+      );
     }
 
     // M4 (F19): 2. احتساب صافي السعر بعد العرض وتحديد خصم الكاشير اليدوي
@@ -1521,6 +1590,7 @@ export async function createSaleInTx(
       isGift,
       promotionId: recordedPromotionId,
       promotionDiscount: recordedPromoDiscount.toFixed(2),
+      refPromotionDiscount: recordedRefPromoDiscount.toFixed(2),
       allowBelowCost: promoAllowBelowCost,
       cashierDiscountAmount: cashierManualDiscount.toFixed(2),
       promotionName: !isGift && recordedPromotionId ? (authPromo?.promotionName ?? null) : null,
@@ -1591,23 +1661,42 @@ export async function createSaleInTx(
       lockedCoupon.maxDiscountAmount,
     );
     couponDiscount = money(allocation.totalCouponDiscount);
+    const refAllocation = hasUpwardPriceOverride
+      ? allocateCouponDiscountAcrossLines(
+          computed.map((c) => ({
+            ...c,
+            promotionDiscount: c.refPromotionDiscount,
+          })),
+          lockedCoupon.promotionId,
+          lockedCoupon.maxDiscountAmount,
+        )
+      : allocation;
     for (let i = 0; i < computed.length; i++) {
       computed[i].promotionDiscount = allocation.lines[i].promotionDiscount;
       computed[i].discountAmount = allocation.lines[i].discountAmount;
       computed[i].total = allocation.lines[i].total;
+      computed[i].refPromotionDiscount = Decimal.min(
+        money(allocation.lines[i].promotionDiscount),
+        money(refAllocation.lines[i].promotionDiscount),
+      ).toFixed(2);
     }
   }
 
   // M4 (F19): 4. فحص بوابة H6 للخصم اليدوي بعد استقرار مبالغ العروض والكوبونات النهائية
+  // يُحسَب الإعفاء الترويجي مقابل السعر المرجعي (refPromotionDiscount) لا السعر اليدوي المُضخَّم،
+  // فلا يستطيع رفع unitPriceOverride محوَ خطّ الأساس المرجعي وتمرير خصم يدوي فوق العتبة بلا موافقة مدير.
   let manualDiscountGateTriggered = false;
   let referenceGrossAfterPromos = money(0);
   for (const line of computed) {
     if (line.isGift) continue;
     const lineRefGross = line.refUnit.times(money(line.quantity));
-    const linePromoDisc = money(line.promotionDiscount);
+    const lineRefPromoDisc = Decimal.min(
+      money(line.promotionDiscount),
+      money(line.refPromotionDiscount),
+    );
     const lineRefAfterPromo = Decimal.max(
       money(0),
-      lineRefGross.minus(linePromoDisc),
+      lineRefGross.minus(lineRefPromoDisc),
     );
     if (
       lineDiscountExceedsThreshold(lineRefAfterPromo, money(1), line.total)

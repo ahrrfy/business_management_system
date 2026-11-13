@@ -1147,5 +1147,77 @@ describe("shared/promotionEngine", () => {
       const couponRes = evaluateCartPromotions(items, [couponPercent], CONTEXT_POS);
       expect(couponRes.totalCartDiscount.toFixed(2)).toBe("250.00");
     });
+
+    it("evaluates 100,000-unit bulk lines in O(L) time for ALL_REQUIRED, PICK_ANY_N, and BOGO without quadratic rescanning", () => {
+      const bulkAllRequired: PromotionRule = {
+        id: 907,
+        name: "باقة جملة إلزامية",
+        type: "BUNDLE_PRICE",
+        bundleMode: "ALL_REQUIRED",
+        bundlePrice: 1500,
+        channel: "ALL",
+        scope: "PRODUCTS",
+        targetProductIds: new Set([1, 2]),
+      };
+      const t0 = Date.now();
+      const resAllReq = evaluateCartPromotions(
+        [
+          { lineKey: "b1", productId: 1, variantId: 1, isBaseUnit: true, unitPrice: 1000, quantity: 100_000 },
+          { lineKey: "b2", productId: 2, variantId: 2, isBaseUnit: true, unitPrice: 1000, quantity: 100_000 },
+        ],
+        [bulkAllRequired],
+        CONTEXT_POS,
+      );
+      const elapsedAllReq = Date.now() - t0;
+      expect(elapsedAllReq).toBeLessThan(200);
+      // 100,000 sets * (2000 - 1500) = 50,000,000.00
+      expect(resAllReq.totalCartDiscount.toFixed(2)).toBe("50000000.00");
+      expect(resAllReq.lineAllocations.get("b1")?.discountAmount.toFixed(2)).toBe("25000000.00");
+      expect(resAllReq.lineAllocations.get("b2")?.discountAmount.toFixed(2)).toBe("25000000.00");
+
+      const bulkPickAny: PromotionRule = {
+        id: 908,
+        name: "اختر 3 بـ 2400",
+        type: "BUNDLE_PRICE",
+        bundleMode: "PICK_ANY_N",
+        bundleQuantity: 3,
+        bundlePrice: 2400,
+        channel: "ALL",
+        scope: "PRODUCTS",
+        targetProductIds: new Set([1, 2]),
+      };
+      const t1 = Date.now();
+      const resPickAny = evaluateCartPromotions(
+        [
+          { lineKey: "p1", productId: 1, variantId: 1, isBaseUnit: true, unitPrice: 1000, quantity: 100_000 },
+          { lineKey: "p2", productId: 2, variantId: 2, isBaseUnit: true, unitPrice: 900, quantity: 2 },
+        ],
+        [bulkPickAny],
+        CONTEXT_POS,
+      );
+      expect(Date.now() - t1).toBeLessThan(200);
+      // 33,333 pure 1000-IQD bundles (savings 600 each = 19,999,800) + 1 straddling bundle (1000 + 900 + 900 = 2800 -> savings 400) = 20,000,200.00
+      expect(resPickAny.totalCartDiscount.toFixed(2)).toBe("20000200.00");
+
+      const bulkBogo: PromotionRule = {
+        id: 909,
+        name: "اشتري 2 واحصل على 1 مجاناً",
+        type: "BOGO",
+        bogoBuyQuantity: 2,
+        bogoGetQuantity: 1,
+        bogoGetDiscountPercent: 100,
+        channel: "ALL",
+        scope: "PRODUCTS",
+        targetProductIds: new Set([1]),
+      };
+      const t2 = Date.now();
+      const resBogo = evaluateCartPromotions(
+        [{ lineKey: "g1", productId: 1, variantId: 1, isBaseUnit: true, unitPrice: 1000, quantity: 99_999 }],
+        [bulkBogo],
+        CONTEXT_POS,
+      );
+      expect(Date.now() - t2).toBeLessThan(200);
+      expect(resBogo.totalCartDiscount.toFixed(2)).toBe("33333000.00");
+    });
   });
 });
