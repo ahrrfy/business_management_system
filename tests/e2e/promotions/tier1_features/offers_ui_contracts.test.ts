@@ -16,6 +16,7 @@ const OFFER_FORM_PATH = path.resolve(process.cwd(), "client/src/components/offer
 const BULK_ADD_PATH = path.resolve(process.cwd(), "client/src/components/offers/OfferBulkAddToolbar.tsx");
 const CHANNEL_SECTION_PATH = path.resolve(process.cwd(), "client/src/components/offers/OfferChannelStepSection.tsx");
 import {
+  buildTargetsForHolder,
   createDefaultRuleDraft,
   simulateMultiRuleBasketPreview,
   validateRuleScopeAndMargin,
@@ -679,6 +680,50 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       // Without the cap, promoPrice = 5,000 < cost 8,000 => blocked
       const uncappedRule = { ...cappedRule, maxDiscountAmount: "" };
       expect(validateRuleScopeAndMargin(uncappedRule, uncappedRule, "")).toContain("ينزل سعرها بالعرض أقل من كلفتها");
+    });
+
+    it("T1-F19-08: buildTargetsForHolder preserves explicit UNIT targetGrain even when selected unit isBaseUnit", () => {
+      const unitScopedDraft = {
+        ...createDefaultRuleDraft("PERCENT", "r_unit_grain"),
+        scope: "PRODUCTS" as const,
+        selectedProducts: [
+          {
+            targetGrain: "UNIT" as const,
+            productId: 601,
+            productName: "دفتر جامعي",
+            productCode: "PRD-601",
+            variantId: 6011,
+            sku: "NB-BLUE",
+            isConsignment: false,
+            barcode: "6286011",
+            productUnitId: 60111,
+            unitName: "قطعة",
+            conversionFactor: "1",
+            isBaseUnit: true,
+            retailPrice: "2000",
+            costPrice: "1200",
+            units: [
+              {
+                id: 60111,
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                barcode: "6286011",
+                retailPrice: "2000",
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(buildTargetsForHolder(unitScopedDraft)).toEqual([
+        {
+          categoryId: null,
+          productId: null,
+          variantId: null,
+          productUnitId: 60111,
+        },
+      ]);
     });
   });
 });

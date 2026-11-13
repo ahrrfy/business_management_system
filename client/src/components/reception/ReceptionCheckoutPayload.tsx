@@ -266,8 +266,12 @@ export function buildReceptionCheckoutPayload({
               ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) }
               : {}),
             lines: regularLines.map((c) => {
-              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
-              const listGross = listWhole.times(c.qty);
+              const catalogUnit = round2(D(c.row.price ?? 0));
+              const listUnit =
+                c.origPrice != null && round2(D(c.origPrice)).gt(catalogUnit)
+                  ? round2(D(c.origPrice))
+                  : catalogUnit;
+              const listGross = round2(listUnit.times(c.qty));
               const netLine = round2(D(lineTotal(c)));
               const discAmt = Decimal.max(0, round2(listGross.minus(netLine)));
               const promoInfo = officialReceptionPromoInfo(c);
@@ -282,7 +286,7 @@ export function buildReceptionCheckoutPayload({
                 variantId: c.row.variantId,
                 productUnitId: c.row.productUnitId,
                 quantity: String(c.qty),
-                unitPriceOverride: listWhole.toFixed(2),
+                unitPriceOverride: listUnit.toFixed(2),
                 ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
                 ...(promotionId != null ? { promotionId } : {}),
                 ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),

@@ -155,4 +155,70 @@ describe("reception split amounts and wire", () => {
     expect(payload.deliveryFeeHeld).toBe("5000");
     expect(payload.deliveryFeeTender).toBe(fee);
   });
+
+  it("يحافظ على الكسور العشرية لسعر الكتالوج (مثل 1000.40) في regularSale فلا يرفض الخادم مطابقة المجموع", () => {
+    const fractionalLine = {
+      qty: 10,
+      row: {
+        variantId: 11,
+        productUnitId: 21,
+        price: "1000.40",
+      },
+    };
+    const input = {
+      heldDelivery: "0",
+      deliveryFeeTender: null,
+      branchId: 1,
+      cashRoundActive: false,
+      effectiveGrandD: D("10004.00"),
+      regularSumRawD: D("10004.00"),
+      invoiceDiscountAmountD: D(0),
+      mixedRoundApplied: false,
+      mixedCarrier: null,
+      mixedDeltaAppliedD: D(0),
+      printLines: [],
+      customWithDeposits: [],
+      effectiveWoDelivery: () => ({
+        has: false,
+        address: null,
+        phone: null,
+        cost: "0",
+        feeColl: "SHOP" as const,
+        partyName: null,
+      }),
+      method: "CASH",
+      paymentReference: "",
+      channel: "WALK_IN",
+      channelHandle: "",
+      receptionPhone: "",
+      regularLines: [fractionalLine],
+      orderDelivery: null,
+      hasGrandShortfall: false,
+      isReserve: false,
+      hasDirectShortfall: false,
+      deferred: false,
+      customer: { customerId: 7 },
+      shift: { id: 4 },
+      customerId: 7,
+      customerName: null,
+      receiptPhone: "",
+      appliedPaidD: D("10004.00"),
+      orderFeeHeldD: D(0),
+      routeDeliveryToWO: false,
+      opts: { quickFullPay: false },
+      mgrCredsRef: { current: null },
+      reqIdRef: { current: "fractional-req" },
+      effectiveTier: "RETAIL",
+      couponCode: null,
+    } as unknown as ReceptionCheckoutPayloadInput;
+
+    const built = buildReceptionCheckoutPayload(input);
+    expect(built.saleAmount).toBe("10004.00");
+    expect(built.directCheckoutPayload.regularSale?.lines[0]).toEqual({
+      variantId: 11,
+      productUnitId: 21,
+      quantity: "10",
+      unitPriceOverride: "1000.40",
+    });
+  });
 });

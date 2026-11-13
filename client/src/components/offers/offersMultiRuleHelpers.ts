@@ -218,7 +218,7 @@ export function buildTargetsForHolder(holder: OfferRuleDraft) {
     variantCountsByProduct.set(p.productId, (variantCountsByProduct.get(p.productId) ?? 0) + 1);
   }
   return holder.selectedProducts.map((p) => {
-    if (!p.isBaseUnit && p.productUnitId) {
+    if ((p.targetGrain === "UNIT" || !p.isBaseUnit) && p.productUnitId) {
       return {
         categoryId: null,
         productId: null,

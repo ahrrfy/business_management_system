@@ -64,8 +64,8 @@ export function officialReceptionPromoInfo(
   line: CartLine,
 ): { promotionId: number; promotionName: string | null; promoDiscountD: Decimal } | null {
   if (line.custom || line.digital || line.row.isPrintService || line.manualService) return null;
-  const listUnit = D(line.row.price ?? 0).toDecimalPlaces(0, 4);
-  const listGross = listUnit.times(line.qty);
+  const listUnit = round2(D(line.row.price ?? 0));
+  const listGross = round2(listUnit.times(line.qty));
   if (line.couponLineDiscount != null && line.row.promotionId != null) {
     const raw = D(line.couponLineDiscount);
     const capped = raw.gt(listGross) ? listGross : raw.lt(0) ? D(0) : round2(raw);
@@ -132,7 +132,7 @@ export function effectivePrice(line: CartLine): number {
 export function lineTotal(line: CartLine): number {
   if (!line.custom && !line.digital && !line.row.isPrintService) {
     if (line.couponLineDiscount != null) {
-      const listGross = D(line.row.price ?? 0).toDecimalPlaces(0, 4).times(line.qty);
+      const listGross = round2(round2(D(line.row.price ?? 0)).times(line.qty));
       const couponDisc = Decimal.min(listGross, Decimal.max(0, D(line.couponLineDiscount)));
       const afterCoupon = listGross.minus(couponDisc);
       if (line.disc && line.disc > 0) {

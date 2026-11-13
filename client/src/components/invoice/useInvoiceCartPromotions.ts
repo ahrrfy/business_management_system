@@ -85,7 +85,19 @@ export function salesInvoiceWithPromotionsReducer(
       };
       return { ...next, items };
     }
-    if (action.field === "discount" || action.field === "discountType") {
+    if (action.field === "discount") {
+      const items = [...next.items];
+      items[action.idx] = {
+        ...updatedItem,
+        discountType: "percent",
+        promotionId: null,
+        promotionName: null,
+        promotionDiscount: null,
+        autoPromoManaged: false,
+      };
+      return { ...next, items };
+    }
+    if (action.field === "discountType") {
       const items = [...next.items];
       items[action.idx] = {
         ...updatedItem,
@@ -100,6 +112,9 @@ export function salesInvoiceWithPromotionsReducer(
       const items = [...next.items];
       items[action.idx] = {
         ...updatedItem,
+        ...(prevItem.autoPromoManaged === true
+          ? { discount: "0", discountType: "percent" }
+          : {}),
         promotionId: null,
         promotionName: null,
         promotionDiscount: null,
