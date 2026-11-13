@@ -19,12 +19,11 @@ import {
   Truck,
   XCircle,
 } from "lucide-react";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field } from "@/components/product/variantBits";
 import { AppSelect } from "@/components/ui/AppSelect";
 import type { PromoChannel } from "./offersTypes";
 
-export type ShippingPerkMode = "NONE" | "FREE" | "DISCOUNT";
+export type ShippingPerkMode = "NONE" | "FREE";
 
 export interface OfferChannelStepSectionProps {
   channel: PromoChannel;
@@ -36,8 +35,6 @@ export interface OfferChannelStepSectionProps {
   userBranchId?: number | null;
   shippingPerkMode: ShippingPerkMode;
   onShippingPerkModeChange: (next: ShippingPerkMode) => void;
-  shippingDiscountAmount: string;
-  onShippingDiscountAmountChange: (next: string) => void;
   hasFreeShippingRule?: boolean;
 }
 
@@ -121,8 +118,6 @@ export function OfferChannelStepSection({
   userBranchId,
   shippingPerkMode,
   onShippingPerkModeChange,
-  shippingDiscountAmount,
-  onShippingDiscountAmountChange,
   hasFreeShippingRule = false,
 }: OfferChannelStepSectionProps) {
   const effectiveShippingMode: ShippingPerkMode = hasFreeShippingRule
@@ -264,28 +259,17 @@ export function OfferChannelStepSection({
           >
             <option value="NONE">بدون خصم توصيل إضافي</option>
             <option value="FREE">توصيل مجاني على حساب المكتبة</option>
-            <option value="DISCOUNT">تنزيل مبلغ ثابت من أجرة التوصيل</option>
           </AppSelect>
         </Field>
 
-        {effectiveShippingMode === "DISCOUNT" ? (
-          <Field label="مبلغ تنزيل التوصيل (د.ع)" required>
-            <MoneyInput
-              value={shippingDiscountAmount}
-              onChange={onShippingDiscountAmountChange}
-              placeholder="مثال: 2,000 د.ع"
-            />
-          </Field>
-        ) : (
-          <div className="hidden lg:flex items-center gap-2 rounded-md border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">
-            <Truck className="size-4 shrink-0 text-primary/70" />
-            <span>
-              {effectiveShippingMode === "FREE"
-                ? "تصير أجرة التوصيل مجاناً للزبون تلقائياً وتنطبع كميزة تسويقية بالفاتورة وملصق الطلب."
-                : "تبقى أجرة التوصيل الاعتيادية كما هي."}
-            </span>
-          </div>
-        )}
+        <div className="hidden lg:flex items-center gap-2 rounded-md border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <Truck className="size-4 shrink-0 text-primary/70" />
+          <span>
+            {effectiveShippingMode === "FREE"
+              ? "تصير أجرة التوصيل مجاناً للزبون تلقائياً وتنطبع كميزة تسويقية بالفاتورة وملصق الطلب."
+              : "تبقى أجرة التوصيل الاعتيادية كما هي."}
+          </span>
+        </div>
       </div>
     </div>
   );

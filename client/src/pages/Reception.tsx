@@ -52,7 +52,7 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
 import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
-import { useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
+import { freezeReceptionDraftCart, useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
@@ -512,7 +512,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       if (result.idempotentReplay) {
         await attachResolvedPromotion({ draftId: result.draft.id, version: result.draft.version, draftNumber: result.draftNumber! }); return;
       }
-      if (result.promoted) { setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = result.draft; setActiveDraft(result.draft); setDraftInfo({ draftNumber: result.draftNumber! }); setDraftHeld("0.00"); setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); }
+      if (result.promoted) { setCart(freezeReceptionDraftCart(cart)); setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = result.draft; setActiveDraft(result.draft); setDraftInfo({ draftNumber: result.draftNumber! }); setDraftHeld("0.00"); setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); }
       setDepositOpen(true);
     } finally { draftPromotionFlightRef.current = false; if (transitionEpoch === draftResumeEpochRef.current) setDraftTransitionPending(false); }
   }
@@ -669,7 +669,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       if (r.idempotentReplay) {
         await attachResolvedPromotion(r); return;
       }
-      const draft = { id: r.draftId, version: r.version }; activeDraftRef.current = draft; setActiveDraft(draft);
+      const draft = { id: r.draftId, version: r.version }; setCart(freezeReceptionDraftCart(cart)); activeDraftRef.current = draft; setActiveDraft(draft);
       setDraftInfo({ draftNumber: r.draftNumber }); setDraftHeld("0.00"); setDetachedRecoveryPending(false);
       notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
       void utils.reception.draftList.invalidate();

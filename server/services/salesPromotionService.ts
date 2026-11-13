@@ -395,6 +395,19 @@ function assertDates(input: CreatePromotionInput) {
 
 function assertTargets(input: CreatePromotionInput) {
   if (input.scope === "ALL") {
+    if (
+      input.type === "BUNDLE_PRICE" &&
+      (input.bundleMode ?? "ALL_REQUIRED") === "ALL_REQUIRED"
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعارض بين نطاق العرض ونوع الباقة",
+          why: "باقة «كل المواد سوية» (ALL_REQUIRED) تتطلب تحديد أقسام أو مواد صريحة ولا تعمل على نطاق كل بضاعة المحل (ALL)",
+          doThis: "اختر نطاق أقسام أو مواد محددة، أو غيّر وضع الباقة إلى اختر أي عدد (PICK_ANY_N)",
+        }),
+      });
+    }
     if (input.targets && input.targets.length) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -965,10 +978,16 @@ export async function updatePromotion(
     effectiveTo: mergedTo,
   });
 
-  if (input.targets !== undefined || input.scope !== undefined) {
+  if (
+    input.targets !== undefined ||
+    input.scope !== undefined ||
+    typeChanged ||
+    input.bundleMode !== undefined
+  ) {
     assertTargets({
       name: input.name ?? existing.name,
       type: mergedType,
+      bundleMode: mergedBundleMode,
       scope: mergedScope,
       effectiveFrom: mergedFrom,
       targets: mergedScope === "ALL" ? undefined : effectiveTargets,

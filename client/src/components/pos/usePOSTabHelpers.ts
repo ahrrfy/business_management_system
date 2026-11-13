@@ -283,22 +283,28 @@ export function usePOSTabHelpers({
     const { numMode, selId } = activeTab;
     if (numMode === "QTY") {
       if (!selId) return;
-      setCart((prev) =>
-        prev.map((c) => {
-          if (lineIdOf(c) !== selId || c.digital) return c;
-          const entry = qtyEntryRef.current;
-          const replaceNextDigit = entry.tabId !== activeIdRef.current || entry.lineId !== selId
-            ? true
-            : entry.replaceNextDigit;
-          const result = applyPosQuantityKey(c.qty, k, replaceNextDigit);
-          qtyEntryRef.current = {
-            tabId: activeIdRef.current,
-            lineId: selId,
-            replaceNextDigit: result.replaceNextDigit,
-          };
-          return { ...c, qty: result.quantity };
-        }),
-      );
+      const target = activeTab.cart.find((c) => lineIdOf(c) === selId && !c.digital);
+      if (!target) return;
+      const entry = qtyEntryRef.current;
+      const replaceNextDigit = entry.tabId !== activeIdRef.current || entry.lineId !== selId
+        ? true
+        : entry.replaceNextDigit;
+      const result = applyPosQuantityKey(target.qty, k, replaceNextDigit);
+      qtyEntryRef.current = {
+        tabId: activeIdRef.current,
+        lineId: selId,
+        replaceNextDigit: result.replaceNextDigit,
+      };
+      const qtyChangedWithCoupon = Boolean(activeTab.couponCode) && result.quantity !== target.qty;
+      if (qtyChangedWithCoupon) {
+        patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
+      }
+      setCart((raw) => {
+        const prev = qtyChangedWithCoupon ? resetCouponItems(raw) : raw;
+        return prev.map((c) =>
+          lineIdOf(c) === selId && !c.digital ? { ...c, qty: result.quantity } : c,
+        );
+      });
     } else if (numMode === "DISC") {
       if (!selId) return;
       setCart((prev) =>
@@ -311,7 +317,12 @@ export function usePOSTabHelpers({
           else if (k === "." && s.includes(".")) return c;
           else s = s + k;
           const disc = Math.min(100, Math.max(0, parseFloat(s) || 0));
-          return { ...c, origPrice: base, disc };
+          const clearCatalogMarker = disc <= 0 && D(base).eq(D(c.row.price ?? 0));
+          return {
+            ...c,
+            origPrice: clearCatalogMarker ? undefined : base,
+            disc: disc <= 0 ? undefined : disc,
+          };
         }),
       );
     } else {

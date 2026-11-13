@@ -32,7 +32,6 @@ import {
   buildTargetsForHolder,
   createDefaultRuleDraft,
   endOfMonthYmd,
-  posDec,
   sanitizeRuleTiers,
   summarizeRuleDraft,
   validateRuleScopeAndMargin,
@@ -94,7 +93,6 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
   const [channel, setChannel] = useState<PromoChannel>("ALL");
   const [branchId, setBranchId] = useState("");
   const [shippingPerkMode, setShippingPerkMode] = useState<ShippingPerkMode>("NONE");
-  const [shippingDiscountAmount, setShippingDiscountAmount] = useState("");
   const [effectiveFrom, setEffectiveFrom] = useState(todayYmd());
   const [effectiveTo, setEffectiveTo] = useState("");
   const [customerTier, setCustomerTier] = useState<CustomerTier>("");
@@ -192,13 +190,8 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     setBranchId(promotion.branchId != null ? String(promotion.branchId) : "");
     if (promotion.freeShipping || promotion.type === "FREE_SHIPPING") {
       setShippingPerkMode("FREE");
-      setShippingDiscountAmount("");
-    } else if (promotion.shippingDiscountAmount && Number(promotion.shippingDiscountAmount) > 0) {
-      setShippingPerkMode("DISCOUNT");
-      setShippingDiscountAmount(String(promotion.shippingDiscountAmount));
     } else {
       setShippingPerkMode("NONE");
-      setShippingDiscountAmount("");
     }
     setEffectiveFrom(toYmd(promotion.effectiveFrom) || todayYmd());
     setEffectiveTo(promotion.effectiveTo ? toYmd(promotion.effectiveTo) : "");
@@ -216,7 +209,21 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     setRules((prev) => prev.map((r, i) => (i === idx ? updater(r) : r)));
   };
   const updateActiveRule = (patch: Partial<OfferRuleDraft>) => {
-    updateRuleAt(activeRuleIdx, (r) => ({ ...r, ...patch }));
+    setRules((prev) => {
+      const next = prev.map((r, i) => (i === activeRuleIdx ? { ...r, ...patch } : r));
+      const updated = next[activeRuleIdx];
+      if (
+        updated &&
+        updated.type === "BUNDLE_PRICE" &&
+        (updated.bundleMode ?? "ALL_REQUIRED") === "ALL_REQUIRED"
+      ) {
+        const holderIdx = scopeSharingMode === "PER_RULE" && next.length > 1 ? activeRuleIdx : 0;
+        if (next[holderIdx]?.scope === "ALL") {
+          next[holderIdx] = { ...next[holderIdx]!, scope: "PRODUCTS" };
+        }
+      }
+      return next;
+    });
   };
 
   const currentScopeIdx =
@@ -302,9 +309,6 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     if (s === 4) {
       if (!effectiveFrom) return "تاريخ البدء مطلوب.";
       if (effectiveTo && effectiveTo < effectiveFrom) return "تاريخ الانتهاء أقدم من تاريخ البدء.";
-      if (shippingPerkMode === "DISCOUNT" && !posDec(shippingDiscountAmount)) {
-        return "أدخل مبلغ خصم التوصيل أكبر من صفر أو اختر بدون خصم توصيل.";
-      }
     }
     return null;
   };
@@ -356,12 +360,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     const r0 = rules[0]!;
     const cleanName = name.trim();
     const resolvedBranchId = isAdmin ? (branchId ? parseInt(branchId, 10) : null) : undefined;
-    const hasRuleFreeShipping = rules.some((r) => r.type === "FREE_SHIPPING");
     const freeShipFlag = shippingPerkMode === "FREE" || r0.type === "FREE_SHIPPING";
-    const shipDiscVal =
-      !hasRuleFreeShipping && shippingPerkMode === "DISCOUNT" && shippingDiscountAmount
-        ? shippingDiscountAmount
-        : undefined;
 
     if (editingId != null) {
       updateM.mutate({
@@ -375,7 +374,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
         channel,
         ...(resolvedBranchId !== undefined ? { branchId: resolvedBranchId } : {}),
         freeShipping: freeShipFlag,
-        shippingDiscountAmount: shipDiscVal ?? "0",
+        shippingDiscountAmount: "0",
         effectiveFrom,
         effectiveTo: effectiveTo || null,
         customerTier: customerTier || null,
@@ -420,7 +419,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
       channel,
       ...(resolvedBranchId !== undefined ? { branchId: resolvedBranchId } : {}),
       freeShipping: freeShipFlag,
-      shippingDiscountAmount: shipDiscVal,
+      shippingDiscountAmount: "0",
       effectiveFrom,
       effectiveTo: effectiveTo || null,
       customerTier: customerTier || null,
@@ -466,7 +465,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     channel,
     branchId,
     freeShipping: shippingPerkMode === "FREE" || hasFreeShippingRule,
-    shippingDiscountAmount,
+    shippingDiscountAmount: "",
     effectiveFrom,
     effectiveTo,
     customerTier,
@@ -704,19 +703,31 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
 
             <Field label="النطاق" required>
               <div className="flex gap-2 flex-wrap">
-                {(["ALL", "CATEGORIES", "PRODUCTS"] as PromoScope[]).map((s) => (
-                  <Button
-                    key={s}
-                    type="button"
-                    variant={targetScopeRule.scope === s ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => updateScopeRule((r) => ({ ...r, scope: s }))}
-                  >
-                    {s === "ALL" && "كل بضاعة المحل"}
-                    {s === "CATEGORIES" && "أقسام محددة"}
-                    {s === "PRODUCTS" && "مواد محددة"}
-                  </Button>
-                ))}
+                {(["ALL", "CATEGORIES", "PRODUCTS"] as PromoScope[]).map((s) => {
+                  const governedRules =
+                    scopeSharingMode === "PER_RULE" && rules.length > 1 ? [targetScopeRule] : rules;
+                  const disallowAll =
+                    s === "ALL" &&
+                    governedRules.some(
+                      (r) =>
+                        r.type === "BUNDLE_PRICE" &&
+                        (r.bundleMode ?? "ALL_REQUIRED") === "ALL_REQUIRED"
+                    );
+                  return (
+                    <Button
+                      key={s}
+                      type="button"
+                      variant={targetScopeRule.scope === s ? "default" : "outline"}
+                      size="sm"
+                      disabled={disallowAll}
+                      onClick={() => updateScopeRule((r) => ({ ...r, scope: s }))}
+                    >
+                      {s === "ALL" && "كل بضاعة المحل"}
+                      {s === "CATEGORIES" && "أقسام محددة"}
+                      {s === "PRODUCTS" && "مواد محددة"}
+                    </Button>
+                  );
+                })}
               </div>
             </Field>
 
@@ -911,8 +922,6 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
               userBranchId={meQ.data?.branchId}
               shippingPerkMode={shippingPerkMode}
               onShippingPerkModeChange={setShippingPerkMode}
-              shippingDiscountAmount={shippingDiscountAmount}
-              onShippingDiscountAmountChange={setShippingDiscountAmount}
               hasFreeShippingRule={hasFreeShippingRule}
             />
 

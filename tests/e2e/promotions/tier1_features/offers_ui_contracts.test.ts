@@ -18,6 +18,7 @@ const CHANNEL_SECTION_PATH = path.resolve(process.cwd(), "client/src/components/
 import {
   createDefaultRuleDraft,
   simulateMultiRuleBasketPreview,
+  validateRuleScopeAndMargin,
   validateRuleTypeFields,
 } from "@/components/offers/offersMultiRuleHelpers";
 import {
@@ -616,6 +617,24 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       expect(content).toContain("تطبيق المتجر للهاتف (Android / iOS)");
       expect(content).toContain("الفرع المستهدف");
       expect(content).toContain("ميزة التوصيل والشحن المصاحبة");
+      expect(content).not.toContain('value="DISCOUNT"');
+    });
+
+    it("T1-F19-06: validateRuleScopeAndMargin rejects store-wide ALL scope for ALL_REQUIRED bundles while allowing PICK_ANY_N", () => {
+      const ruleAllReq = {
+        ...createDefaultRuleDraft("BUNDLE_PRICE", "r_all_req"),
+        bundlePrice: "5000",
+        bundleMode: "ALL_REQUIRED" as const,
+        scope: "ALL" as const,
+      };
+      expect(validateRuleScopeAndMargin(ruleAllReq, ruleAllReq, "")).toContain("لا تقبل نطاق");
+
+      const rulePickAny = {
+        ...ruleAllReq,
+        bundleMode: "PICK_ANY_N" as const,
+        bundleQuantity: 3,
+      };
+      expect(validateRuleScopeAndMargin(rulePickAny, rulePickAny, "")).toBeNull();
     });
   });
 });

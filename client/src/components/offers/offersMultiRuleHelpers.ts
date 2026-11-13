@@ -150,6 +150,13 @@ export function validateRuleScopeAndMargin(
   scopeHolder: OfferRuleDraft,
   prefix: string
 ): string | null {
+  if (
+    ruleVal.type === "BUNDLE_PRICE" &&
+    (ruleVal.bundleMode ?? "ALL_REQUIRED") === "ALL_REQUIRED" &&
+    scopeHolder.scope === "ALL"
+  ) {
+    return `${prefix}باقة «شراء كل مواد البكج سوية» تتطلب اختيار أقسام محددة أو مواد محددة لتكوين الباقة، ولا تقبل نطاق «كل بضاعة المحل».`;
+  }
   if (scopeHolder.scope === "CATEGORIES" && scopeHolder.selectedCategories.length === 0) {
     return `${prefix}اختر فئة واحدة على الأقل.`;
   }

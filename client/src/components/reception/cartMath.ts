@@ -178,8 +178,19 @@ export function withReceptionLineDiscount(line: CartLine, pct: number | null): C
   const customBasePrice = line.custom ? customizationBasePrice(line) : null;
   if (line.custom && customBasePrice == null) return line;
   const normalized = line.custom ? { ...line, customBasePrice: customBasePrice!, origPrice: D(customBasePrice).plus(D(line.custom.unitPrice)).toNumber() } : line;
-  return pct == null || pct <= 0 ? { ...normalized, disc: undefined }
-    : { ...normalized, origPrice: normalized.origPrice ?? D(normalized.row.price).toNumber(), disc: Math.min(100, pct) };
+  if (pct == null || pct <= 0) {
+    const clearCatalogMarker =
+      !normalized.custom &&
+      normalized.origPrice != null &&
+      D(normalized.origPrice).eq(D(normalized.row.price ?? 0)) &&
+      normalized.row.promotionEffectivePrice == null;
+    return {
+      ...normalized,
+      origPrice: clearCatalogMarker ? undefined : normalized.origPrice,
+      disc: undefined,
+    };
+  }
+  return { ...normalized, origPrice: normalized.origPrice ?? D(normalized.row.price).toNumber(), disc: Math.min(100, pct) };
 }
 export function isCustomKind(line: CartLine): boolean {
   return !!line.custom;

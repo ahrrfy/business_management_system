@@ -63,8 +63,7 @@ export function usePosCartPromotions(opts: {
     const evalItems = rawCart.flatMap((c, idx) => {
       if (c.digital || c.row.price == null) return [];
       const hasManualOverride =
-        c.origPrice != null &&
-        !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
+        c.origPrice != null && !D(c.origPrice).eq(D(c.row.price ?? 0));
       const ineligibleForPromo = Boolean(c.row.isPrintService) || hasManualOverride;
       return [
         {
@@ -95,8 +94,7 @@ export function usePosCartPromotions(opts: {
     const nextCart = rawCart.map((c, idx) => {
       if (c.digital || c.row.isPrintService || c.row.price == null) return c;
       const hasManualOverride =
-        c.origPrice != null &&
-        !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
+        c.origPrice != null && !D(c.origPrice).eq(D(c.row.price ?? 0));
       if (hasManualOverride) return c;
       const alloc = res.lineAllocations.get(String(idx));
       return {

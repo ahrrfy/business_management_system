@@ -4,6 +4,7 @@ import { prepareReceptionDraftCart, updateRestoredReceptionCustomization } from 
 import { addPlainCustomizationPiece, canAddPlainCustomizationPiece } from "./cartCustomization";
 import { effectivePrice, lineTotal, withReceptionLineDiscount, type CartLine, type PosRow } from "./cartMath";
 import { buildDraftPayload } from "./draftPayloadBuilder";
+import { freezeReceptionDraftCart } from "./useReceptionCartPromotions";
 
 function customized(qty = 2): CartLine {
   return {
@@ -158,5 +159,63 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
       expect(restored.cart.map(effectivePrice)).toEqual([9000, 11000]);
       expect(restored.cart.map((line) => Boolean(line.custom))).toEqual([false, true]);
     }
+  });
+
+  it("freezes evaluated cart-level promotion prices when saving a reception draft so draft sync retains the discounted total", () => {
+    const goodsRow = {
+      productId: 5,
+      variantId: 50,
+      productUnitId: 500,
+      productName: "دفتر جامعي",
+      sku: "NB-50",
+      unitName: "قطعة",
+      conversionFactor: "1",
+      price: "1000",
+      stockBase: 20,
+      isCustomizable: false,
+      isService: false,
+    } as PosRow;
+    const evaluatedBogoCart: CartLine[] = [
+      {
+        key: "bogo-line",
+        row: goodsRow,
+        qty: 2,
+        cartPromo: { promotionId: 9, promotionName: "اشتر 1 واحصل على 1", lineDiscount: "1000.00" },
+      },
+    ];
+
+    const initialPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: evaluatedBogoCart,
+    });
+    expect(initialPayload.lines[0]?.unitPrice).toBe("500.00");
+
+    const frozen = freezeReceptionDraftCart(evaluatedBogoCart);
+    expect(frozen[0]?.cartPromo).toBeUndefined();
+    expect(frozen[0]?.origPrice).toBe(500);
+    expect(lineTotal(frozen[0]!)).toBe(1000);
+
+    const syncedPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: frozen,
+    });
+    expect(syncedPayload.lines[0]?.unitPrice).toBe("500.00");
+
+    // Clearing a plain line discount also clears catalog-equal origPrice marker
+    const plainLine: CartLine = { key: "plain-1", row: goodsRow, qty: 1 };
+    const discounted = withReceptionLineDiscount(plainLine, 10);
+    expect(discounted.origPrice).toBe(1000);
+    expect(discounted.disc).toBe(10);
+    const cleared = withReceptionLineDiscount(discounted, null);
+    expect(cleared.disc).toBeUndefined();
+    expect(cleared.origPrice).toBeUndefined();
   });
 });

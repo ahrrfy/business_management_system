@@ -1195,6 +1195,39 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     const afterClearThresholds = await withTx((tx) => getPromotionWithTargets(tx, promoId, true));
     expect(afterClearThresholds?.promotion.minOrderSpend).toBe("0.00");
     expect(afterClearThresholds?.promotion.minLineAmount).toBe("0.00");
+
+    // رفض إنشاء أو تحويل عرض BUNDLE_PRICE (ALL_REQUIRED) بنطاق ALL لأنه بلا أهداف مطلوبة
+    await expect(
+      withTx((tx) =>
+        createPromotion(
+          tx,
+          {
+            name: "باقة إلزامية بلا أهداف",
+            type: "BUNDLE_PRICE",
+            bundlePrice: "25.00",
+            bundleMode: "ALL_REQUIRED",
+            scope: "ALL",
+            effectiveFrom: "2026-01-01",
+          },
+          1,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      withTx((tx) =>
+        updatePromotion(
+          tx,
+          {
+            id: promoId,
+            type: "BUNDLE_PRICE",
+            bundlePrice: "25.00",
+            bundleMode: "ALL_REQUIRED",
+          },
+          1,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });
 

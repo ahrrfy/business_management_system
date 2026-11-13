@@ -2,9 +2,36 @@ import { useEffect, useMemo, useState } from "react";
 import { evaluateCartPromotions, type PromotionRule } from "@shared/promotionEngine";
 import { todayYmdBaghdad } from "@shared/promotionScheduling";
 import { loadOfflineActivePromotions } from "@/lib/offline/catalogSync";
-import { D } from "@/lib/money";
+import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import type { CartLine, Tier } from "./cartMath";
+import { effectivePrice, type CartLine, type Tier } from "./cartMath";
+
+/**
+ * عند ترقية السلة المحلية إلى طلب محفوظ (saveDraft / openDepositCollect)، يتوقف التقييم الحيّ
+ * لعروض السلة التلقائية (`activeDraft != null`)؛ نثبّت السعر الفعّال المحسوب في `origPrice`
+ * تماماً كما يفعل `prepareReceptionDraftCart` عند استئناف المسوّدة من الخادم، حتى لا تعود
+ * الأسعار إلى السعر الخام أو تطمس مزامنة الـ800ms السعر المخفّض المحفوظ.
+ */
+export function freezeReceptionDraftCart(evaluatedCart: CartLine[]): CartLine[] {
+  return evaluatedCart.map((c) => {
+    if (c.custom || c.digital || c.row.isPrintService || c.cartPromo === undefined) {
+      return c;
+    }
+    if (c.cartPromo == null) {
+      const { cartPromo: _cp, ...rest } = c;
+      if (rest.origPrice == null && rest.row.promotionEffectivePrice != null) {
+        return { ...rest, origPrice: Number(rest.row.price ?? 0) };
+      }
+      return rest;
+    }
+    const eff = round2(D(effectivePrice(c))).toNumber();
+    const defaultCatalogPrice = Number(c.row.promotionEffectivePrice ?? c.row.price ?? 0);
+    const { cartPromo: _cp, disc: _disc, ...rest } = c;
+    return eff !== defaultCatalogPrice
+      ? { ...rest, origPrice: eff }
+      : { ...rest, origPrice: undefined };
+  });
+}
 
 export function useReceptionCartPromotions(opts: {
   rawCart: CartLine[];
