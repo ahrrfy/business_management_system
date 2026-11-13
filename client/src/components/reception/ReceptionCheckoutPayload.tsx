@@ -18,6 +18,7 @@ import {
   type PayMethod,
   type Tier,
 } from "@/components/reception/cartMath";
+import { applyFreeShippingToOrderDelivery } from "@/components/reception/useReceptionCartPromotions";
 
 export interface ReceptionCheckoutPayloadInput {
   checkoutCharges?:import("@shared/checkoutCharges").CheckoutChargesInput;
@@ -79,6 +80,7 @@ export interface ReceptionCheckoutPayloadInput {
   reqIdRef: React.RefObject<string>;
   effectiveTier: import("@/components/reception/cartMath").Tier;
   couponCode: string | null;
+  freeShippingPromoName?: string | null;
 }
 export function buildReceptionCheckoutPayload({
   payments, checkoutCharges,
@@ -119,6 +121,7 @@ export function buildReceptionCheckoutPayload({
   reqIdRef,
   effectiveTier,
   couponCode,
+  freeShippingPromoName = null,
 }: ReceptionCheckoutPayloadInput) {
   const saleAmount = cashRoundActive
     ? round2(effectiveGrandD).toFixed(2)
@@ -206,17 +209,21 @@ export function buildReceptionCheckoutPayload({
   // إمّا (فاتورة + عهدة مندوب) معاً وإمّا لا شيء. أوامر الشغل وحدها بلا فاتورةٍ حاملة
   // تبقى استثناءً مُعلَناً (تحذيرٌ بعد التثبيت) — الخادم يرفض `delivery` بلا فاتورة.
   const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
+  const effectiveOrderDelivery =
+    D(heldDelivery).gt(0)
+      ? orderDelivery
+      : applyFreeShippingToOrderDelivery(orderDelivery, freeShippingPromoName);
   const deliveryPayload =
-    orderDelivery && hasCarrierInvoice
+    effectiveOrderDelivery && hasCarrierInvoice
       ? {
-          partyId: orderDelivery.partyId,
-          fee: orderDelivery.fee?.trim() ? orderDelivery.fee : "0",
-          feeCollection: orderDelivery.feeCollection,
-          recipientName: orderDelivery.recipientName || undefined,
-          recipientPhone: orderDelivery.recipientPhone || undefined,
-          address: orderDelivery.address || undefined,
+          partyId: effectiveOrderDelivery.partyId,
+          fee: effectiveOrderDelivery.fee?.trim() ? effectiveOrderDelivery.fee : "0",
+          feeCollection: effectiveOrderDelivery.feeCollection,
+          recipientName: effectiveOrderDelivery.recipientName || undefined,
+          recipientPhone: effectiveOrderDelivery.recipientPhone || undefined,
+          address: effectiveOrderDelivery.address || undefined,
           externalTrackingRef:
-            orderDelivery.externalTrackingRef?.trim() || undefined,
+            effectiveOrderDelivery.externalTrackingRef?.trim() || undefined,
         }
       : undefined;
 

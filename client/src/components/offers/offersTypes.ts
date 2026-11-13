@@ -195,6 +195,9 @@ export interface SimulateBasketRule {
   tiers?: OfferTierItem[];
   applyToBaseUnitOnly?: boolean;
   targetProductIds?: number[];
+  targetVariantIds?: number[];
+  targetUnitIds?: number[];
+  targetCategoryIds?: number[];
 }
 
 export interface LiveMarginResult {
@@ -406,6 +409,54 @@ export function safePositiveDecimal(val: unknown): Decimal | undefined {
 // Pure Basket Preview Simulation Contract
 // ---------------------------------------------------------------------------
 
+export function deriveSimulatorTargetCollections(
+  items: Array<{
+    productId: number;
+    variantId?: number;
+    productUnitId?: number;
+    isBaseUnit?: boolean;
+    targetGrain?: "PRODUCT" | "VARIANT" | "UNIT";
+  }>
+): {
+  targetProductIds: number[];
+  targetVariantIds: number[];
+  targetUnitIds: number[];
+} {
+  const variantCountsByProduct = new Map<number, number>();
+  const unitCountsByVariant = new Map<number, number>();
+  for (const p of items) {
+    variantCountsByProduct.set(p.productId, (variantCountsByProduct.get(p.productId) ?? 0) + 1);
+    if (p.variantId != null) {
+      unitCountsByVariant.set(p.variantId, (unitCountsByVariant.get(p.variantId) ?? 0) + 1);
+    }
+  }
+  const targetProductIds: number[] = [];
+  const targetVariantIds: number[] = [];
+  const targetUnitIds: number[] = [];
+  for (const p of items) {
+    if (
+      (p.targetGrain === "UNIT" ||
+        p.isBaseUnit === false ||
+        (p.variantId != null && (unitCountsByVariant.get(p.variantId) ?? 0) > 1)) &&
+      p.productUnitId != null
+    ) {
+      targetUnitIds.push(Number(p.productUnitId));
+    } else if (
+      (p.targetGrain === "VARIANT" || (variantCountsByProduct.get(p.productId) ?? 0) > 1) &&
+      p.variantId != null
+    ) {
+      targetVariantIds.push(Number(p.variantId));
+    } else {
+      targetProductIds.push(Number(p.productId));
+    }
+  }
+  return {
+    targetProductIds: Array.from(new Set(targetProductIds)),
+    targetVariantIds: Array.from(new Set(targetVariantIds)),
+    targetUnitIds: Array.from(new Set(targetUnitIds)),
+  };
+}
+
 /**
  * Pure function: Simulates basket preview calculation matching promotion contracts.
  * Free of DOM and UI dependencies; 100% testable in Node and browser.
@@ -477,16 +528,33 @@ export function simulateBasketPreview(
   }
 
   const bundleMode: BundleMode = rule.bundleMode ?? "ALL_REQUIRED";
-  const distinctTargetProducts =
-    rule.targetProductIds && rule.targetProductIds.length > 0
-      ? Array.from(new Set(rule.targetProductIds))
-      : Array.from(new Set(items.map((i) => i.productId)));
+  const hasExplicitTargets =
+    (rule.targetProductIds?.length ?? 0) > 0 ||
+    (rule.targetVariantIds?.length ?? 0) > 0 ||
+    (rule.targetUnitIds?.length ?? 0) > 0 ||
+    (rule.targetCategoryIds?.length ?? 0) > 0;
+  const resolvedTargets = hasExplicitTargets
+    ? {
+        targetProductIds: Array.from(new Set(rule.targetProductIds ?? [])),
+        targetVariantIds: Array.from(new Set(rule.targetVariantIds ?? [])),
+        targetUnitIds: Array.from(new Set(rule.targetUnitIds ?? [])),
+        targetCategoryIds: Array.from(new Set(rule.targetCategoryIds ?? [])),
+      }
+    : rule.type === "BUNDLE_PRICE"
+      ? { ...deriveSimulatorTargetCollections(items), targetCategoryIds: [] as number[] }
+      : null;
+  const useCategoryScope =
+    resolvedTargets != null &&
+    resolvedTargets.targetCategoryIds.length > 0 &&
+    resolvedTargets.targetProductIds.length === 0 &&
+    resolvedTargets.targetVariantIds.length === 0 &&
+    resolvedTargets.targetUnitIds.length === 0;
 
   const engineRule: PromotionRule = {
     id: 1,
     name: "معاينة العرض",
     type: rule.type,
-    scope: rule.type === "BUNDLE_PRICE" ? "PRODUCTS" : "ALL",
+    scope: resolvedTargets ? (useCategoryScope ? "CATEGORIES" : "PRODUCTS") : "ALL",
     channel: "ALL",
     applicationMode: "AUTO",
     priority: 1,
@@ -517,7 +585,22 @@ export function simulateBasketPreview(
         discountAmount: t.discountAmount ? safeDecimal(t.discountAmount) : undefined,
         fixedPrice: t.fixedPrice ? safeDecimal(t.fixedPrice) : undefined,
       })),
-    ...(rule.type === "BUNDLE_PRICE" ? { targetProductIds: distinctTargetProducts } : {}),
+    ...(resolvedTargets
+      ? {
+          ...(resolvedTargets.targetProductIds.length > 0
+            ? { targetProductIds: resolvedTargets.targetProductIds }
+            : {}),
+          ...(resolvedTargets.targetVariantIds.length > 0
+            ? { targetVariantIds: resolvedTargets.targetVariantIds }
+            : {}),
+          ...(resolvedTargets.targetUnitIds.length > 0
+            ? { targetUnitIds: resolvedTargets.targetUnitIds }
+            : {}),
+          ...(resolvedTargets.targetCategoryIds.length > 0
+            ? { targetCategoryIds: resolvedTargets.targetCategoryIds }
+            : {}),
+        }
+      : {}),
   };
 
   const evaluated = evaluateCartPromotions(evalItems, [engineRule], {
@@ -538,9 +621,14 @@ export function simulateBasketPreview(
 
   let helperNote: string | null = null;
   if (discount.eq(0)) {
-    if (rule.type === "BUNDLE_PRICE" && bundleMode === "ALL_REQUIRED") {
+    if (rule.type === "BUNDLE_PRICE" && bundleMode === "ALL_REQUIRED" && resolvedTargets) {
       const presentProducts = new Set(evalItems.map((i) => i.productId));
-      const missingAny = distinctTargetProducts.some((pid) => !presentProducts.has(pid));
+      const presentVariants = new Set(evalItems.map((i) => i.variantId));
+      const presentUnits = new Set(evalItems.map((i) => i.productUnitId));
+      const missingAny =
+        resolvedTargets.targetProductIds.some((pid) => !presentProducts.has(pid)) ||
+        resolvedTargets.targetVariantIds.some((vid) => !presentVariants.has(vid)) ||
+        resolvedTargets.targetUnitIds.some((uid) => !presentUnits.has(uid));
       if (missingAny) {
         helperNote = "باقة (كل المواد مطلوبة): يجب توفر كمية 1 على الأقل من جميع أصناف الباقة لتفعيل السعر الموحد.";
       }

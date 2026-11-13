@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { formatIqd } from "@/lib/money";
 import {
   PROMO_TYPE_LABELS,
+  deriveSimulatorTargetCollections,
   safeDecimal,
   safePositiveDecimal,
   simulateBasketPreview as simulateBasketPreviewBase,
@@ -40,7 +41,14 @@ import { simulateMultiRuleBasketPreview } from "./offersMultiRuleHelpers";
  * Pure function: Simulates basket preview calculation matching offers_ui_contracts.test.ts
  */
 export function simulateBasketPreview(
-  items: Array<{ productId: number; unitPrice: Decimal | number | string; quantity: Decimal | number | string }>,
+  items: Array<{
+    productId: number;
+    variantId?: number;
+    productUnitId?: number;
+    isBaseUnit?: boolean;
+    unitPrice: Decimal | number | string;
+    quantity: Decimal | number | string;
+  }>,
   rule: SimulateBasketRule
 ): BasketPreviewOutput {
   return simulateBasketPreviewBase(items, rule);
@@ -145,6 +153,11 @@ export function OfferLivePreviewSimulator({
   // Compute live preview using contract function backed by promotionEngine
   const preview = useMemo(() => {
     const hasExplicitNonBaseUnit = mergedSelectedProducts.some((p) => !p.isBaseUnit);
+    const primaryTargets = deriveSimulatorTargetCollections(
+      formData.scope === "PRODUCTS" && selectedProducts.length > 0
+        ? selectedProducts
+        : initialItems
+    );
     const primaryRuleInput: SimulateBasketRule & { ruleName?: string } = {
       ruleName: `قاعدة 1: ${PROMO_TYPE_LABELS[formData.type]}`,
       type: formData.type,
@@ -176,10 +189,7 @@ export function OfferLivePreviewSimulator({
       tieredMode: formData.tieredMode,
       tiers: formData.tiers,
       applyToBaseUnitOnly: hasExplicitNonBaseUnit ? false : formData.applyToBaseUnitOnly,
-      targetProductIds:
-        formData.scope === "PRODUCTS" && selectedProducts.length > 0
-          ? selectedProducts.map((p) => p.productId)
-          : initialItems.map((i) => i.productId),
+      ...primaryTargets,
       minSpend: safePositiveDecimal(formData.minOrderSpend),
     };
 
@@ -190,6 +200,9 @@ export function OfferLivePreviewSimulator({
         const useOwn = formData.scopeSharingMode === "PER_RULE";
         const erItems = useOwn ? er.selectedProducts : selectedProducts;
         const erScope = useOwn ? er.scope : formData.scope;
+        const erTargets = deriveSimulatorTargetCollections(
+          erScope === "PRODUCTS" && erItems.length > 0 ? erItems : initialItems
+        );
         return {
           ruleName: er.ruleLabel.trim() || `قاعدة ${i + 2}: ${PROMO_TYPE_LABELS[er.type]}`,
           type: er.type,
@@ -213,10 +226,7 @@ export function OfferLivePreviewSimulator({
             : useOwn
             ? er.applyToBaseUnitOnly
             : formData.applyToBaseUnitOnly,
-          targetProductIds:
-            erScope === "PRODUCTS" && erItems.length > 0
-              ? erItems.map((p) => p.productId)
-              : initialItems.map((it) => it.productId),
+          ...erTargets,
         };
       }),
     ];

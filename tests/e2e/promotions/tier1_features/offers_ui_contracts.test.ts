@@ -23,6 +23,14 @@ import {
   validateRuleTypeFields,
 } from "@/components/offers/offersMultiRuleHelpers";
 import {
+  deriveSimulatorTargetCollections,
+  simulateBasketPreview as simulateOfferBasketPreview,
+} from "@/components/offers/offersTypes";
+import {
+  applyFreeShippingToOrderDelivery,
+  evaluateReceptionCartPromotionsPure,
+} from "@/components/reception/useReceptionCartPromotions";
+import {
   PRD_CHEAP_PEN,
   PRD_INK_EPSON,
   PRD_NOTEBOOK_FABER,
@@ -724,6 +732,141 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
           productUnitId: 60111,
         },
       ]);
+    });
+
+    it("T1-F19-09: simulator target collections preserve VARIANT and UNIT grain for ALL_REQUIRED bundles", () => {
+      const selectedVariants = [
+        {
+          targetGrain: "VARIANT" as const,
+          productId: 10,
+          variantId: 101,
+          productUnitId: 1001,
+          isBaseUnit: true,
+        },
+        {
+          targetGrain: "VARIANT" as const,
+          productId: 10,
+          variantId: 102,
+          productUnitId: 1002,
+          isBaseUnit: true,
+        },
+      ];
+      const derived = deriveSimulatorTargetCollections(selectedVariants);
+      expect(derived).toEqual({
+        targetProductIds: [],
+        targetVariantIds: [101, 102],
+        targetUnitIds: [],
+      });
+
+      const bundleRule = {
+        type: "BUNDLE_PRICE" as const,
+        bundleMode: "ALL_REQUIRED" as const,
+        bundlePrice: new Decimal(1500),
+        ...derived,
+      };
+
+      // Both variants present (qty 1 each, 1000 IQD each => 2000 gross, 1500 bundle => 500 discount)
+      const completeSingle = simulateOfferBasketPreview(
+        [
+          { productId: 10, variantId: 101, productUnitId: 1001, unitPrice: 1000, quantity: 1 },
+          { productId: 10, variantId: 102, productUnitId: 1002, unitPrice: 1000, quantity: 1 },
+        ],
+        bundleRule
+      );
+      expect(completeSingle.discount.toNumber()).toBe(500);
+      expect(completeSingle.netTotal.toNumber()).toBe(1500);
+
+      // Only one variant present with qty 2 => missing variant 102 => 0 discount + helperNote
+      const incompleteSingle = simulateOfferBasketPreview(
+        [{ productId: 10, variantId: 101, productUnitId: 1001, unitPrice: 1000, quantity: 2 }],
+        bundleRule
+      );
+      expect(incompleteSingle.discount.toNumber()).toBe(0);
+      expect(incompleteSingle.helperNote).toContain("كل المواد مطلوبة");
+
+      // Multi-rule simulator matches exact variant-grain behavior
+      const incompleteMulti = simulateMultiRuleBasketPreview(
+        [{ productId: 10, variantId: 101, productUnitId: 1001, unitPrice: 1000, quantity: 2 }],
+        [{ ...bundleRule, ruleName: "باقة لونين" }]
+      );
+      expect(incompleteMulti.discount.toNumber()).toBe(0);
+
+      // Multi-unit on same variant disambiguates lineKeys and UNIT grain
+      const unitDerived = deriveSimulatorTargetCollections([
+        { targetGrain: "UNIT", productId: 20, variantId: 201, productUnitId: 2001, isBaseUnit: true },
+        { targetGrain: "UNIT", productId: 20, variantId: 201, productUnitId: 2002, isBaseUnit: false },
+      ]);
+      expect(unitDerived.targetUnitIds).toEqual([2001, 2002]);
+      const completeUnitMulti = simulateMultiRuleBasketPreview(
+        [
+          { productId: 20, variantId: 201, productUnitId: 2001, isBaseUnit: true, unitPrice: 1000, quantity: 1 },
+          { productId: 20, variantId: 201, productUnitId: 2002, isBaseUnit: false, unitPrice: 5000, quantity: 1 },
+        ],
+        [{ type: "BUNDLE_PRICE", bundleMode: "ALL_REQUIRED", bundlePrice: new Decimal(5200), ...unitDerived, ruleName: "باقة قطعة + دزينة" }]
+      );
+      expect(completeUnitMulti.discount.toNumber()).toBe(800);
+    });
+
+    it("T1-F19-10: Reception pure promotion evaluator surfaces FREE_SHIPPING and promotes COURIER delivery to SHOP while preserving COUNTER", () => {
+      const evaluated = evaluateReceptionCartPromotionsPure({
+        rawCart: [
+          {
+            key: "line-1",
+            qty: 2,
+            row: {
+              productId: 1,
+              variantId: 1,
+              productUnitId: 1,
+              price: "15000",
+              isBaseUnit: true,
+              isContractPrice: false,
+              isPrintService: false,
+              isService: false,
+            } as never,
+          },
+        ],
+        rules: [
+          {
+            id: 77,
+            name: "توصيل مجاني لطلبات 25 ألف+",
+            type: "FREE_SHIPPING",
+            scope: "ALL",
+            channel: "ALL",
+            applicationMode: "AUTO",
+            priority: 10,
+            minOrderSpend: new Decimal(25000),
+            effectiveFrom: "2026-01-01",
+            isActive: true,
+          },
+        ],
+        branchId: 1,
+        effectiveTier: "RETAIL",
+        todayYmd: "2026-06-15",
+      });
+
+      expect(evaluated.autoFreeShippingName).toBe("توصيل مجاني لطلبات 25 ألف+");
+
+      const baseDelivery = {
+        partyId: 1,
+        partyName: "مندوب بغداد",
+        fee: "5000",
+        feeCollection: "COURIER" as const,
+        recipientPhone: "07701234567",
+        recipientName: "أحمد",
+        address: "الكرادة",
+        externalTrackingRef: null,
+      };
+      expect(
+        applyFreeShippingToOrderDelivery(baseDelivery, evaluated.autoFreeShippingName)?.feeCollection
+      ).toBe("SHOP");
+
+      // Held COUNTER fee is preserved untouched
+      expect(
+        applyFreeShippingToOrderDelivery(
+          { ...baseDelivery, feeCollection: "COUNTER" },
+          evaluated.autoFreeShippingName
+        )?.feeCollection
+      ).toBe("COUNTER");
     });
   });
 });

@@ -964,22 +964,23 @@ export async function createSaleInTx(
 
   // promotions v2: تقييم العروض والكوبونات سلطوياً على مستوى السلة كاملة بلا N+1.
   void resolvePromotionForLine;
+  const shippingRef = input.delivery ?? input.externalDeliveryContext ?? null;
   let resolvedDeliveryFee: string | null = null;
-  if (input.delivery) {
-    resolvedDeliveryFee = input.delivery.fee ?? null;
+  if (shippingRef) {
+    resolvedDeliveryFee = shippingRef.fee ?? null;
     if (resolvedDeliveryFee == null) {
       const dp = (
         await tx
           .select({ defaultFee: deliveryParties.defaultFee })
           .from(deliveryParties)
-          .where(eq(deliveryParties.id, input.delivery.partyId))
+          .where(eq(deliveryParties.id, shippingRef.partyId))
           .limit(1)
       )[0];
       resolvedDeliveryFee = dp?.defaultFee ?? "0";
     }
   }
   const hasShippingContext =
-    Boolean(input.delivery) ||
+    Boolean(shippingRef) ||
     money(input.deliveryFee ?? "0").gt(0) ||
     input.deliveryFree === true;
   const linesNeedingPromo = input.lines.filter((l) => l.promotionId != null);
@@ -1557,6 +1558,22 @@ export async function createSaleInTx(
           : money(0);
       }
     }
+    if (
+      input.offlineCapture != null &&
+      l.discountAmount != null &&
+      l.discountAmount !== ""
+    ) {
+      const capturedTotalDiscount = clampMoney(
+        round2(money(l.discountAmount)),
+        round2(lineGross),
+      );
+      const unattributedCapturedDiscount = round2(
+        capturedTotalDiscount.minus(recordedPromoDiscount),
+      );
+      if (unattributedCapturedDiscount.gt(cashierManualDiscount)) {
+        cashierManualDiscount = unattributedCapturedDiscount;
+      }
+    }
 
     // M4: 3. إجمالي خصم السطر وصافي السطر
     const totalLineDiscount = clampMoney(
@@ -1606,18 +1623,24 @@ export async function createSaleInTx(
     });
   }
 
-  const feeHeldPrecheckD = round2(money(input.deliveryFeeHeld ?? "0"));
+  const feeHeldPrecheckD = round2(
+    money(input.deliveryFeeHeld ?? input.externalDeliveryContext?.deliveryFeeHeld ?? "0"),
+  );
   const rawInputDeliveryFeeD = round2(money(input.deliveryFee ?? "0"));
-  const resolvedCourierFeeD = input.delivery
+  const resolvedCourierFeeD = shippingRef
     ? round2(money(resolvedDeliveryFee ?? "0"))
     : money(0);
   let effectiveDeliveryFeeStr = input.deliveryFee;
   let effectiveDeliveryFreeInput = input.deliveryFree === true;
   let effectiveDeliveryWaivedStr = input.deliveryWaivedAmount ?? "0";
-  let effectiveCourierFeeCollection = input.delivery?.feeCollection ?? "COURIER";
+  let effectiveCourierFeeCollection = shippingRef?.feeCollection ?? "COURIER";
 
   if (authoritativeFreeShippingPromo) {
-    if (input.delivery && feeHeldPrecheckD.lte(0)) {
+    if (
+      shippingRef &&
+      feeHeldPrecheckD.lte(0) &&
+      shippingRef.feeCollection !== "COUNTER"
+    ) {
       effectiveCourierFeeCollection = "SHOP";
       if (resolvedCourierFeeD.gt(0) && rawInputDeliveryFeeD.lte(0)) {
         effectiveDeliveryFreeInput = true;
@@ -1625,7 +1648,7 @@ export async function createSaleInTx(
           effectiveDeliveryWaivedStr = resolvedCourierFeeD.toFixed(2);
         }
       }
-    } else if (!input.delivery && input.deliveryFree !== true && rawInputDeliveryFeeD.gt(0)) {
+    } else if (!shippingRef && input.deliveryFree !== true && rawInputDeliveryFeeD.gt(0)) {
       effectiveDeliveryFeeStr = "0";
       effectiveDeliveryFreeInput = true;
       effectiveDeliveryWaivedStr = rawInputDeliveryFeeD.toFixed(2);
@@ -1649,7 +1672,12 @@ export async function createSaleInTx(
     money(0),
   );
 
-  if (lockedCoupon && totalCouponDiscount.lte(0) && couponShippingWaivedD.lte(0)) {
+  const couponAppliedFreeShipping =
+    authoritativeFreeShippingPromo?.source === "COUPON" &&
+    (couponShippingWaivedD.gt(0) ||
+      (shippingRef != null && effectiveCourierFeeCollection === "SHOP"));
+
+  if (lockedCoupon && totalCouponDiscount.lte(0) && !couponAppliedFreeShipping) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة" });
   }
 
@@ -2968,6 +2996,7 @@ export async function createSaleInTx(
     ...(negativeDips.length ? { negativeDips } : {}),
     ...(createdLineItems.length ? { createdLineItems } : {}),
     ...(dispatched ?? {}),
+    ...(shippingRef ? { effectiveDeliveryFeeCollection: effectiveCourierFeeCollection } : {}),
     bounceBackCoupon,
     ...(totalMerchandisePromoD.gt(0) ||
     (isFreeDelivery && authoritativeFreeShippingPromo != null)

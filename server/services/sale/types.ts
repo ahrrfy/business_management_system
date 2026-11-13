@@ -225,6 +225,17 @@ export interface CreateSaleInput {
    */
   delivery?: SaleDeliveryInput | null;
   /**
+   * سياق توصيل خارجي للمعاملات المركّبة (مثل `checkoutReceptionInTx`):
+   * يُفعّل تقييم عروض/كوبونات التوصيل المجاني وختم `deliveryFree`/`deliveryWaivedAmount`
+   * وإرجاع `effectiveDeliveryFeeCollection` دون استدعاء `dispatchInvoiceInTx` مرّتين داخل `createSaleInTx`.
+   */
+  externalDeliveryContext?: {
+    partyId: number;
+    fee?: string | null;
+    feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+    deliveryFeeHeld?: string | null;
+  } | null;
+  /**
    * أجرةُ التوصيل المقبوضة **الآن** أمانةً للمندوب (`feeCollection='COUNTER'`) — نقداً في الدرج
    * حتماً: إيصال IN بمرجع `DLV-FEE-INV-{invoiceId}` + قيد `DELIVERY_FEE_HELD` على الفاتورة
    * (`delivery/feeHeld.ts`، مرآة الاستقبال). يجب أن تساوي `delivery.fee` بالضبط.
@@ -296,6 +307,8 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** طريقة تحصيل أجرة التوصيل الفعّالة بعد تقييم عروض/كوبونات التوصيل المجاني خادمياً. */
+  effectiveDeliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
   /** معرّف أول إيصال قبض أُنشئ في هذه المعاملة (للتوافق مع المستهلكين الأحاديين). */
   createdReceiptId?: number | null;
   /** معرّفات جميع إيصالات القبض المُنشأة في هذه المعاملة بترتيب أرجل الدفع. */

@@ -907,6 +907,8 @@ export function reconcileReceptionCartRows(
 export type ReceptionCouponPreview = {
   code: string;
   programName: string;
+  freeShipping?: boolean;
+  freeShippingPromotionName?: string | null;
   lines: Array<{
     productUnitId: number;
     promotionId: number | null;
@@ -917,7 +919,7 @@ export type ReceptionCouponPreview = {
 };
 
 export type ReceptionLocalRestorePreparation =
-  | { ok: true; cart: CartLine[]; customer: ReceptionWorkspaceCustomer; tier: Tier; couponCode: string | null; couponLabel: string | null }
+  | { ok: true; cart: CartLine[]; customer: ReceptionWorkspaceCustomer; tier: Tier; couponCode: string | null; couponLabel: string | null; couponFreeShippingPromo?: string | null }
   | { ok: false; reason: "STALE" | "PRICING_CONTEXT" | "MISSING_CATALOG" | "NO_COUPON_LINES"; missingUnitIds?: number[] };
 
 export function applyReceptionCouponPreview(
@@ -1015,6 +1017,9 @@ export async function prepareReceptionLocalWorkspaceRestore(
     tier: pricingContext.tier,
     couponCode: coupon.code,
     couponLabel: coupon.programName,
+    couponFreeShippingPromo: coupon.freeShipping
+      ? (coupon.freeShippingPromotionName ?? coupon.programName)
+      : null,
   };
 }
 

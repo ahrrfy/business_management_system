@@ -13,12 +13,17 @@ import { createPromotion, deactivatePromotion, duplicatePromotion, getPromotionW
 import { hashCouponCode } from "../couponService";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
+import { checkoutReception } from "../receptionCheckoutService";
+import { replayOfflineReception } from "../offline/replayReception";
 import { withTx } from "../tx";
 import { crmRouter } from "../../routers/crmRouter";
 
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries",
+  "deliveryRemittanceLines", "deliveryRemittances", "deliveryConsignments",
+  "deliveryPartyMembers", "deliveryParties",
   "couponRedemptions", "couponReservations", "coupons", "couponPrograms",
   "returnRequests", "accountingEntries", "receipts", "inventoryMovements",
   "invoiceItemBundleComponents", "invoiceItems", "invoices", "idempotencyKeys",
@@ -1633,6 +1638,247 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
         cashierActor,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("R6-1: checkoutReception يطبّق التوصيل المجاني خادمياً ويُروّج إرسالية المندوب إلى SHOP مع ختم deliveryWaivedAmount", async () => {
+    await db().insert(s.deliveryParties).values({
+      id: 1,
+      name: "مندوب بغداد",
+      partyType: "INDIVIDUAL",
+      branchId: 1,
+      currentBalance: "0.00",
+      isActive: true,
+      defaultFee: "5000.00",
+    });
+    await db().insert(s.products).values({ id: 93, name: "طابعة ليزر", categoryId: 1 });
+    await db().insert(s.productVariants).values({ id: 93, productId: 93, sku: "PRN-93", costPrice: "20000.00" });
+    await db().insert(s.productUnits).values({ id: 93, variantId: 93, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 93, priceTier: "RETAIL", price: "30000.00" });
+    await setStock(93, 1, 10);
+
+    await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "توصيل مجاني لطلبات 20 ألف+",
+          type: "FREE_SHIPPING",
+          minOrderSpend: "20000.00",
+          scope: "ALL",
+          channel: "ALL",
+          effectiveFrom: "2026-01-01",
+        },
+        1,
+      ),
+    );
+
+    const recShiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 1,
+      shiftType: "RECEPTION",
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const recShiftId = insertId(recShiftRes);
+
+    const res = await checkoutReception(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        paymentMethod: "CASH",
+        paidAmount: "30000.00",
+        clientRequestId: "r6-free-shipping-rec-1",
+        regularSale: {
+          amount: "30000.00",
+          lines: [{ variantId: 93, productUnitId: 93, quantity: "1" }],
+        },
+        delivery: {
+          partyId: 1,
+          fee: "5000.00",
+          feeCollection: "COURIER",
+          recipientName: "زبون الكرادة",
+          recipientPhone: "07701234567",
+          address: "بغداد - الكرادة",
+        },
+      },
+      actor,
+    );
+
+    expect(res.regularSale?.effectiveDeliveryFeeCollection).toBe("SHOP");
+    expect(res.regularSale?.promotionSummary?.freeShippingPromo).toMatchObject({
+      promotionName: "توصيل مجاني لطلبات 20 ألف+",
+      waivedAmount: "5000.00",
+    });
+
+    const [inv] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, res.regularSale!.invoiceId));
+    expect(inv.deliveryFree).toBe(true);
+    expect(inv.deliveryWaivedAmount).toBe("5000.00");
+
+    const [consignment] = await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.invoiceId, res.regularSale!.invoiceId));
+    expect(consignment.feeCollection).toBe("SHOP");
+  });
+
+  it("R6-2: replayOfflineReception يحفظ إجمالي الفاتورة الملتقط أوفلاين عند إلغاء العرض قبل المزامنة دون فشل التطابق", async () => {
+    await db().insert(s.products).values({ id: 94, name: "موسوعة علمية", categoryId: 1 });
+    await db().insert(s.productVariants).values({ id: 94, productId: 94, sku: "ENC-94", costPrice: "4000.00" });
+    await db().insert(s.productUnits).values({ id: 94, variantId: 94, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 94, priceTier: "RETAIL", price: "10000.00" });
+    await setStock(94, 1, 10);
+
+    const promoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "خصم 10% مؤقت",
+          type: "PERCENT",
+          discountPercent: "10",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 94 }],
+        },
+        1,
+      ),
+    );
+
+    // الكاشير يلتقط الطلب أوفلاين (خصم عرض 1000 + خصم كاشير 900 = 1900، الصافي المقبوض = 8100)، ثم يُلغى العرض قبل المزامنة
+    await withTx((tx) => deactivatePromotion(tx, promoId));
+
+    const recShiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 1,
+      shiftType: "RECEPTION",
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const recShiftId = insertId(recShiftRes);
+
+    const replayed = await replayOfflineReception(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        paymentMethod: "CASH",
+        paidAmount: "8100.00",
+        clientRequestId: "r6-offline-rec-deactivated-1",
+        capturedAt: new Date(Date.now() - 60_000).toISOString(),
+        offlineReceiptNumber: "OFF-REC-9401",
+        deviceId: "REC-DEV-1",
+        regularSale: {
+          amount: "8100.00",
+          lines: [
+            {
+              variantId: 94,
+              productUnitId: 94,
+              quantity: "1",
+              unitPriceOverride: "10000.00",
+              discountAmount: "1900.00",
+              promotionDiscount: "1000.00",
+              cashierDiscountAmount: "900.00",
+              promotionId: promoId,
+            },
+          ],
+        },
+      },
+      actor,
+    );
+
+    expect(replayed.invoiceId).toBeGreaterThan(0);
+    const [inv] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, replayed.invoiceId));
+    expect(inv.total).toBe("8100.00");
+    expect(inv.paidAmount).toBe("8100.00");
+    expect(inv.originatedOffline).toBe(true);
+
+    const [item] = await db()
+      .select()
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, replayed.invoiceId));
+    expect(item.promotionId).toBeNull();
+    expect(item.promotionDiscount).toBe("0.00");
+    expect(item.discountAmount).toBe("1900.00");
+    expect(item.total).toBe("8100.00");
+  });
+
+  it("R6-4: loadPromotionPerformance يطرح حصة خصم رأس الفاتورة (invoiceDiscount) تناسبياً من صافي مبيعات العرض وربحه", async () => {
+    await db().insert(s.products).values([
+      { id: 95, name: "حاسبة علمية", categoryId: 1 },
+      { id: 96, name: "دفتر هندسي", categoryId: 1 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 95, productId: 95, sku: "CALC-95", costPrice: "8000.00" },
+      { id: 96, productId: 96, sku: "ENG-96", costPrice: "6000.00" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 95, variantId: 95, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 96, variantId: 96, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    ]);
+    await db().insert(s.productPrices).values([
+      { productUnitId: 95, priceTier: "RETAIL", price: "12000.00" },
+      { productUnitId: 96, priceTier: "RETAIL", price: "10000.00" },
+    ]);
+    await setStock(95, 1, 10);
+    await setStock(96, 1, 10);
+
+    const promoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "خصم 2000 د.ع على الحاسبة",
+          type: "AMOUNT",
+          discountAmount: "2000.00",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 95 }],
+        },
+        1,
+      ),
+    );
+
+    const shiftId = await openShift();
+    // السطر الترويجي بعد العرض = 10,000 + سطر عادي = 10,000 (المجموع 20,000) ثم خصم رأس 2,000 => صافي الفاتورة 18,000
+    // حصة السطر الترويجي من الإيراد المحقّق = 9,000، وكلفته = 8,000 => مجمل ربح العرض = 1,000
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        priceTier: "RETAIL",
+        invoiceDiscount: "2000.00",
+        lines: [
+          {
+            variantId: 95,
+            productUnitId: 95,
+            quantity: "1",
+            discountAmount: "2000.00",
+            promotionDiscount: "2000.00",
+            promotionId: promoId,
+          },
+          {
+            variantId: 96,
+            productUnitId: 96,
+            quantity: "1",
+          },
+        ],
+        payment: { amount: "18000.00", method: "CASH" },
+      } as any,
+      actor,
+    );
+    expect(sale.total).toBe("18000.00");
+
+    const perf = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    const promoRow = perf.rows.find((r) => r.promotionId === promoId);
+    expect(promoRow).toBeDefined();
+    expect(promoRow!.invoiceCount).toBe(1);
+    expect(promoRow!.discount).toBe("2000.00");
+    expect(promoRow!.netSales).toBe("9000.00");
+    expect(promoRow!.cost).toBe("8000.00");
+    expect(promoRow!.grossProfit).toBe("1000.00");
   });
 });
 

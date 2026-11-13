@@ -2610,53 +2610,53 @@ export async function loadPromotionPerformance(
   tx: Tx,
   branchId: number | null,
 ): Promise<{ rows: PromotionPerformanceRow[]; summary: Omit<PromotionPerformanceRow, "promotionId"> }> {
-  const remainingSaleRatio = sql`CASE
-    WHEN ${invoiceItems.baseQuantity} <= 0 THEN 0
-    ELSE GREATEST(${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity}, 0) / ${invoiceItems.baseQuantity}
-  END`;
-  const { componentRightsNetCostSql, componentRightsNetRevenueSql } =
+  const { componentRightsNetCostSql, invoiceLineReportProjectionSql } =
     await import("./fulfillment/componentRightsReportSql");
-  const netSalesExpr = componentRightsNetRevenueSql({
-    itemId: sql`${invoiceItems.id}`,
-    baseQuantity: sql`${invoiceItems.baseQuantity}`,
-    returnedQuantity: sql`${invoiceItems.returnedBaseQuantity}`,
-    invoiceSubtotal: sql`${invoices.subtotal}`,
-    invoiceDiscount: sql`${invoices.discountAmount}`,
-    invoiceTax: sql`${invoices.taxAmount}`,
-    ordinary: sql`${invoiceItems.total} * (${remainingSaleRatio})`,
-  });
-  const discountExpr = sql`${invoiceItems.promotionDiscount} * (${remainingSaleRatio})`;
+  const branchFilter =
+    branchId == null ? sql`` : sql`AND i.branchId = ${branchId}`;
+  const invoiceScope = sql`i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED') ${branchFilter} AND EXISTS (SELECT 1 FROM invoiceItems pii WHERE pii.invoiceId = i.id AND pii.promotionId IS NOT NULL)`;
+  const projection = invoiceLineReportProjectionSql(invoiceScope);
+
+  const remainingSaleRatio = sql`CASE
+    WHEN ii.baseQuantity <= 0 THEN 0
+    ELSE GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0) / ii.baseQuantity
+  END`;
+  const discountExpr = sql`ii.promotionDiscount * (${remainingSaleRatio})`;
   const costExpr = componentRightsNetCostSql({
-    itemId: sql`${invoiceItems.id}`,
-    originalCost: sql`${invoiceItems.lineCost}`,
+    itemId: sql`ii.id`,
+    originalCost: sql`ii.lineCost`,
     ordinary: sql`CASE
-    WHEN ${invoiceItems.baseQuantity} <= 0 THEN ${invoiceItems.lineCost}
-    WHEN ${invoiceItems.returnedRestockedBaseQuantity} >= ${invoiceItems.baseQuantity} THEN 0
-    ELSE ${invoiceItems.lineCost} - ROUND(
-      ${invoiceItems.lineCost} * ${invoiceItems.returnedRestockedBaseQuantity} / ${invoiceItems.baseQuantity},
-      2
-    )
-  END`,
+      WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+      WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
+      ELSE ii.lineCost - ROUND(
+        ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
+        2
+      )
+    END`,
   });
 
-  const raw = await tx
-    .select({
-      promotionId: invoiceItems.promotionId,
-      invoiceCount: sql<number>`COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ${invoiceItems.invoiceId} END)`,
-      netSales: sql<string>`COALESCE(SUM(${netSalesExpr}), 0)`,
-      discount: sql<string>`COALESCE(SUM(${discountExpr}), 0)`,
-      cost: sql<string>`COALESCE(SUM(${costExpr}), 0)`,
-    })
-    .from(invoiceItems)
-    .innerJoin(invoices, eq(invoices.id, invoiceItems.invoiceId))
-    .where(
-      and(
-        isNotNull(invoiceItems.promotionId),
-        branchId == null ? undefined : eq(invoices.branchId, branchId),
-        notInArray(invoices.status, ["CANCELLED", "SUPERSEDED"]),
-      ),
-    )
-    .groupBy(invoiceItems.promotionId);
+  const queryRes = await tx.execute(sql`
+    SELECT
+      ii.promotionId AS promotionId,
+      COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ii.invoiceId END) AS invoiceCount,
+      CAST(COALESCE(SUM(rp.revenue), 0) AS CHAR) AS netSales,
+      CAST(COALESCE(SUM(${discountExpr}), 0) AS CHAR) AS discount,
+      CAST(COALESCE(SUM(${costExpr}), 0) AS CHAR) AS cost
+    FROM invoiceItems ii
+    INNER JOIN invoices i ON i.id = ii.invoiceId
+    INNER JOIN (${projection}) rp ON rp.id = ii.id
+    WHERE ii.promotionId IS NOT NULL
+      AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
+      ${branchFilter}
+    GROUP BY ii.promotionId
+  `);
+  const raw = ((queryRes as unknown as [any[]])[0] ?? queryRes) as Array<{
+    promotionId: number | string;
+    invoiceCount: number | string;
+    netSales: string;
+    discount: string;
+    cost: string;
+  }>;
 
   const rows = raw.map((row) => {
     const netSales = money(row.netSales);

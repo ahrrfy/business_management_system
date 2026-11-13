@@ -12,6 +12,7 @@ import { D, formatIqd } from "@/lib/money";
 import {
   PROMO_TYPE_LABELS,
   calculateLiveMargin,
+  deriveSimulatorTargetCollections,
   safeDecimal,
   type BasketPreviewOutput,
   type BundleMode,
@@ -352,22 +353,35 @@ export function simulateMultiRuleBasketPreview(
     };
   }
 
+  const variantOccurrences = new Map<number, number>();
+  for (const item of items) {
+    const vk = item.variantId ?? item.productId;
+    variantOccurrences.set(vk, (variantOccurrences.get(vk) ?? 0) + 1);
+  }
+
   const evalItems = items
-    .map((item, idx) => ({
-      lineKey: String(item.variantId ?? item.productId ?? idx),
-      productId: item.productId,
-      variantId: item.variantId ?? item.productId,
-      productUnitId: item.productUnitId ?? item.productId,
-      categoryId: null,
-      unitPrice: safeDecimal(item.unitPrice),
-      quantity: safeDecimal(item.quantity),
-      isBaseUnit: item.isBaseUnit ?? true,
-      hasContractPrice: false,
-      isBundle: false,
-      isGift: false,
-      isDigitalCard: false,
-      isService: false,
-    }))
+    .map((item, idx) => {
+      const vk = item.variantId ?? item.productId;
+      const lineKey =
+        (variantOccurrences.get(vk) ?? 0) > 1
+          ? String(item.productUnitId ?? `${vk}:${idx}`)
+          : String(vk ?? idx);
+      return {
+        lineKey,
+        productId: item.productId,
+        variantId: item.variantId ?? item.productId,
+        productUnitId: item.productUnitId ?? item.productId,
+        categoryId: null,
+        unitPrice: safeDecimal(item.unitPrice),
+        quantity: safeDecimal(item.quantity),
+        isBaseUnit: item.isBaseUnit ?? true,
+        hasContractPrice: false,
+        isBundle: false,
+        isGift: false,
+        isDigitalCard: false,
+        isService: false,
+      };
+    })
     .filter((i) => i.quantity.gt(0));
 
   if (evalItems.length === 0) {
@@ -384,17 +398,33 @@ export function simulateMultiRuleBasketPreview(
 
   const engineRules: PromotionRule[] = rules.map((rule, idx) => {
     const bundleMode: BundleMode = rule.bundleMode ?? "ALL_REQUIRED";
-    const distinctTargets =
-      rule.targetProductIds && rule.targetProductIds.length > 0
-        ? Array.from(new Set(rule.targetProductIds))
-        : Array.from(new Set(items.map((i) => i.productId)));
-    const hasScopedTargets = rule.targetProductIds && rule.targetProductIds.length > 0;
+    const hasExplicitTargets =
+      (rule.targetProductIds?.length ?? 0) > 0 ||
+      (rule.targetVariantIds?.length ?? 0) > 0 ||
+      (rule.targetUnitIds?.length ?? 0) > 0 ||
+      (rule.targetCategoryIds?.length ?? 0) > 0;
+    const resolvedTargets = hasExplicitTargets
+      ? {
+          targetProductIds: Array.from(new Set(rule.targetProductIds ?? [])),
+          targetVariantIds: Array.from(new Set(rule.targetVariantIds ?? [])),
+          targetUnitIds: Array.from(new Set(rule.targetUnitIds ?? [])),
+          targetCategoryIds: Array.from(new Set(rule.targetCategoryIds ?? [])),
+        }
+      : rule.type === "BUNDLE_PRICE"
+        ? { ...deriveSimulatorTargetCollections(items), targetCategoryIds: [] as number[] }
+        : null;
+    const useCategoryScope =
+      resolvedTargets != null &&
+      resolvedTargets.targetCategoryIds.length > 0 &&
+      resolvedTargets.targetProductIds.length === 0 &&
+      resolvedTargets.targetVariantIds.length === 0 &&
+      resolvedTargets.targetUnitIds.length === 0;
     return {
       id: idx + 1,
       name: rule.ruleName || `القاعدة ${idx + 1}: ${PROMO_TYPE_LABELS[rule.type]}`,
       type: rule.type,
       freeShipping: Boolean(offerFreeShippingFlag) || rule.type === "FREE_SHIPPING",
-      scope: rule.type === "BUNDLE_PRICE" || hasScopedTargets ? "PRODUCTS" : "ALL",
+      scope: resolvedTargets ? (useCategoryScope ? "CATEGORIES" : "PRODUCTS") : "ALL",
       channel: "ALL",
       applicationMode: "AUTO",
       priority: 10,
@@ -426,8 +456,21 @@ export function simulateMultiRuleBasketPreview(
           discountAmount: t.discountAmount ? safeDecimal(t.discountAmount) : undefined,
           fixedPrice: t.fixedPrice ? safeDecimal(t.fixedPrice) : undefined,
         })),
-      ...(rule.type === "BUNDLE_PRICE" || hasScopedTargets
-        ? { targetProductIds: distinctTargets }
+      ...(resolvedTargets
+        ? {
+            ...(resolvedTargets.targetProductIds.length > 0
+              ? { targetProductIds: resolvedTargets.targetProductIds }
+              : {}),
+            ...(resolvedTargets.targetVariantIds.length > 0
+              ? { targetVariantIds: resolvedTargets.targetVariantIds }
+              : {}),
+            ...(resolvedTargets.targetUnitIds.length > 0
+              ? { targetUnitIds: resolvedTargets.targetUnitIds }
+              : {}),
+            ...(resolvedTargets.targetCategoryIds.length > 0
+              ? { targetCategoryIds: resolvedTargets.targetCategoryIds }
+              : {}),
+          }
         : {}),
     };
   });
