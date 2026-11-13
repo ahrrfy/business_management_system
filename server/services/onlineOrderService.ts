@@ -1264,6 +1264,7 @@ export async function priceOnlineOrderLines(
   const candidates: Array<
     PricedOnlineOrderLine & {
       isBaseUnit: boolean;
+      isService: boolean;
       baseRetailUnitPrice: string;
       automaticLineDiscount: string;
       automaticPromotionName: string | null;
@@ -1347,6 +1348,7 @@ export async function priceOnlineOrderLines(
       variantId,
       productName: row.productName,
       isBundle: row.isBundle === true,
+      isService: row.isService === true,
       isBaseUnit: row.isBaseUnit !== false,
       productUnitId: Number(row.productUnitId),
       quantity,
@@ -1419,6 +1421,7 @@ export async function priceOnlineOrderLines(
     quantity: String(item.quantity),
     isBaseUnit: item.isBaseUnit,
     isBundle: item.isBundle,
+    isService: item.isService,
     hasContractPrice: false,
   }));
 
@@ -1535,6 +1538,7 @@ export async function priceOnlineOrderLines(
   let couponShippingWaiver = money(0);
   if (
     options.coupon?.freeShipping &&
+    couponEval?.freeShippingPromotion != null &&
     minSpendSatisfied &&
     options.deliveryContext
   ) {

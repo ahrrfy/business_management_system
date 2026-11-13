@@ -312,18 +312,32 @@ export function calculateLiveMargin(
   retailPrice: Decimal,
   costPrice: Decimal,
   promoType: "PERCENT" | "AMOUNT" | "FIXED_PRICE",
-  promoValue: Decimal
+  promoValue: Decimal,
+  maxDiscountCap?: Decimal | null
 ): LiveMarginResult {
+  const cap =
+    maxDiscountCap != null && maxDiscountCap.isFinite() && maxDiscountCap.gt(0)
+      ? maxDiscountCap
+      : null;
   let promoPrice = retailPrice;
 
   if (promoType === "PERCENT") {
-    const disc = retailPrice.mul(promoValue).div(100);
-    promoPrice = retailPrice.minus(disc);
+    let disc = retailPrice.mul(promoValue).div(100);
+    if (cap && disc.gt(cap)) disc = cap;
+    promoPrice = Decimal.max(0, retailPrice.minus(disc));
   } else if (promoType === "AMOUNT") {
-    promoPrice = Decimal.max(0, retailPrice.minus(promoValue));
+    let disc = promoValue;
+    if (cap && disc.gt(cap)) disc = cap;
+    promoPrice = Decimal.max(0, retailPrice.minus(disc));
   } else if (promoType === "FIXED_PRICE") {
     // Ceiling: never increases
-    promoPrice = Decimal.min(retailPrice, promoValue);
+    if (cap) {
+      let disc = retailPrice.gt(promoValue) ? retailPrice.minus(promoValue) : new Decimal(0);
+      if (disc.gt(cap)) disc = cap;
+      promoPrice = Decimal.max(0, retailPrice.minus(disc));
+    } else {
+      promoPrice = Decimal.min(retailPrice, promoValue);
+    }
   }
 
   const profit = promoPrice.minus(costPrice);

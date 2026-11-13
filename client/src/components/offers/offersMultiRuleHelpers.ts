@@ -172,6 +172,7 @@ export function validateRuleScopeAndMargin(
       const unitCostDec = safeDecimal(item.costPrice).mul(convDec);
       if (retailDec.lte(0) || unitCostDec.lte(0)) continue;
 
+      const maxCapDec = posDec(ruleVal.maxDiscountAmount);
       if (ruleVal.type === "PERCENT" || ruleVal.type === "AMOUNT" || ruleVal.type === "FIXED_PRICE") {
         const rawVal =
           ruleVal.type === "PERCENT"
@@ -179,7 +180,7 @@ export function validateRuleScopeAndMargin(
             : ruleVal.type === "AMOUNT"
             ? safeDecimal(ruleVal.discountAmount)
             : safeDecimal(ruleVal.fixedPrice);
-        const res = calculateLiveMargin(retailDec, unitCostDec, ruleVal.type, rawVal);
+        const res = calculateLiveMargin(retailDec, unitCostDec, ruleVal.type, rawVal, maxCapDec);
         if (res.promoPrice.lt(retailDec) && res.isBelowCost) {
           return `${prefix}المادة «${item.productName}» (${activeUnit?.unitName ?? item.unitName}) ينزل سعرها بالعرض أقل من كلفتها. عدّل قيمة الخصم أو فعّل خيار «السماح بالبيع جوا الكلفة (تحت التكلفة)».`;
         }
@@ -191,7 +192,7 @@ export function validateRuleScopeAndMargin(
               : tr.tierType === "AMOUNT"
               ? safeDecimal(tr.discountAmount)
               : safeDecimal(tr.fixedPrice);
-          const res = calculateLiveMargin(retailDec, unitCostDec, tr.tierType, tierVal);
+          const res = calculateLiveMargin(retailDec, unitCostDec, tr.tierType, tierVal, maxCapDec);
           if (res.promoPrice.lt(retailDec) && res.isBelowCost) {
             return `${prefix}إحدى كميات الجملة للمادة «${item.productName}» تنزل بسعر البيع أقل من الكلفة. عدّل السعر أو فعّل خيار «السماح بالبيع جوا الكلفة (تحت التكلفة)».`;
           }

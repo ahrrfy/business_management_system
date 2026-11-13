@@ -224,6 +224,7 @@ export const crmRouter = router({
                 isBaseUnit: productUnits.isBaseUnit,
                 categoryId: products.categoryId,
                 isBundle: products.isBundle,
+                isService: products.isService,
               })
               .from(productUnits)
               .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -237,6 +238,7 @@ export const crmRouter = router({
               isBaseUnit: Boolean(m.isBaseUnit),
               categoryId: m.categoryId == null ? null : Number(m.categoryId),
               isBundle: Boolean(m.isBundle),
+              isService: Boolean(m.isService),
             },
           ]),
         );
@@ -265,7 +267,7 @@ export const crmRouter = router({
             hasContractPrice: Boolean(line.hasContractPrice),
             isBundle: meta?.isBundle ?? false,
             isGift: false,
-            isService: false,
+            isService: meta?.isService ?? false,
           };
         });
         const evaluated = evaluateCartPromotions(evalItems, rules, {
@@ -316,8 +318,7 @@ export const crmRouter = router({
             promotionLineDiscount: toDbMoney(round2(entry.lineDiscount)),
           };
         });
-        const effectiveFreeShipping =
-          Boolean(coupon.freeShipping) || Boolean(evaluated.freeShippingPromotion);
+        const effectiveFreeShipping = Boolean(evaluated.freeShippingPromotion);
         if (!lines.length && !evaluated.freeShippingPromotion) {
           throw new TRPCError({
             code: "BAD_REQUEST",

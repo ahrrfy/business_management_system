@@ -845,6 +845,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
                       ? previewRuleForTable.fixedPrice
                       : "0"
                   }
+                  maxDiscountAmount={previewRuleForTable.maxDiscountAmount}
                   onUpdateUnit={(varId, newUnitId) =>
                     updateScopeRule((r) => ({
                       ...r,

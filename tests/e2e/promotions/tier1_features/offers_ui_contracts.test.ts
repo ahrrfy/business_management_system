@@ -636,5 +636,49 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       };
       expect(validateRuleScopeAndMargin(rulePickAny, rulePickAny, "")).toBeNull();
     });
+
+    it("T1-F19-07: validateRuleScopeAndMargin applies maxDiscountAmount cap before evaluating below-cost floor", () => {
+      const cappedRule = {
+        ...createDefaultRuleDraft("PERCENT", "r_capped"),
+        discountPercent: "50",
+        maxDiscountAmount: "1000",
+        scope: "PRODUCTS" as const,
+        allowBelowCost: false,
+        selectedProducts: [
+          {
+            productId: 501,
+            productName: "حقيبة مدرسية",
+            productCode: "PRD-501",
+            variantId: 501,
+            sku: "BAG-1",
+            isConsignment: false,
+            barcode: "628501",
+            productUnitId: 501,
+            unitName: "قطعة",
+            conversionFactor: "1",
+            isBaseUnit: true,
+            retailPrice: "10000",
+            costPrice: "8000",
+            units: [
+              {
+                id: 501,
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                barcode: "628501",
+                retailPrice: "10000",
+              },
+            ],
+          },
+        ],
+      };
+
+      // 50% of 10,000 = 5,000 uncapped, but capped at 1,000 => promoPrice = 9,000 >= cost 8,000
+      expect(validateRuleScopeAndMargin(cappedRule, cappedRule, "")).toBeNull();
+
+      // Without the cap, promoPrice = 5,000 < cost 8,000 => blocked
+      const uncappedRule = { ...cappedRule, maxDiscountAmount: "" };
+      expect(validateRuleScopeAndMargin(uncappedRule, uncappedRule, "")).toContain("ينزل سعرها بالعرض أقل من كلفتها");
+    });
   });
 });

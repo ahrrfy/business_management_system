@@ -22,6 +22,7 @@ export interface OfferSelectedItemsTableProps {
   items: SelectedOfferItem[];
   promoType: PromoType;
   promoValue?: string;
+  maxDiscountAmount?: string;
   onUpdateUnit: (variantId: number, unitId: number) => void;
   onRemoveItem: (variantId: number) => void;
   disabled?: boolean;
@@ -31,6 +32,7 @@ export function OfferSelectedItemsTable({
   items,
   promoType,
   promoValue = "0",
+  maxDiscountAmount,
   onUpdateUnit,
   onRemoveItem,
   disabled = false,
@@ -44,6 +46,15 @@ export function OfferSelectedItemsTable({
       return new Decimal(0);
     }
   }, [promoValue]);
+
+  const maxDiscountCapDec = useMemo(() => {
+    try {
+      const v = D(maxDiscountAmount ?? "");
+      return v.isFinite() && v.gt(0) ? v : null;
+    } catch {
+      return null;
+    }
+  }, [maxDiscountAmount]);
 
   // Compute live calculations for all rows
   const computedRows = useMemo(() => {
@@ -68,27 +79,24 @@ export function OfferSelectedItemsTable({
             retailPriceDec,
             costPriceDec,
             promoType,
-            promoValueDec
+            promoValueDec,
+            maxDiscountCapDec
           );
         } else {
           // Cost is masked by RBAC, but calculate promoPrice and ceiling rule
-          let promoPrice = retailPriceDec;
-          if (promoType === "PERCENT") {
-            const disc = retailPriceDec.mul(promoValueDec).div(100);
-            promoPrice = retailPriceDec.minus(disc);
-          } else if (promoType === "AMOUNT") {
-            promoPrice = Decimal.max(0, retailPriceDec.minus(promoValueDec));
-          } else if (promoType === "FIXED_PRICE") {
-            promoPrice = Decimal.min(retailPriceDec, promoValueDec);
-          }
-          const isCeilingViolated =
-            promoType === "FIXED_PRICE" && retailPriceDec.lte(promoValueDec);
+          const maskedRes = calculateLiveMargin(
+            retailPriceDec,
+            new Decimal(0),
+            promoType,
+            promoValueDec,
+            maxDiscountCapDec
+          );
           marginResult = {
-            promoPrice,
+            promoPrice: maskedRes.promoPrice,
             marginPercent: new Decimal(0),
             isBelowCost: false,
-            isCeilingViolated,
-            badgeStyle: (isCeilingViolated ? "warning" : "positive") as "warning" | "positive",
+            isCeilingViolated: maskedRes.isCeilingViolated,
+            badgeStyle: (maskedRes.isCeilingViolated ? "warning" : "positive") as "warning" | "positive",
           };
         }
       }
@@ -101,7 +109,7 @@ export function OfferSelectedItemsTable({
         marginResult,
       };
     });
-  }, [items, promoType, promoValueDec]);
+  }, [items, promoType, promoValueDec, maxDiscountCapDec]);
 
   // Alert counters
   const belowCostCount = computedRows.filter(

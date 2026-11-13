@@ -2653,7 +2653,7 @@ export async function loadPromotionPerformance(
       and(
         isNotNull(invoiceItems.promotionId),
         branchId == null ? undefined : eq(invoices.branchId, branchId),
-        notInArray(invoices.status, ["CANCELLED", "RETURNED", "SUPERSEDED"]),
+        notInArray(invoices.status, ["CANCELLED", "SUPERSEDED"]),
       ),
     )
     .groupBy(invoiceItems.promotionId);

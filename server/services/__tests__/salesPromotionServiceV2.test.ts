@@ -14,6 +14,7 @@ import { hashCouponCode } from "../couponService";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 import { withTx } from "../tx";
+import { crmRouter } from "../../routers/crmRouter";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -1227,6 +1228,179 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
           1,
         ),
       ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("مؤشرات أداء العروض تحتفظ بتكلفة البضاعة التالفة غير المُعادة للمخزون عند الإرجاع الكلي (RETURNED)", async () => {
+    await setStock(1, 1, 100);
+    const pid = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "عرض خصم 10% مع إرجاع تالف",
+          type: "PERCENT",
+          discountPercent: "10",
+          scope: "ALL",
+          effectiveFrom: "2026-01-01",
+        },
+        1,
+      ),
+    );
+    const shiftId = await openShift();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        priceTier: "RETAIL",
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "5",
+            unitPriceOverride: "10.00",
+            discountAmount: "5.00",
+            promotionId: pid,
+          },
+        ],
+        payment: { amount: "45.00", method: "CASH" },
+      } as any,
+      actor,
+    );
+
+    const [soldItem] = await db()
+      .select()
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+
+    const ret = await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(soldItem.id), baseQuantity: 5 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          method: "CASH",
+          amount: "45.00",
+          shiftId,
+          reason: "تلف كامل بعد البيع",
+          disposition: "DAMAGED",
+        },
+      },
+      { userId: 1, branchId: 1, role: "admin" } as any,
+    );
+    expect(ret.fullyReturned).toBe(true);
+
+    const [returnedInv] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, sale.invoiceId));
+    expect(returnedInv.status).toBe("RETURNED");
+
+    const performance = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    expect(performance.rows).toEqual([
+      {
+        promotionId: pid,
+        invoiceCount: 0,
+        netSales: "0.00",
+        discount: "0.00",
+        cost: "20.00",
+        grossProfit: "-20.00",
+      },
+    ]);
+    expect(performance.summary).toMatchObject({
+      invoiceCount: 0,
+      netSales: "0.00",
+      discount: "0.00",
+      cost: "20.00",
+      grossProfit: "-20.00",
+    });
+  });
+
+  it("معاينة الكوبون crm.coupons.preview تستثني منتجات الخدمة (isService) تماماً مثل الإتمام الفعلي", async () => {
+    const d = db();
+    await d.insert(s.products).values({
+      id: 90,
+      name: "خدمة تغليف هدايا",
+      categoryId: 2,
+      isService: true,
+    });
+    await d.insert(s.productVariants).values({
+      id: 90,
+      productId: 90,
+      sku: "SRV-WRAP",
+      costPrice: "0.00",
+    });
+    await d.insert(s.productUnits).values({
+      id: 90,
+      variantId: 90,
+      unitName: "خدمة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await d.insert(s.productPrices).values({
+      productUnitId: 90,
+      priceTier: "RETAIL",
+      price: "25.00",
+    });
+
+    const promoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "كوبون عام 20%",
+          type: "PERCENT",
+          discountPercent: "20",
+          scope: "ALL",
+          applicationMode: "COUPON",
+          effectiveFrom: "2026-01-01",
+        },
+        1,
+      ),
+    );
+    await d.insert(s.couponPrograms).values({
+      id: 90,
+      promotionId: promoId,
+      name: "برنامج كوبون عام",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2028-01-01"),
+      perCouponLimit: 10,
+      perCustomerLimit: 10,
+      codePrefix: "SRV",
+      createdBy: 1,
+    });
+    await d.insert(s.coupons).values({
+      id: 90,
+      programId: 90,
+      code: "SRV-TEST20",
+      codeHash: hashCouponCode("SRV-TEST20"),
+      status: "ACTIVE",
+    });
+
+    const caller = crmRouter.createCaller({
+      req: { headers: {} } as any,
+      res: {} as any,
+      user: { id: 1, openId: "local_test", name: "admin", role: "admin", branchId: 1, isActive: true } as any,
+      sessionId: "test-session",
+    } as any);
+
+    await expect(
+      caller.coupons.preview({
+        code: "SRV-TEST20",
+        branchId: 1,
+        customerTier: "RETAIL",
+        lines: [
+          {
+            productId: 90,
+            variantId: 90,
+            productUnitId: 90,
+            unitPrice: "25.00",
+            quantity: 1,
+            hasContractPrice: false,
+          },
+        ],
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

@@ -279,4 +279,69 @@ describe("online storefront pricing benefit", () => {
     expect(order.subtotal).toBe("2500.00");
     expect(order.couponDiscount).toBe("1500.00");
   });
+
+  it("يرفض إعفاء الشحن في المتجر لكوبون توصيل مجاني محصور بنقطة البيع (POS_ONLY) أو خارج أيام سريانه", async () => {
+    const d = db();
+    await d.insert(s.promotions).values({
+      id: 20,
+      name: "توصيل مجاني خاص بالكاشير فقط",
+      type: "FREE_SHIPPING",
+      discountPercent: "0.00",
+      discountAmount: "0.00",
+      freeShipping: true,
+      channel: "POS_ONLY",
+      scope: "ALL",
+      effectiveFrom: new Date("2026-01-01"),
+      effectiveTo: new Date("2028-01-01"),
+      branchId: null,
+      customerTier: null,
+      minLineAmount: "0.00",
+      priority: 100,
+      isActive: true,
+      applicationMode: "COUPON",
+      isStoreManaged: false,
+    });
+    await d.insert(s.couponPrograms).values({
+      id: 20,
+      promotionId: 20,
+      name: "شحن كاشير فقط",
+      status: "ACTIVE",
+      branchId: null,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2028-01-01"),
+      perCouponLimit: 5,
+      perCustomerLimit: 5,
+      codePrefix: "POSFS",
+      createdBy: 1,
+    });
+    await d.insert(s.coupons).values({
+      id: 20,
+      programId: 20,
+      code: "POSFS-ONLY",
+      codeHash: hashCouponCode("POSFS-ONLY"),
+      status: "ACTIVE",
+    });
+
+    const lines = [{ productUnitId: 1, quantity: 2 }];
+    await expect(
+      quoteOnlineOrder({
+        governorate: "baghdad",
+        couponCode: "POSFS-ONLY",
+        lines,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      createOnlineOrder({
+        customerName: "عميل اختبار القناة",
+        customerPhone: "07701112233",
+        governorate: "baghdad",
+        addressText: "بغداد — الكرادة",
+        couponCode: "POSFS-ONLY",
+        clientRequestId: "pos-only-fs-coupon-order",
+        lines,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await d.select().from(s.couponReservations)).toHaveLength(0);
+  });
 });
