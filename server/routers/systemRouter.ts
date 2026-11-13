@@ -6,7 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, companyProfileReadProcedure, ownerProcedure, protectedProcedure, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 import type { TrpcContext } from "../context";
-import { getDb, isMultiTenantModeActive } from "../db";
+import { getDb } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
@@ -31,30 +31,9 @@ async function assertConfirm(confirm: string) {
   }
 }
 
-/**
- * ⛔ يمنع استعادة/تصفير القاعدة كاملةً في وضع تعدّد الشركات — راجع التوثيق المُفصَّل أعلى
- * `runRestore`/`runReset` في maintenanceService.ts لسبب هذا القيد المعماري (لا نقص مؤجَّل).
- * النسخ/القائمة/الحذف/التنزيل تبقى متاحة، مقيَّدة تلقائياً بملفات الشركة الحالية فقط.
- */
-function assertSingleTenantOnly(action: string) {
-  if (isMultiTenantModeActive()) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message:
-        `${action} غير متاح في وضع تعدّد الشركات — عمليات استعادة/تصفير القاعدة كاملةً معطّلة ` +
-        "حفاظاً على عزل بيانات الشركات (لا يمكن لأدوات النسخ الحالية ضمان بقاء العملية داخل حدود " +
-        "قاعدة شركتك وحدها). النسخ الاحتياطي والتنزيل والحذف لملفاتك تبقى متاحة كما هي. للاستعادة " +
-        "الفعلية تواصل مع فريق تشغيل المنصّة.",
-    });
-  }
-  if (process.env.NODE_ENV === "production") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message:
-        `${action} عبر الويب معطّل في الإنتاج لأن SQL الخام يعمل بصلاحية تشغيلية عالية. ` +
-        "نفّذ الاستعادة أثناء نافذة صيانة من سطر الأوامر بعد إيقاف عمال الويب. لا يوجد تجاوز بيئي لهذا الحارس.",
-    });
-  }
+function assertOnlineMaintenanceAllowed() {
+  const message = maint.getOnlineMaintenanceBlockReason();
+  if (message) throw new TRPCError({ code: "FORBIDDEN", message });
 }
 
 export const systemRouter = router({
@@ -76,31 +55,33 @@ export const systemRouter = router({
     }
     const target = getConfiguredTarget();
     const [dbName, dbHostVal] = await Promise.all([maint.currentDbName(), maint.currentDbHost()]);
+    const onlineMaintenanceBlockReason = maint.getOnlineMaintenanceBlockReason();
     return {
       db: { name: dbName, host: dbHostVal },
       counts,
       backups: { ...(await maint.backupsStats()), dir: process.env.BACKUP_DIR ?? "backups" },
       printer: { enabled: target != null, description: describeTarget(target) },
+      // Kept for older settings clients. The application does not observe the scheduler.
       schedule: {
-        dailyAt: "02:00",
-        offsiteConfigured: !!(process.env.BACKUP_OFFSITE_DIR && process.env.BACKUP_OFFSITE_DIR.trim()),
+        dailyAt: null,
+        offsiteConfigured: !!process.env.BACKUP_OFFSITE_DIR?.trim(),
       },
       confirmToken: dbName,
-      onlineMaintenanceEnabled:
-        !isMultiTenantModeActive() && process.env.NODE_ENV !== "production",
+      onlineMaintenanceEnabled: onlineMaintenanceBlockReason === null,
+      onlineMaintenanceBlockReason,
     };
   }),
 
   /** قائمة آخر النسخ الاحتياطية المحلّية (للمدير). */
   listBackups: adminProcedure.query(async () => ({
     dir: process.env.BACKUP_DIR ?? "backups",
-    backups: (await maint.listBackupFiles()).slice(0, 50),
+    ...(await maint.backupReadiness()),
   })),
 
   /** نسخة احتياطية الآن (تطابق DATABASE_URL). يعيد الملف المُنشأ. */
   backupNow: adminProcedure.mutation(async ({ ctx }) => {
     const created = await maint.runBackup();
-    await logAudit(ctx, { action: "system.backup", entityType: "system", entityId: created?.name ?? null });
+    await logAudit(ctx, { action: "system.backup", entityType: "system", entityId: created.name });
     return { ok: true as const, created };
   }),
 
@@ -116,10 +97,10 @@ export const systemRouter = router({
   restoreBackup: ownerProcedure
     .input(z.object({ name: z.string(), confirm: z.string(), password: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      assertSingleTenantOnly("استعادة نسخة");
+      assertOnlineMaintenanceAllowed();
       await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
-      const abs = await maint.resolveBackupFile(input.name);
+      const abs = await maint.resolveStoredRestoreFile(input.name);
       if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
       const releaseLock = await maint.acquireRestoreLock();
       try {
@@ -144,7 +125,7 @@ export const systemRouter = router({
       password: z.string().min(1),
     }))
     .mutation(async ({ ctx, input }) => {
-      assertSingleTenantOnly("استعادة ملف مرفوع");
+      assertOnlineMaintenanceAllowed();
       if (ctx.sessionId == null) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "أعد تسجيل الدخول قبل إصدار تصريح الاستعادة." });
       }
@@ -165,7 +146,7 @@ export const systemRouter = router({
   resetSystem: adminProcedure
     .input(z.object({ confirm: z.string(), password: z.string().min(1), seed: z.boolean().optional() }))
     .mutation(async ({ ctx, input }) => {
-      assertSingleTenantOnly("تصفير النظام");
+      assertOnlineMaintenanceAllowed();
       await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
       const releaseLock = await maint.acquireRestoreLock();
@@ -273,6 +254,14 @@ export const systemRouter = router({
         newValue: profile,
       });
       return { ok: true as const, profile };
+    }),
+  startRestoreDrill: ownerProcedure
+    .input(z.object({ name: z.string().max(180) }))
+    .mutation(async ({ ctx, input }) => {
+      assertOnlineMaintenanceAllowed();
+      const result = await maint.startRestoreDrill(input.name);
+      await logAudit(ctx, { action: "system.restore.drill.start", entityType: "system", entityId: result.name });
+      return result;
     }),
 });
 

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -18,13 +19,14 @@ import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { saveBackupToDevice, type BackupDownloadFile, type BackupDownloadProgress } from "@/lib/backupDownload";
 import { fmtDateTime } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { Download, RotateCcw, Trash2 } from "lucide-react";
+import { Download, FlaskConical, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 function fmtKb(kb: number): string {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} م.ب` : `${kb} ك.ب`;
 }
 const MAX_RESTORE_UPLOAD_BYTES = 200 * 1024 * 1024;
+const isEncryptedBackup = (name: string) => /\.sql\.gpg$/i.test(name);
 
 type DangerAction =
   | { kind: "restore-server"; name: string }
@@ -43,6 +45,43 @@ const SETTINGS_SECTIONS = [
 
 /** حدّ افتراضي لعدد النسخ الاحتياطية المعروضة — السجلّ الكامل قد يكبر كثيراً مع النسخ اليومي التلقائي. */
 const BACKUPS_VISIBLE_STEP = 15;
+const BACKUP_ATTEMPT_LABEL = {
+  STARTED: "بدأت بلا إيصال إكمال",
+  COMPLETED: "اكتملت المحاولة",
+  FAILED: "فشلت المحاولة",
+} as const;
+const BACKUP_ENCRYPTION_LABEL = {
+  MISSING: "التشفير غير مسجّل",
+  UNVERIFIED: "التشفير غير متحقق",
+  RECORDED: "التشفير موثّق",
+} as const;
+const BACKUP_RESTORE_FAILURE_LABEL = {
+  KEY_REQUIRED: "مفتاح فك التشفير مطلوب",
+  DECRYPTION_FAILED: "تعذّر فك التشفير",
+  FAILED: "تعذّر تمرين الاستعادة",
+} as const;
+const DRILL_STATUS_LABEL = {
+  RUNNING: "تمرين الاستعادة قيد التنفيذ",
+  INTERRUPTED: "انقطع تسجيل التمرين",
+  VERIFIED: "تمرين الاستعادة موثّق",
+  PARTIAL: "تحقّق SQL والرجوع، والمرفقات تحتاج متابعة",
+} as const;
+const DRILL_FAILURE_LABEL = {
+  KEY_REQUIRED: "مفتاح فك التشفير مطلوب",
+  ENGINE_REQUIRED: "محرك Docker المحلي غير متاح",
+  IMAGE_REQUIRED: "صورة MySQL المخصّصة للتمرين غير متاحة",
+  ARCHIVE_INVALID: "تعذّر مطابقة النسخة مع بيانها",
+  DECRYPTION_FAILED: "تعذّر فك التشفير",
+  IMPORT_FAILED: "تعذّر الاستيراد في المختبر",
+  ROLLBACK_FAILED: "تعذّر إثبات الرجوع في المختبر",
+  CLEANUP_FAILED: "يحتاج تنظيف المختبر إلى مراجعة",
+  FAILED: "تعذّر توثيق نتيجة التمرين",
+} as const;
+const BACKUP_OFFSITE_LABEL = {
+  MISSING: "الخارجي غير مسجّل",
+  UNVERIFIED: "الخارجي غير متحقق",
+  RECORDED: "الخارجي موثّق عند النسخ",
+} as const;
 
 export default function Settings() {
   const utils = trpc.useUtils();
@@ -52,7 +91,10 @@ export default function Settings() {
   // #31B (تدقيق التثبيت): systemInfo/listBackups إجراءان adminProcedure — كانا يُطلَقان للمدير
   // (يفتح تبويب الإعدادات) فيرجعان 403 يظهر كخطأ اتصال كاذب. نُعطّلهما لغير الأدمن (مرآة الخادم).
   const info = trpc.system.systemInfo.useQuery(undefined, { enabled: isAdmin });
-  const backups = trpc.system.listBackups.useQuery(undefined, { enabled: isAdmin });
+  const backups = trpc.system.listBackups.useQuery(undefined, {
+    enabled: isAdmin,
+    refetchInterval: query => query.state.data?.backups.some(row => row.drill?.status === "RUNNING") ? 2000 : false,
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const [danger, setDanger] = useState<DangerAction | null>(null);
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
@@ -144,14 +186,15 @@ export default function Settings() {
   };
 
   const backupNow = trpc.system.backupNow.useMutation({
-    onSuccess: async (r) => {
-      notify.ok(r.created ? `أُنشئت نسخة: ${r.created.name}` : "تمّت النسخة الاحتياطية");
-      await refresh();
+    onSuccess: (r) => {
+      if (r.created) notify.ok(`أُنشئت نسخة: ${r.created.name}`);
+      else notify.err("تعذّر إثبات ملف النسخة التي طلبتها.");
     },
     onError: (e) => notify.err(e.message || "فشلت النسخة"),
+    onSettled: refresh,
   });
   const deleteBackup = trpc.system.deleteBackup.useMutation({
-    onSuccess: async () => { notify.ok("حُذفت النسخة"); await refresh(); },
+    onSuccess: async () => { notify.ok("حُذف ملف SQL المحلي"); await refresh(); },
     onError: (e) => notify.err(e.message || "تعذّر الحذف"),
   });
 
@@ -165,6 +208,13 @@ export default function Settings() {
     onError: (e) => notify.err(e.message || "فشلت الاستعادة"),
   });
   const restoreUpload = trpc.system.restoreUpload.useMutation();
+  const startRestoreDrill = trpc.system.startRestoreDrill.useMutation({
+    onSuccess: async () => {
+      notify.ok("بدأ تمرين الاستعادة المعزول");
+      await backups.refetch();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر بدء تمرين الاستعادة"),
+  });
   const [restoreUploadStreaming, setRestoreUploadStreaming] = useState(false);
   const resetSystem = trpc.system.resetSystem.useMutation({
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
@@ -174,6 +224,10 @@ export default function Settings() {
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
+  const onlineMaintenanceBlockReason = info.data?.onlineMaintenanceBlockReason;
+  const encryptedRestoreBlockReason = backups.data?.encryptedRestoreBlockReason;
+  const restoreDrillBlockReason = backups.data?.restoreDrillBlockReason;
+  const restoreDrillRunning = backups.data?.backups.some(row => row.drill?.status === "RUNNING") === true;
 
   async function startBackupDownload(
     source: () => Promise<BackupDownloadFile | null>,
@@ -211,8 +265,13 @@ export default function Settings() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".sql")) { notify.err("اختر ملف .sql صالحاً"); return; }
-    if (file.size < 512) { notify.err("الملف صغير أو تالف"); return; }
+    if (!/\.sql(?:\.gpg)?$/i.test(file.name)) { notify.err("اختر ملف .sql أو .sql.gpg"); return; }
+    const encrypted = isEncryptedBackup(file.name);
+    if (encrypted && encryptedRestoreBlockReason) {
+      notify.err(encryptedRestoreBlockReason);
+      return;
+    }
+    if (file.size < (encrypted ? 1 : 512)) { notify.err("الملف صغير أو تالف"); return; }
     if (file.size > MAX_RESTORE_UPLOAD_BYTES) { notify.err("الملف أكبر من الحدّ المسموح (200 م.ب)"); return; }
     setDanger({ kind: "restore-upload", file });
   }
@@ -232,7 +291,7 @@ export default function Settings() {
           method: "POST",
           headers: {
             Authorization: `Bearer ${authorization.ticket}`,
-            "Content-Type": "application/sql",
+            "Content-Type": isEncryptedBackup(danger.file.name) ? "application/octet-stream" : "application/sql",
             "X-ERP-CSRF": "1",
             ...screenAttributionHeaders(),
           },
@@ -254,6 +313,9 @@ export default function Settings() {
 
   const c = info.data?.counts;
   const list = backups.data?.backups ?? [];
+  const latestAttempt = backups.data?.latestAttempt;
+  const latestOffsite = backups.data?.latestOffsite;
+  const latestRestore = backups.data?.latestRestore;
 
   return (
     <div className="space-y-4">
@@ -291,10 +353,8 @@ export default function Settings() {
             <InfoField label="المنتجات" value={c ? String(c.products) : "…"} kind="number" />
             <InfoField label="العملاء" value={c ? String(c.customers) : "…"} kind="number" />
             <InfoField label="الفواتير" value={c ? String(c.invoices) : "…"} kind="number" />
-            <InfoField label="النسخ" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
-            <InfoField label="آخر نسخة" value={fmtDateTime(info.data?.backups.latest ?? null)} kind="datetime" />
+            <InfoField label="ملفات SQL المحلية" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
             <InfoField label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} kind="status" tone={bridge.enabled ? "positive" : "default"} />
-            <InfoField label="النسخ التلقائي" value={`يومياً 02:00${info.data?.schedule.offsiteConfigured ? " + خارجي" : ""}`} />
           </InfoGrid>
         </CardContent>
       </Card>
@@ -303,19 +363,31 @@ export default function Settings() {
       <Card id="sec-backup" className="scroll-mt-4">
         <CardHeader className="flex flex-row items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-base">النسخ الاحتياطي</CardTitle>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending || backupDownload !== null}>
-              {backupNow.isPending ? "جارٍ…" : "نسخة الآن"}
-            </Button>
-            <Button onClick={backupAndDownload} disabled={backupNow.isPending || backupDownload !== null}>
-              نسخة + تنزيل للجهاز
-            </Button>
-          </div>
+          {isAdmin && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending || backupDownload !== null}>
+                {backupNow.isPending ? "جارٍ…" : "نسخة الآن"}
+              </Button>
+              <Button onClick={backupAndDownload} disabled={backupNow.isPending || backupDownload !== null}>
+                نسخة + تنزيل للجهاز
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            نسخة كاملة (mysqldump ذرّي) تطابق قاعدة الإنتاج. التنزيل يحفظ الملف على جهازك. النسخ اليومي 02:00 تلقائي.
+            يعرض السجل حالة ملف SQL والتشفير والنقل الخارجي، ونتيجة تمرين الاستعادة وفحص مراجع المرفقات والوسائط عند توفرها.
           </p>
+          {backups.data && (
+            <InfoGrid>
+              <InfoField
+                label="آخر محاولة نسخ"
+                value={latestAttempt ? `${BACKUP_ATTEMPT_LABEL[latestAttempt.status]} · ${fmtDateTime(latestAttempt.finishedAt ?? latestAttempt.startedAt)}` : "لا يوجد إيصال محاولة"}
+              />
+              <InfoField label="آخر نسخ خارجي موثّق" value={latestOffsite ? fmtDateTime(latestOffsite.at) : "لا يوجد دليل نقل"} />
+              <InfoField label="آخر استعادة SQL مجرّبة" value={latestRestore ? fmtDateTime(latestRestore.at) : "لا يوجد تقرير مطابق"} />
+            </InfoGrid>
+          )}
           {backupDownload && (
             <div
               role="status"
@@ -352,10 +424,12 @@ export default function Settings() {
               <p className="text-xs text-muted-foreground">قد يظهر حجم الملف صفراً أثناء التنزيل؛ يُحفظ نهائياً عند اكتماله.</p>
             </div>
           )}
-          {backups.isLoading ? (
+          {!isAdmin ? (
+            <p className="text-sm text-muted-foreground">سجل النسخ وإدارته متاحان لمسؤول النظام.</p>
+          ) : backups.isLoading ? (
             <LoadingState />
-          ) : list.length === 0 ? (
-            <p className="text-sm text-muted-foreground">لا نسخ بعد — اضغط «نسخة الآن».</p>
+          ) : backups.isError ? null : list.length === 0 ? (
+            <p className="text-sm text-muted-foreground">لا ملفات أو إيصالات نسخ في السجل.</p>
           ) : (
             <ScrollTableShell bordered={false}>
               <Table>
@@ -363,55 +437,130 @@ export default function Settings() {
                   <TableRow>
                     <TableHead className="text-right">الملف</TableHead>
                     <TableHead className="text-left">الحجم</TableHead>
-                    <TableHead className="text-left">التاريخ</TableHead>
+                    <TableHead className="px-3 text-right">التاريخ</TableHead>
+                    <TableHead className="px-3 text-start">حالة النسخة</TableHead>
                     <TableHead className="text-center">إجراءات</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {list.slice(0, backupsVisible).map((b) => (
-                    <TableRow key={b.name}>
-                      <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
-                      <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
-                      <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
+                  {list.slice(0, backupsVisible).map((b) => {
+                    const hasSql = b.sqlAvailable !== false;
+                    const hasOwnerArchive = isOwner && (b.encryption?.status === "RECORDED" || b.offsite?.status === "RECORDED");
+                    const drill = b.drill;
+                    return <TableRow key={b.name}>
+                      <TableCell className="font-mono text-xs whitespace-normal break-all" dir="ltr">{b.name}</TableCell>
+                      <TableCell className="text-left tabular-nums">{b.sizeKb > 0 ? fmtKb(b.sizeKb) : "—"}</TableCell>
+                      <TableCell className="px-3 text-right tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
+                      <TableCell className="px-3 text-start">
+                        <div className="flex min-w-52 flex-wrap gap-1">
+                          {b.attempt && (
+                            <Badge variant={b.attempt.status === "FAILED" ? "destructive" : "outline"}>
+                              {BACKUP_ATTEMPT_LABEL[b.attempt.status]}
+                            </Badge>
+                          )}
+                          <Badge variant={b.sqlAvailable !== false ? "outline" : "secondary"}>
+                            {b.sqlAvailable !== false ? "ملف SQL متوفر" : "ملف SQL غير متوفر محلياً"}
+                          </Badge>
+                          <Badge variant={b.encryption?.at ? "outline" : "secondary"} title={b.encryption?.at ? fmtDateTime(b.encryption.at) : undefined}>
+                            {BACKUP_ENCRYPTION_LABEL[b.encryption?.status ?? "MISSING"]}
+                          </Badge>
+                          <Badge variant={b.offsite?.at ? "outline" : "secondary"} title={b.offsite?.at ? fmtDateTime(b.offsite.at) : undefined}>
+                            {BACKUP_OFFSITE_LABEL[b.offsite?.status ?? "MISSING"]}
+                          </Badge>
+                          <Badge
+                            variant={b.restoredAt ? "outline" : "secondary"}
+                            title={b.restoredAt || b.restoreFailure ? fmtDateTime(b.restoredAt ?? b.restoreFailure?.at) : undefined}
+                          >
+                            {b.restoredAt ? "استعادة SQL مجرّبة" : b.restoreFailure
+                              ? BACKUP_RESTORE_FAILURE_LABEL[b.restoreFailure.code]
+                              : "الاستعادة غير مثبتة"}
+                          </Badge>
+                          {b.attachmentCheck && (
+                            <Badge
+                              variant={b.attachmentCheck.inlineVerified + b.attachmentCheck.mirroredVerified === b.attachmentCheck.references
+                                ? "outline" : "secondary"}
+                              title={`داخل قاعدة البيانات ${b.attachmentCheck.inlineVerified}، المرآة المحلية ${b.attachmentCheck.mirroredVerified}`}
+                            >
+                              {b.attachmentCheck.references === 0
+                                ? "لا مراجع مرفقات في الحقول المفحوصة"
+                                : `مراجع موثّقة للمرفقات والوسائط ${b.attachmentCheck.inlineVerified + b.attachmentCheck.mirroredVerified} من ${b.attachmentCheck.references}`}
+                            </Badge>
+                          )}
+                        </div>
+                        {drill && (
+                          <div className="mt-1 space-y-0.5 text-xs" role="status">
+                            <p title={fmtDateTime(drill.at)}>
+                              {"code" in drill ? DRILL_FAILURE_LABEL[drill.code] : DRILL_STATUS_LABEL[drill.status]}
+                            </p>
+                            {"tableCount" in drill && (
+                              <p className="text-muted-foreground">
+                                نجح الرجوع في المختبر · {drill.tableCount} جدول · {drill.rowCounts.invoices} فاتورة
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        <RowActions
+                        {hasSql || hasOwnerArchive ? <RowActions
                           mode="menu"
                           actions={[
-                            { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null, onSelect: () => { void startBackupDownload(async () => b, b.name); } },
-                            ...(isOwner
+                            ...(hasSql ? [{
+                              key: "download", kind: "export" as const, label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null,
+                              onSelect: () => { void startBackupDownload(async () => b, b.name); },
+                            }] : []),
+                            ...(isOwner && hasSql
                               ? [
                                   {
                                     key: "restore",
                                     kind: "reverse" as const,
-                                    label: "استعادة",
+                                    label: "استعادة SQL",
                                     icon: RotateCcw,
                                     gate: { adminOnly: true },
                                     disabled: !onlineMaintenanceEnabled,
-                                    disabledReason: "الاستعادة عبر الويب معطّلة إنتاجياً؛ استخدم نافذة الصيانة",
+                                    disabledReason: onlineMaintenanceBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
                                     onSelect: () => setDanger({ kind: "restore-server", name: b.name }),
                                   },
                                 ]
                               : []),
-                            {
+                            ...(hasOwnerArchive ? [{
+                              key: "restore-drill",
+                              kind: "view" as const,
+                              label: "تمرين استعادة معزول",
+                              icon: FlaskConical,
+                              gate: { adminOnly: true },
+                              disabled: restoreDrillBlockReason !== null || restoreDrillRunning || startRestoreDrill.isPending,
+                              disabledReason: restoreDrillBlockReason ?? (restoreDrillRunning ? "يوجد تمرين قيد التنفيذ." : undefined),
+                              onSelect: () => startRestoreDrill.mutate({ name: b.name }),
+                            }, {
+                              key: "restore-encrypted",
+                              kind: "reverse" as const,
+                              label: "استعادة النسخة المشفّرة",
+                              icon: RotateCcw,
+                              gate: { adminOnly: true },
+                              disabled: !onlineMaintenanceEnabled || !!encryptedRestoreBlockReason,
+                              disabledReason: onlineMaintenanceBlockReason ?? encryptedRestoreBlockReason ?? "تعذّر التحقق من حالة الصيانة.",
+                              onSelect: () => setDanger({ kind: "restore-server", name: `${b.name}.gpg` }),
+                            }] : []),
+                            ...(hasSql ? [{
                               key: "delete",
-                              kind: "delete",
-                              label: "حذف",
+                              kind: "delete" as const,
+                              label: "حذف SQL المحلي",
                               icon: Trash2,
-                              variant: "destructive",
+                              variant: "destructive" as const,
                               gate: { adminOnly: true },
                               disabled: deleteBackup.isPending,
                               // سببٌ مخصّص كشقيقه restore أعلاه — يُصيَّر في title على العنصر المعطَّل (RowActions).
                               disabledReason: "جارٍ حذف النسخة",
                               onSelect: async () => {
-                                if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
+                                if (!(await confirmDelete({ description: `حذف ملف SQL المحلي «${b.name}»؟` }))) return;
                                 deleteBackup.mutate({ name: b.name });
                               },
-                            },
+                            }] : []),
                           ]}
-                        />
+                        /> : "—"}
                       </TableCell>
-                    </TableRow>
-                  ))}
+                    </TableRow>;
+                  })}
                 </TableBody>
               </Table>
             </ScrollTableShell>
@@ -433,15 +582,16 @@ export default function Settings() {
           <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
+              اختر ملف SQL أو نسخة مشفّرة (.sql.gpg). يستخدم الخادم عبارة GPG المحفوظة محلياً، ويأخذ نسخة أمان قبل الاستعادة.
             </p>
-            {!onlineMaintenanceEnabled && (
-              <p role="status" className="text-xs text-warning">
-                الاستعادة عبر الويب معطّلة في الإنتاج. أوقف عمال الويب ونفّذها من سطر الأوامر داخل نافذة صيانة.
-              </p>
+            {onlineMaintenanceBlockReason && (
+              <p role="status" className="text-xs text-warning">{onlineMaintenanceBlockReason}</p>
             )}
-            <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
-            <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
+            {isOwner && onlineMaintenanceEnabled && encryptedRestoreBlockReason && (
+              <p role="status" className="text-xs text-warning">{encryptedRestoreBlockReason}</p>
+            )}
+            <input ref={fileRef} type="file" accept=".sql,.sql.gpg" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
+            <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف نسخة للاستعادة…</Button>
           </CardContent>
         </Card>
 

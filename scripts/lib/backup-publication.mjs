@@ -1,6 +1,6 @@
 // Publish ciphertext only after encryption finishes. The manifest is the commit marker.
 import { createReadStream } from "node:fs";
-import { stat, writeFile, rename, access, copyFile, mkdir, readFile } from "node:fs/promises";
+import { stat, lstat, writeFile, rename, access, copyFile, mkdir, readFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 
@@ -12,6 +12,26 @@ export async function fingerprint(file) {
     size += chunk.length;
   }
   return { size, sha256: hash.digest("hex") };
+}
+
+export function sameFingerprint(first, second) {
+  return first.size === second?.size && first.sha256 === second?.sha256;
+}
+
+export async function readEncryptedPublication(source, actual) {
+  const marker = source + ".manifest.json";
+  const metadata = await lstat(marker).catch(error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!metadata) return null;
+  if (!metadata.isFile() || metadata.size > 64 * 1024) throw Error("BACKUP_MANIFEST_INVALID");
+  const manifest = await readFile(marker, "utf8").then(JSON.parse).catch(() => { throw Error("BACKUP_MANIFEST_INVALID"); });
+  if (manifest?.version !== 1 || manifest.file !== basename(source) ||
+      !sameFingerprint(actual, manifest) || manifest.source?.file !== basename(source, ".gpg") ||
+      !Number.isSafeInteger(manifest.source.size) || manifest.source.size < 512 ||
+      !/^[a-f0-9]{64}$/.test(manifest.source.sha256)) throw Error("BACKUP_MANIFEST_INVALID");
+  return manifest;
 }
 
 export async function publishEncryptedBackup({ sqlFile, encrypt, sourceRevision = null }) {

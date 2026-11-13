@@ -207,6 +207,7 @@ export const exchangeRouter = router({
         branchId: z.number().int().positive().optional(),
         supplierId: z.number().int().positive(),
         purchaseOrderId: z.number().int().positive().optional(),
+        allocationMode: z.literal("ACCOUNT").optional(),
         currency: z.enum(["USD", "IQD"]),
         walletAmount: moneyStr,
         settledIqd: moneyStr.optional(),

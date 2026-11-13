@@ -9,6 +9,11 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { SignJWT, jwtVerify } from "jose";
+import { isMultiTenantModeActive } from "../db";
+import {
+  inspectBackupReadiness, isBackupSqlName, readBackupAttempt, resolveRecordedArchive,
+  summarizeRestoreDrill, writeRestoreDrillAttempt, type RestoreDrillAttempt,
+} from "../lib/backupEvidence";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { resolveCompanyById } from "../tenancy/registry";
 
@@ -63,9 +68,10 @@ export async function listBackupFiles(): Promise<BackupFile[]> {
   // الملَفّ `<dbName>-<ts>.sql`) — لا تَسريب أَسماء/أَحجام نُسَخ شَركات أُخرى عَبر هذه القائمة.
   const prefix = await backupFilePrefix();
   const out: BackupFile[] = [];
-  for (const name of entries.filter((f) => f.endsWith(".sql") && (!prefix || f.startsWith(prefix)))) {
+  for (const name of entries.filter((f) => isBackupSqlName(f) && (!prefix || f.startsWith(prefix)))) {
     try {
-      const s = await stat(path.join(backupsDir(), name));
+      const s = await lstat(path.join(backupsDir(), name));
+      if (!s.isFile()) continue;
       out.push({ name, sizeKb: Math.round(s.size / 1024), createdAt: s.mtime.toISOString() });
     } catch {
       /* تجاهل ملفاً تعذّر فحصه */
@@ -90,7 +96,7 @@ export async function backupsStats() {
  */
 export async function resolveBackupFile(name: string): Promise<string | null> {
   // قائمة بيضاء صارمة: أحرف/أرقام و . _ - فقط ثم .sql ⇒ ترفض صراحةً الفواصل و«..» وأحرف التحكّم والاقتباس و«:».
-  if (!name || name.includes("..") || !/^[A-Za-z0-9._-]+\.sql$/.test(name)) {
+  if (!isBackupSqlName(name)) {
     return null;
   }
   // تَعدّد الشركات: مَلَفّ لا يَحمِل بادِئة قاعدة الشَركة الحالية ⇒ كَأَنّه غَير مَوجود (لا
@@ -100,7 +106,7 @@ export async function resolveBackupFile(name: string): Promise<string | null> {
   const abs = path.join(backupsDir(), path.basename(name));
   if (path.dirname(abs) !== backupsDir()) return null;
   try {
-    const s = await stat(abs);
+    const s = await lstat(abs);
     if (!s.isFile()) return null;
   } catch {
     return null;
@@ -115,21 +121,163 @@ export async function deleteBackup(name: string): Promise<boolean> {
   return true;
 }
 
-/** نسخة احتياطية الآن (شركة السِياق الحالي، أو DATABASE_URL في النَشر الأُحادي). يعيد الملف المُنشأ. */
-export async function runBackup(): Promise<BackupFile | null> {
-  const before = new Set((await listBackupFiles()).map((b) => b.name));
+export async function backupReadiness() {
+  const prefix = await backupFilePrefix();
+  if (isMultiTenantModeActive() && !prefix) {
+    throw new Error("تعذّر تحديد الشركة لسجل النسخ.");
+  }
+  return {
+    ...(await inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix, await activeRestoreLease())),
+    encryptedRestoreBlockReason: getEncryptedRestoreBlockReason(),
+    restoreDrillBlockReason: getLocalRestoreBlockReason(),
+  };
+}
+
+/** يعود إلى إيصال العملية نفسها حتى عند تزامن النسخ المجدول واليدوي. */
+export async function runBackup(): Promise<BackupFile> {
   const company = await currentCompanyInfo();
-  await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs")], {
+  const { stdout } = await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs"), "--print-receipt"], {
     env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
+    encoding: "utf8",
     maxBuffer: 1024 * 1024 * 64,
   });
-  const after = await listBackupFiles();
-  return after.find((b) => !before.has(b.name)) ?? after[0] ?? null;
+  const name = /^ERP_BACKUP_RESULT: ([A-Za-z0-9_.$-]+\.sql)\r?$/m.exec(stdout)?.[1];
+  const abs = name ? await resolveBackupFile(name) : null;
+  const attempt = name && abs ? await readBackupAttempt(backupsDir(), name) : null;
+  if (!name || !abs || attempt?.status !== "COMPLETED") {
+    throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  const file = await lstat(abs);
+  if (!file.isFile() || file.size < 512) {
+    throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
+}
+
+export function getOnlineMaintenanceBlockReason(): string | null {
+  if (isMultiTenantModeActive()) {
+    return "الصيانة المدمّرة عبر الويب معطّلة في وضع تعدّد الشركات. تواصل مع مسؤول الخادم.";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return "الاستعادة والتصفير عبر الويب معطّلان في الإنتاج. نفّذ الصيانة من الخادم بعد إيقاف عمال الويب.";
+  }
+  return null;
+}
+
+export function isEncryptedRestoreFile(name: string): boolean {
+  return /\.sql\.gpg$/i.test(name);
+}
+
+const localRestoreTargetMessage = "استعادة النسخة المشفّرة تتطلب قاعدة MySQL محلية.";
+const missingBackupKeyMessage = "اضبط عبارة GPG للنسخ الاحتياطية على الخادم المحلي أولاً.";
+
+function getLocalRestoreBlockReason(): string | null {
+  const onlineBlock = getOnlineMaintenanceBlockReason();
+  if (onlineBlock) return onlineBlock;
+  try {
+    const target = new URL(process.env.DATABASE_URL ?? "");
+    if (target.protocol !== "mysql:" || !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)) {
+      return localRestoreTargetMessage;
+    }
+  } catch {
+    return localRestoreTargetMessage;
+  }
+  return null;
+}
+
+export function getEncryptedRestoreBlockReason(): string | null {
+  return getLocalRestoreBlockReason() ?? (process.env.BACKUP_GPG_PASSPHRASE ? null : missingBackupKeyMessage);
+}
+
+function assertEncryptedRestoreReady() {
+  const reason = getEncryptedRestoreBlockReason();
+  if (reason) throw new RestoreUploadValidationError(reason);
+}
+
+export async function resolveStoredRestoreFile(name: string): Promise<string | null> {
+  if (!isEncryptedRestoreFile(name)) return resolveBackupFile(name);
+  assertOnlineMaintenanceAllowed();
+  assertEncryptedRestoreReady();
+  return (await resolveRecordedArchive(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), name))?.file ?? null;
+}
+
+export async function startRestoreDrill(name: string) {
+  const reason = getLocalRestoreBlockReason();
+  if (reason) throw new OnlineMaintenanceBlockedError(reason);
+  const directory = backupsDir();
+  const archive = isBackupSqlName(name)
+    ? await resolveRecordedArchive(directory, process.env.BACKUP_OFFSITE_DIR?.trim(), `${name}.gpg`)
+    : null;
+  if (!archive) throw new RestoreUploadValidationError("اختر نسخة مشفّرة موثّقة من سجل النسخ.");
+
+  const releaseLock = await acquireRestoreLock();
+  let scratch: string | undefined;
+  try {
+    const lease = await activeRestoreLease();
+    if (!lease) throw Error("تعذّر إثبات قفل التمرين.");
+    const scratchDirectory = await mkdtemp(path.join(tmpdir(), "erp-restore-drill-"));
+    scratch = scratchDirectory;
+    const evidence = path.join(scratchDirectory, "evidence");
+    const attempt: RestoreDrillAttempt = {
+      version: 1, file: name, source: { size: archive.manifest.size, sha256: archive.manifest.sha256 },
+      lease, startedAt: new Date().toISOString(), finishedAt: null, result: null,
+    };
+    await writeRestoreDrillAttempt(directory, attempt);
+    const context = process.env.BACKUP_DRILL_DOCKER_CONTEXT?.trim() || (process.platform === "win32" ? "desktop-linux" : "default");
+    const args = [path.join(scriptsDir(), "isolated-local-restore.mjs"), "--screen-exercise",
+      "--encrypted", archive.file, "--context", context, "--evidence", evidence];
+    const mirror = process.env.BACKUP_ATTACHMENT_MIRROR_DIR?.trim();
+    if (mirror) args.push("--attachment-mirror", mirror);
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "ProgramFiles", "USERPROFILE",
+      "HOME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR", "DOCKER_CONFIG", "BACKUP_GPG_PASSPHRASE",
+      "INTEGRATIONS_ENCRYPTION_KEY"]) {
+      if (process.env[key] !== undefined) env[key] = process.env[key];
+    }
+    const work = async () => {
+      let workerSucceeded = true;
+      try {
+        await execFileP(process.execPath, args, { env, encoding: "utf8", maxBuffer: 64 * 1024, windowsHide: true });
+      } catch {
+        workerSucceeded = false; // A blocked attempt can still produce valid evidence.
+      }
+      const reportFile = path.join(evidence, "report.json");
+      let report: unknown;
+      try {
+        const metadata = await lstat(reportFile);
+        if (metadata.isFile() && metadata.size <= 64 * 1024) report = JSON.parse(await readFile(reportFile, "utf8"));
+      } catch { /* Missing or invalid worker report. */ }
+      await writeRestoreDrillAttempt(directory, {
+        ...attempt, finishedAt: new Date().toISOString(),
+        result: summarizeRestoreDrill(report, archive.manifest, workerSucceeded),
+      });
+    };
+    void work().finally(async () => {
+      for (const file of ["report.json", "exercise-target", "exercise-target.next"]) {
+        await unlink(path.join(evidence, file)).catch(() => {});
+      }
+      await rmdir(evidence).catch(() => {});
+      await rmdir(scratchDirectory).catch(() => {});
+      await releaseLock();
+    }).catch(() => console.error("Failed to record isolated restore exercise"));
+    return { ok: true as const, name };
+  } catch (error) {
+    if (scratch) await rmdir(scratch).catch(() => {});
+    await releaseLock();
+    throw error;
+  }
+}
+
+export class OnlineMaintenanceBlockedError extends Error {}
+
+function assertOnlineMaintenanceAllowed() {
+  const reason = getOnlineMaintenanceBlockReason();
+  if (reason) throw new OnlineMaintenanceBlockedError(reason);
 }
 
 /**
  * ⛔ مُعطَّلتان بِالكامِل في وَضع تَعدّد الشركات (`isMultiTenantModeActive()`) — يُتحقَّق مِن
- * هذا عِند حَدّ التَصريح (`systemRouter.ts`) قَبل الوُصول لهاتين الدالّتين أَصلاً، لا هُنا.
+ * هذا عِند حدود التصريح والاستقبال، ويُعاد فحصه قبل تشغيل السكربت.
  *
  * السَبب: `restore.mjs`/`reset.mjs` يُنفّذان عَبر `docker exec ... mysql -uroot` (صَلاحية
  * كامِلة عَلى كُل قَواعِد الخادِم، لا مُقيَّدة بِقاعِدة الشَركة) واستِعادة `restoreUpload`
@@ -143,15 +291,44 @@ export async function runBackup(): Promise<BackupFile | null> {
  * الذاتية في نِظام مُتعدِّد المُستأجِرين أَصلاً؛ تَبقى مُتاحة عَبر أَدوات المُشغِّل المُباشِرة
  * (`pnpm db:backup:all-companies` + استِعادة يَدوية مَوجَّهة لِقاعِدة الشَركة تَحديداً).
  */
-export async function runRestore(absFile: string): Promise<void> {
-  await execFileP(process.execPath, [path.join(scriptsDir(), "restore.mjs"), absFile, "--confirm", "RESTORE"], {
-    env: { ...process.env, MAINTENANCE_LOCK_HELD_BY_PARENT: "1" },
-    maxBuffer: 1024 * 1024 * 16,
-  });
+export async function runRestore(absFile: string, { requireArchiveManifest = true } = {}): Promise<void> {
+  assertOnlineMaintenanceAllowed();
+  let sqlFile = absFile;
+  const encrypted = isEncryptedRestoreFile(absFile);
+  if (encrypted) {
+    assertEncryptedRestoreReady();
+    sqlFile = path.join(await mkdtemp(path.join(tmpdir(), "erp-restore-decrypted-")), "decrypted.sql");
+  }
+  try {
+    if (encrypted) {
+      const args = [path.join(scriptsDir(), "decrypt-restore-archive.mjs"), absFile, sqlFile];
+      if (requireArchiveManifest) args.push("--require-manifest");
+      try {
+        await execFileP(process.execPath, args, { encoding: "utf8", maxBuffer: 64 * 1024 });
+      } catch (error) {
+        const code = (error as { stderr?: string }).stderr?.trim();
+        if (code === "BACKUP_RESTORE_SQL_TOO_LARGE") {
+          throw new RestoreUploadValidationError("الملف بعد فك التشفير يتجاوز الحدّ المسموح (2 غ.ب).", 413);
+        }
+        if (code === "BACKUP_MANIFEST_INVALID" || code === "DECRYPTED_SQL_FINGERPRINT_MISMATCH" || code === "BACKUP_ARCHIVE_CHANGED") {
+          throw new RestoreUploadValidationError("تعذّر مطابقة النسخة المشفّرة مع بيانها.");
+        }
+        throw new RestoreUploadValidationError("تعذّر تجهيز النسخة المشفّرة. تحقق من الملف وعبارة GPG على الخادم المحلي.");
+      }
+      assertEncryptedRestoreReady();
+    }
+    await execFileP(process.execPath, [path.join(scriptsDir(), "restore.mjs"), sqlFile, "--confirm", "RESTORE"], {
+      env: { ...process.env, MAINTENANCE_LOCK_HELD_BY_PARENT: "1" },
+      maxBuffer: 1024 * 1024 * 16,
+    });
+  } finally {
+    if (encrypted) await cleanupTmp(sqlFile);
+  }
 }
 
 /** تصفير «نظام فارغ» (reset.mjs يأخذ نسخة أمان أولاً). ⛔ راجع تحذير runRestore أعلاه — نفس القيد. */
 export async function runReset(seed: boolean): Promise<void> {
+  assertOnlineMaintenanceAllowed();
   const args = [path.join(scriptsDir(), "reset.mjs"), "--confirm", "RESET"];
   if (seed) args.push("--seed");
   await execFileP(process.execPath, args, {
@@ -161,7 +338,7 @@ export async function runReset(seed: boolean): Promise<void> {
 }
 
 export const MAX_RESTORE_UPLOAD_BYTES = 200 * 1024 * 1024;
-const MIN_RESTORE_UPLOAD_BYTES = 512;
+const MIN_SQL_RESTORE_BYTES = 512;
 const RESTORE_TICKET_ISSUER = "business-management-system";
 const RESTORE_TICKET_AUDIENCE = "restore-upload";
 const RESTORE_LOCK_STALE_MS = 5 * 60 * 1000;
@@ -177,7 +354,7 @@ export async function sweepStaleRestoreArtifacts(now = Date.now()): Promise<numb
   const entries = await readdir(base).catch(() => [] as string[]);
   let removed = 0;
   for (const name of entries) {
-    const isUploadDir = /^erp-restore-upload-[A-Za-z0-9_-]+$/.test(name);
+    const isUploadDir = /^erp-restore-(?:upload|decrypted)-[A-Za-z0-9_-]+$/.test(name);
     const isUsedMarker = /^erp-restore-ticket-[0-9a-f-]{36}\.used$/i.test(name);
     if (!isUploadDir && !isUsedMarker) continue;
     const target = path.join(base, name);
@@ -194,6 +371,12 @@ export async function sweepStaleRestoreArtifacts(now = Date.now()): Promise<numb
 
 export function restoreLockPath(): string {
   return RESTORE_LOCK_PATH;
+}
+
+async function activeRestoreLease(): Promise<string | undefined> {
+  const info = await lstat(RESTORE_LOCK_PATH).catch(() => null);
+  if (!info?.isFile() || info.size > 1024 || Date.now() - info.mtimeMs > RESTORE_LOCK_STALE_MS) return undefined;
+  return (await readFile(RESTORE_LOCK_PATH, "utf8").catch(() => "")).split("\n", 1)[0] || undefined;
 }
 
 export class RestoreUploadValidationError extends Error {
@@ -219,9 +402,9 @@ export function normalizeRestoreFileName(fileName: string): string {
     name.length > 128 ||
     name !== path.basename(name) ||
     name.includes("..") ||
-    !/^[A-Za-z0-9._-]+\.sql$/i.test(name)
+    !/^[A-Za-z0-9._-]+\.sql(?:\.gpg)?$/i.test(name)
   ) {
-    throw new RestoreUploadValidationError("اسم الملف غير صالح؛ اختر ملف .sql باسم بسيط.");
+    throw new RestoreUploadValidationError("اسم الملف غير صالح. اختر ملف .sql أو .sql.gpg باسم بسيط.");
   }
   return name;
 }
@@ -238,7 +421,9 @@ export type RestoreUploadTicket = {
 /** تذكرة قصيرة العمر: تفصل إعادة التحقّق الصغيرة عن دفق الملف الكبير. */
 export async function issueRestoreUploadTicket(input: RestoreUploadTicket): Promise<string> {
   const fileName = normalizeRestoreFileName(input.fileName);
-  if (!Number.isSafeInteger(input.fileSize) || input.fileSize < MIN_RESTORE_UPLOAD_BYTES) {
+  const encrypted = isEncryptedRestoreFile(fileName);
+  if (encrypted) assertEncryptedRestoreReady();
+  if (!Number.isSafeInteger(input.fileSize) || input.fileSize < (encrypted ? 1 : MIN_SQL_RESTORE_BYTES)) {
     throw new RestoreUploadValidationError("الملف صغير أو تالف.");
   }
   if (input.fileSize > MAX_RESTORE_UPLOAD_BYTES) {
@@ -282,7 +467,7 @@ export async function verifyRestoreUploadTicket(token: string): Promise<RestoreU
     if (!ticketId || !Number.isInteger(userId) || userId <= 0) return null;
     if (!Number.isInteger(sessionId) || sessionId <= 0) return null;
     if (!dbName || !fileName || !Number.isSafeInteger(fileSize)) return null;
-    if (fileSize < MIN_RESTORE_UPLOAD_BYTES || fileSize > MAX_RESTORE_UPLOAD_BYTES) return null;
+    if (fileSize < (isEncryptedRestoreFile(fileName) ? 1 : MIN_SQL_RESTORE_BYTES) || fileSize > MAX_RESTORE_UPLOAD_BYTES) return null;
     return { ticketId, userId, sessionId, dbName, fileName, fileSize };
   } catch {
     return null;
@@ -310,8 +495,8 @@ export async function consumeRestoreUploadTicket(ticketId: string): Promise<bool
  * يحفظ SQL كدفق في ملف حصري خارج webroot. لا Base64 ولا تجميع في الذاكرة؛ الحارس
  * يعدّ البايتات أثناء الكتابة ويحذف أي ملف ناقص/زائد/غير صالح.
  */
-export async function quarantineUploadStream(input: Readable, expectedBytes: number): Promise<string> {
-  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < MIN_RESTORE_UPLOAD_BYTES) {
+export async function quarantineUploadStream(input: Readable, expectedBytes: number, encrypted = false): Promise<string> {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < (encrypted ? 1 : MIN_SQL_RESTORE_BYTES)) {
     throw new RestoreUploadValidationError("الملف صغير أو تالف.");
   }
   if (expectedBytes > MAX_RESTORE_UPLOAD_BYTES) {
@@ -319,7 +504,7 @@ export async function quarantineUploadStream(input: Readable, expectedBytes: num
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), "erp-restore-upload-"));
-  const tmp = path.join(dir, "upload.sql");
+  const tmp = path.join(dir, encrypted ? "upload.sql.gpg" : "upload.sql");
   const handle = await open(tmp, "wx", 0o600);
   let bytes = 0;
   let head = Buffer.alloc(0);
@@ -331,7 +516,7 @@ export async function quarantineUploadStream(input: Readable, expectedBytes: num
       if (bytes > MAX_RESTORE_UPLOAD_BYTES || bytes > expectedBytes) {
         throw new RestoreUploadValidationError("تجاوز دفق الملف الحجم المصرّح به.", 413);
       }
-      if (head.length < 4096) {
+      if (!encrypted && head.length < 4096) {
         head = Buffer.concat([head, chunk.subarray(0, 4096 - head.length)]);
       }
       let offset = 0;
@@ -346,7 +531,7 @@ export async function quarantineUploadStream(input: Readable, expectedBytes: num
     if (bytes !== expectedBytes) {
       throw new RestoreUploadValidationError("حجم الملف المستلم لا يطابق الحجم المصرّح به.");
     }
-    if (!/ALROYA_DB_NEUTRAL_BACKUP|MySQL dump|CREATE TABLE|INSERT INTO|CREATE DATABASE/i.test(head.toString("utf8"))) {
+    if (!encrypted && !/ALROYA_DB_NEUTRAL_BACKUP|MySQL dump|CREATE TABLE|INSERT INTO|CREATE DATABASE/i.test(head.toString("utf8"))) {
       throw new RestoreUploadValidationError("الملف لا يبدو ناتج mysqldump صالحاً (.sql).");
     }
     return tmp;
@@ -398,9 +583,14 @@ export async function acquireRestoreLock(): Promise<() => Promise<void>> {
 }
 
 export async function cleanupTmp(p: string): Promise<void> {
-  await unlink(p).catch(() => { /* ليس حرجاً */ });
-  // مجلّد الحجر مولّد وفارغ بعد حذف الملف؛ لا يمسّ أي مسار آخر.
-  if (path.basename(p) === "upload.sql" && path.basename(path.dirname(p)).startsWith("erp-restore-upload-")) {
-    await rmdir(path.dirname(p)).catch(() => {});
-  }
+  const directory = path.dirname(p);
+  const name = path.basename(p);
+  const parent = path.basename(directory);
+  const upload = parent.startsWith("erp-restore-upload-") && (name === "upload.sql" || name === "upload.sql.gpg");
+  const decrypted = parent.startsWith("erp-restore-decrypted-") && name === "decrypted.sql";
+  if (path.dirname(directory) !== path.resolve(tmpdir()) || (!upload && !decrypted)) return;
+  await unlink(p).catch(error => {
+    if (decrypted && error.code !== "ENOENT") console.error("Decrypted restore temporary file requires cleanup");
+  });
+  await rmdir(directory).catch(() => {});
 }

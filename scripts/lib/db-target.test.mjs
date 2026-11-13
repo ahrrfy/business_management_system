@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
+import { basename, join } from "node:path";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { PassThrough, Readable, Writable } from "node:stream";
@@ -98,24 +100,38 @@ async function backupSelection({
       backupDumpCommand,
     };
   }
+  let exitReason;
   const context = vm.createContext({
     ...helpers,
     execFileSync,
-    console: { error() {}, log() {} },
+    // Run receipt setup without creating files or registering exit listeners.
+    basename,
+    join,
+    mkdirSync() {},
+    parseDbTarget,
+    randomUUID,
+    renameSync() {},
+    writeFileSync() {},
+    console: {
+      error(_label, reason) {
+        exitReason = reason;
+      },
+    },
     process: {
       argv: [],
       env: {
         BACKUP_TARGET_URL: `mysql://root:pw@${host}:${urlPort}/erp`,
         DB_CONTAINER: "container-a",
       },
+      once() {},
       exit: (code) => {
-        throw new Error(`EXIT:${code}`);
+        throw new Error(exitReason ?? String(code));
       },
     },
   });
   const selection = source.slice(
     source.indexOf("const container ="),
-    source.indexOf("const ts ="),
+    source.indexOf("const partial ="),
   );
   return {
     result: await vm.runInContext(
@@ -127,18 +143,18 @@ async function backupSelection({
 }
 
 test("backup refuses Docker fallback whose published port differs from the URL", async () => {
-  await assert.rejects(backupSelection(), /DB_TARGET_BINDING_MISMATCH|EXIT:1/);
+  await assert.rejects(backupSelection(), /DB_TARGET_BINDING_MISMATCH/);
 });
 test("backup refuses remote Docker fallback", async () => {
   await assert.rejects(
     backupSelection({ host: "db.remote.invalid" }),
-    /DB_TARGET_DOCKER_REMOTE|EXIT:1/,
+    /DB_TARGET_DOCKER_REMOTE/,
   );
 });
 test("backup refuses matching Docker port with a different server identity", async () => {
   await assert.rejects(
     backupSelection({ publishedPort: "3310", adapterUuid: "server-a" }),
-    /DB_TARGET_IDENTITY_MISMATCH|EXIT:1/,
+    /DB_TARGET_IDENTITY_MISMATCH/,
   );
 });
 test("backup selects the verified Docker container with explicit internal TCP coordinates", async () => {

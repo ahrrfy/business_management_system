@@ -627,9 +627,8 @@ describe("عرض سداد الشراء المثبت", () => {
     );
     expect(html).toContain('data-selected-value="SUPPLIER"');
     expect(html).toContain('data-supplier-picker="15"');
-    expect(html).toContain(
-      "عند اعتماد سند الصرف وتنفيذه، ينخفض رصيد ذمة المورد بقيمة السند",
-    );
+    expect(html).toContain("يوزّع النظام الدفعة بالدينار على أقدم مستحقات المورد");
+    expect(html).toContain('href="/exchange?tab=settle&amp;supplierId=15"');
   });
 
   it("يعرض بطاقة سياسة تسوية المورد بوضوح للنقدي الديناري والدولاري والآجل", async () => {

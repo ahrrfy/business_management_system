@@ -274,6 +274,11 @@ export default function VoucherFormShared(props: VoucherFormProps) {
 
       {/* تَنبيهات النَظام */}
       <FormError message={err} />
+      {err && !isReceipt && partyType === "SUPPLIER" && supplierId != null && (
+        <Link className="inline-block text-sm text-primary underline" href={`/suppliers?tab=statement&id=${supplierId}`}>
+          فتح كشف حساب المورد لمراجعة الدفعات والمرتجعات
+        </Link>
+      )}
       {hardBlock && (
         <div className="rounded-md border badge-stock-low text-sm p-3 flex items-start gap-2">
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />

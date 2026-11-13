@@ -3,29 +3,56 @@ import { spawnSync } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
-export async function assertPrivateRecoveryDirectory(directory) {
+export async function assertPrivateRecoveryDirectory(directory, { restrictNewWindowsDirectory = false } = {}) {
   if (process.platform !== "win32") {
     if (((await stat(directory)).mode & 0o077) !== 0) throw Error("PRIVATE_EVIDENCE_DIRECTORY_REQUIRED");
     return;
   }
-  // mode 0600 does not establish a private Windows ACL. Inspect actual allowed SIDs.
+  // Read SIDs directly so ACL checks do not depend on account-name resolution.
   const script = `$ErrorActionPreference='Stop';
+$sidType=[System.Security.Principal.SecurityIdentifier];
 $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
 $allowed=@($current,'S-1-5-18','S-1-5-32-544');
-$acl=Get-Acl -LiteralPath $env:RECOVERY_PRIVATE_DIR;
-foreach($rule in $acl.Access){
- if($rule.AccessControlType -eq 'Allow'){
-  $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
-  if($sid -notin $allowed){exit 1}
+$target=$env:RECOVERY_PRIVATE_DIR;
+$acl=[IO.Directory]::GetAccessControl($target);
+if($env:RECOVERY_RESTRICT_NEW_DIRECTORY -eq '1'){
+ $attributes=[IO.File]::GetAttributes($target);
+ if(!($attributes -band [IO.FileAttributes]::Directory) -or ($attributes -band [IO.FileAttributes]::ReparsePoint)){exit 2}
+ if([IO.Directory]::GetFileSystemEntries($target).Length -ne 0){exit 3}
+ if($acl.GetOwner($sidType).Value -notin $allowed){exit 4}
+ $acl.SetAccessRuleProtection($true,$false);
+ foreach($rule in $acl.GetAccessRules($true,$false,$sidType)){$acl.RemoveAccessRuleSpecific($rule)}
+ $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit;
+ foreach($sid in $allowed){
+  $principal=[Security.Principal.SecurityIdentifier]::new($sid);
+  $rule=[Security.AccessControl.FileSystemAccessRule]::new($principal,'FullControl',$inherit,'None','Allow');
+  $acl.AddAccessRule($rule);
  }
+ [IO.Directory]::SetAccessControl($target,$acl);
+ $acl=[IO.Directory]::GetAccessControl($target);
+}
+foreach($rule in $acl.GetAccessRules($true,$true,$sidType)){
+ if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed){exit 5}
 }
 exit 0`;
-  const r = spawnSync(join(process.env.SystemRoot ?? "C:/Windows", "System32/WindowsPowerShell/v1.0/powershell.exe"),
+  const systemRoot = process.env.SystemRoot ?? "C:/Windows";
+  const platformEnvironment = Object.fromEntries([
+    "PATH", "SystemDrive", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData",
+  ].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+  const r = spawnSync(join(systemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    { env: { ...process.env, RECOVERY_PRIVATE_DIR: directory,
-      PSModulePath: join(process.env.SystemRoot ?? "C:/Windows", "System32/WindowsPowerShell/v1.0/Modules") },
-      timeout: 10000, stdio: "ignore" });
-  if (r.status !== 0) throw Error("PRIVATE_EVIDENCE_DIRECTORY_REQUIRED");
+    { env: {
+      ...platformEnvironment,
+      SystemRoot: systemRoot,
+      RECOVERY_PRIVATE_DIR: directory,
+      RECOVERY_RESTRICT_NEW_DIRECTORY: restrictNewWindowsDirectory ? "1" : "0",
+      PSModulePath: join(systemRoot, "System32/WindowsPowerShell/v1.0/Modules"),
+    },
+    timeout: 30_000, stdio: "ignore" });
+  if (r.status !== 0) {
+    const reason = r.error?.code ?? `WINDOWS_ACL_EXIT_${r.status}`;
+    throw Error("PRIVATE_EVIDENCE_DIRECTORY_REQUIRED", { cause: reason });
+  }
 }
 
 export const DEFINER_INVENTORY_SQL = `

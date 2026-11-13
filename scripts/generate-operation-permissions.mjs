@@ -754,6 +754,7 @@ const WORDS = {
   reverse: "عكس",
   revert: "تراجع",
   restore: "استعادة",
+  drill: "تمرين",
   correct: "تصحيح",
   return: "مرتجع",
   refund: "رد مبلغ",

@@ -10,6 +10,10 @@ import {
   cleanupTmp,
   consumeRestoreUploadTicket,
   currentDbName,
+  getEncryptedRestoreBlockReason,
+  getOnlineMaintenanceBlockReason,
+  isEncryptedRestoreFile,
+  OnlineMaintenanceBlockedError,
   quarantineUploadStream,
   resolveBackupFile,
   RestoreUploadValidationError,
@@ -90,9 +94,11 @@ export function backupRouter(): Router {
     // التحقّق يحدث قبل تركيب أي body parser/مستهلك للدفق. الطلب المجهول يُرفض فوراً
     // ولا يستطيع إجبار Node على تجميع ملف الاستعادة في الذاكرة أو على القرص.
     const session = await getSessionContext(req).catch(() => ({ user: null, sessionId: null }));
-    if (!session.user || (session.user.role !== "admin" && !session.user.isOwner)) {
-      return res.status(403).json({ error: "استعادة النسخ متاحة للمدير فقط." });
+    if (session.user?.isOwner !== true) {
+      return res.status(403).json({ error: "استعادة النسخ متاحة للمالك فقط." });
     }
+    const blockedReason = getOnlineMaintenanceBlockReason();
+    if (blockedReason) return res.status(403).json({ error: blockedReason });
 
     const rawAuthorization = req.get("authorization") ?? "";
     const token = rawAuthorization.startsWith("Bearer ") ? rawAuthorization.slice(7).trim() : "";
@@ -107,8 +113,12 @@ export function backupRouter(): Router {
     ) {
       return res.status(401).json({ error: "تصريح رفع الاستعادة غير صالح أو منتهي." });
     }
-    if (req.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/sql") {
-      return res.status(415).json({ error: "نوع الملف غير صالح؛ المطلوب application/sql." });
+    const encrypted = isEncryptedRestoreFile(ticket.fileName);
+    const encryptedBlock = encrypted ? getEncryptedRestoreBlockReason() : null;
+    if (encryptedBlock) return res.status(400).json({ error: encryptedBlock });
+    const contentType = encrypted ? "application/octet-stream" : "application/sql";
+    if (req.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== contentType) {
+      return res.status(415).json({ error: `نوع الملف لا يطابق تصريح الاستعادة. النوع المطلوب ${contentType}.` });
     }
     const contentLength = Number(req.get("content-length"));
     if (!Number.isSafeInteger(contentLength) || contentLength !== ticket.fileSize) {
@@ -122,12 +132,12 @@ export function backupRouter(): Router {
     let tmp: string | null = null;
     try {
       releaseLock = await acquireRestoreLock();
-      tmp = await quarantineUploadStream(req, ticket.fileSize);
+      tmp = await quarantineUploadStream(req, ticket.fileSize, encrypted);
       await logAudit(
         { user: session.user, req },
         { action: "system.restore.upload.begin", entityType: "system", entityId: ticket.fileName },
       );
-      await runRestore(tmp);
+      await runRestore(tmp, { requireArchiveManifest: false });
       await logAudit(
         { user: session.user, req },
         { action: "system.restore.upload", entityType: "system", entityId: ticket.fileName },
@@ -144,6 +154,9 @@ export function backupRouter(): Router {
           outcome: "FAILURE",
         },
       );
+      if (error instanceof OnlineMaintenanceBlockedError) {
+        return res.status(403).json({ error: error.message });
+      }
       if (error instanceof RestoreUploadValidationError) {
         return res.status(error.status).json({ error: error.message });
       }
