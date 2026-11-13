@@ -12,6 +12,7 @@ import {
   computeInvoiceDiscount,
   itemTotal,
   money,
+  officialPromoDiscountOfItem,
 } from "./posShared";
 
 import { toNormalizedNumber } from "@shared/numberNormalize";
@@ -52,7 +53,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const referenceGrossD = cart.reduce((s, c) => {
     if (c.digital) return s;
     const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
-    return s.plus(refUnit.times(c.qty));
+    const refAfterPromo = refUnit.times(c.qty).minus(officialPromoDiscountOfItem(c));
+    return s.plus(refAfterPromo.lt(0) ? D(0) : refAfterPromo);
   }, D(0));
 
   const priorDeviationRatioD = referenceGrossD.gt(0)

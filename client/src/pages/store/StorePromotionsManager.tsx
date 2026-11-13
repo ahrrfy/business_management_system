@@ -195,6 +195,10 @@ export default function StorePromotionsManager() {
   }
 
   function openEditModal(promo: StorePromotion) {
+    if (promo.type !== "PERCENT" && promo.type !== "AMOUNT") {
+      notify.err("هذا العرض متقدم (باقة/كميات/سعر موحد)؛ يرجى تعديله من شاشة العروض والتخفيضات المركزية.");
+      return;
+    }
     const initialTargets: TargetItem[] = (promo.targets ?? []).map((t) => {
       const isCat = t.targetType === "CATEGORY";
       const catName = isCat ? categoriesQ.data?.find((c) => c.id === t.targetId)?.name : undefined;
@@ -417,13 +421,14 @@ export default function StorePromotionsManager() {
       {
         id: "discount",
         header: "قيمة الخصم",
-        accessorFn: (p) => (p.type === "PERCENT" ? `${p.discountPercent}%` : p.discountAmount),
+        accessorFn: (p) => p.summary || (p.type === "PERCENT" ? `${p.discountPercent}%` : p.discountAmount),
         cell: ({ row }) => {
           const promo = row.original;
           const discountDisplay =
-            promo.type === "PERCENT"
+            promo.summary ||
+            (promo.type === "PERCENT"
               ? `${promo.discountPercent}%`
-              : formatIqd(Number(promo.discountAmount));
+              : formatIqd(Number(promo.discountAmount)));
           return (
             <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 font-bold tabular-nums text-primary text-xs">
               {promo.type === "PERCENT" ? <Percent aria-hidden className="size-3" /> : null}

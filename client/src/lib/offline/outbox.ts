@@ -34,6 +34,9 @@ export interface OfflineSaleLine {
   unitPriceOverride: string;
   discountPercent?: string;
   discountAmount?: string;
+  promotionId?: number;
+  promotionDiscount?: string;
+  cashierDiscountAmount?: string;
 }
 
 export interface OfflineSalePayload {

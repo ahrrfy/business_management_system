@@ -8,10 +8,12 @@ import {
   type CustomizationData,
   composeCustomizationText,
 } from "@/components/CustomizationDialog";
+import Decimal from "decimal.js";
 import { D, round2 } from "@/lib/money";
 import {
   effectivePrice,
   lineTotal,
+  officialReceptionPromoInfo,
   type CartLine,
   type PayMethod,
   type Tier,
@@ -264,31 +266,27 @@ export function buildReceptionCheckoutPayload({
               ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) }
               : {}),
             lines: regularLines.map((c) => {
-              if (c.row.promotionEffectivePrice != null) {
-                const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
-                const discAmt = listWhole
-                  .minus(D(c.row.promotionEffectivePrice))
-                  .times(c.qty);
-                return {
-                  variantId: c.row.variantId,
-                  productUnitId: c.row.productUnitId,
-                  quantity: String(c.qty),
-                  unitPriceOverride: listWhole.toFixed(2),
-                  ...(discAmt.gt(0)
-                    ? { discountAmount: discAmt.toFixed(2) }
-                    : {}),
-                  ...(c.row.promotionId != null
-                    ? { promotionId: c.row.promotionId }
-                    : {}),
-                };
-              }
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const listGross = listWhole.times(c.qty);
+              const netLine = round2(D(lineTotal(c)));
+              const discAmt = Decimal.max(0, round2(listGross.minus(netLine)));
+              const promoInfo = officialReceptionPromoInfo(c);
+              const promotionId = promoInfo?.promotionId;
+
+              const promoDiscount = promoInfo
+                ? Decimal.min(discAmt, promoInfo.promoDiscountD)
+                : D(0);
+              const cashierDiscount = Decimal.max(0, round2(discAmt.minus(promoDiscount)));
+
               return {
                 variantId: c.row.variantId,
                 productUnitId: c.row.productUnitId,
                 quantity: String(c.qty),
-                ...(c.disc != null && c.disc > 0
-                  ? { discountPercent: String(c.disc) }
-                  : {}),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(promotionId != null ? { promotionId } : {}),
+                ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+                ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
               };
             }),
           }

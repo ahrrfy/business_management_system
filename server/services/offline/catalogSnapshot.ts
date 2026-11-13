@@ -19,6 +19,9 @@ import {
   productUnitBarcodes,
   productUnits,
   productVariants,
+  promotions,
+  promotionTargets,
+  promotionTiers,
 } from "../../../drizzle/schema";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import type {
@@ -29,6 +32,7 @@ import type {
   OfflineStockRow,
   OfflineVersions,
 } from "@shared/offlineCatalog";
+import type { PromotionRule } from "@shared/promotionEngine";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { titleForChannel } from "@shared/productChannelTitles";
@@ -41,15 +45,26 @@ function requireDbOrThrow() {
   return db;
 }
 
+function toYmdStr(v: Date | string | null | undefined): string | null {
+  if (!v) return null;
+  return typeof v === "string" ? v.slice(0, 10) : v.toISOString().slice(0, 10);
+}
+
 // مبدأ النسخة: بصمة محتوى (count + SUM(CRC32) على **الحقول المُصدَّرة بالضبط** في اللقطة) —
 // لا اعتماد على updatedAt إطلاقاً (دقّته ثانية واحدة، وتعديلٌ في نفس ثانية الإدراج يفلت منه؛
 // وproductUnits/البدائل بلا updatedAt أصلاً). النتيجة: النسخة تتغيّر إذا-وفقط-إذا تغيّر ما
 // يصل العميل فعلاً.
 async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): Promise<string> {
+  const posAutoPromoWhere = and(
+    eq(promotions.isActive, true),
+    eq(promotions.applicationMode, "AUTO"),
+    eq(promotions.isStoreManaged, false),
+    inArray(promotions.channel, ["ALL", "POS_ONLY"]),
+  );
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, coalesce(${products.posLabel}, ''), coalesce(${products.shortTitle}, ''), ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), coalesce(${products.stockUsage}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, coalesce(${products.categoryId}, ''), ${products.name}, coalesce(${products.posLabel}, ''), coalesce(${products.shortTitle}, ''), ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), coalesce(${products.stockUsage}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -76,6 +91,29 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
       crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${productUnitBarcodes.productUnitId}, ${productUnitBarcodes.barcode}))), 0)`,
     })
     .from(productUnitBarcodes);
+  const [promo] = await db
+    .select({
+      cnt: sql<number>`count(*)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${promotions.id}, ${promotions.name}, ${promotions.type}, ${promotions.scope}, ${promotions.freeShipping}, coalesce(${promotions.discountPercent}, ''), coalesce(${promotions.discountAmount}, ''), coalesce(${promotions.fixedPrice}, ''), coalesce(${promotions.bundlePrice}, ''), coalesce(${promotions.bundleMode}, ''), coalesce(${promotions.bundleQuantity}, ''), coalesce(${promotions.bogoBuyQuantity}, ''), coalesce(${promotions.bogoGetQuantity}, ''), coalesce(${promotions.bogoGetDiscountPercent}, ''), coalesce(${promotions.tieredMode}, ''), coalesce(${promotions.minLineAmount}, ''), coalesce(${promotions.minOrderSpend}, ''), coalesce(${promotions.maxDiscountAmount}, ''), coalesce(${promotions.branchId}, ''), coalesce(${promotions.customerTier}, ''), ${promotions.channel}, ${promotions.priority}, ${promotions.allowBelowCost}, ${promotions.applyToBaseUnitOnly}, coalesce(cast(${promotions.activeDays} as char), ''), coalesce(${promotions.effectiveFrom}, ''), coalesce(${promotions.effectiveTo}, '')))), 0)`,
+    })
+    .from(promotions)
+    .where(posAutoPromoWhere);
+  const [promoTargets] = await db
+    .select({
+      cnt: sql<number>`count(*)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${promotionTargets.id}, ${promotionTargets.promotionId}, coalesce(${promotionTargets.categoryId}, ''), coalesce(${promotionTargets.productId}, ''), coalesce(${promotionTargets.variantId}, ''), coalesce(${promotionTargets.productUnitId}, '')))), 0)`,
+    })
+    .from(promotionTargets)
+    .innerJoin(promotions, eq(promotionTargets.promotionId, promotions.id))
+    .where(posAutoPromoWhere);
+  const [promoTiers] = await db
+    .select({
+      cnt: sql<number>`count(*)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${promotionTiers.id}, ${promotionTiers.promotionId}, ${promotionTiers.minQuantity}, ${promotionTiers.tierType}, coalesce(${promotionTiers.discountPercent}, ''), coalesce(${promotionTiers.discountAmount}, ''), coalesce(${promotionTiers.fixedPrice}, '')))), 0)`,
+    })
+    .from(promotionTiers)
+    .innerJoin(promotions, eq(promotionTiers.promotionId, promotions.id))
+    .where(posAutoPromoWhere);
   return [
     // بادئة نسخة الاشتقاق: تُرفَع يدوياً عند أي تغيير في **صيغة** اللقطة (حقول/searchText…)
     // — بصمة الـCRC تلتقط تغيّر البيانات فقط، لا تغيّر الكود المُشتِق.
@@ -94,12 +132,16 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     // v6: اعتماد عنوان القناة (titleForChannel مع قناة "pos" / posLabel / shortTitle) في productName
     // وsearchText للقطة، لتتطابق تسمية الكاشير أوفلاين مع الكاشير أونلاين تماماً + تضمين الحقلين في الـCRC.
     // v7: فلترة لقطة الأوفلاين ومخزونها وفق stockUsage القابل للبيع فقط + إدخال stockUsage في CRC.
-    "v7",
+    // v8 (M4 / F24): تضمين العروض الترويجية النشطة (ALL, POS_ONLY) وأهدافها وشرائحها في بصمة الـCRC.
+    "v8",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
     units.cnt, units.crc,
     aliases.cnt, aliases.crc,
+    promo.cnt, promo.crc,
+    promoTargets.cnt, promoTargets.crc,
+    promoTiers.cnt, promoTiers.crc,
   ].join("|");
 }
 
@@ -129,12 +171,13 @@ export async function buildOfflineVersions(): Promise<OfflineVersions> {
 export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
   const db = requireDbOrThrow();
 
-  const [version, base, priceRows, aliasRows] = await Promise.all([
+  const [version, base, priceRows, aliasRows, promoRows] = await Promise.all([
     catalogVersionParts(db),
     db
       .select({
         productUnitId: productUnits.id,
         productId: products.id,
+        categoryId: products.categoryId,
         productName: products.name,
         posLabel: products.posLabel,
         shortTitle: products.shortTitle,
@@ -179,7 +222,100 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         barcode: productUnitBarcodes.barcode,
       })
       .from(productUnitBarcodes),
+    db
+      .select()
+      .from(promotions)
+      .where(
+        and(
+          eq(promotions.isActive, true),
+          eq(promotions.applicationMode, "AUTO"),
+          eq(promotions.isStoreManaged, false),
+          inArray(promotions.channel, ["ALL", "POS_ONLY"]),
+        ),
+      ),
   ]);
+
+  const promoIds = promoRows.map((p) => Number(p.id));
+  const [promoTargetRows, promoTierRows] = promoIds.length > 0
+    ? await Promise.all([
+        db
+          .select()
+          .from(promotionTargets)
+          .where(inArray(promotionTargets.promotionId, promoIds)),
+        promoRows.some((p) => p.type === "TIERED_QTY")
+          ? db
+              .select()
+              .from(promotionTiers)
+              .where(inArray(promotionTiers.promotionId, promoIds))
+          : Promise.resolve([]),
+      ])
+    : [[], []];
+
+  const targetsByPromo = new Map<number, typeof promoTargetRows>();
+  for (const t of promoTargetRows) {
+    const pid = Number(t.promotionId);
+    const arr = targetsByPromo.get(pid) ?? [];
+    arr.push(t);
+    targetsByPromo.set(pid, arr);
+  }
+  const tiersByPromo = new Map<number, typeof promoTierRows>();
+  for (const tr of promoTierRows) {
+    const pid = Number(tr.promotionId);
+    const arr = tiersByPromo.get(pid) ?? [];
+    arr.push(tr);
+    tiersByPromo.set(pid, arr);
+  }
+
+  const exportedPromotions: PromotionRule[] = promoRows.map((p) => {
+    const pid = Number(p.id);
+    const pts = targetsByPromo.get(pid) ?? [];
+    const ptrs = tiersByPromo.get(pid) ?? [];
+    return {
+      id: pid,
+      name: p.name,
+      type: p.type,
+      scope: p.scope,
+      discountPercent: p.discountPercent ?? "0",
+      discountAmount: p.discountAmount ?? "0",
+      fixedPrice: p.fixedPrice ?? null,
+      bundlePrice: p.bundlePrice ?? null,
+      bundleMode: p.bundleMode ?? null,
+      bundleQuantity: p.bundleQuantity ?? null,
+      bogoBuyQuantity: p.bogoBuyQuantity ?? null,
+      bogoGetQuantity: p.bogoGetQuantity ?? null,
+      bogoGetDiscountPercent: p.bogoGetDiscountPercent ?? null,
+      tieredMode: p.tieredMode ?? null,
+      tiers: ptrs
+        .slice()
+        .sort((a, b) => Number(a.minQuantity) - Number(b.minQuantity))
+        .map((tr) => ({
+          minQuantity: Number(tr.minQuantity),
+          tierType: tr.tierType,
+          discountPercent: tr.discountPercent ?? null,
+          discountAmount: tr.discountAmount ?? null,
+          fixedPrice: tr.fixedPrice ?? null,
+        })),
+      minLineAmount: p.minLineAmount ?? "0",
+      minOrderSpend: p.minOrderSpend ?? "0",
+      maxDiscountAmount: p.maxDiscountAmount ?? null,
+      priority: Number(p.priority ?? 0),
+      branchId: p.branchId == null ? null : Number(p.branchId),
+      customerTier: p.customerTier ?? null,
+      channel: p.channel ?? "ALL",
+      applicationMode: "AUTO",
+      allowBelowCost: Boolean(p.allowBelowCost),
+      applyToBaseUnitOnly: p.applyToBaseUnitOnly !== false,
+      freeShipping: Boolean(p.freeShipping) || p.type === "FREE_SHIPPING",
+      activeDays: Array.isArray(p.activeDays) ? p.activeDays : null,
+      effectiveFrom: toYmdStr(p.effectiveFrom),
+      effectiveTo: toYmdStr(p.effectiveTo),
+      isActive: Boolean(p.isActive),
+      targetCategoryIds: pts.filter((t) => t.categoryId != null).map((t) => Number(t.categoryId)),
+      targetProductIds: pts.filter((t) => t.productId != null).map((t) => Number(t.productId)),
+      targetVariantIds: pts.filter((t) => t.variantId != null).map((t) => Number(t.variantId)),
+      targetUnitIds: pts.filter((t) => t.productUnitId != null).map((t) => Number(t.productUnitId)),
+    };
+  });
 
   const pricesByUnit = new Map<number, Partial<Record<OfflinePriceTier, string>>>();
   for (const p of priceRows) {
@@ -218,6 +354,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
     return {
       productUnitId: unitId,
       productId: Number(r.productId),
+      categoryId: r.categoryId == null ? null : Number(r.categoryId),
       productName: posTitle,
       variantId: Number(r.variantId),
       variantName: r.variantName,
@@ -264,7 +401,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
     };
   });
 
-  return { version, generatedAt: new Date().toISOString(), rows };
+  return { version, generatedAt: new Date().toISOString(), rows, promotions: exportedPromotions };
 }
 
 export async function buildStockSnapshot(branchId: number): Promise<OfflineStockRow[]> {

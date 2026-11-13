@@ -1,5 +1,6 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
@@ -13,8 +14,10 @@ import {
   invoiceItems,
   invoices,
   openingModeSettings,
+  productUnits,
   productVariants,
   products,
+  promotions,
   receipts,
   shifts,
 } from "../../../drizzle/schema";
@@ -51,11 +54,14 @@ import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { resolveContractPrices } from "../contractPriceService";
 import {
   allocateCouponDiscountAcrossLines,
-  getProductCategoryIds,
-  resolveCouponPromotionForLine,
+  loadPromotionRuleSnapshot,
   resolvePromotionForLine,
-  type ResolvedPromotion,
+  snapshotToEngineRules,
 } from "../salesPromotionService";
+import {
+  evaluateCartPromotions,
+  type CartEvalItem,
+} from "../../../shared/promotionEngine";
 import {
   consumeCoupon,
   hashCouponCode,
@@ -78,7 +84,7 @@ import {
   type PostingProfile,
 } from "../accounting/postingEngine";
 import { logger } from "../../logger";
-import { money, round2, roundCashIQD, toDbMoney } from "../money";
+import { clampMoney, money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber, nextTransactionTrackingNumber } from "../numbering";
 import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import {
@@ -502,8 +508,15 @@ export async function createSaleInTx(
   const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
   // يوم بغداد هو مرجع صلاحية العرض والكوبون معاً؛ يُحسَب مرة واحدة داخل المعاملة.
-  const _now = new Date();
-  const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
+  // M4 (F25): استخدام وقت الالتقاط الفعلي للبيع في وضع الأوفلاين إن وُجد لضمان ثبات صلاحية العروض
+  const parsedCaptureDate = input.offlineCapture?.capturedAt
+    ? new Date(input.offlineCapture.capturedAt)
+    : null;
+  const referenceDate =
+    parsedCaptureDate && !Number.isNaN(parsedCaptureDate.getTime())
+      ? parsedCaptureDate
+      : new Date();
+  const _bag = new Date(referenceDate.getTime() + 3 * 60 * 60 * 1000);
   const todayYmd = _bag.toISOString().slice(0, 10);
   const lockedCoupon = input.couponCode
     ? await lockCouponForSale(tx, {
@@ -638,6 +651,7 @@ export async function createSaleInTx(
     ? await tx
         .select({
           id: products.id,
+          categoryId: products.categoryId,
           isActive: products.isActive,
           isService: products.isService,
           isBundle: products.isBundle,
@@ -948,40 +962,100 @@ export async function createSaleInTx(
     }
   }
 
-  // promotions v2: خرائط لتحقّق العرض بلا N+1.
-  const productIdByVariant = new Map<number, number>();
-  for (const r of variantRows) {
-    productIdByVariant.set(Number(r.id), 0); // سيُملأ لاحقاً
+  // promotions v2: تقييم العروض والكوبونات سلطوياً على مستوى السلة كاملة بلا N+1.
+  void resolvePromotionForLine;
+  let resolvedDeliveryFee: string | null = null;
+  if (input.delivery) {
+    resolvedDeliveryFee = input.delivery.fee ?? null;
+    if (resolvedDeliveryFee == null) {
+      const dp = (
+        await tx
+          .select({ defaultFee: deliveryParties.defaultFee })
+          .from(deliveryParties)
+          .where(eq(deliveryParties.id, input.delivery.partyId))
+          .limit(1)
+      )[0];
+      resolvedDeliveryFee = dp?.defaultFee ?? "0";
+    }
   }
-  // نحتاج productId لكل متغيّر. نستعمل استعلام إضافي واحد.
-  let categoryByProduct = new Map<number, number | null>();
+  const hasShippingContext =
+    Boolean(input.delivery) ||
+    money(input.deliveryFee ?? "0").gt(0) ||
+    input.deliveryFree === true;
   const linesNeedingPromo = input.lines.filter((l) => l.promotionId != null);
-  if (linesNeedingPromo.length) {
-    const productRows = await tx
-      .select({
-        variantId: productVariants.id,
-        productId: productVariants.productId,
-      })
-      .from(productVariants)
-      .where(
-        inArray(
-          productVariants.id,
-          Array.from(new Set(linesNeedingPromo.map((l) => l.variantId))),
-        ),
-      );
-    for (const pr of productRows)
-      productIdByVariant.set(Number(pr.variantId), Number(pr.productId));
-    const productIds = Array.from(
-      new Set(productRows.map((r) => Number(r.productId))),
+  const hasAnyPromoOrCoupon =
+    linesNeedingPromo.length > 0 ||
+    lockedCoupon != null ||
+    (hasShippingContext && input.sourceType !== "ONLINE");
+  const isBaseUnitByUnitId = new Map<number, boolean>();
+  const promoMetaById = new Map<
+    number,
+    { id: number; allowBelowCost: boolean; isActive: boolean; name: string }
+  >();
+  if (hasAnyPromoOrCoupon) {
+    const unitIdsForPromo = Array.from(
+      new Set(input.lines.map((l) => l.productUnitId)),
     );
-    categoryByProduct = await getProductCategoryIds(tx, productIds);
+    if (unitIdsForPromo.length > 0) {
+      const unitRowsForPromo = await tx
+        .select({
+          id: productUnits.id,
+          isBaseUnit: productUnits.isBaseUnit,
+        })
+        .from(productUnits)
+        .where(inArray(productUnits.id, unitIdsForPromo));
+      for (const ur of unitRowsForPromo) {
+        isBaseUnitByUnitId.set(Number(ur.id), Boolean(ur.isBaseUnit));
+      }
+    }
+
+    const promoIds = Array.from(
+      new Set([
+        ...linesNeedingPromo.map((l) => Number(l.promotionId)).filter(Boolean),
+        ...(lockedCoupon ? [lockedCoupon.promotionId] : []),
+      ]),
+    );
+    if (promoIds.length > 0) {
+      const promoRows = await tx
+        .select({
+          id: promotions.id,
+          allowBelowCost: promotions.allowBelowCost,
+          isActive: promotions.isActive,
+          name: promotions.name,
+        })
+        .from(promotions)
+        .where(inArray(promotions.id, promoIds));
+      for (const pr of promoRows) {
+        promoMetaById.set(Number(pr.id), pr);
+      }
+    }
   }
-  const computed = [];
-  // H6 (تدقيق ٢٧/٧): هل انحرف أيّ سطرٍ عن مرجعه بأكثر من العتبة؟ (خصمٌ/سعرٌ يدويّ فوق التكلفة يستوجب تفويضاً).
-  let manualDiscountGateTriggered = false;
-  // ومرجعُ **رأس** الفاتورة: مجموع (سعر المرجع × الكمية) للأسطر غير المُهداة. بوّابة السطر لا تراه،
-  // فخصمُ الرأس كان يفلت منها كلّياً (يُقصّ إلى [0, subtotal] وحسب) — وهو نصف H6 الثاني.
-  let referenceGrossTotal = money(0);
+  const prePricedLines: Array<{
+    l: (typeof input.lines)[number];
+    v: NonNullable<ReturnType<typeof variantById.get>>;
+    productId: number;
+    categoryId: number | null;
+    isBaseUnit: boolean;
+    baseQuantity: number;
+    contractPrice: string | undefined;
+    refUnit: Decimal;
+    unitPrice: Decimal;
+    kind: VariantKind;
+    serviceCost: {
+      unitCost: string;
+      lineCost: string;
+      materials: Array<{
+        materialVariantId: number;
+        baseQuantity: number;
+        unitCost: string;
+        lineCost: string;
+      }>;
+    } | null;
+    unitCost: string;
+    lineCost: string;
+    isGift: boolean;
+    lineGross: Decimal;
+  }> = [];
   for (const l of input.lines) {
     const v = variantById.get(l.variantId);
     if (!v)
@@ -1128,89 +1202,293 @@ export async function createSaleInTx(
     // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
     // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
     const isGift = l.isGift === true;
-    const lineRes = isGift
-      ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
-      : computeLineTotal({
-          unitPrice,
-          quantity: money(l.quantity),
-          discountPercent: l.discountPercent,
-          discountAmount: l.discountAmount,
-        });
-    // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
-    // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
-    // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
-    if (
-      !isGift &&
-      lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)
-    )
-      manualDiscountGateTriggered = true;
-    if (!isGift)
-      referenceGrossTotal = referenceGrossTotal.plus(
-        refUnit.times(money(l.quantity)),
-      );
+    const lineGross = unitPrice.mul(money(l.quantity));
+    const lockedProduct = lockedProductById.get(v.productId);
+    prePricedLines.push({
+      l,
+      v,
+      productId: v.productId,
+      categoryId:
+        lockedProduct?.categoryId == null
+          ? null
+          : Number(lockedProduct.categoryId),
+      isBaseUnit: isBaseUnitByUnitId.get(l.productUnitId) ?? true,
+      baseQuantity,
+      contractPrice,
+      refUnit,
+      unitPrice,
+      kind,
+      serviceCost,
+      unitCost,
+      lineCost,
+      isGift,
+      lineGross,
+    });
+  }
 
-    // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
-    // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
-    // إن اتّسق ⇒ نخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف (تغيّر العرض بين
-    // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
-    let recordedPromotionId: number | null = null;
-    let recordedPromoDiscount = "0.00";
-    // الهدية خارج العروض: خصمها صفر (السعر صفر أصلاً) فلا عرضَ يُثبَّت عليها.
-    if (l.promotionId != null && kind !== "BUNDLE" && !isGift) {
-      const productId = productIdByVariant.get(l.variantId);
-      if (productId != null && productId > 0) {
-        const categoryId = categoryByProduct.get(productId) ?? null;
-        const resolveInput = {
-          branchId: input.branchId,
-          customerTier: tier,
-          productId,
-          variantId: l.variantId,
-          categoryId,
-          unitPrice: unitPrice.toFixed(2),
-          lineAmount: unitPrice.mul(money(l.quantity)).toFixed(2),
-          hasContractPrice: contractPrice != null,
-          todayYmd,
-        };
-        const isCouponPromotion =
-          !!lockedCoupon && Number(l.promotionId) === lockedCoupon.promotionId;
-        const resolved: ResolvedPromotion | null = isCouponPromotion
-          ? await resolveCouponPromotionForLine(
-              tx,
-              lockedCoupon.promotionId,
-              resolveInput,
-            )
-          : await resolvePromotionForLine(tx, resolveInput);
-        if (
-          resolved &&
-          Number(resolved.promotionId) === Number(l.promotionId)
-        ) {
-          const expected = money(resolved.discountForUnit).mul(
-            money(l.quantity),
-          );
-          const actual = money(lineRes.discountAmount);
-          // IQD في POS يُعرض كعدد صحيح لكل وحدة. فرق التقريب المشروع أقصاه دينار واحد لكل وحدة؛
-          // للكوبون نسجل الخصم المعروض فعلياً (كي يطابق الإجمالي المقبوض)، وللتلقائي نبقي السلوك القديم.
-          const tolerance = isCouponPromotion ? money(l.quantity) : money(1);
-          const couponCap = isCouponPromotion && lockedCoupon?.maxDiscountAmount && money(lockedCoupon.maxDiscountAmount).gt(0)
-            ? money(lockedCoupon.maxDiscountAmount)
-            : null;
-          const matchesExpected = actual.minus(expected).abs().lte(tolerance);
-          const matchesCap = couponCap != null && actual.gt(0) && actual.lte(expected.plus(tolerance)) && actual.lte(couponCap.plus(tolerance));
-          if (matchesExpected || matchesCap) {
-            recordedPromotionId = Number(l.promotionId);
-            recordedPromoDiscount = isCouponPromotion
-              ? actual.toFixed(2)
-              : expected.toFixed(2);
+  // تقييم سلطوي على مستوى السلة لجميع أنواع العروض الـ 7 (PERCENT, AMOUNT, FIXED_PRICE, BUNDLE_PRICE, BOGO, TIERED_QTY, FREE_SHIPPING)
+  const authoritativePromoByIdx = new Map<
+    number,
+    {
+      promotionId: number;
+      promotionName: string;
+      discountAmount: Decimal;
+      allowBelowCost: boolean;
+    }
+  >();
+  let authoritativeFreeShippingPromo: {
+    promotionId: number;
+    promotionName: string;
+    source: "AUTO" | "COUPON";
+  } | null = null;
+
+  if (hasAnyPromoOrCoupon && prePricedLines.length > 0) {
+    const evalChannel: "POS" | "STORE" =
+      input.sourceType === "ONLINE" ? "STORE" : "POS";
+    const evalCtx = {
+      branchId: input.branchId,
+      customerTier: tier,
+      channel: evalChannel,
+      todayYmd,
+    };
+
+    const baseEvalItems: CartEvalItem[] = prePricedLines.map((pl, idx) => ({
+      lineKey: String(idx),
+      productId: pl.productId,
+      variantId: pl.l.variantId,
+      productUnitId: pl.l.productUnitId,
+      categoryId: pl.categoryId,
+      unitPrice: pl.unitPrice.toFixed(2),
+      quantity: money(pl.l.quantity).toNumber(),
+      isBaseUnit: pl.isBaseUnit,
+      hasContractPrice: pl.contractPrice != null,
+      isBundle: pl.kind === "BUNDLE",
+      isGift: pl.isGift,
+      isService: pl.kind === "SERVICE",
+    }));
+
+    if (lockedCoupon) {
+      const couponSnapshot = await loadPromotionRuleSnapshot(tx, {
+        branchId: input.branchId,
+        customerTier: tier,
+        todayYmd,
+        includeStoreManaged: evalChannel === "STORE",
+        evaluationChannel: evalChannel,
+        requiredApplicationMode: "COUPON",
+        specificPromotionId: lockedCoupon.promotionId,
+      });
+      const couponRules = snapshotToEngineRules(couponSnapshot);
+      if (couponRules.length > 0) {
+        const anyLineClaimedCoupon = prePricedLines.some(
+          (pl) => Number(pl.l.promotionId) === lockedCoupon.promotionId,
+        );
+        const couponEvalItems = baseEvalItems.map((item, idx) => ({
+          ...item,
+          hasContractPrice:
+            item.hasContractPrice ||
+            (anyLineClaimedCoupon &&
+              Number(prePricedLines[idx]!.l.promotionId) !==
+                lockedCoupon.promotionId),
+        }));
+        const couponEval = evaluateCartPromotions(
+          couponEvalItems,
+          couponRules,
+          evalCtx,
+        );
+        const couponMeta = promoMetaById.get(lockedCoupon.promotionId);
+        const couponPromoName = couponMeta?.name ?? lockedCoupon.code;
+        for (const alloc of Array.from(couponEval.lineAllocations.values())) {
+          const lineIdx = Number(alloc.lineKey);
+          const disc = money(alloc.discountAmount.toFixed(2));
+          if (disc.gt(0)) {
+            authoritativePromoByIdx.set(lineIdx, {
+              promotionId: lockedCoupon.promotionId,
+              promotionName: couponPromoName,
+              discountAmount: disc,
+              allowBelowCost: couponMeta?.allowBelowCost === true,
+            });
           }
+        }
+        if (couponEval.freeShippingPromotion) {
+          authoritativeFreeShippingPromo = {
+            promotionId: couponEval.freeShippingPromotion.promotionId,
+            promotionName:
+              couponEval.freeShippingPromotion.promotionName || couponPromoName,
+            source: "COUPON",
+          };
         }
       }
     }
+
+    const claimedAutoPromoIds = Array.from(
+      new Set(
+        prePricedLines
+          .map((pl) =>
+            pl.l.promotionId != null ? Number(pl.l.promotionId) : null,
+          )
+          .filter(
+            (pid): pid is number =>
+              pid != null &&
+              pid > 0 &&
+              (!lockedCoupon || pid !== lockedCoupon.promotionId),
+          ),
+      ),
+    );
+
+    const shouldEvaluateAutoShipping =
+      hasShippingContext &&
+      input.sourceType !== "ONLINE" &&
+      !authoritativeFreeShippingPromo;
+
+    if (claimedAutoPromoIds.length > 0 || shouldEvaluateAutoShipping) {
+      const autoSnapshot = await loadPromotionRuleSnapshot(tx, {
+        branchId: input.branchId,
+        customerTier: tier,
+        todayYmd,
+        includeStoreManaged: evalChannel === "STORE",
+        evaluationChannel: evalChannel,
+        requiredApplicationMode: "AUTO",
+      });
+      const allAutoRules = snapshotToEngineRules(autoSnapshot);
+      if (claimedAutoPromoIds.length > 0) {
+        const autoEvalItems = baseEvalItems.map((item, idx) => {
+          const claimedPid =
+            prePricedLines[idx]!.l.promotionId != null
+              ? Number(prePricedLines[idx]!.l.promotionId)
+              : null;
+          const isCouponClaim =
+            lockedCoupon != null && claimedPid === lockedCoupon.promotionId;
+          return {
+            ...item,
+            hasContractPrice:
+              item.hasContractPrice ||
+              authoritativePromoByIdx.has(idx) ||
+              claimedPid == null ||
+              claimedPid <= 0 ||
+              isCouponClaim,
+          };
+        });
+        const autoEval = evaluateCartPromotions(
+          autoEvalItems,
+          allAutoRules,
+          evalCtx,
+        );
+        for (const alloc of Array.from(autoEval.lineAllocations.values())) {
+          const lineIdx = Number(alloc.lineKey);
+          const claimedPid = Number(prePricedLines[lineIdx]?.l.promotionId);
+          if (claimedPid !== alloc.promotionId) continue;
+          const meta = promoMetaById.get(alloc.promotionId);
+          if (!meta || !meta.isActive) continue;
+          const disc = money(alloc.discountAmount.toFixed(2));
+          if (disc.gt(0) && !authoritativePromoByIdx.has(lineIdx)) {
+            authoritativePromoByIdx.set(lineIdx, {
+              promotionId: alloc.promotionId,
+              promotionName: meta.name,
+              discountAmount: disc,
+              allowBelowCost: meta.allowBelowCost === true,
+            });
+          }
+        }
+      }
+      if (shouldEvaluateAutoShipping) {
+        const shippingAutoEval = evaluateCartPromotions(
+          baseEvalItems,
+          allAutoRules,
+          evalCtx,
+        );
+        if (shippingAutoEval.freeShippingPromotion) {
+          authoritativeFreeShippingPromo = {
+            promotionId: shippingAutoEval.freeShippingPromotion.promotionId,
+            promotionName: shippingAutoEval.freeShippingPromotion.promotionName,
+            source: "AUTO",
+          };
+        }
+      }
+    }
+  }
+
+  const computed = [];
+  for (let idx = 0; idx < prePricedLines.length; idx++) {
+    const {
+      l,
+      v,
+      baseQuantity,
+      refUnit,
+      unitPrice,
+      kind,
+      serviceCost,
+      unitCost,
+      lineCost,
+      isGift,
+      lineGross,
+    } = prePricedLines[idx]!;
+
+    // M4 (F19/F20): 1. حلّ العرض الترويجي الإداري والتحقق منه سلطوياً وسقفه بقيمة المحرك
+    let recordedPromotionId: number | null = null;
+    let recordedPromoDiscount = money(0);
+    let promoAllowBelowCost = false;
+
+    const authPromo = !isGift ? authoritativePromoByIdx.get(idx) : undefined;
+    if (authPromo && authPromo.discountAmount.gt(0)) {
+      recordedPromotionId = authPromo.promotionId;
+      promoAllowBelowCost = authPromo.allowBelowCost;
+      if (l.promotionDiscount != null && l.promotionDiscount !== "") {
+        recordedPromoDiscount = Decimal.max(
+          money(0),
+          Decimal.min(money(l.promotionDiscount), authPromo.discountAmount),
+        );
+      } else if (l.discountAmount != null && l.discountAmount !== "") {
+        recordedPromoDiscount = Decimal.max(
+          money(0),
+          Decimal.min(money(l.discountAmount), authPromo.discountAmount),
+        );
+      } else {
+        recordedPromoDiscount = authPromo.discountAmount;
+      }
+    }
+
+    // M4 (F19): 2. احتساب صافي السعر بعد العرض وتحديد خصم الكاشير اليدوي
+    const lineTotalAfterPromo = lineGross.minus(recordedPromoDiscount);
+
+    let cashierManualDiscount = money(0);
+    if (l.cashierDiscountAmount != null && l.cashierDiscountAmount !== "") {
+      cashierManualDiscount = money(l.cashierDiscountAmount);
+    } else if (l.discountAmount != null && l.discountAmount !== "") {
+      const rawDiscount = money(l.discountAmount);
+      cashierManualDiscount = rawDiscount.gt(recordedPromoDiscount)
+        ? rawDiscount.minus(recordedPromoDiscount)
+        : money(0);
+    } else if (l.discountPercent != null && l.discountPercent !== "") {
+      const pct = money(l.discountPercent);
+      if (pct.gt(0)) {
+        cashierManualDiscount = lineTotalAfterPromo.gt(0)
+          ? lineTotalAfterPromo.mul(pct).div(100)
+          : money(0);
+      }
+    }
+
+    // M4: 3. إجمالي خصم السطر وصافي السطر
+    const totalLineDiscount = clampMoney(
+      round2(recordedPromoDiscount.plus(cashierManualDiscount)),
+      round2(lineGross),
+    );
+
+    const lineRes = isGift
+      ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
+      : {
+          unitPrice: unitPrice.toDecimalPlaces(2).toFixed(2),
+          quantity: money(l.quantity).toDecimalPlaces(3).toFixed(3),
+          discountAmount: totalLineDiscount.toFixed(2),
+          total: round2(lineGross.minus(totalLineDiscount)).toFixed(2),
+        };
 
     computed.push({
       variantId: l.variantId,
       productUnitId: l.productUnitId,
       baseQuantity,
       unitPrice: lineRes.unitPrice,
+      refUnit,
+      hasManualPriceReduction: !isGift && unitPrice.lt(refUnit),
       unitCost,
       lineCost,
       serviceMaterials: serviceCost?.materials ?? [],
@@ -1220,7 +1498,10 @@ export async function createSaleInTx(
       kind,
       isGift,
       promotionId: recordedPromotionId,
-      promotionDiscount: recordedPromoDiscount,
+      promotionDiscount: recordedPromoDiscount.toFixed(2),
+      allowBelowCost: promoAllowBelowCost,
+      cashierDiscountAmount: cashierManualDiscount.toFixed(2),
+      promotionName: !isGift && recordedPromotionId ? (authPromo?.promotionName ?? null) : null,
       internalLineToken: l.internalLineToken?.trim() || null,
       invoiceName: titleForChannel(
         {
@@ -1233,6 +1514,40 @@ export async function createSaleInTx(
     });
   }
 
+  const feeHeldPrecheckD = round2(money(input.deliveryFeeHeld ?? "0"));
+  const rawInputDeliveryFeeD = round2(money(input.deliveryFee ?? "0"));
+  const resolvedCourierFeeD = input.delivery
+    ? round2(money(resolvedDeliveryFee ?? "0"))
+    : money(0);
+  let effectiveDeliveryFeeStr = input.deliveryFee;
+  let effectiveDeliveryFreeInput = input.deliveryFree === true;
+  let effectiveDeliveryWaivedStr = input.deliveryWaivedAmount ?? "0";
+  let effectiveCourierFeeCollection = input.delivery?.feeCollection ?? "COURIER";
+
+  if (authoritativeFreeShippingPromo) {
+    if (input.delivery && feeHeldPrecheckD.lte(0)) {
+      effectiveCourierFeeCollection = "SHOP";
+      if (resolvedCourierFeeD.gt(0) && rawInputDeliveryFeeD.lte(0)) {
+        effectiveDeliveryFreeInput = true;
+        if (round2(money(effectiveDeliveryWaivedStr)).lte(0)) {
+          effectiveDeliveryWaivedStr = resolvedCourierFeeD.toFixed(2);
+        }
+      }
+    } else if (!input.delivery && input.deliveryFree !== true && rawInputDeliveryFeeD.gt(0)) {
+      effectiveDeliveryFeeStr = "0";
+      effectiveDeliveryFreeInput = true;
+      effectiveDeliveryWaivedStr = rawInputDeliveryFeeD.toFixed(2);
+    }
+  }
+
+  const deliveryFeeD = round2(money(effectiveDeliveryFeeStr ?? "0"));
+  const isFreeDelivery = effectiveDeliveryFreeInput && deliveryFeeD.lte(0);
+  const waivedDelivery = round2(money(effectiveDeliveryWaivedStr));
+  const couponShippingWaivedD =
+    authoritativeFreeShippingPromo?.source === "COUPON" && isFreeDelivery
+      ? waivedDelivery
+      : money(0);
+
   const couponLines = lockedCoupon
     ? computed.filter((line) => line.promotionId === lockedCoupon.promotionId)
     : [];
@@ -1242,12 +1557,12 @@ export async function createSaleInTx(
     money(0),
   );
 
-  if (lockedCoupon && totalCouponDiscount.lte(0)) {
+  if (lockedCoupon && totalCouponDiscount.lte(0) && couponShippingWaivedD.lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة" });
   }
 
   let couponDiscount = totalCouponDiscount;
-  if (lockedCoupon) {
+  if (lockedCoupon && totalCouponDiscount.gt(0)) {
     const allocation = allocateCouponDiscountAcrossLines(
       computed,
       lockedCoupon.promotionId,
@@ -1261,6 +1576,25 @@ export async function createSaleInTx(
     }
   }
 
+  // M4 (F19): 4. فحص بوابة H6 للخصم اليدوي بعد استقرار مبالغ العروض والكوبونات النهائية
+  let manualDiscountGateTriggered = false;
+  let referenceGrossAfterPromos = money(0);
+  for (const line of computed) {
+    if (line.isGift) continue;
+    const lineRefGross = line.refUnit.times(money(line.quantity));
+    const linePromoDisc = money(line.promotionDiscount);
+    const lineRefAfterPromo = Decimal.max(
+      money(0),
+      lineRefGross.minus(linePromoDisc),
+    );
+    if (
+      lineDiscountExceedsThreshold(lineRefAfterPromo, money(1), line.total)
+    ) {
+      manualDiscountGateTriggered = true;
+    }
+    referenceGrossAfterPromos = referenceGrossAfterPromos.plus(lineRefAfterPromo);
+  }
+
   // 5. Deterministic lock order: sort by variantId ascending.
   computed.sort((a, b) => a.variantId - b.variantId);
 
@@ -1269,7 +1603,7 @@ export async function createSaleInTx(
     lineTotals: computed.map((c) => c.total),
     invoiceDiscount: input.invoiceDiscount,
     taxRatePercent: input.taxRatePercent,
-    deliveryFee: input.deliveryFee,
+    deliveryFee: effectiveDeliveryFeeStr,
   });
 
   const basketSubtotal = round2(
@@ -1305,9 +1639,6 @@ export async function createSaleInTx(
   // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
   // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
   // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
-  const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
-  const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
-  const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
   if (waivedDelivery.lt(0)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -1326,18 +1657,37 @@ export async function createSaleInTx(
     });
   }
 
-  // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
-  //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
-  //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
-  //     تُفحَص **البنود المدفوعة** وحدها مقابل `costTotal` (وهو تكلفتها وحدها) — سطر الهدية
-  //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
-  //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
-  const belowCost = isInvoiceBelowCost(
-    paidLines,
-    totals.subtotal,
-    totals.discountAmount,
-    costTotal,
+  // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة مع إعفاء العروض المصرحة (allowBelowCost = true) (F20)
+  // الإعفاء يقتصر حصراً على الخسارة الناتجة عن العرض الرسمي ذاته دون أي خصم يدوي إضافي على السطر أو الرأس.
+  let unapprovedBelowCost = false;
+  let effectiveCostFloor = money(0);
+
+  for (const l of paidLines) {
+    const lCost =
+      l.lineCost != null
+        ? money(l.lineCost)
+        : money(l.unitCost).times(l.baseQuantity);
+    const lTotal = money(l.total);
+    const isExemptPromoLoss =
+      l.allowBelowCost &&
+      money(l.cashierDiscountAmount).lte(0) &&
+      !l.hasManualPriceReduction;
+    if (lTotal.lt(lCost) && !isExemptPromoLoss) {
+      unapprovedBelowCost = true;
+    }
+    effectiveCostFloor = effectiveCostFloor.plus(
+      isExemptPromoLoss ? Decimal.min(lCost, lTotal) : lCost,
+    );
+  }
+
+  const invoiceRevenue = money(totals.subtotal).minus(
+    money(totals.discountAmount),
   );
+  if (invoiceRevenue.lt(round2(effectiveCostFloor))) {
+    unapprovedBelowCost = true;
+  }
+
+  const belowCost = unapprovedBelowCost;
   // حارس شذوذ التكلفة الكارثي (كشف إدخال تكلفة الوجبة ككلفة للقطعة):
   // إذا كان السطر غير مهدى، وتجاوزت التكلفة المحتسبة للسطر إيراده بأكثر من ٥ أضعاف
   // وكان فارق الخسارة على السطر يتجاوز ٥٠٠,٠٠٠ د.ع ⇒ رفض قاطع لحماية الدفتر المالي من الأخطاء الكارثية.
@@ -1362,11 +1712,10 @@ export async function createSaleInTx(
   // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
   // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
   // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
-  // خصمُ الرأس يُقاس على الصافي (المجموع − خصم الفاتورة) مقابل المرجع الإجماليّ — بلا ضريبةٍ ولا
-  // أجرة توصيل (كلتاهما ليست تنازلاً سعرياً). فاتورةٌ بأسطرٍ بسعر القائمة وخصمِ رأسٍ ٤٠٪ تُمسَك هنا.
+  // خصمُ الرأس يُقاس على الصافي (المجموع − خصم الفاتورة) مقابل المرجع الإجماليّ بعد استبعاد خصم العروض الرسمية.
   const invoiceNet = money(totals.subtotal).minus(money(totals.discountAmount));
   const headDiscountGate = invoiceDiscountExceedsThreshold(
-    referenceGrossTotal,
+    referenceGrossAfterPromos,
     invoiceNet,
   );
   if (headDiscountGate) manualDiscountGateTriggered = true;
@@ -1688,7 +2037,7 @@ export async function createSaleInTx(
     cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
     // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
     // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
-    deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
+    deliveryFee: toDbMoney(deliveryFeeD),
     // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
     // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
     // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
@@ -1805,7 +2154,7 @@ export async function createSaleInTx(
       invoiceId,
       customerId: input.customerId ?? null,
       branchId: input.branchId,
-      discountAmount: couponDiscount.toFixed(2),
+      discountAmount: couponDiscount.plus(couponShippingWaivedD).toFixed(2),
       netSales: totals.total,
       userId: actor.userId,
     });
@@ -2404,20 +2753,8 @@ export async function createSaleInTx(
   // Codex #1006/#1012 P2 — احلل أجرةَ الجهة الافتراضيّة مرّةً هنا لتقرأها بوّابةُ الأمانة والإسناد
   // معاً: `delivery.fee = null` يعني `deliveryParties.defaultFee`؛ والمقارنةُ بصفرٍ قبل الحلّ كانت
   // ترفض أمانةً = الأجرة الافتراضية (بوّابة الأمانة)، ثمّ ترفض الأمانة الغائبة (بوّابة COUNTER في الإسناد).
-  let resolvedDeliveryFee: string | null = null;
-  if (input.delivery) {
-    resolvedDeliveryFee = input.delivery.fee ?? null;
-    if (resolvedDeliveryFee == null) {
-      const dp = (
-        await tx
-          .select({ defaultFee: deliveryParties.defaultFee })
-          .from(deliveryParties)
-          .where(eq(deliveryParties.id, input.delivery.partyId))
-          .limit(1)
-      )[0];
-      resolvedDeliveryFee = dp?.defaultFee ?? "0";
-    }
-  }
+  // م١: أجرة الجهة الافتراضية حُلَّت مسبقاً في `resolvedDeliveryFee` لتقرأها بوّابة التوصيل المجاني
+  // وبوّابة الأمانة والإسناد معاً (Codex #1006/#1012 P2).
   const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
   if (feeHeldD.gt(0)) {
     assertDeliveryFeeHeldConsistent(
@@ -2451,7 +2788,7 @@ export async function createSaleInTx(
         // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
         // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
         deliveryFee: resolvedDeliveryFee,
-        feeCollection: input.delivery.feeCollection ?? "COURIER",
+        feeCollection: effectiveCourierFeeCollection,
         recipientName:
           input.delivery.recipientName ?? input.contactName ?? null,
         recipientPhone:
@@ -2486,6 +2823,25 @@ export async function createSaleInTx(
     });
   }
 
+  const totalMerchandisePromoD = round2(
+    computed.reduce(
+      (sum, line) =>
+        line.isGift ? sum : sum.plus(money(line.promotionDiscount)),
+      money(0),
+    ),
+  );
+  const appliedOfferNames = Array.from(
+    new Set([
+      ...computed
+        .filter((line) => !line.isGift && money(line.promotionDiscount).gt(0))
+        .map((line) => line.promotionName)
+        .filter((n): n is string => Boolean(n)),
+      ...(isFreeDelivery && authoritativeFreeShippingPromo?.promotionName
+        ? [authoritativeFreeShippingPromo.promotionName]
+        : []),
+    ]),
+  );
+
   return {
     invoiceId,
     invoiceNumber,
@@ -2502,6 +2858,23 @@ export async function createSaleInTx(
     ...(createdLineItems.length ? { createdLineItems } : {}),
     ...(dispatched ?? {}),
     bounceBackCoupon,
+    ...(totalMerchandisePromoD.gt(0) ||
+    (isFreeDelivery && authoritativeFreeShippingPromo != null)
+      ? {
+          promotionSummary: {
+            totalMerchandiseDiscount: totalMerchandisePromoD.toFixed(2),
+            offerNames: appliedOfferNames,
+            freeShippingPromo:
+              isFreeDelivery && authoritativeFreeShippingPromo
+                ? {
+                    promotionId: authoritativeFreeShippingPromo.promotionId,
+                    promotionName: authoritativeFreeShippingPromo.promotionName,
+                    waivedAmount: waivedDelivery.toFixed(2),
+                  }
+                : null,
+          },
+        }
+      : {}),
   };
 }
 

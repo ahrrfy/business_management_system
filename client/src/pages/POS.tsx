@@ -20,6 +20,7 @@ import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { usePosCartPromotions } from "@/components/pos/usePosCartPromotions";
 import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled } from "@/lib/offline/outbox";
 import { setMeta } from "@/lib/offline/db";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
@@ -39,7 +40,7 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, buildPosReceiptPromoSummary,
 } from "@/components/pos/posShared";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
@@ -142,7 +143,7 @@ export default function POS() {
   activeIdRef.current = activeId;
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
-  const cart      = activeTab.cart;
+  const rawCart   = activeTab.cart;
 
   // السلال والمسودات تحفظ السعر والكمية، لكنها لا تملك الرصيد. نعيد قراءة رصيد كل الوحدات
   // الموجودة في جميع التبويبات من الخادم دورياً؛ بذلك لا يبقى حساب على لقطة سبقت بيعاً/جرداً.
@@ -243,6 +244,12 @@ export default function POS() {
     (selectedCustomer?.defaultPriceTier as Tier | undefined) ??
     "RETAIL";
 
+  const onAutoFreeShipping = useCallback((d: NonNullable<POSTab["delivery"]>) => patchTab(activeTab.id, { delivery: d }), [activeTab.id, patchTab]);
+  const { cart, freeShippingPromoName } = usePosCartPromotions({
+    rawCart, branchId, effectiveTier, offline, couponCode: activeTab.couponCode,
+    couponFreeShippingPromo: activeTab.couponFreeShippingPromo, tabId: activeTab.id, delivery: activeTab.delivery, onAutoFreeShipping,
+  });
+
   // §٥: حساب الإجمالي/المدفوع/الباقي/الفكّة بدقّة Decimal (لا JS Number) عبر computePOSTotals
   const {
     subtotalD,
@@ -294,7 +301,7 @@ export default function POS() {
       return;
     }
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     // صفوف الكتالوج الأوفلايني القديمة لا تحمل branchId؛ نربط الصف المضاف بالفرع الحالي صراحةً.
     const currentRow = { ...row, branchId: row.branchId ?? branchId };
     setCart((raw) => {
@@ -318,7 +325,7 @@ export default function POS() {
 
   function changeItemUnit(oldUnitId: number, newRow: PosRow) {
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
     setCart((raw) => {
       const prev = resetCouponItems(raw);
@@ -475,7 +482,7 @@ export default function POS() {
     if (digitalCheckoutRef.current || digitalLines.length + basket.lines.length > 50) return;
     cartHasDigitalRef.current = true;
     if (receipt) setReceipt(null);
-    patchActive({ couponCode: null, couponLabel: null, invoiceDiscountPct: "" });
+    patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null, invoiceDiscountPct: "" });
     // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
     // (تبديل مسار/تبويب) بينما الـref يعود للصفر ⇒ تصادم مفاتيح React. أقلّ معرّف ناقص واحد.
     const firstLineId = Math.min(0, ...cart.map((c) => c.digital?.lineId ?? 0)) - 1;
@@ -579,7 +586,7 @@ export default function POS() {
     paymentLegs?: Receipt["paymentLegs"];
     customerName?: string; customerPhone?: string | null; cashierName?: string;
     /** م١ PR-B: كتلة التوصيل للإيصال + بيانات الليبل (تُلتقط لحظة الإرسال). */
-    delivery?: Receipt["delivery"];
+    delivery?: Receipt["delivery"]; cartSnapshot: CartItem[]; freeShippingPromoName?: string | null; couponLabel?: string | null;
     labelMeta?: { governorate?: string | null; recipientName?: string | null; recipientPhone?: string | null; externalTrackingRef?: string | null } | null;
   } | null>(null);
   const saleLabelWinRef = useRef<Window | null>(null);
@@ -592,6 +599,8 @@ export default function POS() {
       const completedCheckout=savedCheckout(r,submitted.clientRequestId??" ");
       if(completedCheckout)patchTab(ctx.tabId,{lastCheckout:completedCheckout});
       const now = new Date();
+      const srvPromo = (r as { promotionSummary?: Parameters<typeof buildPosReceiptPromoSummary>[0]["serverSummary"] }).promotionSummary ?? null;
+      const effDelivery = ctx.delivery && srvPromo?.freeShippingPromo ? { ...ctx.delivery, feeCollection: "SHOP" as const } : (ctx.delivery ?? null);
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
         invoiceId:     r.invoiceId,
@@ -611,8 +620,9 @@ export default function POS() {
         method: ctx.method, methodCode: ctx.methodCode,
         paymentLegs: ctx.paymentLegs,
         // م١ PR-B: الطرد المُنشأ في معاملة البيع (يعود من الخادم) + كتلة التوصيل للإيصال.
-        delivery: ctx.delivery ?? null,
+        delivery: effDelivery,
         consignmentNumber: r.consignmentNumber ?? null,
+        promoSummary: buildPosReceiptPromoSummary({ cart: ctx.cartSnapshot, invoiceDiscount: ctx.invoiceDiscount, delivery: effDelivery, freeShippingPromoName: ctx.freeShippingPromoName, couponLabel: ctx.couponLabel, serverSummary: srvPromo }),
         bounceBackCoupon: (r as { bounceBackCoupon?: Receipt["bounceBackCoupon"] }).bounceBackCoupon ?? null,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
@@ -627,7 +637,7 @@ export default function POS() {
         : alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه";
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, saleMsg);
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { extraCharges: undefined, cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
+      patchTab(ctx.tabId, { extraCharges: undefined, cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, couponFreeShippingPromo: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
 
       const lblWin = saleLabelWinRef.current; saleLabelWinRef.current = null;
       if (alignedRec.delivery || alignedRec.consignmentNumber) void printPosDeliveryShippingLabel({ ...alignedRec, customerPhone: ctx.customerPhone, delivery: alignedRec.delivery ? { ...alignedRec.delivery, ...ctx.labelMeta } : null }, printAuthorizedDocument, lblWin, false).catch(() => {});
@@ -737,11 +747,18 @@ export default function POS() {
       setCart((items) => items.map((item) => {
         const base = item.preCouponRow ?? item.row;
         const applied = byUnit.get(Number(base.productUnitId));
-        if (!applied) return { ...item, row: base, preCouponRow: undefined };
+        if (!applied) return { ...item, row: base, preCouponRow: undefined, cartPromo: null };
+        const lineDiscount = (applied as any).promotionLineDiscount
+          ?? D(applied.promotionDiscountForUnit).times(item.qty).toFixed(2);
         return {
           ...item,
           disc: undefined,
           preCouponRow: base,
+          cartPromo: {
+            promotionId: applied.promotionId,
+            promotionName: applied.promotionName,
+            lineDiscount,
+          },
           row: {
             ...base,
             promotionId: applied.promotionId,
@@ -751,7 +768,7 @@ export default function POS() {
           },
         };
       }));
-      patchActive({ couponInput: result.code, couponCode: result.code, couponLabel: result.programName });
+      patchActive({ couponInput: result.code, couponCode: result.code, couponLabel: result.programName, couponFreeShippingPromo: result.freeShipping ? (result.freeShippingPromotionName ?? result.programName) : null });
       notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
     },
     onError: (error) => notify.err(error),
@@ -812,6 +829,7 @@ export default function POS() {
       delivery: activeTab.delivery && deliveryPayload
         ? { partyName: activeTab.delivery.partyName, fee: deliveryPayload.fee, feeCollection: deliveryPayload.feeCollection, address: deliveryPayload.address ?? null }
         : null,
+      cartSnapshot: cart, freeShippingPromoName, couponLabel: activeTab.couponLabel,
       labelMeta: deliveryPayload ? { governorate: deliveryPayload.governorate ?? null, recipientName: deliveryPayload.recipientName ?? null, recipientPhone: deliveryPayload.recipientPhone ?? null, externalTrackingRef: deliveryPayload.externalTrackingRef ?? null } : null,
     };
   }
@@ -850,7 +868,7 @@ export default function POS() {
       return;
     }
     if (activeTab.couponCode) {
-      notify.errBig("الكوبونات والعروض غير متاحة دون اتصال — أزل الكوبون أولاً.");
+      notify.errBig("الكوبونات غير متاحة دون اتصال — أزل الكوبون أولاً.");
       return;
     }
     // صمّاما الأمان: عمر الأسعار المحلية + سقف قيمة الطابور.
@@ -867,8 +885,8 @@ export default function POS() {
         shiftId: shift.id,
         customerId: activeTab.customerId ?? undefined,
         priceTier: effectiveTier,
-        // promotionId يُسقَط عمداً — العروض معطّلة أوفلاين (الخادم يرفض غير المعروف في مخططه).
-        lines: cart.map(buildSaleLine).map(({ promotionId: _p, ...rest }) => rest),
+        // M4 (F25): الحفاظ على promotionId و promotionDiscount في طابور الأوفلاين للتحقق عند المزامنة
+        lines: cart.map(buildSaleLine),
         ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
         // نفس منطق submitSale: نرسل المقرَّب لأنّه ما قبضه الكاشير فعلياً (الأوفلاين نقديّ كامل بحكم القرار).
         payment: { amount: money(cashRoundedTotal), method: "CASH" },
@@ -898,6 +916,7 @@ export default function POS() {
       total: ctx.total, received: ctx.received, change: ctx.change,
       credit: ctx.credit, isCredit: ctx.isCredit,
       method: ctx.method, methodCode: ctx.methodCode,
+      promoSummary: buildPosReceiptPromoSummary({ cart: ctx.cartSnapshot, invoiceDiscount: ctx.invoiceDiscount }),
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
@@ -1298,7 +1317,7 @@ export default function POS() {
           tabId={activeTab.id}
           salesRepId={activeTab.salesRepId ?? null}
           onSalesRepChange={(id) => patchActive({ salesRepId: id })}
-          delivery={activeTab.delivery ?? null}
+          delivery={activeTab.delivery ?? null} freeShippingPromoName={freeShippingPromoName}
           onDeliveryChange={(d) => patchActive({ delivery: d })}
           onDeliveryIdentity={(identity) => {
             // العميل المربوط بالهاتف يصير عميلَ التبويب (⛔ بلا فحص ائتمان — COD خادمياً)، والمستلم يُملأ منه.

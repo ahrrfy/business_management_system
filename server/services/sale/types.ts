@@ -36,6 +36,10 @@ export interface SaleLineInput {
    *  إن طابق ⇒ يُخزَّن `promotionId` + `promotionDiscount` على invoiceItem. إن لم يطابق ⇒ لا نُخزّن
    *  (نعامل الخصم كيدوي) — لا نرفض لتفادي فشل بيع بعد تعديل عرض بين العرض والحفظ. */
   promotionId?: number | null;
+  /** M4 (F19/F22): حصة الخصم الترويجي الموزعة على السطر (محسوبة خادمياً أو من السلة). */
+  promotionDiscount?: string | null;
+  /** M4 (F19/F22): مبلغ الخصم اليدوي الإضافي الخاص بالكاشير على السطر، يُقاس ضد صافي سعر السطر بعد العرض لبوابة H6. */
+  cashierDiscountAmount?: string | null;
   /**
    * **تصدير داخليّ بحت — لا يقبله أيّ راوتر ولا يصل من العميل إطلاقاً** (نمط `offlineCapture`).
    * تكلفة الوحدة المفروضة خادمياً لهذا السطر، تتجاوز `productVariants.costPrice`.
@@ -303,5 +307,15 @@ export interface CreateSaleResult {
     discountText: string;
     minSpendText?: string | null;
     validToText: string;
+  } | null;
+  /** ملخص العروض الترويجية المطبّقة ذرّياً على الفاتورة (للعرض الفوري والمطبوعات التسويقية) */
+  promotionSummary?: {
+    totalMerchandiseDiscount: string;
+    offerNames: string[];
+    freeShippingPromo: {
+      promotionId: number;
+      promotionName: string;
+      waivedAmount: string;
+    } | null;
   } | null;
 }

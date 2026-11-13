@@ -3,11 +3,14 @@
 // للتصفح والمسح والتسعير أثناء الانقطاع. صفّ واحد لكل (منتج × لون × وحدة) بأسعار الفئات
 // الثلاث معاً — فيبقى اختيار الفئة قراراً محلياً لحظياً بلا رحلة خادم.
 
+import type { PromotionRule } from "./promotionEngine";
+
 export type OfflinePriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 
 export interface OfflineCatalogRow {
   productUnitId: number;
   productId: number;
+  categoryId?: number | null;
   productName: string;
   variantId: number;
   variantName: string | null;
@@ -75,6 +78,7 @@ export interface OfflineCatalogSnapshot {
   version: string;
   generatedAt: string;
   rows: OfflineCatalogRow[];
+  promotions?: PromotionRule[];
 }
 
 export interface OfflineCustomersSnapshot {

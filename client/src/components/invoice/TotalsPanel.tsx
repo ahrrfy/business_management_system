@@ -41,6 +41,8 @@ export interface TotalsPanelProps {
   shippingLabel?: string;
   /** true = إظهار مفتاح «مجاني» بجانب أجرة التوصيل (فاتورة البيع). Default false للشاشات الأخرى. */
   allowFreeShipping?: boolean;
+  /** اسم عرض التوصيل المجاني المؤهّل تلقائياً في السلة إن وُجد. */
+  freeShippingPromoName?: string | null;
   /** SALES/POS money-in is CASH-only until a trusted provider + reconciliation lifecycle is enabled. */
   cashOnlyPayment?: boolean;
 }
@@ -58,6 +60,7 @@ export function TotalsPanel({
   overrideDiscountAmount,
   shippingLabel = "مصاريف شحن",
   allowFreeShipping = false,
+  freeShippingPromoName = null,
   cashOnlyPayment = false,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
@@ -219,6 +222,18 @@ export function TotalsPanel({
               />
             </div>
           </div>
+        )}
+        {/* عرض التوصيل المجاني التلقائي عند تأهّل السلة */}
+        {showShipping && allowFreeShipping && freeShippingPromoName && (
+          <p
+            role="status"
+            data-testid="invoice-free-shipping-promo-banner"
+            className="mb-1.5 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-pos)]"
+          >
+            {Number(state.shipping || "0") > 0
+              ? `التوصيل مجاني بالعرض (${freeShippingPromoName}) — صارت الأجرة مجاناً للزبون (${fmtNum(state.shipping)} ${currSym} على حساب المكتبة) وتنطبع بالفاتورة.`
+              : `الفاتورة مشمولة بعرض التوصيل المجاني (${freeShippingPromoName}) — اكتب أجرة التوصيل حتى تنزل مجاناً وتنطبع قيمة التوفير للزبون.`}
+          </p>
         )}
         {/* شفافيةٌ للموظّف: يرى بالضبط ما سيُطبَع للزبون في كلّ حالة. */}
         {showShipping && allowFreeShipping && isFreeShipping && (

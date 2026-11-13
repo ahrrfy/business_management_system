@@ -59,8 +59,10 @@ export interface ProductSearchBarProps {
 
 interface NormalizedRow {
   productId: number;
+  categoryId?: number | null;
   variantId: number;
   productUnitId: number;
+  isBaseUnit?: boolean;
   name: string;
   variantName?: string | null;
   color?: string | null;
@@ -217,8 +219,10 @@ export function ProductSearchBar({
     }
     return (activePosRows ?? []).map((r) => ({
       productId: r.productId,
+      categoryId: "categoryId" in r ? (r.categoryId ?? null) : null,
       variantId: r.variantId,
       productUnitId: r.productUnitId,
+      isBaseUnit: r.isBaseUnit !== false,
       name: variantDisplayName(r),
       variantName: r.variantName,
       color: r.color,
@@ -262,8 +266,10 @@ export function ProductSearchBar({
   const addRow = (r: NormalizedRow) => {
     const line: InvoiceLine = {
       productId: r.productId,
+      categoryId: r.categoryId ?? null,
       variantId: r.variantId,
       productUnitId: r.productUnitId,
+      isBaseUnit: r.isBaseUnit !== false,
       name: r.name,
       variantName: r.variantName,
       color: r.color,
@@ -383,8 +389,10 @@ export function ProductSearchBar({
         } else {
           addRow({
             productId: row.productId,
+            categoryId: "categoryId" in row ? (row.categoryId ?? null) : null,
             variantId: row.variantId,
             productUnitId: row.productUnitId,
+            isBaseUnit: row.isBaseUnit !== false,
             name: variantDisplayName(row),
             variantName: row.variantName,
             color: row.color,

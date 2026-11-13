@@ -30,10 +30,11 @@ export type StorefrontCategory = {
 export type StorefrontOffer = {
   id: number;
   name: string;
-  type: "PERCENT" | "AMOUNT";
+  type: "PERCENT" | "AMOUNT" | "FIXED_PRICE" | "BUNDLE_PRICE" | "BOGO" | "TIERED_QTY" | "FREE_SHIPPING";
   discountPercent: string;
   discountAmount: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
+  summary?: string;
 };
 export type StorefrontBanner = {
   id: number;

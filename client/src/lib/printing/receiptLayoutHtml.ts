@@ -10,6 +10,7 @@ import { wrapReceiptDoc } from "./docHtml";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { receiptHeaderHtml } from "./receiptLayoutHtmlHeader";
 import { receiptFooterHtml } from "./receiptLayoutHtmlFooter";
+import { renderReceiptPromoBoxHtml } from "./promoPrintSummary";
 
 export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const facts = invoicePrintAmounts({
@@ -85,7 +86,9 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
           dl.feeCollection === "COUNTER"
             ? "مقبوضة في الاستقبال"
             : shop
-              ? "على المكتبة — مجاناً للزبون"
+              ? d.promoSummary?.freeShipping
+                ? "عرض توصيل مجاني على حساب المكتبة"
+                : "على المكتبة — مجاناً للزبون"
               : "يقبضها المندوب من الزبون";
         const remainingMerchandise = D(facts.courierGoodsDue);
         const hasCredit = D(facts.creditDue).gt(0);
@@ -210,6 +213,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
       ${D(facts.remainingAmount).gt(0) ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${(d.paymentMode === "COD" || d.collectCreditOnDelivery === true) ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(facts.remainingAmount)} د.ع</td></tr>` : ""}
     </tbody>
   </table>
+
+  ${renderReceiptPromoBoxHtml(d.promoSummary, facts.dead)}
 
   ${deliveryHtml}
 

@@ -7,6 +7,7 @@ import { invoicePrintAmounts } from "@/lib/printing/receiptLayoutInvoiceAmounts"
 import { newClientRequestId } from "@/lib/countQueue";
 import { D, round2 } from "@/lib/money";
 import type { ReceiptBrowserData } from "@/lib/printing/print";
+import type { PromoPrintSummary } from "@/lib/printing/promoPrintSummary";
 import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
 import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
 import type { RouterOutputs } from "@/lib/trpc";
@@ -54,10 +55,19 @@ export type DigitalLineMeta = {
   student?: StudentSnapshot;
 };
 
+export type CartPromoAllocation = {
+  promotionId: number;
+  promotionName: string;
+  /** إجمالي الخصم الترويجي المخصص لهذا السطر بالكامل بدقة 2dp */
+  lineDiscount: string;
+};
+
 export type CartItem = {
   row: PosRow;
   /** لقطة السعر/العرض التلقائي قبل تطبيق كوبون، لاستعادتها عند تغيّر السلة أو إزالة الكوبون. */
   preCouponRow?: PosRow;
+  /** تخصيص العرض الحيّ على مستوى السلة (يدعم BUNDLE_PRICE, BOGO, TIERED_QTY, FIXED_PRICE, PERCENT, AMOUNT والكوبونات). */
+  cartPromo?: CartPromoAllocation | null;
   qty: number;
   disc?: number; // خصم % (0–100)
   origPrice?: number; // السعر الأصلي قبل الخصم
@@ -88,6 +98,7 @@ export type POSTab = {
   couponInput: string;
   couponCode: string | null;
   couponLabel: string | null;
+  couponFreeShippingPromo?: string | null;
   /** مرجع عملية الدفع غير النقدي؛ يُثبّت أولاً في محاولة خادمية مستقلة. */
   paymentRef: string;
   externalPayment: ExternalPaymentDraft | null;
@@ -156,6 +167,8 @@ export type Receipt = {
   consignmentNumber?: string | null;
   /** قسيمة عودة تلقائية (Bounce-Back Coupon) تُطبع بأسفل الإيصال */
   bounceBackCoupon?: ReceiptBrowserData["bounceBackCoupon"];
+  /** ملخص المزايا والعروض الترويجية للطباعة التسويقية على الإيصال الحراري وملصق الطرد */
+  promoSummary?: PromoPrintSummary | null;
 };
 
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
@@ -206,8 +219,30 @@ export const money = (n: number) => n.toFixed(2);
 // promotions v2 (٨/٧/٢٦): إن مرّر pos.ts `promotionEffectivePrice` (السعر بعد الخصم الترويجي)،
 // نستعمله كنقطة انطلاق (بدل السعر الأصلي) قبل تطبيق أي خصم يدوي من الكاشير. الترتيب: العرض أوّلاً
 // ثم الخصم اليدوي — بحيث لا يُلغي الكاشير العرض بلا وعي (يمكنه إضافة خصم فوقه).
-export const effectivePrice = (item: CartItem) => {
+export const officialPromoDiscountOfItem = (item: CartItem) => {
+  if (item.digital) return D(0);
+  const listWhole = D(item.row.price ?? 0).toDecimalPlaces(0, 4 /* ROUND_HALF_UP */);
+  const listGross = listWhole.times(item.qty);
+  if (item.cartPromo !== undefined) {
+    if (item.cartPromo == null) return D(0);
+    const raw = round2(D(item.cartPromo.lineDiscount));
+    return raw.lte(0) ? D(0) : raw.gt(listGross) ? listGross : raw;
+  }
+  const promotionId = (item.row as any).promotionId as number | null | undefined;
+  const promoPrice = (item.row as any).promotionEffectivePrice != null
+    ? D((item.row as any).promotionEffectivePrice).toDecimalPlaces(0, 4 /* ROUND_HALF_UP */)
+    : listWhole;
+  return promotionId != null && listWhole.gt(promoPrice)
+    ? listWhole.minus(promoPrice).times(item.qty)
+    : D(0);
+};
+
+export const effectivePrice = (item: CartItem): number => {
   if (item.digital) return D(item.row.price ?? 0).toNumber();
+  if (item.cartPromo !== undefined) {
+    if (item.qty <= 0) return D(item.row.price ?? 0).toDecimalPlaces(0, 4).toNumber();
+    return round2(D(itemTotal(item)).div(item.qty)).toNumber();
+  }
   const base = D(
     (item.row as any).promotionEffectivePrice ?? item.row.price ?? 0,
   );
@@ -217,23 +252,59 @@ export const effectivePrice = (item: CartItem) => {
   return discounted.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
 };
 
-export const itemTotal = (item: CartItem) =>
-  D(effectivePrice(item)).times(item.qty).toNumber();
+export const itemTotal = (item: CartItem): number => {
+  if (item.digital) return D(item.row.price ?? 0).times(item.qty).toNumber();
+  if (item.cartPromo !== undefined) {
+    const listWhole = D(item.row.price ?? 0).toDecimalPlaces(0, 4 /* ROUND_HALF_UP */);
+    const listGross = listWhole.times(item.qty);
+    const promoDisc = officialPromoDiscountOfItem(item);
+    const afterPromo = round2(listGross.minus(promoDisc));
+    if (item.disc == null || item.disc <= 0) return afterPromo.toNumber();
+    const cashierDisc = round2(afterPromo.times(D(item.disc)).div(100));
+    const net = round2(afterPromo.minus(cashierDisc));
+    return (net.lt(0) ? D(0) : net).toNumber();
+  }
+  return D(effectivePrice(item)).times(item.qty).toNumber();
+};
 
 // POS-ROUND (تدقيق ٢/٧): يبني سطر البيع للخادم بسعر وحدةٍ صحيح (دينار) مطابق تماماً لِما يعرضه
-// ويحصّله الكاشير، مع تمرير الخصم كمبلغٍ صريح. كان العميل يرسل discountPercent فقط بينما يقرّب سعر
-// الوحدة لدينار كامل، والخادم يحسب الخصم على إجمالي السطر بدقّة 2dp ⇒ invoices.total يخالف المبلغ
-// المحصَّل (رفض بيع بطاقة/تحويل كامل، أو فرق درج في Z-report). بتثبيت unitPriceOverride=سعر القائمة
-// الصحيح + discountAmount=(القائمة−الفعلي)×الكمية يصبح total الخادم = effectivePrice×qty حرفياً،
-// ويبقى الخصم مسجَّلاً على بند الفاتورة.
+// ويحصّله الكاشير، مع تمرير الخصم كمبلغٍ صريح.
 export const buildSaleLine = (c: CartItem) => {
   const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4 /* HALF_UP */);
+  const listGross = listWhole.times(c.qty);
+  if (c.cartPromo !== undefined) {
+    const promotionId = c.cartPromo?.promotionId ?? null;
+    const promoDiscount = officialPromoDiscountOfItem(c);
+    const lineNet = round2(D(itemTotal(c)));
+    const discAmt = round2(listGross.minus(lineNet));
+    const cashierDiscount = discAmt.gt(promoDiscount)
+      ? round2(discAmt.minus(promoDiscount))
+      : D(0);
+    return {
+      variantId: c.row.variantId,
+      productUnitId: c.row.productUnitId,
+      quantity: String(c.qty),
+      unitPriceOverride: listWhole.toFixed(2),
+      ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+      ...(promotionId != null && promoDiscount.gt(0) ? { promotionId } : {}),
+      ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+      ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+    };
+  }
+  const promoPrice = (c.row as any).promotionEffectivePrice != null
+    ? D((c.row as any).promotionEffectivePrice).toDecimalPlaces(0, 4 /* HALF_UP */)
+    : listWhole;
   const eff = D(effectivePrice(c));
   const discAmt = listWhole.minus(eff).times(c.qty);
-  // promotions v2 (٨/٧/٢٦): إن كان الصفّ يحمل عرضاً من pos.ts، نمرّر `promotionId` كي يتحقّق الخادم
-  // (idempotent) ويسجّل promotionId + promotionDiscount على invoiceItem. لو تغيّر العرض بين وقت
-  // العرض والحفظ، الخادم يعامل الخصم كيدوي (لا رفض).
   const promotionId = (c.row as any).promotionId as number | null | undefined;
+
+  const promoDiscount = promotionId != null && listWhole.gt(promoPrice)
+    ? listWhole.minus(promoPrice).times(c.qty)
+    : D(0);
+  const cashierDiscount = promoPrice.gt(eff)
+    ? promoPrice.minus(eff).times(c.qty)
+    : D(0);
+
   return {
     variantId: c.row.variantId,
     productUnitId: c.row.productUnitId,
@@ -241,6 +312,8 @@ export const buildSaleLine = (c: CartItem) => {
     unitPriceOverride: listWhole.toFixed(2),
     ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
     ...(promotionId != null ? { promotionId } : {}),
+    ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+    ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
   };
 };
 
@@ -258,6 +331,7 @@ export const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "",
   couponCode: null,
   couponLabel: null,
+  couponFreeShippingPromo: null,
   paymentRef: "",
   externalPayment: null,
   paymentLegs: [],
@@ -427,7 +501,77 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     digitalDetails: r.digitalDetails ?? null,
     // م١ PR-B: كتلة التوصيل تُطبع بالراسم القائم نفسه (٨/٨) — الأجرة تمريرٌ لا إيراد.
     delivery: r.delivery ?? null,
+    promoSummary: r.promoSummary ?? null,
     bounceBackCoupon: r.bounceBackCoupon ?? null,
+  };
+}
+
+export function buildPosReceiptPromoSummary(opts: {
+  cart: CartItem[];
+  invoiceDiscount: number;
+  delivery?: Receipt["delivery"];
+  freeShippingPromoName?: string | null;
+  couponLabel?: string | null;
+  serverSummary?: {
+    totalMerchandiseDiscount: string;
+    offerNames: string[];
+    freeShippingPromo: { promotionName: string; waivedAmount: string } | null;
+  } | null;
+}): PromoPrintSummary | null {
+  const namesSet = new Set<string>();
+  for (const n of opts.serverSummary?.offerNames ?? []) {
+    if (n?.trim()) namesSet.add(n.trim());
+  }
+  let localMerchD = D(0);
+  for (const c of opts.cart) {
+    const discD = officialPromoDiscountOfItem(c);
+    if (discD.gt(0)) {
+      localMerchD = localMerchD.plus(discD);
+      const pName = c.cartPromo?.promotionName ?? c.row.promotionName;
+      if (pName?.trim()) namesSet.add(pName.trim());
+    }
+  }
+  if (opts.couponLabel?.trim()) namesSet.add(opts.couponLabel.trim());
+
+  const merchD =
+    opts.serverSummary != null
+      ? D(opts.serverSummary.totalMerchandiseDiscount || "0")
+      : localMerchD;
+
+  const serverFreeShip = opts.serverSummary?.freeShippingPromo ?? null;
+  const isFreeShipping =
+    Boolean(serverFreeShip) ||
+    Boolean(
+      opts.delivery &&
+        opts.delivery.feeCollection === "SHOP" &&
+        opts.freeShippingPromoName,
+    );
+  const fsName =
+    serverFreeShip?.promotionName?.trim() ||
+    opts.freeShippingPromoName?.trim() ||
+    null;
+  if (isFreeShipping && fsName) namesSet.add(fsName);
+
+  const offerNames = Array.from(namesSet);
+  if (merchD.lte(0) && !isFreeShipping && offerNames.length === 0) {
+    return null;
+  }
+
+  const waivedD = serverFreeShip
+    ? D(serverFreeShip.waivedAmount || "0")
+    : isFreeShipping && opts.delivery
+      ? D(opts.delivery.fee || "0")
+      : D(0);
+  const invDiscD = D(opts.invoiceDiscount || 0);
+  const totalSavingsD = round2(merchD.plus(invDiscD).plus(waivedD));
+
+  return {
+    offerNames,
+    merchandiseSavings: merchD.gt(0) ? round2(merchD).toFixed(2) : null,
+    invoiceDiscount: invDiscD.gt(0) ? round2(invDiscD).toFixed(2) : null,
+    freeShipping: isFreeShipping,
+    waivedDeliveryAmount: waivedD.gt(0) ? round2(waivedD).toFixed(2) : null,
+    totalSavings: totalSavingsD.gt(0) ? totalSavingsD.toFixed(2) : null,
   };
 }
 

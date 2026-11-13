@@ -160,6 +160,46 @@ export function buildReceptionCheckoutReceipts({
       (s, c) => s.plus(D(lineTotal(c))),
       D(0),
     );
+    const serverPromo = (
+      result.regularSale as {
+        promotionSummary?: {
+          totalMerchandiseDiscount: string;
+          offerNames: string[];
+          freeShippingPromo: { promotionName: string; waivedAmount: string } | null;
+        } | null;
+      }
+    ).promotionSummary;
+    const localOfferNames = new Set<string>(serverPromo?.offerNames ?? []);
+    let localMerchD = D(0);
+    for (const c of regularLines) {
+      const cPromoD = c.cartPromo
+        ? D(c.cartPromo.lineDiscount || "0")
+        : D((c as { couponLineDiscount?: string }).couponLineDiscount || "0");
+      if (cPromoD.gt(0)) {
+        localMerchD = localMerchD.plus(cPromoD);
+      }
+      const pName = c.cartPromo?.promotionName ?? c.row.promotionName;
+      if (pName?.trim() && cPromoD.gt(0)) localOfferNames.add(pName.trim());
+    }
+    const merchSavingsD = serverPromo
+      ? D(serverPromo.totalMerchandiseDiscount || "0")
+      : localMerchD;
+    const isFreeShipPromo = Boolean(serverPromo?.freeShippingPromo);
+    const waivedShipD = serverPromo?.freeShippingPromo
+      ? D(serverPromo.freeShippingPromo.waivedAmount || "0")
+      : D(0);
+    if (serverPromo?.freeShippingPromo?.promotionName) {
+      localOfferNames.add(serverPromo.freeShippingPromo.promotionName);
+    }
+    const hasReceptionPromo =
+      merchSavingsD.gt(0) || isFreeShipPromo || localOfferNames.size > 0;
+    const totalReceptionSavingsD = round2(
+      merchSavingsD.plus(invoiceDiscountAmountD).plus(waivedShipD),
+    );
+    const effectiveReceiptDelivery =
+      receiptDelivery && isFreeShipPromo
+        ? { ...receiptDelivery, feeCollection: "SHOP" as const }
+        : receiptDelivery;
     receiptsToPrint.push({
       ...receiptHead,
       receiptNumber: result.regularSale.invoiceNumber,
@@ -180,7 +220,17 @@ export function buildReceptionCheckoutReceipts({
         methodLabel: result.paymentAllocations ? "موضح في تفصيل الدفعات" : PAY_METHOD_LABEL[method],
         paymentMode: checkoutPaymentMode,
       }),
-      delivery: receiptDelivery,
+      delivery: effectiveReceiptDelivery,
+      promoSummary: hasReceptionPromo
+        ? {
+            offerNames: Array.from(localOfferNames),
+            merchandiseSavings: merchSavingsD.gt(0) ? round2(merchSavingsD).toFixed(2) : null,
+            invoiceDiscount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
+            freeShipping: isFreeShipPromo,
+            waivedDeliveryAmount: waivedShipD.gt(0) ? round2(waivedShipD).toFixed(2) : null,
+            totalSavings: totalReceptionSavingsD.gt(0) ? totalReceptionSavingsD.toFixed(2) : null,
+          }
+        : null,
     });
   }
   if (result.printSale) {

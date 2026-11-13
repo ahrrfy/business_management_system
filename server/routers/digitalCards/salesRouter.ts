@@ -57,6 +57,8 @@ export const salesRouter = router({
           discountAmount: nonNegMoneyString.nullish(),
           discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).nullish(),
           promotionId: z.number().int().positive().nullish(),
+          promotionDiscount: nonNegMoneyString.nullish(),
+          cashierDiscountAmount: nonNegMoneyString.nullish(),
           isGift: z.boolean().optional(),
         }).strict()).max(100).optional(),
         lines: z

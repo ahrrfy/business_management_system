@@ -12,16 +12,19 @@
 //   - Contract-price wins: الاستدعاء من pos.ts يمرّر hasContractPrice ⇒ نعود null فوراً.
 //   - manager scoping للراوتر (في promotionsRouter): يفرض branchId من ctx للـnon-admin.
 import { TRPCError } from "@trpc/server";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import Decimal from "decimal.js";
 import {
   and,
   asc,
+  desc,
   eq,
   inArray,
   isNotNull,
   isNull,
-  lte,
+  like,
   notInArray,
   or,
   sql,
@@ -29,22 +32,47 @@ import {
 import {
   invoiceItems,
   invoices,
+  productPrices,
+  productUnitBarcodes,
+  productUnits,
+  productVariants,
   products,
   promotionTargets,
+  promotionTiers,
   promotions,
 } from "../../drizzle/schema";
+import type { PromotionRule, TierRule } from "../../shared/promotionEngine";
+import { isPromotionActiveOnDay } from "../../shared/promotionScheduling";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { loadBundleUnitCosts } from "./bundleService";
 import { DecimalInput, money, round2, toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 
-export type SalesPromotionType = "PERCENT" | "AMOUNT";
+export type SalesPromotionType =
+  | "PERCENT"
+  | "AMOUNT"
+  | "FIXED_PRICE"
+  | "BUNDLE_PRICE"
+  | "BOGO"
+  | "TIERED_QTY"
+  | "FREE_SHIPPING";
 export type SalesPromotionScope = "ALL" | "CATEGORIES" | "PRODUCTS";
+export type SalesPromotionChannel = "ALL" | "POS_ONLY" | "STORE_ONLY";
 
 export interface PromotionTargetInput {
   categoryId?: number | null;
   productId?: number | null;
   variantId?: number | null;
+  productUnitId?: number | null;
+}
+
+export interface PromotionTierInput {
+  minQuantity: string;
+  tierType: "PERCENT" | "AMOUNT" | "FIXED_PRICE";
+  discountPercent?: string;
+  discountAmount?: string;
+  fixedPrice?: string;
 }
 
 export interface CreatePromotionInput {
@@ -66,37 +94,255 @@ export interface CreatePromotionInput {
   minLineAmount?: string;
   priority?: number;
   targets?: PromotionTargetInput[];
+  channel?: SalesPromotionChannel | "POS" | "STORE";
   /** 0073: true = عرض متجر إلكترونيّ (أونلاين فقط — يُستثنى من تسعير الكاشير). افتراضي false. */
   isStoreManaged?: boolean;
   /** AUTO يُحلّ تلقائياً؛ COUPON لا يدخل التسعير إلا بعد تحقق الكوبون داخل معاملة البيع. */
   applicationMode?: "AUTO" | "COUPON";
+  allowBelowCost?: boolean;
+  applyToBaseUnitOnly?: boolean;
+  activeDays?: number[] | null;
+  // Type-specific values
+  fixedPrice?: string;
+  bundlePrice?: string;
+  bundleMode?: "ALL_REQUIRED" | "PICK_ANY_N";
+  bundleQuantity?: number;
+  bogoBuyQuantity?: number;
+  bogoGetQuantity?: number;
+  bogoGetDiscountPercent?: string;
+  tieredMode?: "PER_ITEM" | "POOL_ACROSS_TARGETS";
+  tiers?: PromotionTierInput[];
 }
 
 function assertShape(input: CreatePromotionInput) {
-  if (input.type === "PERCENT") {
-    const p = money(input.discountPercent ?? "0");
-    if (!p.gt(0) || p.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الخصم بين 0 و100 (حصريّاً > 0)" });
-    if (input.discountAmount && money(input.discountAmount).gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "نوع النسبة لا يقبل مبلغاً ثابتاً" });
-    if (input.maxDiscountAmount != null && input.maxDiscountAmount !== "") {
-      const cap = money(input.maxDiscountAmount);
-      if (cap.lt(0)) {
+  switch (input.type) {
+    case "PERCENT": {
+      const p = money(input.discountPercent ?? "0");
+      if (!p.gt(0) || p.gt(100)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
-            what: "سقف الخصم الأقصى غير صالح",
-            why: "سقف الخصم الأقصى يجب ألا يكون سالباً",
-            doThis: "أدخل مبلغ سقف خصم موجب أو اتركه فارغاً",
+            what: "نسبة الخصم غير صالحة",
+            why: `نسبة الخصم (${p.toString()}%) يجب أن تكون أكبر من 0 وأقل من أو تساوي 100`,
+            doThis: "أدخل نسبة صحيحة بين 1 و100",
           }),
         });
       }
+      if (input.discountAmount && money(input.discountAmount).gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعارض في نوع الخصم",
+            why: "عرض النسبة المئوية لا يقبل تحديد مبلغ ثابت",
+            doThis: "احذف قيمة المبلغ الثابت أو غيّر نوع العرض إلى مبلغ ثابت",
+          }),
+        });
+      }
+      if (input.maxDiscountAmount != null && input.maxDiscountAmount !== "") {
+        const cap = money(input.maxDiscountAmount);
+        if (cap.lt(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "سقف الخصم الأقصى غير صالح",
+              why: "سقف الخصم الأقصى يجب ألا يكون سالباً",
+              doThis: "أدخل مبلغ سقف خصم موجب أو اتركه فارغاً",
+            }),
+          });
+        }
+      }
+      break;
     }
-  } else if (input.type === "AMOUNT") {
-    const a = money(input.discountAmount ?? "0");
-    if (!a.gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ الثابت يجب أن يكون أكبر من صفر" });
-    if (input.discountPercent && money(input.discountPercent).gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "نوع المبلغ الثابت لا يقبل نسبة" });
-  } else {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "نوع عرض غير معروف" });
+    case "AMOUNT": {
+      const a = money(input.discountAmount ?? "0");
+      if (!a.gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "مبلغ الخصم غير صالح",
+            why: "المبلغ الثابت للخصم يجب أن يكون أكبر من صفر",
+            doThis: "أدخل مبلغ خصم أكبر من صفر",
+          }),
+        });
+      }
+      if (input.discountPercent && money(input.discountPercent).gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعارض في نوع الخصم",
+            why: "عرض المبلغ الثابت لا يقبل تحديد نسبة مئوية",
+            doThis: "احذف النسبة المئوية أو غيّر نوع العرض إلى نسبة مئوية",
+          }),
+        });
+      }
+      break;
+    }
+    case "FIXED_PRICE": {
+      if (!input.fixedPrice || !money(input.fixedPrice).gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "السعر الموحد غير صالح",
+            why: "السعر الموحد للسلعة يجب أن يكون أكبر من صفر",
+            doThis: "أدخل سعراً موحداً صالحاً أكبر من صفر",
+          }),
+        });
+      }
+      break;
+    }
+    case "BUNDLE_PRICE": {
+      if (!input.bundlePrice || !money(input.bundlePrice).gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "سعر الباقة غير صالح",
+            why: "سعر الباقة الإجمالي يجب أن يكون أكبر من صفر",
+            doThis: "أدخل سعر باقة إجمالي صالح أكبر من صفر",
+          }),
+        });
+      }
+      if (!input.bundleMode || !["ALL_REQUIRED", "PICK_ANY_N"].includes(input.bundleMode)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "نمط الباقة غير صالح",
+            why: "نمط الباقة يجب أن يكون إما كل المواد مطلوبة أو اختر أي ن من المواد",
+            doThis: "اختر نمط باقة معتمد (ALL_REQUIRED أو PICK_ANY_N)",
+          }),
+        });
+      }
+      if (input.bundleMode === "PICK_ANY_N" && (!input.bundleQuantity || input.bundleQuantity < 1)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "كمية الباقة غير محددة",
+            why: "نمط اختر أي ن يتطلب تحديد كمية الباقة أكبر من أو تساوي 1",
+            doThis: "حدد كمية المواد المطلوبة للباقة (1 أو أكثر)",
+          }),
+        });
+      }
+      break;
+    }
+    case "BOGO": {
+      if (!input.bogoBuyQuantity || input.bogoBuyQuantity < 1) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "كمية الشراء غير صالحة",
+            why: "كمية الشراء المطلوبة لعرض BOGO يجب أن تكون 1 أو أكثر",
+            doThis: "أدخل كمية شراء صحيحة تبدأ من 1",
+          }),
+        });
+      }
+      if (!input.bogoGetQuantity || input.bogoGetQuantity < 1) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "كمية التخفيض غير صالحة",
+            why: "كمية المواد المخفضة/المجانية في عرض BOGO يجب أن تكون 1 أو أكثر",
+            doThis: "أدخل كمية مواد مخفضة صحيحة تبدأ من 1",
+          }),
+        });
+      }
+      const getPct = money(input.bogoGetDiscountPercent ?? "0");
+      if (!getPct.gt(0) || getPct.gt(100)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "نسبة خصم المادة الإضافية غير صالحة",
+            why: "نسبة خصم مادة BOGO يجب أن تكون بين 1% و100%",
+            doThis: "أدخل نسبة خصم بين 1 و100 (مثلاً 100% لمجاني، أو 50% لنصف السعر)",
+          }),
+        });
+      }
+      break;
+    }
+    case "TIERED_QTY": {
+      if (!input.tieredMode || !["PER_ITEM", "POOL_ACROSS_TARGETS"].includes(input.tieredMode)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "نمط الشرائح غير صالح",
+            why: "نمط الشرائح يجب أن يكون لكل مادة منفصلة أو مجمعاً عبر المواد",
+            doThis: "اختر PER_ITEM أو POOL_ACROSS_TARGETS",
+          }),
+        });
+      }
+      if (!input.tiers || input.tiers.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "شرائح الكميات فارغة",
+            why: "عرض الكميات المتعددة يتطلب تعريف شريحة كمية واحدة على الأقل",
+            doThis: "أضف شريحة كمية واحدة أو أكثر",
+          }),
+        });
+      }
+      for (const tier of input.tiers) {
+        const minQ = money(tier.minQuantity);
+        if (!minQ.gt(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "كمية الشريحة غير صالحة",
+              why: "الحد الأدنى لكمية تفعيل الشريحة يجب أن يكون أكبر من صفر",
+              doThis: "أدخل كمية تفعيل صحيحة للشريحة أكبر من صفر",
+            }),
+          });
+        }
+        if (tier.tierType === "PERCENT") {
+          const p = money(tier.discountPercent ?? "0");
+          if (!p.gt(0) || p.gt(100)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "نسبة خصم الشريحة غير صالحة",
+                why: "نسبة خصم الشريحة يجب أن تكون بين 1 و100%",
+                doThis: "أدخل نسبة خصم صالحة للشريحة",
+              }),
+            });
+          }
+        } else if (tier.tierType === "AMOUNT") {
+          const a = money(tier.discountAmount ?? "0");
+          if (!a.gt(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "مبلغ خصم الشريحة غير صالح",
+                why: "مبلغ الخصم الثابت للشريحة يجب أن يكون أكبر من صفر",
+                doThis: "أدخل مبلغ خصم صالح للشريحة",
+              }),
+            });
+          }
+        } else if (tier.tierType === "FIXED_PRICE") {
+          if (!tier.fixedPrice || !money(tier.fixedPrice).gt(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "السعر الموحد للشريحة غير صالح",
+                why: "السعر الموحد للشريحة يجب أن يكون أكبر من صفر",
+                doThis: "أدخل سعراً موحداً صالحاً للشريحة أكبر من صفر",
+              }),
+            });
+          }
+        }
+      }
+      break;
+    }
+    case "FREE_SHIPPING": {
+      break;
+    }
+    default:
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "نوع العرض غير معروف",
+          why: "نوع العرض المدخل غير مدعوم في النظام",
+          doThis: "اختر أحد أنواع العروض السبعة المعتمدة",
+        }),
+      });
   }
+
   if (input.minOrderSpend != null && input.minOrderSpend !== "") {
     const minSpend = money(input.minOrderSpend);
     if (minSpend.lt(0)) {
@@ -113,25 +359,304 @@ function assertShape(input: CreatePromotionInput) {
 }
 
 function assertDates(input: CreatePromotionInput) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveFrom)) throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ البدء صيغته YYYY-MM-DD" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveFrom)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "صيغة تاريخ البدء غير صالحة",
+        why: `التاريخ المدخل (${input.effectiveFrom}) لا يطابق صيغة YYYY-MM-DD`,
+        doThis: "أدخل تاريخ البدء بصيغة YYYY-MM-DD (مثال: 2026-07-15)",
+      }),
+    });
+  }
   if (input.effectiveTo) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveTo)) throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الانتهاء صيغته YYYY-MM-DD" });
-    if (input.effectiveTo < input.effectiveFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الانتهاء أقدم من البدء" });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveTo)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "صيغة تاريخ الانتهاء غير صالحة",
+          why: `التاريخ المدخل (${input.effectiveTo}) لا يطابق صيغة YYYY-MM-DD`,
+          doThis: "أدخل تاريخ الانتهاء بصيغة YYYY-MM-DD",
+        }),
+      });
+    }
+    if (input.effectiveTo < input.effectiveFrom) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعارض في نطاق التواريخ",
+          why: `تاريخ الانتهاء (${input.effectiveTo}) يسبق تاريخ البدء (${input.effectiveFrom})`,
+          doThis: "اجعل تاريخ الانتهاء لاحقاً لتاريخ البدء أو مساوياً له",
+        }),
+      });
+    }
   }
 }
 
 function assertTargets(input: CreatePromotionInput) {
   if (input.scope === "ALL") {
-    if (input.targets && input.targets.length) throw new TRPCError({ code: "BAD_REQUEST", message: "نطاق ALL لا يقبل أهدافاً — احذف القائمة" });
+    if (input.targets && input.targets.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعارض في نطاق العرض",
+          why: "العرض العام على مستوى كل الأصناف (ALL) لا يقبل تخصيص أهداف محددة",
+          doThis: "احذف قائمة الأهداف أو غيّر النطاق إلى فئات أو منتجات",
+        }),
+      });
+    }
     return;
   }
   const targets = input.targets ?? [];
-  if (!targets.length) throw new TRPCError({ code: "BAD_REQUEST", message: "النطاق المحدّد يحتاج هدفاً واحداً على الأقلّ" });
+  if (!targets.length) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "أهداف العرض مفقودة",
+        why: "النطاق المحدد يتطلب إضافة هدف واحد على الأقل",
+        doThis: "أضف فئة أو منتجاً أو وحدة تعبئة إلى أهداف العرض",
+      }),
+    });
+  }
   for (const t of targets) {
-    const filled = [t.categoryId, t.productId, t.variantId].filter((v) => v != null && Number(v) > 0);
-    if (filled.length !== 1) throw new TRPCError({ code: "BAD_REQUEST", message: "كل هدف يحتاج حبيبة واحدة صريحة: فئة أو منتج أو متغيّر" });
-    if (input.scope === "CATEGORIES" && !t.categoryId) throw new TRPCError({ code: "BAD_REQUEST", message: "نطاق CATEGORIES يستقبل categoryId فقط" });
-    if (input.scope === "PRODUCTS" && !(t.productId || t.variantId)) throw new TRPCError({ code: "BAD_REQUEST", message: "نطاق PRODUCTS يستقبل productId أو variantId" });
+    const filled = [t.categoryId, t.productId, t.variantId, t.productUnitId].filter((v) => v != null && Number(v) > 0);
+    if (filled.length !== 1) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "حبيبة الهدف غير صالحة",
+          why: "كل سطر هدف يجب أن يحدد حبيبة واحدة فقط صريحة (فئة، منتج، متغير، أو وحدة تعبئة)",
+          doThis: "حدد حقلاً واحداً فقط لكل هدف",
+        }),
+      });
+    }
+    if (input.scope === "CATEGORIES" && !t.categoryId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "عدم تطابق في نوع الهدف",
+          why: "نطاق الفئات (CATEGORIES) يستقبل معرفات الفئات فقط",
+          doThis: "اختر فئات فقط أو غيّر نطاق العرض إلى منتجات",
+        }),
+      });
+    }
+    if (input.scope === "PRODUCTS" && !(t.productId || t.variantId || t.productUnitId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "عدم تطابق في نوع الهدف",
+          why: "نطاق المنتجات (PRODUCTS) يستقبل منتجات أو متغيرات أو وحدات تعبئة فقط",
+          doThis: "اختر منتجاً أو متغيراً أو وحدة تعبئة كهدف للعرض",
+        }),
+      });
+    }
+  }
+}
+
+function normalizeTypeColumns(input: {
+  type: SalesPromotionType;
+  discountPercent?: string;
+  discountAmount?: string;
+  fixedPrice?: string;
+  bundlePrice?: string;
+  bundleMode?: "ALL_REQUIRED" | "PICK_ANY_N";
+  bundleQuantity?: number;
+  bogoBuyQuantity?: number;
+  bogoGetQuantity?: number;
+  bogoGetDiscountPercent?: string;
+  tieredMode?: "PER_ITEM" | "POOL_ACROSS_TARGETS";
+}) {
+  return {
+    discountPercent: input.type === "PERCENT" ? toDbMoney(input.discountPercent ?? "0") : "0.00",
+    discountAmount: input.type === "AMOUNT" ? toDbMoney(input.discountAmount ?? "0") : "0.00",
+    fixedPrice: input.type === "FIXED_PRICE" && input.fixedPrice ? toDbMoney(input.fixedPrice) : null,
+    bundlePrice: input.type === "BUNDLE_PRICE" && input.bundlePrice ? toDbMoney(input.bundlePrice) : null,
+    bundleMode: input.type === "BUNDLE_PRICE" ? (input.bundleMode ?? null) : null,
+    bundleQuantity:
+      input.type === "BUNDLE_PRICE" && input.bundleMode === "PICK_ANY_N"
+        ? (input.bundleQuantity ?? null)
+        : null,
+    bogoBuyQuantity: input.type === "BOGO" ? (input.bogoBuyQuantity ?? null) : null,
+    bogoGetQuantity: input.type === "BOGO" ? (input.bogoGetQuantity ?? null) : null,
+    bogoGetDiscountPercent:
+      input.type === "BOGO" && input.bogoGetDiscountPercent
+        ? toDbMoney(input.bogoGetDiscountPercent)
+        : null,
+    tieredMode: input.type === "TIERED_QTY" ? (input.tieredMode ?? null) : null,
+  };
+}
+
+function normalizeTierColumns(t: PromotionTierInput) {
+  return {
+    minQuantity: toDbMoney(t.minQuantity),
+    tierType: t.tierType,
+    discountPercent: t.tierType === "PERCENT" ? toDbMoney(t.discountPercent ?? "0") : "0.00",
+    discountAmount: t.tierType === "AMOUNT" ? toDbMoney(t.discountAmount ?? "0") : "0.00",
+    fixedPrice: t.tierType === "FIXED_PRICE" && t.fixedPrice ? toDbMoney(t.fixedPrice) : null,
+  };
+}
+
+async function assertBelowCostTargets(
+  tx: Tx,
+  opts: {
+    scope: SalesPromotionScope;
+    type: SalesPromotionType;
+    allowBelowCost: boolean;
+    applyToBaseUnitOnly: boolean;
+    customerTier: PriceTier | null | undefined;
+    discountPercent?: string;
+    discountAmount?: string;
+    maxDiscountAmount?: string | null;
+    fixedPrice?: string;
+    tiers?: PromotionTierInput[];
+    targets?: PromotionTargetInput[];
+  },
+): Promise<void> {
+  if (opts.allowBelowCost || opts.scope !== "PRODUCTS") return;
+  if (
+    opts.type !== "PERCENT" &&
+    opts.type !== "AMOUNT" &&
+    opts.type !== "FIXED_PRICE" &&
+    opts.type !== "TIERED_QTY"
+  ) {
+    return;
+  }
+  const targets = opts.targets ?? [];
+  if (targets.length === 0) return;
+
+  const prodIds = targets.filter((t) => t.productId != null).map((t) => Number(t.productId));
+  const varIds = targets.filter((t) => t.variantId != null).map((t) => Number(t.variantId));
+  const explicitUnitIds = new Set(
+    targets.filter((t) => t.productUnitId != null).map((t) => Number(t.productUnitId)),
+  );
+  const targetConditionParts: any[] = [];
+  if (prodIds.length > 0) targetConditionParts.push(inArray(products.id, prodIds));
+  if (varIds.length > 0) targetConditionParts.push(inArray(productVariants.id, varIds));
+  if (explicitUnitIds.size > 0) {
+    targetConditionParts.push(inArray(productUnits.id, Array.from(explicitUnitIds)));
+  }
+  if (targetConditionParts.length === 0) return;
+
+  const effectiveTier: PriceTier = opts.customerTier ?? "RETAIL";
+  const candidateUnits = await tx
+    .select({
+      unitId: productUnits.id,
+      unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
+      variantId: productVariants.id,
+      costPrice: productVariants.costPrice,
+      productName: products.name,
+      isBundle: products.isBundle,
+      price: productPrices.price,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, effectiveTier),
+      ),
+    )
+    .where(
+      and(
+        eq(products.isActive, true),
+        eq(productVariants.isActive, true),
+        eq(productUnits.isActive, true),
+        or(...targetConditionParts)!,
+      ),
+    );
+
+  if (candidateUnits.length === 0) return;
+
+  const bundleVariantIds = Array.from(
+    new Set(
+      candidateUnits
+        .filter((u) => Boolean(u.isBundle))
+        .map((u) => Number(u.variantId)),
+    ),
+  );
+  const bundleCosts =
+    bundleVariantIds.length > 0 ? await loadBundleUnitCosts(tx, bundleVariantIds) : new Map<number, string>();
+
+  const maxCap =
+    opts.maxDiscountAmount != null && opts.maxDiscountAmount !== ""
+      ? money(opts.maxDiscountAmount)
+      : null;
+
+  const computePromoUnitPrice = (
+    retailPrice: Decimal,
+    ruleType: "PERCENT" | "AMOUNT" | "FIXED_PRICE",
+    pctVal?: string,
+    amtVal?: string,
+    fixedVal?: string,
+  ): Decimal => {
+    let disc = money(0);
+    if (ruleType === "PERCENT") {
+      disc = retailPrice.mul(money(pctVal ?? "0")).div(100);
+    } else if (ruleType === "AMOUNT") {
+      disc = Decimal.min(retailPrice, money(amtVal ?? "0"));
+    } else if (ruleType === "FIXED_PRICE") {
+      const fp = money(fixedVal ?? "0");
+      disc = retailPrice.gt(fp) ? retailPrice.minus(fp) : money(0);
+    }
+    if (maxCap && maxCap.gt(0) && disc.gt(maxCap)) {
+      disc = maxCap;
+    }
+    disc = Decimal.min(retailPrice, Decimal.max(money(0), round2(disc)));
+    return round2(retailPrice.minus(disc));
+  };
+
+  for (const u of candidateUnits) {
+    const uid = Number(u.unitId);
+    const explicitlyTargetedUnit = explicitUnitIds.has(uid);
+    if (!explicitlyTargetedUnit && opts.applyToBaseUnitOnly && !u.isBaseUnit) {
+      continue;
+    }
+    const retailPrice = u.price != null ? money(u.price) : money(0);
+    if (retailPrice.lte(0)) continue;
+
+    const baseCostStr =
+      Boolean(u.isBundle) && bundleCosts.has(Number(u.variantId))
+        ? bundleCosts.get(Number(u.variantId))!
+        : String(u.costPrice ?? "0");
+    const unitCost = round2(money(baseCostStr).mul(money(u.conversionFactor ?? "1")));
+    if (unitCost.lte(0)) continue;
+
+    let worstPromoPrice = retailPrice;
+    if (opts.type === "PERCENT" || opts.type === "AMOUNT" || opts.type === "FIXED_PRICE") {
+      worstPromoPrice = computePromoUnitPrice(
+        retailPrice,
+        opts.type,
+        opts.discountPercent,
+        opts.discountAmount,
+        opts.fixedPrice,
+      );
+    } else if (opts.type === "TIERED_QTY") {
+      for (const tier of opts.tiers ?? []) {
+        const tp = computePromoUnitPrice(
+          retailPrice,
+          tier.tierType,
+          tier.discountPercent,
+          tier.discountAmount,
+          tier.fixedPrice,
+        );
+        if (tp.lt(worstPromoPrice)) worstPromoPrice = tp;
+      }
+    }
+
+    if (worstPromoPrice.lt(retailPrice) && worstPromoPrice.lt(unitCost)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `سعر العرض للصنف «${u.productName}» (${u.unitName}) أقل من سعر التكلفة`,
+          why: `سعر البيع بعد العرض (${worstPromoPrice.toFixed(2)} د.ع) يقل عن تكلفة الوحدة (${unitCost.toFixed(2)} د.ع) دون تفعيل السماح بالبيع تحت التكلفة`,
+          doThis: "عدّل قيمة الخصم/السعر الموحد أو فعّل خيار «السماح بالبيع تحت التكلفة» صراحةً من الإدارة",
+        }),
+      });
+    }
   }
 }
 
@@ -139,17 +664,36 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
   assertShape(input);
   assertDates(input);
   assertTargets(input);
+  await assertBelowCostTargets(tx, {
+    scope: input.scope,
+    type: input.type,
+    allowBelowCost: input.allowBelowCost ?? false,
+    applyToBaseUnitOnly: input.applyToBaseUnitOnly ?? true,
+    customerTier: input.customerTier,
+    discountPercent: input.discountPercent,
+    discountAmount: input.discountAmount,
+    maxDiscountAmount: input.maxDiscountAmount,
+    fixedPrice: input.fixedPrice,
+    tiers: input.tiers,
+    targets: input.targets,
+  });
 
+  const channel: SalesPromotionChannel =
+    input.channel === "POS" ? "POS_ONLY" :
+    input.channel === "STORE" ? "STORE_ONLY" :
+    (input.channel ?? (input.isStoreManaged ? "STORE_ONLY" : "ALL"));
+
+  const typeCols = normalizeTypeColumns(input);
   const res = await tx.insert(promotions).values({
     campaignId: input.campaignId ?? null,
     name: input.name.trim(),
     description: input.description?.trim() || null,
     type: input.type,
-    discountPercent: toDbMoney(input.discountPercent ?? "0"),
-    discountAmount: toDbMoney(input.discountAmount ?? "0"),
+    discountPercent: typeCols.discountPercent,
+    discountAmount: typeCols.discountAmount,
     maxDiscountAmount: input.maxDiscountAmount ? toDbMoney(input.maxDiscountAmount) : null,
     minOrderSpend: toDbMoney(input.minOrderSpend ?? "0"),
-    freeShipping: input.freeShipping ?? false,
+    freeShipping: input.type === "FREE_SHIPPING" ? true : (input.freeShipping ?? false),
     shippingDiscountAmount: toDbMoney(input.shippingDiscountAmount ?? "0"),
     scope: input.scope,
     effectiveFrom: new Date(input.effectiveFrom),
@@ -160,7 +704,19 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
     priority: input.priority ?? 0,
     isActive: true,
     applicationMode: input.applicationMode ?? "AUTO",
-    isStoreManaged: input.isStoreManaged ?? false,
+    channel,
+    isStoreManaged: channel === "STORE_ONLY",
+    allowBelowCost: input.allowBelowCost ?? false,
+    applyToBaseUnitOnly: input.applyToBaseUnitOnly ?? true,
+    activeDays: input.activeDays ?? null,
+    fixedPrice: typeCols.fixedPrice,
+    bundlePrice: typeCols.bundlePrice,
+    bundleMode: typeCols.bundleMode,
+    bundleQuantity: typeCols.bundleQuantity,
+    bogoBuyQuantity: typeCols.bogoBuyQuantity,
+    bogoGetQuantity: typeCols.bogoGetQuantity,
+    bogoGetDiscountPercent: typeCols.bogoGetDiscountPercent,
+    tieredMode: typeCols.tieredMode,
     createdBy: actorUserId,
   });
   const promotionId = extractInsertId(res);
@@ -173,9 +729,20 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
         categoryId: t.categoryId ?? null,
         productId: t.productId ?? null,
         variantId: t.variantId ?? null,
+        productUnitId: t.productUnitId ?? null,
       })),
     );
   }
+
+  if (input.type === "TIERED_QTY" && input.tiers && input.tiers.length > 0) {
+    await tx.insert(promotionTiers).values(
+      input.tiers.map((t) => ({
+        promotionId,
+        ...normalizeTierColumns(t),
+      })),
+    );
+  }
+
   return promotionId;
 }
 
@@ -189,6 +756,8 @@ export async function reactivatePromotion(tx: Tx, promotionId: number) {
 
 export interface UpdatePromotionInput {
   id: number;
+  campaignId?: number | null;
+  isActive?: boolean;
   name?: string;
   description?: string | null;
   type?: SalesPromotionType;
@@ -206,8 +775,21 @@ export interface UpdatePromotionInput {
   minLineAmount?: string;
   priority?: number;
   targets?: PromotionTargetInput[];
+  channel?: SalesPromotionChannel | "POS" | "STORE";
   isStoreManaged?: boolean;
   applicationMode?: "AUTO" | "COUPON";
+  allowBelowCost?: boolean;
+  applyToBaseUnitOnly?: boolean;
+  activeDays?: number[] | null;
+  fixedPrice?: string;
+  bundlePrice?: string;
+  bundleMode?: "ALL_REQUIRED" | "PICK_ANY_N";
+  bundleQuantity?: number;
+  bogoBuyQuantity?: number;
+  bogoGetQuantity?: number;
+  bogoGetDiscountPercent?: string;
+  tieredMode?: "PER_ITEM" | "POOL_ACROSS_TARGETS";
+  tiers?: PromotionTierInput[];
 }
 
 export async function updatePromotion(
@@ -235,13 +817,114 @@ export async function updatePromotion(
   }
 
   const mergedType = input.type ?? (existing.type as SalesPromotionType);
+  const typeChanged = input.type !== undefined && input.type !== existing.type;
   const mergedScope = input.scope ?? (existing.scope as SalesPromotionScope);
   const mergedFrom = input.effectiveFrom ?? (existing.effectiveFrom instanceof Date ? existing.effectiveFrom.toISOString().slice(0, 10) : String(existing.effectiveFrom).slice(0, 10));
   const mergedTo = input.effectiveTo !== undefined ? input.effectiveTo : (existing.effectiveTo ? (existing.effectiveTo instanceof Date ? existing.effectiveTo.toISOString().slice(0, 10) : String(existing.effectiveTo).slice(0, 10)) : null);
-  const mergedPercent = input.discountPercent !== undefined ? input.discountPercent : String(existing.discountPercent ?? "0");
-  const mergedAmount = input.discountAmount !== undefined ? input.discountAmount : String(existing.discountAmount ?? "0");
+  const mergedPercent =
+    input.discountPercent !== undefined
+      ? input.discountPercent
+      : typeChanged
+        ? "0"
+        : String(existing.discountPercent ?? "0");
+  const mergedAmount =
+    input.discountAmount !== undefined
+      ? input.discountAmount
+      : typeChanged
+        ? "0"
+        : String(existing.discountAmount ?? "0");
   const mergedMaxCap = input.maxDiscountAmount !== undefined ? input.maxDiscountAmount : (existing.maxDiscountAmount ? String(existing.maxDiscountAmount) : null);
   const mergedMinSpend = input.minOrderSpend !== undefined ? input.minOrderSpend : String(existing.minOrderSpend ?? "0");
+  const mergedFixedPrice =
+    input.fixedPrice !== undefined
+      ? input.fixedPrice
+      : typeChanged
+        ? undefined
+        : existing.fixedPrice
+          ? String(existing.fixedPrice)
+          : undefined;
+  const mergedBundlePrice =
+    input.bundlePrice !== undefined
+      ? input.bundlePrice
+      : typeChanged
+        ? undefined
+        : existing.bundlePrice
+          ? String(existing.bundlePrice)
+          : undefined;
+  const mergedBundleMode =
+    input.bundleMode !== undefined
+      ? input.bundleMode
+      : typeChanged
+        ? undefined
+        : (existing.bundleMode as "ALL_REQUIRED" | "PICK_ANY_N" | undefined);
+  const mergedBundleQuantity =
+    input.bundleQuantity !== undefined
+      ? input.bundleQuantity
+      : typeChanged
+        ? undefined
+        : existing.bundleQuantity != null
+          ? Number(existing.bundleQuantity)
+          : undefined;
+  const mergedBogoBuyQuantity =
+    input.bogoBuyQuantity !== undefined
+      ? input.bogoBuyQuantity
+      : typeChanged
+        ? undefined
+        : existing.bogoBuyQuantity != null
+          ? Number(existing.bogoBuyQuantity)
+          : undefined;
+  const mergedBogoGetQuantity =
+    input.bogoGetQuantity !== undefined
+      ? input.bogoGetQuantity
+      : typeChanged
+        ? undefined
+        : existing.bogoGetQuantity != null
+          ? Number(existing.bogoGetQuantity)
+          : undefined;
+  const mergedBogoGetDiscountPercent =
+    input.bogoGetDiscountPercent !== undefined
+      ? input.bogoGetDiscountPercent
+      : typeChanged
+        ? undefined
+        : existing.bogoGetDiscountPercent
+          ? String(existing.bogoGetDiscountPercent)
+          : undefined;
+  const mergedTieredMode =
+    input.tieredMode !== undefined
+      ? input.tieredMode
+      : typeChanged
+        ? undefined
+        : (existing.tieredMode as "PER_ITEM" | "POOL_ACROSS_TARGETS" | undefined);
+
+  let effectiveTiers: PromotionTierInput[] | undefined = input.tiers;
+  if (mergedType === "TIERED_QTY" && effectiveTiers === undefined && !typeChanged) {
+    const existingTierRows = await tx
+      .select()
+      .from(promotionTiers)
+      .where(eq(promotionTiers.promotionId, input.id))
+      .orderBy(asc(promotionTiers.minQuantity));
+    effectiveTiers = existingTierRows.map((tr) => ({
+      minQuantity: String(tr.minQuantity),
+      tierType: tr.tierType,
+      discountPercent: String(tr.discountPercent),
+      discountAmount: String(tr.discountAmount),
+      fixedPrice: tr.fixedPrice != null ? String(tr.fixedPrice) : undefined,
+    }));
+  }
+
+  let effectiveTargets: PromotionTargetInput[] | undefined = input.targets;
+  if (mergedScope !== "ALL" && effectiveTargets === undefined) {
+    const existingTargetRows = await tx
+      .select()
+      .from(promotionTargets)
+      .where(eq(promotionTargets.promotionId, input.id));
+    effectiveTargets = existingTargetRows.map((tr) => ({
+      categoryId: tr.categoryId == null ? null : Number(tr.categoryId),
+      productId: tr.productId == null ? null : Number(tr.productId),
+      variantId: tr.variantId == null ? null : Number(tr.variantId),
+      productUnitId: tr.productUnitId == null ? null : Number(tr.productUnitId),
+    }));
+  }
 
   assertShape({
     name: input.name ?? existing.name,
@@ -253,6 +936,15 @@ export async function updatePromotion(
     discountAmount: mergedAmount,
     maxDiscountAmount: mergedMaxCap,
     minOrderSpend: mergedMinSpend,
+    fixedPrice: mergedFixedPrice,
+    bundlePrice: mergedBundlePrice,
+    bundleMode: mergedBundleMode,
+    bundleQuantity: mergedBundleQuantity,
+    bogoBuyQuantity: mergedBogoBuyQuantity,
+    bogoGetQuantity: mergedBogoGetQuantity,
+    bogoGetDiscountPercent: mergedBogoGetDiscountPercent,
+    tieredMode: mergedTieredMode,
+    tiers: effectiveTiers,
   });
 
   assertDates({
@@ -269,19 +961,81 @@ export async function updatePromotion(
       type: mergedType,
       scope: mergedScope,
       effectiveFrom: mergedFrom,
-      targets: input.targets,
+      targets: mergedScope === "ALL" ? undefined : effectiveTargets,
     });
   }
 
+  const mergedAllowBelowCost = input.allowBelowCost !== undefined ? input.allowBelowCost : Boolean(existing.allowBelowCost);
+  const mergedApplyBaseOnly = input.applyToBaseUnitOnly !== undefined ? input.applyToBaseUnitOnly : Boolean(existing.applyToBaseUnitOnly);
+  const mergedCustomerTier = input.customerTier !== undefined ? input.customerTier : (existing.customerTier as PriceTier | null);
+
+  await assertBelowCostTargets(tx, {
+    scope: mergedScope,
+    type: mergedType,
+    allowBelowCost: mergedAllowBelowCost,
+    applyToBaseUnitOnly: mergedApplyBaseOnly,
+    customerTier: mergedCustomerTier,
+    discountPercent: mergedPercent,
+    discountAmount: mergedAmount,
+    maxDiscountAmount: mergedMaxCap,
+    fixedPrice: mergedFixedPrice,
+    tiers: effectiveTiers,
+    targets: effectiveTargets,
+  });
+
+  const normalizedTypeCols = normalizeTypeColumns({
+    type: mergedType,
+    discountPercent: mergedPercent,
+    discountAmount: mergedAmount,
+    fixedPrice: mergedFixedPrice,
+    bundlePrice: mergedBundlePrice,
+    bundleMode: mergedBundleMode,
+    bundleQuantity: mergedBundleQuantity,
+    bogoBuyQuantity: mergedBogoBuyQuantity,
+    bogoGetQuantity: mergedBogoGetQuantity,
+    bogoGetDiscountPercent: mergedBogoGetDiscountPercent,
+    tieredMode: mergedTieredMode,
+  });
+
   const patch: Record<string, unknown> = {};
+  if (input.campaignId !== undefined) patch.campaignId = input.campaignId;
+  if (input.isActive !== undefined) patch.isActive = input.isActive;
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
-  if (input.type !== undefined) patch.type = input.type;
-  if (input.discountPercent !== undefined) patch.discountPercent = input.discountPercent ? toDbMoney(input.discountPercent) : "0.00";
-  if (input.discountAmount !== undefined) patch.discountAmount = input.discountAmount ? toDbMoney(input.discountAmount) : "0.00";
+  if (
+    typeChanged ||
+    input.discountPercent !== undefined ||
+    input.discountAmount !== undefined ||
+    input.fixedPrice !== undefined ||
+    input.bundlePrice !== undefined ||
+    input.bundleMode !== undefined ||
+    input.bundleQuantity !== undefined ||
+    input.bogoBuyQuantity !== undefined ||
+    input.bogoGetQuantity !== undefined ||
+    input.bogoGetDiscountPercent !== undefined ||
+    input.tieredMode !== undefined
+  ) {
+    patch.type = mergedType;
+    patch.discountPercent = normalizedTypeCols.discountPercent;
+    patch.discountAmount = normalizedTypeCols.discountAmount;
+    patch.fixedPrice = normalizedTypeCols.fixedPrice;
+    patch.bundlePrice = normalizedTypeCols.bundlePrice;
+    patch.bundleMode = normalizedTypeCols.bundleMode;
+    patch.bundleQuantity = normalizedTypeCols.bundleQuantity;
+    patch.bogoBuyQuantity = normalizedTypeCols.bogoBuyQuantity;
+    patch.bogoGetQuantity = normalizedTypeCols.bogoGetQuantity;
+    patch.bogoGetDiscountPercent = normalizedTypeCols.bogoGetDiscountPercent;
+    patch.tieredMode = normalizedTypeCols.tieredMode;
+  }
   if (input.maxDiscountAmount !== undefined) patch.maxDiscountAmount = input.maxDiscountAmount ? toDbMoney(input.maxDiscountAmount) : null;
   if (input.minOrderSpend !== undefined) patch.minOrderSpend = input.minOrderSpend ? toDbMoney(input.minOrderSpend) : "0.00";
-  if (input.freeShipping !== undefined) patch.freeShipping = input.freeShipping;
+  if (mergedType === "FREE_SHIPPING") {
+    patch.freeShipping = true;
+  } else if (input.freeShipping !== undefined) {
+    patch.freeShipping = input.freeShipping;
+  } else if (existing.type === "FREE_SHIPPING") {
+    patch.freeShipping = false;
+  }
   if (input.shippingDiscountAmount !== undefined) patch.shippingDiscountAmount = input.shippingDiscountAmount ? toDbMoney(input.shippingDiscountAmount) : "0.00";
   if (input.scope !== undefined) patch.scope = input.scope;
   if (input.effectiveFrom !== undefined) patch.effectiveFrom = new Date(input.effectiveFrom);
@@ -290,8 +1044,21 @@ export async function updatePromotion(
   if (input.branchId !== undefined) patch.branchId = input.branchId;
   if (input.minLineAmount !== undefined) patch.minLineAmount = input.minLineAmount ? toDbMoney(input.minLineAmount) : "0.00";
   if (input.priority !== undefined) patch.priority = input.priority;
-  if (input.isStoreManaged !== undefined) patch.isStoreManaged = input.isStoreManaged;
+  if (input.channel !== undefined) {
+    const ch: SalesPromotionChannel =
+      input.channel === "POS" ? "POS_ONLY" :
+      input.channel === "STORE" ? "STORE_ONLY" :
+      input.channel;
+    patch.channel = ch;
+    patch.isStoreManaged = ch === "STORE_ONLY";
+  } else if (input.isStoreManaged !== undefined) {
+    patch.isStoreManaged = input.isStoreManaged;
+    patch.channel = input.isStoreManaged ? "STORE_ONLY" : "ALL";
+  }
   if (input.applicationMode !== undefined) patch.applicationMode = input.applicationMode;
+  if (input.allowBelowCost !== undefined) patch.allowBelowCost = input.allowBelowCost;
+  if (input.applyToBaseUnitOnly !== undefined) patch.applyToBaseUnitOnly = input.applyToBaseUnitOnly;
+  if (input.activeDays !== undefined) patch.activeDays = input.activeDays;
 
   if (Object.keys(patch).length > 0) {
     await tx.update(promotions).set(patch).where(eq(promotions.id, input.id));
@@ -306,8 +1073,25 @@ export async function updatePromotion(
           categoryId: t.categoryId ?? null,
           productId: t.productId ?? null,
           variantId: t.variantId ?? null,
+          productUnitId: t.productUnitId ?? null,
         });
       }
+    }
+  }
+
+  if (mergedType !== "TIERED_QTY") {
+    if (existing.type === "TIERED_QTY" || input.tiers !== undefined) {
+      await tx.delete(promotionTiers).where(eq(promotionTiers.promotionId, input.id));
+    }
+  } else if (input.tiers !== undefined) {
+    await tx.delete(promotionTiers).where(eq(promotionTiers.promotionId, input.id));
+    if (input.tiers.length > 0) {
+      await tx.insert(promotionTiers).values(
+        input.tiers.map((t) => ({
+          promotionId: input.id,
+          ...normalizeTierColumns(t),
+        })),
+      );
     }
   }
 
@@ -326,6 +1110,11 @@ export interface ResolveLineInput {
   productId: number;
   variantId: number;
   categoryId: number | null;
+  productUnitId?: number | null;
+  isBaseUnit?: boolean;
+  isBundle?: boolean;
+  quantity?: string | number;
+  orderSubtotal?: string | number;
   unitPrice: string;
   lineAmount: string;
   hasContractPrice: boolean;
@@ -333,6 +1122,7 @@ export interface ResolveLineInput {
   todayYmd: string;
   /** 0073: هل تُدرَج عروض المتجر (isStoreManaged)؟ الكاشير=false (أونلاين فقط)، المتجر=true. افتراضي false. */
   includeStoreManaged?: boolean;
+  evaluationChannel?: "POS" | "STORE";
   /** داخلي: لحل عرض كوبون محدد من دون إدخاله في المنافسة التلقائية. */
   requiredApplicationMode?: "AUTO" | "COUPON";
   specificPromotionId?: number;
@@ -346,6 +1136,7 @@ export interface PromotionRuleSnapshotInput {
   customerTier: PriceTier;
   todayYmd: string;
   includeStoreManaged?: boolean;
+  evaluationChannel?: "POS" | "STORE";
   requiredApplicationMode?: "AUTO" | "COUPON";
   specificPromotionId?: number | null;
   /** Current Read + FOR UPDATE للعروض وأهدافها عند تثبيت طلب المتجر دفعةً واحدة خارج حلقة الأسطر. */
@@ -357,6 +1148,7 @@ export interface PromotionRuleSnapshot {
   readonly customerTier: PriceTier;
   readonly todayYmd: string;
   readonly includeStoreManaged: boolean;
+  readonly evaluationChannel?: "POS" | "STORE";
   readonly requiredApplicationMode: "AUTO" | "COUPON";
   readonly specificPromotionId?: number | null;
   readonly rules: ReadonlyArray<{
@@ -369,25 +1161,62 @@ export interface PromotionRuleSnapshot {
     readonly minOrderSpend: string;
     readonly freeShipping: boolean;
     readonly shippingDiscountAmount: string;
-    readonly scope: SalesPromotionScope;
+    readonly scope: SalesPromotionScope | "CATEGORY";
     readonly priority: number;
     readonly minLineAmount: string;
+    readonly channel?: SalesPromotionChannel;
+    readonly isStoreManaged?: boolean;
+    readonly allowBelowCost?: boolean;
+    readonly applyToBaseUnitOnly?: boolean;
+    readonly activeDays?: ReadonlyArray<number> | null;
+    readonly effectiveFrom?: string;
+    readonly effectiveTo?: string | null;
+    readonly branchId?: number | null;
+    readonly customerTier?: PriceTier | null;
+    readonly fixedPrice?: string | null;
+    readonly bundlePrice?: string | null;
+    readonly bundleMode?: "ALL_REQUIRED" | "PICK_ANY_N" | null;
+    readonly bundleQuantity?: number | null;
+    readonly bogoBuyQuantity?: number | null;
+    readonly bogoGetQuantity?: number | null;
+    readonly bogoGetDiscountPercent?: string | null;
+    readonly tieredMode?: "PER_ITEM" | "POOL_ACROSS_TARGETS" | null;
     readonly targets: ReadonlyArray<{
+      readonly promotionId?: number;
       readonly categoryId: number | null;
       readonly productId: number | null;
       readonly variantId: number | null;
+      readonly productUnitId?: number | null;
     }>;
+    readonly tiers?: ReadonlyArray<TierRule>;
   }>;
 }
 
+function formatDateYmd(value: unknown, fallback: string): string {
+  if (!value) return fallback;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
 /**
- * لقطة مجمّعة لقواعد العروض وأهدافها (استعلام قواعد + استعلام أهداف لغير ALL فقط، بصرف النظر عن عدد الأسطر).
+ * لقطة مجمّعة لقواعد العروض وأهدافها وشرائحها (استعلام قواعد + استعلام أهداف، واستعلام شرائح فقط عند وجود TIERED_QTY).
  * تدعم `specificPromotionId` للكوبونات و`lockForUpdate` بترتيب مفاتيح تصاعدي لتثبيت الطلب بلا N+1.
  */
 export async function loadPromotionRuleSnapshot(
   tx: Tx,
   input: PromotionRuleSnapshotInput,
 ): Promise<PromotionRuleSnapshot> {
+  const evalChannel: "POS" | "STORE" =
+    input.evaluationChannel ?? (input.includeStoreManaged ? "STORE" : "POS");
+
+  const channelCondition =
+    evalChannel === "STORE"
+      ? inArray(promotions.channel, ["ALL", "STORE_ONLY"])
+      : and(
+          eq(promotions.isStoreManaged, false),
+          inArray(promotions.channel, ["ALL", "POS_ONLY"]),
+        );
+
   const baseCandidateQuery = tx
     .select({
       id: promotions.id,
@@ -402,6 +1231,23 @@ export async function loadPromotionRuleSnapshot(
       scope: promotions.scope,
       priority: promotions.priority,
       minLineAmount: promotions.minLineAmount,
+      channel: promotions.channel,
+      isStoreManaged: promotions.isStoreManaged,
+      allowBelowCost: promotions.allowBelowCost,
+      applyToBaseUnitOnly: promotions.applyToBaseUnitOnly,
+      activeDays: promotions.activeDays,
+      effectiveFrom: promotions.effectiveFrom,
+      effectiveTo: promotions.effectiveTo,
+      branchId: promotions.branchId,
+      customerTier: promotions.customerTier,
+      fixedPrice: promotions.fixedPrice,
+      bundlePrice: promotions.bundlePrice,
+      bundleMode: promotions.bundleMode,
+      bundleQuantity: promotions.bundleQuantity,
+      bogoBuyQuantity: promotions.bogoBuyQuantity,
+      bogoGetQuantity: promotions.bogoGetQuantity,
+      bogoGetDiscountPercent: promotions.bogoGetDiscountPercent,
+      tieredMode: promotions.tieredMode,
     })
     .from(promotions)
     .where(
@@ -413,25 +1259,34 @@ export async function loadPromotionRuleSnapshot(
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${input.todayYmd})`)!,
         or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
         or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))!,
-        input.includeStoreManaged ? undefined : eq(promotions.isStoreManaged, false),
+        channelCondition,
       ),
     )
     .orderBy(asc(promotions.id));
 
-  const candidateRows = input.lockForUpdate
+  const rawCandidateRows = input.lockForUpdate
     ? await baseCandidateQuery.for("update")
     : await baseCandidateQuery;
+
+  const candidateRows = rawCandidateRows.filter((row) =>
+    isPromotionActiveOnDay(
+      Array.isArray(row.activeDays) ? row.activeDays : null,
+      input.todayYmd,
+    ),
+  );
 
   const targetLookupIds = (
     input.lockForUpdate
       ? candidateRows.filter((row) => row.scope !== "ALL")
       : candidateRows
   ).map((row) => Number(row.id));
+
   let targetRows: Array<{
     promotionId: number;
     categoryId: number | null;
     productId: number | null;
     variantId: number | null;
+    productUnitId?: number | null;
   }> = [];
   if (targetLookupIds.length) {
     const baseTargetQuery = tx
@@ -440,6 +1295,7 @@ export async function loadPromotionRuleSnapshot(
         categoryId: promotionTargets.categoryId,
         productId: promotionTargets.productId,
         variantId: promotionTargets.variantId,
+        productUnitId: promotionTargets.productUnitId,
       })
       .from(promotionTargets)
       .where(inArray(promotionTargets.promotionId, targetLookupIds))
@@ -448,11 +1304,16 @@ export async function loadPromotionRuleSnapshot(
       ? await baseTargetQuery.for("update")
       : await baseTargetQuery;
   }
-  const targetsByPromotion = new Map<number, Array<{
-    categoryId: number | null;
-    productId: number | null;
-    variantId: number | null;
-  }>>();
+
+  const targetsByPromotion = new Map<
+    number,
+    Array<{
+      categoryId: number | null;
+      productId: number | null;
+      variantId: number | null;
+      productUnitId: number | null;
+    }>
+  >();
   for (const target of targetRows) {
     const promotionId = Number(target.promotionId);
     const current = targetsByPromotion.get(promotionId) ?? [];
@@ -460,8 +1321,43 @@ export async function loadPromotionRuleSnapshot(
       categoryId: target.categoryId == null ? null : Number(target.categoryId),
       productId: target.productId == null ? null : Number(target.productId),
       variantId: target.variantId == null ? null : Number(target.variantId),
+      productUnitId: target.productUnitId == null ? null : Number(target.productUnitId),
     });
     targetsByPromotion.set(promotionId, current);
+  }
+
+  const tieredPromotionIds = candidateRows
+    .filter((row) => row.type === "TIERED_QTY")
+    .map((row) => Number(row.id));
+  const tiersByPromotion = new Map<number, TierRule[]>();
+  if (tieredPromotionIds.length > 0) {
+    const baseTiersQuery = tx
+      .select({
+        promotionId: promotionTiers.promotionId,
+        minQuantity: promotionTiers.minQuantity,
+        tierType: promotionTiers.tierType,
+        discountPercent: promotionTiers.discountPercent,
+        discountAmount: promotionTiers.discountAmount,
+        fixedPrice: promotionTiers.fixedPrice,
+      })
+      .from(promotionTiers)
+      .where(inArray(promotionTiers.promotionId, tieredPromotionIds))
+      .orderBy(asc(promotionTiers.promotionId), asc(promotionTiers.minQuantity), asc(promotionTiers.id));
+    const tierRows = input.lockForUpdate
+      ? await baseTiersQuery.for("update")
+      : await baseTiersQuery;
+    for (const t of tierRows) {
+      const pid = Number(t.promotionId);
+      const list = tiersByPromotion.get(pid) ?? [];
+      list.push({
+        minQuantity: String(t.minQuantity),
+        tierType: t.tierType,
+        discountPercent: t.discountPercent != null ? String(t.discountPercent) : "0.00",
+        discountAmount: t.discountAmount != null ? String(t.discountAmount) : "0.00",
+        fixedPrice: t.fixedPrice != null ? String(t.fixedPrice) : undefined,
+      });
+      tiersByPromotion.set(pid, list);
+    }
   }
 
   return {
@@ -469,24 +1365,113 @@ export async function loadPromotionRuleSnapshot(
     customerTier: input.customerTier,
     todayYmd: input.todayYmd,
     includeStoreManaged: input.includeStoreManaged === true,
+    evaluationChannel: evalChannel,
     requiredApplicationMode: input.requiredApplicationMode ?? "AUTO",
     specificPromotionId: input.specificPromotionId ?? null,
-    rules: candidateRows.map((row) => ({
-      id: Number(row.id),
-      name: row.name,
-      type: row.type,
-      discountPercent: String(row.discountPercent),
-      discountAmount: String(row.discountAmount),
-      maxDiscountAmount: row.maxDiscountAmount ? String(row.maxDiscountAmount) : null,
-      minOrderSpend: String(row.minOrderSpend ?? "0"),
-      freeShipping: Boolean(row.freeShipping),
-      shippingDiscountAmount: String(row.shippingDiscountAmount ?? "0"),
-      scope: row.scope,
-      priority: Number(row.priority ?? 0),
-      minLineAmount: String(row.minLineAmount ?? "0"),
-      targets: targetsByPromotion.get(Number(row.id)) ?? [],
-    })),
+    rules: candidateRows.map((row) => {
+      const pid = Number(row.id);
+      const resolvedChannel: SalesPromotionChannel =
+        row.channel === "POS_ONLY" || row.channel === "STORE_ONLY"
+          ? row.channel
+          : row.isStoreManaged
+            ? "STORE_ONLY"
+            : "ALL";
+      return {
+        id: pid,
+        name: row.name,
+        type: row.type,
+        discountPercent: String(row.discountPercent ?? "0"),
+        discountAmount: String(row.discountAmount ?? "0"),
+        maxDiscountAmount: row.maxDiscountAmount != null ? String(row.maxDiscountAmount) : null,
+        minOrderSpend: String(row.minOrderSpend ?? "0"),
+        freeShipping: Boolean(row.freeShipping) || row.type === "FREE_SHIPPING",
+        shippingDiscountAmount: String(row.shippingDiscountAmount ?? "0"),
+        scope: row.scope,
+        priority: Number(row.priority ?? 0),
+        minLineAmount: String(row.minLineAmount ?? "0"),
+        channel: resolvedChannel,
+        isStoreManaged: Boolean(row.isStoreManaged),
+        allowBelowCost: Boolean(row.allowBelowCost),
+        applyToBaseUnitOnly: row.applyToBaseUnitOnly !== false,
+        activeDays: Array.isArray(row.activeDays) ? row.activeDays : null,
+        effectiveFrom: formatDateYmd(row.effectiveFrom, input.todayYmd),
+        effectiveTo: row.effectiveTo ? formatDateYmd(row.effectiveTo, input.todayYmd) : null,
+        branchId: row.branchId == null ? null : Number(row.branchId),
+        customerTier: (row.customerTier as PriceTier | null | undefined) ?? null,
+        fixedPrice: row.fixedPrice != null ? String(row.fixedPrice) : null,
+        bundlePrice: row.bundlePrice != null ? String(row.bundlePrice) : null,
+        bundleMode: row.bundleMode ?? null,
+        bundleQuantity: row.bundleQuantity != null ? Number(row.bundleQuantity) : null,
+        bogoBuyQuantity: row.bogoBuyQuantity != null ? Number(row.bogoBuyQuantity) : null,
+        bogoGetQuantity: row.bogoGetQuantity != null ? Number(row.bogoGetQuantity) : null,
+        bogoGetDiscountPercent: row.bogoGetDiscountPercent != null ? String(row.bogoGetDiscountPercent) : null,
+        tieredMode: row.tieredMode ?? null,
+        targets: targetsByPromotion.get(pid) ?? [],
+        tiers: tiersByPromotion.get(pid) ?? [],
+      };
+    }),
   };
+}
+
+/**
+ * تحويل لقطة قواعد العروض المحمّلة من قاعدة البيانات إلى صيغة المحرك النقي `PromotionRule[]`
+ * لاستعمالها مباشرةً في `evaluateCartPromotions` على الخادم أو إرسالها للعميل.
+ */
+export function snapshotToEngineRules(snapshot: PromotionRuleSnapshot): PromotionRule[] {
+  return snapshot.rules.map((r) => {
+    const targetCategoryIds: number[] = [];
+    const targetProductIds: number[] = [];
+    const targetVariantIds: number[] = [];
+    const targetUnitIds: number[] = [];
+    for (const t of r.targets) {
+      if (t.productUnitId != null) {
+        targetUnitIds.push(t.productUnitId);
+      } else if (t.variantId != null) {
+        targetVariantIds.push(t.variantId);
+      } else if (t.productId != null) {
+        targetProductIds.push(t.productId);
+      } else if (t.categoryId != null) {
+        targetCategoryIds.push(t.categoryId);
+      }
+    }
+    const normalizedScope: SalesPromotionScope =
+      r.scope === "CATEGORY" ? "CATEGORIES" : r.scope;
+    return {
+      id: r.id,
+      name: r.name,
+      type: r.type,
+      scope: normalizedScope,
+      priority: r.priority,
+      channel: r.channel ?? (r.isStoreManaged ? "STORE_ONLY" : "ALL"),
+      applicationMode: snapshot.requiredApplicationMode,
+      branchId: r.branchId ?? null,
+      customerTier: r.customerTier ?? null,
+      allowBelowCost: r.allowBelowCost ?? false,
+      applyToBaseUnitOnly: r.applyToBaseUnitOnly !== false,
+      freeShipping: Boolean(r.freeShipping) || r.type === "FREE_SHIPPING",
+      activeDays: r.activeDays ? [...r.activeDays] : null,
+      effectiveFrom: r.effectiveFrom ?? snapshot.todayYmd,
+      effectiveTo: r.effectiveTo ?? null,
+      minOrderSpend: r.minOrderSpend,
+      minLineAmount: r.minLineAmount,
+      maxDiscountAmount: r.maxDiscountAmount,
+      discountPercent: r.discountPercent,
+      discountAmount: r.discountAmount,
+      fixedPrice: r.fixedPrice ?? null,
+      bundlePrice: r.bundlePrice ?? null,
+      bundleMode: r.bundleMode ?? null,
+      bundleQuantity: r.bundleQuantity ?? null,
+      bogoBuyQuantity: r.bogoBuyQuantity ?? null,
+      bogoGetQuantity: r.bogoGetQuantity ?? null,
+      bogoGetDiscountPercent: r.bogoGetDiscountPercent ?? null,
+      tieredMode: r.tieredMode ?? null,
+      tiers: r.tiers ? [...r.tiers] : [],
+      targetCategoryIds,
+      targetProductIds,
+      targetVariantIds,
+      targetUnitIds,
+    };
+  });
 }
 
 /** حلّ نقي من snapshot محمّلة مسبقاً؛ لا ينفّذ SQL ويمكن استدعاؤه لكل بطاقات الصفحة وأسطر السلة. */
@@ -494,6 +1479,10 @@ export function resolvePromotionFromSnapshot(
   snapshot: PromotionRuleSnapshot,
   input: ResolveLineInput,
 ): ResolvedPromotion | null {
+  const inputEvalChannel: "POS" | "STORE" =
+    input.evaluationChannel ?? (input.includeStoreManaged ? "STORE" : "POS");
+  const snapshotEvalChannel: "POS" | "STORE" =
+    snapshot.evaluationChannel ?? (snapshot.includeStoreManaged ? "STORE" : "POS");
   if (
     input.hasContractPrice ||
     input.branchId !== snapshot.branchId ||
@@ -501,7 +1490,7 @@ export function resolvePromotionFromSnapshot(
     input.todayYmd !== snapshot.todayYmd ||
     (input.requiredApplicationMode ?? "AUTO") !== snapshot.requiredApplicationMode ||
     (input.specificPromotionId ?? null) !== (snapshot.specificPromotionId ?? null) ||
-    Boolean(input.includeStoreManaged) !== snapshot.includeStoreManaged
+    inputEvalChannel !== snapshotEvalChannel
   ) {
     return null;
   }
@@ -510,29 +1499,118 @@ export function resolvePromotionFromSnapshot(
   const lineAmount = round2(money(input.lineAmount));
   if (unitPrice.lte(0)) return null;
 
+  const qty =
+    input.quantity != null
+      ? money(input.quantity)
+      : lineAmount.gt(0)
+        ? lineAmount.dividedBy(unitPrice)
+        : money(1);
+  if (qty.lte(0)) return null;
+
+  const isBaseUnit = input.isBaseUnit ?? true;
+  const effectiveSubtotal =
+    input.orderSubtotal != null
+      ? money(input.orderSubtotal)
+      : snapshot.requiredApplicationMode === "AUTO"
+        ? lineAmount
+        : null;
+
   const scored: Array<{
     id: number;
     name: string;
     priority: number;
     discountForUnit: Decimal;
   }> = [];
+
   for (const rule of snapshot.rules) {
+    if (!isPromotionActiveOnDay(rule.activeDays ? [...rule.activeDays] : null, input.todayYmd)) {
+      continue;
+    }
+    if (
+      effectiveSubtotal != null &&
+      money(rule.minOrderSpend).gt(0) &&
+      effectiveSubtotal.lt(money(rule.minOrderSpend))
+    ) {
+      continue;
+    }
     if (money(rule.minLineAmount).gt(lineAmount)) continue;
-    if (rule.scope !== "ALL") {
-      const targetMatches = rule.targets.some((target) =>
-        (target.variantId != null && target.variantId === input.variantId) ||
-        (target.productId != null && target.productId === input.productId) ||
-        (target.categoryId != null && input.categoryId != null && target.categoryId === input.categoryId),
+
+    const explicitUnitMatch =
+      input.productUnitId != null &&
+      rule.targets.some(
+        (target) =>
+          target.productUnitId != null && target.productUnitId === input.productUnitId,
       );
+
+    if ((rule.applyToBaseUnitOnly ?? true) && !isBaseUnit && !explicitUnitMatch) {
+      continue;
+    }
+
+    if (rule.scope === "ALL") {
+      if (input.isBundle === true) continue;
+    } else {
+      const targetMatches = rule.targets.some((target) => {
+        if (target.productUnitId != null) {
+          return input.productUnitId != null && target.productUnitId === input.productUnitId;
+        }
+        if (target.variantId != null) {
+          return target.variantId === input.variantId;
+        }
+        if (target.productId != null) {
+          return target.productId === input.productId;
+        }
+        if (target.categoryId != null) {
+          return input.categoryId != null && target.categoryId === input.categoryId;
+        }
+        return false;
+      });
       if (!targetMatches) continue;
     }
-    let discount = rule.type === "PERCENT"
-      ? round2(unitPrice.mul(money(rule.discountPercent)).dividedBy(100))
-      : money(rule.discountAmount);
-    if (rule.type === "PERCENT" && rule.maxDiscountAmount != null && money(rule.maxDiscountAmount).gt(0)) {
-      const cap = money(rule.maxDiscountAmount);
-      if (discount.gt(cap)) discount = cap;
+
+    let discount = money(0);
+    if (rule.type === "PERCENT") {
+      discount = round2(unitPrice.mul(money(rule.discountPercent)).dividedBy(100));
+      if (rule.maxDiscountAmount != null && money(rule.maxDiscountAmount).gt(0)) {
+        const cap = money(rule.maxDiscountAmount);
+        if (discount.gt(cap)) discount = cap;
+      }
+    } else if (rule.type === "AMOUNT") {
+      discount = round2(money(rule.discountAmount));
+    } else if (rule.type === "FIXED_PRICE") {
+      if (rule.fixedPrice == null) continue;
+      const fixed = money(rule.fixedPrice);
+      if (fixed.lt(0) || unitPrice.lte(fixed)) continue;
+      discount = round2(unitPrice.minus(fixed));
+      if (rule.maxDiscountAmount != null && money(rule.maxDiscountAmount).gt(0)) {
+        const cap = money(rule.maxDiscountAmount);
+        if (discount.gt(cap)) discount = cap;
+      }
+    } else if (rule.type === "TIERED_QTY") {
+      const tiers = rule.tiers ?? [];
+      if (!tiers.length) continue;
+      const sortedTiers = [...tiers].sort((a, b) =>
+        money(b.minQuantity).comparedTo(money(a.minQuantity)),
+      );
+      const matchedTier = sortedTiers.find((t) => qty.gte(money(t.minQuantity)));
+      if (!matchedTier) continue;
+      if (matchedTier.tierType === "PERCENT" && matchedTier.discountPercent != null) {
+        discount = round2(unitPrice.mul(money(matchedTier.discountPercent)).dividedBy(100));
+      } else if (matchedTier.tierType === "AMOUNT" && matchedTier.discountAmount != null) {
+        discount = round2(money(matchedTier.discountAmount));
+      } else if (matchedTier.tierType === "FIXED_PRICE" && matchedTier.fixedPrice != null) {
+        const fixed = money(matchedTier.fixedPrice);
+        if (fixed.lt(0) || unitPrice.lte(fixed)) continue;
+        discount = round2(unitPrice.minus(fixed));
+      }
+      if (rule.maxDiscountAmount != null && money(rule.maxDiscountAmount).gt(0)) {
+        const capPerUnit = round2(money(rule.maxDiscountAmount).dividedBy(qty));
+        if (discount.gt(capPerUnit)) discount = capPerUnit;
+      }
+    } else {
+      // BUNDLE_PRICE / BOGO: عروض مشروطة بالسلة تُقيَّم عبر evaluateCartPromotions ولا تُطبَع كسعر مفرد على الرف/الملصق
+      continue;
     }
+
     if (discount.gt(unitPrice)) discount = unitPrice;
     if (discount.lte(0)) continue;
     scored.push({
@@ -565,6 +1643,7 @@ export function calculateDiscountAmount(options: {
   quantity?: DecimalInput;
   discountPercent?: DecimalInput | null;
   discountAmount?: DecimalInput | null;
+  fixedPrice?: DecimalInput | null;
   maxDiscountAmount?: DecimalInput | null;
 }): Decimal {
   const unitPrice = money(options.unitPrice);
@@ -572,6 +1651,9 @@ export function calculateDiscountAmount(options: {
   const lineTotal = unitPrice.mul(qty);
   let discount: Decimal;
 
+  if (options.type === "FREE_SHIPPING") {
+    return money(0);
+  }
   if (options.type === "PERCENT") {
     const rawDiscount = round2(lineTotal.mul(money(options.discountPercent ?? "0")).dividedBy(100));
     if (options.maxDiscountAmount != null && money(options.maxDiscountAmount).gt(0)) {
@@ -580,8 +1662,22 @@ export function calculateDiscountAmount(options: {
     } else {
       discount = rawDiscount;
     }
+  } else if (options.type === "FIXED_PRICE") {
+    const fixed = options.fixedPrice != null ? money(options.fixedPrice) : unitPrice;
+    const perUnit = unitPrice.gt(fixed) && fixed.gte(0) ? unitPrice.minus(fixed) : money(0);
+    const rawDiscount = round2(perUnit.mul(qty));
+    if (options.maxDiscountAmount != null && money(options.maxDiscountAmount).gt(0)) {
+      const cap = money(options.maxDiscountAmount);
+      discount = rawDiscount.gt(cap) ? cap : rawDiscount;
+    } else {
+      discount = rawDiscount;
+    }
   } else {
     discount = round2(money(options.discountAmount ?? "0"));
+    if (options.maxDiscountAmount != null && money(options.maxDiscountAmount).gt(0)) {
+      const cap = money(options.maxDiscountAmount);
+      if (discount.gt(cap)) discount = cap;
+    }
   }
 
   if (discount.gt(lineTotal)) {
@@ -694,110 +1790,20 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
   if (input.hasContractPrice) return null;
 
   const unitPrice = money(input.unitPrice);
-  const lineAmount = money(input.lineAmount);
   if (unitPrice.lte(0)) return null;
 
-  // B8: نستعمل SQL DATE() casting كي يقارن DATE بـDATE (لا DATETIME) — MySQL يقارن DATE `x` >= DATETIME
-  // بتحويل x إلى `x 00:00:00` ⇒ آخر يوم يفشل. `DATE(?)` يحافظ على المقارنة بحبيبة اليوم.
-  const todayYmd = input.todayYmd;
-
-  const candidateQuery = tx
-    .select({
-      id: promotions.id,
-      name: promotions.name,
-      type: promotions.type,
-      discountPercent: promotions.discountPercent,
-      discountAmount: promotions.discountAmount,
-      maxDiscountAmount: promotions.maxDiscountAmount,
-      minOrderSpend: promotions.minOrderSpend,
-      freeShipping: promotions.freeShipping,
-      shippingDiscountAmount: promotions.shippingDiscountAmount,
-      scope: promotions.scope,
-      priority: promotions.priority,
-      customerTier: promotions.customerTier,
-      branchId: promotions.branchId,
-      minLineAmount: promotions.minLineAmount,
-    })
-    .from(promotions)
-    .where(
-      and(
-        eq(promotions.isActive, true),
-        eq(promotions.applicationMode, input.requiredApplicationMode ?? "AUTO"),
-        input.specificPromotionId != null ? eq(promotions.id, input.specificPromotionId) : undefined,
-        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
-        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
-        or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
-        or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))!,
-        // B11: minLineAmount NOT NULL على المخطّط، لكن نُعامل NULL كصفر دفاعاً لبيانات قديمة.
-        lte(promotions.minLineAmount, toDbMoney(lineAmount)),
-        // 0073: عروض المتجر (isStoreManaged) أونلاين فقط ⇒ يستثنيها الكاشير افتراضياً (منع خصمها بيعَ
-        // الكاشير للمفرد على نفس الفرع+الفئة). المتجر يمرّر includeStoreManaged=true فيدرِجها.
-        input.includeStoreManaged ? undefined : eq(promotions.isStoreManaged, false),
-      ),
-    );
-  const candidates = input.lockForUpdate
-    ? await candidateQuery.orderBy(asc(promotions.id)).for("update")
-    : await candidateQuery;
-  if (!candidates.length) return null;
-
-  const nonAllIds = candidates.filter((c) => c.scope !== "ALL").map((c) => Number(c.id));
-  const matchedTargetPromoIds = new Set<number>();
-  if (nonAllIds.length) {
-    const targetQuery = tx
-      .select({
-        promotionId: promotionTargets.promotionId,
-        categoryId: promotionTargets.categoryId,
-        productId: promotionTargets.productId,
-        variantId: promotionTargets.variantId,
-      })
-      .from(promotionTargets)
-      .where(inArray(promotionTargets.promotionId, nonAllIds));
-    const rows = input.lockForUpdate
-      ? await targetQuery.orderBy(asc(promotionTargets.promotionId)).for("update")
-      : await targetQuery;
-    for (const t of rows) {
-      const pid = Number(t.promotionId);
-      const match =
-        (t.variantId != null && Number(t.variantId) === input.variantId) ||
-        (t.productId != null && Number(t.productId) === input.productId) ||
-        (t.categoryId != null && input.categoryId != null && Number(t.categoryId) === input.categoryId);
-      if (match) matchedTargetPromoIds.add(pid);
-    }
-  }
-
-  interface Scored {
-    id: number;
-    name: string;
-    priority: number;
-    discountForUnit: Decimal;
-  }
-  const scored: Scored[] = [];
-  for (const c of candidates) {
-    if (c.scope !== "ALL" && !matchedTargetPromoIds.has(Number(c.id))) continue;
-    let discount: Decimal;
-    if (c.type === "PERCENT") {
-      discount = round2(unitPrice.mul(money(c.discountPercent)).dividedBy(100));
-      if (c.maxDiscountAmount != null && money(c.maxDiscountAmount).gt(0)) {
-        const cap = money(c.maxDiscountAmount);
-        if (discount.gt(cap)) discount = cap;
-      }
-    } else {
-      discount = money(c.discountAmount);
-    }
-    if (discount.gt(unitPrice)) discount = unitPrice; // قصّ لسعر الوحدة
-    if (discount.lte(0)) continue;
-    scored.push({ id: Number(c.id), name: c.name, priority: Number(c.priority ?? 0), discountForUnit: discount });
-  }
-  if (!scored.length) return null;
-
-  scored.sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    const cmp = b.discountForUnit.comparedTo(a.discountForUnit);
-    if (cmp !== 0) return cmp;
-    return a.id - b.id;
+  const snapshot = await loadPromotionRuleSnapshot(tx, {
+    branchId: input.branchId,
+    customerTier: input.customerTier,
+    todayYmd: input.todayYmd,
+    includeStoreManaged: input.includeStoreManaged,
+    evaluationChannel: input.evaluationChannel,
+    requiredApplicationMode: input.requiredApplicationMode,
+    specificPromotionId: input.specificPromotionId,
+    lockForUpdate: input.lockForUpdate,
   });
-  const win = scored[0];
-  return { promotionId: win.id, promotionName: win.name, discountForUnit: toDbMoney(win.discountForUnit) };
+
+  return resolvePromotionFromSnapshot(snapshot, input);
 }
 
 export function resolveCouponPromotionForLine(tx: Tx, promotionId: number, input: ResolveLineInput) {
@@ -809,11 +1815,741 @@ export async function listPromotions(tx: Tx, includeInactive = false) {
   return tx.select().from(promotions).where(eq(promotions.isActive, true));
 }
 
-export async function getPromotionWithTargets(tx: Tx, promotionId: number) {
+export interface HydratedPromotionTarget {
+  targetId: number;
+  targetGrain: "PRODUCT" | "VARIANT" | "UNIT";
+  productId: number;
+  productName: string;
+  productCode: string;
+  variantId: number;
+  sku: string;
+  variantKind: "VARIANT" | "ALTERNATIVE";
+  isConsignment: boolean;
+  isBundle: boolean;
+  costPrice: string | null;
+  productUnitId: number;
+  unitName: string;
+  conversionFactor: string;
+  retailPrice: string;
+  barcode: string | null;
+  isBaseUnit: boolean;
+  units: Array<{
+    id: number;
+    unitName: string;
+    conversionFactor: string;
+    barcode: string | null;
+    isBaseUnit: boolean;
+    retailPrice: string;
+  }>;
+}
+
+export async function getPromotionWithTargets(tx: Tx, promotionId: number, canViewCost = false) {
   const p = (await tx.select().from(promotions).where(eq(promotions.id, promotionId)).limit(1))[0];
   if (!p) return null;
-  const targets = await tx.select().from(promotionTargets).where(eq(promotionTargets.promotionId, promotionId));
-  return { promotion: p, targets };
+
+  const targets = await tx
+    .select()
+    .from(promotionTargets)
+    .where(eq(promotionTargets.promotionId, promotionId));
+
+  const tiers = await tx
+    .select()
+    .from(promotionTiers)
+    .where(eq(promotionTiers.promotionId, promotionId))
+    .orderBy(asc(promotionTiers.minQuantity));
+
+  const productTargets = targets.filter(
+    (t) => t.productId != null || t.variantId != null || t.productUnitId != null,
+  );
+  const hydratedTargets: HydratedPromotionTarget[] = [];
+
+  if (productTargets.length > 0) {
+    const directProdIds = productTargets.filter((t) => t.productId != null).map((t) => Number(t.productId));
+    const directVarIds = productTargets.filter((t) => t.variantId != null).map((t) => Number(t.variantId));
+    const directUnitIds = productTargets.filter((t) => t.productUnitId != null).map((t) => Number(t.productUnitId));
+
+    const unitToVariantMap = new Map<number, number>();
+    if (directUnitIds.length > 0) {
+      const uRows = await tx
+        .select({ id: productUnits.id, variantId: productUnits.variantId })
+        .from(productUnits)
+        .where(inArray(productUnits.id, directUnitIds));
+      for (const ur of uRows) {
+        unitToVariantMap.set(Number(ur.id), Number(ur.variantId));
+      }
+    }
+
+    const allVarIds = Array.from(new Set([...directVarIds, ...Array.from(unitToVariantMap.values())]));
+    const lookupOrs: any[] = [];
+    if (directProdIds.length > 0) lookupOrs.push(inArray(products.id, directProdIds));
+    if (allVarIds.length > 0) lookupOrs.push(inArray(productVariants.id, allVarIds));
+
+    if (lookupOrs.length > 0) {
+      const variantRows = await tx
+        .select({
+          productId: products.id,
+          productName: products.name,
+          isConsignment: products.isConsignment,
+          isBundle: products.isBundle,
+          variantId: productVariants.id,
+          sku: productVariants.sku,
+          variantKind: productVariants.variantKind,
+          costPrice: productVariants.costPrice,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(or(...lookupOrs)!)
+        .orderBy(asc(productVariants.id));
+
+      if (variantRows.length > 0) {
+        const foundVarIds = Array.from(new Set(variantRows.map((r) => Number(r.variantId))));
+        let bundleCostMap = new Map<number, string>();
+        if (canViewCost) {
+          const bundleVarIds = variantRows
+            .filter((r) => Boolean(r.isBundle))
+            .map((r) => Number(r.variantId));
+          if (bundleVarIds.length > 0) {
+            bundleCostMap = await loadBundleUnitCosts(tx, bundleVarIds);
+          }
+        }
+
+        const effectiveTier: PriceTier = (p.customerTier as PriceTier | null) ?? "RETAIL";
+        const unitRows = await tx
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            unitName: productUnits.unitName,
+            conversionFactor: productUnits.conversionFactor,
+            barcode: productUnits.barcode,
+            isBaseUnit: productUnits.isBaseUnit,
+            retailPrice: productPrices.price,
+          })
+          .from(productUnits)
+          .leftJoin(
+            productPrices,
+            and(
+              eq(productPrices.productUnitId, productUnits.id),
+              eq(productPrices.priceTier, effectiveTier),
+            ),
+          )
+          .where(inArray(productUnits.variantId, foundVarIds))
+          .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.conversionFactor), asc(productUnits.id));
+
+        const unitsByVariant = new Map<number, HydratedPromotionTarget["units"]>();
+        for (const u of unitRows) {
+          const vid = Number(u.variantId);
+          const list = unitsByVariant.get(vid) ?? [];
+          list.push({
+            id: Number(u.id),
+            unitName: u.unitName,
+            conversionFactor: String(u.conversionFactor ?? "1"),
+            barcode: u.barcode ?? null,
+            isBaseUnit: Boolean(u.isBaseUnit),
+            retailPrice: u.retailPrice != null ? String(u.retailPrice) : "0.00",
+          });
+          unitsByVariant.set(vid, list);
+        }
+
+        const variantById = new Map(variantRows.map((r) => [Number(r.variantId), r]));
+        const firstVariantByProd = new Map<number, (typeof variantRows)[number]>();
+        for (const r of variantRows) {
+          const pid = Number(r.productId);
+          if (!firstVariantByProd.has(pid)) firstVariantByProd.set(pid, r);
+        }
+
+        for (const t of productTargets) {
+          let targetGrain: "PRODUCT" | "VARIANT" | "UNIT" = "PRODUCT";
+          let vRow: (typeof variantRows)[number] | undefined;
+          let preferredUnitId: number | null = null;
+
+          if (t.productUnitId != null) {
+            targetGrain = "UNIT";
+            preferredUnitId = Number(t.productUnitId);
+            const vid = unitToVariantMap.get(preferredUnitId);
+            if (vid != null) vRow = variantById.get(vid);
+          } else if (t.variantId != null) {
+            targetGrain = "VARIANT";
+            vRow = variantById.get(Number(t.variantId));
+          } else if (t.productId != null) {
+            targetGrain = "PRODUCT";
+            vRow = firstVariantByProd.get(Number(t.productId));
+          }
+
+          if (!vRow) continue;
+          const varId = Number(vRow.variantId);
+          const units = unitsByVariant.get(varId) ?? [];
+          const activeUnit =
+            (preferredUnitId != null ? units.find((u) => u.id === preferredUnitId) : undefined) ??
+            units.find((u) => u.isBaseUnit) ??
+            units[0];
+          if (!activeUnit) continue;
+
+          const isBundle = Boolean(vRow.isBundle);
+          const effectiveCost =
+            isBundle && bundleCostMap.has(varId)
+              ? bundleCostMap.get(varId)!
+              : vRow.costPrice != null
+                ? String(vRow.costPrice)
+                : "0.00";
+
+          hydratedTargets.push({
+            targetId: Number(t.id),
+            targetGrain,
+            productId: Number(vRow.productId),
+            productName: vRow.productName,
+            productCode: vRow.sku,
+            variantId: varId,
+            sku: vRow.sku,
+            variantKind: (vRow.variantKind as "VARIANT" | "ALTERNATIVE") ?? "VARIANT",
+            isConsignment: Boolean(vRow.isConsignment),
+            isBundle,
+            costPrice: canViewCost ? effectiveCost : null,
+            productUnitId: activeUnit.id,
+            unitName: activeUnit.unitName,
+            conversionFactor: activeUnit.conversionFactor,
+            retailPrice: activeUnit.retailPrice,
+            barcode: activeUnit.barcode,
+            isBaseUnit: activeUnit.isBaseUnit,
+            units,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    promotion: {
+      ...p,
+      id: Number(p.id),
+      campaignId: p.campaignId == null ? null : Number(p.campaignId),
+      branchId: p.branchId == null ? null : Number(p.branchId),
+      createdBy: p.createdBy == null ? null : Number(p.createdBy),
+      effectiveFrom: p.effectiveFrom instanceof Date ? p.effectiveFrom.toISOString().slice(0, 10) : String(p.effectiveFrom),
+      effectiveTo: p.effectiveTo ? (p.effectiveTo instanceof Date ? p.effectiveTo.toISOString().slice(0, 10) : String(p.effectiveTo)) : null,
+    },
+    targets: targets.map((t) => ({
+      id: Number(t.id),
+      promotionId: Number(t.promotionId),
+      categoryId: t.categoryId == null ? null : Number(t.categoryId),
+      productId: t.productId == null ? null : Number(t.productId),
+      variantId: t.variantId == null ? null : Number(t.variantId),
+      productUnitId: t.productUnitId == null ? null : Number(t.productUnitId),
+    })),
+    hydratedTargets,
+    tiers: tiers.map((tier) => ({
+      id: Number(tier.id),
+      promotionId: Number(tier.promotionId),
+      minQuantity: String(tier.minQuantity),
+      tierType: tier.tierType,
+      discountPercent: String(tier.discountPercent),
+      discountAmount: String(tier.discountAmount),
+      fixedPrice: tier.fixedPrice == null ? null : String(tier.fixedPrice),
+    })),
+  };
+}
+
+export async function duplicatePromotion(
+  tx: Tx,
+  promotionId: number,
+  actorUserId: number,
+  todayYmd: string,
+  user: { role: string; branchId?: number | null },
+): Promise<number> {
+  const existing = await getPromotionWithTargets(tx, promotionId);
+  if (!existing) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "العرض الترويجي غير موجود",
+        why: `لم يتم العثور على العرض برقم ${promotionId}`,
+        doThis: "تأكد من رقم العرض الترويجي أو اختر عرضاً آخر من القائمة",
+      }),
+    });
+  }
+  if (user.role !== "admin" && existing.promotion.branchId != null && Number(existing.promotion.branchId) !== Number(user.branchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية غير كافية",
+        why: "العرض الترويجي المطلوب نسخه يخص فرعاً آخر",
+        doThis: "انسخ العروض التابعة لفرعك فقط أو راجع مدير النظام",
+      }),
+    });
+  }
+
+  const p = existing.promotion;
+  const newName = `نسخة من ${p.name}`.slice(0, 255);
+
+  const res = await tx.insert(promotions).values({
+    campaignId: p.campaignId ?? null,
+    name: newName,
+    description: p.description ?? null,
+    type: p.type,
+    discountPercent: toDbMoney(p.discountPercent ?? "0"),
+    discountAmount: toDbMoney(p.discountAmount ?? "0"),
+    maxDiscountAmount: p.maxDiscountAmount ? toDbMoney(p.maxDiscountAmount) : null,
+    minOrderSpend: toDbMoney(p.minOrderSpend ?? "0"),
+    freeShipping: p.freeShipping ?? false,
+    shippingDiscountAmount: toDbMoney(p.shippingDiscountAmount ?? "0"),
+    scope: p.scope,
+    effectiveFrom: new Date(todayYmd),
+    effectiveTo: null, // Draft has open end date
+    customerTier: p.customerTier ?? null,
+    branchId: user.role === "admin" ? (p.branchId ?? null) : (user.branchId ?? null),
+    minLineAmount: toDbMoney(p.minLineAmount ?? "0"),
+    priority: p.priority ?? 0,
+    isActive: false, // Default to inactive draft!
+    applicationMode: p.applicationMode,
+    channel: p.channel,
+    isStoreManaged: p.channel === "STORE_ONLY",
+    allowBelowCost: p.allowBelowCost,
+    applyToBaseUnitOnly: p.applyToBaseUnitOnly,
+    activeDays: p.activeDays ?? null,
+    fixedPrice: p.fixedPrice ? toDbMoney(p.fixedPrice) : null,
+    bundlePrice: p.bundlePrice ? toDbMoney(p.bundlePrice) : null,
+    bundleMode: p.bundleMode ?? null,
+    bundleQuantity: p.bundleQuantity ?? null,
+    bogoBuyQuantity: p.bogoBuyQuantity ?? null,
+    bogoGetQuantity: p.bogoGetQuantity ?? null,
+    bogoGetDiscountPercent: p.bogoGetDiscountPercent ? toDbMoney(p.bogoGetDiscountPercent) : null,
+    tieredMode: p.tieredMode ?? null,
+    createdBy: actorUserId,
+  });
+  const newId = extractInsertId(res);
+
+  if (existing.targets.length > 0) {
+    await tx.insert(promotionTargets).values(
+      existing.targets.map((t) => ({
+        promotionId: newId,
+        categoryId: t.categoryId,
+        productId: t.productId,
+        variantId: t.variantId,
+        productUnitId: t.productUnitId,
+      })),
+    );
+  }
+
+  if (existing.tiers.length > 0) {
+    await tx.insert(promotionTiers).values(
+      existing.tiers.map((t) => ({
+        promotionId: newId,
+        ...normalizeTierColumns({
+          minQuantity: String(t.minQuantity),
+          tierType: t.tierType,
+          discountPercent: String(t.discountPercent),
+          discountAmount: String(t.discountAmount),
+          fixedPrice: t.fixedPrice ?? undefined,
+        }),
+      })),
+    );
+  }
+
+  return newId;
+}
+
+export interface SearchProductResultItem {
+  productId: number;
+  productName: string;
+  productCode: string;
+  categoryId: number;
+  categoryName?: string;
+  variantId: number;
+  sku: string;
+  variantKind: "VARIANT" | "ALTERNATIVE";
+  isConsignment: boolean;
+  isBundle?: boolean;
+  costPrice: string | null; // Sanitized: null if unauthorized
+  units: Array<{
+    id: number;
+    unitName: string;
+    conversionFactor: string;
+    barcode: string | null;
+    altBarcodes?: string[];
+    isBaseUnit: boolean;
+    retailPrice: string;
+  }>;
+}
+
+export async function searchPromotionProducts(
+  db: any,
+  input: {
+    q?: string;
+    categoryId?: number | null;
+    codes?: string[];
+    limit?: number;
+  },
+  canViewCost: boolean,
+): Promise<SearchProductResultItem[]> {
+  const rawCodes = Array.isArray(input.codes)
+    ? input.codes.map((c) => String(c ?? "").trim()).filter(Boolean).slice(0, 500)
+    : [];
+  const rawQ = input.q?.trim() ?? "";
+  const canonicalBarcodeQ = rawQ ? canonicalizeBarcodeInput(rawQ) : "";
+  const normQ = rawQ ? normalizeSearchText(rawQ) : "";
+  const normTokens = normQ ? normQ.split(/\s+/).filter(Boolean) : [];
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 500);
+
+  const exactBarcodeVariantIds = new Set<number>();
+  const matchedVariantIdsSet = new Set<number>();
+
+  if (rawCodes.length > 0) {
+    const bulkTerms = Array.from(
+      new Set(
+        rawCodes.flatMap((c) => {
+          const canon = canonicalizeBarcodeInput(c);
+          return canon && canon !== c ? [c, canon] : [c];
+        }),
+      ),
+    );
+    if (bulkTerms.length > 0) {
+      const unitHits = await db
+        .select({ variantId: productUnits.variantId })
+        .from(productUnits)
+        .where(
+          and(
+            eq(productUnits.isActive, true),
+            inArray(productUnits.barcode, bulkTerms),
+          ),
+        );
+      for (const u of unitHits) {
+        const vid = Number(u.variantId);
+        exactBarcodeVariantIds.add(vid);
+        matchedVariantIdsSet.add(vid);
+      }
+
+      const aliasHits = await db
+        .select({ variantId: productUnits.variantId })
+        .from(productUnitBarcodes)
+        .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+        .where(
+          and(
+            eq(productUnits.isActive, true),
+            inArray(productUnitBarcodes.barcode, bulkTerms),
+          ),
+        );
+      for (const a of aliasHits) {
+        const vid = Number(a.variantId);
+        exactBarcodeVariantIds.add(vid);
+        matchedVariantIdsSet.add(vid);
+      }
+
+      const skuHits = await db
+        .select({ variantId: productVariants.id })
+        .from(productVariants)
+        .where(
+          and(
+            eq(productVariants.isActive, true),
+            inArray(productVariants.sku, bulkTerms),
+          ),
+        );
+      for (const s of skuHits) {
+        const vid = Number(s.variantId);
+        exactBarcodeVariantIds.add(vid);
+        matchedVariantIdsSet.add(vid);
+      }
+    }
+    if (matchedVariantIdsSet.size === 0) return [];
+  } else if (rawQ) {
+    const barcodeTerms = Array.from(new Set([rawQ, canonicalBarcodeQ].filter(Boolean)));
+    // 1a. Exact primary & alias barcode matches (never truncated by small limit)
+    const exactUnitMatches = await db
+      .select({ variantId: productUnits.variantId })
+      .from(productUnits)
+      .where(
+        and(
+          eq(productUnits.isActive, true),
+          inArray(productUnits.barcode, barcodeTerms),
+        ),
+      )
+      .limit(50);
+    for (const u of exactUnitMatches) {
+      const vid = Number(u.variantId);
+      exactBarcodeVariantIds.add(vid);
+      matchedVariantIdsSet.add(vid);
+    }
+
+    const exactAliasMatches = await db
+      .select({ variantId: productUnits.variantId })
+      .from(productUnitBarcodes)
+      .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+      .where(
+        and(
+          eq(productUnits.isActive, true),
+          inArray(productUnitBarcodes.barcode, barcodeTerms),
+        ),
+      )
+      .limit(50);
+    for (const a of exactAliasMatches) {
+      const vid = Number(a.variantId);
+      exactBarcodeVariantIds.add(vid);
+      matchedVariantIdsSet.add(vid);
+    }
+
+    // 1b. Substring barcode matches
+    const likeLimit = Math.min(Math.max(limit * 2, 20), 60);
+    const primaryLikeOrs = barcodeTerms.map((term) => like(productUnits.barcode, `%${term}%`));
+    const unitMatches = await db
+      .select({ variantId: productUnits.variantId })
+      .from(productUnits)
+      .where(
+        and(
+          eq(productUnits.isActive, true),
+          or(...primaryLikeOrs)!,
+        ),
+      )
+      .limit(likeLimit);
+    for (const u of unitMatches) {
+      matchedVariantIdsSet.add(Number(u.variantId));
+    }
+
+    const aliasLikeOrs = barcodeTerms.map((term) => like(productUnitBarcodes.barcode, `%${term}%`));
+    const aliasMatches = await db
+      .select({ variantId: productUnits.variantId })
+      .from(productUnitBarcodes)
+      .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+      .where(
+        and(
+          eq(productUnits.isActive, true),
+          or(...aliasLikeOrs)!,
+        ),
+      )
+      .limit(likeLimit);
+    for (const a of aliasMatches) {
+      matchedVariantIdsSet.add(Number(a.variantId));
+    }
+  }
+
+  const matchedVariantIds = Array.from(matchedVariantIdsSet);
+
+  // 2. Query productVariants joined with products
+  const conditions: any[] = [
+    eq(products.isActive, true),
+    eq(productVariants.isActive, true),
+  ];
+
+  if (input.categoryId != null) {
+    conditions.push(eq(products.categoryId, input.categoryId));
+  }
+
+  if (rawCodes.length > 0) {
+    conditions.push(inArray(productVariants.id, matchedVariantIds));
+  } else if (rawQ) {
+    const textConditions: any[] = [
+      like(products.name, `%${rawQ}%`),
+      like(productVariants.sku, `%${rawQ}%`),
+    ];
+    if (canonicalBarcodeQ && canonicalBarcodeQ !== rawQ) {
+      textConditions.push(like(productVariants.sku, `%${canonicalBarcodeQ}%`));
+    }
+    if (products.searchNorm && normTokens.length > 0) {
+      if (normTokens.length === 1) {
+        textConditions.push(like(products.searchNorm, `%${normTokens[0]}%`));
+      } else {
+        textConditions.push(
+          and(...normTokens.map((tok) => like(products.searchNorm, `%${tok}%`)))!,
+        );
+      }
+    }
+    if (matchedVariantIds.length > 0) {
+      textConditions.push(inArray(productVariants.id, matchedVariantIds));
+    }
+    conditions.push(or(...textConditions)!);
+  }
+
+  const candidateLimit =
+    rawCodes.length > 0
+      ? Math.max(limit, matchedVariantIds.length)
+      : rawQ
+      ? Math.min(Math.max(limit * 4, 40), 600)
+      : limit;
+  const candidateRows = await db
+    .select({
+      productId: products.id,
+      productName: products.name,
+      categoryId: products.categoryId,
+      isConsignment: products.isConsignment,
+      isBundle: products.isBundle,
+      variantId: productVariants.id,
+      sku: productVariants.sku,
+      variantKind: productVariants.variantKind,
+      costPrice: productVariants.costPrice,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(...conditions))
+    .orderBy(desc(products.id), asc(productVariants.id))
+    .limit(candidateLimit);
+
+  if (rawQ && exactBarcodeVariantIds.size > 0) {
+    const presentIds = new Set(candidateRows.map((r: any) => Number(r.variantId)));
+    const missingExactIds = Array.from(exactBarcodeVariantIds).filter((id) => !presentIds.has(id));
+    if (missingExactIds.length > 0) {
+      const exactConds: any[] = [
+        eq(products.isActive, true),
+        eq(productVariants.isActive, true),
+        inArray(productVariants.id, missingExactIds),
+      ];
+      if (input.categoryId != null) {
+        exactConds.push(eq(products.categoryId, input.categoryId));
+      }
+      const extraRows = await db
+        .select({
+          productId: products.id,
+          productName: products.name,
+          categoryId: products.categoryId,
+          isConsignment: products.isConsignment,
+          isBundle: products.isBundle,
+          variantId: productVariants.id,
+          sku: productVariants.sku,
+          variantKind: productVariants.variantKind,
+          costPrice: productVariants.costPrice,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(and(...exactConds));
+      candidateRows.push(...extraRows);
+    }
+  }
+
+  if (candidateRows.length === 0) return [];
+
+  const rawQLower = rawQ.toLowerCase();
+  const canonicalLower = canonicalBarcodeQ.toLowerCase();
+  const rankOfRow = (r: any): number => {
+    if (!rawQ) return 0;
+    const vid = Number(r.variantId);
+    const skuLower = String(r.sku ?? "").toLowerCase();
+    if (
+      exactBarcodeVariantIds.has(vid) ||
+      skuLower === rawQLower ||
+      (canonicalLower && skuLower === canonicalLower)
+    ) {
+      return 0;
+    }
+    const nameNorm = normalizeSearchText(String(r.productName ?? ""));
+    if (
+      skuLower.startsWith(rawQLower) ||
+      (canonicalLower && skuLower.startsWith(canonicalLower)) ||
+      (normQ && nameNorm === normQ)
+    ) {
+      return 1;
+    }
+    if ((normQ && nameNorm.startsWith(normQ)) || matchedVariantIdsSet.has(vid)) {
+      return 2;
+    }
+    return 3;
+  };
+
+  const variantRows = rawQ
+    ? [...candidateRows]
+        .sort((a: any, b: any) => {
+          const rDiff = rankOfRow(a) - rankOfRow(b);
+          if (rDiff !== 0) return rDiff;
+          const pDiff = Number(b.productId) - Number(a.productId);
+          if (pDiff !== 0) return pDiff;
+          return Number(a.variantId) - Number(b.variantId);
+        })
+        .slice(0, limit)
+    : candidateRows.slice(0, limit);
+
+  const foundVariantIds = variantRows.map((r: any) => Number(r.variantId));
+
+  // Resolve live component cost for pre-packaged bundles when cost visibility is authorized
+  let bundleCostMap = new Map<number, string>();
+  if (canViewCost) {
+    const bundleVariantIds = variantRows
+      .filter((r: any) => Boolean(r.isBundle))
+      .map((r: any) => Number(r.variantId));
+    if (bundleVariantIds.length > 0) {
+      bundleCostMap = await loadBundleUnitCosts(db, bundleVariantIds);
+    }
+  }
+
+  // 3. Load packaging units with retail price
+  const unitRows = await db
+    .select({
+      id: productUnits.id,
+      variantId: productUnits.variantId,
+      unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      barcode: productUnits.barcode,
+      isBaseUnit: productUnits.isBaseUnit,
+      retailPrice: productPrices.price,
+    })
+    .from(productUnits)
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, "RETAIL"),
+      ),
+    )
+    .where(
+      and(
+        inArray(productUnits.variantId, foundVariantIds),
+        eq(productUnits.isActive, true),
+      ),
+    )
+    .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.conversionFactor), asc(productUnits.id));
+
+  const foundUnitIds = unitRows.map((u: any) => Number(u.id));
+  const altBarcodesByUnit = new Map<number, string[]>();
+  if (foundUnitIds.length > 0) {
+    const aliasRows = await db
+      .select({
+        productUnitId: productUnitBarcodes.productUnitId,
+        barcode: productUnitBarcodes.barcode,
+      })
+      .from(productUnitBarcodes)
+      .where(inArray(productUnitBarcodes.productUnitId, foundUnitIds));
+    for (const ar of aliasRows) {
+      const uid = Number(ar.productUnitId);
+      const list = altBarcodesByUnit.get(uid) ?? [];
+      if (ar.barcode) list.push(String(ar.barcode));
+      altBarcodesByUnit.set(uid, list);
+    }
+  }
+
+  const unitsByVariant = new Map<number, SearchProductResultItem["units"]>();
+  for (const u of unitRows) {
+    const varId = Number(u.variantId);
+    const uid = Number(u.id);
+    const list = unitsByVariant.get(varId) ?? [];
+    const altBarcodes = altBarcodesByUnit.get(uid);
+    list.push({
+      id: uid,
+      unitName: u.unitName,
+      conversionFactor: String(u.conversionFactor ?? "1"),
+      barcode: u.barcode ?? null,
+      ...(altBarcodes && altBarcodes.length > 0 ? { altBarcodes } : {}),
+      isBaseUnit: Boolean(u.isBaseUnit),
+      retailPrice: u.retailPrice != null ? String(u.retailPrice) : "0.00",
+    });
+    unitsByVariant.set(varId, list);
+  }
+
+  return variantRows.map((r: any) => {
+    const varId = Number(r.variantId);
+    const isBundle = Boolean(r.isBundle);
+    const effectiveCost = isBundle && bundleCostMap.has(varId)
+      ? bundleCostMap.get(varId)!
+      : r.costPrice != null
+        ? String(r.costPrice)
+        : "0.00";
+    return {
+      productId: Number(r.productId),
+      productName: r.productName,
+      productCode: r.sku,
+      categoryId: r.categoryId == null ? 0 : Number(r.categoryId),
+      variantId: varId,
+      sku: r.sku,
+      variantKind: (r.variantKind as "VARIANT" | "ALTERNATIVE") ?? "VARIANT",
+      isConsignment: Boolean(r.isConsignment),
+      isBundle,
+      costPrice: canViewCost ? effectiveCost : null,
+      units: unitsByVariant.get(varId) ?? [],
+    };
+  });
 }
 
 export async function getProductCategoryIds(tx: Tx, productIds: number[]): Promise<Map<number, number | null>> {

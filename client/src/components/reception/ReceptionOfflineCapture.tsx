@@ -7,6 +7,7 @@ import {
   isOfflineSaleEnabled,
   type OfflineReceptionPayload,
 } from "@/lib/offline/outbox";
+import Decimal from "decimal.js";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { fmtDate, fmtTime } from "@/lib/date";
@@ -14,6 +15,7 @@ import {
   effectivePrice,
   isCustomKind,
   lineTotal,
+  officialReceptionPromoInfo,
   PAY_METHOD_LABEL,
   type CartLine,
   type PayMethod,
@@ -186,12 +188,33 @@ export async function ReceptionOfflineCapture(
       regularLines.length > 0
         ? {
             // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
-            lines: regularLines.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-            })),
+            lines: regularLines.map((c) => {
+              const promoInfo = officialReceptionPromoInfo(c);
+              if (!promoInfo) {
+                return {
+                  variantId: c.row.variantId,
+                  productUnitId: c.row.productUnitId,
+                  quantity: String(c.qty),
+                  unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+                };
+              }
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const listGross = listWhole.times(c.qty);
+              const netLine = round2(D(lineTotal(c)));
+              const discAmt = Decimal.max(0, round2(listGross.minus(netLine)));
+              const promoDiscount = Decimal.min(discAmt, promoInfo.promoDiscountD);
+              const cashierDiscount = Decimal.max(0, round2(discAmt.minus(promoDiscount)));
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                promotionId: promoInfo.promotionId,
+                ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+                ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+              };
+            }),
             // ٢٣/٨ — الصافي = الأسطر الخام − خصمُ رأس الفاتورة الملتقَط. الخادم يعيد الحساب بنفس المدخلات
             // عند الترحيل (replayOfflineReception → checkoutReception → createSaleInTx) فينتج نفس الرقم.
             amount: round2(

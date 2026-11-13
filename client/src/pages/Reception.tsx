@@ -51,7 +51,8 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
-import { isCustomKind, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
+import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
+import { useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
@@ -161,7 +162,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
 
   const compactHeader = useMediaQuery("(max-height: 900px)");
 
-  const [cart, setCart] = useState<CartLine[]>([]); const [checkoutCharges,setCheckoutCharges]=useState<CheckoutChargesInput>({}); const extraChargeAmount=checkoutExtraTotal(checkoutCharges);
+  const [rawCart, setCart] = useState<CartLine[]>([]); const [checkoutCharges,setCheckoutCharges]=useState<CheckoutChargesInput>({}); const extraChargeAmount=checkoutExtraTotal(checkoutCharges);
   const [addTick, setAddTick] = useState(0), [selKey, setSelKey] = useState<string | null>(null), [search, setSearch] = useState(""), [showDrop, setShowDrop] = useState(false);
   const [payInput, setPayInput] = useState("");
   const [deferred, setDeferred] = useState(false);
@@ -306,6 +307,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   );
   const effectiveTier: Tier =
     tierOverride ?? hydratedAutomaticTier ?? resolvedCustomerTier ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  const cart = useReceptionCartPromotions({ rawCart, branchId, effectiveTier, offline, canReadPromos: canAction("catalog.activePromotions"), activeDraft, couponCode });
   const barcodePricingContextRef = useRef("");
   barcodePricingContextRef.current = `${branchId}:${customer.customerId ?? "walk-in"}:${effectiveTier}`;
   useEffect(() => { if (hydratedAutomaticTier && phoneResolution === "RESOLVED" && resolvedCustomerTier) setHydratedAutomaticTier(null); }, [hydratedAutomaticTier, phoneResolution, resolvedCustomerTier]);
@@ -335,7 +337,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     branchId,
     activeDraftId: activeDraft?.id ?? null, activeDraftVersion: activeDraft?.version ?? null, clientRequestIdRef: reqIdRef,
     local: {
-      cart, checkoutCharges,
+      cart: rawCart, checkoutCharges,
       customer: { customerId: customer.customerId ?? null, name: customer.name, phone: customer.phone ?? null, isNew: customer.isNew },
       phoneInput: receptionPhone, customerCreditLimit, tierOverride, effectiveTier, draftPromotionPending, draftPromotionShiftId, detachedRecoveryPending, payInput, method, deferred,
       invoiceDiscountPct, couponInput, couponCode, couponLabel,
@@ -781,12 +783,27 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
           priceTier: effectiveTier,
           sourceType: "RECEPTION",
           sourcePayload: { version: 1, contactName: customerName ?? null, contactPhone: receiptPhone ?? null, cashRoundIQD: method === "CASH" && cashRoundActive },
-          regularLines: regularLines.map((line, index) => ({
-            lineKey: `regular:${index}:${line.row.productUnitId}`,
-            variantId: line.row.variantId,
-            productUnitId: line.row.productUnitId,
-            quantity: String(line.qty),
-          })),
+          regularLines: regularLines.map((line, index) => {
+            const listWhole = D(line.row.price ?? 0).toDecimalPlaces(0, 4);
+            const listGross = listWhole.times(line.qty);
+            const netLine = round2(D(lineTotal(line)));
+            const discAmt = listGross.gt(netLine) ? round2(listGross.minus(netLine)) : D(0);
+            const promoInfo = officialReceptionPromoInfo(line);
+            const promotionId = promoInfo?.promotionId;
+            const promoDiscount = promoInfo ? (promoInfo.promoDiscountD.gt(discAmt) ? discAmt : promoInfo.promoDiscountD) : D(0);
+            const cashierDiscount = discAmt.gt(promoDiscount) ? round2(discAmt.minus(promoDiscount)) : D(0);
+            return {
+              lineKey: `regular:${index}:${line.row.productUnitId}`,
+              variantId: line.row.variantId,
+              productUnitId: line.row.productUnitId,
+              quantity: String(line.qty),
+              unitPriceOverride: listWhole.toFixed(2),
+              ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+              ...(promotionId != null ? { promotionId } : {}),
+              ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+              ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+            };
+          }),
           lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
         }, amount: round2(appliedPaidD).toFixed(2), tenderedAmount: round2(inputPaidD).toFixed(2), customerName,
           captureConfirmed: true, reference: method === "CARD" ? paymentReference.trim() : null });

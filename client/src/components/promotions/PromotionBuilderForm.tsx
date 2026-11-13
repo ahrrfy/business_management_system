@@ -176,10 +176,10 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
         <div className="flex items-center justify-between">
           <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
             <Layers className="size-3.5 text-primary" />
-            <span>اختر نوع الحملة والغرض الترويجي (النوع المعزول)</span>
+            <span>اختر نوع العرض أو الكوبون</span>
           </label>
           <span className="text-[11px] text-muted-foreground">
-            تخصيص الحقول والشاشات تلقائياً حسب نوع الحملة
+            تظهر الحقول المناسبة تلقائياً حسب اختيارك
           </span>
         </div>
 
@@ -262,9 +262,9 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
 
           {!isDirectPromo && (
             <Field
-              label={isAffiliate ? "رمز كوبون المسوق (الكود المباشر)" : "بادئة الكود (Prefix)"}
+              label={isAffiliate ? "كود المسوق" : "بداية الكود (مثل VIP)"}
               required
-              hint={errors.codePrefix || (isAffiliate ? "الكود الذي يشاركه المسوق مع متابعيه" : "البادئة التلقائية")}
+              hint={errors.codePrefix || (isAffiliate ? "الكود الذي يشاركه المسوق مع زبائنه" : "الحروف الأولى للكود")}
             >
               <Input
                 value={data.codePrefix}

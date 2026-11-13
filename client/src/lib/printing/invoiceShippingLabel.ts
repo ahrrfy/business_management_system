@@ -23,6 +23,8 @@ export interface InvoiceShippingLabelSource {
   courierName?: string | null;
   courierFee?: string | number | null;
   courierFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  deliveryFree?: boolean | null;
+  deliveryWaivedAmount?: string | number | null;
   externalTrackingRef?: string | null;
   qrPayload?: string | null;
   items: Array<{
@@ -58,6 +60,8 @@ export function invoiceToShippingLabel(invoice: InvoiceShippingLabelSource): Shi
     ...(D(collection.creditDue).gt(0) ? { creditAmount: collection.creditDue } : {}),
     deliveryPartyName: invoice.courierName ?? null,
     externalTrackingRef: invoice.externalTrackingRef ?? null,
+    freeShippingPromo: Boolean(!facts.dead && (invoice.deliveryFree || invoice.courierFeeCollection === "SHOP")),
+    waivedShippingAmount: invoice.deliveryWaivedAmount ?? (invoice.courierFeeCollection === "SHOP" ? invoice.courierFee : null),
     qrUrl: invoice.qrPayload
       ? (origin ? `${origin}/verify?payload=${encodeURIComponent(invoice.qrPayload)}` : invoice.qrPayload)
       : null,

@@ -3,6 +3,7 @@ import type { CustomizationData } from "@/components/CustomizationDialog";
 import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
 import type { ReceiptBrowserData, WorkOrderReceiptData } from "@/lib/printing/print";
 import type { RouterOutputs } from "@/lib/trpc";
+import Decimal from "decimal.js";
 import { D, round2 } from "@/lib/money";
 
 /**
@@ -40,8 +41,12 @@ export type CartLine = {
   customBasePrice?: number | null;
   /** سعر الكوبون الملتقط للمسودة؛ منفصل عن السعر الأساس كي تعود إزالة الكوبون للسعر الصحيح. */
   couponPriceSnapshot?: number;
+  /** خصم السطر الإجمالي للكوبون (دقيق لمنزلتين عشريتين لعروض الباقات/اشترِ واحصل/الكميات المتدرجة). */
+  couponLineDiscount?: string;
   /** العرض التلقائي الذي كان على السطر قبل أن يستبدله الكوبون. */
   couponBasePromotion?: { promotionId: number | null; promotionName: string | null; promotionEffectivePrice: string | null };
+  /** التقييم الحيّ لعروض السلة التلقائية (غير مخزّن في sessionStorage). */
+  cartPromo?: { promotionId: number; promotionName: string; lineDiscount: string } | null;
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
   manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
@@ -52,7 +57,64 @@ export type CartLine = {
 // زرّ «5,000» يُدخل 5,000,000 ⇒ فكّةٌ خاطئة ١٠٠٠× — كارثة كاشير.
 export const QUICK_AMTS = [1000, 5000, 10000, 25000];
 
+/**
+ * يستخرج بيانات العرض الرسمي أو الكوبون المطبّق على سطر الاستقبال الجاهز (غير المخصّص/الرقمي/الطباعة).
+ */
+export function officialReceptionPromoInfo(
+  line: CartLine,
+): { promotionId: number; promotionName: string | null; promoDiscountD: Decimal } | null {
+  if (line.custom || line.digital || line.row.isPrintService || line.manualService) return null;
+  const listUnit = D(line.row.price ?? 0).toDecimalPlaces(0, 4);
+  const listGross = listUnit.times(line.qty);
+  if (line.couponLineDiscount != null && line.row.promotionId != null) {
+    const raw = D(line.couponLineDiscount);
+    const capped = raw.gt(listGross) ? listGross : raw.lt(0) ? D(0) : round2(raw);
+    return {
+      promotionId: Number(line.row.promotionId),
+      promotionName: line.row.promotionName ?? null,
+      promoDiscountD: capped,
+    };
+  }
+  if (line.couponPriceSnapshot != null && line.row.promotionId != null) {
+    const snapD = D(line.couponPriceSnapshot);
+    const d = listUnit.gt(snapD) ? round2(listUnit.minus(snapD).times(line.qty)) : D(0);
+    return {
+      promotionId: Number(line.row.promotionId),
+      promotionName: line.row.promotionName ?? null,
+      promoDiscountD: d,
+    };
+  }
+  if (line.cartPromo !== undefined) {
+    if (!line.cartPromo || !(line.cartPromo.promotionId > 0)) return null;
+    const raw = D(line.cartPromo.lineDiscount);
+    const capped = raw.gt(listGross) ? listGross : raw.lt(0) ? D(0) : round2(raw);
+    return {
+      promotionId: line.cartPromo.promotionId,
+      promotionName: line.cartPromo.promotionName,
+      promoDiscountD: capped,
+    };
+  }
+  if (line.origPrice == null && line.row.promotionId != null && line.row.promotionEffectivePrice != null) {
+    const promoUnit = D(line.row.promotionEffectivePrice);
+    const d = listUnit.gt(promoUnit) ? round2(listUnit.minus(promoUnit).times(line.qty)) : D(0);
+    return {
+      promotionId: Number(line.row.promotionId),
+      promotionName: line.row.promotionName ?? null,
+      promoDiscountD: d,
+    };
+  }
+  return null;
+}
+
 export function effectivePrice(line: CartLine): number {
+  if (!line.custom && !line.digital && !line.row.isPrintService && line.qty > 0) {
+    if (line.couponLineDiscount != null) {
+      return round2(D(lineTotal(line)).div(line.qty)).toNumber();
+    }
+    if (line.cartPromo !== undefined && line.couponPriceSnapshot == null) {
+      return round2(D(lineTotal(line)).div(line.qty)).toNumber();
+    }
+  }
   // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
   // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
   // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
@@ -68,6 +130,32 @@ export function effectivePrice(line: CartLine): number {
   return base;
 }
 export function lineTotal(line: CartLine): number {
+  if (!line.custom && !line.digital && !line.row.isPrintService) {
+    if (line.couponLineDiscount != null) {
+      const listGross = D(line.row.price ?? 0).toDecimalPlaces(0, 4).times(line.qty);
+      const couponDisc = Decimal.min(listGross, Decimal.max(0, D(line.couponLineDiscount)));
+      const afterCoupon = listGross.minus(couponDisc);
+      if (line.disc && line.disc > 0) {
+        return round2(afterCoupon.times(D(100).minus(line.disc)).div(100)).toNumber();
+      }
+      return round2(afterCoupon).toNumber();
+    }
+    if (line.cartPromo !== undefined && line.couponPriceSnapshot == null) {
+      const hasHistoricalOverride =
+        line.origPrice != null && !((line.disc ?? 0) > 0 && D(line.origPrice).eq(D(line.row.price ?? 0)));
+      const baseUnit = hasHistoricalOverride ? D(line.origPrice!) : D(line.row.price ?? 0);
+      const grossLine = baseUnit.times(line.qty);
+      const promoDisc =
+        !hasHistoricalOverride && line.cartPromo
+          ? Decimal.min(grossLine, Decimal.max(0, D(line.cartPromo.lineDiscount)))
+          : D(0);
+      const afterPromo = grossLine.minus(promoDisc);
+      if (line.disc && line.disc > 0) {
+        return round2(afterPromo.times(D(100).minus(line.disc)).div(100)).toNumber();
+      }
+      return round2(afterPromo).toNumber();
+    }
+  }
   return effectivePrice(line) * line.qty;
 }
 export function customizationBasePrice(line: CartLine): number | null {

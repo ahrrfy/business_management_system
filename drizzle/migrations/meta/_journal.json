@@ -2696,6 +2696,13 @@
 			"when": 1788148886000,
 			"tag": "0428_catalog_stock_usage_and_locks",
 			"breakpoints": true
+		},
+		{
+			"idx": 429,
+			"version": "5",
+			"when": 1788148887000,
+			"tag": "0429_redesign_promotions_and_discounts",
+			"breakpoints": true
 		}
 	]
 }

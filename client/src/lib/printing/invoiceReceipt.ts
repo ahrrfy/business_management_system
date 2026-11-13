@@ -4,6 +4,7 @@ import { paymentMethodLabel } from "@/lib/paymentMethod";
 import type { ReceiptBrowserData } from "./print";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
+import { deriveInvoicePromoSummary } from "./promoPrintSummary";
 
 export interface InvoiceReceiptSource {
   id?: number;
@@ -39,6 +40,8 @@ export interface InvoiceReceiptSource {
   courierFee?: string | number | null;
   courierFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   consignmentStatus?: string | null;
+  deliveryFree?: boolean | null;
+  deliveryWaivedAmount?: string | number | null;
   items: {
     productName?: string | null;
     variantName?: string | null;
@@ -52,6 +55,9 @@ export interface InvoiceReceiptSource {
     total: string | number;
     /** هدايا الفاتورة (0149): يُوسَم الاسم بـ«هدية» في الإيصال الحراريّ (السعر صفر أصلاً). */
     isGift?: boolean | null;
+    promotionId?: number | null;
+    promotionDiscount?: string | number | null;
+    promotionName?: string | null;
   }[];
   bounceBackCoupon?: ReceiptBrowserData["bounceBackCoupon"];
   /** تفصيل دفعات الفاتورة جاهز للعرض (اختياري) */
@@ -152,6 +158,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     delivery: d.courierName && Number(d.courierFee ?? 0) > 0 && d.consignmentStatus !== "CANCELLED"
       ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
       : null,
+    promoSummary: deriveInvoicePromoSummary(d),
     bounceBackCoupon: d.bounceBackCoupon ?? null,
   };
 }

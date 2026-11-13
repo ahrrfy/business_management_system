@@ -31,7 +31,7 @@ export interface UsePOSTabHelpersParams {
 export function resetCouponItems(items: CartItem[]) {
   return items.map((item) =>
     item.preCouponRow
-      ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined }
+      ? { ...item, row: item.preCouponRow, preCouponRow: undefined, cartPromo: undefined, disc: undefined }
       : item,
   );
 }
@@ -251,7 +251,7 @@ export function usePOSTabHelpers({
 
   const clearAppliedCoupon = () => {
     setCart((items) => resetCouponItems(items));
-    patchActive({ couponCode: null, couponLabel: null });
+    patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
   };
 
   const setCustId = (v: number | null) => {

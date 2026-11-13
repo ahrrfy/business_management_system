@@ -24,9 +24,11 @@ export interface ResolvedLinePrice {
 export interface InvoiceLine {
   /** Product id (for grouping/display). */
   productId: number;
+  categoryId?: number | null;
   variantId: number;
   /** Stable key for ADD_ITEM dedupe. */
   productUnitId: number;
+  isBaseUnit?: boolean;
   name: string;
   variantName?: string | null;
   color?: string | null;
@@ -69,6 +71,10 @@ export interface InvoiceLine {
   /** Per-line discount, percent (0-100) or absolute amount (in invoice currency). */
   discount: string;
   discountType: DiscountType;
+  promotionId?: number | null;
+  promotionName?: string | null;
+  promotionDiscount?: string | null;
+  autoPromoManaged?: boolean;
   note: string;
   /**
    * هدايا الفاتورة (0149، فاتورة البيع فقط): سطرٌ مُهدىً — يُعرَض ويُطبَع بقيمة صفر ولا يدخل

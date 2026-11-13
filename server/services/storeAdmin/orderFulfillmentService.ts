@@ -1289,6 +1289,7 @@ export async function updateOnlineOrder(
         const promo = (
           await tx
             .select({
+              type: promotions.type,
               freeShipping: promotions.freeShipping,
               shippingDiscountAmount: promotions.shippingDiscountAmount,
             })
@@ -1298,7 +1299,7 @@ export async function updateOnlineOrder(
             .limit(1)
         )[0];
 
-        if (promo?.freeShipping) {
+        if (promo?.freeShipping || promo?.type === "FREE_SHIPPING") {
           couponShipping = {
             freeShipping: true,
             shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
@@ -1351,6 +1352,7 @@ export async function updateOnlineOrder(
     const quoteOrderTotals = async (
       lineItems: Array<{ lineTotal: string }>,
       eligibilitySubtotalStr: string,
+      offerFreeShipping?: boolean,
     ) => {
       const baseQuote = await totalOnlineOrderQuote(
         tx,
@@ -1360,6 +1362,7 @@ export async function updateOnlineOrder(
         eligibilitySubtotalStr,
         storeSettings?.freeShippingThresholdGovernorates,
         couponShipping,
+        offerFreeShipping,
       );
       if (retainedDeactivatedZoneFee == null) {
         return baseQuote;
@@ -1370,10 +1373,13 @@ export async function updateOnlineOrder(
         : null;
       const eligibilitySubtotal = round2(money(eligibilitySubtotalStr));
       const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
-      const couponFree = Boolean(
-        couponShipping?.freeShipping && !thresholdFree && retainedDeactivatedZoneFee.gt(0),
+      const offerFree = Boolean(
+        offerFreeShipping && !thresholdFree && retainedDeactivatedZoneFee.gt(0),
       );
-      const deliveryFree = thresholdFree || couponFree;
+      const couponFree = Boolean(
+        couponShipping?.freeShipping && !thresholdFree && !offerFree && retainedDeactivatedZoneFee.gt(0),
+      );
+      const deliveryFree = thresholdFree || offerFree || couponFree;
       const customerDeliveryFee = deliveryFree ? round2(money(0)) : retainedDeactivatedZoneFee;
       const deliveryWaivedAmount = deliveryFree ? retainedDeactivatedZoneFee : round2(money(0));
       const couponDeliveryWaivedAmount = couponFree ? retainedDeactivatedZoneFee : round2(money(0));
@@ -1587,7 +1593,11 @@ export async function updateOnlineOrder(
         ),
       );
 
-      const quoteTotals = await quoteOrderTotals(pricing.items, retailSubtotal.toFixed(2));
+      const quoteTotals = await quoteOrderTotals(
+        pricing.items,
+        retailSubtotal.toFixed(2),
+        Boolean(pricing.benefit.type === "OFFER" && pricing.benefit.offerShippingActive),
+      );
 
       // Deduct coupon discount if order had one
       const currentCouponDiscount = money(order.couponDiscount ?? "0");
@@ -1677,7 +1687,23 @@ export async function updateOnlineOrder(
         money(order.subtotal).plus(persistedMerchandiseDiscount),
       ).toFixed(2);
 
-      const quoteTotals = await quoteOrderTotals(existingItems, retailEligibilitySubtotal);
+      const oldIsBaghdad = isBaghdadGovernorate(order.governorate ?? "");
+      const oldThreshStr = oldIsBaghdad
+        ? storeSettings?.freeShippingThreshold
+        : (storeSettings?.freeShippingThresholdGovernorates ?? storeSettings?.freeShippingThreshold);
+      const oldThresh = oldThreshStr ? money(oldThreshStr) : null;
+      const oldWasThresholdFree = Boolean(
+        oldThresh && oldThresh.gt(0) && money(retailEligibilitySubtotal).gte(oldThresh),
+      );
+      const preservedOfferFreeShipping = Boolean(
+        order.pricingBenefitType === "OFFER" && order.deliveryFree && !oldWasThresholdFree,
+      );
+
+      const quoteTotals = await quoteOrderTotals(
+        existingItems,
+        retailEligibilitySubtotal,
+        preservedOfferFreeShipping,
+      );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.

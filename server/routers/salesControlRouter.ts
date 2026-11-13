@@ -43,6 +43,8 @@ const correctionLine = z.object({
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
   discountAmount: nonNegMoneyString.optional(),
   promotionId: z.number().int().positive().optional(),
+  promotionDiscount: nonNegMoneyString.optional(),
+  cashierDiscountAmount: nonNegMoneyString.optional(),
   isGift: z.boolean().optional(),
 });
 const correctionPayload = z.object({

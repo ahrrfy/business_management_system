@@ -41,11 +41,13 @@ export interface DeliveryModeFieldsProps {
   suggestedPartyId?: number | null;
   /** سببُ تعطيل الوضع (الأوفلاين): يُعرض ويُعطّل الحقول. */
   disabledReason?: string | null;
+  /** اسم عرض التوصيل المجاني المؤهّل حالياً في السلة إن وُجد. */
+  freeShippingPromoName?: string | null;
 }
 
 const LABEL = "mb-1 block text-[10px] font-bold text-muted-foreground";
 
-export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId = null, disabledReason = null }: DeliveryModeFieldsProps) {
+export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId = null, disabledReason = null, freeShippingPromoName = null }: DeliveryModeFieldsProps) {
   const disabled = !!disabledReason;
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000, enabled: !disabled });
   const quoteQ = trpc.delivery.previewDeliveryQuoteByGovernorate.useQuery(
@@ -197,6 +199,16 @@ export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId
             disabled={disabled}
           />
         </div>
+      )}
+
+      {freeShippingPromoName && (
+        <p
+          role="status"
+          data-testid="pos-free-shipping-promo-banner"
+          className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-pos)]"
+        >
+          التوصيل مجاني بالعرض ({freeShippingPromoName}) — الأجرة على حساب المكتبة ومجاناً للزبون، وتنطبع بالوصل وملصق الطلب.
+        </p>
       )}
 
       <div className="grid grid-cols-2 gap-2">

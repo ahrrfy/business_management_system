@@ -23,6 +23,9 @@ export const DAYS_OF_WEEK: readonly DayOfWeekOption[] = Object.freeze([
 
 export const ALL_DAYS_MASK = [0, 1, 2, 3, 4, 5, 6];
 
+export type PromotionChannel = "ALL" | "POS_ONLY" | "STORE_ONLY";
+export type EvaluationChannel = "POS" | "STORE";
+
 /**
  * حساب يوم الأسبوع المعتمد وفق توقيت بغداد (UTC+3).
  */
@@ -33,6 +36,16 @@ export function getBaghdadDayOfWeek(dateInput?: Date | string | null): number {
   // تحويل إلى توقيت بغداد (UTC+3)
   const baghdadTime = new Date(d.getTime() + 3 * 60 * 60 * 1000);
   return baghdadTime.getUTCDay();
+}
+
+/**
+ * تاريخ اليوم بصيغة YYYY-MM-DD وفق توقيت بغداد (UTC+3).
+ */
+export function todayYmdBaghdad(dateInput?: Date | string | null): string {
+  const d = dateInput ? (dateInput instanceof Date ? dateInput : new Date(dateInput)) : new Date();
+  const base = Number.isNaN(d.getTime()) ? new Date() : d;
+  const baghdadTime = new Date(base.getTime() + 3 * 60 * 60 * 1000);
+  return baghdadTime.toISOString().slice(0, 10);
 }
 
 /**
@@ -56,6 +69,48 @@ export function isDayActive(
   }
   const currentDay = getBaghdadDayOfWeek(dateInput);
   return activeDays.includes(currentDay);
+}
+
+/**
+ * فحص ما إذا كان جدول أيام الأسبوع للعرض فعالاً في تاريخ محدد أو يوم أسبوع محدد.
+ * إذا كانت المصفوفة فارغة أو غير محددة أو تضم 7 أيام، يعتبر العرض فعالاً طوال الأسبوع.
+ */
+export function isPromotionActiveOnDay(
+  activeDays?: readonly number[] | null,
+  dateOrDayOfWeek?: Date | string | number | null,
+): boolean {
+  if (!activeDays || !Array.isArray(activeDays) || activeDays.length === 0 || activeDays.length >= 7) {
+    return true;
+  }
+
+  let dayIdx: number;
+  if (typeof dateOrDayOfWeek === "number") {
+    dayIdx = dateOrDayOfWeek;
+  } else if (typeof dateOrDayOfWeek === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateOrDayOfWeek)) {
+    // Pure YYYY-MM-DD string: parse UTC midday to avoid TZ boundary shifts
+    const [y, m, d] = dateOrDayOfWeek.split("-").map(Number);
+    const date = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    dayIdx = date.getUTCDay();
+  } else {
+    dayIdx = getBaghdadDayOfWeek(dateOrDayOfWeek);
+  }
+
+  return activeDays.includes(dayIdx);
+}
+
+/**
+ * فحص ما إذا كانت قناة العرض متوافقة مع قناة نقطة البيع الحالية.
+ */
+export function isPromotionChannelActive(
+  promoChannel: PromotionChannel | string,
+  contextChannel: EvaluationChannel,
+): boolean {
+  if (promoChannel === "ALL") return true;
+  if (promoChannel === "POS_ONLY" && contextChannel === "POS") return true;
+  if (promoChannel === "STORE_ONLY" && contextChannel === "STORE") return true;
+  if (promoChannel === "POS" && contextChannel === "POS") return true;
+  if (promoChannel === "STORE" && contextChannel === "STORE") return true;
+  return false;
 }
 
 /**

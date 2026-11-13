@@ -60,16 +60,20 @@ export function validateReceptionDigitalCart({
       notify.err("الكروت والاشتراكات لا تقبل البيع الآجل أو الدفع الجزئي.");
       return false;
     }
-    if (
-      couponCode ||
-      rawInvoiceDiscountPctD.gt(0) ||
-      regularLines.some(
-        (line) => (line.disc ?? 0) > 0 || line.row.promotionId != null,
-      )
-    ) {
+    if (couponCode || rawInvoiceDiscountPctD.gt(0)) {
       notify.err(
-        "لا تُطبّق الكوبونات أو الخصومات على عملية تحتوي كروتاً رقمية؛ افصلها في فاتورة أخرى.",
+        "لا تُطبّق الكوبونات أو الخصومات الإجمالية على عملية تحتوي كروتاً رقمية؛ افصلها في فاتورة أخرى.",
       );
+      return false;
+    }
+    const promoDigital = digitalLines.find(
+      (line) =>
+        (line.row as any).promotionId != null ||
+        line.cartPromo != null ||
+        (line.disc != null && line.disc > 0),
+    );
+    if (promoDigital) {
+      notify.err("لا يمكن تطبيق عروض ترويجية أو خصومات على الكروت الرقمية.");
       return false;
     }
     const changedDigital = digitalLines.find(

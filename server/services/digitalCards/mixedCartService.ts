@@ -1,5 +1,6 @@
 /** Durable public-price snapshot for ordinary lines travelling with digital cards. */
 import { createHash } from "node:crypto";
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -7,7 +8,16 @@ import {
   products,
   productUnits,
   productVariants,
+  promotions,
 } from "../../../drizzle/schema";
+import {
+  evaluateCartPromotions,
+  type CartEvalItem,
+} from "../../../shared/promotionEngine";
+import {
+  loadPromotionRuleSnapshot,
+  snapshotToEngineRules,
+} from "../salesPromotionService";
 import type {
   DigitalCheckoutInventoryReservationSnapshot,
   DigitalCheckoutPricingGuardSnapshot,
@@ -217,12 +227,16 @@ export async function prepareCheckoutSnapshot(
     referenceGrossTotal: "0.00",
   };
   if (request.regularLines.length) {
+    const branchId = input.branchId ?? actor.branchId;
+    if (branchId == null) checkoutError("الفرع غير محدد لفحص مخزون السلة");
     const variantIds = Array.from(
       new Set(request.regularLines.map((line) => line.variantId)),
     );
     const variants = await tx
       .select({
         id: productVariants.id,
+        productId: productVariants.productId,
+        categoryId: products.categoryId,
         active: productVariants.isActive,
         productActive: products.isActive,
         productType: products.productType,
@@ -246,6 +260,7 @@ export async function prepareCheckoutSnapshot(
         id: productUnits.id,
         variantId: productUnits.variantId,
         isActive: productUnits.isActive,
+        isBaseUnit: productUnits.isBaseUnit,
       })
       .from(productUnits)
       .where(inArray(productUnits.id, requestedUnitIds));
@@ -255,6 +270,7 @@ export async function prepareCheckoutSnapshot(
     const baseByLine = new Map<string, number>();
     let referenceGrossTotal = money(0);
     let manualLineDiscountGate = false;
+    const exemptPromoLossByKey = new Map<string, boolean>();
     const contracts =
       request.customerId == null
         ? new Map<number, string>()
@@ -263,6 +279,15 @@ export async function prepareCheckoutSnapshot(
             request.customerId,
             request.regularLines.map((line) => line.productUnitId),
           );
+    const preRegular: Array<{
+      line: DigitalCheckoutRegularLineInput;
+      variant: NonNullable<ReturnType<typeof byId.get>>;
+      unit: NonNullable<ReturnType<typeof unitById.get>>;
+      contractPrice: string | undefined;
+      reference: Decimal | null;
+      price: Decimal;
+      priced: ReturnType<typeof computeLineTotal>;
+    }> = [];
     for (const line of request.regularLines) {
       const variant = byId.get(line.variantId);
       if (
@@ -310,16 +335,123 @@ export async function prepareCheckoutSnapshot(
               discountPercent: line.discountPercent,
             },
       );
-      // The native sale repeats all pricing/cost/stock gates under its own locks at commit.
-      const lineNeedsApproval = !line.isGift && lineDiscountExceedsThreshold(
-        reference ?? money(0),
-        money(line.quantity),
-        priced.total,
+      preRegular.push({
+        line,
+        variant,
+        unit,
+        contractPrice,
+        reference,
+        price,
+        priced,
+      });
+    }
+
+    const authPromoByIdx = new Map<
+      number,
+      { promotionId: number; discountAmount: Decimal; allowBelowCost: boolean }
+    >();
+    const claimedPromoIds = Array.from(
+      new Set(
+        preRegular
+          .map((item) =>
+            item.line.promotionId != null ? Number(item.line.promotionId) : null,
+          )
+          .filter((pid): pid is number => pid != null && pid > 0),
+      ),
+    );
+    if (claimedPromoIds.length > 0) {
+      const todayYmd = new Date(Date.now() + 3 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      const promoMetaRows = await tx
+        .select({
+          id: promotions.id,
+          isActive: promotions.isActive,
+          allowBelowCost: promotions.allowBelowCost,
+        })
+        .from(promotions)
+        .where(inArray(promotions.id, claimedPromoIds));
+      const promoMetaById = new Map(
+        promoMetaRows.map((r) => [Number(r.id), r]),
       );
+      const autoSnapshot = await loadPromotionRuleSnapshot(tx, {
+        branchId,
+        customerTier: priceTier,
+        todayYmd,
+        includeStoreManaged: false,
+        evaluationChannel: "POS",
+        requiredApplicationMode: "AUTO",
+      });
+      const allAutoRules = snapshotToEngineRules(autoSnapshot);
+      const baseEvalItems: CartEvalItem[] = preRegular.map((item, idx) => ({
+        lineKey: String(idx),
+        productId: Number(item.variant.productId),
+        variantId: item.line.variantId,
+        productUnitId: item.line.productUnitId,
+        categoryId:
+          item.variant.categoryId == null
+            ? null
+            : Number(item.variant.categoryId),
+        unitPrice: item.price.toFixed(2),
+        quantity: money(item.line.quantity).toNumber(),
+        isBaseUnit: Boolean(item.unit.isBaseUnit),
+        hasContractPrice:
+          item.contractPrice != null ||
+          item.line.promotionId == null ||
+          Number(item.line.promotionId) <= 0,
+        isBundle: Boolean(item.variant.isBundle),
+        isGift: item.line.isGift === true,
+        isService: Boolean(item.variant.isService),
+      }));
+      const evalCtx = {
+        branchId,
+        customerTier: priceTier,
+        channel: "POS" as const,
+        todayYmd,
+      };
+      const autoEval = evaluateCartPromotions(
+        baseEvalItems,
+        allAutoRules,
+        evalCtx,
+      );
+      for (const alloc of Array.from(autoEval.lineAllocations.values())) {
+        const lineIdx = Number(alloc.lineKey);
+        const claimedPid = Number(preRegular[lineIdx]?.line.promotionId);
+        if (claimedPid !== alloc.promotionId) continue;
+        const meta = promoMetaById.get(alloc.promotionId);
+        if (!meta || !meta.isActive) continue;
+        const disc = money(alloc.discountAmount.toFixed(2));
+        if (disc.gt(0) && !authPromoByIdx.has(lineIdx)) {
+          authPromoByIdx.set(lineIdx, {
+            promotionId: alloc.promotionId,
+            discountAmount: disc,
+            allowBelowCost: meta.allowBelowCost === true,
+          });
+        }
+      }
+    }
+
+    for (let idx = 0; idx < preRegular.length; idx++) {
+      const { line, variant, reference, price, priced } = preRegular[idx]!;
+      const authPromo = !line.isGift ? authPromoByIdx.get(idx) : undefined;
+      const recordedPromoDiscount =
+        authPromo && authPromo.discountAmount.gt(0)
+          ? Decimal.max(
+              money(0),
+              Decimal.min(money(priced.discountAmount), authPromo.discountAmount),
+            )
+          : money(0);
+      const refUnit = reference ?? money(0);
+      const lineRefAfterPromo = Decimal.max(
+        money(0),
+        refUnit.times(money(line.quantity)).minus(recordedPromoDiscount),
+      );
+      // The native sale repeats all pricing/cost/stock gates under its own locks at commit.
+      const lineNeedsApproval =
+        !line.isGift &&
+        lineDiscountExceedsThreshold(lineRefAfterPromo, money(1), priced.total);
       if (!line.isGift) {
-        referenceGrossTotal = referenceGrossTotal.plus(
-          (reference ?? money(0)).times(money(line.quantity)),
-        );
+        referenceGrossTotal = referenceGrossTotal.plus(lineRefAfterPromo);
         manualLineDiscountGate ||= lineNeedsApproval;
       }
       if (
@@ -329,6 +461,20 @@ export async function prepareCheckoutSnapshot(
       ) {
         checkoutError(`خصم «${variant.name}» يتطلب موافقة مدير`, "FORBIDDEN");
       }
+      const hasExtraManualDiscount = money(priced.discountAmount).gt(
+        recordedPromoDiscount,
+      );
+      const hasManualPriceReduction = price.lt(refUnit);
+      exemptPromoLossByKey.set(
+        line.lineKey,
+        Boolean(
+          !line.isGift &&
+            authPromo?.allowBelowCost === true &&
+            recordedPromoDiscount.gt(0) &&
+            !hasExtraManualDiscount &&
+            !hasManualPriceReduction,
+        ),
+      );
       regularLines.push({
         lineKey: line.lineKey,
         variantId: line.variantId,
@@ -337,12 +483,10 @@ export async function prepareCheckoutSnapshot(
         unitPrice: priced.unitPrice,
         discountAmount: priced.discountAmount,
         total: priced.total,
-        promotionId: line.promotionId,
-        isGift: line.isGift,
+        promotionId: authPromo ? authPromo.promotionId : null,
+        isGift: line.isGift === true,
       });
     }
-    const branchId = input.branchId ?? actor.branchId;
-    if (branchId == null) checkoutError("الفرع غير محدد لفحص مخزون السلة");
     const requestedStock = new Map<
       number,
       { quantity: number; requiresOwnedStock: boolean }
@@ -451,6 +595,7 @@ export async function prepareCheckoutSnapshot(
       unitCost: string;
       baseQuantity: number;
       isGift: boolean;
+      exemptPromoLoss: boolean;
     }[] = [];
     for (const line of regularLines) {
       const variant = byId.get(line.variantId)!;
@@ -464,6 +609,7 @@ export async function prepareCheckoutSnapshot(
             : variant.costPrice,
         baseQuantity,
         isGift: line.isGift,
+        exemptPromoLoss: exemptPromoLossByKey.get(line.lineKey) === true,
       });
       if (!variant.isService && !variant.isBundle) {
         addRequestedStock(
@@ -595,16 +741,32 @@ export async function prepareCheckoutSnapshot(
       );
     }
     const paid = costedLines.filter((line) => !line.isGift);
-    const gifts = costedLines.filter((line) => line.isGift);
+    const gifts = costedLines.filter((line) => !line.isGift === false);
     const paidSubtotal = toDbMoney(sumMoney(paid.map((line) => line.total)));
-    const paidCostTotal = computeInvoiceCost(paid);
-    const giftCostTotal = computeInvoiceCost(gifts);
-    pricingGuard = {
-      paidCostTotal,
-      giftCostTotal,
-      paidLineBelowCost: paid.some((line) =>
-        money(line.total).lt(money(line.unitCost).times(line.baseQuantity)),
+    const effectivePaidCostFloor = toDbMoney(
+      round2(
+        paid.reduce((sum, line) => {
+          const lineCost = round2(
+            money(line.unitCost).times(line.baseQuantity),
+          );
+          return sum.plus(
+            line.exemptPromoLoss
+              ? Decimal.min(lineCost, money(line.total))
+              : lineCost,
+          );
+        }, money(0)),
       ),
+    );
+    const giftCostTotal = computeInvoiceCost(gifts);
+    const paidLineBelowCost = paid.some(
+      (line) =>
+        !line.exemptPromoLoss &&
+        money(line.total).lt(money(line.unitCost).times(line.baseQuantity)),
+    );
+    pricingGuard = {
+      paidCostTotal: effectivePaidCostFloor,
+      giftCostTotal,
+      paidLineBelowCost,
       manualLineDiscountGate,
       referenceGrossTotal: toDbMoney(referenceGrossTotal),
     };
@@ -615,7 +777,8 @@ export async function prepareCheckoutSnapshot(
       !carriesVerifiedApproval
     ) {
       if (
-        isInvoiceBelowCost(paid, paidSubtotal, "0", paidCostTotal)
+        paidLineBelowCost ||
+        money(paidSubtotal).lt(money(effectivePaidCostFloor))
       ) {
         checkoutError("بيع بأقل من التكلفة يتطلب موافقة مدير", "FORBIDDEN");
       }

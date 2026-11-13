@@ -4,6 +4,7 @@
 // `BarcodeLabels.tsx` يبني الاسم `المنتج — الوحدة` (بلا لون/قياس ⇒ ملصقات الألوان تخرج
 // متطابقةً نصّياً)، بينما `variantModals.tsx` يبنيه صحيحاً `المنتج اللون القياس — الوحدة`.
 // أيّ تصحيح في موضعٍ كان ينجرف عن الآخر. الآن: دالّة واحدة، والطرفان يستدعيانها.
+import { D } from "@/lib/money";
 import type { LabelRenderItem } from "./labelRaster";
 
 /** فئات السعر كما يعرفها الكتالوج. */
@@ -117,7 +118,15 @@ export interface LabelPriceSource {
  */
 export function labelPrice(src: LabelPriceSource): { price: string | null; basePrice: string | null } {
   const promo = src.promotionEffectivePrice;
-  if (promo != null && promo !== "" && promo !== src.price) {
+  if (
+    promo != null &&
+    promo !== "" &&
+    src.price != null &&
+    src.price !== "" &&
+    promo !== src.price &&
+    D(promo).gt(0) &&
+    D(promo).lt(D(src.price))
+  ) {
     return { price: promo, basePrice: src.price };
   }
   return { price: src.price, basePrice: null };

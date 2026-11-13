@@ -2,8 +2,10 @@ import { randomBytes, createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import Decimal from "decimal.js";
 import { appErrorMessage } from "../../shared/errors";
 import { formatActiveDays, type PromotionDesignMeta } from "../../shared/promotionScheduling";
+import { evaluateCartPromotions, formatPromotionSummary } from "../../shared/promotionEngine";
 import { generateCouponsStandalonePdf, type CouponPdfItem } from "../services/couponPdfService";
 import {
   auditLogs,
@@ -11,6 +13,9 @@ import {
   couponRedemptions,
   coupons,
   crmCampaigns,
+  productUnits,
+  productVariants,
+  products,
   promotions,
   promotionTargets,
   storeSettings,
@@ -20,14 +25,19 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { nonNegMoneyString, percentString } from "../lib/schemas";
 import { logAudit, logAuditTx } from "../services/auditService";
-import { getProductCategoryIds, resolveCouponPromotionForLine } from "../services/salesPromotionService";
+import {
+  getProductCategoryIds,
+  loadPromotionRuleSnapshot,
+  resolveCouponPromotionForLine,
+  snapshotToEngineRules,
+} from "../services/salesPromotionService";
 import {
   loadCouponProgramPerformance,
   loadIssuedCouponDetails,
   lockCouponForSale,
 } from "../services/couponService";
 import { escapeLike } from "../lib/sqlLike";
-import { money, toDbMoney } from "../services/money";
+import { money, round2, toDbMoney } from "../services/money";
 import { requireDb, withTx } from "../services/tx";
 import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../trpc";
 
@@ -206,30 +216,109 @@ export const crmRouter = router({
           },
           { lock: false },
         );
+        const unitIds = Array.from(new Set(input.lines.map((line) => line.productUnitId)));
+        const unitMetaRows = unitIds.length
+          ? await tx
+              .select({
+                unitId: productUnits.id,
+                isBaseUnit: productUnits.isBaseUnit,
+                categoryId: products.categoryId,
+                isBundle: products.isBundle,
+              })
+              .from(productUnits)
+              .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+              .innerJoin(products, eq(productVariants.productId, products.id))
+              .where(inArray(productUnits.id, unitIds))
+          : [];
+        const unitMetaById = new Map(
+          unitMetaRows.map((m) => [
+            Number(m.unitId),
+            {
+              isBaseUnit: Boolean(m.isBaseUnit),
+              categoryId: m.categoryId == null ? null : Number(m.categoryId),
+              isBundle: Boolean(m.isBundle),
+            },
+          ]),
+        );
         const categories = await getProductCategoryIds(tx, input.lines.map((line) => line.productId));
-        const lines = [];
-        for (const line of input.lines) {
-          const resolved = await resolveCouponPromotionForLine(tx, coupon.promotionId, {
-            branchId,
-            customerTier: input.customerTier,
+        const snapshot = await loadPromotionRuleSnapshot(tx, {
+          branchId,
+          customerTier: input.customerTier,
+          todayYmd,
+          includeStoreManaged: false,
+          evaluationChannel: "POS",
+          requiredApplicationMode: "COUPON",
+          specificPromotionId: coupon.promotionId,
+        });
+        const rules = snapshotToEngineRules(snapshot);
+        const evalItems = input.lines.map((line, idx) => {
+          const meta = unitMetaById.get(line.productUnitId);
+          return {
+            lineKey: String(idx),
             productId: line.productId,
             variantId: line.variantId,
-            categoryId: categories.get(line.productId) ?? null,
-            unitPrice: line.unitPrice,
-            lineAmount: money(line.unitPrice).mul(line.quantity).toFixed(2),
-            hasContractPrice: line.hasContractPrice,
-            todayYmd,
-          });
-          if (!resolved) continue;
-          lines.push({
             productUnitId: line.productUnitId,
-            promotionId: resolved.promotionId,
-            promotionName: resolved.promotionName,
-            promotionDiscountForUnit: resolved.discountForUnit,
-            promotionEffectivePrice: toDbMoney(money(line.unitPrice).minus(money(resolved.discountForUnit))),
-          });
-        }
-        if (!lines.length) {
+            categoryId: meta?.categoryId ?? categories.get(line.productId) ?? null,
+            unitPrice: line.unitPrice,
+            quantity: line.quantity,
+            isBaseUnit: meta?.isBaseUnit ?? true,
+            hasContractPrice: Boolean(line.hasContractPrice),
+            isBundle: meta?.isBundle ?? false,
+            isGift: false,
+            isService: false,
+          };
+        });
+        const evaluated = evaluateCartPromotions(evalItems, rules, {
+          branchId,
+          customerTier: input.customerTier,
+          channel: "POS",
+          todayYmd,
+        });
+        const aggByUnit = new Map<
+          number,
+          {
+            productUnitId: number;
+            promotionId: number;
+            promotionName: string;
+            unitPrice: Decimal;
+            quantity: number;
+            lineDiscount: Decimal;
+          }
+        >();
+        input.lines.forEach((line, idx) => {
+          const alloc = evaluated.lineAllocations.get(String(idx));
+          if (!alloc || alloc.discountAmount.lte(0)) return;
+          const disc = money(alloc.discountAmount.toFixed(2));
+          const prev = aggByUnit.get(line.productUnitId);
+          if (prev) {
+            prev.quantity += line.quantity;
+            prev.lineDiscount = prev.lineDiscount.plus(disc);
+          } else {
+            aggByUnit.set(line.productUnitId, {
+              productUnitId: line.productUnitId,
+              promotionId: alloc.promotionId,
+              promotionName: alloc.promotionName,
+              unitPrice: money(line.unitPrice),
+              quantity: line.quantity,
+              lineDiscount: disc,
+            });
+          }
+        });
+        const lines = Array.from(aggByUnit.values()).map((entry) => {
+          const unitDisc = round2(entry.lineDiscount.dividedBy(entry.quantity));
+          const effUnit = Decimal.max(money(0), entry.unitPrice.minus(unitDisc));
+          return {
+            productUnitId: entry.productUnitId,
+            promotionId: entry.promotionId,
+            promotionName: entry.promotionName,
+            promotionDiscountForUnit: toDbMoney(unitDisc),
+            promotionEffectivePrice: toDbMoney(effUnit),
+            promotionLineDiscount: toDbMoney(round2(entry.lineDiscount)),
+          };
+        });
+        const effectiveFreeShipping =
+          Boolean(coupon.freeShipping) || Boolean(evaluated.freeShippingPromotion);
+        if (!lines.length && !evaluated.freeShippingPromotion) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
@@ -245,7 +334,10 @@ export const crmRouter = router({
           lines,
           maxDiscountAmount: coupon.maxDiscountAmount,
           minOrderSpend: coupon.minOrderSpend,
-          freeShipping: coupon.freeShipping,
+          freeShipping: effectiveFreeShipping,
+          freeShippingPromotionName:
+            evaluated.freeShippingPromotion?.promotionName ??
+            (effectiveFreeShipping ? coupon.programName : null),
           shippingDiscountAmount: coupon.shippingDiscountAmount,
           affiliateName: coupon.affiliateName,
         };
@@ -272,6 +364,19 @@ export const crmRouter = router({
         affiliatePhone: couponPrograms.affiliatePhone,
         affiliateCommissionRate: couponPrograms.affiliateCommissionRate,
         createdAt: couponPrograms.createdAt,
+        promoName: promotions.name,
+        promoType: promotions.type,
+        promoDiscountPercent: promotions.discountPercent,
+        promoDiscountAmount: promotions.discountAmount,
+        promoFixedPrice: promotions.fixedPrice,
+        promoBundlePrice: promotions.bundlePrice,
+        promoBundleMode: promotions.bundleMode,
+        promoPickCount: promotions.bundleQuantity,
+        promoBuyQuantity: promotions.bogoBuyQuantity,
+        promoGetQuantity: promotions.bogoGetQuantity,
+        promoGetDiscountPercent: promotions.bogoGetDiscountPercent,
+        promoTierMode: promotions.tieredMode,
+        promoChannel: promotions.channel,
         minOrderSpend: promotions.minOrderSpend,
         maxDiscountAmount: promotions.maxDiscountAmount,
         freeShipping: promotions.freeShipping,
@@ -283,12 +388,28 @@ export const crmRouter = router({
       const performance = await withTx((tx) => loadCouponProgramPerformance(tx, branchId));
       return rows.map((row) => {
         const p = performance.get(Number(row.id));
+        const promoSummary = row.promoType
+          ? formatPromotionSummary({
+              type: row.promoType,
+              discountPercent: row.promoDiscountPercent,
+              discountAmount: row.promoDiscountAmount,
+              fixedPrice: row.promoFixedPrice,
+              bundlePrice: row.promoBundlePrice,
+              bundleMode: row.promoBundleMode,
+              pickCount: row.promoPickCount,
+              buyQuantity: row.promoBuyQuantity,
+              getQuantity: row.promoGetQuantity,
+              getDiscountPercent: row.promoGetDiscountPercent,
+              tierMode: row.promoTierMode,
+            })
+          : "";
         return {
           ...row,
           id: Number(row.id),
           campaignId: row.campaignId == null ? null : Number(row.campaignId),
           promotionId: Number(row.promotionId),
           branchId: row.branchId == null ? null : Number(row.branchId),
+          promoSummary,
           minOrderSpend: row.minOrderSpend ?? "0.00",
           maxDiscountAmount: row.maxDiscountAmount ?? null,
           freeShipping: Boolean(row.freeShipping),
@@ -1009,6 +1130,14 @@ export const crmRouter = router({
               promoType: promotions.type,
               promoPercent: promotions.discountPercent,
               promoAmount: promotions.discountAmount,
+              promoFixedPrice: promotions.fixedPrice,
+              promoBundlePrice: promotions.bundlePrice,
+              promoBundleMode: promotions.bundleMode,
+              promoPickCount: promotions.bundleQuantity,
+              promoBuyQuantity: promotions.bogoBuyQuantity,
+              promoGetQuantity: promotions.bogoGetQuantity,
+              promoGetDiscountPercent: promotions.bogoGetDiscountPercent,
+              promoTierMode: promotions.tieredMode,
               promoMaxDiscount: promotions.maxDiscountAmount,
               promoMinSpend: promotions.minOrderSpend,
             })
@@ -1088,21 +1217,30 @@ export const crmRouter = router({
         }
 
         const design = (program.designJson ?? {}) as PromotionDesignMeta;
-        let heroDiscount = "";
-        if (program.promoType === "PERCENT") {
-          heroDiscount = `خصم ${Number(program.promoPercent)}%`;
-        } else if (program.promoAmount) {
-          heroDiscount = `خصم ${Number(program.promoAmount).toLocaleString()} د.ع`;
-        }
+        const heroDiscount = program.promoType
+          ? formatPromotionSummary({
+              type: program.promoType,
+              discountPercent: program.promoPercent,
+              discountAmount: program.promoAmount,
+              fixedPrice: program.promoFixedPrice,
+              bundlePrice: program.promoBundlePrice,
+              bundleMode: program.promoBundleMode,
+              pickCount: program.promoPickCount,
+              buyQuantity: program.promoBuyQuantity,
+              getQuantity: program.promoGetQuantity,
+              getDiscountPercent: program.promoGetDiscountPercent,
+              tierMode: program.promoTierMode,
+            })
+          : "";
 
         let discountCap = "";
         if (program.promoMaxDiscount && money(program.promoMaxDiscount).gt(0)) {
-          discountCap = `سقف الخصم: ${Number(program.promoMaxDiscount).toLocaleString()} د.ع`;
+          discountCap = `سقف الخصم: ${Number(program.promoMaxDiscount).toLocaleString("en-US")} د.ع`;
         }
 
         let minSpend = "";
         if (program.promoMinSpend && money(program.promoMinSpend).gt(0)) {
-          minSpend = `للطلبات بقيمة ${Number(program.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+          minSpend = `للطلبات بقيمة ${Number(program.promoMinSpend).toLocaleString("en-US")} د.ع فأكثر`;
         }
 
         const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
