@@ -1202,6 +1202,28 @@ export async function createSaleInTx(
     // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
     // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
     const isGift = l.isGift === true;
+    if (!isGift) {
+      computeLineTotal({
+        unitPrice,
+        quantity: money(l.quantity),
+        discountAmount: l.discountAmount,
+        discountPercent: l.discountPercent,
+      });
+      if (l.promotionDiscount != null && l.promotionDiscount !== "") {
+        computeLineTotal({
+          unitPrice,
+          quantity: money(l.quantity),
+          discountAmount: l.promotionDiscount,
+        });
+      }
+      if (l.cashierDiscountAmount != null && l.cashierDiscountAmount !== "") {
+        computeLineTotal({
+          unitPrice,
+          quantity: money(l.quantity),
+          discountAmount: l.cashierDiscountAmount,
+        });
+      }
+    }
     const lineGross = unitPrice.mul(money(l.quantity));
     const lockedProduct = lockedProductById.get(v.productId);
     prePricedLines.push({
@@ -2403,7 +2425,7 @@ export async function createSaleInTx(
   // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
   const revenue = money(totals.subtotal)
     .minus(money(totals.discountAmount))
-    .plus(money(input.deliveryFee ?? "0"));
+    .plus(deliveryFeeD);
   // `invoices.costTotal` remains the complete analytical paid-line cost used by sales/job-cost
   // reports. The SALE source field, however, is canonical ledger COGS and must equal only the
   // owned inventory/materials actually credited below. Consignor COGS is disclosed by its

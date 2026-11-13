@@ -1066,5 +1066,86 @@ describe("shared/promotionEngine", () => {
       const belowThreshold = evaluateCartPromotions(smallCart, [freeShipRule], CONTEXT_POS);
       expect(belowThreshold.freeShippingPromotion).toBeNull();
     });
+
+    it("prevents double-counting a single physical unit across overlapping ALL_REQUIRED targets and supports category targets", () => {
+      const overlappingRule: PromotionRule = {
+        id: 903,
+        name: "بكج منتج 10 + متغير 101 بـ 8,000",
+        type: "BUNDLE_PRICE",
+        bundleMode: "ALL_REQUIRED",
+        bundlePrice: 8000,
+        scope: "PRODUCTS",
+        channel: "ALL",
+        targetProductIds: new Set([10]),
+        targetVariantIds: new Set([101]),
+      };
+
+      // Only 1 physical unit of variant 101 (product 10): must NOT satisfy both slots
+      const singleUnit = evaluateCartPromotions(
+        [{ lineKey: "l1", productId: 10, variantId: 101, isBaseUnit: true, unitPrice: 5000, quantity: 1 }],
+        [overlappingRule],
+        CONTEXT_POS,
+      );
+      expect(singleUnit.totalCartDiscount.toFixed(2)).toBe("0.00");
+
+      // 2 distinct physical units (variant 101 + variant 102 of product 10): forms 1 complete set
+      const twoDistinctUnits = evaluateCartPromotions(
+        [
+          { lineKey: "l1", productId: 10, variantId: 101, isBaseUnit: true, unitPrice: 5000, quantity: 1 },
+          { lineKey: "l2", productId: 10, variantId: 102, isBaseUnit: true, unitPrice: 6000, quantity: 1 },
+        ],
+        [overlappingRule],
+        CONTEXT_POS,
+      );
+      expect(twoDistinctUnits.totalCartDiscount.toFixed(2)).toBe("3000.00");
+
+      // Category-scoped ALL_REQUIRED bundle (1 item from cat 10 + 1 item from cat 20)
+      const categoryBundleRule: PromotionRule = {
+        id: 904,
+        name: "بكج دفتر + قلم من التصنيفين بـ 4,000",
+        type: "BUNDLE_PRICE",
+        bundleMode: "ALL_REQUIRED",
+        bundlePrice: 4000,
+        scope: "CATEGORIES",
+        channel: "ALL",
+        targetCategoryIds: new Set([10, 20]),
+      };
+      const catOut = evaluateCartPromotions(
+        [
+          { lineKey: "c1", productId: 1, variantId: 1, categoryId: 10, isBaseUnit: true, unitPrice: 3000, quantity: 1 },
+          { lineKey: "c2", productId: 2, variantId: 2, categoryId: 20, isBaseUnit: true, unitPrice: 2000, quantity: 1 },
+        ],
+        [categoryBundleRule],
+        CONTEXT_POS,
+      );
+      expect(catOut.totalCartDiscount.toFixed(2)).toBe("1000.00");
+    });
+
+    it("applies maxDiscountAmount per unit for AUTO PERCENT and across the cart for COUPON PERCENT", () => {
+      const items: EvaluationItem[] = [
+        { lineKey: "l1", productId: 200, variantId: 200, categoryId: 10, isBaseUnit: true, unitPrice: 3000, quantity: 3 },
+      ];
+      const autoPercent: PromotionRule = {
+        id: 905,
+        name: "خصم تلقائي 10% بسقف 250 للقطعة",
+        type: "PERCENT",
+        applicationMode: "AUTO",
+        channel: "ALL",
+        discountPercent: 10,
+        maxDiscountAmount: 250,
+        scope: "CATEGORIES",
+        targetCategoryIds: new Set([10]),
+      };
+      const autoRes = evaluateCartPromotions(items, [autoPercent], CONTEXT_POS);
+      expect(autoRes.totalCartDiscount.toFixed(2)).toBe("750.00");
+
+      const couponPercent: PromotionRule = {
+        ...autoPercent,
+        id: 906,
+        applicationMode: "COUPON",
+      };
+      const couponRes = evaluateCartPromotions(items, [couponPercent], CONTEXT_POS);
+      expect(couponRes.totalCartDiscount.toFixed(2)).toBe("250.00");
+    });
   });
 });

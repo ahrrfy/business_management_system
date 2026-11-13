@@ -1171,6 +1171,30 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(savedInv.deliveryFee).toBe("0.00");
     expect(savedInv.deliveryFree).toBe(true);
     expect(savedInv.deliveryWaivedAmount).toBe("15.00");
+
+    // التحقق من تطابق إيراد قيد الدفتر SALE مع إجمالي الفاتورة بعد الإعفاء التلقائي لأجرة الشحن
+    const [saleEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `SALE:${saleRes.invoiceId}`));
+    expect(saleEntry.revenue).toBe("100.00");
+    expect(saleEntry.amount).toBe("100.00");
+
+    // التحقق من إمكانية تصفير minOrderSpend و minLineAmount صراحةً بـ "0" عند التعديل
+    await withTx((tx) =>
+      updatePromotion(
+        tx,
+        {
+          id: promoId,
+          minOrderSpend: "0",
+          minLineAmount: "0",
+        },
+        1,
+      ),
+    );
+    const afterClearThresholds = await withTx((tx) => getPromotionWithTargets(tx, promoId, true));
+    expect(afterClearThresholds?.promotion.minOrderSpend).toBe("0.00");
+    expect(afterClearThresholds?.promotion.minLineAmount).toBe("0.00");
   });
 });
 

@@ -155,7 +155,7 @@ function assertShape(input: CreatePromotionInput) {
     }
     case "AMOUNT": {
       const a = money(input.discountAmount ?? "0");
-      if (!a.gt(0)) {
+      if (a.lt(0) || (!a.gt(0) && !input.freeShipping)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -926,6 +926,15 @@ export async function updatePromotion(
     }));
   }
 
+  const mergedFreeShipping =
+    mergedType === "FREE_SHIPPING"
+      ? true
+      : input.freeShipping !== undefined
+        ? input.freeShipping
+        : existing.type === "FREE_SHIPPING"
+          ? false
+          : Boolean(existing.freeShipping);
+
   assertShape({
     name: input.name ?? existing.name,
     type: mergedType,
@@ -936,6 +945,7 @@ export async function updatePromotion(
     discountAmount: mergedAmount,
     maxDiscountAmount: mergedMaxCap,
     minOrderSpend: mergedMinSpend,
+    freeShipping: mergedFreeShipping,
     fixedPrice: mergedFixedPrice,
     bundlePrice: mergedBundlePrice,
     bundleMode: mergedBundleMode,

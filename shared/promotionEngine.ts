@@ -370,11 +370,30 @@ function evaluateSingleRuleDiscounts(
       const percent = new Decimal(rule.discountPercent ?? 0);
       if (percent.lte(0)) break;
 
+      const perUnitCap =
+        rule.applicationMode !== "COUPON" &&
+        rule.maxDiscountAmount != null &&
+        rule.maxDiscountAmount !== ""
+          ? new Decimal(rule.maxDiscountAmount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+          : null;
+      const hasPerUnitCap = perUnitCap != null && perUnitCap.gt(0);
+
       for (const line of filterByMinLine(matchingLines)) {
         const lineGross = line.quantity.mul(line.unitPrice);
         if (lineGross.lte(0)) continue;
 
-        const rawDiscount = lineGross.mul(percent).div(100);
+        let rawDiscount: Decimal;
+        if (hasPerUnitCap) {
+          const unitRaw = line.unitPrice
+            .mul(percent)
+            .div(100)
+            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+          const unitDisc = Decimal.min(unitRaw, perUnitCap);
+          rawDiscount = unitDisc.mul(line.quantity);
+        } else {
+          rawDiscount = lineGross.mul(percent).div(100);
+        }
+
         const lineDiscount = Decimal.min(rawDiscount, lineGross).toDecimalPlaces(
           2,
           Decimal.ROUND_HALF_UP
@@ -434,61 +453,100 @@ function evaluateSingleRuleDiscounts(
       if (eligibleLines.length === 0) break;
 
       if (rule.bundleMode === "ALL_REQUIRED") {
-        const reqProducts = Array.from(toSet(rule.targetProductIds));
         const reqUnits = Array.from(toSet(rule.targetUnitIds));
         const reqVariants = Array.from(toSet(rule.targetVariantIds));
+        const reqProducts = Array.from(toSet(rule.targetProductIds));
+        const reqCategories = Array.from(toSet(rule.targetCategoryIds));
 
-        type TargetKey = { kind: "PRODUCT" | "UNIT" | "VARIANT"; id: number };
+        type TargetKey = { kind: "UNIT" | "VARIANT" | "PRODUCT" | "CATEGORY"; id: number };
+        // Ordered from most specific to least specific so narrower slots claim matching
+        // physical units before broader product/category slots, preventing both starvation
+        // and double-counting of a single physical unit across overlapping targets.
         const requiredKeys: TargetKey[] = [
-          ...reqProducts.map((id) => ({ kind: "PRODUCT" as const, id })),
           ...reqUnits.map((id) => ({ kind: "UNIT" as const, id })),
           ...reqVariants.map((id) => ({ kind: "VARIANT" as const, id })),
+          ...reqProducts.map((id) => ({ kind: "PRODUCT" as const, id })),
+          ...reqCategories.map((id) => ({ kind: "CATEGORY" as const, id })),
         ];
 
         if (requiredKeys.length === 0) break;
 
-        const unitPools = new Map<number, Array<{ lineKey: string; unitPrice: Decimal }>>();
-        let minSets = Infinity;
+        type PhysicalUnit = {
+          uid: number;
+          lineKey: string;
+          unitPrice: Decimal;
+          productId: number;
+          variantId: number;
+          productUnitId?: number | null;
+          categoryId?: number | null;
+        };
+        const physicalUnits: PhysicalUnit[] = [];
+        let nextUid = 0;
+        for (const l of eligibleLines) {
+          const wholeQty = Math.floor(l.quantity.toNumber());
+          for (let q = 0; q < wholeQty; q++) {
+            physicalUnits.push({
+              uid: nextUid++,
+              lineKey: l.lineKey,
+              unitPrice: l.unitPrice,
+              productId: l.productId,
+              variantId: l.variantId,
+              productUnitId: l.productUnitId,
+              categoryId: l.categoryId,
+            });
+          }
+        }
+        if (physicalUnits.length < requiredKeys.length) break;
 
-        for (let idx = 0; idx < requiredKeys.length; idx++) {
-          const rk = requiredKeys[idx];
-          const units: Array<{ lineKey: string; unitPrice: Decimal }> = [];
-          for (const l of eligibleLines) {
-            const matches =
-              rk.kind === "PRODUCT"
-                ? l.productId === rk.id
-                : rk.kind === "UNIT"
-                ? l.productUnitId === rk.id
-                : l.variantId === rk.id;
-            if (!matches) continue;
-            const wholeQty = Math.floor(l.quantity.toNumber());
-            for (let q = 0; q < wholeQty; q++) {
-              units.push({ lineKey: l.lineKey, unitPrice: l.unitPrice });
+        // Sort descending so highest-value eligible units form qualifying bundles first
+        physicalUnits.sort((a, b) => {
+          const cmp = b.unitPrice.comparedTo(a.unitPrice);
+          return cmp !== 0 ? cmp : a.uid - b.uid;
+        });
+
+        const matchesKey = (u: PhysicalUnit, rk: TargetKey): boolean => {
+          switch (rk.kind) {
+            case "UNIT":
+              return u.productUnitId != null && u.productUnitId === rk.id;
+            case "VARIANT":
+              return u.variantId === rk.id;
+            case "PRODUCT":
+              return u.productId === rk.id;
+            case "CATEGORY":
+              return u.categoryId != null && u.categoryId === rk.id;
+          }
+        };
+
+        const consumedUids = new Set<number>();
+        const formedSets: Array<PhysicalUnit[]> = [];
+        while (true) {
+          const setUnits: PhysicalUnit[] = [];
+          const tentativeUids = new Set<number>();
+          let complete = true;
+          for (const rk of requiredKeys) {
+            const candidate = physicalUnits.find(
+              (u) => !consumedUids.has(u.uid) && !tentativeUids.has(u.uid) && matchesKey(u, rk)
+            );
+            if (!candidate) {
+              complete = false;
+              break;
             }
+            tentativeUids.add(candidate.uid);
+            setUnits.push(candidate);
           }
-          if (units.length === 0) {
-            minSets = 0;
-            break;
+          if (!complete) break;
+          for (const uid of Array.from(tentativeUids)) {
+            consumedUids.add(uid);
           }
-          // Sort descending so highest-value eligible units form qualifying bundles first
-          units.sort((a, b) => b.unitPrice.minus(a.unitPrice).toNumber());
-          unitPools.set(idx, units);
-          if (units.length < minSets) minSets = units.length;
+          formedSets.push(setUnits);
         }
 
-        if (minSets > 0 && Number.isFinite(minSets)) {
+        if (formedSets.length > 0) {
           const bundledGrossByLine = new Map<string, Decimal>();
           let totalBundleSavings = new Decimal(0);
 
-          for (let sIdx = 0; sIdx < minSets; sIdx++) {
-            let setOriginal = new Decimal(0);
-            const setUnits: Array<{ lineKey: string; unitPrice: Decimal }> = [];
-            for (const units of Array.from(unitPools.values())) {
-              const u = units[sIdx];
-              if (!u) continue;
-              setOriginal = setOriginal.plus(u.unitPrice);
-              setUnits.push(u);
-            }
+          for (const setUnits of formedSets) {
+            const setOriginal = setUnits.reduce((acc, u) => acc.plus(u.unitPrice), new Decimal(0));
             // Per-set ceiling: never surcharge a cheaper set to reduce another set's discount
             if (setOriginal.gt(bundlePrice)) {
               totalBundleSavings = totalBundleSavings.plus(setOriginal.minus(bundlePrice));
@@ -662,7 +720,14 @@ function evaluateSingleRuleDiscounts(
     }
   }
 
-  if (rule.maxDiscountAmount != null && rule.maxDiscountAmount !== "" && result.size > 0) {
+  const usesPerUnitPercentCap =
+    rule.type === "PERCENT" && rule.applicationMode !== "COUPON";
+  if (
+    !usesPerUnitPercentCap &&
+    rule.maxDiscountAmount != null &&
+    rule.maxDiscountAmount !== "" &&
+    result.size > 0
+  ) {
     const cap = new Decimal(rule.maxDiscountAmount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
     if (cap.gt(0)) {
       let totalUncapped = new Decimal(0);
@@ -834,10 +899,20 @@ export function evaluateCartPromotions(
       if (cartGross.lt(minSpend)) continue;
     }
 
-    if (rule.type === "FREE_SHIPPING") {
-      const anyEligibleForShipping = physicalItems.some((item) =>
-        isPromotionApplicableToItem(item, rule)
-      );
+    const isShippingOnlyRule =
+      rule.type === "FREE_SHIPPING" ||
+      (rule.type === "AMOUNT" &&
+        new Decimal(rule.discountAmount ?? 0).lte(0) &&
+        rule.freeShipping === true);
+    if (isShippingOnlyRule) {
+      const minLine = rule.minLineAmount ? new Decimal(rule.minLineAmount) : null;
+      const anyEligibleForShipping = physicalItems.some((item) => {
+        if (!isPromotionApplicableToItem(item, rule)) return false;
+        if (minLine && minLine.gt(0) && item.quantity.mul(item.unitPrice).lt(minLine)) {
+          return false;
+        }
+        return true;
+      });
       if (anyEligibleForShipping) {
         if (!freeShippingPromotion) {
           freeShippingPromotion = {

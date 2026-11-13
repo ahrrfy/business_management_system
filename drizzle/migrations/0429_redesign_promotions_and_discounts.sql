@@ -298,7 +298,7 @@ SET @promo_add_chk = IF(
   'SELECT 1',
   'ALTER TABLE `promotions` ADD CONSTRAINT `chk_promo_shape` CHECK (
     (promotionType = ''PERCENT'' AND discountPercent > 0 AND discountPercent <= 100 AND discountAmount = 0)
-    OR (promotionType = ''AMOUNT'' AND discountAmount > 0 AND discountPercent = 0)
+    OR (promotionType = ''AMOUNT'' AND discountPercent = 0 AND (discountAmount > 0 OR freeShipping = 1))
     OR (promotionType = ''FIXED_PRICE'' AND fixedPrice IS NOT NULL AND fixedPrice > 0)
     OR (promotionType = ''BUNDLE_PRICE'' AND bundlePrice IS NOT NULL AND bundlePrice > 0 AND promotionBundleMode IS NOT NULL AND (promotionBundleMode = ''ALL_REQUIRED'' OR (promotionBundleMode = ''PICK_ANY_N'' AND bundleQuantity IS NOT NULL AND bundleQuantity > 0)))
     OR (promotionType = ''BOGO'' AND bogoBuyQuantity IS NOT NULL AND bogoBuyQuantity > 0 AND bogoGetQuantity IS NOT NULL AND bogoGetQuantity > 0 AND bogoGetDiscountPercent IS NOT NULL AND bogoGetDiscountPercent > 0 AND bogoGetDiscountPercent <= 100)
