@@ -1266,6 +1266,7 @@ export async function updateOnlineOrder(
 
     // استعادة ميزة شحن الكوبون المحجوزة للطلب لضمان عدم فقدانها عند إعادة حساب الطلب أو تغيير العنوان
     let couponShipping: { freeShipping?: boolean; shippingDiscountAmount?: string | null } | null = null;
+    let couponShippingPromotionId: number | null = null;
     let activeReservation: { id: number; programId: number } | null = null;
     if (order.couponCode) {
       const reservation = (
@@ -1289,6 +1290,7 @@ export async function updateOnlineOrder(
         const promo = (
           await tx
             .select({
+              id: promotions.id,
               type: promotions.type,
               freeShipping: promotions.freeShipping,
               shippingDiscountAmount: promotions.shippingDiscountAmount,
@@ -1300,6 +1302,7 @@ export async function updateOnlineOrder(
         )[0];
 
         if (promo?.freeShipping || promo?.type === "FREE_SHIPPING") {
+          couponShippingPromotionId = Number(promo.id);
           couponShipping = {
             freeShipping: true,
             shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
@@ -1390,6 +1393,7 @@ export async function updateOnlineOrder(
         deliveryFree,
         deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
         couponDeliveryWaivedAmount: couponDeliveryWaivedAmount.toFixed(2),
+        offerShippingApplied: offerFree,
         couponShippingApplied: couponFree,
         total: total.toFixed(2),
       };
@@ -1658,6 +1662,10 @@ export async function updateOnlineOrder(
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          freeShippingPromotionId:
+            quoteTotals.offerShippingApplied || quoteTotals.couponShippingApplied
+              ? (pricing.benefit.freeShippingPromotionId ?? couponShippingPromotionId ?? null)
+              : null,
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,
@@ -1751,6 +1759,14 @@ export async function updateOnlineOrder(
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          freeShippingPromotionId: quoteTotals.offerShippingApplied
+            ? (order.freeShippingPromotionId != null ? Number(order.freeShippingPromotionId) : null)
+            : quoteTotals.couponShippingApplied
+              ? (couponShippingPromotionId ??
+                (order.freeShippingPromotionId != null
+                  ? Number(order.freeShippingPromotionId)
+                  : null))
+              : null,
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,
