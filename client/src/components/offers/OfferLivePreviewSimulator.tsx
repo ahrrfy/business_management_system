@@ -165,7 +165,10 @@ export function OfferLivePreviewSimulator({
         formData.type === "PERCENT"
           ? safePositiveDecimal(formData.discountPercent)
           : undefined,
-      maxDiscountAmount: safePositiveDecimal(formData.maxDiscountAmount),
+      maxDiscountAmount:
+        formData.type === "PERCENT"
+          ? safePositiveDecimal(formData.maxDiscountAmount)
+          : undefined,
       minLineAmount: safePositiveDecimal(formData.minLineAmount),
       discountAmount:
         formData.type === "AMOUNT"
@@ -207,7 +210,8 @@ export function OfferLivePreviewSimulator({
           ruleName: er.ruleLabel.trim() || `قاعدة ${i + 2}: ${PROMO_TYPE_LABELS[er.type]}`,
           type: er.type,
           percent: er.type === "PERCENT" ? safePositiveDecimal(er.discountPercent) : undefined,
-          maxDiscountAmount: safePositiveDecimal(er.maxDiscountAmount),
+          maxDiscountAmount:
+            er.type === "PERCENT" ? safePositiveDecimal(er.maxDiscountAmount) : undefined,
           minLineAmount: safePositiveDecimal(useOwn ? er.minLineAmount : formData.minLineAmount),
           discountAmount: er.type === "AMOUNT" ? safePositiveDecimal(er.discountAmount) : undefined,
           fixedPrice: er.type === "FIXED_PRICE" ? safePositiveDecimal(er.fixedPrice) : undefined,

@@ -32,11 +32,11 @@ import {
   buildTargetsForHolder,
   createDefaultRuleDraft,
   endOfMonthYmd,
-  sanitizeRuleTiers,
   summarizeRuleDraft,
   validateRuleScopeAndMargin,
   validateRuleTypeFields,
 } from "./offersMultiRuleHelpers";
+import { applyOfferRuleDraftPatch, buildRulePayloadCore } from "./offersDraftGuards";
 import {
   ACTIVE_DAYS_LIST,
   APPLICATION_LABELS,
@@ -150,7 +150,10 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
           promotion.discountAmount && Number(promotion.discountAmount) > 0
             ? String(promotion.discountAmount)
             : "",
-        maxDiscountAmount: promotion.maxDiscountAmount ? String(promotion.maxDiscountAmount) : "",
+        maxDiscountAmount:
+          promotion.type === "PERCENT" && promotion.maxDiscountAmount
+            ? String(promotion.maxDiscountAmount)
+            : "",
         fixedPrice: promotion.fixedPrice ? String(promotion.fixedPrice) : "",
         bundlePrice: promotion.bundlePrice ? String(promotion.bundlePrice) : "",
         bundleMode: (promotion.bundleMode as any) ?? "ALL_REQUIRED",
@@ -210,7 +213,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
   };
   const updateActiveRule = (patch: Partial<OfferRuleDraft>) => {
     setRules((prev) => {
-      const next = prev.map((r, i) => (i === activeRuleIdx ? { ...r, ...patch } : r));
+      const next = prev.map((r, i) => (i === activeRuleIdx ? applyOfferRuleDraftPatch(r, patch) : r));
       const updated = next[activeRuleIdx];
       if (
         updated &&
@@ -328,22 +331,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     setStep((prev) => Math.max(1, prev - 1) as any);
   };
 
-  const rulePayloadCore = (r: OfferRuleDraft) => ({
-    type: r.type,
-    discountPercent: r.type === "PERCENT" ? r.discountPercent : undefined,
-    discountAmount: r.type === "AMOUNT" ? r.discountAmount : undefined,
-    maxDiscountAmount: r.maxDiscountAmount || null,
-    fixedPrice: r.type === "FIXED_PRICE" ? r.fixedPrice : undefined,
-    bundlePrice: r.type === "BUNDLE_PRICE" ? r.bundlePrice : undefined,
-    bundleMode: r.type === "BUNDLE_PRICE" ? r.bundleMode : undefined,
-    bundleQuantity:
-      r.type === "BUNDLE_PRICE" && r.bundleMode === "PICK_ANY_N" ? r.bundleQuantity : undefined,
-    bogoBuyQuantity: r.type === "BOGO" ? r.bogoBuyQuantity : undefined,
-    bogoGetQuantity: r.type === "BOGO" ? r.bogoGetQuantity : undefined,
-    bogoGetDiscountPercent: r.type === "BOGO" ? r.bogoGetDiscountPercent : undefined,
-    tieredMode: r.type === "TIERED_QTY" ? r.tieredMode : undefined,
-    tiers: sanitizeRuleTiers(r),
-  });
+  const rulePayloadCore = buildRulePayloadCore;
 
   const handleSubmit = () => {
     if (isHydratingEdit) return;
@@ -845,7 +833,11 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
                       ? previewRuleForTable.fixedPrice
                       : "0"
                   }
-                  maxDiscountAmount={previewRuleForTable.maxDiscountAmount}
+                  maxDiscountAmount={
+                    previewRuleForTable.type === "PERCENT"
+                      ? previewRuleForTable.maxDiscountAmount
+                      : ""
+                  }
                   onUpdateUnit={(varId, newUnitId) =>
                     updateScopeRule((r) => ({
                       ...r,

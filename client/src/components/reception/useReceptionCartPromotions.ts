@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { evaluateCartPromotions, type PromotionRule } from "@shared/promotionEngine";
 import { todayYmdBaghdad } from "@shared/promotionScheduling";
 import { loadOfflineActivePromotions } from "@/lib/offline/catalogSync";
-import { D, round2 } from "@/lib/money";
+import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import type { OrderDeliveryValue } from "./ReceptionTypes";
-import { effectivePrice, type CartLine, type Tier } from "./cartMath";
+import { resolveDraftGoodsPricing, type CartLine, type Tier } from "./cartMath";
 
 export interface UseReceptionCartPromotionsResult {
   cart: CartLine[];
@@ -42,7 +42,8 @@ export function evaluateReceptionCartPromotionsPure(opts: {
   const evalLines = rawCart.flatMap((c, idx) => {
     if (c.digital) return [];
     const hasHistoricalOverride =
-      c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
+      c.draftLineDiscount != null ||
+      (c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0))));
     const ineligible = Boolean(
       c.custom || c.row.isPrintService || c.manualService || hasHistoricalOverride,
     );
@@ -143,9 +144,17 @@ export function freezeReceptionDraftCart(evaluatedCart: CartLine[]): CartLine[] 
       }
       return rest;
     }
-    const eff = round2(D(effectivePrice(c))).toNumber();
+    const pricing = resolveDraftGoodsPricing(c);
     const defaultCatalogPrice = Number(c.row.promotionEffectivePrice ?? c.row.price ?? 0);
-    const { cartPromo: _cp, disc: _disc, ...rest } = c;
+    const { cartPromo: _cp, disc: _disc, draftLineDiscount: _prevDraftDisc, ...rest } = c;
+    if (pricing.discountAmount && pricing.discountAmount.gt(0)) {
+      return {
+        ...rest,
+        origPrice: pricing.unitPrice.toNumber(),
+        draftLineDiscount: pricing.discountAmount.toFixed(2),
+      };
+    }
+    const eff = pricing.unitPrice.toNumber();
     return eff !== defaultCatalogPrice
       ? { ...rest, origPrice: eff }
       : { ...rest, origPrice: undefined };

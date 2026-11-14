@@ -51,7 +51,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
-import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
+import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount, withReceptionLineQty } from "@/components/reception/cartMath";
 import { applyFreeShippingToOrderDelivery, freezeReceptionDraftCart, useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
@@ -463,7 +463,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
   function setQty(key: string, qty: number) {
     clearCouponIfApplied();
-    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? withReceptionLineQty(c, qty) : c)));
   }
   /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
   function setLineDiscount(key: string, pct: number | null) {

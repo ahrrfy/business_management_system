@@ -17,6 +17,7 @@ import {
   Loader2,
   Package,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
@@ -36,6 +37,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { formatIqd } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { buildOfferItemFromSearchProduct } from "./offersMultiRuleHelpers";
+import { pullCategorySearchPages, resolveCategoryPullOutcome } from "./offersDraftGuards";
 import type { SelectedOfferItem } from "./offersTypes";
 
 export interface OfferBulkAddToolbarProps {
@@ -98,6 +100,7 @@ export function OfferBulkAddToolbar({
   const [quickCatId, setQuickCatId] = useState("");
   const [isPullingCategory, setIsPullingCategory] = useState(false);
   const [inlineNotice, setInlineNotice] = useState<string | null>(null);
+  const [inlineNoticeTone, setInlineNoticeTone] = useState<"pos" | "warn">("pos");
 
   const handleConfirmBrowserSelection = () => {
     const built = Array.from(pickedMap.values())
@@ -106,6 +109,7 @@ export function OfferBulkAddToolbar({
       .filter((x): x is SelectedOfferItem => x != null);
     if (built.length > 0) {
       onAddItems(built);
+      setInlineNoticeTone("pos");
       setInlineNotice(`تمت إضافة ${built.length} مادة من مستعرض الأصناف.`);
     }
     setPickedMap(new Map());
@@ -185,6 +189,7 @@ export function OfferBulkAddToolbar({
         );
       }
       const summary = parts.join(" • ");
+      setInlineNoticeTone("pos");
       setInlineNotice(summary);
       if (unmatchedCodes.length === 0) {
         setPasteRaw("");
@@ -204,21 +209,24 @@ export function OfferBulkAddToolbar({
     setIsPullingCategory(true);
     setInlineNotice(null);
     try {
-      const rows = await utils.salesPromotions.searchProducts.fetch({
-        categoryId: Number(quickCatId),
-        limit: 500,
+      const catIdNum = Number(quickCatId);
+      const { rows, truncated } = await pullCategorySearchPages({
+        categoryId: catIdNum,
+        fetchPage: ({ categoryId, limit, offset }) =>
+          utils.salesPromotions.searchProducts.fetch({ categoryId, limit, offset }),
       });
-      const newItems = rows
-        .filter((p: any) => !existingVariantIds.has(p.variantId))
-        .map((p: any) => buildOfferItemFromSearchProduct(p))
-        .filter((x): x is SelectedOfferItem => x != null);
-      if (newItems.length > 0) {
-        onAddItems(newItems);
-        const catName = categories.find((c) => String(c.id) === quickCatId)?.name ?? "الفئة";
-        setInlineNotice(`تم سحب ${newItems.length} مادة من فئة «${catName}» إلى الجدول (يمكنك استثناء أي مادة بحذفها).`);
-      } else {
-        setInlineNotice("جميع مواد هذه الفئة مضافة مسبقاً في الجدول أو الفئة فارغة.");
+      const catName = categories.find((c) => String(c.id) === quickCatId)?.name ?? "الفئة";
+      const outcome = resolveCategoryPullOutcome({
+        fetchedRows: rows,
+        truncated,
+        existingVariantIds,
+        catName,
+      });
+      if (outcome.itemsToAdd.length > 0) {
+        onAddItems(outcome.itemsToAdd);
       }
+      setInlineNoticeTone(outcome.tone);
+      setInlineNotice(outcome.notice);
     } finally {
       setIsPullingCategory(false);
     }
@@ -300,9 +308,19 @@ export function OfferBulkAddToolbar({
       </div>
 
       {inlineNotice && (
-        <div className="flex items-center justify-between gap-2 rounded border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-xs text-[var(--sem-pos)]">
+        <div
+          className={`flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 text-xs ${
+            inlineNoticeTone === "warn"
+              ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+              : "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+          }`}
+        >
           <span className="flex items-center gap-1.5">
-            <CheckCircle2 className="size-3.5 shrink-0" />
+            {inlineNoticeTone === "warn" ? (
+              <TriangleAlert className="size-3.5 shrink-0" />
+            ) : (
+              <CheckCircle2 className="size-3.5 shrink-0" />
+            )}
             {inlineNotice}
           </span>
           <button

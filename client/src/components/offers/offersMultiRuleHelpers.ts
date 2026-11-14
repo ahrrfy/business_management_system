@@ -173,7 +173,7 @@ export function validateRuleScopeAndMargin(
       const unitCostDec = safeDecimal(item.costPrice).mul(convDec);
       if (retailDec.lte(0) || unitCostDec.lte(0)) continue;
 
-      const maxCapDec = posDec(ruleVal.maxDiscountAmount);
+      const maxCapDec = ruleVal.type === "PERCENT" ? posDec(ruleVal.maxDiscountAmount) : null;
       if (ruleVal.type === "PERCENT" || ruleVal.type === "AMOUNT" || ruleVal.type === "FIXED_PRICE") {
         const rawVal =
           ruleVal.type === "PERCENT"

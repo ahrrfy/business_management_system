@@ -2206,6 +2206,7 @@ export async function searchPromotionProducts(
     categoryId?: number | null;
     codes?: string[];
     limit?: number;
+    offset?: number;
   },
   canViewCost: boolean,
 ): Promise<SearchProductResultItem[]> {
@@ -2217,6 +2218,10 @@ export async function searchPromotionProducts(
   const normQ = rawQ ? normalizeSearchText(rawQ) : "";
   const normTokens = normQ ? normQ.split(/\s+/).filter(Boolean) : [];
   const limit = Math.min(Math.max(input.limit ?? 20, 1), 500);
+  const safeOffset =
+    !rawQ && rawCodes.length === 0
+      ? Math.min(Math.max(0, Math.trunc(input.offset ?? 0)), 50_000)
+      : 0;
 
   const exactBarcodeVariantIds = new Set<number>();
   const matchedVariantIdsSet = new Set<number>();
@@ -2407,7 +2412,8 @@ export async function searchPromotionProducts(
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(and(...conditions))
     .orderBy(desc(products.id), asc(productVariants.id))
-    .limit(candidateLimit);
+    .limit(candidateLimit)
+    .offset(safeOffset);
 
   if (rawQ && exactBarcodeVariantIds.size > 0) {
     const presentIds = new Set(candidateRows.map((r: any) => Number(r.variantId)));

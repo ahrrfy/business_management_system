@@ -148,6 +148,7 @@ export const promotionsV2Router = router({
         categoryId: z.number().int().positive().nullish(),
         codes: z.array(z.string().min(1).max(120)).max(500).optional(),
         limit: z.number().int().positive().max(500).default(20),
+        offset: z.number().int().min(0).max(50_000).optional(),
       }),
     )
     .query(async ({ input, ctx }) => {

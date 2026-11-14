@@ -1880,6 +1880,38 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(promoRow!.cost).toBe("8000.00");
     expect(promoRow!.grossProfit).toBe("1000.00");
   });
+
+  it("R7-3: searchPromotionProducts يدعم الترقيم الحتمي عبر offset عند جلب أصناف فئة كاملة", async () => {
+    await db().insert(s.categories).values({ id: 77, name: "أقلام ملونة" });
+    await db().insert(s.products).values([
+      { id: 191, name: "قلم 1", categoryId: 77 },
+      { id: 192, name: "قلم 2", categoryId: 77 },
+      { id: 193, name: "قلم 3", categoryId: 77 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 191, productId: 191, sku: "CLR-191", costPrice: "500.00" },
+      { id: 192, productId: 192, sku: "CLR-192", costPrice: "500.00" },
+      { id: 193, productId: 193, sku: "CLR-193", costPrice: "500.00" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 191, variantId: 191, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 192, variantId: 192, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 193, variantId: 193, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    ]);
+    await db().insert(s.productPrices).values([
+      { productUnitId: 191, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 192, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 193, priceTier: "RETAIL", price: "1000.00" },
+    ]);
+
+    const page1 = await searchPromotionProducts(db(), { categoryId: 77, limit: 2, offset: 0 }, true);
+    const page2 = await searchPromotionProducts(db(), { categoryId: 77, limit: 2, offset: 2 }, true);
+    const page3 = await searchPromotionProducts(db(), { categoryId: 77, limit: 2, offset: 4 }, true);
+
+    expect(page1.map((p) => p.variantId)).toEqual([193, 192]);
+    expect(page2.map((p) => p.variantId)).toEqual([191]);
+    expect(page3).toEqual([]);
+  });
 });
 
 

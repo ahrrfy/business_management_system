@@ -6,7 +6,7 @@ import type {
 } from "@/components/reception/cartMath";
 import type { CustomizationData } from "@/components/CustomizationDialog";
 import { customizationBasePrice } from "@/components/reception/cartMath";
-import { D } from "@/lib/money";
+import { D, round2 } from "@/lib/money";
 import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { toWorkOrderChannel, type WorkOrderChannel } from "@shared/receptionChannel";
@@ -544,7 +544,7 @@ function isCart(value: unknown): value is CartLine[] {
   if (!Array.isArray(value) || value.length > 500 || containsSensitiveKey(value)) return false;
   return value.every((line) => {
     if (!isRecord(line)
-      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponLineDiscount", "couponBasePromotion", "disc", "custom", "manualService", "digital"])
+      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponLineDiscount", "couponBasePromotion", "draftLineDiscount", "disc", "custom", "manualService", "digital"])
       || !boundedString(line.key, 200)
       || line.key.length === 0) return false;
     if (typeof line.qty !== "number" || !Number.isSafeInteger(line.qty) || line.qty <= 0 || line.qty > MAX_LINE_QUANTITY) return false;
@@ -556,6 +556,7 @@ function isCart(value: unknown): value is CartLine[] {
     if (line.customBasePrice != null && !finiteNumberInRange(line.customBasePrice, 0, MAX_MONEY)) return false;
     if (line.couponPriceSnapshot !== undefined && !finiteNumberInRange(line.couponPriceSnapshot, 0, 1_000_000_000_000)) return false;
     if (line.couponLineDiscount !== undefined && !decimalText(line.couponLineDiscount)) return false;
+    if (line.draftLineDiscount !== undefined && !decimalText(line.draftLineDiscount)) return false;
     if (line.couponBasePromotion !== undefined) {
       if (!isRecord(line.couponBasePromotion) || !hasOnlyKeys(line.couponBasePromotion, ["promotionId", "promotionName", "promotionEffectivePrice"])) return false;
       if (line.couponBasePromotion.promotionId !== null && (!Number.isSafeInteger(line.couponBasePromotion.promotionId) || Number(line.couponBasePromotion.promotionId) <= 0)) return false;
@@ -890,7 +891,7 @@ export function reconcileReceptionCartRows(
           isCustomizable: false,
         }
       : live;
-    const { origPrice: _staleOrigPrice, customBasePrice: _staleCustomBase, couponPriceSnapshot: _staleCouponPrice, couponLineDiscount: _staleCouponLineDiscount, couponBasePromotion: _staleCouponBase, cartPromo: _staleCartPromo, ...rest } = line;
+    const { origPrice: _staleOrigPrice, customBasePrice: _staleCustomBase, couponPriceSnapshot: _staleCouponPrice, couponLineDiscount: _staleCouponLineDiscount, couponBasePromotion: _staleCouponBase, draftLineDiscount: _staleDraftLineDiscount, cartPromo: _staleCartPromo, ...rest } = line;
     const next: CartLine = options.preserveStoredPrices ? { ...line, row } : { ...rest, row };
     if (line.custom) next.customBasePrice = options.preserveStoredPrices ? customizationBasePrice(line) : D(row.price).toNumber();
     if (!options.preserveStoredPrices && (line.disc ?? 0) > 0) {
@@ -1033,6 +1034,7 @@ export type ReceptionRestorableDraftLine = {
   productUnitId: number | null;
   title: string | null;
   unitPrice: number | string;
+  discountAmount?: number | string | null;
 };
 
 export type ReceptionDraftCartPreparation =
@@ -1122,7 +1124,17 @@ export function prepareReceptionDraftCart(
     const restored: CartLine = { key: `r-${line.id}`, row, qty: quantity };
     const storedPrice = Number(line.unitPrice);
     if (!Number.isFinite(storedPrice) || storedPrice < 0 || storedPrice > MAX_MONEY) { missingCount += 1; continue; }
-    if (storedPrice !== Number(row.promotionEffectivePrice ?? row.price ?? 0)) restored.origPrice = storedPrice;
+    const rawStoredDisc = line.discountAmount != null ? Number(line.discountAmount) : 0;
+    if (!Number.isFinite(rawStoredDisc) || rawStoredDisc < 0 || rawStoredDisc > MAX_MONEY) { missingCount += 1; continue; }
+    const storedDiscD = round2(D(rawStoredDisc));
+    if (storedDiscD.gt(0)) {
+      const grossD = round2(round2(D(storedPrice)).times(quantity));
+      if (storedDiscD.gt(grossD)) { missingCount += 1; continue; }
+      restored.origPrice = storedPrice;
+      restored.draftLineDiscount = storedDiscD.toFixed(2);
+    } else if (storedPrice !== Number(row.promotionEffectivePrice ?? row.price ?? 0)) {
+      restored.origPrice = storedPrice;
+    }
     cart.push(restored);
   }
   return missingCount > 0 ? { ok: false, missingCount } : { ok: true, cart };

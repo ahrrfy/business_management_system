@@ -45,6 +45,8 @@ export type CartLine = {
   couponLineDiscount?: string;
   /** العرض التلقائي الذي كان على السطر قبل أن يستبدله الكوبون. */
   couponBasePromotion?: { promotionId: number | null; promotionName: string | null; promotionEffectivePrice: string | null };
+  /** خصم السطر المطلق المثبَّت في المسوّدة عندما لا يقبل صافي السطر القسمة التامّة على الكمية. */
+  draftLineDiscount?: string;
   /** التقييم الحيّ لعروض السلة التلقائية (غير مخزّن في sessionStorage). */
   cartPromo?: { promotionId: number; promotionName: string; lineDiscount: string } | null;
   disc?: number; // نسبة خصم
@@ -114,6 +116,9 @@ export function effectivePrice(line: CartLine): number {
     if (line.cartPromo !== undefined && line.couponPriceSnapshot == null) {
       return round2(D(lineTotal(line)).div(line.qty)).toNumber();
     }
+    if (line.draftLineDiscount != null && line.couponPriceSnapshot == null) {
+      return round2(D(lineTotal(line)).div(line.qty)).toNumber();
+    }
   }
   // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
   // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
@@ -140,6 +145,16 @@ export function lineTotal(line: CartLine): number {
       }
       return round2(afterCoupon).toNumber();
     }
+    if (line.draftLineDiscount != null && line.couponPriceSnapshot == null) {
+      const baseUnit = round2(D(line.origPrice ?? line.row.promotionEffectivePrice ?? line.row.price ?? 0));
+      const grossLine = round2(baseUnit.times(line.qty));
+      const draftDisc = Decimal.min(grossLine, Decimal.max(0, D(line.draftLineDiscount)));
+      const afterDraftDisc = grossLine.minus(draftDisc);
+      if (line.disc && line.disc > 0) {
+        return round2(afterDraftDisc.times(D(100).minus(line.disc)).div(100)).toNumber();
+      }
+      return round2(afterDraftDisc).toNumber();
+    }
     if (line.cartPromo !== undefined && line.couponPriceSnapshot == null) {
       const hasHistoricalOverride =
         line.origPrice != null && !((line.disc ?? 0) > 0 && D(line.origPrice).eq(D(line.row.price ?? 0)));
@@ -157,6 +172,37 @@ export function lineTotal(line: CartLine): number {
     }
   }
   return effectivePrice(line) * line.qty;
+}
+
+/**
+ * يستخرج سعر الوحدة وخصم السطر لمسوّدة الاستقبال بحيث يطابق `round2(unitPrice * qty - discount)`
+ * صافي السطر المقوَّم تماماً حتى عندما لا يقبل الخصم القسمة التامّة على الكمية.
+ */
+export function resolveDraftGoodsPricing(
+  line: CartLine,
+): { unitPrice: Decimal; discountAmount?: Decimal } {
+  const effUnit = round2(D(effectivePrice(line)));
+  if (line.custom || line.digital || line.row.isPrintService || line.qty <= 0) {
+    return { unitPrice: effUnit };
+  }
+  const exactNet = round2(D(lineTotal(line)));
+  if (round2(effUnit.times(line.qty)).eq(exactNet)) {
+    return { unitPrice: effUnit };
+  }
+  const candidateBase = round2(D(line.origPrice ?? line.row.price ?? 0));
+  const candidateGross = round2(candidateBase.times(line.qty));
+  if (candidateGross.gte(exactNet)) {
+    return {
+      unitPrice: candidateBase,
+      discountAmount: round2(candidateGross.minus(exactNet)),
+    };
+  }
+  const ceilingUnit = exactNet.div(line.qty).toDecimalPlaces(2, Decimal.ROUND_UP);
+  const ceilingGross = round2(ceilingUnit.times(line.qty));
+  return {
+    unitPrice: ceilingUnit,
+    discountAmount: round2(ceilingGross.minus(exactNet)),
+  };
 }
 export function customizationBasePrice(line: CartLine): number | null {
   try {
@@ -181,6 +227,7 @@ export function withReceptionLineDiscount(line: CartLine, pct: number | null): C
   if (pct == null || pct <= 0) {
     const clearCatalogMarker =
       !normalized.custom &&
+      normalized.draftLineDiscount == null &&
       normalized.origPrice != null &&
       D(normalized.origPrice).eq(D(normalized.row.price ?? 0)) &&
       normalized.row.promotionEffectivePrice == null;
@@ -191,6 +238,21 @@ export function withReceptionLineDiscount(line: CartLine, pct: number | null): C
     };
   }
   return { ...normalized, origPrice: normalized.origPrice ?? D(normalized.row.price).toNumber(), disc: Math.min(100, pct) };
+}
+
+export function withReceptionLineQty(line: CartLine, rawQty: number): CartLine {
+  if (line.digital) return line;
+  const nextQty = Math.max(1, Math.trunc(rawQty) || 1);
+  if (nextQty === line.qty) return line;
+  if (line.draftLineDiscount != null && line.qty > 0) {
+    const scaled = round2(D(line.draftLineDiscount).times(nextQty).div(line.qty));
+    if (scaled.lte(0)) {
+      const { draftLineDiscount: _d, ...rest } = line;
+      return { ...rest, qty: nextQty };
+    }
+    return { ...line, qty: nextQty, draftLineDiscount: scaled.toFixed(2) };
+  }
+  return { ...line, qty: nextQty };
 }
 export function isCustomKind(line: CartLine): boolean {
   return !!line.custom;

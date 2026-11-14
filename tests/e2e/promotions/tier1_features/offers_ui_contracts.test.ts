@@ -23,6 +23,12 @@ import {
   validateRuleTypeFields,
 } from "@/components/offers/offersMultiRuleHelpers";
 import {
+  applyOfferRuleDraftPatch,
+  buildRulePayloadCore,
+  pullCategorySearchPages,
+  resolveCategoryPullOutcome,
+} from "@/components/offers/offersDraftGuards";
+import {
   deriveSimulatorTargetCollections,
   simulateBasketPreview as simulateOfferBasketPreview,
 } from "@/components/offers/offersTypes";
@@ -867,6 +873,95 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
           evaluated.autoFreeShippingName
         )?.feeCollection
       ).toBe("COUNTER");
+    });
+
+    it("T1-F19-11: switching offer rule type away from PERCENT clears hidden maxDiscountAmount in draft state and API payload", () => {
+      const percentDraft = applyOfferRuleDraftPatch(createDefaultRuleDraft("PERCENT"), {
+        discountPercent: "20",
+        maxDiscountAmount: "1000",
+      });
+      expect(percentDraft.maxDiscountAmount).toBe("1000");
+      expect(buildRulePayloadCore(percentDraft).maxDiscountAmount).toBe("1000");
+
+      // Manager switches from PERCENT to BOGO (buy 1 get 1 free on 10,000-IQD items)
+      const bogoDraft = applyOfferRuleDraftPatch(percentDraft, {
+        type: "BOGO",
+        bogoBuyQuantity: 1,
+        bogoGetQuantity: 1,
+        bogoGetDiscountPercent: "100",
+      });
+      expect(bogoDraft.maxDiscountAmount).toBe("");
+      expect(buildRulePayloadCore(bogoDraft).maxDiscountAmount).toBeNull();
+
+      // Even if a stale draft carried maxDiscountAmount on BOGO, buildRulePayloadCore strips it
+      const staleBogoPayload = buildRulePayloadCore({
+        ...bogoDraft,
+        maxDiscountAmount: "1000",
+      });
+      expect(staleBogoPayload.maxDiscountAmount).toBeNull();
+    });
+
+    it("T1-F19-12: whole-category pull paginates across >500-variant categories and warns explicitly on safety-cap truncation", async () => {
+      const makeSearchRow = (id: number) => ({
+        productId: id,
+        productName: `مادة ${id}`,
+        productCode: `SKU-${id}`,
+        categoryId: 7,
+        variantId: id,
+        sku: `SKU-${id}`,
+        variantKind: "VARIANT" as const,
+        isConsignment: false,
+        isBundle: false,
+        costPrice: "500.00",
+        units: [
+          {
+            id: id * 10,
+            unitName: "قطعة",
+            conversionFactor: "1",
+            barcode: null,
+            isBaseUnit: true,
+            retailPrice: "1000.00",
+          },
+        ],
+      });
+
+      const fullCatalog = Array.from({ length: 1205 }, (_, i) => makeSearchRow(i + 1));
+      const fullPull = await pullCategorySearchPages({
+        categoryId: 7,
+        pageSize: 500,
+        fetchPage: async ({ limit, offset }) => fullCatalog.slice(offset, offset + limit),
+      });
+      expect(fullPull.truncated).toBe(false);
+      expect(fullPull.rows).toHaveLength(1205);
+
+      const firstOutcome = resolveCategoryPullOutcome({
+        fetchedRows: fullPull.rows,
+        truncated: fullPull.truncated,
+        existingVariantIds: new Set(),
+        catName: "قرطاسية مدرسية",
+      });
+      expect(firstOutcome.itemsToAdd).toHaveLength(1205);
+      expect(firstOutcome.tone).toBe("pos");
+
+      // If safety ceiling is hit (e.g. maxPages = 2 => 1,000 of 1,205 fetched), truncation is detected and warned
+      const cappedPull = await pullCategorySearchPages({
+        categoryId: 7,
+        pageSize: 500,
+        maxPages: 2,
+        fetchPage: async ({ limit, offset }) => fullCatalog.slice(offset, offset + limit),
+      });
+      expect(cappedPull.truncated).toBe(true);
+      expect(cappedPull.rows).toHaveLength(1000);
+
+      const cappedOutcome = resolveCategoryPullOutcome({
+        fetchedRows: cappedPull.rows,
+        truncated: cappedPull.truncated,
+        existingVariantIds: new Set(cappedPull.rows.map((r) => r.variantId)),
+        catName: "قرطاسية مدرسية",
+      });
+      expect(cappedOutcome.itemsToAdd).toHaveLength(0);
+      expect(cappedOutcome.tone).toBe("warn");
+      expect(cappedOutcome.notice).toContain("أصنافاً إضافية");
     });
   });
 });

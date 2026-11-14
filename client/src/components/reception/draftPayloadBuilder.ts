@@ -1,5 +1,5 @@
 import { D, round2 } from "@/lib/money";
-import { customizationBasePrice, effectivePrice, type CartLine } from "./cartMath";
+import { customizationBasePrice, effectivePrice, resolveDraftGoodsPricing, type CartLine } from "./cartMath";
 import { composeCustomizationText } from "@/components/CustomizationDialog";
 
 export interface DraftPayloadContext {
@@ -56,13 +56,28 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
         assignedTo: c.custom.assignedTo ?? null,
       };
     }
+    if (c.row.isPrintService) {
+      return {
+        lineKind: "PRINT" as const,
+        sortOrder: i,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        quantity: String(c.qty),
+        unitPrice: eff,
+        title: `${c.row.productName} (${c.row.unitName})`,
+      };
+    }
+    const goodsPricing = resolveDraftGoodsPricing(c);
     return {
-      lineKind: c.row.isPrintService ? ("PRINT" as const) : ("GOODS" as const),
+      lineKind: "GOODS" as const,
       sortOrder: i,
       variantId: c.row.variantId,
       productUnitId: c.row.productUnitId,
       quantity: String(c.qty),
-      unitPrice: eff,
+      unitPrice: goodsPricing.unitPrice.toFixed(2),
+      ...(goodsPricing.discountAmount && goodsPricing.discountAmount.gt(0)
+        ? { discountAmount: goodsPricing.discountAmount.toFixed(2) }
+        : {}),
       title: `${c.row.productName} (${c.row.unitName})`,
     };
   });

@@ -12,6 +12,7 @@ import {
   type CartLine,
   type PosRow,
   type Tier,
+  withReceptionLineQty,
 } from "@/components/reception/cartMath";
 import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
 export interface useReceptionCartEditingInput {
@@ -202,7 +203,7 @@ export function useReceptionCartEditing({
         prev.map((c) => {
           if (c.key !== lineKey) return c;
           if (c.digital) return c;
-          const { origPrice: _oldUnitPrice, ...rest } = c;
+          const { origPrice: _oldUnitPrice, draftLineDiscount: _oldDraftDisc, ...rest } = c;
           return {
             ...rest,
             row: {
@@ -222,7 +223,7 @@ export function useReceptionCartEditing({
     setCart((prev) =>
       prev.map((c) =>
         c.key === key && !c.digital
-          ? { ...c, qty: Math.max(1, c.qty + delta) }
+          ? withReceptionLineQty(c, c.qty + delta)
           : c,
       ),
     );
