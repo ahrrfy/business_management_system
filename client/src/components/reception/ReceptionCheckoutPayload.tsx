@@ -8,14 +8,17 @@ import {
   type CustomizationData,
   composeCustomizationText,
 } from "@/components/CustomizationDialog";
+import Decimal from "decimal.js";
 import { D, round2 } from "@/lib/money";
 import {
   effectivePrice,
   lineTotal,
+  officialReceptionPromoInfo,
   type CartLine,
   type PayMethod,
   type Tier,
 } from "@/components/reception/cartMath";
+import { applyFreeShippingToOrderDelivery } from "@/components/reception/useReceptionCartPromotions";
 
 export interface ReceptionCheckoutPayloadInput {
   checkoutCharges?:import("@shared/checkoutCharges").CheckoutChargesInput;
@@ -77,6 +80,7 @@ export interface ReceptionCheckoutPayloadInput {
   reqIdRef: React.RefObject<string>;
   effectiveTier: import("@/components/reception/cartMath").Tier;
   couponCode: string | null;
+  freeShippingPromoName?: string | null;
 }
 export function buildReceptionCheckoutPayload({
   payments, checkoutCharges,
@@ -117,6 +121,7 @@ export function buildReceptionCheckoutPayload({
   reqIdRef,
   effectiveTier,
   couponCode,
+  freeShippingPromoName = null,
 }: ReceptionCheckoutPayloadInput) {
   const saleAmount = cashRoundActive
     ? round2(effectiveGrandD).toFixed(2)
@@ -204,17 +209,21 @@ export function buildReceptionCheckoutPayload({
   // إمّا (فاتورة + عهدة مندوب) معاً وإمّا لا شيء. أوامر الشغل وحدها بلا فاتورةٍ حاملة
   // تبقى استثناءً مُعلَناً (تحذيرٌ بعد التثبيت) — الخادم يرفض `delivery` بلا فاتورة.
   const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
+  const effectiveOrderDelivery =
+    D(heldDelivery).gt(0)
+      ? orderDelivery
+      : applyFreeShippingToOrderDelivery(orderDelivery, freeShippingPromoName);
   const deliveryPayload =
-    orderDelivery && hasCarrierInvoice
+    effectiveOrderDelivery && hasCarrierInvoice
       ? {
-          partyId: orderDelivery.partyId,
-          fee: orderDelivery.fee?.trim() ? orderDelivery.fee : "0",
-          feeCollection: orderDelivery.feeCollection,
-          recipientName: orderDelivery.recipientName || undefined,
-          recipientPhone: orderDelivery.recipientPhone || undefined,
-          address: orderDelivery.address || undefined,
+          partyId: effectiveOrderDelivery.partyId,
+          fee: effectiveOrderDelivery.fee?.trim() ? effectiveOrderDelivery.fee : "0",
+          feeCollection: effectiveOrderDelivery.feeCollection,
+          recipientName: effectiveOrderDelivery.recipientName || undefined,
+          recipientPhone: effectiveOrderDelivery.recipientPhone || undefined,
+          address: effectiveOrderDelivery.address || undefined,
           externalTrackingRef:
-            orderDelivery.externalTrackingRef?.trim() || undefined,
+            effectiveOrderDelivery.externalTrackingRef?.trim() || undefined,
         }
       : undefined;
 
@@ -264,31 +273,31 @@ export function buildReceptionCheckoutPayload({
               ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) }
               : {}),
             lines: regularLines.map((c) => {
-              if (c.row.promotionEffectivePrice != null) {
-                const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
-                const discAmt = listWhole
-                  .minus(D(c.row.promotionEffectivePrice))
-                  .times(c.qty);
-                return {
-                  variantId: c.row.variantId,
-                  productUnitId: c.row.productUnitId,
-                  quantity: String(c.qty),
-                  unitPriceOverride: listWhole.toFixed(2),
-                  ...(discAmt.gt(0)
-                    ? { discountAmount: discAmt.toFixed(2) }
-                    : {}),
-                  ...(c.row.promotionId != null
-                    ? { promotionId: c.row.promotionId }
-                    : {}),
-                };
-              }
+              const catalogUnit = round2(D(c.row.price ?? 0));
+              const listUnit =
+                c.origPrice != null && round2(D(c.origPrice)).gt(catalogUnit)
+                  ? round2(D(c.origPrice))
+                  : catalogUnit;
+              const listGross = round2(listUnit.times(c.qty));
+              const netLine = round2(D(lineTotal(c)));
+              const discAmt = Decimal.max(0, round2(listGross.minus(netLine)));
+              const promoInfo = officialReceptionPromoInfo(c);
+              const promotionId = promoInfo?.promotionId;
+
+              const promoDiscount = promoInfo
+                ? Decimal.min(discAmt, promoInfo.promoDiscountD)
+                : D(0);
+              const cashierDiscount = Decimal.max(0, round2(discAmt.minus(promoDiscount)));
+
               return {
                 variantId: c.row.variantId,
                 productUnitId: c.row.productUnitId,
                 quantity: String(c.qty),
-                ...(c.disc != null && c.disc > 0
-                  ? { discountPercent: String(c.disc) }
-                  : {}),
+                unitPriceOverride: listUnit.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(promotionId != null ? { promotionId } : {}),
+                ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+                ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
               };
             }),
           }

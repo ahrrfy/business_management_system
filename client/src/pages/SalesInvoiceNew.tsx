@@ -62,7 +62,7 @@ import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/s
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { captureDigitalInvoiceBasketItems, resolveDigitalInvoiceSettlement, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
-import { AlertTriangle, Lock, CreditCard } from "lucide-react";
+import { AlertTriangle, Lock, CreditCard, Tag } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -97,6 +97,7 @@ import {
   type PriceTier,
 } from "@/components/invoice";
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
+import { salesInvoiceWithPromotionsReducer, useInvoiceCartPromotions } from "@/components/invoice/useInvoiceCartPromotions";
 import { SalesCorrectionPanel, resolvePriorReceipt, isPendingCodCorrection, correctionOutstandingBlockReason, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
 import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
 import { salesOperationAllowed, salesCostVisible, salesCorrectionKinds, salesEditorActions, salesDigitalAllowed, salesExternalPaymentAllowed, salesEditorShortcuts } from "@/lib/salesOperationAccess";
@@ -120,7 +121,7 @@ export default function SalesInvoice() {
   const salesReps = useMemo(() => salesRepresentativeOptions(employeesQ.data?.rows ?? []), [employeesQ.data?.rows]);
 
   const [state, dispatch] = useReducer(
-    invoiceReducer,
+    salesInvoiceWithPromotionsReducer,
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId),
   ); const pricingIntentEpochRef = useRef(createPricingIntentEpoch());
@@ -130,6 +131,7 @@ export default function SalesInvoice() {
   const [corrMatch, corrParams] = useRoute("/invoices/:id/correct");
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
+  const freeShippingPromo = useInvoiceCartPromotions({ items: state.items, branchId: state.branchId, tier: state.tier, shipping: state.shipping, shippingFree: state.shippingFree, enabled: !isCorrection && salesOperationAllowed(me.data, "catalog.activePromotions", true), dispatch });
   const correctionSearchParams = new URLSearchParams(useSearch());
   const correctionFromReception = correctionSearchParams.get("from") === "reception-edit";
   const rawCorrectionReturnTo = correctionSearchParams.get("returnTo") ?? "";
@@ -600,21 +602,21 @@ export default function SalesInvoice() {
       shiftId: currentShift.data?.id ?? undefined,
       customerId: state.entityId ?? undefined,
       priceTier: state.tier,
-      lines: state.items.map((l) => ({
-        variantId: l.variantId,
-        productUnitId: l.productUnitId,
-        quantity: moneyInput(l.qty).toString(),
-        ...(l.digital ? { internalLineToken: l.digital.lineKey } : {}),
-        // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
-        // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
-        ...(l.isGift
-          ? { isGift: true as const }
-          : {
-              ...(shouldSendUnitPriceOverride(l) ? { unitPriceOverride: round2(moneyInput(l.price)).toFixed(2) } : {}),
-              discountPercent: l.discountType === "percent" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
-              discountAmount: l.discountType === "amount" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
-            }),
-      })),
+      lines: state.items.map((l) => {
+        const isOverride = shouldSendUnitPriceOverride(l);
+        const pId = isOverride ? undefined : ((l as any).promotionId ?? undefined);
+        const pDisc = isOverride ? undefined : ((l as any).promotionDiscount && D((l as any).promotionDiscount).gt(0) ? (l as any).promotionDiscount : undefined);
+        return {
+          variantId: l.variantId, productUnitId: l.productUnitId, quantity: moneyInput(l.qty).toString(),
+          ...(l.digital ? { internalLineToken: l.digital.lineKey } : {}),
+          ...(l.isGift ? { isGift: true as const } : {
+            ...(isOverride ? { unitPriceOverride: round2(moneyInput(l.price)).toFixed(2) } : {}),
+            discountPercent: l.discountType === "percent" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
+            discountAmount: l.discountType === "amount" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
+            ...(pId != null ? { promotionId: pId } : {}), ...(pDisc != null ? { promotionDiscount: pDisc } : {}),
+          }),
+        };
+      }),
       // أجرة التوصيل (0152) — ثلاث حالات صريحة لا اثنتان:
       //   مدفوع  ⇒ deliveryFee > 0 (إيرادُ شحنٍ يدخل الإجمالي)
       //   مجّانيّ ⇒ deliveryFree=true + القيمة المُتنازَل عنها (بلا إيراد ولا إجمالي)
@@ -1186,6 +1188,19 @@ export default function SalesInvoice() {
         </div>
       )}
 
+      {/* M4 (F23): شارات العروض الترويجية النشطة على بنود الفاتورة */}
+      {state.items.some((item) => item.promotionId != null) && (
+        <div className="badge-promo flex flex-wrap items-center gap-2 rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--sem-pos)]">
+          <Tag aria-hidden className="size-3.5 shrink-0" />
+          <span>تتضمن الفاتورة بنوداً مشمولة بعروض ترويجية نشطة:</span>
+          {state.items.filter((item) => item.promotionId != null).map((item, idx) => (
+            <span key={idx} className="rounded bg-[var(--sem-pos)]/10 px-2 py-0.5 text-[11px] font-bold">
+              {item.name} {item.promotionName ? `· ${item.promotionName}` : ""} {item.promotionDiscount && D(item.promotionDiscount).gt(0) ? `(خصم ${fmt(D(item.promotionDiscount).toFixed(2))} د.ع)` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات — تدفّق طبيعي بلا حبس ارتفاع */}
       <div className="flex flex-col gap-2.5 xl:flex-row xl:items-start">
         <div className="flex min-w-0 flex-1 flex-col gap-2 h-[62vh] min-h-[380px] print:h-auto print:min-h-fit">
@@ -1236,7 +1251,7 @@ export default function SalesInvoice() {
               للمال هنا هو «المُحصَّل الآن»، وطريقتُه صارت بجواره في CorrectionPanel. */}
           <TotalsPanel
             shippingLabel="أجرة التوصيل"
-            allowFreeShipping
+            allowFreeShipping freeShippingPromoName={freeShippingPromo?.promotionName ?? null}
             items={state.items}
             state={state}
             dispatch={dispatch}

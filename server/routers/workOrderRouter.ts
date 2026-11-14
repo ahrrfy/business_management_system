@@ -272,6 +272,8 @@ const receptionCheckoutSchema = z.object({
       unitPriceOverride: nonNegMoneyString.optional(),
       discountAmount: nonNegMoneyString.optional(),
       promotionId: z.number().int().positive().nullish(),
+      promotionDiscount: nonNegMoneyString.optional(),
+      cashierDiscountAmount: nonNegMoneyString.optional(),
     })).min(1),
     amount: positiveMoneyString,
     // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (سلطةُ كاشيرٍ إلى ١٥٪، فوقه اعتمادُ مدير):

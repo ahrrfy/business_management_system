@@ -5,6 +5,7 @@ import { variantDisplayName } from '@shared/variantDisplay';
 import type { RouterOutputs } from '@/lib/trpc';
 import type { InvoicePrintData } from './printTemplates';
 import { invoiceRemaining, isDeadInvoice } from '@shared/predicates';
+import { deriveInvoicePromoSummary } from './promoPrintSummary';
 
 type SavedInvoice = NonNullable<RouterOutputs['sales']['get']>;
 type SavedItem = SavedInvoice['items'][number];
@@ -16,7 +17,9 @@ type PrintSource = Pick<SavedInvoice, 'invoiceNumber' | 'subtotal' | 'total' | '
     'courierFee' | 'courierFeeCollection' | 'consignmentStatus' | 'collectCreditOnDelivery'>> & {
       items: (Pick<SavedItem, 'quantity' | 'unitPrice' | 'total'> &
         Partial<Pick<SavedItem, 'productName' | 'variantName' | 'color' | 'size' | 'variantKind' |
-          'sku' | 'unitName' | 'isGift' | 'barcode'>>)[];
+          'sku' | 'unitName' | 'isGift' | 'barcode' | 'promotionId' | 'promotionDiscount'> & {
+          promotionName?: string | null;
+        }>)[];
     };
 
 export function invoiceDetailPrintData(data: PrintSource, companyTaxId: string | null): InvoicePrintData {
@@ -84,6 +87,7 @@ export function invoiceDetailPrintData(data: PrintSource, companyTaxId: string |
       deliveryFee: data.deliveryFee,
       deliveryFree: data.deliveryFree,
       deliveryWaivedAmount: data.deliveryWaivedAmount,
+      promoSummary: deriveInvoicePromoSummary(data),
       // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة ⇒ نمرّرها للعرض
       // كي تُظهر الفاتورة المطبوعة «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
       courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0 && data.consignmentStatus !== "CANCELLED"

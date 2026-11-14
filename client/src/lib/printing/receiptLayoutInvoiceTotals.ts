@@ -91,25 +91,31 @@ export function salesInvoiceTotals(
               sign: "+" as const,
             },
           ]
-        : data.deliveryFree
+        : data.deliveryFree && !(courier && fee.gt(0) && courier.feeCollection === "SHOP")
           ? [
               {
-                label: "التوصيل",
+                label: "التوصيل (عرض ترويجي)",
                 value: D(data.deliveryWaivedAmount ?? 0).gt(0)
                   ? `مجاناً (قيمته ${money(data.deliveryWaivedAmount)})`
                   : "مجاناً",
-                color: B.orange,
+                color: B.green,
               },
             ]
           : []),
       ...(courier && fee.gt(0) && D(data.deliveryFee ?? 0).isZero()
         ? [
-            {
-              label: `أجرة التوصيل${facts.dead ? "" : ` (${courier.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : courier.feeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${courier.partyName} من الزبون`})`}`,
-              value: money(courier.fee),
-              sign: "+" as const,
-              color: B.orange,
-            },
+            data.deliveryFree && courier.feeCollection === "SHOP"
+              ? {
+                  label: `أجرة التوصيل${facts.dead ? "" : ` (${courier.partyName} — على المكتبة / هدية عرض ترويجي)`}`,
+                  value: `مجاناً (قيمته ${money(courier.fee)})`,
+                  color: B.green,
+                }
+              : {
+                  label: `أجرة التوصيل${facts.dead ? "" : ` (${courier.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : courier.feeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${courier.partyName} من الزبون`})`}`,
+                  value: money(courier.fee),
+                  sign: "+" as const,
+                  color: B.orange,
+                },
             ...(facts.dead
               ? []
               : courier.feeCollection === "COURIER"

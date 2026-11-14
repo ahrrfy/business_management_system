@@ -36,6 +36,8 @@ import {
 } from './docHtml';
 import { formatArabicMoneyWords } from './tafqit';
 import { formatPaymentMethodPrintHtml } from './cardBrandLogos';
+import { isDeadInvoice } from '@shared/predicates';
+import { renderA4PromoBannerHtml, type PromoPrintSummary } from './promoPrintSummary';
 
 // ─── مساعدات مشتركة ──────────────────────────────────────────────────────────
 
@@ -226,6 +228,8 @@ export interface SalesInvoiceV2Data {
   /** SVG جاهز من qr.ts (اختياري). إن غاب يُستعمل placeholder. */
   qrSvg?: string | null;
   qrCaption?: string | null;
+  /** ملخص المزايا والعروض الترويجية للطباعة التسويقية على الفاتورة الرسمية. */
+  promoSummary?: PromoPrintSummary | null;
 
   settings?: CompanySettings;
 }
@@ -308,6 +312,7 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     total: it.isGift ? 'مجاناً' : fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
+  const promoBanner = renderA4PromoBannerHtml(d.promoSummary, fmtIQD, isDeadInvoice(d.status));
 
   const totals = salesInvoiceTotals(d, fmtIQD, taxLabel);
 
@@ -323,7 +328,7 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     ],
   });
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+  const body = `${pageBodyOpen()}${header}${cards}${table}${promoBanner}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
   return wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body);
 }
 

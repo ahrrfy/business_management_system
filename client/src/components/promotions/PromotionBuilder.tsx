@@ -158,10 +158,10 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
             <div className="space-y-1">
               <DialogTitle className="text-lg font-bold flex items-center gap-2">
                 <Sparkles className="size-5 text-primary" />
-                <span>المحرر المرئي الموحد للعروض والكوبونات (Unified Visual Builder)</span>
+                <span>منشئ العروض والكوبونات السريع</span>
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                أنماط ترويجية متخصصة ومعزولة (حملات، مؤثرين، عودة كاشير، ترحيب طلب أول، خصم مباشر) مع التوليد والتصدير الفوري.
+                إنشاء كوبونات الخصم، أكواد المؤثرين، قسائم العودة للكاشير، وعروض الترحيب مع الطباعة الفورية.
               </DialogDescription>
             </div>
           </div>
@@ -214,7 +214,7 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
               {createUnified.isPending ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  <span>جارٍ الحفظ الذري…</span>
+                  <span>جارٍ الحفظ…</span>
                 </>
               ) : (
                 <>

@@ -809,7 +809,11 @@ function StorefrontContent() {
       return offers.slice(0, 4).map((o) => ({
         id: -o.id,
         title: o.name,
-        subtitle: o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`,
+        subtitle:
+          o.summary ||
+          (o.type === "PERCENT"
+            ? `خصم ${Number(o.discountPercent)}٪`
+            : `خصم ${money(o.discountAmount)} د.ع`),
         ctaLabel: "عرض اليوم",
       }));
     }

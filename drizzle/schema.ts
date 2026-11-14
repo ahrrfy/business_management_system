@@ -2242,6 +2242,10 @@ export const invoices = mysqlTable(
     })
       .default("0")
       .notNull(),
+    // معرّف عرض الشحن المجاني المطبّق (لقطة مجمّدة لتقارير أداء واستخدام العروض).
+    freeShippingPromotionId: bigint("freeShippingPromotionId", {
+      mode: "number",
+    }),
     status: mysqlEnum("invoiceStatus", [
       "PENDING",
       "CONFIRMED",
@@ -2377,6 +2381,9 @@ export const invoices = mysqlTable(
     // أوفلاين (0084): بحث بالرقم المؤقّت المطبوع على إيصال الزبون (مرتجع/استفسار).
     offlineReceiptIdx: index("idx_invoice_offline_receipt").on(
       table.offlineReceiptNumber,
+    ),
+    freeShippingPromoIdx: index("idx_invoice_free_shipping_promo").on(
+      table.freeShippingPromotionId,
     ),
     salespersonDateIdx: index("idx_invoice_salesperson_date").on(
       table.createdBy,
@@ -2655,7 +2662,7 @@ export const crmCampaigns = mysqlTable(
 export type CrmCampaign = typeof crmCampaigns.$inferSelect;
 export type InsertCrmCampaign = typeof crmCampaigns.$inferInsert;
 
-/* ============================ العروض والخصومات على المبيعات (Promotions v2) ============================ */
+/* ============================ العروض والخصومات على المبيعات (Promotions Redesign) ============================ */
 
 /**
  * promotions v2 (٨/٧/٢٦، بعد gstack-review على PR #163): إعادة بناء بفلسفة «نقطة العرض = نقطة الفرض» —
@@ -2680,7 +2687,15 @@ export const promotions = mysqlTable(
     ),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    type: mysqlEnum("promotionType", ["PERCENT", "AMOUNT"]).notNull(),
+    type: mysqlEnum("promotionType", [
+      "PERCENT",
+      "AMOUNT",
+      "FIXED_PRICE",
+      "BUNDLE_PRICE",
+      "BOGO",
+      "TIERED_QTY",
+      "FREE_SHIPPING",
+    ]).notNull(),
     discountPercent: decimal("discountPercent", { precision: 5, scale: 2 })
       .default("0")
       .notNull(),
@@ -2721,9 +2736,41 @@ export const promotions = mysqlTable(
     applicationMode: mysqlEnum("promotionApplicationMode", ["AUTO", "COUPON"])
       .default("AUTO")
       .notNull(),
+    // قناة العرض الثلاثية: ALL = كاشير ومتجر، POS_ONLY = كاشير فقط، STORE_ONLY = متجر فقط
+    channel: mysqlEnum("promotionChannel", [
+      "ALL",
+      "POS_ONLY",
+      "STORE_ONLY",
+    ])
+      .default("ALL")
+      .notNull(),
     // قناة العرض (0073): true = عرض متجر إلكترونيّ (من لوحة hPanel، أونلاين فقط — يُستثنى من تسعير
     // الكاشير). false = عرض كاشير/إدارة عامّ (السلوك السابق). يميّز القناتين إذ يتطابق branch+tier.
     isStoreManaged: boolean("isStoreManaged").default(false).notNull(),
+    // بيع تحت التكلفة صريح وموثق
+    allowBelowCost: boolean("allowBelowCost").default(false).notNull(),
+    // حماية السعر: قصر العرض على الوحدة الأساسية افتراضياً لمنع تسرّب سعر القطعة للكرتون
+    applyToBaseUnitOnly: boolean("applyToBaseUnitOnly").default(true).notNull(),
+    // الأيام الفعالة أسبوعياً [0..6] (0 = الأحد، 6 = السبت)
+    activeDays: json("activeDays").$type<number[] | null>(),
+    // حقول النوع FIXED_PRICE
+    fixedPrice: decimal("fixedPrice", { precision: 15, scale: 2 }),
+    // حقول النوع BUNDLE_PRICE
+    bundlePrice: decimal("bundlePrice", { precision: 15, scale: 2 }),
+    bundleMode: mysqlEnum("promotionBundleMode", [
+      "ALL_REQUIRED",
+      "PICK_ANY_N",
+    ]),
+    bundleQuantity: int("bundleQuantity"),
+    // حقول النوع BOGO
+    bogoBuyQuantity: int("bogoBuyQuantity"),
+    bogoGetQuantity: int("bogoGetQuantity"),
+    bogoGetDiscountPercent: decimal("bogoGetDiscountPercent", { precision: 5, scale: 2 }),
+    // حقول النوع TIERED_QTY
+    tieredMode: mysqlEnum("promotionTieredMode", [
+      "PER_ITEM",
+      "POOL_ACROSS_TARGETS",
+    ]),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -2741,6 +2788,10 @@ export const promotions = mysqlTable(
       table.applicationMode,
       table.isActive,
     ),
+    channelIdx: index("idx_promo_channel").on(
+      table.channel,
+      table.isActive,
+    ),
   }),
 );
 
@@ -2748,8 +2799,8 @@ export type Promotion = typeof promotions.$inferSelect;
 export type InsertPromotion = typeof promotions.$inferInsert;
 
 /**
- * promotionTargets: أهداف العرض عند scope ≠ ALL. صفٌّ واحد لكل هدف — إحدى (categoryId/productId/variantId)
- * حصراً (نفرض ذلك بـCHECK). productId = العرض يشمل كل متغيّرات المنتج (الأشيَع). variantId = دقيق.
+ * promotionTargets: أهداف العرض عند scope ≠ ALL.
+ * صف واحد لكل هدف: إحدى (categoryId/productId/variantId/productUnitId) حصراً.
  */
 export const promotionTargets = mysqlTable(
   "promotionTargets",
@@ -2770,6 +2821,10 @@ export const promotionTargets = mysqlTable(
       () => productVariants.id,
       { onDelete: "cascade" },
     ),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(
+      () => productUnits.id,
+      { onDelete: "cascade" },
+    ),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -2777,11 +2832,51 @@ export const promotionTargets = mysqlTable(
     categoryIdx: index("idx_promo_target_category").on(table.categoryId),
     productIdx: index("idx_promo_target_product").on(table.productId),
     variantIdx: index("idx_promo_target_variant").on(table.variantId),
+    unitIdx: index("idx_promo_target_unit").on(table.productUnitId),
   }),
 );
 
 export type PromotionTarget = typeof promotionTargets.$inferSelect;
 export type InsertPromotionTarget = typeof promotionTargets.$inferInsert;
+
+/**
+ * promotionTiers: شرائح الكميات لعروض TIERED_QTY.
+ * تدعم خصومات PERCENT, AMOUNT, FIXED_PRICE حسب عتبة الكمية.
+ */
+export const promotionTiers = mysqlTable(
+  "promotionTiers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    promotionId: bigint("promotionId", { mode: "number" })
+      .notNull()
+      .references(() => promotions.id, { onDelete: "cascade" }),
+    minQuantity: decimal("minQuantity", { precision: 15, scale: 4 }).notNull(),
+    tierType: mysqlEnum("promotionTierType", [
+      "PERCENT",
+      "AMOUNT",
+      "FIXED_PRICE",
+    ]).notNull(),
+    discountPercent: decimal("discountPercent", { precision: 5, scale: 2 })
+      .default("0")
+      .notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    fixedPrice: decimal("fixedPrice", { precision: 15, scale: 2 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    promoIdx: index("idx_promo_tier_promo").on(table.promotionId),
+    uqPromoMinQty: unique("uq_promo_tier_min_qty").on(
+      table.promotionId,
+      table.minQuantity,
+    ),
+  }),
+);
+
+export type PromotionTier = typeof promotionTiers.$inferSelect;
+export type InsertPromotionTier = typeof promotionTiers.$inferInsert;
 
 /* ============================ CRM — برامج الكوبونات والإصدارات والاسترداد ============================ */
 
@@ -4913,6 +5008,8 @@ export const receptionDraftLines = mysqlTable(
     assignedTo: int("assignedTo"),
     priceOverride: boolean("priceOverride").default(false).notNull(),
     priceApprovedBy: bigint("priceApprovedBy", { mode: "number" }),
+    promotionId: bigint("promotionId", { mode: "number" }),
+    promotionDiscount: decimal("promotionDiscount", { precision: 15, scale: 2 }),
     lineRequestId: varchar("lineRequestId", { length: 64 }),
   },
   (table) => ({
@@ -8680,6 +8777,10 @@ export const onlineOrders = mysqlTable(
     })
       .default("0")
       .notNull(),
+    // معرّف عرض الشحن المجاني المطبّق (لقطة مجمّدة لتقارير أداء واستخدام العروض).
+    freeShippingPromotionId: bigint("freeShippingPromotionId", {
+      mode: "number",
+    }),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -8771,6 +8872,9 @@ export const onlineOrders = mysqlTable(
     ),
     deliveryPartyIdx: index("idx_order_delivery_party").on(
       table.deliveryPartyId,
+    ),
+    freeShippingPromoIdx: index("idx_online_order_free_shipping_promo").on(
+      table.freeShippingPromotionId,
     ),
   }),
 );

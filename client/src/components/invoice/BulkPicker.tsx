@@ -78,7 +78,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   type Row = {
     productUnitId: number;
     productId: number;
+    categoryId?: number | null;
     variantId: number;
+    isBaseUnit?: boolean;
     name: string;
     variantName?: string | null;
     color?: string | null;
@@ -120,7 +122,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       }));
     }
     return ((isWarehouse ? whQ.data : posQ.data) ?? []).map((r) => ({
-      productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
+      productUnitId: r.productUnitId, productId: r.productId,
+      categoryId: "categoryId" in r ? (r.categoryId ?? null) : null,
+      variantId: r.variantId, isBaseUnit: r.isBaseUnit !== false,
       name: variantDisplayName(r),
       variantName: r.variantName,
       color: r.color,
@@ -198,7 +202,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     if (salePricingPending) return;
     // إضافة الأصناف بالتسلسل الزمني الدقيق الذي اختاره المستخدم (Array.from(selectedMap.values()))
     const lines: InvoiceLine[] = Array.from(selectedMap.values()).map((r) => ({
-      productId: r.productId, variantId: r.variantId, productUnitId: r.productUnitId,
+      productId: r.productId, categoryId: r.categoryId ?? null, variantId: r.variantId, productUnitId: r.productUnitId, isBaseUnit: r.isBaseUnit !== false,
       name: r.name,
       variantName: r.variantName,
       color: r.color,

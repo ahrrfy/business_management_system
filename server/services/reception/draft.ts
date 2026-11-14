@@ -45,6 +45,8 @@ export interface DraftLineInput {
   quantity: string;
   unitPrice: string;
   discountAmount?: string | null;
+  promotionId?: number | null;
+  promotionDiscount?: string | null;
   title?: string | null;
   customizationText?: string | null;
   designImages?: string | null; // JSON [{url,caption,sortOrder}] — لا يُنتقى في القوائم (I22)
@@ -98,6 +100,25 @@ function lineRowValues(draftId: number, line: DraftLineInput, index: number) {
   const qty = money(line.quantity);
   const gross = round2(money(line.unitPrice).times(qty));
   const disc = round2(money(line.discountAmount ?? "0"));
+  const rawPromoDisc =
+    line.lineKind === "GOODS" &&
+    line.promotionId != null &&
+    Number(line.promotionId) > 0 &&
+    line.promotionDiscount != null
+      ? round2(money(line.promotionDiscount))
+      : money("0");
+  const cappedPromoDisc = rawPromoDisc.gt(disc)
+    ? disc
+    : rawPromoDisc.lt(0)
+      ? money("0")
+      : rawPromoDisc;
+  const resolvedPromoId =
+    line.lineKind === "GOODS" &&
+    line.promotionId != null &&
+    Number(line.promotionId) > 0 &&
+    cappedPromoDisc.gt(0)
+      ? Number(line.promotionId)
+      : null;
   return {
     draftId,
     lineKind: line.lineKind,
@@ -115,6 +136,8 @@ function lineRowValues(draftId: number, line: DraftLineInput, index: number) {
     dueDate: line.dueDate ? new Date(line.dueDate) : null,
     assignedTo: line.assignedTo ?? null,
     priceOverride: !!line.priceOverride,
+    promotionId: resolvedPromoId,
+    promotionDiscount: resolvedPromoId != null ? toDbMoney(cappedPromoDisc) : null,
     lineRequestId: line.lineRequestId ?? null,
   };
 }

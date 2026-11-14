@@ -170,6 +170,7 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_promo_tier_min_qty: { msg: "عتبة الكمية لهذه الشريحة مسجّلة مسبقاً في هذا العرض — عدّل الشريحة القائمة بدلاً من تكرارها." },
   uq_sbs_adoption_key: { msg: "طلب ربط تسديد المورد مسجل مسبقاً؛ حدّث نتيجة الطلب الحالي." },
   uq_sbs_entry: { msg: "هذا القيد مرتبط بتسوية مورد مسبقاً؛ لا يمكن تخصيصه مرتين." },
   uq_sbs_exchange: { msg: "حركة الصيرفة مرتبطة بتسوية مورد مسبقاً." },

@@ -652,6 +652,7 @@ export interface PosDeliveryLabelReceiptLike {
     externalTrackingRef?: string | null;
   } | null;
   consignmentNumber?: string | null;
+  promoSummary?: import("./promoPrintSummary").PromoPrintSummary | null;
 }
 
 export function buildPosDeliveryShippingLabelData(
@@ -664,6 +665,8 @@ export function buildPosDeliveryShippingLabelData(
   const codTotal = goodsDue.plus(courierFee);
   const orderNum = rec.consignmentNumber || rec.invoiceNumber;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const isFreeShipping = Boolean(rec.promoSummary?.freeShipping || rec.delivery?.feeCollection === "SHOP");
+  const waivedShipping = rec.promoSummary?.waivedDeliveryAmount ?? (rec.delivery?.feeCollection === "SHOP" && D(rec.delivery.fee ?? 0).gt(0) ? rec.delivery.fee : null);
   return {
     orderNumber: orderNum,
     barcodeValue: orderNum,
@@ -675,6 +678,9 @@ export function buildPosDeliveryShippingLabelData(
     subtotal: D(rec.total).toFixed(2),
     paidAmount: D(rec.received).gt(0) ? D(rec.received).toFixed(2) : null,
     shippingFee: courierFee.gt(0) ? courierFee.toFixed(2) : null,
+    freeShippingPromo: isFreeShipping,
+    waivedShippingAmount: waivedShipping,
+    promoTitle: rec.promoSummary?.offerNames?.[0] ?? null,
     paymentState: resolveShippingLabelPaymentState(codTotal.toNumber()),
     deliveryPartyName: rec.delivery?.partyName ?? null,
     externalTrackingRef: rec.delivery?.externalTrackingRef ?? null,

@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fmtAr as money } from "@/lib/money";
+import { D, fmtAr as money } from "@/lib/money";
 import { internalBarcode, productBarcodeSvg } from "@/lib/printing/barcode";
 import {
   printLabel, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
@@ -967,6 +967,11 @@ export default function BarcodeLabels() {
                   } catch {
                     preview = "";
                   }
+                  const hasActivePromo =
+                    q.promoPrice != null &&
+                    q.price != null &&
+                    D(q.promoPrice).gt(0) &&
+                    D(q.promoPrice).lt(D(q.price));
                   return (
                     <tr key={q.key} className="border-t align-middle">
                       <td className="p-2">
@@ -982,7 +987,7 @@ export default function BarcodeLabels() {
                             barcode={q.barcode}
                             productName={q.productName}
                             unitName={q.unitName}
-                            retailPrice={q.price ?? undefined}
+                            retailPrice={(hasActivePromo ? q.promoPrice : q.price) ?? undefined}
                             sku={q.sku}
                           />
                           {!q.saved && (
@@ -1010,10 +1015,10 @@ export default function BarcodeLabels() {
                       </td>
                       {/* عرضٌ سارٍ ⇒ المطبوع هو السعر الفعّال والأصليّ مشطوب (الملصق لا يكذب على الزبون). */}
                       <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {q.promoPrice != null && q.price != null ? (
+                        {hasActivePromo ? (
                           <span className="inline-flex items-center gap-1" title={q.promotionName ?? "عرض سارٍ"}>
-                            <s className="text-muted-foreground text-xs">{money(q.price)}</s>
-                            <span className="text-money-positive font-medium">{money(q.promoPrice)}</span>
+                            <s className="text-muted-foreground text-xs">{money(q.price!)}</s>
+                            <span className="text-money-positive font-medium">{money(q.promoPrice!)}</span>
                             <Tag aria-hidden className="size-3 text-money-positive" />
                           </span>
                         ) : q.price != null ? (

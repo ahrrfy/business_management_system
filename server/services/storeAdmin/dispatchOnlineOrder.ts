@@ -11,6 +11,7 @@
  * createSale ثم فشل تحديث الطلب، order.invoiceId مربوطٌ فوراً ⇒ إعادة المحاولة تتخطّى createSale.
  */
 import { TRPCError } from "@trpc/server";
+import Decimal from "decimal.js";
 import { eq, and, sql } from "drizzle-orm";
 import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments, couponReservations } from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -226,12 +227,26 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         sourceType: "ONLINE" as const,
         priceTier: "RETAIL" as const,
         trackingNumber: stripDocPrefix(cur.orderNumber),
-        lines: items.map((it) => ({
-          variantId: Number(it.variantId),
-          productUnitId: Number(it.productUnitId),
-          quantity: String(it.quantity),
-          unitPriceOverride: String(it.unitPrice),
-        })),
+        lines: items.map((it) => {
+          const qty = money(it.quantity);
+          const targetTotal = money(it.total).toDecimalPlaces(2);
+          let uPrice = money(it.unitPrice).toDecimalPlaces(2);
+          let gross = uPrice.times(qty).toDecimalPlaces(2);
+          if (qty.gt(0) && gross.lt(targetTotal)) {
+            uPrice = targetTotal.dividedBy(qty).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+            gross = uPrice.times(qty).toDecimalPlaces(2);
+          }
+          const roundingDiff = gross.gt(targetTotal)
+            ? gross.minus(targetTotal).toDecimalPlaces(2)
+            : money(0);
+          return {
+            variantId: Number(it.variantId),
+            productUnitId: Number(it.productUnitId),
+            quantity: String(it.quantity),
+            unitPriceOverride: uPrice.toFixed(2),
+            ...(roundingDiff.gt(0) ? { discountAmount: roundingDiff.toFixed(2) } : {}),
+          };
+        }),
         notes: `طلب متجر ${cur.orderNumber}`,
         clientRequestId: `online-dispatch:${cur.id}`,
         priceOverrideApproved: true,
@@ -241,6 +256,10 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         deliveryWaivedAmount: cur.deliveryFree === true
           ? String(cur.deliveryWaivedAmount ?? "0")
           : null,
+        freeShippingPromotionId:
+          cur.deliveryFree === true && cur.freeShippingPromotionId != null
+            ? Number(cur.freeShippingPromotionId)
+            : null,
         // طلب المتجر نقدي عند الاستلام بطبيعته: الزبون الجديد يُنشأ بحد ائتمان صفري
         // (نقدي فقط)، لذلك لا يجوز تمرير الفاتورة المؤقتة إلى بوابة الائتمان كبيع آجل.
         // يبقى المبلغ ذمّة تشغيلية حتى تحصيل المندوب، وتُصفّى ذرياً عند التسليم.

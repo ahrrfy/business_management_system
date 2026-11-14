@@ -50,8 +50,12 @@ import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { nextCounterValue, nextTransactionTrackingNumber } from "./numbering";
 import {
   loadPromotionRuleSnapshot,
-  resolvePromotionFromSnapshot,
+  snapshotToEngineRules,
 } from "./salesPromotionService";
+import {
+  evaluateCartPromotions,
+  type EvaluationItem,
+} from "@shared/promotionEngine";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
 import {
@@ -1103,6 +1107,10 @@ export interface StorefrontPricingBenefit {
   couponSuperseded: boolean;
   /** ميزة الشحن المجاني للكوبون مفعلة كفائز */
   couponShippingActive: boolean;
+  /** ميزة الشحن المجاني للعرض التلقائي مفعلة كفائز */
+  offerShippingActive?: boolean;
+  /** معرّف العرض المانح للشحن المجاني (تلقائي أو كوبون) لنقله إلى الفاتورة عند الإرسال */
+  freeShippingPromotionId?: number | null;
 }
 
 export interface PricedOnlineOrderLines {
@@ -1193,6 +1201,7 @@ export async function priceOnlineOrderLines(
       productUnitId: productUnits.id,
       variantId: productVariants.id,
       conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
       unitActive: productUnits.isActive,
       unitAvailableInStore: productUnits.isStoreSaleUnit,
       variantActive: productVariants.isActive,
@@ -1237,6 +1246,7 @@ export async function priceOnlineOrderLines(
     customerTier: RETAIL,
     todayYmd,
     includeStoreManaged: true,
+    evaluationChannel: "STORE",
     requiredApplicationMode: "AUTO",
     lockForUpdate: options.lock,
   });
@@ -1246,6 +1256,7 @@ export async function priceOnlineOrderLines(
         customerTier: RETAIL,
         todayYmd,
         includeStoreManaged: true,
+        evaluationChannel: "STORE",
         requiredApplicationMode: "COUPON",
         specificPromotionId: options.coupon.promotionId,
         lockForUpdate: options.lock,
@@ -1254,10 +1265,12 @@ export async function priceOnlineOrderLines(
 
   const candidates: Array<
     PricedOnlineOrderLine & {
+      isBaseUnit: boolean;
+      isService: boolean;
       baseRetailUnitPrice: string;
-      automaticDiscountPerUnit: string;
+      automaticLineDiscount: string;
       automaticPromotionName: string | null;
-      couponDiscountCandidatePerUnit: string;
+      couponLineDiscount: string;
       wholesaleUnitPrice: string | null;
     }
   > = [];
@@ -1331,47 +1344,14 @@ export async function priceOnlineOrderLines(
     const productId = Number(row.productId);
     const variantId = Number(row.variantId);
     const categoryId = row.categoryId == null ? null : Number(row.categoryId);
-    const lineAmountStr = retail.times(quantity).toFixed(2);
-    const promo = resolvePromotionFromSnapshot(autoPromoSnapshot, {
-      branchId,
-      customerTier: RETAIL,
-      productId,
-      variantId,
-      categoryId,
-      unitPrice: retail.toFixed(2),
-      lineAmount: lineAmountStr,
-      hasContractPrice: false,
-      todayYmd,
-      includeStoreManaged: true,
-    });
-    const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
-    const couponPromo = couponPromoSnapshot && options.coupon
-      ? resolvePromotionFromSnapshot(couponPromoSnapshot, {
-          branchId,
-          customerTier: RETAIL,
-          productId,
-          variantId,
-          categoryId,
-          // العروض والكوبونات منفعتان بديلتان في المتجر، لا طبقتا خصم. لذلك يُقاس
-          // الكوبون على سعر المفرد الأصلي لا على السعر بعد العرض التلقائي.
-          unitPrice: retail.toFixed(2),
-          lineAmount: lineAmountStr,
-          hasContractPrice: false,
-          todayYmd,
-          includeStoreManaged: true,
-          requiredApplicationMode: "COUPON",
-          specificPromotionId: options.coupon.promotionId,
-        })
-      : null;
-    const couponDiscount = couponPromo
-      ? money(couponPromo.discountForUnit)
-      : money(0);
     candidates.push({
       productId,
       categoryId,
       variantId,
       productName: row.productName,
       isBundle: row.isBundle === true,
+      isService: row.isService === true,
+      isBaseUnit: row.isBaseUnit !== false,
       productUnitId: Number(row.productUnitId),
       quantity,
       baseQuantity: base.toNumber(),
@@ -1379,9 +1359,9 @@ export async function priceOnlineOrderLines(
       retailUnitPrice: retailWithCustomization.toFixed(2),
       customizationPriceDelta: resolvedCustomization.priceDelta.toFixed(2),
       customizationSnapshot: resolvedCustomization.snapshot,
-      automaticDiscountPerUnit: round2(automaticDiscount).toFixed(2),
-      automaticPromotionName: promo?.promotionName ?? null,
-      couponDiscountCandidatePerUnit: round2(couponDiscount).toFixed(2),
+      automaticLineDiscount: "0.00",
+      automaticPromotionName: null,
+      couponLineDiscount: "0.00",
       wholesaleUnitPrice:
         row.wholesalePrice == null ? null : round2(row.wholesalePrice).toFixed(2),
       // تُملأ بعد مقارنة مرشحي الجملة/العرض/الكوبون على مستوى السلة كاملة.
@@ -1432,57 +1412,84 @@ export async function priceOnlineOrderLines(
     ),
   );
 
+  // العروض والكوبونات منفعتان بديلتان في المتجر على مستوى السلة كاملة، وتدعمان الأنواع الـ 6 كافة.
+  const engineItems: EvaluationItem[] = candidates.map((item, idx) => ({
+    lineKey: String(idx),
+    productId: item.productId,
+    variantId: item.variantId,
+    productUnitId: item.productUnitId,
+    categoryId: item.categoryId,
+    unitPrice: item.baseRetailUnitPrice,
+    quantity: String(item.quantity),
+    isBaseUnit: item.isBaseUnit,
+    isBundle: item.isBundle,
+    isService: item.isService,
+    hasContractPrice: false,
+  }));
+
+  const autoEngineRules = snapshotToEngineRules(autoPromoSnapshot)
+    .filter(
+      (r) =>
+        !r.minOrderSpend ||
+        money(r.minOrderSpend).lte(0) ||
+        retailSubtotal.gte(money(r.minOrderSpend)),
+    )
+    .map((r) => ({ ...r, minOrderSpend: "0.00" }));
+  const autoEval = evaluateCartPromotions(engineItems, autoEngineRules, {
+    branchId,
+    customerTier: RETAIL,
+    channel: "STORE",
+    todayYmd,
+  });
+
+  const couponCapStr =
+    options.coupon?.maxDiscountAmount &&
+    money(options.coupon.maxDiscountAmount).gt(0)
+      ? round2(money(options.coupon.maxDiscountAmount)).toFixed(2)
+      : null;
+  const couponEval =
+    couponPromoSnapshot && options.coupon
+      ? evaluateCartPromotions(
+          engineItems,
+          snapshotToEngineRules(couponPromoSnapshot)
+            .filter((r) => r.id === options.coupon!.promotionId)
+            .map((r) => ({
+              ...r,
+              minOrderSpend: "0.00",
+              maxDiscountAmount: couponCapStr ?? r.maxDiscountAmount ?? null,
+            })),
+          {
+            branchId,
+            customerTier: RETAIL,
+            channel: "STORE",
+            todayYmd,
+          },
+        )
+      : null;
+
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const item = candidates[idx]!;
+    const maxLineDisc = round2(money(item.retailUnitPrice).times(item.quantity));
+    const autoAlloc = autoEval.lineAllocations.get(String(idx));
+    if (autoAlloc && autoAlloc.discountAmount.gt(0)) {
+      item.automaticLineDiscount = round2(
+        Decimal.min(autoAlloc.discountAmount, maxLineDisc),
+      ).toFixed(2);
+      item.automaticPromotionName = autoAlloc.promotionName;
+    }
+    const couponAlloc = couponEval?.lineAllocations.get(String(idx));
+    if (couponAlloc && couponAlloc.discountAmount.gt(0)) {
+      item.couponLineDiscount = round2(
+        Decimal.min(couponAlloc.discountAmount, maxLineDisc),
+      ).toFixed(2);
+    }
+  }
+
   const hasMinSpend =
     options.coupon?.minOrderSpend &&
     money(options.coupon.minOrderSpend).gt(0);
   const minSpendSatisfied =
     !hasMinSpend || retailSubtotal.gte(money(options.coupon!.minOrderSpend));
-
-  const maxCouponCap =
-    options.coupon?.maxDiscountAmount &&
-    money(options.coupon.maxDiscountAmount).gt(0)
-      ? round2(money(options.coupon.maxDiscountAmount))
-      : null;
-  if (maxCouponCap) {
-    let remainingUncapped = round2(
-      candidates.reduce(
-        (sum, item) =>
-          sum.plus(money(item.couponDiscountCandidatePerUnit).times(item.quantity)),
-        money(0),
-      ),
-    );
-    if (remainingUncapped.gt(maxCouponCap)) {
-      let remainingCap = maxCouponCap;
-      for (const item of candidates) {
-        const lineUncapped = round2(
-          money(item.couponDiscountCandidatePerUnit).times(item.quantity),
-        );
-        if (lineUncapped.lte(0) || item.quantity <= 0) continue;
-        const isLastQualifying = remainingUncapped.eq(lineUncapped);
-        const idealLineDisc = isLastQualifying
-          ? remainingCap
-          : round2(remainingCap.times(lineUncapped).dividedBy(remainingUncapped));
-        const targetLineDisc = Decimal.min(
-          remainingCap,
-          lineUncapped,
-          idealLineDisc,
-        );
-        const cappedPerUnit = Decimal.min(
-          money(item.retailUnitPrice),
-          Decimal.max(
-            0,
-            targetLineDisc
-              .dividedBy(item.quantity)
-              .toDecimalPlaces(2, Decimal.ROUND_DOWN),
-          ),
-        );
-        item.couponDiscountCandidatePerUnit = cappedPerUnit.toFixed(2);
-        const actualLineDisc = round2(cappedPerUnit.times(item.quantity));
-        remainingCap = Decimal.max(0, remainingCap.minus(actualLineDisc));
-        remainingUncapped = Decimal.max(0, remainingUncapped.minus(lineUncapped));
-      }
-    }
-  }
 
   let wholesaleDiscount = money(0);
   let offerDiscount = money(0);
@@ -1501,13 +1508,13 @@ export async function priceOnlineOrderLines(
         wholesalePerUnit.times(item.quantity),
       );
     }
-    const automaticPerUnit = money(item.automaticDiscountPerUnit);
-    offerDiscount = offerDiscount.plus(automaticPerUnit.times(item.quantity));
-    if (automaticPerUnit.gt(0) && item.automaticPromotionName) {
+    const automaticLineDisc = money(item.automaticLineDiscount);
+    offerDiscount = offerDiscount.plus(automaticLineDisc);
+    if (automaticLineDisc.gt(0) && item.automaticPromotionName) {
       offerNames.add(item.automaticPromotionName);
     }
     rawCouponMerchandiseDiscount = rawCouponMerchandiseDiscount.plus(
-      money(item.couponDiscountCandidatePerUnit).times(item.quantity),
+      money(item.couponLineDiscount),
     );
   }
 
@@ -1515,9 +1522,25 @@ export async function priceOnlineOrderLines(
     ? rawCouponMerchandiseDiscount
     : money(0);
 
+  let offerShippingWaiver = money(0);
+  if (autoEval.freeShippingPromotion && options.deliveryContext) {
+    const { actualDeliveryFee, freeShippingThreshold } = options.deliveryContext;
+    const thresholdFree = Boolean(
+      freeShippingThreshold &&
+      freeShippingThreshold.gt(0) &&
+      retailSubtotal.gte(freeShippingThreshold),
+    );
+    if (!thresholdFree && actualDeliveryFee.gt(0)) {
+      offerShippingWaiver = actualDeliveryFee;
+      offerNames.add(autoEval.freeShippingPromotion.promotionName);
+    }
+  }
+  const totalOfferBenefit = offerDiscount.plus(offerShippingWaiver);
+
   let couponShippingWaiver = money(0);
   if (
     options.coupon?.freeShipping &&
+    couponEval?.freeShippingPromotion != null &&
     minSpendSatisfied &&
     options.deliveryContext
   ) {
@@ -1541,6 +1564,7 @@ export async function priceOnlineOrderLines(
     priority: number;
     label: string;
     shippingActive: boolean;
+    freeShippingPromotionId: number | null;
   }> = [
     // عند التعادل لا نستهلك كوبوناً بلا توفير إضافي؛ تبقى قيمة الكوبون للعميل لاحقاً.
     {
@@ -1550,17 +1574,24 @@ export async function priceOnlineOrderLines(
       priority: 3,
       label: "سعر الجملة التلقائي",
       shippingActive: false,
+      freeShippingPromotionId: null,
     },
     {
       type: "OFFER" as const,
-      totalBenefit: offerDiscount,
+      totalBenefit: totalOfferBenefit,
       merchandiseDiscount: offerDiscount,
       priority: 2,
       label:
         offerNames.size === 1
           ? Array.from(offerNames)[0]!
-          : "أفضل عرض تلقائي",
-      shippingActive: false,
+          : offerDiscount.lte(0) && offerShippingWaiver.gt(0)
+            ? "عرض توصيل مجاني"
+            : "أفضل عرض تلقائي",
+      shippingActive: offerShippingWaiver.gt(0),
+      freeShippingPromotionId:
+        offerShippingWaiver.gt(0) && autoEval.freeShippingPromotion
+          ? autoEval.freeShippingPromotion.promotionId
+          : null,
     },
     {
       type: "COUPON" as const,
@@ -1569,6 +1600,10 @@ export async function priceOnlineOrderLines(
       priority: 1,
       label: options.coupon?.programName ?? (couponShippingWaiver.gt(0) ? "توصيل مجاني" : "خصم الكوبون"),
       shippingActive: couponShippingWaiver.gt(0),
+      freeShippingPromotionId:
+        couponShippingWaiver.gt(0)
+          ? (couponEval?.freeShippingPromotion?.promotionId ?? options.coupon?.promotionId ?? null)
+          : null,
     },
   ].filter((candidate) => candidate.totalBenefit.gt(0));
   candidatesByBenefit.sort((a, b) => {
@@ -1596,6 +1631,8 @@ export async function priceOnlineOrderLines(
           totalCouponBenefit.gt(0) &&
           selected.type !== "COUPON",
         couponShippingActive: selected.type === "COUPON" && selected.shippingActive,
+        offerShippingActive: selected.type === "OFFER" && selected.shippingActive,
+        freeShippingPromotionId: selected.shippingActive ? selected.freeShippingPromotionId : null,
       }
     : {
         type: "NONE",
@@ -1603,6 +1640,8 @@ export async function priceOnlineOrderLines(
         discount: "0.00",
         couponSuperseded: false,
         couponShippingActive: false,
+        offerShippingActive: false,
+        freeShippingPromotionId: null,
       };
 
   const items = candidates.map((item) => {
@@ -1615,19 +1654,39 @@ export async function priceOnlineOrderLines(
     const wholesalePerUnit = wholesaleDifference.gt(0)
       ? wholesaleDifference
       : money(0);
-    const selectedDiscount =
-      benefit.type === "WHOLESALE"
-        ? wholesalePerUnit
-        : benefit.type === "OFFER"
-          ? money(item.automaticDiscountPerUnit)
-          : benefit.type === "COUPON" && minSpendSatisfied
-            ? money(item.couponDiscountCandidatePerUnit)
-            : money(0);
-    const priceAfterBenefit = money(item.retailUnitPrice).minus(selectedDiscount);
-    const unitPrice = round2(
-      priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit,
-    );
-    const lineTotal = round2(unitPrice.times(item.quantity));
+
+    let unitPrice: Decimal;
+    let lineTotal: Decimal;
+    let discountPerUnit: Decimal;
+    if (benefit.type === "WHOLESALE") {
+      discountPerUnit = round2(wholesalePerUnit);
+      const priceAfterBenefit = money(item.retailUnitPrice).minus(discountPerUnit);
+      unitPrice = round2(priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit);
+      lineTotal = round2(unitPrice.times(item.quantity));
+    } else if (
+      benefit.type === "OFFER" ||
+      (benefit.type === "COUPON" && minSpendSatisfied)
+    ) {
+      const selectedLineDiscount =
+        benefit.type === "OFFER"
+          ? round2(money(item.automaticLineDiscount))
+          : round2(money(item.couponLineDiscount));
+      const lineGross = round2(money(item.retailUnitPrice).times(item.quantity));
+      lineTotal = round2(Decimal.max(0, lineGross.minus(selectedLineDiscount)));
+      discountPerUnit =
+        item.quantity > 0
+          ? round2(selectedLineDiscount.dividedBy(item.quantity))
+          : money(0);
+      unitPrice =
+        item.quantity > 0
+          ? round2(lineTotal.dividedBy(item.quantity))
+          : round2(money(item.retailUnitPrice));
+    } else {
+      discountPerUnit = money(0);
+      unitPrice = round2(money(item.retailUnitPrice));
+      lineTotal = round2(unitPrice.times(item.quantity));
+    }
+
     if (!lineTotal.isFinite() || lineTotal.gt(MAX_ONLINE_ORDER_MONEY)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1650,10 +1709,10 @@ export async function priceOnlineOrderLines(
       retailUnitPrice: item.retailUnitPrice,
       customizationPriceDelta: item.customizationPriceDelta,
       customizationSnapshot: item.customizationSnapshot,
-      discountPerUnit: round2(selectedDiscount).toFixed(2),
+      discountPerUnit: discountPerUnit.toFixed(2),
       couponDiscountPerUnit:
         benefit.type === "COUPON" && minSpendSatisfied
-          ? round2(selectedDiscount).toFixed(2)
+          ? discountPerUnit.toFixed(2)
           : "0.00",
       unitPrice: unitPrice.toFixed(2),
       lineTotal: lineTotal.toFixed(2),
@@ -1702,6 +1761,7 @@ export async function totalOnlineOrderQuote(
     freeShipping?: boolean;
     shippingDiscountAmount?: string | null;
   } | null,
+  offerFreeShipping?: boolean,
 ): Promise<
   Pick<
     OnlineOrderQuoteResult,
@@ -1715,6 +1775,7 @@ export async function totalOnlineOrderQuote(
   > & {
     couponDeliveryWaivedAmount: string;
     couponShippingApplied: boolean;
+    offerShippingApplied: boolean;
   }
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
@@ -1754,11 +1815,12 @@ export async function totalOnlineOrderQuote(
   }
 
   const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
+  const offerFree = Boolean(offerFreeShipping && !thresholdFree && actualDeliveryFee.gt(0));
   const couponFree = Boolean(
-    couponShipping?.freeShipping && !thresholdFree && actualDeliveryFee.gt(0),
+    couponShipping?.freeShipping && !thresholdFree && !offerFree && actualDeliveryFee.gt(0),
   );
 
-  const deliveryFree = thresholdFree || couponFree;
+  const deliveryFree = thresholdFree || offerFree || couponFree;
   if (deliveryFree) {
     customerDeliveryFee = round2(money(0));
   }
@@ -1783,6 +1845,7 @@ export async function totalOnlineOrderQuote(
     deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
     couponDeliveryWaivedAmount: couponDeliveryWaivedAmount.toFixed(2),
     couponShippingApplied: couponFree,
+    offerShippingApplied: offerFree,
     freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
     freeShippingRemaining: freeThreshold
       ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
@@ -1900,6 +1963,7 @@ export async function quoteOnlineOrder(
         retailSubtotal.toFixed(2),
         settings?.freeShippingThresholdGovernorates,
         couponShipping,
+        Boolean(pricing.benefit.type === "OFFER" && pricing.benefit.offerShippingActive),
       );
       const hasMerchandiseDiscount =
         pricing.benefit.type === "COUPON" && money(pricing.benefit.discount).gt(0);
@@ -2350,6 +2414,7 @@ async function createOnlineOrderAttempt(
       retailSubtotal.toFixed(2),
       storeSettings?.freeShippingThresholdGovernorates,
       couponShipping,
+      Boolean(currentPricing.benefit.type === "OFFER" && currentPricing.benefit.offerShippingActive),
     );
     const hasMerchandiseDiscount =
       currentPricing.benefit.type === "COUPON" && money(currentPricing.benefit.discount).gt(0);
@@ -2490,6 +2555,10 @@ async function createOnlineOrderAttempt(
       shippingCost: toDbMoney(deliveryFee),
       deliveryFree: quoteTotals.deliveryFree,
       deliveryWaivedAmount: toDbMoney(quoteTotals.deliveryWaivedAmount),
+      freeShippingPromotionId:
+        quoteTotals.offerShippingApplied || quoteTotals.couponShippingApplied
+          ? (currentPricing.benefit.freeShippingPromotionId ?? null)
+          : null,
       taxAmount: "0",
       total: toDbMoney(total),
       status: "PENDING",

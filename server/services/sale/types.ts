@@ -36,6 +36,10 @@ export interface SaleLineInput {
    *  إن طابق ⇒ يُخزَّن `promotionId` + `promotionDiscount` على invoiceItem. إن لم يطابق ⇒ لا نُخزّن
    *  (نعامل الخصم كيدوي) — لا نرفض لتفادي فشل بيع بعد تعديل عرض بين العرض والحفظ. */
   promotionId?: number | null;
+  /** M4 (F19/F22): حصة الخصم الترويجي الموزعة على السطر (محسوبة خادمياً أو من السلة). */
+  promotionDiscount?: string | null;
+  /** M4 (F19/F22): مبلغ الخصم اليدوي الإضافي الخاص بالكاشير على السطر، يُقاس ضد صافي سعر السطر بعد العرض لبوابة H6. */
+  cashierDiscountAmount?: string | null;
   /**
    * **تصدير داخليّ بحت — لا يقبله أيّ راوتر ولا يصل من العميل إطلاقاً** (نمط `offlineCapture`).
    * تكلفة الوحدة المفروضة خادمياً لهذا السطر، تتجاوز `productVariants.costPrice`.
@@ -107,6 +111,8 @@ export interface CreateSaleInput {
    * و**إلزامية** معه (قرار المالك ٦/٨/٢٦): توصيلٌ مجّانيّ بلا قيمة يُضيّع قياس ما أُهدي.
    */
   deliveryWaivedAmount?: string | null;
+  /** نقل داخلي لمعرّف عرض الشحن المجاني من لقطة طلب المتجر أو تصحيح فاتورة سابقة. */
+  freeShippingPromotionId?: number | null;
   taxRatePercent?: string | null;
   payment?: PaymentLegInput | null;
   /** دفعات مقسّمة (Split / Mixed Payment): عند تمريرها تُنشئ كل رجلٍ إيصالاً وقيد PAYMENT_IN خاصّاً بها، وتُختم الفاتورة بـMIXED عند اختلاف طرق الدفع. */
@@ -221,6 +227,17 @@ export interface CreateSaleInput {
    */
   delivery?: SaleDeliveryInput | null;
   /**
+   * سياق توصيل خارجي للمعاملات المركّبة (مثل `checkoutReceptionInTx`):
+   * يُفعّل تقييم عروض/كوبونات التوصيل المجاني وختم `deliveryFree`/`deliveryWaivedAmount`
+   * وإرجاع `effectiveDeliveryFeeCollection` دون استدعاء `dispatchInvoiceInTx` مرّتين داخل `createSaleInTx`.
+   */
+  externalDeliveryContext?: {
+    partyId: number;
+    fee?: string | null;
+    feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+    deliveryFeeHeld?: string | null;
+  } | null;
+  /**
    * أجرةُ التوصيل المقبوضة **الآن** أمانةً للمندوب (`feeCollection='COUNTER'`) — نقداً في الدرج
    * حتماً: إيصال IN بمرجع `DLV-FEE-INV-{invoiceId}` + قيد `DELIVERY_FEE_HELD` على الفاتورة
    * (`delivery/feeHeld.ts`، مرآة الاستقبال). يجب أن تساوي `delivery.fee` بالضبط.
@@ -292,6 +309,8 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** طريقة تحصيل أجرة التوصيل الفعّالة بعد تقييم عروض/كوبونات التوصيل المجاني خادمياً. */
+  effectiveDeliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
   /** معرّف أول إيصال قبض أُنشئ في هذه المعاملة (للتوافق مع المستهلكين الأحاديين). */
   createdReceiptId?: number | null;
   /** معرّفات جميع إيصالات القبض المُنشأة في هذه المعاملة بترتيب أرجل الدفع. */
@@ -303,5 +322,15 @@ export interface CreateSaleResult {
     discountText: string;
     minSpendText?: string | null;
     validToText: string;
+  } | null;
+  /** ملخص العروض الترويجية المطبّقة ذرّياً على الفاتورة (للعرض الفوري والمطبوعات التسويقية) */
+  promotionSummary?: {
+    totalMerchandiseDiscount: string;
+    offerNames: string[];
+    freeShippingPromo: {
+      promotionId: number;
+      promotionName: string;
+      waivedAmount: string;
+    } | null;
   } | null;
 }

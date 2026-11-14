@@ -55,6 +55,7 @@ import {
   productUnits,
   productVariants,
   products,
+  promotions,
   receipts,
   salesControlRequests,
   shifts,
@@ -700,6 +701,8 @@ const lineSchema = z.object({
   // promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
   // ويُخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف عن حلّ الخادم ⇒ يعامل كيدوي.
   promotionId: z.number().int().positive().optional(),
+  promotionDiscount: nonNegMoneyString.optional(),
+  cashierDiscountAmount: nonNegMoneyString.optional(),
   // هدايا الفاتورة (0149): وسمُ سطرٍ مُهدىً. الخادم يُصفّر سعره وخصمه بنفسه ويُرحّل تكلفته قيدَ
   // GIFT_OUT — فالشاشة تُعلن النيّة فقط، ولا تُملي مبلغاً.
   isGift: z.boolean().optional(),
@@ -2445,6 +2448,9 @@ export const saleRouter = router({
           unitCost: invoiceItems.unitCost,
           discountAmount: invoiceItems.discountAmount,
           total: invoiceItems.total,
+          promotionId: invoiceItems.promotionId,
+          promotionDiscount: invoiceItems.promotionDiscount,
+          promotionName: promotions.name,
           // هدايا الفاتورة (0149): تُوسَم في شاشة الفاتورة وطباعتها — «مجاناً» لا «صفر» (الصفر
           // يُقرأ خطأَ إدخالٍ، والوسم يُثبت أنّ المجّانيّة قرارٌ مسجَّلٌ بتكلفةٍ مُرحَّلة في الدفتر).
           isGift: invoiceItems.isGift,
@@ -2469,6 +2475,7 @@ export const saleRouter = router({
         )
         .leftJoin(products, eq(productVariants.productId, products.id))
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+        .leftJoin(promotions, eq(invoiceItems.promotionId, promotions.id))
         .where(eq(invoiceItems.invoiceId, input.invoiceId));
       const directPayments = await db
         .select({

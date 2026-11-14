@@ -8,6 +8,7 @@ import {
   validatePosSaleBeforeSubmit,
 } from "../posTotals";
 import type { CartItem, POSTab, PosPaymentLegDraft } from "../posShared";
+import { usePOSTabHelpers } from "../usePOSTabHelpers";
 import { deliverySendsPayment } from "../deliveryMode";
 import { deliveryFeeTenderForGoods } from "../feeTenderUi";
 
@@ -414,5 +415,77 @@ describe("held delivery fee and external payment binding",()=>{
     expect(computeSplitLegFingerprint(first,D(5000))).toContain("35000.00");
     tab.delivery!.fee="6000";
     expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(false);
+  });
+});
+
+describe("usePOSTabHelpers.numPress — coupon invalidation and manual discount reset", () => {
+  function createHarness(initialTab: POSTab) {
+    let tabs = [initialTab];
+    const activeIdRef = { current: initialTab.id };
+    const qtyEntryRef = { current: { tabId: initialTab.id, lineId: null as number | null, replaceNextDigit: true } };
+    const digitalCheckoutRef = { current: null };
+    const setTabs = (updater: POSTab[] | ((prev: POSTab[]) => POSTab[])) => {
+      tabs = typeof updater === "function" ? updater(tabs) : updater;
+    };
+    const getHelpers = () =>
+      usePOSTabHelpers({
+        tabs,
+        setTabs,
+        activeId: initialTab.id,
+        setActiveId: () => {},
+        activeIdRef,
+        qtyEntryRef,
+        digitalCheckoutRef,
+        activeTab: tabs[0]!,
+        setSearch: () => {},
+        setShowDrop: () => {},
+        searchRef: { current: null },
+      });
+    return { getTab: () => tabs[0]!, getHelpers };
+  }
+
+  it("clears applied coupon and resets coupon allocations when quantity changes via keypad", () => {
+    const baseItem = makeItem(1000, 2);
+    const couponAppliedItem: CartItem = {
+      ...baseItem,
+      origPrice: undefined,
+      disc: undefined,
+      preCouponRow: baseItem.row,
+      cartPromo: { promotionId: 77, promotionName: "SAVE10", lineDiscount: "200.00" },
+      row: { ...baseItem.row, promotionId: 77, promotionName: "SAVE10", promotionEffectivePrice: "900.00" } as any,
+    };
+    const h = createHarness(
+      makeTab({
+        cart: [couponAppliedItem],
+        selId: 10,
+        numMode: "QTY",
+        couponCode: "SAVE10",
+        couponLabel: "خصم 10%",
+        couponFreeShippingPromo: "شحن مجاني",
+      }),
+    );
+
+    h.getHelpers().numPress("4");
+    const updated = h.getTab();
+    expect(updated.couponCode).toBeNull();
+    expect(updated.couponLabel).toBeNull();
+    expect(updated.couponFreeShippingPromo).toBeNull();
+    expect(updated.cart[0]?.qty).toBe(4);
+    expect(updated.cart[0]?.preCouponRow).toBeUndefined();
+    expect(updated.cart[0]?.cartPromo).toBeUndefined();
+  });
+
+  it("clears catalog-equal origPrice marker when manual percentage discount is cleared with C", () => {
+    const item: CartItem = { ...makeItem(1000, 2), origPrice: undefined, disc: undefined };
+    const h = createHarness(makeTab({ cart: [item], selId: 10, numMode: "DISC" }));
+
+    h.getHelpers().numPress("1");
+    h.getHelpers().numPress("5");
+    expect(h.getTab().cart[0]?.disc).toBe(15);
+    expect(h.getTab().cart[0]?.origPrice).toBe(1000);
+
+    h.getHelpers().numPress("C");
+    expect(h.getTab().cart[0]?.disc).toBeUndefined();
+    expect(h.getTab().cart[0]?.origPrice).toBeUndefined();
   });
 });

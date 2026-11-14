@@ -193,6 +193,9 @@ vi.mock("@/lib/trpc", () => ({
       },
     },
     catalog: {
+      activePromotions: {
+        useQuery: () => ({ data: [], isLoading: false, isFetching: false }),
+      },
       posList: {
         useQuery: (_input: any, opts?: { enabled?: boolean }) => ({
           data: opts?.enabled === false ? [] : mockState.posCatalog,

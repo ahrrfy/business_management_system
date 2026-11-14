@@ -78,6 +78,7 @@ export interface ReceptionRestoreWorkspaceInput {
   setCouponInput: React.Dispatch<React.SetStateAction<string>>;
   setCouponCode: React.Dispatch<React.SetStateAction<string | null>>;
   setCouponLabel: React.Dispatch<React.SetStateAction<string | null>>;
+  setCouponFreeShippingPromo?: React.Dispatch<React.SetStateAction<string | null>>;
   setChannel: React.Dispatch<
     React.SetStateAction<
       "OTHER" | "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE"
@@ -128,6 +129,7 @@ export async function ReceptionRestoreWorkspace(
     setCouponInput,
     setCouponCode,
     setCouponLabel,
+    setCouponFreeShippingPromo,
     setChannel,
     setChannelHandle,
     setLinkedConversationId,
@@ -264,6 +266,7 @@ export async function ReceptionRestoreWorkspace(
     setCouponInput(snapshot.coupon.input);
     setCouponCode(restored.couponCode);
     setCouponLabel(restored.couponLabel);
+    setCouponFreeShippingPromo?.(restored.couponFreeShippingPromo ?? null);
     setChannel(snapshot.channel.kind);
     setChannelHandle(snapshot.channel.handle);
     setLinkedConversationId(snapshot.channel.linkedConversationId);

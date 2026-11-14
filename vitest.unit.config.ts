@@ -26,6 +26,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/digitalCards/DigitalRefundTenderFields.test.tsx",
       "client/src/components/digitalCards/useDurableDigitalSale.test.tsx",
       "client/src/components/pos/posSharedFinancialRecovery.test.ts",
+      "client/src/components/pos/posCouponPreview.test.ts",
       "client/src/StorefrontBootstrap.test.ts",
       "client/src/pages/__tests__/supplierPaymentRequestOutcome.test.tsx",
       "client/src/lib/persistedFinancialIntent.test.ts",
@@ -687,6 +688,22 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/salesInvoiceDigitalIntegrity.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
       "client/src/__tests__/bootstrapApp.test.ts",
+      // Promotions & Discounts Redesign E2E Track (Opaque-Box In-Memory Suite)
+      "shared/__tests__/promotionEngine.test.ts",
+      "tests/e2e/promotions/tier1_features/schema_and_migration.test.ts",
+      "tests/e2e/promotions/tier1_features/challenger_m3_1_empirical.test.ts",
+      "tests/e2e/promotions/tier1_features/pricing_engine_core.test.ts",
+      "tests/e2e/promotions/tier1_features/backend_services_and_search.test.ts",
+      "tests/e2e/promotions/tier1_features/offers_ui_contracts.test.ts",
+      "tests/e2e/promotions/tier1_features/sales_channels_and_offline.test.ts",
+      "tests/e2e/promotions/tier2_boundaries/ceiling_and_precision_limits.test.ts",
+      "tests/e2e/promotions/tier2_boundaries/below_cost_and_gates_boundaries.test.ts",
+      "tests/e2e/promotions/tier2_boundaries/scheduling_and_channel_boundaries.test.ts",
+      "tests/e2e/promotions/tier2_boundaries/offline_and_sync_boundaries.test.ts",
+      "tests/e2e/promotions/tier3_pairwise/feature_interactions.test.ts",
+      "tests/e2e/promotions/tier4_real_world/iraqi_retail_scenarios.test.ts",
+      "tests/e2e/promotions/tier5_adversarial/challenger1_engine_pipeline.test.ts",
+      "tests/e2e/promotions/tier5_adversarial/challenger2_services_ui.test.ts",
 ];
 
 export default defineConfig({

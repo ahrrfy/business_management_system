@@ -71,6 +71,8 @@ const draftLineSchema = z.object({
   quantity: quantityString,
   unitPrice: nonNegMoneyString,
   discountAmount: nonNegMoneyString.nullish(),
+  promotionId: z.number().int().positive().nullish(),
+  promotionDiscount: nonNegMoneyString.nullish(),
   title: z.string().trim().max(255).nullish(),
   customizationText: z.string().max(5000).nullish(),
   /** JSON نصّي [{url,caption,sortOrder}] — يُتحقَّق من كل صورة فيه أدناه. */

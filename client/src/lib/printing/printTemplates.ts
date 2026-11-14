@@ -40,6 +40,8 @@ export type {
   WarehouseSlipV2Data,
 } from './printTemplatesV2';
 export type { DocHeaderBarcode } from './docHtml';
+export type { PromoPrintSummary } from './promoPrintSummary';
+import type { PromoPrintSummary } from './promoPrintSummary';
 import { qrCodeSvg, qrSvgSync } from './qr';
 import { code128Svg } from './barcode';
 import { resolveQrUrl } from './render';
@@ -155,6 +157,8 @@ export interface InvoicePrintData {
   }> | null;
   /** وسم ظاهر يميّز النسخة الأصلية من إعادة الطباعة المبنية على القيم الحالية. */
   copyLabel?: string | null;
+  /** ملخص المزايا والعروض الترويجية للطباعة التسويقية على الفاتورة. */
+  promoSummary?: PromoPrintSummary | null;
 }
 
 export async function printInvoiceA4(d: InvoicePrintData, options?: PrintWindowOptions): Promise<boolean> {
@@ -186,6 +190,7 @@ export async function printInvoiceA4(d: InvoicePrintData, options?: PrintWindowO
     paymentMethod: d.paymentMethod,
     paymentLegs: d.paymentLegs ?? null,
     copyLabel: d.copyLabel ?? null,
+    promoSummary: d.promoSummary ?? null,
     salesRep: d.salespersonName,
     customerBalanceBefore: facts.balanceBefore,
     customerBalanceAfter: facts.balanceAfter,
@@ -1054,6 +1059,8 @@ export interface ReceiptBrowserData {
     minSpendText?: string | null;
     validToText: string;
   } | null;
+  /** ملخص المزايا والعروض الترويجية للطباعة التسويقية على الإيصال الحراري */
+  promoSummary?: PromoPrintSummary | null;
 }
 
 export { buildBrowserReceiptHtml } from "./receiptLayoutHtml";

@@ -219,6 +219,9 @@ export const offlineRouter = router({
               unitPriceOverride: nonNegMoneyString,
               discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
               discountAmount: nonNegMoneyString.optional(),
+              promotionId: z.number().int().positive().nullish(),
+              promotionDiscount: nonNegMoneyString.optional(),
+              cashierDiscountAmount: nonNegMoneyString.optional(),
             }),
           )
           .min(1),
@@ -417,6 +420,9 @@ export const offlineRouter = router({
                   unitPriceOverride: nonNegMoneyString,
                   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
                   discountAmount: nonNegMoneyString.optional(),
+                  promotionId: z.number().int().positive().nullish(),
+                  promotionDiscount: nonNegMoneyString.optional(),
+                  cashierDiscountAmount: nonNegMoneyString.optional(),
                 }),
               )
               .min(1),

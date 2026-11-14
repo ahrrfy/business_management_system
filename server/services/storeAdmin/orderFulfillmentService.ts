@@ -1266,6 +1266,7 @@ export async function updateOnlineOrder(
 
     // استعادة ميزة شحن الكوبون المحجوزة للطلب لضمان عدم فقدانها عند إعادة حساب الطلب أو تغيير العنوان
     let couponShipping: { freeShipping?: boolean; shippingDiscountAmount?: string | null } | null = null;
+    let couponShippingPromotionId: number | null = null;
     let activeReservation: { id: number; programId: number } | null = null;
     if (order.couponCode) {
       const reservation = (
@@ -1289,6 +1290,8 @@ export async function updateOnlineOrder(
         const promo = (
           await tx
             .select({
+              id: promotions.id,
+              type: promotions.type,
               freeShipping: promotions.freeShipping,
               shippingDiscountAmount: promotions.shippingDiscountAmount,
             })
@@ -1298,7 +1301,8 @@ export async function updateOnlineOrder(
             .limit(1)
         )[0];
 
-        if (promo?.freeShipping) {
+        if (promo?.freeShipping || promo?.type === "FREE_SHIPPING") {
+          couponShippingPromotionId = Number(promo.id);
           couponShipping = {
             freeShipping: true,
             shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
@@ -1351,6 +1355,7 @@ export async function updateOnlineOrder(
     const quoteOrderTotals = async (
       lineItems: Array<{ lineTotal: string }>,
       eligibilitySubtotalStr: string,
+      offerFreeShipping?: boolean,
     ) => {
       const baseQuote = await totalOnlineOrderQuote(
         tx,
@@ -1360,6 +1365,7 @@ export async function updateOnlineOrder(
         eligibilitySubtotalStr,
         storeSettings?.freeShippingThresholdGovernorates,
         couponShipping,
+        offerFreeShipping,
       );
       if (retainedDeactivatedZoneFee == null) {
         return baseQuote;
@@ -1370,10 +1376,13 @@ export async function updateOnlineOrder(
         : null;
       const eligibilitySubtotal = round2(money(eligibilitySubtotalStr));
       const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
-      const couponFree = Boolean(
-        couponShipping?.freeShipping && !thresholdFree && retainedDeactivatedZoneFee.gt(0),
+      const offerFree = Boolean(
+        offerFreeShipping && !thresholdFree && retainedDeactivatedZoneFee.gt(0),
       );
-      const deliveryFree = thresholdFree || couponFree;
+      const couponFree = Boolean(
+        couponShipping?.freeShipping && !thresholdFree && !offerFree && retainedDeactivatedZoneFee.gt(0),
+      );
+      const deliveryFree = thresholdFree || offerFree || couponFree;
       const customerDeliveryFee = deliveryFree ? round2(money(0)) : retainedDeactivatedZoneFee;
       const deliveryWaivedAmount = deliveryFree ? retainedDeactivatedZoneFee : round2(money(0));
       const couponDeliveryWaivedAmount = couponFree ? retainedDeactivatedZoneFee : round2(money(0));
@@ -1384,6 +1393,7 @@ export async function updateOnlineOrder(
         deliveryFree,
         deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
         couponDeliveryWaivedAmount: couponDeliveryWaivedAmount.toFixed(2),
+        offerShippingApplied: offerFree,
         couponShippingApplied: couponFree,
         total: total.toFixed(2),
       };
@@ -1587,7 +1597,11 @@ export async function updateOnlineOrder(
         ),
       );
 
-      const quoteTotals = await quoteOrderTotals(pricing.items, retailSubtotal.toFixed(2));
+      const quoteTotals = await quoteOrderTotals(
+        pricing.items,
+        retailSubtotal.toFixed(2),
+        Boolean(pricing.benefit.type === "OFFER" && pricing.benefit.offerShippingActive),
+      );
 
       // Deduct coupon discount if order had one
       const currentCouponDiscount = money(order.couponDiscount ?? "0");
@@ -1648,6 +1662,10 @@ export async function updateOnlineOrder(
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          freeShippingPromotionId:
+            quoteTotals.offerShippingApplied || quoteTotals.couponShippingApplied
+              ? (pricing.benefit.freeShippingPromotionId ?? couponShippingPromotionId ?? null)
+              : null,
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,
@@ -1677,7 +1695,23 @@ export async function updateOnlineOrder(
         money(order.subtotal).plus(persistedMerchandiseDiscount),
       ).toFixed(2);
 
-      const quoteTotals = await quoteOrderTotals(existingItems, retailEligibilitySubtotal);
+      const oldIsBaghdad = isBaghdadGovernorate(order.governorate ?? "");
+      const oldThreshStr = oldIsBaghdad
+        ? storeSettings?.freeShippingThreshold
+        : (storeSettings?.freeShippingThresholdGovernorates ?? storeSettings?.freeShippingThreshold);
+      const oldThresh = oldThreshStr ? money(oldThreshStr) : null;
+      const oldWasThresholdFree = Boolean(
+        oldThresh && oldThresh.gt(0) && money(retailEligibilitySubtotal).gte(oldThresh),
+      );
+      const preservedOfferFreeShipping = Boolean(
+        order.pricingBenefitType === "OFFER" && order.deliveryFree && !oldWasThresholdFree,
+      );
+
+      const quoteTotals = await quoteOrderTotals(
+        existingItems,
+        retailEligibilitySubtotal,
+        preservedOfferFreeShipping,
+      );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.
@@ -1725,6 +1759,14 @@ export async function updateOnlineOrder(
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          freeShippingPromotionId: quoteTotals.offerShippingApplied
+            ? (order.freeShippingPromotionId != null ? Number(order.freeShippingPromotionId) : null)
+            : quoteTotals.couponShippingApplied
+              ? (couponShippingPromotionId ??
+                (order.freeShippingPromotionId != null
+                  ? Number(order.freeShippingPromotionId)
+                  : null))
+              : null,
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,

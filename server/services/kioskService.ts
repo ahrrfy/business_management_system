@@ -12,6 +12,7 @@ import { getDb } from "../db";
 import { decodeDataUrl, kioskProductImageUrl } from "../imageRoute";
 import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
 import { resolvePromotionForLine } from "./salesPromotionService";
+import { todayYmdBaghdad } from "../../shared/promotionScheduling";
 import { money, toDbMoney } from "./money";
 import Decimal from "decimal.js";
 
@@ -75,6 +76,9 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
       brand: products.brand,
       category: categories.name,
       variantName: productVariants.variantName,
+      productUnitId: productUnits.id,
+      isBaseUnit: productUnits.isBaseUnit,
+      isBundle: products.isBundle,
       unitName: productUnits.unitName,
       price: productPrices.price,
       barcode: productUnits.barcode,
@@ -174,16 +178,20 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
   // ١. فحص العروض والخصومات النشطة لفئة المفرد (نقطة العرض = نقطة الفرض)
   if (prod.price) {
     try {
-      const todayYmd = new Date().toISOString().slice(0, 10);
+      const todayYmd = todayYmdBaghdad();
       const promo = await resolvePromotionForLine(db as any, {
         branchId,
         customerTier: RETAIL,
         todayYmd,
         productId: owner.productId,
         variantId: owner.variantId,
+        productUnitId: Number(rows[0].productUnitId),
+        isBaseUnit: Boolean(rows[0].isBaseUnit),
+        isBundle: Boolean(rows[0].isBundle),
         categoryId: rows[0].categoryId != null ? Number(rows[0].categoryId) : null,
         unitPrice: prod.price,
         lineAmount: prod.price,
+        quantity: 1,
         hasContractPrice: false,
       });
       if (promo) {
@@ -241,7 +249,7 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
 export async function kioskPromotions(branchId?: number | null): Promise<KioskPromo[]> {
   const db = getDb();
   if (!db) return [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayYmdBaghdad();
   const rows = await db
     .select({
       id: storeBanners.id,

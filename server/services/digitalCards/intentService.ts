@@ -203,8 +203,9 @@ function normalizeIntentSource(input: PrepareInput): {
 } {
   if (input.sourceType === "RECEPTION") {
     const sourcePayload = parseReceptionSource(input.sourcePayload, input.paymentMethod);
-    if ((input.regularLines ?? []).some((line) => line.isGift || line.promotionId != null || money(line.discountAmount ?? "0").gt(0) || money(line.discountPercent ?? "0").gt(0))) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: intentOperationError("لا تُجمع خصومات أو هدايا مع الكروت في الاستقبال", "افصل البنود المخفضة قبل إصدار الكروت") });
+    // M4 (F21): عزل الكرت الرقمي على مستوى السطر — بنود الكتالوج العادية يسمح لها بحمل عروض وخصومات
+    if ((input.regularLines ?? []).some((line) => line.isGift)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: intentOperationError("لا تُجمع هدايا مع الكروت في الاستقبال", "افصل بنود الهدايا قبل إصدار الكروت") });
     }
     return { input: { ...input, sourcePayload }, invoicePayload: null };
   }
@@ -409,6 +410,19 @@ async function prepareAdmitted(tx: Tx, input: PrepareInput, actor: DigitalIntent
   const keys = new Set(input.lines.map((l) => l.lineKey));
   if (keys.size !== input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفاتيح أسطر مكرّرة في السلة" });
+  }
+
+  // M4 (F21): عزل الكروت الرقمية — يمنع تطبيق أي عرض ترويجي أو خصم على أسطر الكروت
+  for (const line of input.lines) {
+    const pId = (line as any).promotionId;
+    const pDisc = (line as any).promotionDiscount;
+    const dAmt = (line as any).discountAmount;
+    if (pId != null || (pDisc != null && money(pDisc).gt(0)) || (dAmt != null && money(dAmt).gt(0))) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: intentOperationError("لا يمكن تطبيق عروض ترويجية أو خصومات على الكروت الرقمية", "أزل العرض أو الخصم عن الكرت الرقمي"),
+      });
+    }
   }
 
   // وردية مفتوحة ومملوكة للفاعل في الفرع نفسه.

@@ -51,7 +51,8 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
-import { isCustomKind, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
+import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount, withReceptionLineQty } from "@/components/reception/cartMath";
+import { applyFreeShippingToOrderDelivery, freezeReceptionDraftCart, useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
@@ -161,7 +162,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
 
   const compactHeader = useMediaQuery("(max-height: 900px)");
 
-  const [cart, setCart] = useState<CartLine[]>([]); const [checkoutCharges,setCheckoutCharges]=useState<CheckoutChargesInput>({}); const extraChargeAmount=checkoutExtraTotal(checkoutCharges);
+  const [rawCart, setCart] = useState<CartLine[]>([]); const [checkoutCharges,setCheckoutCharges]=useState<CheckoutChargesInput>({}); const extraChargeAmount=checkoutExtraTotal(checkoutCharges);
   const [addTick, setAddTick] = useState(0), [selKey, setSelKey] = useState<string | null>(null), [search, setSearch] = useState(""), [showDrop, setShowDrop] = useState(false);
   const [payInput, setPayInput] = useState("");
   const [deferred, setDeferred] = useState(false);
@@ -199,13 +200,12 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
-  const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
-  const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
+  const [rawOrderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
   const deliveryDialogOpen = false;
   const setDeliveryDialogOpen = (_v: boolean) => {};
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
-    { enabled: canAction("delivery.listParties") && (deliveryDialogOpen || orderDelivery != null), staleTime: 60_000 },
+    { enabled: canAction("delivery.listParties") && (deliveryDialogOpen || rawOrderDelivery != null), staleTime: 60_000 },
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
@@ -227,6 +227,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [invoiceDiscountPct, setInvoiceDiscountPct] = useState("");
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
+  const [couponFreeShippingPromo, setCouponFreeShippingPromo] = useState<string | null>(null);
   const [channel, setChannel] = useState<WorkOrderChannel>("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
   /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
@@ -245,7 +246,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
     setOrderDelivery(null); setCustomerContextId(null);
     setTierOverride(null); setHydratedAutomaticTier(null); setInvoiceDiscountPct("");
-    setCouponInput(""); setCouponCode(null); setCouponLabel(null);
+    setCouponInput(""); setCouponCode(null); setCouponLabel(null); setCouponFreeShippingPromo(null);
     setChannel("WALK_IN"); setChannelHandle(""); setLinkedConversationId(null);
     setCustomer({ customerId: null, name: "", phone: null, isNew: false }); setReceptionPhone(""); setCustomerCreditLimit("");
   };
@@ -306,6 +307,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   );
   const effectiveTier: Tier =
     tierOverride ?? hydratedAutomaticTier ?? resolvedCustomerTier ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  const { cart, freeShippingPromoName } = useReceptionCartPromotions({ rawCart, branchId, effectiveTier, offline, canReadPromos: canAction("catalog.activePromotions"), activeDraft, couponCode, couponFreeShippingPromo, orderDelivery: rawOrderDelivery, onAutoFreeShipping: setOrderDelivery });
+  const orderDelivery = useMemo(() => applyFreeShippingToOrderDelivery(rawOrderDelivery, freeShippingPromoName), [rawOrderDelivery, freeShippingPromoName]);
   const barcodePricingContextRef = useRef("");
   barcodePricingContextRef.current = `${branchId}:${customer.customerId ?? "walk-in"}:${effectiveTier}`;
   useEffect(() => { if (hydratedAutomaticTier && phoneResolution === "RESOLVED" && resolvedCustomerTier) setHydratedAutomaticTier(null); }, [hydratedAutomaticTier, phoneResolution, resolvedCustomerTier]);
@@ -318,6 +321,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     if (couponCode) {
       setCouponCode(null);
       setCouponLabel(null);
+      setCouponFreeShippingPromo(null);
       setCouponInput("");
       setCart(clearReceptionCouponPricing);
     }
@@ -327,7 +331,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const restoreCouponPreviewM = trpc.crm.coupons.preview.useMutation();
   const restoreCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
   const resolvePromotionM = trpc.reception.draftResolvePromotion.useMutation();
-  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> { return ReceptionRestoreWorkspace({ branchId, setDraftPromotionPending, setDraftPromotionShiftId, resolvePromotionM, attachResolvedPromotion, setDraftRestoreRecovery, restoreCustomerM, utils, restoreCouponPreviewM, isElevatedRole, prevCustomerIdRef, pendingDeferredRestoreRef, suppressHydratedPhoneResetRef, receptionPhone, setCheckoutCharges, setCart, setSelKey, setReceptionPhone, setCustomer, setCustomerCreditLimit, setTierOverride, setHydratedAutomaticTier, setInvoiceDiscountPct, setPayInput, setMethod, setPaymentReference, setDeferred, setCouponInput, setCouponCode, setCouponLabel, setChannel, setChannelHandle, setLinkedConversationId, setDetachedRecoveryPending, activeDraftRef, setActiveDraft, setDraftHeld, setDraftInfo, mgrCredsRef }, snapshot, isCurrent, preserveStoredPrices); }
+  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> { return ReceptionRestoreWorkspace({ branchId, setDraftPromotionPending, setDraftPromotionShiftId, resolvePromotionM, attachResolvedPromotion, setDraftRestoreRecovery, restoreCustomerM, utils, restoreCouponPreviewM, isElevatedRole, prevCustomerIdRef, pendingDeferredRestoreRef, suppressHydratedPhoneResetRef, receptionPhone, setCheckoutCharges, setCart, setSelKey, setReceptionPhone, setCustomer, setCustomerCreditLimit, setTierOverride, setHydratedAutomaticTier, setInvoiceDiscountPct, setPayInput, setMethod, setPaymentReference, setDeferred, setCouponInput, setCouponCode, setCouponLabel, setCouponFreeShippingPromo, setChannel, setChannelHandle, setLinkedConversationId, setDetachedRecoveryPending, activeDraftRef, setActiveDraft, setDraftHeld, setDraftInfo, mgrCredsRef }, snapshot, isCurrent, preserveStoredPrices); }
 
   const { clearPersistedWorkspace, markDraftPromotionPending, workspaceState, workspaceDirty, persistenceDegraded } = useReceptionWorkspacePersistence({
     companyId: me.data === undefined ? undefined : (me.data?.companyId ?? null),
@@ -335,7 +339,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     branchId,
     activeDraftId: activeDraft?.id ?? null, activeDraftVersion: activeDraft?.version ?? null, clientRequestIdRef: reqIdRef,
     local: {
-      cart, checkoutCharges,
+      cart: rawCart, checkoutCharges,
       customer: { customerId: customer.customerId ?? null, name: customer.name, phone: customer.phone ?? null, isNew: customer.isNew },
       phoneInput: receptionPhone, customerCreditLimit, tierOverride, effectiveTier, draftPromotionPending, draftPromotionShiftId, detachedRecoveryPending, payInput, method, deferred,
       invoiceDiscountPct, couponInput, couponCode, couponLabel,
@@ -409,6 +413,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     setCouponCode((prev) => {
       if (!prev) return prev;
       setCouponLabel(null);
+      setCouponFreeShippingPromo(null);
       setCart(clearReceptionCouponPricing);
       return null;
     });
@@ -428,7 +433,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     await draftSyncQueueRef.current?.supersedeAndDrain();
     if (!clearPersistedWorkspace()) return;
     reqIdRef.current = crypto.randomUUID(); draftResumeEpochRef.current += 1; setDetachedRecoveryPending(false); setDraftRestoreRecovery(null);
-    setCouponCode(null); setCouponLabel(null); setCouponInput("");
+    setCouponCode(null); setCouponLabel(null); setCouponFreeShippingPromo(null); setCouponInput("");
     // يفكّ الارتباط قبل مسح السلة حتى لا تمسح مزامنة مؤجلة المسودة البعيدة.
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
@@ -458,7 +463,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
   function setQty(key: string, qty: number) {
     clearCouponIfApplied();
-    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? withReceptionLineQty(c, qty) : c)));
   }
   /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
   function setLineDiscount(key: string, pct: number | null) {
@@ -510,7 +515,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       if (result.idempotentReplay) {
         await attachResolvedPromotion({ draftId: result.draft.id, version: result.draft.version, draftNumber: result.draftNumber! }); return;
       }
-      if (result.promoted) { setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = result.draft; setActiveDraft(result.draft); setDraftInfo({ draftNumber: result.draftNumber! }); setDraftHeld("0.00"); setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); }
+      if (result.promoted) { setCart(freezeReceptionDraftCart(cart)); setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = result.draft; setActiveDraft(result.draft); setDraftInfo({ draftNumber: result.draftNumber! }); setDraftHeld("0.00"); setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); }
       setDepositOpen(true);
     } finally { draftPromotionFlightRef.current = false; if (transitionEpoch === draftResumeEpochRef.current) setDraftTransitionPending(false); }
   }
@@ -575,13 +580,13 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         })),
       });
       if (transitionEpoch !== draftResumeEpochRef.current || context !== couponContextRef.current) return;
-      setCart((items) => applyReceptionCouponPreview(items, result)); setCouponCode(result.code); setCouponLabel(result.programName);
+      setCart((items) => applyReceptionCouponPreview(items, result)); setCouponCode(result.code); setCouponLabel(result.programName); setCouponFreeShippingPromo(result.freeShipping ? (result.freeShippingPromotionName ?? result.programName) : null);
       notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
     } catch (error) {
       if (transitionEpoch === draftResumeEpochRef.current && context === couponContextRef.current) notify.err(error, "تعذّر تطبيق الكوبون");
     }
   }
-  function clearCoupon() { setCouponCode(null); setCouponLabel(null); setCouponInput(""); setCart(clearReceptionCouponPricing); }
+  function clearCoupon() { setCouponCode(null); setCouponLabel(null); setCouponFreeShippingPromo(null); setCouponInput(""); setCart(clearReceptionCouponPricing); }
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل + **إسناد التوصيل** (PR #495).
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
   // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
@@ -667,7 +672,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       if (r.idempotentReplay) {
         await attachResolvedPromotion(r); return;
       }
-      const draft = { id: r.draftId, version: r.version }; activeDraftRef.current = draft; setActiveDraft(draft);
+      const draft = { id: r.draftId, version: r.version }; setCart(freezeReceptionDraftCart(cart)); activeDraftRef.current = draft; setActiveDraft(draft);
       setDraftInfo({ draftNumber: r.draftNumber }); setDraftHeld("0.00"); setDetachedRecoveryPending(false);
       notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
       void utils.reception.draftList.invalidate();
@@ -766,7 +771,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // ٢٣/٨: مبلغُ البيع = صافي أسطر البيع بعد خصم رأس الفاتورة (regularSumRawD − invoiceDiscountAmountD)
       // + فرق التقريب إن وُجد. الخادم يستقبل الخصمَ مطلقاً في `regularSale.invoiceDiscount` ويعيد
       // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
-      const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? (extraChargeAmount.gt(0)?[{amount:inputPaidD.toFixed(2),method:method as "CASH"|"CARD"|"TRANSFER"|"WALLET",externalPaymentAttemptId:feePayment.tender?.externalPaymentAttemptId,externalPaymentDeviceId:feePayment.tender?.externalPaymentDeviceId}]:undefined), checkoutCharges, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender:heldDelivery>0?feePayment.tender:null, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
+      const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? (extraChargeAmount.gt(0)?[{amount:inputPaidD.toFixed(2),method:method as "CASH"|"CARD"|"TRANSFER"|"WALLET",externalPaymentAttemptId:feePayment.tender?.externalPaymentAttemptId,externalPaymentDeviceId:feePayment.tender?.externalPaymentDeviceId}]:undefined), checkoutCharges, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender:heldDelivery>0?feePayment.tender:null, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode, freeShippingPromoName });
       if (digitalLines.length > 0) {
         if (!digitalCaptureConfirmed) { notify.err("تحقق من استلام النقد أو نجاح دفع البطاقة فعلاً، ثم أكد القبض قبل إصدار الكروت"); return; }
         if (method !== "CASH" && method !== "CARD") return;
@@ -781,12 +786,27 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
           priceTier: effectiveTier,
           sourceType: "RECEPTION",
           sourcePayload: { version: 1, contactName: customerName ?? null, contactPhone: receiptPhone ?? null, cashRoundIQD: method === "CASH" && cashRoundActive },
-          regularLines: regularLines.map((line, index) => ({
-            lineKey: `regular:${index}:${line.row.productUnitId}`,
-            variantId: line.row.variantId,
-            productUnitId: line.row.productUnitId,
-            quantity: String(line.qty),
-          })),
+          regularLines: regularLines.map((line, index) => {
+            const listWhole = D(line.row.price ?? 0).toDecimalPlaces(0, 4);
+            const listGross = listWhole.times(line.qty);
+            const netLine = round2(D(lineTotal(line)));
+            const discAmt = listGross.gt(netLine) ? round2(listGross.minus(netLine)) : D(0);
+            const promoInfo = officialReceptionPromoInfo(line);
+            const promotionId = promoInfo?.promotionId;
+            const promoDiscount = promoInfo ? (promoInfo.promoDiscountD.gt(discAmt) ? discAmt : promoInfo.promoDiscountD) : D(0);
+            const cashierDiscount = discAmt.gt(promoDiscount) ? round2(discAmt.minus(promoDiscount)) : D(0);
+            return {
+              lineKey: `regular:${index}:${line.row.productUnitId}`,
+              variantId: line.row.variantId,
+              productUnitId: line.row.productUnitId,
+              quantity: String(line.qty),
+              unitPriceOverride: listWhole.toFixed(2),
+              ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+              ...(promotionId != null ? { promotionId } : {}),
+              ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
+              ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+            };
+          }),
           lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
         }, amount: round2(appliedPaidD).toFixed(2), tenderedAmount: round2(inputPaidD).toFixed(2), customerName,
           captureConfirmed: true, reference: method === "CARD" ? paymentReference.trim() : null });

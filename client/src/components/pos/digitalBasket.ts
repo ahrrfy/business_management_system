@@ -231,17 +231,24 @@ export function toDigitalPrepareRegularLine(line: {
   price: string;
   discountType: string;
   discount: string;
+  promotionId?: number | null;
+  promotionDiscount?: string | null;
   isGift?: boolean;
 }, index: number) {
+  const isGift = line.isGift === true;
+  const pId = !isGift && line.promotionId != null ? line.promotionId : undefined;
+  const pDisc = !isGift && line.promotionDiscount && D(line.promotionDiscount).gt(0) ? line.promotionDiscount : undefined;
   return {
     lineKey: `regular:${index}:${line.productUnitId}`,
     variantId: line.variantId,
     productUnitId: line.productUnitId,
     quantity: String(line.qty),
     unitPriceOverride: line.price,
-    discountPercent: line.discountType === "percent" ? line.discount : undefined,
-    discountAmount: line.discountType === "amount" ? line.discount : undefined,
-    isGift: line.isGift === true,
+    discountPercent: !isGift && line.discountType === "percent" ? line.discount : undefined,
+    discountAmount: !isGift && line.discountType === "amount" ? line.discount : undefined,
+    ...(pId != null ? { promotionId: pId } : {}),
+    ...(pDisc != null ? { promotionDiscount: pDisc } : {}),
+    isGift,
   };
 }
 import { D, moneyInput, round2 } from "@/lib/money";

@@ -741,4 +741,159 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
       "حي الجامعة محلة 630\nملاحظة: قرب جامع المأمون",
     );
   });
+
+  it("updates freeShippingPromotionId when repricing order items across shipping offers and clears it when store threshold or paid shipping applies", async () => {
+    const d = db();
+    // Seed a second product so Offer A targets Product 2 and Offer B targets Product 3
+    await d.insert(s.products).values([
+      { id: 2, name: "دفتر جامعي", showInStore: true },
+      { id: 3, name: "طقم هندسي", showInStore: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 2, productId: 2, sku: "NB-02", color: "أبيض", costPrice: "3000.00" },
+      { id: 3, productId: 3, sku: "GEO-03", color: "فضي", costPrice: "5000.00" },
+    ]);
+    await d.insert(s.productUnits).values([
+      {
+        id: 2,
+        variantId: 2,
+        unitName: "قطعة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+        isStoreSaleUnit: true,
+      },
+      {
+        id: 3,
+        variantId: 3,
+        unitName: "قطعة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+        isStoreSaleUnit: true,
+      },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 2, priceTier: "RETAIL", price: "10000.00" },
+      { productUnitId: 3, priceTier: "RETAIL", price: "12000.00" },
+    ]);
+    await d.insert(s.branchStock).values([
+      { branchId: 1, variantId: 2, quantity: 30 },
+      { branchId: 1, variantId: 3, quantity: 30 },
+    ]);
+
+    await d.insert(s.promotions).values([
+      {
+        id: 701,
+        name: "توصيل مجاني للدفاتر",
+        type: "FREE_SHIPPING",
+        scope: "PRODUCTS",
+        channel: "ALL",
+        applicationMode: "AUTO",
+        freeShipping: true,
+        priority: 10,
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        isActive: true,
+        createdBy: 1,
+      },
+      {
+        id: 702,
+        name: "توصيل مجاني للأطقم الهندسية",
+        type: "FREE_SHIPPING",
+        scope: "PRODUCTS",
+        channel: "ALL",
+        applicationMode: "AUTO",
+        freeShipping: true,
+        priority: 20,
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        isActive: true,
+        createdBy: 1,
+      },
+    ]);
+    await d.insert(s.promotionTargets).values([
+      { promotionId: 701, productId: 2 },
+      { promotionId: 702, productId: 3 },
+    ]);
+
+    // 1. Order starts with Product 1 (no shipping offer) -> freeShippingPromotionId = null
+    const created = await createOnlineOrder({
+      customerName: "نور الهدى",
+      customerPhone: "07708889900",
+      governorate: "basra",
+      addressText: "العشار",
+      lines: [{ productUnitId: 1, quantity: 1 }], // 4,500 + 9,000 shipping
+    });
+    const [initialRow] = await d
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(initialRow?.freeShippingPromotionId).toBeNull();
+    expect(initialRow?.deliveryFree).toBe(false);
+
+    // 2. Staff replaces items with Product 2 -> newly qualifies for Offer 701
+    await updateOnlineOrder(
+      {
+        id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
+        scopedBranchId: 1,
+        items: [{ productUnitId: 2, quantity: 1 }],
+      },
+      1,
+    );
+    const [afterOfferA] = await d
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(afterOfferA?.deliveryFree).toBe(true);
+    expect(afterOfferA?.freeShippingPromotionId).toBe(701);
+
+    // 3. Staff replaces items with Product 3 (48,000 < Basra 60,000) -> switches attribution from Offer 701 to Offer 702
+    await updateOnlineOrder(
+      {
+        id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
+        scopedBranchId: 1,
+        items: [{ productUnitId: 3, quantity: 4 }],
+      },
+      1,
+    );
+    const [afterOfferB] = await d
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(afterOfferB?.deliveryFree).toBe(true);
+    expect(afterOfferB?.freeShippingPromotionId).toBe(702);
+
+    // 4. Increasing quantity to 5 units (60,000 >= Basra 60,000 store threshold) -> store threshold takes over, clearing freeShippingPromotionId
+    await updateOnlineOrder(
+      {
+        id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
+        scopedBranchId: 1,
+        items: [{ productUnitId: 3, quantity: 5 }],
+      },
+      1,
+    );
+    const [afterThreshold] = await d
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(afterThreshold?.deliveryFree).toBe(true);
+    expect(afterThreshold?.freeShippingPromotionId).toBeNull();
+
+    // 5. Staff replaces items back with Product 1 (1 unit = 4,500, no offer) -> clears freeShippingPromotionId to null
+    await updateOnlineOrder(
+      {
+        id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
+        scopedBranchId: 1,
+        items: [{ productUnitId: 1, quantity: 1 }],
+      },
+      1,
+    );
+    const [afterCleared] = await d
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(afterCleared?.deliveryFree).toBe(false);
+    expect(afterCleared?.freeShippingPromotionId).toBeNull();
+  });
 });

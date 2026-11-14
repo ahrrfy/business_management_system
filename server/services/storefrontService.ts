@@ -38,6 +38,8 @@ import type { PublicProductImageWidth } from "../lib/imageStore";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
 import { loadPromotionRuleSnapshot, resolvePromotionFromSnapshot } from "./salesPromotionService";
+import { formatPromotionSummary, type PromotionType } from "@shared/promotionEngine";
+import { isPromotionActiveOnDay } from "@shared/promotionScheduling";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 import { requireActiveBranch, requireStorefrontContext } from "./storefrontContextService";
 import {
@@ -291,6 +293,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       categoryId: products.categoryId,
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
       price: productPrices.price,
       // الصور تُرفق باستعلام مجمّع بعد حسم الصفوف؛ لا نحمل MEDIUMTEXT ولا نضاعف وحدات
       // البيع بانضمام صورة رئيسية لكل بديل داخل الاستعلام الأساسي.
@@ -317,6 +320,8 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
       categoryId: products.categoryId,
       price: productPrices.price,
       conversionFactor: productUnits.conversionFactor,
+      isBaseUnit: productUnits.isBaseUnit,
+      isBundle: products.isBundle,
       isFeatured: products.isFeatured,
       productName: products.name,
       storeTitle: products.storeTitle,
@@ -484,16 +489,18 @@ function toPublicProductImage(
   return decodeDataUrl(value) ? productImageUrl(Number(imageId), value, preferredWidth) : null;
 }
 
+const storefrontUnitMeta = new WeakMap<object, { isBaseUnit: boolean }>();
+
 function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; description: string | null; storeTitle: string | null; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
-  category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
+  category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; isBaseUnit?: boolean | null; price: string | null;
   imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
   stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean;
 }): StorefrontProduct {
   const factor = Math.max(1, Number(r.conversionFactor) || 1);
   const availableUnits = Math.floor(r.availableQty / factor);
-  return {
+  const card: StorefrontProduct = {
     productId: Number(r.productId),
     productUnitId: Number(r.productUnitId),
     variantId: Number(r.variantId),
@@ -516,6 +523,10 @@ function toStorefront(r: {
     soldCount: 0,
     hasAlternatives: false, // يُضبط بعد التجميع على مستوى المنتج (يعرف كل متغيّراته).
   };
+  storefrontUnitMeta.set(card, {
+    isBaseUnit: r.isBaseUnit == null ? factor === 1 : Boolean(r.isBaseUnit),
+  });
+  return card;
 }
 
 /**
@@ -826,7 +837,17 @@ async function attachVariantColors(
  * ومنتج ومقترحاتٍ من كلّ زائرٍ مجهول — أي أضعافَ حركة التسعيرة التي عولجت أوّلاً. المعاملة
  * تبقى للقطةٍ متّسقة عبر استعلامات اللقطة، لا للذرّية.
  */
-export async function applyStorefrontPromotions(list: Array<Pick<StorefrontProduct, "productId" | "variantId" | "categoryId" | "price" | "salePrice" | "promotionName">>, branchId: number): Promise<void> {
+export async function applyStorefrontPromotions(
+  list: Array<
+    Pick<StorefrontProduct, "productId" | "variantId" | "categoryId" | "price" | "salePrice" | "promotionName"> & {
+      productUnitId?: number;
+      conversionFactor?: string | number;
+      isBaseUnit?: boolean | null;
+      isBundle?: boolean | null;
+    }
+  >,
+  branchId: number,
+): Promise<void> {
   const eligible = list.filter((p) => p.price != null);
   if (!eligible.length) return;
   const todayYmd = todayYmdBaghdad();
@@ -836,20 +857,36 @@ export async function applyStorefrontPromotions(list: Array<Pick<StorefrontProdu
       customerTier: RETAIL,
       todayYmd,
       includeStoreManaged: true,
+      evaluationChannel: "STORE",
+      requiredApplicationMode: "AUTO",
     });
     for (const p of eligible) {
       const price = money(p.price!);
+      const meta = storefrontUnitMeta.get(p);
+      const isBaseUnit =
+        p.isBaseUnit != null
+          ? Boolean(p.isBaseUnit)
+          : meta != null
+            ? meta.isBaseUnit
+            : p.conversionFactor != null
+              ? Number(p.conversionFactor) === 1
+              : true;
       const res = resolvePromotionFromSnapshot(snapshot, {
         branchId,
         customerTier: RETAIL,
         productId: p.productId,
         variantId: p.variantId,
+        productUnitId: p.productUnitId ?? null,
         categoryId: p.categoryId ?? null,
         unitPrice: price.toFixed(2),
         lineAmount: price.toFixed(2),
+        quantity: "1",
+        isBaseUnit,
+        isBundle: Boolean(p.isBundle),
         hasContractPrice: false,
         todayYmd,
         includeStoreManaged: true, // 0073: المتجر يُدرِج عروضه المتجرية (أونلاين) بخلاف الكاشير
+        evaluationChannel: "STORE",
       });
       if (res) {
         const eff = price.minus(money(res.discountForUnit));
@@ -1373,10 +1410,11 @@ export async function storefrontRelated(
 export interface StorefrontOffer {
   id: number;
   name: string;
-  type: "PERCENT" | "AMOUNT";
+  type: PromotionType;
   discountPercent: string;
   discountAmount: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
+  summary?: string;
 }
 
 /** العروض الفعّالة اليوم (للبنرات) — نفس نافذة resolvePromotionForLine. */
@@ -1392,6 +1430,16 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
       type: promotions.type,
       discountPercent: promotions.discountPercent,
       discountAmount: promotions.discountAmount,
+      maxDiscountAmount: promotions.maxDiscountAmount,
+      fixedPrice: promotions.fixedPrice,
+      bundlePrice: promotions.bundlePrice,
+      bundleMode: promotions.bundleMode,
+      bundleQuantity: promotions.bundleQuantity,
+      bogoBuyQuantity: promotions.bogoBuyQuantity,
+      bogoGetQuantity: promotions.bogoGetQuantity,
+      bogoGetDiscountPercent: promotions.bogoGetDiscountPercent,
+      tieredMode: promotions.tieredMode,
+      activeDays: promotions.activeDays,
       scope: promotions.scope,
       priority: promotions.priority,
     })
@@ -1399,6 +1447,8 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
     .where(
       and(
         eq(promotions.isActive, true),
+        eq(promotions.applicationMode, "AUTO"),
+        inArray(promotions.channel, ["ALL", "STORE_ONLY"]),
         sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
         or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
@@ -1406,13 +1456,30 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
       )
     )
     .orderBy(desc(promotions.priority), desc(promotions.id))
-    .limit(10);
-  return rows.map((r) => ({
-    id: Number(r.id),
-    name: r.name,
-    type: r.type as "PERCENT" | "AMOUNT",
-    discountPercent: String(r.discountPercent ?? "0"),
-    discountAmount: String(r.discountAmount ?? "0"),
-    scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
-  }));
+    .limit(30);
+  return rows
+    .filter((r) => isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, todayYmd))
+    .slice(0, 10)
+    .map((r) => ({
+      id: Number(r.id),
+      name: r.name,
+      type: r.type as PromotionType,
+      discountPercent: String(r.discountPercent ?? "0"),
+      discountAmount: String(r.discountAmount ?? "0"),
+      scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
+      summary: formatPromotionSummary({
+        type: r.type,
+        discountPercent: r.discountPercent,
+        discountAmount: r.discountAmount,
+        maxDiscountAmount: r.maxDiscountAmount,
+        fixedPrice: r.fixedPrice,
+        bundlePrice: r.bundlePrice,
+        bundleMode: r.bundleMode,
+        bundleQuantity: r.bundleQuantity,
+        bogoBuyQuantity: r.bogoBuyQuantity,
+        bogoGetQuantity: r.bogoGetQuantity,
+        bogoGetDiscountPercent: r.bogoGetDiscountPercent,
+        tieredMode: r.tieredMode,
+      }),
+    }));
 }
