@@ -14,6 +14,8 @@ import { hashCouponCode } from "../couponService";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 import { checkoutReception } from "../receptionCheckoutService";
+import { commitDraft } from "../reception/commit";
+import { getDraft, promoteDraft } from "../reception/draft";
 import { replayOfflineReception } from "../offline/replayReception";
 import { withTx } from "../tx";
 import { crmRouter } from "../../routers/crmRouter";
@@ -21,6 +23,7 @@ import { crmRouter } from "../../routers/crmRouter";
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
+  "orderPayments", "receptionDraftLines", "receptionDrafts",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries",
   "deliveryRemittanceLines", "deliveryRemittances", "deliveryConsignments",
   "deliveryPartyMembers", "deliveryParties",
@@ -2239,6 +2242,234 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(perfAfterMixed.summary.invoiceCount).toBe(2);
     expect(perfAfterMixed.summary.netSales).toBe("4000.00");
     expect(perfAfterMixed.summary.discount).toBe("1000.00");
+  });
+
+  it("R10-1: حفظ مسودة استقبال بعرض اشترِ واربح (BOGO 50%) ثم تثبيتها من كاشير بدون موافقة مدير يحفظ إسناد العرض ويرفض التثبيت إذا أُلغي العرض", async () => {
+    await db().insert(s.products).values({ id: 210, name: "ألبوم صور", categoryId: 1 });
+    await db().insert(s.productVariants).values({ id: 210, productId: 210, sku: "ALB-210", costPrice: "300.00" });
+    await db().insert(s.productUnits).values({ id: 210, variantId: 210, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 210, priceTier: "RETAIL", price: "1000.00" });
+    await setStock(210, 1, 20);
+
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "cashier_r10_draft",
+      name: "كاشير استقبال",
+      role: "cashier",
+      branchId: 1,
+      loginMethod: "local",
+    });
+    const recShiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 2,
+      shiftType: "RECEPTION",
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const recShiftId = insertId(recShiftRes);
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" as const };
+
+    const bogoPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "اشترِ 1 واحصل على 1 مجاناً",
+          type: "BOGO",
+          bogoBuyQuantity: 1,
+          bogoGetQuantity: 1,
+          bogoGetDiscountPercent: "100",
+          scope: "PRODUCTS",
+          channel: "ALL",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 210 }],
+        },
+        1,
+      ),
+    );
+
+    const promoted = await promoteDraft(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        clientRequestId: "r10-1-draft-bogo-ok",
+        header: { priceTier: "RETAIL", channel: "WALK_IN" },
+        lines: [
+          {
+            lineKind: "GOODS",
+            variantId: 210,
+            productUnitId: 210,
+            quantity: "2",
+            unitPrice: "1000.00",
+            discountAmount: "1000.00",
+            promotionId: bogoPromoId,
+            promotionDiscount: "1000.00",
+            title: "ألبوم صور (قطعة)",
+          },
+        ],
+      },
+      cashierActor,
+    );
+
+    const loadedDraft = await getDraft(promoted.draftId, cashierActor);
+    expect(loadedDraft.lines[0]?.promotionId).toBe(bogoPromoId);
+    expect(String(loadedDraft.lines[0]?.promotionDiscount)).toBe("1000.00");
+
+    // التثبيت من الكاشير بلا موافقة مدير ينجح رغم أن الخصم 50% (> 15% عتبة H6) لأن العرض صالح وموثّق
+    const committed = await commitDraft(
+      {
+        draftId: promoted.draftId,
+        version: promoted.version,
+        expectedTotal: "1000.00",
+        shiftId: recShiftId,
+        collectNow: { amount: "1000.00", method: "CASH" },
+      },
+      cashierActor,
+    );
+    expect(committed.regularSale?.invoiceId).toBeGreaterThan(0);
+
+    const [invLine] = await db()
+      .select()
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, committed.regularSale!.invoiceId));
+    expect(invLine?.promotionId).toBe(bogoPromoId);
+    expect(String(invLine?.promotionDiscount)).toBe("1000.00");
+    expect(String(invLine?.total)).toBe("1000.00");
+
+    // أما إذا حُفظت مسودة ثانية ثم عُطّل العرض قبل التثبيت، فإن الخادم يعيد تصنيف الـ 50% كخصم يدوي ويطالب بموافقة مدير
+    const promotedExpired = await promoteDraft(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        clientRequestId: "r10-1-draft-bogo-deactivated",
+        header: { priceTier: "RETAIL", channel: "WALK_IN" },
+        lines: [
+          {
+            lineKind: "GOODS",
+            variantId: 210,
+            productUnitId: 210,
+            quantity: "2",
+            unitPrice: "1000.00",
+            discountAmount: "1000.00",
+            promotionId: bogoPromoId,
+            promotionDiscount: "1000.00",
+            title: "ألبوم صور (قطعة)",
+          },
+        ],
+      },
+      cashierActor,
+    );
+
+    await withTx((tx) => deactivatePromotion(tx, bogoPromoId));
+
+    await expect(
+      commitDraft(
+        {
+          draftId: promotedExpired.draftId,
+          version: promotedExpired.version,
+          expectedTotal: "1000.00",
+          shiftId: recShiftId,
+          collectNow: { amount: "1000.00", method: "CASH" },
+        },
+        cashierActor,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("R10-2: crm.coupons.preview يُرجع lineAllocations مفصّلة لكل سطر حتى مع تكرار نفس productUnitId فلا يتضاعف الخصم المسقوف", async () => {
+    await db().insert(s.products).values({ id: 211, name: "مذكرة مكتب", categoryId: 1 });
+    await db().insert(s.productVariants).values({ id: 211, productId: 211, sku: "MEM-211", costPrice: "300.00" });
+    await db().insert(s.productUnits).values({ id: 211, variantId: 211, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 211, priceTier: "RETAIL", price: "1000.00" });
+
+    const cappedCouponPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "كوبون 50% بسقف 200 دينار",
+          type: "PERCENT",
+          discountPercent: "50",
+          maxDiscountAmount: "200.00",
+          applicationMode: "COUPON",
+          scope: "PRODUCTS",
+          channel: "ALL",
+          effectiveFrom: "2026-01-01",
+          targets: [{ productId: 211 }],
+        },
+        1,
+      ),
+    );
+    await db().insert(s.couponPrograms).values({
+      id: 211,
+      promotionId: cappedCouponPromoId,
+      name: "برنامج سقف 200",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2028-01-01"),
+      perCouponLimit: 10,
+      perCustomerLimit: 10,
+      codePrefix: "CAP200",
+      createdBy: 1,
+    });
+    await db().insert(s.coupons).values({
+      id: 211,
+      programId: 211,
+      code: "CAP200-DUP",
+      codeHash: hashCouponCode("CAP200-DUP"),
+      status: "ACTIVE",
+    });
+
+    const caller = crmRouter.createCaller({
+      user: {
+        id: 1,
+        openId: "local_test",
+        name: "admin",
+        role: "admin",
+        branchId: 1,
+        isOwner: true,
+        isActive: true,
+      },
+    } as never);
+
+    const preview = await caller.coupons.preview({
+      code: "CAP200-DUP",
+      branchId: 1,
+      customerTier: "RETAIL",
+      lines: [
+        {
+          productId: 211,
+          variantId: 211,
+          productUnitId: 211,
+          unitPrice: "1000.00",
+          quantity: 1,
+          hasContractPrice: false,
+        },
+        {
+          productId: 211,
+          variantId: 211,
+          productUnitId: 211,
+          unitPrice: "1000.00",
+          quantity: 1,
+          hasContractPrice: false,
+        },
+      ],
+    });
+
+    expect(preview.lines).toHaveLength(1);
+    expect(preview.lines[0]?.promotionLineDiscount).toBe("200.00");
+    expect(preview.lineAllocations).toHaveLength(2);
+    expect(preview.lineAllocations[0]).toMatchObject({
+      lineIndex: 0,
+      productUnitId: 211,
+      promotionLineDiscount: "100.00",
+      promotionEffectivePrice: "900.00",
+    });
+    expect(preview.lineAllocations[1]).toMatchObject({
+      lineIndex: 1,
+      productUnitId: 211,
+      promotionLineDiscount: "100.00",
+      promotionEffectivePrice: "900.00",
+    });
   });
 });
 

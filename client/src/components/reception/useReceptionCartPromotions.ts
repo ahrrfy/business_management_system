@@ -43,6 +43,7 @@ export function evaluateReceptionCartPromotionsPure(opts: {
     if (c.digital) return [];
     const hasHistoricalOverride =
       c.draftLineDiscount != null ||
+      c.draftPromo != null ||
       (c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0))));
     const ineligible = Boolean(
       c.custom || c.row.isPrintService || c.manualService || hasHistoricalOverride,
@@ -134,19 +135,45 @@ export function evaluateReceptionCartPromotionsPure(opts: {
  */
 export function freezeReceptionDraftCart(evaluatedCart: CartLine[]): CartLine[] {
   return evaluatedCart.map((c) => {
-    if (c.custom || c.digital || c.row.isPrintService || c.cartPromo === undefined) {
+    if (c.custom || c.digital || c.row.isPrintService) {
+      return c;
+    }
+    const pricing = resolveDraftGoodsPricing(c);
+    const {
+      cartPromo: _cp,
+      disc: _disc,
+      draftLineDiscount: _prevDraftDisc,
+      draftPromo: _prevDraftPromo,
+      ...rest
+    } = c;
+    if (
+      pricing.promotionId != null &&
+      pricing.promotionDiscount != null &&
+      pricing.promotionDiscount.gt(0) &&
+      pricing.discountAmount != null &&
+      pricing.discountAmount.gt(0)
+    ) {
+      return {
+        ...rest,
+        origPrice: pricing.unitPrice.toNumber(),
+        draftLineDiscount: pricing.discountAmount.toFixed(2),
+        draftPromo: {
+          promotionId: pricing.promotionId,
+          ...(pricing.promotionName ? { promotionName: pricing.promotionName } : {}),
+          promotionDiscount: pricing.promotionDiscount.toFixed(2),
+        },
+      };
+    }
+    if (c.cartPromo === undefined) {
       return c;
     }
     if (c.cartPromo == null) {
-      const { cartPromo: _cp, ...rest } = c;
-      if (rest.origPrice == null && rest.row.promotionEffectivePrice != null) {
-        return { ...rest, origPrice: Number(rest.row.price ?? 0) };
+      const { cartPromo: _clearNullPromo, ...noPromoRest } = c;
+      if (noPromoRest.origPrice == null && noPromoRest.row.promotionEffectivePrice != null) {
+        return { ...noPromoRest, origPrice: Number(noPromoRest.row.price ?? 0) };
       }
-      return rest;
+      return noPromoRest;
     }
-    const pricing = resolveDraftGoodsPricing(c);
-    const defaultCatalogPrice = Number(c.row.promotionEffectivePrice ?? c.row.price ?? 0);
-    const { cartPromo: _cp, disc: _disc, draftLineDiscount: _prevDraftDisc, ...rest } = c;
     if (pricing.discountAmount && pricing.discountAmount.gt(0)) {
       return {
         ...rest,
@@ -154,6 +181,7 @@ export function freezeReceptionDraftCart(evaluatedCart: CartLine[]): CartLine[] 
         draftLineDiscount: pricing.discountAmount.toFixed(2),
       };
     }
+    const defaultCatalogPrice = Number(c.row.promotionEffectivePrice ?? c.row.price ?? 0);
     const eff = pricing.unitPrice.toNumber();
     return eff !== defaultCatalogPrice
       ? { ...rest, origPrice: eff }

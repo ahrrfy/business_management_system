@@ -1,8 +1,10 @@
-import { D } from "@/lib/money";
+import Decimal from "decimal.js";
+import { D, round2 } from "@/lib/money";
 import type { CartItem, POSTab, Tier } from "./posShared";
 import { resetCouponItems } from "./usePOSTabHelpers";
 
 export interface PosCouponPreviewLineResult {
+  lineIndex?: number;
   productUnitId: number | string;
   promotionId: number;
   promotionName: string;
@@ -17,6 +19,7 @@ export interface PosCouponPreviewResult {
   freeShipping?: boolean;
   freeShippingPromotionName?: string | null;
   lines: PosCouponPreviewLineResult[];
+  lineAllocations?: PosCouponPreviewLineResult[];
 }
 
 export interface PosCouponPreviewSnapshot {
@@ -127,18 +130,103 @@ export function applyPosCouponPreviewToCart(
   items: CartItem[],
   result: PosCouponPreviewResult,
 ): CartItem[] {
+  if (Array.isArray(result.lineAllocations)) {
+    const byLineIdx = new Map(
+      result.lineAllocations
+        .filter((line) => typeof line.lineIndex === "number")
+        .map((line) => [Number(line.lineIndex), line]),
+    );
+    return items.map((item, idx) => {
+      const base = item.preCouponRow ?? item.row;
+      const applied = byLineIdx.get(idx);
+      if (!applied) {
+        return { ...item, row: base, preCouponRow: undefined, cartPromo: null };
+      }
+      const lineDiscount =
+        applied.promotionLineDiscount ??
+        round2(D(applied.promotionDiscountForUnit).times(item.qty)).toFixed(2);
+      return {
+        ...item,
+        disc: undefined,
+        preCouponRow: base,
+        cartPromo: {
+          promotionId: applied.promotionId,
+          promotionName: applied.promotionName,
+          lineDiscount,
+        },
+        row: {
+          ...base,
+          promotionId: applied.promotionId,
+          promotionName: applied.promotionName,
+          promotionDiscountForUnit: applied.promotionDiscountForUnit,
+          promotionEffectivePrice: applied.promotionEffectivePrice,
+        },
+      };
+    });
+  }
+
   const byUnit = new Map(
     result.lines.map((line) => [Number(line.productUnitId), line]),
   );
-  return items.map((item) => {
+  const indicesByUnit = new Map<number, number[]>();
+  items.forEach((item, idx) => {
+    const base = item.preCouponRow ?? item.row;
+    const unitId = Number(base.productUnitId);
+    if (!byUnit.has(unitId)) return;
+    const list = indicesByUnit.get(unitId);
+    if (list) list.push(idx);
+    else indicesByUnit.set(unitId, [idx]);
+  });
+
+  const splitDiscByIdx = new Map<number, string>();
+  indicesByUnit.forEach((groupIndices, unitId) => {
+    const applied = byUnit.get(unitId);
+    if (!applied || applied.promotionLineDiscount == null) return;
+    const totalDisc = Decimal.max(D(0), round2(D(applied.promotionLineDiscount)));
+    if (groupIndices.length === 1) {
+      splitDiscByIdx.set(groupIndices[0]!, totalDisc.toFixed(2));
+      return;
+    }
+    const weights = groupIndices.map((idx) => {
+      const it = items[idx]!;
+      const base = it.preCouponRow ?? it.row;
+      const gross = round2(round2(D(base.price ?? 0)).times(it.qty));
+      return { idx, gross, weight: gross.gt(0) ? gross : D(Math.max(1, it.qty)) };
+    });
+    const totalWeight = weights.reduce((s, w) => s.plus(w.weight), D(0));
+    let remaining = totalDisc;
+    weights.forEach((w, pos) => {
+      const isLast = pos === weights.length - 1;
+      const rawShare = isLast
+        ? remaining
+        : totalWeight.gt(0)
+          ? round2(totalDisc.times(w.weight).div(totalWeight))
+          : D(0);
+      const share = Decimal.min(
+        w.gross.gt(0) ? Decimal.min(w.gross, remaining) : remaining,
+        Decimal.max(D(0), rawShare),
+      );
+      remaining = Decimal.max(D(0), round2(remaining.minus(share)));
+      splitDiscByIdx.set(w.idx, share.toFixed(2));
+    });
+  });
+
+  return items.map((item, idx) => {
     const base = item.preCouponRow ?? item.row;
     const applied = byUnit.get(Number(base.productUnitId));
     if (!applied) {
       return { ...item, row: base, preCouponRow: undefined, cartPromo: null };
     }
     const lineDiscount =
-      applied.promotionLineDiscount ??
-      D(applied.promotionDiscountForUnit).times(item.qty).toFixed(2);
+      splitDiscByIdx.get(idx) ??
+      round2(D(applied.promotionDiscountForUnit).times(item.qty)).toFixed(2);
+    const unitDisc =
+      item.qty > 0 ? round2(D(lineDiscount).div(item.qty)) : D(0);
+    const effPrice =
+      applied.promotionLineDiscount != null &&
+      (indicesByUnit.get(Number(base.productUnitId))?.length ?? 0) > 1
+        ? Decimal.max(D(0), round2(D(base.price ?? 0)).minus(unitDisc)).toFixed(2)
+        : applied.promotionEffectivePrice;
     return {
       ...item,
       disc: undefined,
@@ -152,8 +240,11 @@ export function applyPosCouponPreviewToCart(
         ...base,
         promotionId: applied.promotionId,
         promotionName: applied.promotionName,
-        promotionDiscountForUnit: applied.promotionDiscountForUnit,
-        promotionEffectivePrice: applied.promotionEffectivePrice,
+        promotionDiscountForUnit:
+          (indicesByUnit.get(Number(base.productUnitId))?.length ?? 0) > 1
+            ? unitDisc.toFixed(2)
+            : applied.promotionDiscountForUnit,
+        promotionEffectivePrice: effPrice,
       },
     };
   });

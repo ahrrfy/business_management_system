@@ -192,11 +192,21 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
       linkedConversationId: null,
       cart: evaluatedBogoCart,
     });
-    expect(initialPayload.lines[0]?.unitPrice).toBe("500.00");
+    expect(initialPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in initialPayload.lines[0]! ? initialPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+    expect("promotionId" in initialPayload.lines[0]! ? initialPayload.lines[0]!.promotionId : undefined).toBe(9);
+    expect("promotionDiscount" in initialPayload.lines[0]! ? initialPayload.lines[0]!.promotionDiscount : undefined).toBe("1000.00");
 
     const frozen = freezeReceptionDraftCart(evaluatedBogoCart);
     expect(frozen[0]?.cartPromo).toBeUndefined();
-    expect(frozen[0]?.origPrice).toBe(500);
+    expect(frozen[0]?.origPrice).toBe(1000);
+    expect(frozen[0]?.draftLineDiscount).toBe("1000.00");
+    expect(frozen[0]?.draftPromo).toEqual({
+      promotionId: 9,
+      promotionName: "اشتر 1 واحصل على 1",
+      promotionDiscount: "1000.00",
+    });
+    expect(effectivePrice(frozen[0]!)).toBe(500);
     expect(lineTotal(frozen[0]!)).toBe(1000);
 
     const syncedPayload = buildDraftPayload({
@@ -207,7 +217,10 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
       linkedConversationId: null,
       cart: frozen,
     });
-    expect(syncedPayload.lines[0]?.unitPrice).toBe("500.00");
+    expect(syncedPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+    expect("promotionId" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.promotionId : undefined).toBe(9);
+    expect("promotionDiscount" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.promotionDiscount : undefined).toBe("1000.00");
 
     // Clearing a plain line discount also clears catalog-equal origPrice marker
     const plainLine: CartLine = { key: "plain-1", row: goodsRow, qty: 1 };

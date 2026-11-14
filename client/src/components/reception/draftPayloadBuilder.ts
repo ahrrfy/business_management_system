@@ -78,6 +78,14 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
       ...(goodsPricing.discountAmount && goodsPricing.discountAmount.gt(0)
         ? { discountAmount: goodsPricing.discountAmount.toFixed(2) }
         : {}),
+      ...(goodsPricing.promotionId != null &&
+      goodsPricing.promotionDiscount &&
+      goodsPricing.promotionDiscount.gt(0)
+        ? {
+            promotionId: goodsPricing.promotionId,
+            promotionDiscount: goodsPricing.promotionDiscount.toFixed(2),
+          }
+        : {}),
       title: `${c.row.productName} (${c.row.unitName})`,
     };
   });

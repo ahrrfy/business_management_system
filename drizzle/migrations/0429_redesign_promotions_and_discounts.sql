@@ -384,3 +384,31 @@ SET @ord_add_free_ship_promo_idx = IF(
 PREPARE ord_add_free_ship_promo_idx_stmt FROM @ord_add_free_ship_promo_idx;
 EXECUTE ord_add_free_ship_promo_idx_stmt;
 DEALLOCATE PREPARE ord_add_free_ship_promo_idx_stmt;
+--> statement-breakpoint
+SET @dline_add_promo_id = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'receptionDraftLines'
+      AND COLUMN_NAME = 'promotionId'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `receptionDraftLines` ADD COLUMN `promotionId` bigint NULL'
+);
+PREPARE dline_add_promo_id_stmt FROM @dline_add_promo_id;
+EXECUTE dline_add_promo_id_stmt;
+DEALLOCATE PREPARE dline_add_promo_id_stmt;
+--> statement-breakpoint
+SET @dline_add_promo_disc = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'receptionDraftLines'
+      AND COLUMN_NAME = 'promotionDiscount'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `receptionDraftLines` ADD COLUMN `promotionDiscount` decimal(15,2) NULL'
+);
+PREPARE dline_add_promo_disc_stmt FROM @dline_add_promo_disc;
+EXECUTE dline_add_promo_disc_stmt;
+DEALLOCATE PREPARE dline_add_promo_disc_stmt;

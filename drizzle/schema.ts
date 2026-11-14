@@ -5008,6 +5008,8 @@ export const receptionDraftLines = mysqlTable(
     assignedTo: int("assignedTo"),
     priceOverride: boolean("priceOverride").default(false).notNull(),
     priceApprovedBy: bigint("priceApprovedBy", { mode: "number" }),
+    promotionId: bigint("promotionId", { mode: "number" }),
+    promotionDiscount: decimal("promotionDiscount", { precision: 15, scale: 2 }),
     lineRequestId: varchar("lineRequestId", { length: 64 }),
   },
   (table) => ({

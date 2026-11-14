@@ -78,7 +78,7 @@ export function useReceptionCartEditing({
         );
         if (i >= 0) {
           const next = [...prev];
-          const updated = { ...next[i], qty: next[i].qty + 1 };
+          const updated = withReceptionLineQty(next[i]!, next[i]!.qty + 1);
           next.splice(i, 1);
           next.unshift(updated);
           setSelKey(updated.key);
@@ -203,7 +203,7 @@ export function useReceptionCartEditing({
         prev.map((c) => {
           if (c.key !== lineKey) return c;
           if (c.digital) return c;
-          const { origPrice: _oldUnitPrice, draftLineDiscount: _oldDraftDisc, ...rest } = c;
+          const { origPrice: _oldUnitPrice, draftLineDiscount: _oldDraftDisc, draftPromo: _oldDraftPromo, ...rest } = c;
           return {
             ...rest,
             row: {

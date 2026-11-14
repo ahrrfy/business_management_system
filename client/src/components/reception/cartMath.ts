@@ -47,6 +47,8 @@ export type CartLine = {
   couponBasePromotion?: { promotionId: number | null; promotionName: string | null; promotionEffectivePrice: string | null };
   /** خصم السطر المطلق المثبَّت في المسوّدة عندما لا يقبل صافي السطر القسمة التامّة على الكمية. */
   draftLineDiscount?: string;
+  /** إسناد العرض الترويجي المثبَّت في مسوّدة الاستقبال ليُتحقَّق منه سلطوياً عند التثبيت. */
+  draftPromo?: { promotionId: number; promotionName?: string | null; promotionDiscount: string };
   /** التقييم الحيّ لعروض السلة التلقائية (غير مخزّن في sessionStorage). */
   cartPromo?: { promotionId: number; promotionName: string; lineDiscount: string } | null;
   disc?: number; // نسبة خصم
@@ -95,6 +97,23 @@ export function officialReceptionPromoInfo(
       promotionName: line.cartPromo.promotionName,
       promoDiscountD: capped,
     };
+  }
+  if (line.draftPromo != null && line.draftPromo.promotionId > 0) {
+    const baseUnit = round2(D(line.origPrice ?? line.row.price ?? 0));
+    const baseGross = round2(baseUnit.times(line.qty));
+    const maxDisc = line.draftLineDiscount != null
+      ? Decimal.min(baseGross, Decimal.max(D(0), round2(D(line.draftLineDiscount))))
+      : baseGross;
+    const raw = D(line.draftPromo.promotionDiscount);
+    const capped = raw.gt(maxDisc) ? maxDisc : raw.lt(0) ? D(0) : round2(raw);
+    if (capped.gt(0)) {
+      return {
+        promotionId: line.draftPromo.promotionId,
+        promotionName: line.draftPromo.promotionName ?? null,
+        promoDiscountD: capped,
+      };
+    }
+    return null;
   }
   if (line.origPrice == null && line.row.promotionId != null && line.row.promotionEffectivePrice != null) {
     const promoUnit = D(line.row.promotionEffectivePrice);
@@ -180,12 +199,40 @@ export function lineTotal(line: CartLine): number {
  */
 export function resolveDraftGoodsPricing(
   line: CartLine,
-): { unitPrice: Decimal; discountAmount?: Decimal } {
+): {
+  unitPrice: Decimal;
+  discountAmount?: Decimal;
+  promotionId?: number;
+  promotionDiscount?: Decimal;
+  promotionName?: string | null;
+} {
   const effUnit = round2(D(effectivePrice(line)));
   if (line.custom || line.digital || line.row.isPrintService || line.qty <= 0) {
     return { unitPrice: effUnit };
   }
   const exactNet = round2(D(lineTotal(line)));
+  const promoInfo = officialReceptionPromoInfo(line);
+  if (promoInfo && promoInfo.promotionId > 0 && promoInfo.promoDiscountD.gt(0)) {
+    const promoBase = round2(
+      D(line.draftPromo != null ? (line.origPrice ?? line.row.price ?? 0) : (line.row.price ?? 0)),
+    );
+    const promoGross = round2(promoBase.times(line.qty));
+    if (promoGross.gt(exactNet)) {
+      const totalDisc = round2(promoGross.minus(exactNet));
+      const promoDisc = Decimal.min(totalDisc, round2(promoInfo.promoDiscountD));
+      return {
+        unitPrice: promoBase,
+        discountAmount: totalDisc,
+        ...(promoDisc.gt(0)
+          ? {
+              promotionId: promoInfo.promotionId,
+              promotionDiscount: promoDisc,
+              promotionName: promoInfo.promotionName ?? null,
+            }
+          : {}),
+      };
+    }
+  }
   if (round2(effUnit.times(line.qty)).eq(exactNet)) {
     return { unitPrice: effUnit };
   }
@@ -247,8 +294,24 @@ export function withReceptionLineQty(line: CartLine, rawQty: number): CartLine {
   if (line.draftLineDiscount != null && line.qty > 0) {
     const scaled = round2(D(line.draftLineDiscount).times(nextQty).div(line.qty));
     if (scaled.lte(0)) {
-      const { draftLineDiscount: _d, ...rest } = line;
+      const { draftLineDiscount: _d, draftPromo: _dp, ...rest } = line;
       return { ...rest, qty: nextQty };
+    }
+    if (line.draftPromo != null) {
+      const scaledPromo = Decimal.min(
+        scaled,
+        round2(D(line.draftPromo.promotionDiscount).times(nextQty).div(line.qty)),
+      );
+      if (scaledPromo.lte(0)) {
+        const { draftPromo: _dp, ...rest } = line;
+        return { ...rest, qty: nextQty, draftLineDiscount: scaled.toFixed(2) };
+      }
+      return {
+        ...line,
+        qty: nextQty,
+        draftLineDiscount: scaled.toFixed(2),
+        draftPromo: { ...line.draftPromo, promotionDiscount: scaledPromo.toFixed(2) },
+      };
     }
     return { ...line, qty: nextQty, draftLineDiscount: scaled.toFixed(2) };
   }

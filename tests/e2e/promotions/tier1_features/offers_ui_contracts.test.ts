@@ -1046,5 +1046,57 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
         String(MAX_PROMOTION_TARGETS),
       );
     });
+
+    it("T1-F19-14: passes formData.applicationMode into simulateMultiRuleBasketPreview so COUPON caps apply cart-wide while AUTO caps apply per unit", () => {
+      const simulatorPath = path.resolve(
+        process.cwd(),
+        "client/src/components/offers/OfferLivePreviewSimulator.tsx",
+      );
+      const simulatorSrc = fs.readFileSync(simulatorPath, "utf-8");
+      expect(simulatorSrc).toMatch(
+        /simulateMultiRuleBasketPreview\(\s*cartItems,\s*allRuleInputs,\s*safePositiveDecimal\(formData\.minOrderSpend\),\s*Boolean\(formData\.freeShipping\),\s*formData\.applicationMode\s*\)/,
+      );
+
+      const cartItems = [
+        {
+          productId: 101,
+          variantId: 201,
+          productUnitId: 301,
+          unitPrice: new Decimal("10000"),
+          quantity: 2,
+        },
+      ];
+      const rules = [
+        {
+          type: "PERCENT" as const,
+          ruleName: "خصم 50% بسقف 1000",
+          percent: new Decimal("50"),
+          maxDiscountAmount: new Decimal("1000"),
+        },
+      ];
+
+      const autoPreview = simulateMultiRuleBasketPreview(
+        cartItems,
+        rules,
+        undefined,
+        false,
+        "AUTO",
+      );
+      const couponPreview = simulateMultiRuleBasketPreview(
+        cartItems,
+        rules,
+        undefined,
+        false,
+        "COUPON",
+      );
+
+      // AUTO caps 1,000 IQD per unit => 2,000 IQD across 2 units
+      expect(autoPreview.discount.toFixed(2)).toBe("2000.00");
+      expect(autoPreview.netTotal.toFixed(2)).toBe("18000.00");
+
+      // COUPON caps 1,000 IQD across the whole cart => 1,000 IQD total
+      expect(couponPreview.discount.toFixed(2)).toBe("1000.00");
+      expect(couponPreview.netTotal.toFixed(2)).toBe("19000.00");
+    });
   });
 });

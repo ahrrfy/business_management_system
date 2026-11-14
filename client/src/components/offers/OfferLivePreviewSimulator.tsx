@@ -239,7 +239,8 @@ export function OfferLivePreviewSimulator({
       cartItems,
       allRuleInputs,
       safePositiveDecimal(formData.minOrderSpend),
-      Boolean(formData.freeShipping)
+      Boolean(formData.freeShipping),
+      formData.applicationMode
     );
     return extraList.length === 0
       ? { ...multiRes, winningRuleNamesByLineKey: {} as Record<string, string> }

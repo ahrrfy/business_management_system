@@ -337,7 +337,8 @@ export function simulateMultiRuleBasketPreview(
   }>,
   rules: Array<SimulateBasketRule & { ruleName?: string }>,
   minOrderSpend?: Decimal,
-  offerFreeShippingFlag?: boolean
+  offerFreeShippingFlag?: boolean,
+  applicationMode: "AUTO" | "COUPON" = "AUTO"
 ): MultiRuleBasketPreviewOutput {
   const grossTotal = items.reduce(
     (acc, i) => acc.plus(safeDecimal(i.unitPrice).mul(safeDecimal(i.quantity))),
@@ -442,7 +443,7 @@ export function simulateMultiRuleBasketPreview(
       freeShipping: Boolean(offerFreeShippingFlag) || rule.type === "FREE_SHIPPING",
       scope: resolvedTargets ? (useCategoryScope ? "CATEGORIES" : "PRODUCTS") : "ALL",
       channel: "ALL",
-      applicationMode: "AUTO",
+      applicationMode,
       priority: 10,
       isActive: true,
       allowBelowCost: true,

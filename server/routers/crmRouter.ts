@@ -287,10 +287,32 @@ export const crmRouter = router({
             lineDiscount: Decimal;
           }
         >();
+        const lineAllocations: Array<{
+          lineIndex: number;
+          productUnitId: number;
+          promotionId: number;
+          promotionName: string;
+          promotionDiscountForUnit: string;
+          promotionEffectivePrice: string;
+          promotionLineDiscount: string;
+        }> = [];
         input.lines.forEach((line, idx) => {
           const alloc = evaluated.lineAllocations.get(String(idx));
           if (!alloc || alloc.discountAmount.lte(0)) return;
           const disc = money(alloc.discountAmount.toFixed(2));
+          const lineUnitPrice = money(line.unitPrice);
+          const lineUnitDisc =
+            line.quantity > 0 ? round2(disc.dividedBy(line.quantity)) : money(0);
+          const lineEffUnit = Decimal.max(money(0), lineUnitPrice.minus(lineUnitDisc));
+          lineAllocations.push({
+            lineIndex: idx,
+            productUnitId: line.productUnitId,
+            promotionId: alloc.promotionId,
+            promotionName: alloc.promotionName,
+            promotionDiscountForUnit: toDbMoney(lineUnitDisc),
+            promotionEffectivePrice: toDbMoney(lineEffUnit),
+            promotionLineDiscount: toDbMoney(round2(disc)),
+          });
           const prev = aggByUnit.get(line.productUnitId);
           if (prev) {
             prev.quantity += line.quantity;
@@ -300,7 +322,7 @@ export const crmRouter = router({
               productUnitId: line.productUnitId,
               promotionId: alloc.promotionId,
               promotionName: alloc.promotionName,
-              unitPrice: money(line.unitPrice),
+              unitPrice: lineUnitPrice,
               quantity: line.quantity,
               lineDiscount: disc,
             });
@@ -333,6 +355,7 @@ export const crmRouter = router({
           code: coupon.code,
           programName: coupon.programName,
           lines,
+          lineAllocations,
           maxDiscountAmount: coupon.maxDiscountAmount,
           minOrderSpend: coupon.minOrderSpend,
           freeShipping: effectiveFreeShipping,

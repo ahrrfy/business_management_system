@@ -33,7 +33,7 @@ import {
   updateRestoredReceptionCustomization,
   writeReceptionWorkspaceSnapshot,
 } from "./receptionWorkspaceState";
-import { effectivePrice } from "@/components/reception/cartMath";
+import { effectivePrice, lineTotal } from "@/components/reception/cartMath";
 import { emptyCustomization } from "@/components/CustomizationDialog";
 import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
 
@@ -827,5 +827,154 @@ describe("reception draft transition races", () => {
     expect(isDefinitiveReceptionPromotionRejection({ data: { code: "BAD_REQUEST" } })).toBe(true);
     expect(isDefinitiveReceptionPromotionRejection({ data: { code: "CONFLICT" } })).toBe(false);
     expect(isDefinitiveReceptionPromotionRejection(new Error("network"))).toBe(false);
+  });
+
+  it("splits aggregated coupon discounts across duplicate productUnitId lines and honors per-line allocations", () => {
+    const baseRow = {
+      productId: 10,
+      variantId: 11,
+      productUnitId: 22,
+      productName: "دفتر",
+      sku: "NB-1",
+      unitName: "قطعة",
+      conversionFactor: "1",
+      price: "1000",
+      stockBase: 20,
+      isService: false,
+      isPrintService: false,
+      isCustomizable: false,
+    };
+    const duplicateCart = [
+      { key: "line-a", row: { ...baseRow }, qty: 1 },
+      { key: "line-b", row: { ...baseRow }, qty: 1 },
+    ];
+
+    // Fallback when lineAllocations is absent: 200.00 total split across two 1,000-IQD lines => 100.00 + 100.00 (never 200.00 + 200.00)
+    const splitEqual = applyReceptionCouponPreview(duplicateCart as never, {
+      code: "CAP200",
+      programName: "كوبون مسقوف",
+      lines: [
+        {
+          productUnitId: 22,
+          promotionId: 8,
+          promotionName: "كوبون مسقوف",
+          promotionEffectivePrice: "900.00",
+          promotionLineDiscount: "200.00",
+        },
+      ],
+    });
+    expect(splitEqual[0]?.couponLineDiscount).toBe("100.00");
+    expect(splitEqual[1]?.couponLineDiscount).toBe("100.00");
+    expect(lineTotal(splitEqual[0]!) + lineTotal(splitEqual[1]!)).toBe(1800);
+
+    // Uneven qty split conserves exact 0.01-IQD remainder (100.00 across qty 1 + qty 2 => 33.33 + 66.67)
+    const unevenCart = [
+      { key: "line-1", row: { ...baseRow }, qty: 1 },
+      { key: "line-2", row: { ...baseRow }, qty: 2 },
+    ];
+    const splitUneven = applyReceptionCouponPreview(unevenCart as never, {
+      code: "CAP100",
+      programName: "كوبون مسقوف 100",
+      lines: [
+        {
+          productUnitId: 22,
+          promotionId: 8,
+          promotionName: "كوبون مسقوف 100",
+          promotionEffectivePrice: "966.67",
+          promotionLineDiscount: "100.00",
+        },
+      ],
+    });
+    expect(splitUneven[0]?.couponLineDiscount).toBe("33.33");
+    expect(splitUneven[1]?.couponLineDiscount).toBe("66.67");
+    expect(lineTotal(splitUneven[0]!) + lineTotal(splitUneven[1]!)).toBe(2900);
+
+    // Authoritative lineAllocations preserve asymmetric BOGO line index allocation (0.00 on line 0, 1000.00 on line 1)
+    const asymmetric = applyReceptionCouponPreview(duplicateCart as never, {
+      code: "BOGO",
+      programName: "اشتر 1 واحصل على 1",
+      lines: [
+        {
+          productUnitId: 22,
+          promotionId: 9,
+          promotionName: "اشتر 1 واحصل على 1",
+          promotionEffectivePrice: "500.00",
+          promotionLineDiscount: "1000.00",
+        },
+      ],
+      lineAllocations: [
+        {
+          lineIndex: 1,
+          productUnitId: 22,
+          promotionId: 9,
+          promotionName: "اشتر 1 واحصل على 1",
+          promotionEffectivePrice: "0.00",
+          promotionLineDiscount: "1000.00",
+        },
+      ],
+    });
+    expect(asymmetric[0]?.couponLineDiscount).toBeUndefined();
+    expect(lineTotal(asymmetric[0]!)).toBe(1000);
+    expect(asymmetric[1]?.couponLineDiscount).toBe("1000.00");
+    expect(lineTotal(asymmetric[1]!)).toBe(0);
+  });
+
+  it("round-trips draftPromo across local workspace snapshots and server draft restoration", () => {
+    const input = localInput();
+    input.cart = [
+      {
+        ...input.cart[0]!,
+        qty: 2,
+        origPrice: 2500,
+        draftLineDiscount: "2500.00",
+        draftPromo: {
+          promotionId: 17,
+          promotionName: "اشتر 1 واحصل على 1",
+          promotionDiscount: "2500.00",
+        },
+      } as never,
+    ];
+    const serialized = serializeReceptionWorkspaceSnapshot(
+      createReceptionLocalSnapshot(input as never, Date.now()),
+    );
+    const parsed = parseReceptionWorkspaceSnapshot(serialized, Date.now());
+    expect(parsed?.kind).toBe("LOCAL");
+    if (parsed?.kind === "LOCAL") {
+      expect(parsed.cart[0]?.draftPromo).toEqual({
+        promotionId: 17,
+        promotionName: "اشتر 1 واحصل على 1",
+        promotionDiscount: "2500.00",
+      });
+    }
+
+    const restored = prepareReceptionDraftCart(
+      [
+        {
+          id: 99,
+          lineKind: "GOODS",
+          quantity: "2.000",
+          unitPrice: "2500.00",
+          discountAmount: "2500.00",
+          promotionId: 17,
+          promotionDiscount: "2500.00",
+          variantId: 11,
+          productUnitId: 22,
+          title: "دفتر (قطعة)",
+          printSpec: null,
+          designImages: null,
+        },
+      ],
+      input.cart.map((c) => c.row) as never,
+    );
+    expect(restored.ok).toBe(true);
+    if (restored.ok) {
+      expect(restored.cart[0]?.origPrice).toBe(2500);
+      expect(restored.cart[0]?.draftLineDiscount).toBe("2500.00");
+      expect(restored.cart[0]?.draftPromo).toEqual({
+        promotionId: 17,
+        promotionDiscount: "2500.00",
+      });
+      expect(lineTotal(restored.cart[0]!)).toBe(2500);
+    }
   });
 });

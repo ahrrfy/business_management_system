@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTab, itemTotal, type PosRow, type POSTab } from "./posShared";
 import {
+  applyPosCouponPreviewToCart,
   applyPosCouponPreviewToTabs,
   capturePosCouponPreviewSnapshot,
   isPosCouponPreviewFresh,
@@ -220,5 +221,60 @@ describe("posCouponPreview — حارس سباق معاينة الكوبون ف�
         tab: tab1,
       }),
     ).toBe(false);
+  });
+
+  it("يقسّم خصم الكوبون المجمّع بين الأسطر المكرّرة لنفس الوحدة ويحترم تخصيصات الأسطر المفصّلة", () => {
+    const duplicateCart = [
+      { row: makePosRow(), qty: 1 },
+      { row: makePosRow(), qty: 1 },
+    ];
+
+    const splitFallback = applyPosCouponPreviewToCart(duplicateCart, {
+      code: "CAP200",
+      programName: "كوبون مسقوف",
+      lines: [
+        {
+          productUnitId: 1000,
+          promotionId: 77,
+          promotionName: "كوبون مسقوف",
+          promotionDiscountForUnit: "100.00",
+          promotionEffectivePrice: "900.00",
+          promotionLineDiscount: "200.00",
+        },
+      ],
+    });
+    expect(splitFallback[0]?.cartPromo?.lineDiscount).toBe("100.00");
+    expect(splitFallback[1]?.cartPromo?.lineDiscount).toBe("100.00");
+    expect(itemTotal(splitFallback[0]!) + itemTotal(splitFallback[1]!)).toBe(1800);
+
+    const indexedAllocations = applyPosCouponPreviewToCart(duplicateCart, {
+      code: "BOGO",
+      programName: "اشتر 1 واحصل على 1",
+      lines: [
+        {
+          productUnitId: 1000,
+          promotionId: 88,
+          promotionName: "اشتر 1 واحصل على 1",
+          promotionDiscountForUnit: "500.00",
+          promotionEffectivePrice: "500.00",
+          promotionLineDiscount: "1000.00",
+        },
+      ],
+      lineAllocations: [
+        {
+          lineIndex: 1,
+          productUnitId: 1000,
+          promotionId: 88,
+          promotionName: "اشتر 1 واحصل على 1",
+          promotionDiscountForUnit: "1000.00",
+          promotionEffectivePrice: "0.00",
+          promotionLineDiscount: "1000.00",
+        },
+      ],
+    });
+    expect(indexedAllocations[0]?.cartPromo).toBeNull();
+    expect(itemTotal(indexedAllocations[0]!)).toBe(1000);
+    expect(indexedAllocations[1]?.cartPromo?.lineDiscount).toBe("1000.00");
+    expect(itemTotal(indexedAllocations[1]!)).toBe(0);
   });
 });

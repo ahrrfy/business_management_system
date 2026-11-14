@@ -222,7 +222,7 @@ export function materialize(
     }
   }
 
-  const saleLine = (l: (typeof lines)[number]) => ({
+  const printSaleLine = (l: (typeof lines)[number]) => ({
     variantId: Number(l.variantId),
     productUnitId: Number(l.productUnitId),
     quantity: String(l.quantity),
@@ -231,6 +231,28 @@ export function materialize(
     unitPriceOverride: money(l.unitPrice).toFixed(2),
     ...(money(l.discountAmount).gt(0) ? { discountAmount: money(l.discountAmount).toFixed(2) } : {}),
   });
+
+  const goodsSaleLine = (l: (typeof lines)[number]) => {
+    const totalDisc = money(l.discountAmount ?? "0");
+    const rawPromoDisc =
+      l.promotionId != null && Number(l.promotionId) > 0 && l.promotionDiscount != null
+        ? money(l.promotionDiscount)
+        : money("0");
+    const promoDisc = rawPromoDisc.gt(totalDisc)
+      ? totalDisc
+      : rawPromoDisc.lt(0)
+        ? money("0")
+        : round2(rawPromoDisc);
+    return {
+      ...printSaleLine(l),
+      ...(l.promotionId != null && Number(l.promotionId) > 0 && promoDisc.gt(0)
+        ? {
+            promotionId: Number(l.promotionId),
+            promotionDiscount: promoDisc.toFixed(2),
+          }
+        : {}),
+    };
+  };
 
   const customCount = customs.length;
   /** CUSTOM: المواصفة الكاملة من printSpec (CustomizationData عدا الصور) + الصور من عمودها. */
@@ -323,8 +345,8 @@ export function materialize(
     delivery: input.delivery ?? null,
     openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
     priceApprovedBy: input.priceApprovedBy ?? null,
-    regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
-    printSale: prints.length ? { lines: prints.map(saleLine), amount: printAmount.toFixed(2) } : null,
+    regularSale: goods.length ? { lines: goods.map(goodsSaleLine), amount: goodsAmount.toFixed(2) } : null,
+    printSale: prints.length ? { lines: prints.map(printSaleLine), amount: printAmount.toFixed(2) } : null,
     workOrders: customs.map((l, i) => workOrderOf(l, i)),
     priceOverrideApproved: input.priceOverrideApproved === true,
   };
