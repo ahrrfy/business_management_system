@@ -2676,9 +2676,25 @@ export async function loadPromotionPerformance(
       grossProfit: toDbMoney(netSales.minus(cost)),
     };
   });
+  let distinctInvoiceCount = 0;
+  if (rows.length > 0) {
+    const distinctRes = await tx.execute(sql`
+      SELECT
+        COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ii.invoiceId END) AS invoiceCount
+      FROM invoiceItems ii
+      INNER JOIN invoices i ON i.id = ii.invoiceId
+      WHERE ii.promotionId IS NOT NULL
+        AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
+        ${branchFilter}
+    `);
+    const distinctRows = ((distinctRes as unknown as [any[]])[0] ?? distinctRes) as Array<{
+      invoiceCount?: number | string;
+    }>;
+    distinctInvoiceCount = Number(distinctRows[0]?.invoiceCount ?? 0);
+  }
   const summary = rows.reduce(
     (acc, row) => ({
-      invoiceCount: acc.invoiceCount + row.invoiceCount,
+      invoiceCount: distinctInvoiceCount,
       netSales: toDbMoney(money(acc.netSales).plus(row.netSales)),
       discount: toDbMoney(money(acc.discount).plus(row.discount)),
       cost: toDbMoney(money(acc.cost).plus(row.cost)),

@@ -22,6 +22,7 @@ export interface UsePOSTabHelpersParams {
   activeIdRef: MutableRefObject<number>;
   qtyEntryRef: MutableRefObject<{ tabId: number; lineId: number | null; replaceNextDigit: boolean }>;
   digitalCheckoutRef: MutableRefObject<{ tabId: number } | null>;
+  cartRevisionRef?: MutableRefObject<number>;
   activeTab: POSTab;
   setSearch: (s: string) => void;
   setShowDrop: (b: boolean) => void;
@@ -44,12 +45,23 @@ export function usePOSTabHelpers({
   activeIdRef,
   qtyEntryRef,
   digitalCheckoutRef,
+  cartRevisionRef,
   activeTab,
   setSearch,
   setShowDrop,
   searchRef,
 }: UsePOSTabHelpersParams) {
   function patchTab(id: number, patch: Partial<POSTab>) {
+    if (
+      cartRevisionRef &&
+      ("cart" in patch ||
+        "customerId" in patch ||
+        "tierOverride" in patch ||
+        "couponInput" in patch ||
+        "couponCode" in patch)
+    ) {
+      cartRevisionRef.current += 1;
+    }
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }
 
@@ -60,6 +72,7 @@ export function usePOSTabHelpers({
   function setCart(updater: CartItem[] | ((c: CartItem[]) => CartItem[])) {
     const id = activeIdRef.current;
     if (digitalCheckoutRef.current?.tabId === id) return;
+    if (cartRevisionRef) cartRevisionRef.current += 1;
     setTabs((prev) =>
       prev.map((t) =>
         t.id !== id
@@ -259,7 +272,10 @@ export function usePOSTabHelpers({
     patchActive({ customerId: v, tierOverride: null });
   };
 
-  const setTierOvr = (v: Tier | null) => patchActive({ tierOverride: v });
+  const setTierOvr = (v: Tier | null) => {
+    if (activeTab.couponCode) clearAppliedCoupon();
+    patchActive({ tierOverride: v });
+  };
 
   function addTab() {
     const id = (tabs.length ? Math.max(...tabs.map((t) => t.id)) : 0) + 1;

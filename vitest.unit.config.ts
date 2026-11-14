@@ -26,6 +26,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/digitalCards/DigitalRefundTenderFields.test.tsx",
       "client/src/components/digitalCards/useDurableDigitalSale.test.tsx",
       "client/src/components/pos/posSharedFinancialRecovery.test.ts",
+      "client/src/components/pos/posCouponPreview.test.ts",
       "client/src/StorefrontBootstrap.test.ts",
       "client/src/pages/__tests__/supplierPaymentRequestOutcome.test.tsx",
       "client/src/lib/persistedFinancialIntent.test.ts",

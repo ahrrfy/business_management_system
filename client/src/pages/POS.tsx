@@ -67,6 +67,7 @@ import {
 import { usePOSOfflineBoot } from "@/components/pos/usePOSOfflineBoot";
 import { usePOSCatalogSearch } from "@/components/pos/usePOSCatalogSearch";
 import { usePOSTabHelpers } from "@/components/pos/usePOSTabHelpers";
+import { applyPosCouponPreviewToTabs, buildPosCouponPreviewInput, capturePosCouponPreviewSnapshot, isPosCouponPreviewFresh } from "@/components/pos/posCouponPreview";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -195,6 +196,8 @@ export default function POS() {
 
   const searchRef = useRef<HTMLInputElement>(null);
   const qtyEntryRef = useRef({ tabId: activeId, lineId: null as number | null, replaceNextDigit: true });
+  const cartRevisionRef = useRef(0);
+  const couponReqSeqRef = useRef(0);
   // تثبيت سياق الطلب: تبديل تبويب أثناء الشبكة لا يمسح سلة أخرى ولا يغيّر المبلغ.
   const digitalCheckoutRef = useRef<{
     tabId: number; requestId: string; total: string; received: string;
@@ -208,7 +211,7 @@ export default function POS() {
     resetCouponItems, clearAppliedCoupon, setCustId, setTierOvr, addTab, closeTab, numPress,
   } = usePOSTabHelpers({
     tabs, setTabs, activeId, setActiveId, activeIdRef, qtyEntryRef,
-    digitalCheckoutRef, activeTab, setSearch, setShowDrop, searchRef,
+    digitalCheckoutRef, cartRevisionRef, activeTab, setSearch, setShowDrop, searchRef,
   });
 
   // ── Cart draft — عزل صريح بالفرع + المستخدم + الوردية ───────────────────
@@ -740,59 +743,25 @@ export default function POS() {
     }
   }
 
-  const couponPreview = trpc.crm.coupons.preview.useMutation({
-    onSuccess: (result) => {
-      if (cartHasDigitalRef.current) return;
-      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
-      setCart((items) => items.map((item) => {
-        const base = item.preCouponRow ?? item.row;
-        const applied = byUnit.get(Number(base.productUnitId));
-        if (!applied) return { ...item, row: base, preCouponRow: undefined, cartPromo: null };
-        const lineDiscount = (applied as any).promotionLineDiscount
-          ?? D(applied.promotionDiscountForUnit).times(item.qty).toFixed(2);
-        return {
-          ...item,
-          disc: undefined,
-          preCouponRow: base,
-          cartPromo: {
-            promotionId: applied.promotionId,
-            promotionName: applied.promotionName,
-            lineDiscount,
-          },
-          row: {
-            ...base,
-            promotionId: applied.promotionId,
-            promotionName: applied.promotionName,
-            promotionDiscountForUnit: applied.promotionDiscountForUnit,
-            promotionEffectivePrice: applied.promotionEffectivePrice,
-          },
-        };
-      }));
-      patchActive({ couponInput: result.code, couponCode: result.code, couponLabel: result.programName, couponFreeShippingPromo: result.freeShipping ? (result.freeShippingPromotionName ?? result.programName) : null });
-      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
-    },
-    onError: (error) => notify.err(error),
-  });
+  const couponPreview = trpc.crm.coupons.preview.useMutation();
+  const couponLiveRef = useRef({ activeId, branchId, effectiveTier, cartHasDigital, activeTab });
+  couponLiveRef.current = { activeId, branchId, effectiveTier, cartHasDigital, activeTab };
 
-  function applyCoupon() {
+  async function applyCoupon() {
     if (cartHasDigital) return notify.err("الكوبونات غير متاحة لفاتورة تحتوي بطاقات رقمية");
     const code = activeTab.couponInput.trim();
     if (!code || !cart.length) return;
-    const baseItems = resetCouponItems(cart);
-    couponPreview.mutate({
-      code,
-      branchId,
-      customerId: activeTab.customerId ?? undefined,
-      customerTier: effectiveTier,
-      lines: baseItems.map((item) => ({
-        productId: item.row.productId,
-        variantId: item.row.variantId,
-        productUnitId: item.row.productUnitId,
-        unitPrice: String(item.row.price ?? "0"),
-        quantity: item.qty,
-        hasContractPrice: item.row.isContractPrice,
-      })),
-    });
+    const requestSeq = ++couponReqSeqRef.current;
+    const snapshot = capturePosCouponPreviewSnapshot({ requestSeq, cartRevision: cartRevisionRef.current, tab: activeTab, branchId, effectiveTier });
+    try {
+      const result = await couponPreview.mutateAsync(buildPosCouponPreviewInput({ tab: activeTab, branchId, effectiveTier }));
+      const liveMeta = () => ({ latestRequestSeq: couponReqSeqRef.current, cartRevision: cartRevisionRef.current, activeTabId: couponLiveRef.current.activeId, branchId: couponLiveRef.current.branchId, effectiveTier: couponLiveRef.current.effectiveTier, cartHasDigital: cartHasDigitalRef.current });
+      if (!isPosCouponPreviewFresh(snapshot, { ...liveMeta(), tab: couponLiveRef.current.activeTab })) return;
+      setTabs((prev) => applyPosCouponPreviewToTabs(prev, snapshot, liveMeta(), result));
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    } catch (error) {
+      if (isPosCouponPreviewFresh(snapshot, { latestRequestSeq: couponReqSeqRef.current, cartRevision: cartRevisionRef.current, activeTabId: couponLiveRef.current.activeId, branchId: couponLiveRef.current.branchId, effectiveTier: couponLiveRef.current.effectiveTier, cartHasDigital: cartHasDigitalRef.current, tab: couponLiveRef.current.activeTab })) notify.err(error);
+    }
   }
 
   // §٥: لقطة مبالغ/منتجات البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب

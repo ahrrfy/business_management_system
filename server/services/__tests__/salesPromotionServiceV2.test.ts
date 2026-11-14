@@ -1912,6 +1912,98 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(page2.map((p) => p.variantId)).toEqual([191]);
     expect(page3).toEqual([]);
   });
+
+  it("R8-2: loadPromotionPerformance يعد الفاتورة الواحدة متعددة العروض مرةً واحدة في الملخص مع إبقاء عداد كل عرض مستقلاً", async () => {
+    await db().insert(s.products).values([
+      { id: 196, name: "منتج عرض أ", categoryId: 1 },
+      { id: 197, name: "منتج عرض ب", categoryId: 1 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 196, productId: 196, sku: "PROMO-A-196", costPrice: "3000.00" },
+      { id: 197, productId: 197, sku: "PROMO-B-197", costPrice: "4000.00" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 196, variantId: 196, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 197, variantId: 197, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    ]);
+    await db().insert(s.productPrices).values([
+      { productUnitId: 196, priceTier: "RETAIL", price: "5000.00" },
+      { productUnitId: 197, priceTier: "RETAIL", price: "8000.00" },
+    ]);
+    await setStock(196, 1, 20);
+    await setStock(197, 1, 20);
+
+    const promoA = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "عرض منتج أ",
+          type: "AMOUNT",
+          discountAmount: "500.00",
+          scope: "PRODUCTS",
+          effectiveFrom: "2020-01-01",
+          targets: [{ variantId: 196 }],
+        },
+        1,
+      ),
+    );
+    const promoB = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "عرض منتج ب",
+          type: "AMOUNT",
+          discountAmount: "1000.00",
+          scope: "PRODUCTS",
+          effectiveFrom: "2020-01-01",
+          targets: [{ variantId: 197 }],
+        },
+        1,
+      ),
+    );
+
+    const shiftId = await openShift();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        priceTier: "RETAIL",
+        lines: [
+          {
+            variantId: 196,
+            productUnitId: 196,
+            quantity: "1",
+            discountAmount: "500.00",
+            promotionDiscount: "500.00",
+            promotionId: promoA,
+          },
+          {
+            variantId: 197,
+            productUnitId: 197,
+            quantity: "1",
+            discountAmount: "1000.00",
+            promotionDiscount: "1000.00",
+            promotionId: promoB,
+          },
+        ],
+        payment: { amount: "11500.00", method: "CASH" },
+      } as any,
+      actor,
+    );
+    expect(sale.total).toBe("11500.00");
+
+    const perf = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    const rowA = perf.rows.find((r) => r.promotionId === promoA);
+    const rowB = perf.rows.find((r) => r.promotionId === promoB);
+    expect(rowA?.invoiceCount).toBe(1);
+    expect(rowB?.invoiceCount).toBe(1);
+    expect(perf.summary.invoiceCount).toBe(1);
+    expect(perf.summary.discount).toBe("1500.00");
+    expect(perf.summary.netSales).toBe("11500.00");
+    expect(perf.summary.cost).toBe("7000.00");
+    expect(perf.summary.grossProfit).toBe("4500.00");
+  });
 });
 
 
