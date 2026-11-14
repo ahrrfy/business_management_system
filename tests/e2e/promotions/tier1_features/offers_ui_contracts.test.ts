@@ -40,6 +40,11 @@ import {
   evaluateReceptionCartPromotionsPure,
 } from "@/components/reception/useReceptionCartPromotions";
 import {
+  buildDeliveryPayload,
+  emptyDeliveryDraft,
+} from "@/components/pos/deliveryMode";
+import { reconcilePosDeliveryAutoFreeShipping } from "@/components/pos/usePosCartPromotions";
+import {
   PRD_CHEAP_PEN,
   PRD_INK_EPSON,
   PRD_NOTEBOOK_FABER,
@@ -1054,7 +1059,7 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       );
       const simulatorSrc = fs.readFileSync(simulatorPath, "utf-8");
       expect(simulatorSrc).toMatch(
-        /simulateMultiRuleBasketPreview\(\s*cartItems,\s*allRuleInputs,\s*safePositiveDecimal\(formData\.minOrderSpend\),\s*Boolean\(formData\.freeShipping\),\s*formData\.applicationMode\s*\)/,
+        /simulateMultiRuleBasketPreview\(\s*cartItems,\s*allRuleInputs,\s*safePositiveDecimal\(formData\.minOrderSpend\),\s*sharedShippingPerk,\s*formData\.applicationMode\s*\)/,
       );
 
       const cartItems = [
@@ -1097,6 +1102,245 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       // COUPON caps 1,000 IQD across the whole cart => 1,000 IQD total
       expect(couponPreview.discount.toFixed(2)).toBe("1000.00");
       expect(couponPreview.netTotal.toFixed(2)).toBe("19000.00");
+    });
+
+    it("T1-F19-15: Reception pure promotion evaluator scopes minOrderSpend to regular goods lines and excludes print/custom/manualService lines", () => {
+      const rules = [
+        {
+          id: 91,
+          name: "خصم 20% لطلبات البضاعة 2000+",
+          type: "PERCENT" as const,
+          scope: "ALL" as const,
+          channel: "ALL" as const,
+          applicationMode: "AUTO" as const,
+          priority: 10,
+          discountPercent: new Decimal(20),
+          minOrderSpend: new Decimal(2000),
+          freeShipping: true,
+          effectiveFrom: "2026-01-01",
+          isActive: true,
+        },
+      ];
+
+      // 1,000 IQD regular merchandise + 1,500 IQD print service + 3,000 IQD custom work order => regularSale gross is only 1,000 IQD (< 2,000)
+      const belowRegularThreshold = evaluateReceptionCartPromotionsPure({
+        rawCart: [
+          {
+            key: "goods-1",
+            qty: 1,
+            row: {
+              productId: 10,
+              variantId: 100,
+              productUnitId: 1000,
+              price: "1000",
+              isBaseUnit: true,
+              isContractPrice: false,
+              isPrintService: false,
+              isService: false,
+            } as never,
+          },
+          {
+            key: "print-1",
+            qty: 1,
+            row: {
+              productId: 20,
+              variantId: 200,
+              productUnitId: 2000,
+              price: "1500",
+              isBaseUnit: true,
+              isContractPrice: false,
+              isPrintService: true,
+              isService: true,
+            } as never,
+          },
+          {
+            key: "custom-1",
+            qty: 1,
+            custom: { title: "درع تخرج", unitPrice: "3000" } as never,
+            row: {
+              productId: 30,
+              variantId: 300,
+              productUnitId: 3000,
+              price: "3000",
+              isBaseUnit: true,
+              isContractPrice: false,
+              isPrintService: false,
+              isService: false,
+            } as never,
+          },
+        ],
+        rules,
+        branchId: 1,
+        effectiveTier: "RETAIL",
+        todayYmd: "2026-06-15",
+      });
+
+      expect(belowRegularThreshold.cart[0]?.cartPromo).toBeNull();
+      expect(belowRegularThreshold.autoFreeShippingName).toBeNull();
+
+      // 2,000 IQD regular merchandise satisfies minOrderSpend on its own
+      const meetsRegularThreshold = evaluateReceptionCartPromotionsPure({
+        rawCart: [
+          {
+            key: "goods-2",
+            qty: 2,
+            row: {
+              productId: 10,
+              variantId: 100,
+              productUnitId: 1000,
+              price: "1000",
+              isBaseUnit: true,
+              isContractPrice: false,
+              isPrintService: false,
+              isService: false,
+            } as never,
+          },
+        ],
+        rules,
+        branchId: 1,
+        effectiveTier: "RETAIL",
+        todayYmd: "2026-06-15",
+      });
+
+      expect(meetsRegularThreshold.cart[0]?.cartPromo?.lineDiscount).toBe("400.00");
+      expect(meetsRegularThreshold.autoFreeShippingName).toBe("خصم 20% لطلبات البضاعة 2000+");
+    });
+
+    it("T1-F19-16: POS auto-free-shipping ownership persists in DeliveryDraft across draft reload and strips internal markers from server payload", () => {
+      const initial = {
+        ...emptyDeliveryDraft(),
+        governorate: "baghdad",
+        address: "الكرادة داخل",
+        partyId: 5,
+        partyName: "مندوب بغداد",
+        fee: "5000",
+        feeCollection: "COURIER" as const,
+      };
+
+      // 1. Promo qualifies -> promotes COURIER to SHOP and stamps ownership inside DeliveryDraft
+      const promoted = reconcilePosDeliveryAutoFreeShipping({
+        delivery: initial,
+        freeShippingPromoName: "توصيل مجاني للقرطاسية",
+        promosReady: true,
+      });
+      expect(promoted).not.toBeNull();
+      expect(promoted?.feeCollection).toBe("SHOP");
+      expect(promoted?.autoFreeShippingOwned).toBe(true);
+      expect(promoted?.autoFreeShippingPrevCollection).toBe("COURIER");
+      expect(promoted?.autoFreeShippingPromoName).toBe("توصيل مجاني للقرطاسية");
+
+      // 2. Simulate localStorage round-trip (usePOSTabsDraft) + initial render before activePromotions query resolves
+      const restoredFromStorage = JSON.parse(JSON.stringify(promoted));
+      expect(
+        reconcilePosDeliveryAutoFreeShipping({
+          delivery: restoredFromStorage,
+          freeShippingPromoName: null,
+          promosReady: false,
+        }),
+      ).toBeNull();
+
+      // 3. Server payload strips internal autoFreeShipping* fields cleanly
+      const serverPayload = buildDeliveryPayload(restoredFromStorage);
+      expect(serverPayload).not.toBeNull();
+      expect(serverPayload?.feeCollection).toBe("SHOP");
+      expect("autoFreeShippingOwned" in (serverPayload as unknown as Record<string, unknown>)).toBe(
+        false,
+      );
+
+      // 4. Qualifying item removed after reload (promosReady = true, freeShippingPromoName = null) -> reverts SHOP back to COURIER
+      const reverted = reconcilePosDeliveryAutoFreeShipping({
+        delivery: restoredFromStorage,
+        freeShippingPromoName: null,
+        promosReady: true,
+      });
+      expect(reverted?.feeCollection).toBe("COURIER");
+      expect(reverted?.autoFreeShippingOwned).toBe(false);
+      expect(reverted?.autoFreeShippingPromoName).toBeNull();
+
+      // 5. Manual SHOP selection by cashier (autoFreeShippingOwned = false) is never reverted when promo ends
+      const manualShop = {
+        ...initial,
+        feeCollection: "SHOP" as const,
+        autoFreeShippingOwned: false,
+      };
+      expect(
+        reconcilePosDeliveryAutoFreeShipping({
+          delivery: manualShop,
+          freeShippingPromoName: null,
+          promosReady: true,
+        }),
+      ).toBeNull();
+    });
+
+    it("T1-F19-17: multi-rule simulator evaluates freeShipping per rule rather than leaking an extra FREE_SHIPPING rule onto unrelated rules", () => {
+      const offerFormSrc = fs.readFileSync(OFFER_FORM_PATH, "utf-8");
+      expect(offerFormSrc).toContain(
+        'freeShipping: shippingPerkMode === "FREE" || r0.type === "FREE_SHIPPING"',
+      );
+      expect(offerFormSrc).toContain(
+        'rules.every((r) => r.type === "FREE_SHIPPING")',
+      );
+
+      const multiRule = [
+        {
+          type: "PERCENT" as const,
+          ruleName: "خصم 10% على المادة أ",
+          percent: new Decimal(10),
+          freeShipping: false,
+          targetProductIds: [101],
+        },
+        {
+          type: "FREE_SHIPPING" as const,
+          ruleName: "توصيل مجاني للمادة ب",
+          freeShipping: true,
+          targetProductIds: [202],
+        },
+      ];
+
+      // Buying only Product A (101) gets the 10% discount and NO free shipping
+      const onlyProductA = simulateMultiRuleBasketPreview(
+        [
+          {
+            productId: 101,
+            variantId: 1010,
+            productUnitId: 10100,
+            unitPrice: new Decimal(10000),
+            quantity: 1,
+          },
+        ],
+        multiRule,
+        undefined,
+        false,
+        "AUTO",
+      );
+      expect(onlyProductA.discount.toFixed(2)).toBe("1000.00");
+      expect(onlyProductA.freeShippingApplied).toBe(false);
+
+      // Buying Product B (202) triggers Rule 2's free shipping
+      const withProductB = simulateMultiRuleBasketPreview(
+        [
+          {
+            productId: 101,
+            variantId: 1010,
+            productUnitId: 10100,
+            unitPrice: new Decimal(10000),
+            quantity: 1,
+          },
+          {
+            productId: 202,
+            variantId: 2020,
+            productUnitId: 20200,
+            unitPrice: new Decimal(5000),
+            quantity: 1,
+          },
+        ],
+        multiRule,
+        undefined,
+        false,
+        "AUTO",
+      );
+      expect(withProductB.discount.toFixed(2)).toBe("1000.00");
+      expect(withProductB.freeShippingApplied).toBe(true);
     });
   });
 });

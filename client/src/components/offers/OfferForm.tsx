@@ -383,6 +383,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
         ? rules.slice(1).map((er) => ({
             ruleLabel: er.ruleLabel.trim() || null,
             ...rulePayloadCore(er),
+            freeShipping: shippingPerkMode === "FREE" || er.type === "FREE_SHIPPING",
             ...(scopeSharingMode === "PER_RULE"
               ? {
                   scope: er.scope,
@@ -422,7 +423,8 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
   };
 
   const r0 = rules[0]!;
-  const hasFreeShippingRule = rules.some((r) => r.type === "FREE_SHIPPING");
+  const allRulesAreFreeShipping =
+    rules.length > 0 && rules.every((r) => r.type === "FREE_SHIPPING");
   const currentFormData: OfferFormData = {
     id: editingId ?? undefined,
     name,
@@ -452,7 +454,8 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
     minOrderSpend,
     channel,
     branchId,
-    freeShipping: shippingPerkMode === "FREE" || hasFreeShippingRule,
+    freeShipping: shippingPerkMode === "FREE" || r0.type === "FREE_SHIPPING",
+    shippingPerkEnabled: shippingPerkMode === "FREE",
     shippingDiscountAmount: "",
     effectiveFrom,
     effectiveTo,
@@ -915,7 +918,7 @@ export function OfferForm({ editingId, onSuccess, onDuplicated, onCancel }: Offe
               userBranchId={meQ.data?.branchId}
               shippingPerkMode={shippingPerkMode}
               onShippingPerkModeChange={setShippingPerkMode}
-              hasFreeShippingRule={hasFreeShippingRule}
+              hasFreeShippingRule={allRulesAreFreeShipping}
             />
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

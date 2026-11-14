@@ -40,30 +40,27 @@ export function evaluateReceptionCartPromotionsPure(opts: {
   }
   const eligibleIndices: number[] = [];
   const evalLines = rawCart.flatMap((c, idx) => {
-    if (c.digital) return [];
+    if (c.digital || c.custom || c.row.isPrintService || c.manualService) return [];
     const hasHistoricalOverride =
       c.draftLineDiscount != null ||
       c.draftPromo != null ||
       (c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0))));
-    const ineligible = Boolean(
-      c.custom || c.row.isPrintService || c.manualService || hasHistoricalOverride,
-    );
     const rowAny = c.row as unknown as Record<string, unknown>;
-    if (ineligible) {
+    if (hasHistoricalOverride) {
       return [
         {
           lineKey: `ineligible_${idx}`,
           productId: Number(c.row.productId ?? 0),
           variantId: Number(c.row.variantId ?? 0),
           productUnitId: Number(c.row.productUnitId ?? 0),
-          categoryId: null,
+          categoryId: typeof rowAny.categoryId === "number" ? rowAny.categoryId : null,
           quantity: c.qty,
           unitPrice: String(c.row.price ?? "0"),
-          isBaseUnit: true,
-          isBundle: false,
+          isBaseUnit: c.row.isBaseUnit !== false,
+          isBundle: Boolean(rowAny.isBundle),
           hasContractPrice: true,
           isDigitalCard: false,
-          isService: true,
+          isService: Boolean(c.row.isService),
         },
       ];
     }
@@ -86,7 +83,7 @@ export function evaluateReceptionCartPromotionsPure(opts: {
     ];
   });
 
-  if (eligibleIndices.length === 0) {
+  if (evalLines.length === 0) {
     return { cart: rawCart, autoFreeShippingName: null };
   }
 

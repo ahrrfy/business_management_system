@@ -36,6 +36,10 @@ export interface DeliveryDraft {
   recipientPhone: string;
   /** هاتف العميل (١١ خانة) الذي رُبط به التبويب — لاستئناف البحث عند العودة إلى التبويب؛ لا يُرسَل. */
   customerPhone: string;
+  /** علامات ملكية الإعفاء التلقائي للتوصيل عبر حفظ المسودة وتحديث الصفحة (لا تُرسَل للخادم). */
+  autoFreeShippingOwned?: boolean;
+  autoFreeShippingPrevCollection?: DeliveryFeeCollection;
+  autoFreeShippingPromoName?: string | null;
 }
 
 /** عقد `sales.create` ⇒ `input.delivery` (PR-1 م١-خادم): يُسنِد داخل نفس المعاملة. */

@@ -440,7 +440,10 @@ export function simulateMultiRuleBasketPreview(
       id: idx + 1,
       name: rule.ruleName || `القاعدة ${idx + 1}: ${PROMO_TYPE_LABELS[rule.type]}`,
       type: rule.type,
-      freeShipping: Boolean(offerFreeShippingFlag) || rule.type === "FREE_SHIPPING",
+      freeShipping:
+        rule.freeShipping !== undefined
+          ? rule.freeShipping || rule.type === "FREE_SHIPPING"
+          : Boolean(offerFreeShippingFlag) || rule.type === "FREE_SHIPPING",
       scope: resolvedTargets ? (useCategoryScope ? "CATEGORIES" : "PRODUCTS") : "ALL",
       channel: "ALL",
       applicationMode,

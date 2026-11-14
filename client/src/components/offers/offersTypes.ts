@@ -149,6 +149,7 @@ export interface OfferFormData {
   channel: PromoChannel;
   branchId?: string;
   freeShipping?: boolean;
+  shippingPerkEnabled?: boolean;
   shippingDiscountAmount?: string;
   effectiveFrom: string;
   effectiveTo: string;
@@ -180,6 +181,7 @@ export interface BasketPreviewOutput {
 
 export interface SimulateBasketRule {
   type: PromoType;
+  freeShipping?: boolean;
   percent?: Decimal;
   minSpend?: Decimal;
   maxDiscountAmount?: Decimal;

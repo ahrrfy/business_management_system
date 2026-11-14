@@ -81,6 +81,7 @@ const additionalRuleSchema = z.object({
   allowBelowCost: z.boolean().optional(),
   applyToBaseUnitOnly: z.boolean().optional(),
   minLineAmount: moneyStr.optional(),
+  freeShipping: z.boolean().optional(),
 });
 
 const PROMO_TYPE_AR_SHORT: Record<z.infer<typeof promoTypeEnum>, string> = {
@@ -256,7 +257,13 @@ export const promotionsV2Router = router({
               discountAmount: extra.discountAmount,
               maxDiscountAmount: extra.maxDiscountAmount,
               minOrderSpend: promotionInput.minOrderSpend,
-              freeShipping: extra.type === "FREE_SHIPPING" ? true : promotionInput.freeShipping,
+              freeShipping:
+                extra.type === "FREE_SHIPPING"
+                  ? true
+                  : (extra.freeShipping ??
+                    (promotionInput.type === "FREE_SHIPPING"
+                      ? false
+                      : promotionInput.freeShipping)),
               shippingDiscountAmount: promotionInput.shippingDiscountAmount,
               scope: extra.scope ?? promotionInput.scope,
               effectiveFrom: promotionInput.effectiveFrom,

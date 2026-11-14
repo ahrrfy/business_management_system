@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { evaluateCartPromotions, type PromotionRule } from "@shared/promotionEngine";
 import { todayYmdBaghdad } from "@shared/promotionScheduling";
 import { loadOfflineActivePromotions } from "@/lib/offline/catalogSync";
@@ -10,6 +10,62 @@ import type { CartItem, Tier } from "./posShared";
 export interface UsePosCartPromotionsResult {
   cart: CartItem[];
   freeShippingPromoName: string | null;
+}
+
+/**
+ * يطابق حالة تحصيل أجرة التوصيل مع عرض/كوبون التوصيل المجاني مع حفظ علامة الملكية التلقائية
+ * والتحصيل الأصلي داخل `DeliveryDraft` نفسه لتصمد عبر حفظ المسوّدة وتحديث الصفحة وتبديل التبويبات.
+ */
+export function reconcilePosDeliveryAutoFreeShipping(opts: {
+  delivery: DeliveryDraft | null;
+  freeShippingPromoName: string | null;
+  promosReady: boolean;
+}): DeliveryDraft | null {
+  const { delivery, freeShippingPromoName, promosReady } = opts;
+  if (!delivery || !promosReady) return null;
+
+  if (freeShippingPromoName) {
+    if (delivery.autoFreeShippingPromoName === freeShippingPromoName) {
+      return null;
+    }
+    if (delivery.feeCollection !== "SHOP") {
+      return {
+        ...delivery,
+        feeCollection: "SHOP",
+        autoFreeShippingOwned: true,
+        autoFreeShippingPrevCollection: delivery.feeCollection,
+        autoFreeShippingPromoName: freeShippingPromoName,
+      };
+    }
+    return {
+      ...delivery,
+      autoFreeShippingPromoName: freeShippingPromoName,
+    };
+  }
+
+  if (delivery.autoFreeShippingOwned) {
+    const restored =
+      delivery.autoFreeShippingPrevCollection &&
+      delivery.autoFreeShippingPrevCollection !== "SHOP"
+        ? delivery.autoFreeShippingPrevCollection
+        : "COURIER";
+    return {
+      ...delivery,
+      feeCollection: restored,
+      autoFreeShippingOwned: false,
+      autoFreeShippingPrevCollection: undefined,
+      autoFreeShippingPromoName: null,
+    };
+  }
+
+  if (delivery.autoFreeShippingPromoName != null) {
+    return {
+      ...delivery,
+      autoFreeShippingPromoName: null,
+    };
+  }
+
+  return null;
 }
 
 export function usePosCartPromotions(opts: {
@@ -118,34 +174,20 @@ export function usePosCartPromotions(opts: {
   const freeShippingPromoName = couponCode
     ? (couponFreeShippingPromo ?? null)
     : evaluated.autoFreeShippingName;
-
-  const autoManagedByTabRef = useRef<Record<number, boolean>>({});
-  const lastAppliedPromoByTabRef = useRef<Record<number, string | null>>({});
+  const promosReady =
+    Boolean(couponCode) || activePromoRules !== undefined || rawCart.length === 0;
 
   useEffect(() => {
-    if (!delivery || !onAutoFreeShipping) {
-      lastAppliedPromoByTabRef.current[tabId] = null;
-      autoManagedByTabRef.current[tabId] = false;
-      return;
+    if (!delivery || !onAutoFreeShipping) return;
+    const nextDelivery = reconcilePosDeliveryAutoFreeShipping({
+      delivery,
+      freeShippingPromoName,
+      promosReady,
+    });
+    if (nextDelivery) {
+      onAutoFreeShipping(nextDelivery);
     }
-    if (freeShippingPromoName) {
-      if (lastAppliedPromoByTabRef.current[tabId] !== freeShippingPromoName) {
-        lastAppliedPromoByTabRef.current[tabId] = freeShippingPromoName;
-        if (delivery.feeCollection !== "SHOP") {
-          autoManagedByTabRef.current[tabId] = true;
-          onAutoFreeShipping({ ...delivery, feeCollection: "SHOP" });
-        }
-      }
-      return;
-    }
-    lastAppliedPromoByTabRef.current[tabId] = null;
-    if (autoManagedByTabRef.current[tabId]) {
-      autoManagedByTabRef.current[tabId] = false;
-      if (delivery.feeCollection === "SHOP") {
-        onAutoFreeShipping({ ...delivery, feeCollection: "COURIER" });
-      }
-    }
-  }, [tabId, delivery, freeShippingPromoName, onAutoFreeShipping]);
+  }, [tabId, delivery, freeShippingPromoName, promosReady, onAutoFreeShipping]);
 
   return {
     cart: evaluated.cart,

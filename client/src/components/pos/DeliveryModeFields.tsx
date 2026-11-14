@@ -230,7 +230,14 @@ export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId
           <AppSelect
             id="pos-delivery-fee-collection"
             value={draft.feeCollection}
-            onValueChange={(v) => onChange({ ...draft, feeCollection: v as DeliveryFeeCollection })}
+            onValueChange={(v) =>
+              onChange({
+                ...draft,
+                feeCollection: v as DeliveryFeeCollection,
+                autoFreeShippingOwned: false,
+                autoFreeShippingPrevCollection: undefined,
+              })
+            }
             aria-label="من يقبض أجرة التوصيل"
             className="h-9 text-xs"
             disabled={disabled}

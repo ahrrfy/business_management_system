@@ -158,9 +158,14 @@ export function OfferLivePreviewSimulator({
         ? selectedProducts
         : initialItems
     );
+    const sharedShippingPerk = Boolean(
+      formData.shippingPerkEnabled ??
+        (formData.type !== "FREE_SHIPPING" && formData.freeShipping)
+    );
     const primaryRuleInput: SimulateBasketRule & { ruleName?: string } = {
       ruleName: `قاعدة 1: ${PROMO_TYPE_LABELS[formData.type]}`,
       type: formData.type,
+      freeShipping: Boolean(formData.freeShipping) || formData.type === "FREE_SHIPPING",
       percent:
         formData.type === "PERCENT"
           ? safePositiveDecimal(formData.discountPercent)
@@ -209,6 +214,7 @@ export function OfferLivePreviewSimulator({
         return {
           ruleName: er.ruleLabel.trim() || `قاعدة ${i + 2}: ${PROMO_TYPE_LABELS[er.type]}`,
           type: er.type,
+          freeShipping: sharedShippingPerk || er.type === "FREE_SHIPPING",
           percent: er.type === "PERCENT" ? safePositiveDecimal(er.discountPercent) : undefined,
           maxDiscountAmount:
             er.type === "PERCENT" ? safePositiveDecimal(er.maxDiscountAmount) : undefined,
@@ -239,7 +245,7 @@ export function OfferLivePreviewSimulator({
       cartItems,
       allRuleInputs,
       safePositiveDecimal(formData.minOrderSpend),
-      Boolean(formData.freeShipping),
+      sharedShippingPerk,
       formData.applicationMode
     );
     return extraList.length === 0
