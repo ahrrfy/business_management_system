@@ -21,6 +21,8 @@ export function DangerConfirmDialog(props: {
   description: string;
   /** رمز التأكيد المطلوب (اسم القاعدة). */
   confirmToken: string;
+  confirmationLabel?: string;
+  passwordLabel?: string;
   /** نقاط تحذير تُعرض كقائمة. */
   warnings?: string[];
   actionLabel: string;
@@ -33,6 +35,7 @@ export function DangerConfirmDialog(props: {
 }) {
   const {
     open, onOpenChange, title, description, confirmToken, warnings, actionLabel, pending,
+    confirmationLabel = "اكتب اسم القاعدة للتأكيد", passwordLabel = "كلمة مرور المدير",
     onCancelPending, pendingCancelLabel = "إلغاء العملية", showSeedToggle, onConfirm,
   } = props;
   const [typed, setTyped] = useState("");
@@ -67,11 +70,11 @@ export function DangerConfirmDialog(props: {
           </p>
 
           <div className="space-y-1">
-            <Label htmlFor="dc-token">اكتب اسم القاعدة للتأكيد: <code dir="ltr" className="font-mono text-foreground">{confirmToken}</code></Label>
-            <Input id="dc-token" dir="ltr" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={confirmToken} autoComplete="off" />
+            <Label htmlFor="dc-token" className="flex-wrap">{confirmationLabel} <code dir="auto" className="break-all font-mono text-foreground">{confirmToken}</code></Label>
+            <Input id="dc-token" dir="auto" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={confirmToken} autoComplete="off" />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="dc-pwd">كلمة مرور المدير</Label>
+            <Label htmlFor="dc-pwd">{passwordLabel}</Label>
             <Input id="dc-pwd" type="password" dir="ltr" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" />
           </div>
           {showSeedToggle && (

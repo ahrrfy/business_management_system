@@ -485,6 +485,7 @@ export const UNIT_TEST_FILES: string[] = [
       "server/services/__tests__/printService.test.ts",
       "server/services/__tests__/monthCloseSequence.test.ts",
       "server/services/__tests__/restoreScriptContract.test.ts",
+      "server/services/__tests__/ownerRestoreService.test.ts",
       "server/services/__tests__/storefrontOrderGate.test.ts",
       "server/services/__tests__/storefrontTurnstile.test.ts",
       "server/services/__tests__/storefrontCartShareService.test.ts",
