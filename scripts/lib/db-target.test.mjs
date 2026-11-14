@@ -232,6 +232,8 @@ async function restoreExecution({
   streamUuid = uuid,
   missingDatabase = false,
   noBackup = false,
+  databaseDefaults,
+  skipMigrations = false,
 } = {}) {
   const source = readFileSync(
     new URL("../restore.mjs", import.meta.url),
@@ -295,6 +297,8 @@ async function restoreExecution({
     url: "mysql://root:pw@127.0.0.1:3310/erp",
     dbName: "erp",
     targetDb: "erp",
+    databaseDefaults,
+    skipMigrations,
     fail: (message) => {
       throw new Error(message);
     },
@@ -316,7 +320,7 @@ async function restoreExecution({
       child.stdin = new Writable({
         write(chunk, encoding, callback) {
           if (chunk.toString().includes("DROP DATABASE")) {
-            calls.push({ drop: true });
+            calls.push({ drop: true, sql: chunk.toString() });
             databaseCreated = true;
           }
           if (chunk.toString().includes("ALROYA_TARGET_IDENTITY:"))
@@ -415,6 +419,22 @@ test("explicit no-backup recovery creates a missing database only after exact-co
     false,
     "client must not select a database before CREATE",
   );
+});
+test("managed rollback recreates the database with its captured defaults and verifies without migrating", async () => {
+  const calls = await restoreExecution({
+    publishedPort: "3310",
+    noBackup: true,
+    databaseDefaults: "utf8mb4:utf8mb4_bin",
+    skipMigrations: true,
+  });
+  const recreation = calls.find((call) => call.drop);
+  assert.match(
+    recreation.sql,
+    /CREATE DATABASE `erp` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;/,
+  );
+  const verification = calls.filter((call) => call.command === "pnpm");
+  assert.deepEqual(verification.map((call) => call.args), [["db:verify"]]);
+  assert.equal(verification[0].env.DB_TARGET_EXPECTED_UUID, "server-b");
 });
 test("missing database still refuses ordinary restore before backup or destructive SQL", async () => {
   await assert.rejects(

@@ -1,5 +1,7 @@
-import { runtimeWorkDrain, runtimeDrainBoundary } from "./lib/workDrain";
 import "dotenv/config";
+import { runtimeWorkDrain, runtimeDrainBoundary } from "./lib/workDrain";
+import { ownerRestoreMaintenanceBoundary, readOwnerRestoreStatus } from "./services/ownerRestoreService";
+import { OWNER_RESTORE_STATUS_PATH } from "../shared/ownerRestore";
 import { initSentry, Sentry } from "./sentry";
 // تهيئة Sentry قبل أي شيء (لا أثر إن لم يُضبط DSN).
 const sentryEnabled = initSentry();
@@ -243,6 +245,9 @@ async function startServer() {
       next();
     });
   }
+
+  app.get(OWNER_RESTORE_STATUS_PATH, readOwnerRestoreStatus);
+  app.use(ownerRestoreMaintenanceBoundary());
 
   // تسجيل بنيوي + معرّف لكل طلب (req.id) يُستعمل للربط في الأخطاء.
   app.use(
