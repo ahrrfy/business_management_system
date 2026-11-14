@@ -717,6 +717,23 @@ export function forwardRecoveryProjectionBaseline(existing, state) {
   return activeInventoryManifest({ ...existing, id: active.activationId, phase: "RELEASED", commit: active.commit, artifacts: active.artifacts, active });
 }
 
+/**
+ * Requires explicit external-writer attestation (`=1`) for initial activation or
+ * schema cutovers. Routine code deploys with an already-active prior manifest
+ * still enforce live MySQL `assertNoUnownedSessions`, `event_scheduler=OFF`,
+ * `replication=OFF`, and UID process census without requiring manual `.env` edits,
+ * unless explicitly disabled with `=0`.
+ */
+export function resolveExternalWritersExcluded(
+  environment,
+  { priorActive, schemaTransition } = {},
+) {
+  const flag = environment?.ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED;
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  return !schemaTransition && Boolean(priorActive);
+}
+
 export async function executeInventoryDeployment(options) {
   const {
     projectRoot,
@@ -799,8 +816,10 @@ export async function executeInventoryDeployment(options) {
       journal,
       connectionA: a,
       connectionB: b,
-      externalWritersExcluded:
-        environment.ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED === "1",
+      externalWritersExcluded: resolveExternalWritersExcluded(environment, {
+        priorActive,
+        schemaTransition: options.schemaTransition,
+      }),
       forwardRecoveryJournal: forwardRecovery ? existing : null,
     });
     return await runInventoryActivation({
