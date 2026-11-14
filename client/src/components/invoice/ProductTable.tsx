@@ -570,13 +570,16 @@ export function ProductTable({
                         // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
                         <span className="text-xs text-muted-foreground">—</span>
                       ) : readOnlyPricing ? (
-                        <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {fmtNum(item.discount)}
+                          {item.discountType === "amount" ? " د.ع" : "%"}
+                        </span>
                       ) : (
                         <InlineNumberInput
                           value={item.discount}
                           width="w-14"
                           max={100}
-                          suffix="%"
+                          suffix={item.discountType === "amount" ? " د.ع" : "%"}
                           ariaLabel={`خصم ${item.name} بالنسبة المئوية`}
                           onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
                         />

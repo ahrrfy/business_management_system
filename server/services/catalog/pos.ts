@@ -8,7 +8,14 @@ import { resolveContractPrices } from "../contractPriceService";
 import { money, toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
-import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotionService";
+import {
+  getProductCategoryIds,
+  loadPromotionRuleSnapshot,
+  resolvePromotionForLine,
+  resolvePromotionFromSnapshot,
+  snapshotToEngineRules,
+} from "../salesPromotionService";
+import type { PromotionRule } from "../../../shared/promotionEngine";
 import { withTx } from "../tx";
 import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility, warehouseVisibility } from "./search";
@@ -21,6 +28,7 @@ export interface PosRow {
   /** الفرع الفعلي الذي قرأه الخادم بعد تطبيق عزل الحساب؛ لا يُستنتج من طلب العميل. */
   branchId: number;
   productId: number;
+  categoryId?: number | null;
   productName: string;
   variantId: number;
   variantName: string | null;
@@ -95,6 +103,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
   return db
     .select({
       productId: products.id,
+      categoryId: products.categoryId,
       productName: products.name,
       posLabel: products.posLabel,
       shortTitle: products.shortTitle,
@@ -147,6 +156,7 @@ function normalize(rows: any[], branchId: number): PosRow[] {
     branchId,
     productName: titleForChannel({ name: r.productName, posLabel: r.posLabel, shortTitle: r.shortTitle }, "pos"),
     productId: Number(r.productId),
+    categoryId: r.categoryId == null ? null : Number(r.categoryId),
     variantId: Number(r.variantId),
     productUnitId: Number(r.productUnitId),
     isBaseUnit: !!r.isBaseUnit,
@@ -180,14 +190,11 @@ function todayYmdBaghdad(): string {
 }
 
 /**
- * promotions v2 (٨/٧/٢٦، gstack B1+B2+B8): يحلّ العرض المطبَّق على كل صفٍّ ويعرض السعر المخصوم.
- *   - يتخطّى الأسطر التي لها سعر تعاقدي (`isContractPrice=true`) — قرار المالك: التعاقدي يفوز.
- *   - يتخطّى البكجات (نطاق قرار: العروض على البكج نُخطّطها بعد استقرار موجة v2).
- *   - يتخطّى الخدمات (لا معنى لعرض «خصم» على خدمة مسعّرة كليّاً).
- *   - يستدعي `resolvePromotionForLine` لكل صفٍّ ناجٍ ⇒ يُعبّي promotionId/Name/DiscountForUnit/EffectivePrice.
- *
- * ملاحظة الأداء: النداء يمرّ بـ`withTx` قصير لكل قائمة (لا يمنع القفل — نستدعي بلا FOR UPDATE).
- * المستدعي: قائمة POS + مطابقة الباركود ⇒ ٥٠-٢٠٠ صف ⇒ استدعاء واحد لكل نداء API. مقبول.
+ * promotions v2: يحلّ العرض الفردي المطبَّق على كل صفٍّ عند كميّة 1 ويعرض السعر المخصوم.
+ *   - يتخطّى الأسطر التي لها سعر تعاقدي (`isContractPrice=true`) — التعاقدي يفوز.
+ *   - يتخطّى الخدمات وخدمات الطباعة.
+ *   - الباقات الجاهزة (`isBundle=true`) تُستثنى تلقائياً من عروض `ALL` داخل المحرك وتقبل الاستهداف الصريح.
+ *   - عروض السلة المشروطة بالكمية/المجموعة (`BUNDLE_PRICE`, `BOGO`, `TIERED_QTY` بكمية >1) تُقيَّم حيّاً في السلة عبر `listActivePosPromotions`.
  */
 async function applyPromotions(
   rows: PosRow[],
@@ -196,7 +203,7 @@ async function applyPromotions(
 ): Promise<PosRow[]> {
   if (!rows.length) return rows;
   const eligible = rows.filter(
-    (r) => !r.isContractPrice && !r.isBundle && !r.isService && !r.isPrintService && r.price != null,
+    (r) => !r.isContractPrice && !r.isService && !r.isPrintService && r.price != null,
   );
   if (!eligible.length) return rows;
 
@@ -204,24 +211,44 @@ async function applyPromotions(
   const resolvedMap = new Map<number, { id: number; name: string; discountForUnit: string; effective: string }>();
 
   await withTx(async (tx: Tx) => {
-    // productId + categoryId جماعياً — تجنّب N+1.
-    const productIds = Array.from(new Set(eligible.map((r) => r.productId)));
-    const categoryByProduct = await getProductCategoryIds(tx, productIds);
+    const missingCatIds = Array.from(
+      new Set(eligible.filter((r) => r.categoryId === undefined).map((r) => r.productId)),
+    );
+    const categoryByProduct = missingCatIds.length
+      ? await getProductCategoryIds(tx, missingCatIds)
+      : new Map<number, number | null>();
+
+    const snapshot = eligible.length > 1
+      ? await loadPromotionRuleSnapshot(tx, {
+          branchId,
+          customerTier,
+          todayYmd,
+          includeStoreManaged: false,
+          evaluationChannel: "POS",
+          requiredApplicationMode: "AUTO",
+        })
+      : null;
 
     for (const r of eligible) {
       const price = money(r.price!);
-      const lineAmount = price; // كميّة 1 عند التسعير المعروض — Line-min filter عمليّاً لا يعمل لأنه على «إجمالي السطر» في العرض الأصلي؛ للـPOS نمرّر سعر الوحدة (خصمٌ min-line=0 يعمل، >0 يتخطّى لأن العميل يبني الكميّة لاحقاً).
-      const res = await resolvePromotionForLine(tx, {
+      const lineInput = {
         branchId,
         customerTier,
         productId: r.productId,
         variantId: r.variantId,
-        categoryId: categoryByProduct.get(r.productId) ?? null,
+        productUnitId: r.productUnitId,
+        isBaseUnit: r.isBaseUnit,
+        isBundle: r.isBundle,
+        categoryId: r.categoryId !== undefined ? r.categoryId : (categoryByProduct.get(r.productId) ?? null),
         unitPrice: price.toFixed(2),
-        lineAmount: lineAmount.toFixed(2),
-        hasContractPrice: false, // filtered above
+        lineAmount: price.toFixed(2),
+        quantity: 1,
+        hasContractPrice: false,
         todayYmd,
-      });
+      };
+      const res = snapshot
+        ? resolvePromotionFromSnapshot(snapshot, lineInput)
+        : await resolvePromotionForLine(tx, lineInput);
       if (res) {
         const effective = price.minus(money(res.discountForUnit));
         resolvedMap.set(r.productUnitId, {
@@ -244,6 +271,24 @@ async function applyPromotions(
       promotionDiscountForUnit: res.discountForUnit,
       promotionEffectivePrice: res.effective,
     };
+  });
+}
+
+/** قواعد العروض التلقائية النشطة لقناة البيع المباشر لتقييم السلة التفاعلي (`evaluateCartPromotions`). */
+export async function listActivePosPromotions(
+  branchId: number,
+  customerTier: PriceTier,
+): Promise<PromotionRule[]> {
+  return withTx(async (tx: Tx) => {
+    const snapshot = await loadPromotionRuleSnapshot(tx, {
+      branchId,
+      customerTier,
+      todayYmd: todayYmdBaghdad(),
+      includeStoreManaged: false,
+      evaluationChannel: "POS",
+      requiredApplicationMode: "AUTO",
+    });
+    return snapshotToEngineRules(snapshot);
   });
 }
 

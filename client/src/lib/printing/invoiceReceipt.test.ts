@@ -221,4 +221,78 @@ describe("invoiceToReceipt", () => {
     expect(a4Html).toContain("بطاقة");
     expect(a4Html).toContain("POS-REF-7788");
   });
+
+  it("renders marketing promotional banner & free-shipping gift callout across Thermal, A4 V2, and Shipping Label", async () => {
+    const { buildBrowserReceiptHtml } = await import("./printTemplates");
+    const { buildSalesInvoiceV2Html } = await import("./printTemplatesV2");
+    const { invoiceDetailPrintData } = await import("./invoiceDetailPrintData");
+    const { invoiceToShippingLabel } = await import("./invoiceShippingLabel");
+    const { shippingLabelHtml } = await import("./shippingLabel");
+
+    const savedPromoInvoice = {
+      invoiceNumber: "INV-PROMO-77",
+      invoiceDate: "2026-11-13T12:00:00.000Z",
+      subtotal: "30000.00",
+      discountAmount: "0.00",
+      taxAmount: "0.00",
+      total: "24000.00",
+      paidAmount: "24000.00",
+      returnedTotal: "0.00",
+      status: "PAID" as const,
+      paymentMethod: "CASH",
+      deliveryFree: true,
+      deliveryWaivedAmount: "5000.00",
+      courierName: "شركة النور للتوصيل",
+      courierFee: "5000.00",
+      courierFeeCollection: "SHOP" as const,
+      items: [
+        {
+          productName: "طقم دفاتر جامعية",
+          unitName: "قطعة",
+          quantity: "3",
+          unitPrice: "10000.00",
+          total: "24000.00",
+          promotionId: 77,
+          promotionDiscount: "6000.00",
+          promotionName: "عرض العودة للمدارس + توصيل مجاني",
+        },
+      ],
+    };
+
+    const receipt = invoiceToReceipt(savedPromoInvoice);
+    expect(receipt.promoSummary).toMatchObject({
+      offerNames: ["عرض العودة للمدارس + توصيل مجاني"],
+      merchandiseSavings: "6000.00",
+      freeShipping: true,
+      waivedDeliveryAmount: "5000.00",
+      totalSavings: "11000.00",
+    });
+
+    const thermalHtml = buildBrowserReceiptHtml(receipt);
+    expect(thermalHtml).toContain("مزايا العروض وتوفيرك في هذه الفاتورة");
+    expect(thermalHtml).toContain("عرض العودة للمدارس + توصيل مجاني");
+    expect(thermalHtml).toContain("هدية التوصيل المجاني");
+    expect(thermalHtml).toContain("11,000");
+
+    const a4Input = invoiceDetailPrintData(savedPromoInvoice as never, null);
+    const a4Html = buildSalesInvoiceV2Html({
+      ...a4Input,
+      items: a4Input.items,
+    });
+    expect(a4Html).toContain("مزايا العروض الترويجية");
+    expect(a4Html).toContain("عرض العودة للمدارس + توصيل مجاني");
+    expect(a4Html).toContain("إجمالي توفير العميل");
+    expect(a4Html).toContain("11,000");
+    expect(a4Html).toContain("هدية عرض ترويجي");
+
+    const labelData = invoiceToShippingLabel(savedPromoInvoice);
+    expect(labelData.freeShippingPromo).toBe(true);
+    const labelHtml = await shippingLabelHtml(labelData);
+    expect(labelHtml).toContain("عرض التوصيل المجاني");
+
+    // Dead (CANCELLED) invoice suppresses promotional marketing callout
+    const cancelledReceipt = invoiceToReceipt({ ...savedPromoInvoice, status: "CANCELLED" });
+    expect(cancelledReceipt.promoSummary).toBeNull();
+    expect(buildBrowserReceiptHtml(cancelledReceipt)).not.toContain("مزايا العروض وتوفيرك في هذه الفاتورة");
+  });
 });

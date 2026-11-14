@@ -4,6 +4,7 @@ import { fmtDate } from "../date";
 import { qrCodeSvgSync } from "./qr";
 import { resolveQrUrl } from "./render";
 import { formatPaymentMethodPrintHtml } from "./cardBrandLogos";
+import { renderA4PromoBannerHtml, type PromoPrintSummary } from "./promoPrintSummary";
 
 export type A4InvoiceItem = {
   productName: string;
@@ -25,6 +26,7 @@ export type A4Invoice = {
   items: A4InvoiceItem[];
   qrUrl?: string | null;
   qrPayload?: string | null;
+  promoSummary?: PromoPrintSummary | null;
 };
 
 const getShopName = () => `${CO.name} — ${CO.sub}`;
@@ -96,6 +98,7 @@ ${CAIRO_FONT}
     <thead><tr><th class="c">#</th><th>المنتج</th><th class="c">الكمية</th><th class="l">السعر</th><th class="l">الإجمالي</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
+  ${renderA4PromoBannerHtml(inv.promoSummary, money)}
   <div class="totals">
     <div class="row"><span>المجموع قبل الخصم/الضريبة</span><span class="l-num">${money(inv.subtotal)}</span></div>
     ${Number(inv.discountAmount ?? 0) > 0 ? `<div class="row"><span>الخصم</span><span class="l-num">${money(inv.discountAmount)}</span></div>` : ""}

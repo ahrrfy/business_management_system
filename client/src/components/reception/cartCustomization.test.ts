@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { emptyCustomization } from "@/components/CustomizationDialog";
 import { prepareReceptionDraftCart, updateRestoredReceptionCustomization } from "@/lib/receptionWorkspaceState";
 import { addPlainCustomizationPiece, canAddPlainCustomizationPiece } from "./cartCustomization";
-import { effectivePrice, lineTotal, withReceptionLineDiscount, type CartLine, type PosRow } from "./cartMath";
+import { effectivePrice, lineTotal, withReceptionLineDiscount, withReceptionLineQty, type CartLine, type PosRow } from "./cartMath";
 import { buildDraftPayload } from "./draftPayloadBuilder";
+import { freezeReceptionDraftCart } from "./useReceptionCartPromotions";
 
 function customized(qty = 2): CartLine {
   return {
@@ -157,6 +158,158 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
     if (restored.ok) {
       expect(restored.cart.map(effectivePrice)).toEqual([9000, 11000]);
       expect(restored.cart.map((line) => Boolean(line.custom))).toEqual([false, true]);
+    }
+  });
+
+  it("freezes evaluated cart-level promotion prices when saving a reception draft so draft sync retains the discounted total", () => {
+    const goodsRow = {
+      productId: 5,
+      variantId: 50,
+      productUnitId: 500,
+      productName: "دفتر جامعي",
+      sku: "NB-50",
+      unitName: "قطعة",
+      conversionFactor: "1",
+      price: "1000",
+      stockBase: 20,
+      isCustomizable: false,
+      isService: false,
+    } as PosRow;
+    const evaluatedBogoCart: CartLine[] = [
+      {
+        key: "bogo-line",
+        row: goodsRow,
+        qty: 2,
+        cartPromo: { promotionId: 9, promotionName: "اشتر 1 واحصل على 1", lineDiscount: "1000.00" },
+      },
+    ];
+
+    const initialPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: evaluatedBogoCart,
+    });
+    expect(initialPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in initialPayload.lines[0]! ? initialPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+    expect("promotionId" in initialPayload.lines[0]! ? initialPayload.lines[0]!.promotionId : undefined).toBe(9);
+    expect("promotionDiscount" in initialPayload.lines[0]! ? initialPayload.lines[0]!.promotionDiscount : undefined).toBe("1000.00");
+
+    const frozen = freezeReceptionDraftCart(evaluatedBogoCart);
+    expect(frozen[0]?.cartPromo).toBeUndefined();
+    expect(frozen[0]?.origPrice).toBe(1000);
+    expect(frozen[0]?.draftLineDiscount).toBe("1000.00");
+    expect(frozen[0]?.draftPromo).toEqual({
+      promotionId: 9,
+      promotionName: "اشتر 1 واحصل على 1",
+      promotionDiscount: "1000.00",
+    });
+    expect(effectivePrice(frozen[0]!)).toBe(500);
+    expect(lineTotal(frozen[0]!)).toBe(1000);
+
+    const syncedPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: frozen,
+    });
+    expect(syncedPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+    expect("promotionId" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.promotionId : undefined).toBe(9);
+    expect("promotionDiscount" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.promotionDiscount : undefined).toBe("1000.00");
+
+    // Clearing a plain line discount also clears catalog-equal origPrice marker
+    const plainLine: CartLine = { key: "plain-1", row: goodsRow, qty: 1 };
+    const discounted = withReceptionLineDiscount(plainLine, 10);
+    expect(discounted.origPrice).toBe(1000);
+    expect(discounted.disc).toBe(10);
+    const cleared = withReceptionLineDiscount(discounted, null);
+    expect(cleared.disc).toBeUndefined();
+    expect(cleared.origPrice).toBeUndefined();
+  });
+
+  it("preserves exact line-level discount precision when a cart discount is not evenly divisible by quantity", () => {
+    const goodsRow = {
+      productId: 6,
+      variantId: 60,
+      productUnitId: 600,
+      productName: "قلم رصاص",
+      sku: "PEN-60",
+      unitName: "قطعة",
+      conversionFactor: "1",
+      price: "1000",
+      stockBase: 5000,
+      isCustomizable: false,
+      isService: false,
+      isPrintService: false,
+    } as PosRow;
+    const cappedCart: CartLine[] = [
+      {
+        key: "capped-line",
+        row: goodsRow,
+        qty: 3000,
+        cartPromo: { promotionId: 12, promotionName: "خصم مسقوف 1000", lineDiscount: "1000.00" },
+      },
+    ];
+
+    expect(lineTotal(cappedCart[0]!)).toBe(2_999_000);
+    expect(effectivePrice(cappedCart[0]!)).toBe(999.67);
+
+    const initialPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: cappedCart,
+    });
+    expect(initialPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in initialPayload.lines[0]! ? initialPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+
+    const frozen = freezeReceptionDraftCart(cappedCart);
+    expect(frozen[0]?.cartPromo).toBeUndefined();
+    expect(frozen[0]?.origPrice).toBe(1000);
+    expect(frozen[0]?.draftLineDiscount).toBe("1000.00");
+    expect(lineTotal(frozen[0]!)).toBe(2_999_000);
+
+    const syncedPayload = buildDraftPayload({
+      customer: {},
+      effectiveTier: "RETAIL",
+      channel: "WALK_IN",
+      channelHandle: "",
+      linkedConversationId: null,
+      cart: frozen,
+    });
+    expect(syncedPayload.lines[0]?.unitPrice).toBe("1000.00");
+    expect("discountAmount" in syncedPayload.lines[0]! ? syncedPayload.lines[0]!.discountAmount : undefined).toBe("1000.00");
+
+    const restored = prepareReceptionDraftCart(
+      [
+        {
+          id: 77,
+          lineKind: "GOODS",
+          quantity: "3000.000",
+          unitPrice: "1000.00",
+          discountAmount: "1000.00",
+          variantId: 60,
+          productUnitId: 600,
+          title: "قلم رصاص (قطعة)",
+          printSpec: null,
+          designImages: null,
+        },
+      ],
+      [{ ...goodsRow, price: "1250" }],
+    );
+    expect(restored.ok).toBe(true);
+    if (restored.ok) {
+      expect(lineTotal(restored.cart[0]!)).toBe(2_999_000);
+      const halved = withReceptionLineQty(restored.cart[0]!, 1500);
+      expect(halved.draftLineDiscount).toBe("500.00");
+      expect(lineTotal(halved)).toBe(1_499_500);
     }
   });
 });

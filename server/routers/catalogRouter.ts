@@ -10,6 +10,7 @@ import {
   createProduct,
   deleteProduct,
   getProductForEdit,
+  listActivePosPromotions,
   listByProductIds,
   listByUnitIds,
   listForPos,
@@ -430,6 +431,17 @@ export const catalogRouter = router({
         },
       );
       return redactPosCost(rows, ctx.user);
+    }),
+
+  activePromotions: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      return listActivePosPromotions(scopeBranch(ctx, input.branchId), input.tier);
     }),
 
   // تحديث خفيف وموثوق للرصيد داخل السلال المفتوحة/المستعادة. يعيد الفرع الفعلي بعد العزل

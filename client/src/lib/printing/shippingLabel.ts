@@ -64,6 +64,10 @@ export interface ShippingLabelData {
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
   qrUrl?: string | null;
   isReprint?: boolean;
+  /** وسم عرض التوصيل المجاني على ملصق الطرد ليظهر بوضوح للعميل والمندوب. */
+  freeShippingPromo?: boolean;
+  waivedShippingAmount?: string | number | null;
+  promoTitle?: string | null;
 }
 
 export function resolveShippingLabelQrTarget(
@@ -175,6 +179,11 @@ export async function shippingLabelHtml(
   const creditNotice = hasCredit
     ? `<div style="font-size:${isCompact ? "5.3" : "6"}pt;font-weight:800;margin-top:0.2mm;">رصيد البضاعة آجل؛ لا يحصله المندوب: <span dir="ltr">${fmt(o.creditAmount)} د.ع</span></div>`
     : "";
+  const waivedShipD = moneyInput(o.waivedShippingAmount);
+  const freeShippingStripRow =
+    !isClosed && o.freeShippingPromo
+      ? `<tr data-testid="shipping-label-free-shipping-strip" style="background:#000;color:#fff;"><td colspan="2" style="border-top:1.5px solid #000;padding:0.35mm 0.8mm;text-align:center;font-size:6.2pt;font-weight:900;">عرض التوصيل المجاني${o.promoTitle ? ` (${esc(o.promoTitle)})` : ""} — التوصيل على حساب المكتبة${waivedShipD.gt(0) ? ` (وفّر العميل ${fmt(waivedShipD.toFixed(2))} د.ع)` : ""}</td></tr>`
+      : "";
   const logo = logoUrl();
 
   // حساب سعة الأصناف ديناميكياً حسب الارتفاع المتاح لمنع تجاوز صفحة واحدة
@@ -363,6 +372,7 @@ export async function shippingLabelHtml(
           </div>
         </td>
       </tr>
+      ${freeShippingStripRow}
     </table>
 
     <!-- 4. جدول فحص الأصناف والتجهيز (Pick & Pack) -->
@@ -490,6 +500,7 @@ export async function shippingLabelHtml(
               </div>
             </td>
           </tr>
+          ${freeShippingStripRow}
         </table>
       </div>
 
@@ -596,7 +607,7 @@ export async function shippingLabelHtml(
         <td ${qr ? "" : 'colspan="2"'} style="${qr ? "border-left:1.5px solid #000;" : ""}padding:0.5mm 0.8mm;text-align:right;vertical-align:middle;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
           <div style="display:flex;justify-content:space-between;align-items:baseline;gap:1mm;">
             <span style="font-size:6pt;font-weight:900;">${isClosed ? "مستند مغلق؛ لا تحصيل" : isCredit ? "بضاعة آجلة (CREDIT)" : isPrepaid ? "مدفوع مسبقاً (PREPAID)" : hasCredit && totalKnown ? "أجرة التوصيل فقط" : totalKnown ? "المطلوب عند الاستلام (COD)" : "المبلغ غير متاح"}</span>
-            <span style="font-size:5.6pt;font-weight:800;white-space:nowrap;">${esc(o.deliveryPartyName || "توصيل")} • ${itemCount} قطعة</span>
+            <span style="font-size:5.6pt;font-weight:800;white-space:nowrap;">${esc(o.deliveryPartyName || "توصيل")}${!isClosed && o.freeShippingPromo ? " • توصيل مجاني" : ""} • ${itemCount} قطعة</span>
           </div>
           <div style="font-size:12.5pt;font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;line-height:1.05;margin-top:0.2mm;">
             ${dueAmountText} ${totalKnown || isPrepaid ? '<span style="font-size:7pt;">د.ع</span>' : ""}

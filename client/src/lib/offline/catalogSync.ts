@@ -18,14 +18,18 @@ import type {
   OfflineStockRow,
   OfflineVersions,
 } from "@shared/offlineCatalog";
+import { evaluateCartPromotions, type PromotionRule } from "@shared/promotionEngine";
+import { todayYmdBaghdad } from "@shared/promotionScheduling";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { connectivity } from "./connectivity";
 import { getMeta, offlineDb, requestPersistentStorage, setMeta } from "./db";
 import { resolveOfflineBarcodeRows } from "./barcodeResolution";
 
 const META_CATALOG_VERSION = "catalogVersion";
+const META_ACTIVE_PROMOTIONS = "activePromotions";
 const META_CUSTOMERS_VERSION = "customersVersion";
 const META_STOCK_BRANCH = "stockBranchId";
 const META_LAST_SYNC = "lastSyncAt";
@@ -62,6 +66,10 @@ export async function syncOfflineCache(api: OfflineSyncApi, branchId: number): P
         await offlineDb.catalog.clear();
         await offlineDb.catalog.bulkPut(snap.rows);
         await offlineDb.meta.put({ key: META_CATALOG_VERSION, value: snap.version });
+        await offlineDb.meta.put({
+          key: META_ACTIVE_PROMOTIONS,
+          value: JSON.stringify(snap.promotions ?? []),
+        });
       });
       catalogRefreshed = true;
       catalogRows = snap.rows.length;
@@ -130,6 +138,7 @@ export function useOfflineCatalogSync(branchId: number | null | undefined) {
 /** شكل صفّ الكاشير كما يستهلكه POS من catalog.posList — نبنيه هنا حرفياً (تكافؤ عقد). */
 export interface OfflinePosRow {
   productId: number;
+  categoryId?: number | null;
   productName: string;
   variantId: number;
   variantName: string | null;
@@ -170,27 +179,78 @@ function tierPrice(row: OfflineCatalogRow, tier: OfflinePriceTier): string | nul
   return row.priceRetail;
 }
 
+/** قراءة قواعد العروض الترويجية المحفوظة محلياً لتقييم السلة في وضع الأوفلاين. */
+export async function loadOfflineActivePromotions(): Promise<PromotionRule[]> {
+  try {
+    const raw = await getMeta(META_ACTIVE_PROMOTIONS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PromotionRule[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 async function toPosRow(
   row: OfflineCatalogRow,
   tier: OfflinePriceTier,
   currentBranchId: number,
   cachedBranchId: number | null,
+  activePromotions: PromotionRule[],
 ): Promise<OfflinePosRow> {
   const stock = await offlineDb.stock.get(row.variantId);
   const qty = stock?.qty ?? 0;
   const reservedBase = stock?.reservedBase ?? 0;
-  // ٢٤/٨ (Codex P1×٤ على PR #737): `availableBase` يبقى **مجهولاً** (null) في ثلاث حالات
-  // كي لا يُعلن ATP كاذباً:
-  //   ⑴ لقطةٌ قديمة قبل توسيع العقد — تعرف بغياب `availableBase` من الخادم (لا وجود له في
-  //      اللقطات المخزَّنة سابقاً في IndexedDB قبل ترقية العقد).
-  //   ⑵ فرعُ اللقطة المحفوظة لا يطابق الفرعَ الحاليّ (تبديلٌ لم يُوفَّق باللقطة بعد).
-  //   ⑶ الصفّ ذاته مفقود (لم يصل الترحيلُ الأوّل، صنفٌ جديد لم يُلتقَط بعد).
-  // POS.tsx يعرض «جارٍ التحقّق» في هذه الحالات بأمان — قرارٌ سلوكيٌّ قائم في `stockState`.
   const branchMatches = cachedBranchId != null && cachedBranchId === currentBranchId;
   const hasFreshAtp = stock?.availableBase != null;
   const availableBase = branchMatches && hasFreshAtp ? stock.availableBase! : null;
+  const price = tierPrice(row, tier);
+
+  let promotionId: number | null = null;
+  let promotionName: string | null = null;
+  let promotionDiscountForUnit = "0.00";
+  let promotionEffectivePrice: string | null = null;
+
+  if (price != null && !row.isService && !row.isPrintService && activePromotions.length > 0) {
+    const evalRes = evaluateCartPromotions(
+      [
+        {
+          lineKey: "0",
+          productId: row.productId,
+          variantId: row.variantId,
+          productUnitId: row.productUnitId,
+          categoryId: row.categoryId ?? null,
+          unitPrice: price,
+          quantity: 1,
+          isBaseUnit: row.isBaseUnit,
+          hasContractPrice: false,
+          isBundle: row.isBundle,
+          isGift: false,
+          isService: false,
+        },
+      ],
+      activePromotions,
+      {
+        branchId: currentBranchId,
+        customerTier: tier,
+        channel: "POS",
+        todayYmd: todayYmdBaghdad(),
+      },
+    );
+    const alloc = evalRes.lineAllocations.get("0");
+    if (alloc && alloc.discountAmount.gt(0)) {
+      const discD = D(alloc.discountAmount.toFixed(2));
+      const effD = D(price).minus(discD);
+      promotionId = alloc.promotionId;
+      promotionName = alloc.promotionName;
+      promotionDiscountForUnit = discD.toFixed(2);
+      promotionEffectivePrice = (effD.lt(0) ? D(0) : effD).toFixed(2);
+    }
+  }
+
   return {
     productId: row.productId,
+    categoryId: row.categoryId ?? null,
     productName: row.productName,
     variantId: row.variantId,
     variantName: row.variantName,
@@ -202,7 +262,7 @@ async function toPosRow(
     conversionFactor: row.conversionFactor,
     barcode: row.barcode,
     isBaseUnit: row.isBaseUnit,
-    price: tierPrice(row, tier),
+    price,
     stockBase: qty,
     reservedBase,
     availableBase,
@@ -210,13 +270,12 @@ async function toPosRow(
     allowBackorder: row.allowBackorder,
     isCustomizable: row.isCustomizable,
     isPrintService: row.isPrintService,
-    // أسعار العقود والعروض والكوبونات أونلاين فقط (قرار الخطة) — الحقول بثوابتها المحايدة.
     isContractPrice: false,
     isBundle: row.isBundle,
-    promotionId: null,
-    promotionName: null,
-    promotionDiscountForUnit: "0.00",
-    promotionEffectivePrice: null,
+    promotionId,
+    promotionName,
+    promotionDiscountForUnit,
+    promotionEffectivePrice,
   };
 }
 
@@ -261,8 +320,15 @@ export async function offlineSearchCatalog(
     return b.productId - a.productId;
   });
 
-  const cachedBranch = await getCachedStockBranchId();
-  return Promise.all(matches.slice(0, limit).map((row) => toPosRow(row, tier, branchId, cachedBranch)));
+  const [cachedBranch, activePromotions] = await Promise.all([
+    getCachedStockBranchId(),
+    loadOfflineActivePromotions(),
+  ]);
+  return Promise.all(
+    matches
+      .slice(0, limit)
+      .map((row) => toPosRow(row, tier, branchId, cachedBranch, activePromotions)),
+  );
 }
 
 /** مطابقة باركود (الأساسي أو أي بديل) بضربة فهرس multiEntry واحدة. */
@@ -288,8 +354,11 @@ export async function offlineFindByBarcode(
   // محلّياً قد تكون غامضةً في الكتالوج الكامل ⇒ خطرُ حسمٍ خاطئ (§٥، أمسكته المراجعة العدائية). الكاشير
   // المنقطع يبحث يدوياً عن هذه الفئة النادرة (٢-٣ أصناف بحرفٍ بادئ)، والاتصالُ يحلّها تلقائياً.
   if (resolution.status !== "FOUND") return null;
-  const cachedBranch = await getCachedStockBranchId();
-  return toPosRow(resolution.row, tier, branchId, cachedBranch);
+  const [cachedBranch, activePromotions] = await Promise.all([
+    getCachedStockBranchId(),
+    loadOfflineActivePromotions(),
+  ]);
+  return toPosRow(resolution.row, tier, branchId, cachedBranch, activePromotions);
 }
 
 /** آخر مزامنة ناجحة (ISO) — لصمّام «عمر الكاش» في الشريحة ٣ ولشاشة الحالة. */

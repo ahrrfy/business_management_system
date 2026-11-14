@@ -26,6 +26,7 @@ import {
   effectivePrice,
   isCustomKind,
   lineTotal,
+  officialReceptionPromoInfo,
   type CartLine,
   type PosRow,
 } from "./cartMath";
@@ -215,6 +216,15 @@ export function CartTable({
                           {isCustom ? l.custom!.title : variantDisplayName(l.row)}
                         </span>
                         <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
+                        {(() => {
+                          const promoInfo = officialReceptionPromoInfo(l);
+                          if (!promoInfo || !promoInfo.promoDiscountD.gt(0)) return null;
+                          return (
+                            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-extrabold text-[var(--sem-pos)]">
+                              {promoInfo.promotionName ?? "عرض ترويجي"} · خصم {fmt(promoInfo.promoDiscountD.toNumber())}
+                            </span>
+                          );
+                        })()}
                         {!isCustom && l.row.allowBackorder && (l.row.availableBase ?? 0) <= 0 && (
                           <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                             يُباع بالطلب — يُورَّد لاحقاً

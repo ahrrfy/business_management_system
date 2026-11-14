@@ -12,6 +12,7 @@ import {
   receiptTextLines,
 } from "./receiptLayout";
 import { formatArabicMoneyWords } from "./tafqit";
+import { hasActivePromoSummary } from "./promoPrintSummary";
 export function drawReceiptTotals(
   ctx: CanvasRenderingContext2D,
   d: ReceiptBrowserData,
@@ -134,6 +135,50 @@ export function drawReceiptTotals(
     ctx.textAlign = "left";
     ctx.fillText(`${fmt(facts.remainingAmount)} د.ع`, PAD, y);
     y += 30;
+  }
+
+  // بطاقة العروض والتوفير الترويجية على إيصال ESC/POS النقطي
+  if (!facts.dead && hasActivePromoSummary(d.promoSummary) && d.promoSummary) {
+    const ps = d.promoSummary;
+    const merchD = moneyInput(ps.merchandiseSavings);
+    const invDiscD = moneyInput(ps.invoiceDiscount);
+    const waivedD = moneyInput(ps.waivedDeliveryAmount);
+    const totalSavD = moneyInput(ps.totalSavings).gt(0)
+      ? moneyInput(ps.totalSavings)
+      : merchD.plus(invDiscD).plus(waivedD);
+    y += 4;
+    receiptRule(ctx, y, true);
+    y += 30;
+    ctx.font = "900 23px Cairo, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("مزايا العروض وتوفيرك اليوم", W / 2, y);
+    y += 28;
+    if (ps.offerNames && ps.offerNames.length > 0) {
+      ctx.font = "800 18px Cairo, sans-serif";
+      for (const line of receiptTextLines(
+        ctx,
+        `العروض: ${ps.offerNames.join(" • ")}`,
+      )) {
+        ctx.textAlign = "center";
+        ctx.fillText(line, W / 2, y);
+        y += 24;
+      }
+    }
+    if (merchD.gt(0)) {
+      totRow("توفير الأصناف:", `${fmt(merchD.toFixed(2))} د.ع`, true);
+    }
+    if (ps.freeShipping) {
+      totRow(
+        "هدية التوصيل:",
+        waivedD.gt(0)
+          ? `مجاناً (وفّرت ${fmt(waivedD.toFixed(2))})`
+          : "مجاناً بالكامل",
+        true,
+      );
+    }
+    if (totalSavD.gt(0)) {
+      totRow("إجمالي توفيرك:", `${fmt(totalSavD.toFixed(2))} د.ع`, true);
+    }
   }
 
   // ٨/٨ — كتلة التوصيل: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة خارج `total`

@@ -18,9 +18,10 @@ export interface CartDeliveryPanelProps {
   customerBalance: string | null;
   suggestedPartyId?: number | null;
   disabledReason: string | null;
+  freeShippingPromoName?: string | null;
 }
 
-export function CartDeliveryPanel({ C, branchId, tabId, draft, onChange, onIdentityChange, customerBalance, suggestedPartyId = null, disabledReason }: CartDeliveryPanelProps) {
+export function CartDeliveryPanel({ C, branchId, tabId, draft, onChange, onIdentityChange, customerBalance, suggestedPartyId = null, disabledReason, freeShippingPromoName = null }: CartDeliveryPanelProps) {
   return (
     <div
       data-testid="pos-delivery-mode"
@@ -35,7 +36,7 @@ export function CartDeliveryPanel({ C, branchId, tabId, draft, onChange, onIdent
             onIdentityChange={onIdentityChange}
           />
         </div>
-        <DeliveryModeFields branchId={branchId} draft={draft} onChange={onChange} suggestedPartyId={suggestedPartyId} disabledReason={disabledReason} />
+        <DeliveryModeFields branchId={branchId} draft={draft} onChange={onChange} suggestedPartyId={suggestedPartyId} disabledReason={disabledReason} freeShippingPromoName={freeShippingPromoName} />
       </div>
     </div>
   );

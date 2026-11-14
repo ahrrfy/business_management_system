@@ -152,6 +152,7 @@ export async function lookupShelfPrice(
       variantName: productVariants.variantName,
       unitName: productUnits.unitName,
       productUnitId: productUnits.id,
+      isBaseUnit: productUnits.isBaseUnit,
       conversionFactor: productUnits.conversionFactor,
       price: productPrices.price,
       barcode: productUnits.barcode,
@@ -159,6 +160,7 @@ export async function lookupShelfPrice(
       imageUrl: productImages.url,
       stockQuantity: branchStock.quantity,
       isService: products.isService,
+      isBundle: products.isBundle,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -222,6 +224,9 @@ export async function lookupShelfPrice(
         todayYmd,
         productId: owner.productId,
         variantId: owner.variantId,
+        productUnitId: Number(row.productUnitId),
+        isBaseUnit: Boolean(row.isBaseUnit),
+        isBundle: Boolean(row.isBundle),
         categoryId: row.categoryId != null ? Number(row.categoryId) : null,
         unitPrice: effectivePrice,
         lineAmount: effectivePrice,

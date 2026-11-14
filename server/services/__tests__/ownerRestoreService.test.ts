@@ -5,11 +5,39 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import express from "express";
 import { afterEach, expect, test, vi } from "vitest";
+import { assertOwnerRestoreImporterGrants } from "../../../scripts/lib/owner-restore-import-grants";
 import { OWNER_RESTORE_STATUS_PATH, ownerRestoreConfirmation } from "../../../shared/ownerRestore";
 import { ownerRestorePaths } from "../../lib/ownerRestoreFiles";
 import { ownerRestoreMaintenanceBoundary, readOwnerRestoreStatus } from "../ownerRestoreService";
 
 afterEach(() => vi.unstubAllEnvs());
+
+const importerGrants = (definerGrant: string) => [
+  "GRANT ALL PRIVILEGES ON `erp`.* TO `erp_restore_import`@`%`",
+  "GRANT USAGE ON *.* TO `erp_restore_import`@`%`",
+  "GRANT CONNECTION_ADMIN, " + definerGrant + " ON *.* TO `erp_restore_import`@`%`",
+];
+
+test.each([
+  ["8.0.46", "SET_USER_ID", "SET_ANY_DEFINER"],
+  ["8.4.9", "SET_ANY_DEFINER", "SET_USER_ID"],
+])("accepts only the matching definer grant on MySQL %s", (version, supportedGrant, legacyOrNewGrant) => {
+  expect(() => assertOwnerRestoreImporterGrants(version, "erp", importerGrants(supportedGrant))).not.toThrow();
+  expect(() => assertOwnerRestoreImporterGrants(version, "erp", importerGrants(legacyOrNewGrant)))
+    .toThrow("RESTORE_IMPORT_PRIVILEGES_TOO_BROAD");
+});
+
+test("rejects orphan-definer privileges and grants outside the target schema", () => {
+  const grants = importerGrants("SET_ANY_DEFINER");
+  expect(() => assertOwnerRestoreImporterGrants("8.4.9", "erp", [
+    ...grants, "GRANT ALLOW_NONEXISTENT_DEFINER ON *.* TO `erp_restore_import`@`%`",
+  ])).toThrow("RESTORE_IMPORT_PRIVILEGES_TOO_BROAD");
+  expect(() => assertOwnerRestoreImporterGrants("8.4.9", "erp", [
+    ...grants, "GRANT SELECT ON `other`.* TO `erp_restore_import`@`%`",
+  ])).toThrow("RESTORE_IMPORT_PRIVILEGES_TOO_BROAD");
+  expect(() => assertOwnerRestoreImporterGrants("8.4.9", "erp", grants.slice(0, 2)))
+    .toThrow("RESTORE_IMPORT_PRIVILEGES_INSUFFICIENT");
+});
 
 test("accepts mysqldump session settings and rejects an unapproved DEFINER", async ({ onTestFinished }) => {
   const directory = await mkdtemp(path.join(tmpdir(), "erp-owner-restore-test-"));

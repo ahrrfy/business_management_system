@@ -269,3 +269,59 @@ describe("composeDocumentNotes & splitDocumentNotes", () => {
     });
   });
 });
+
+describe("salesInvoiceWithPromotionsReducer promotion discount ownership", () => {
+  it("restores percent discountType when editing discount on an auto-promoted line and clears managed discount on gift toggle", async () => {
+    const { salesInvoiceWithPromotionsReducer } = await import("../useInvoiceCartPromotions");
+    const { calcLineTotal } = await import("../totals");
+
+    const baseState = {
+      ...createInitialState("SALE"),
+      items: [line(11, "2000.00")],
+    };
+
+    const synced = salesInvoiceWithPromotionsReducer(baseState, {
+      type: "SYNC_PROMOTIONS",
+      allocationsByIndex: {
+        0: { promotionId: 44, promotionName: "خصم 10%", discountAmount: "200.00" },
+      },
+      eligibleIndices: [0],
+    });
+    expect(synced.items[0]).toMatchObject({
+      discountType: "amount",
+      discount: "200.00",
+      promotionId: 44,
+      autoPromoManaged: true,
+    });
+
+    // Editing the percentage input ("10") must restore percent semantics (10% of 2000 = 200.00 => lineTotal 1800.00, not 1990.00)
+    const manualEdited = salesInvoiceWithPromotionsReducer(synced, {
+      type: "UPDATE_ITEM",
+      idx: 0,
+      field: "discount",
+      value: "10",
+    });
+    expect(manualEdited.items[0]).toMatchObject({
+      discountType: "percent",
+      discount: "10",
+      promotionId: null,
+      autoPromoManaged: false,
+    });
+    expect(calcLineTotal(manualEdited.items[0]!)).toBe("1800.00");
+
+    // Marking an auto-promoted line as a gift clears the managed amount so toggling gift off keeps it clean
+    const gifted = salesInvoiceWithPromotionsReducer(synced, {
+      type: "UPDATE_ITEM",
+      idx: 0,
+      field: "isGift",
+      value: true,
+    });
+    expect(gifted.items[0]).toMatchObject({
+      isGift: true,
+      discount: "0",
+      discountType: "percent",
+      promotionId: null,
+      autoPromoManaged: undefined,
+    });
+  });
+});

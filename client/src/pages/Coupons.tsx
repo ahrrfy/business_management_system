@@ -19,6 +19,7 @@ import { notify } from "@/lib/notify";
 import { printCouponCards, type CouponPrintLayout } from "@/lib/printing/couponCard";
 import { printGiftVoucherDoc } from "@/lib/printing/giftVoucherPrint";
 import { downloadPdfFromBase64 } from "@/lib/printing/couponCardPdf";
+import { formatPromotionSummary } from "@shared/promotionEngine";
 import { formatActiveDays, type PromotionDesignMeta } from "@shared/promotionScheduling";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
@@ -235,14 +236,21 @@ export default function Coupons() {
     const custPhone = coupon.assignedCustomerPhone;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
+    const offerSummary = offer ? formatPromotionSummary(offer as any) : "";
     const discountSuffix = isPercent && offer?.discountPercent
       ? ` (خصم ${offer.discountPercent}%)`
       : isAmountPerUnit && offer?.discountAmount
       ? ` (خصم ${fmtAr(offer.discountAmount)} د.ع/وحدة)`
+      : offerSummary
+      ? ` (${offerSummary})`
       : "";
     const terms = [
       design.terms,
-      isAmountPerUnit ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.` : undefined,
+      isAmountPerUnit
+        ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.`
+        : !isPercent && offerSummary
+        ? `ميزة القسيمة: ${offerSummary}`
+        : undefined,
     ].filter(Boolean).join(" • ");
     try {
       const res = await printGiftVoucherDoc({
@@ -283,14 +291,21 @@ export default function Coupons() {
     const custPhone = customerPhone || undefined;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
+    const offerSummary = offer ? formatPromotionSummary(offer as any) : "";
     const discountSuffix = isPercent && offer?.discountPercent
       ? ` (خصم ${offer.discountPercent}%)`
       : isAmountPerUnit && offer?.discountAmount
       ? ` (خصم ${fmtAr(offer.discountAmount)} د.ع/وحدة)`
+      : offerSummary
+      ? ` (${offerSummary})`
       : "";
     const terms = [
       design.terms,
-      isAmountPerUnit ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.` : undefined,
+      isAmountPerUnit
+        ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.`
+        : !isPercent && offerSummary
+        ? `ميزة القسيمة: ${offerSummary}`
+        : undefined,
     ].filter(Boolean).join(" • ");
     try {
       const res = await printGiftVoucherDoc({
@@ -422,7 +437,7 @@ export default function Coupons() {
       meta: { width: "wide", wrap: true },
       cell: ({ row }) => {
         const offer = offerById.get(row.original.promotionId);
-        return <button type="button" className="text-right" onClick={() => setSelected(row.original.id)}><div className="font-medium text-primary">{row.original.name}</div><div className="text-xs text-muted-foreground">{offer?.name ?? `عرض #${row.original.promotionId}`} · {offer?.type === "PERCENT" ? `${offer.discountPercent}٪` : `${fmtAr(offer?.discountAmount)} د.ع/وحدة`}</div></button>;
+        return <button type="button" className="text-right" onClick={() => setSelected(row.original.id)}><div className="font-medium text-primary">{row.original.name}</div><div className="text-xs text-muted-foreground">{offer?.name ?? `عرض #${row.original.promotionId}`} · {offer ? formatPromotionSummary(offer as any) : "—"}</div></button>;
       },
     },
     {
@@ -642,7 +657,7 @@ export default function Coupons() {
       <CardHeader><CardTitle className="text-base">برنامج كوبونات جديد</CardTitle></CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-4">
         <Field label="اسم البرنامج" required className="md:col-span-2"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="كوبونات العملاء العائدين" /></Field>
-        <Field label="عرض بنمط كوبون" required className="md:col-span-2"><AppSelect className="h-9 px-3" value={promotionId} onValueChange={(next) => setPromotionId(next)}><option value="">اختر العرض المالي</option>{couponOffers.map((offer) => <option key={offer.id} value={offer.id}>{offer.name} — {offer.type === "PERCENT" ? `${offer.discountPercent}٪` : `${fmtAr(offer.discountAmount)} د.ع لكل وحدة`}</option>)}</AppSelect></Field>
+        <Field label="عرض بنمط كوبون" required className="md:col-span-2"><AppSelect className="h-9 px-3" value={promotionId} onValueChange={(next) => setPromotionId(next)}><option value="">اختر العرض المالي</option>{couponOffers.map((offer) => <option key={offer.id} value={offer.id}>{offer.name} — {formatPromotionSummary(offer as any)}</option>)}</AppSelect></Field>
         <Field label="الحملة"><AppSelect className="h-9 px-3" value={campaignId} onValueChange={(next) => setCampaignId(next)}><option value="">من العرض / بلا حملة</option>{(campaigns.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</AppSelect></Field>
         <Field label="صالح من" required><Input type="date" value={validFrom} onChange={(event) => setValidFrom(event.target.value)} /></Field>
         <Field label="صالح إلى"><Input type="date" value={validTo} onChange={(event) => setValidTo(event.target.value)} /></Field>

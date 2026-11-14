@@ -768,6 +768,10 @@ export async function correctSaleInTx(
       deliveryFee: input.deliveryFee ?? null,
       deliveryFree: input.deliveryFree === true,
       deliveryWaivedAmount: input.deliveryFree ? input.deliveryWaivedAmount ?? null : null,
+      freeShippingPromotionId:
+        input.deliveryFree === true && inv.deliveryFree
+          ? (inv.freeShippingPromotionId == null ? null : Number(inv.freeShippingPromotionId))
+          : null,
       taxRatePercent: input.taxRatePercent ?? null,
       dueDate: input.dueDate ?? null,
       notes: input.notes ?? null,

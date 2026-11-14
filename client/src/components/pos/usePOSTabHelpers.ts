@@ -22,6 +22,7 @@ export interface UsePOSTabHelpersParams {
   activeIdRef: MutableRefObject<number>;
   qtyEntryRef: MutableRefObject<{ tabId: number; lineId: number | null; replaceNextDigit: boolean }>;
   digitalCheckoutRef: MutableRefObject<{ tabId: number } | null>;
+  cartRevisionRef?: MutableRefObject<number>;
   activeTab: POSTab;
   setSearch: (s: string) => void;
   setShowDrop: (b: boolean) => void;
@@ -31,7 +32,7 @@ export interface UsePOSTabHelpersParams {
 export function resetCouponItems(items: CartItem[]) {
   return items.map((item) =>
     item.preCouponRow
-      ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined }
+      ? { ...item, row: item.preCouponRow, preCouponRow: undefined, cartPromo: undefined, disc: undefined }
       : item,
   );
 }
@@ -44,12 +45,23 @@ export function usePOSTabHelpers({
   activeIdRef,
   qtyEntryRef,
   digitalCheckoutRef,
+  cartRevisionRef,
   activeTab,
   setSearch,
   setShowDrop,
   searchRef,
 }: UsePOSTabHelpersParams) {
   function patchTab(id: number, patch: Partial<POSTab>) {
+    if (
+      cartRevisionRef &&
+      ("cart" in patch ||
+        "customerId" in patch ||
+        "tierOverride" in patch ||
+        "couponInput" in patch ||
+        "couponCode" in patch)
+    ) {
+      cartRevisionRef.current += 1;
+    }
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }
 
@@ -60,6 +72,7 @@ export function usePOSTabHelpers({
   function setCart(updater: CartItem[] | ((c: CartItem[]) => CartItem[])) {
     const id = activeIdRef.current;
     if (digitalCheckoutRef.current?.tabId === id) return;
+    if (cartRevisionRef) cartRevisionRef.current += 1;
     setTabs((prev) =>
       prev.map((t) =>
         t.id !== id
@@ -251,7 +264,7 @@ export function usePOSTabHelpers({
 
   const clearAppliedCoupon = () => {
     setCart((items) => resetCouponItems(items));
-    patchActive({ couponCode: null, couponLabel: null });
+    patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
   };
 
   const setCustId = (v: number | null) => {
@@ -259,7 +272,10 @@ export function usePOSTabHelpers({
     patchActive({ customerId: v, tierOverride: null });
   };
 
-  const setTierOvr = (v: Tier | null) => patchActive({ tierOverride: v });
+  const setTierOvr = (v: Tier | null) => {
+    if (activeTab.couponCode) clearAppliedCoupon();
+    patchActive({ tierOverride: v });
+  };
 
   function addTab() {
     const id = (tabs.length ? Math.max(...tabs.map((t) => t.id)) : 0) + 1;
@@ -283,22 +299,28 @@ export function usePOSTabHelpers({
     const { numMode, selId } = activeTab;
     if (numMode === "QTY") {
       if (!selId) return;
-      setCart((prev) =>
-        prev.map((c) => {
-          if (lineIdOf(c) !== selId || c.digital) return c;
-          const entry = qtyEntryRef.current;
-          const replaceNextDigit = entry.tabId !== activeIdRef.current || entry.lineId !== selId
-            ? true
-            : entry.replaceNextDigit;
-          const result = applyPosQuantityKey(c.qty, k, replaceNextDigit);
-          qtyEntryRef.current = {
-            tabId: activeIdRef.current,
-            lineId: selId,
-            replaceNextDigit: result.replaceNextDigit,
-          };
-          return { ...c, qty: result.quantity };
-        }),
-      );
+      const target = activeTab.cart.find((c) => lineIdOf(c) === selId && !c.digital);
+      if (!target) return;
+      const entry = qtyEntryRef.current;
+      const replaceNextDigit = entry.tabId !== activeIdRef.current || entry.lineId !== selId
+        ? true
+        : entry.replaceNextDigit;
+      const result = applyPosQuantityKey(target.qty, k, replaceNextDigit);
+      qtyEntryRef.current = {
+        tabId: activeIdRef.current,
+        lineId: selId,
+        replaceNextDigit: result.replaceNextDigit,
+      };
+      const qtyChangedWithCoupon = Boolean(activeTab.couponCode) && result.quantity !== target.qty;
+      if (qtyChangedWithCoupon) {
+        patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
+      }
+      setCart((raw) => {
+        const prev = qtyChangedWithCoupon ? resetCouponItems(raw) : raw;
+        return prev.map((c) =>
+          lineIdOf(c) === selId && !c.digital ? { ...c, qty: result.quantity } : c,
+        );
+      });
     } else if (numMode === "DISC") {
       if (!selId) return;
       setCart((prev) =>
@@ -311,7 +333,12 @@ export function usePOSTabHelpers({
           else if (k === "." && s.includes(".")) return c;
           else s = s + k;
           const disc = Math.min(100, Math.max(0, parseFloat(s) || 0));
-          return { ...c, origPrice: base, disc };
+          const clearCatalogMarker = disc <= 0 && D(base).eq(D(c.row.price ?? 0));
+          return {
+            ...c,
+            origPrice: clearCatalogMarker ? undefined : base,
+            disc: disc <= 0 ? undefined : disc,
+          };
         }),
       );
     } else {

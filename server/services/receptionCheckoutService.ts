@@ -786,6 +786,15 @@ async function checkoutReceptionCoreInTx(
               }
             : null,
           codDispatchPending: input.delivery != null,
+          externalDeliveryContext:
+            input.delivery && !input.offlineCapture
+              ? {
+                  partyId: input.delivery.partyId,
+                  fee: input.delivery.fee ?? null,
+                  feeCollection: input.delivery.feeCollection ?? "COURIER",
+                  deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+                }
+              : null,
           // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
           paymentMode: resolvedPaymentMode,
           // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
@@ -1016,7 +1025,10 @@ async function checkoutReceptionCoreInTx(
             partyId: input.delivery.partyId,
             assignedUserId: input.delivery.assignedUserId ?? null,
             deliveryFee: input.delivery.fee ?? "0",
-            feeCollection: input.delivery.feeCollection ?? "COURIER",
+            feeCollection:
+              regularSale?.effectiveDeliveryFeeCollection ??
+              input.delivery.feeCollection ??
+              "COURIER",
             recipientName:
               input.delivery.recipientName ?? input.contactName ?? null,
             recipientPhone:

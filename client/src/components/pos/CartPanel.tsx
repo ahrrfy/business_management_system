@@ -271,6 +271,7 @@ export interface CartPanelProps {
   onDeliveryChange: (next: DeliveryDraft | null) => void;
   onDeliveryIdentity: (identity: DeliveryCustomerIdentity) => void;
   deliveryDisabledReason: string | null;
+  freeShippingPromoName?: string | null;
   customerBalance: string | null;
   salesRepId?: number | null;
   onSalesRepChange?: (repId: number | null) => void;
@@ -306,6 +307,7 @@ export function CartPanel({
   onDeliveryChange,
   onDeliveryIdentity,
   deliveryDisabledReason,
+  freeShippingPromoName = null,
   customerBalance,
   salesRepId,
   onSalesRepChange,
@@ -610,6 +612,7 @@ export function CartPanel({
           // المسوّدة في هذا الفرع + أجرتُها — تُطبَّق عند اختيار المحافظة ولا تطمس اختيار الكاشير بعدها.
           suggestedPartyId={partySuggestionQ.data?.partyId ?? null}
           disabledReason={deliveryDisabledReason}
+          freeShippingPromoName={freeShippingPromoName}
         />
       )}
 
@@ -767,6 +770,18 @@ export function CartPanel({
                         }}
                       >
                         جارٍ التحقق من الرصيد
+                      </span>
+                    )}
+                    {(c.cartPromo?.promotionName ?? (c.cartPromo === undefined ? c.row.promotionName : null)) && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: C.success,
+                          fontWeight: 700,
+                          marginRight: 5,
+                        }}
+                      >
+                        {c.cartPromo?.promotionName ?? c.row.promotionName}
                       </span>
                     )}
                     {c.disc != null && c.disc > 0 && (

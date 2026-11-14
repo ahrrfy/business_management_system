@@ -14,6 +14,7 @@ import { prepareEncryptedRestore, gpgForPlatform } from "./decrypt-restore-archi
 import { encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
 import { fingerprint, publishEncryptedBackup, sameFingerprint } from "./lib/backup-publication.mjs";
 import { acquireMaintenanceLock } from "./lib/maintenance-lock.mjs";
+import { assertOwnerRestoreImporterGrants } from "./lib/owner-restore-import-grants.ts";
 import { assertLocalEndpoint } from "./isolated-local-restore.mjs";
 import { assertPrivateRecoveryDirectory } from "./lib/recovery-mysql.mjs";
 
@@ -120,28 +121,10 @@ async function assertDatabaseDefiners(db, database, allowed) {
 async function verifyImporter(config) {
   const db = await connect(config.importUrl);
   try {
-    const identity = await one(db, "SELECT @@server_uuid AS uuid, DATABASE() AS db, CURRENT_USER() AS definer");
+    const identity = await one(db, "SELECT @@server_uuid AS uuid, DATABASE() AS db, CURRENT_USER() AS definer, @@version AS version");
     requireCondition(identity.uuid === config.uuid && identity.db === config.app.database, "RESTORE_DATABASE_IDENTITY_CHANGED");
     const grants = (await rows(db, "SHOW GRANTS FOR CURRENT_USER()")).map(row => String(Object.values(row)[0]));
-    const expectedScope = " ON `" + config.app.database + "`.*";
-    const databaseGrants = new Set();
-    const globalGrants = new Set();
-    for (const grant of grants) {
-      requireCondition(!/\bWITH\s+(?:GRANT|ADMIN)\s+OPTION\b/i.test(grant), "RESTORE_IMPORT_PRIVILEGES_TOO_BROAD");
-      const [privilege] = grant.split(" TO ", 1);
-      if (privilege.endsWith(expectedScope)) {
-        for (const name of privilege.slice("GRANT ".length, -expectedScope.length).split(/,\s*/)) databaseGrants.add(name);
-        continue;
-      }
-      const names = /^GRANT ([A-Z ,_]+) ON \*\.\*$/.exec(privilege)?.[1].split(/,\s*/);
-      requireCondition(names?.every(name => ["USAGE", "CONNECTION_ADMIN", "SET_USER_ID"].includes(name)),
-        "RESTORE_IMPORT_PRIVILEGES_TOO_BROAD");
-      for (const name of names) globalGrants.add(name);
-    }
-    const required = ["ALTER", "ALTER ROUTINE", "CREATE", "CREATE ROUTINE", "CREATE TEMPORARY TABLES", "CREATE VIEW",
-      "DELETE", "DROP", "EVENT", "EXECUTE", "INDEX", "INSERT", "LOCK TABLES", "REFERENCES", "SELECT", "SHOW VIEW", "TRIGGER", "UPDATE"];
-    requireCondition(globalGrants.has("CONNECTION_ADMIN") && globalGrants.has("SET_USER_ID") &&
-      (databaseGrants.has("ALL PRIVILEGES") || required.every(name => databaseGrants.has(name))), "RESTORE_IMPORT_PRIVILEGES_INSUFFICIENT");
+    assertOwnerRestoreImporterGrants(identity.version, config.app.database, grants);
     return identity.definer;
   } finally { await db.end(); }
 }

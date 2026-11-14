@@ -387,8 +387,8 @@ export async function getAnomalyWatch(opts: {
   );
 
   // ── D2: الخصومات لكل كاشير ──
-  // gross = قيمة البيع قبل كل الخصومات = subtotal (صافي الأسطر) + خصوم الأسطر اليدوية + خصوم العروض.
-  // الخصم اليدوي = خصم رأس الفاتورة + خصوم الأسطر (computeLineTotal يخزّن النسبة مبلغاً في discountAmount).
+  // gross = قيمة البيع قبل كل الخصومات = subtotal (صافي الأسطر) + إجمالي خصوم الأسطر (ii.discountAmount يشمل اليدوي والعرض معاً).
+  // الخصم اليدوي = خصم رأس الفاتورة + جزء خصم السطر غير المغطّى بعرضٍ رسميّ (ii.discountAmount - ii.promotionDiscount).
   const discountsP = safe(
     db.execute(sql`
       SELECT t.userId, u.name AS userName,
@@ -398,9 +398,9 @@ export async function getAnomalyWatch(opts: {
         CAST(COALESCE(SUM(t.promoDisc), 0) AS CHAR) AS promoDiscount
       FROM (
         SELECT i.id, i.createdBy AS userId,
-          i.discountAmount + COALESCE(SUM(ii.discountAmount), 0) AS manualDisc,
+          i.discountAmount + COALESCE(SUM(GREATEST(ii.discountAmount - COALESCE(ii.promotionDiscount, 0), 0)), 0) AS manualDisc,
           COALESCE(SUM(ii.promotionDiscount), 0) AS promoDisc,
-          i.subtotal + COALESCE(SUM(ii.discountAmount), 0) + COALESCE(SUM(ii.promotionDiscount), 0) AS gross
+          i.subtotal + COALESCE(SUM(ii.discountAmount), 0) AS gross
         FROM invoices i
         LEFT JOIN invoiceItems ii ON ii.invoiceId = i.id
         WHERE i.invoiceStatus <> 'CANCELLED'

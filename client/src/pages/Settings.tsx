@@ -93,6 +93,7 @@ const OWNER_RESTORE_PHASE_LABEL = {
 } as const;
 const OWNER_RESTORE_TERMINAL = new Set(["RESTORED", "ROLLED_BACK", "FAILED", "RECOVERY_REQUIRED"]);
 const OWNER_RESTORE_TICKET_KEY = "erp-owner-restore-ticket";
+const OWNER_RESTORE_RELOADED_KEY = "erp-owner-restore-reloaded";
 const OWNER_RESTORE_DEFINER_MESSAGES: Readonly<Record<string, string>> = {
   RESTORE_DEFINER_NOT_ALLOWED: "تحتوي النسخة على كائن MySQL معرّف بحساب خارج نطاق المستورد.",
   RESTORE_LIVE_DEFINER_NOT_ALLOWED: "تحتوي القاعدة الحالية على كائن MySQL معرّف بحساب خارج نطاق المستورد.",
@@ -232,6 +233,10 @@ export default function Settings() {
     try { return ownerRestoreTicket.safeParse(sessionStorage.getItem(OWNER_RESTORE_TICKET_KEY)).data ?? ""; }
     catch { return ""; }
   });
+  const [reloadedOwnerRestoreId] = useState(() => {
+    try { return sessionStorage.getItem(OWNER_RESTORE_RELOADED_KEY); }
+    catch { return null; }
+  });
   const ownerRestore = useQuery({
     queryKey: ["system", "owner-restore-status", ownerTicket],
     enabled: !!ownerTicket,
@@ -249,7 +254,18 @@ export default function Settings() {
   });
   const ownerRestoreActive = !!ownerTicket && (ownerRestore.data === undefined ||
     !!ownerRestore.data && !OWNER_RESTORE_TERMINAL.has(ownerRestore.data.phase));
-  const ownerRestoreBlocked = ownerRestoreActive || ownerRestore.data?.phase === "RECOVERY_REQUIRED";
+  const restoredId = ownerRestore.data?.phase === "RESTORED" ? ownerRestore.data.id : null;
+  const reloadAfterRestore = restoredId !== null && restoredId !== reloadedOwnerRestoreId;
+  const ownerRestoreBlocked = ownerRestoreActive || reloadAfterRestore || ownerRestore.data?.phase === "RECOVERY_REQUIRED";
+  useEffect(() => {
+    if (!restoredId || !reloadAfterRestore) return;
+    try { sessionStorage.setItem(OWNER_RESTORE_RELOADED_KEY, restoredId); }
+    catch {
+      // Discard the stored ticket if the reload marker cannot be written.
+      try { sessionStorage.removeItem(OWNER_RESTORE_TICKET_KEY); } catch { /* Storage is unavailable. */ }
+    }
+    window.location.reload();
+  }, [restoredId, reloadAfterRestore]);
   const startProductionRestore = trpc.system.startOwnerProductionRestore.useMutation({
     onSuccess: ({ ticket }) => {
       setOwnerTicket(ticket);
@@ -742,7 +758,7 @@ export default function Settings() {
             </div>
           )}
           {isAdmin ? (
-            <Button onClick={saveTaxSettings} disabled={updateTax.isPending || taxSettings.isLoading}>
+            <Button onClick={saveTaxSettings} disabled={ownerRestoreBlocked || updateTax.isPending || taxSettings.isLoading}>
               {updateTax.isPending ? ACTION_LABELS.saving : "حفظ إعدادات الضريبة"}
             </Button>
           ) : (
@@ -852,7 +868,7 @@ export default function Settings() {
             </>
           )}
           {isAdmin ? (
-            <Button onClick={saveOpeningMode} disabled={updateOpeningMode.isPending || openingMode.isLoading}>
+            <Button onClick={saveOpeningMode} disabled={ownerRestoreBlocked || updateOpeningMode.isPending || openingMode.isLoading}>
               {updateOpeningMode.isPending ? ACTION_LABELS.saving : "حفظ وضع الافتتاح"}
             </Button>
           ) : (

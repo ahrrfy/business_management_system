@@ -11,6 +11,8 @@
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { formatPromotionSummary, isPromotionChannelActive, type PromotionType } from "@shared/promotionEngine";
+import { isPromotionActiveOnDay } from "@shared/promotionScheduling";
 import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { promotionTargets, promotions } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
@@ -37,7 +39,9 @@ export interface StorePromotionRow {
   id: number;
   name: string;
   description: string | null;
-  type: "PERCENT" | "AMOUNT";
+  type: PromotionType;
+  summary: string;
+  channel: string;
   discountPercent: string;
   discountAmount: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
@@ -108,11 +112,32 @@ export async function listStorePromotions(input: {
     const to = r.effectiveTo == null ? null : toYmd(r.effectiveTo);
     const isActive = !!r.isActive;
     const promoTargets = targetsByPromo.get(Number(r.id)) ?? [];
+    const resolvedChannel =
+      r.channel === "POS_ONLY" || r.channel === "STORE_ONLY"
+        ? r.channel
+        : r.isStoreManaged
+        ? "STORE_ONLY"
+        : "ALL";
+    const activeToday = isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, input.todayYmd);
+    const storeChannelOk = isPromotionChannelActive(resolvedChannel, "STORE");
     return {
       id: Number(r.id),
       name: r.name,
       description: r.description ?? null,
-      type: r.type as "PERCENT" | "AMOUNT",
+      type: r.type as PromotionType,
+      summary: formatPromotionSummary({
+        type: r.type as PromotionType,
+        discountPercent: r.discountPercent,
+        discountAmount: r.discountAmount,
+        fixedPrice: r.fixedPrice,
+        bundlePrice: r.bundlePrice,
+        bundleMode: (r.bundleMode as "ALL_REQUIRED" | "PICK_ANY_N" | null) ?? null,
+        bundleQuantity: r.bundleQuantity,
+        bogoBuyQuantity: r.bogoBuyQuantity,
+        bogoGetQuantity: r.bogoGetQuantity,
+        bogoGetDiscountPercent: r.bogoGetDiscountPercent,
+      }),
+      channel: resolvedChannel,
       discountPercent: String(r.discountPercent ?? "0"),
       discountAmount: String(r.discountAmount ?? "0"),
       scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
@@ -121,7 +146,13 @@ export async function listStorePromotions(input: {
       minLineAmount: String(r.minLineAmount ?? "0"),
       priority: Number(r.priority ?? 0),
       isActive,
-      liveNow: isActive && from <= input.todayYmd && (to == null || to >= input.todayYmd),
+      liveNow:
+        isActive &&
+        r.applicationMode === "AUTO" &&
+        storeChannelOk &&
+        activeToday &&
+        from <= input.todayYmd &&
+        (to == null || to >= input.todayYmd),
       // 0073: الملكية بعلامة القناة الصريحة (isStoreManaged) لا بـbranch+tier — لأن عرض كاشير
       // RETAIL@فرع-المتجر يتطابق مع عرض المتجر في هذين، فيتعذّر التمييز بهما (مراجعة عدائية ١٣/٧).
       storeOwned: !!r.isStoreManaged,

@@ -1,11 +1,13 @@
 import type { OrderDeliveryValue } from "@/components/reception/ReceptionTypes";
 import { useEffect } from "react";
+import Decimal from "decimal.js";
 import { D, round2, roundCashIQD } from "@/lib/money";
 import {
   customLineGrand,
   isCustomKind,
   lineCounterHeldFee,
   lineTotal,
+  officialReceptionPromoInfo,
   type CartLine,
   type PayMethod,
 } from "@/components/reception/cartMath";
@@ -68,10 +70,16 @@ export function useReceptionAmounts({
   const regularReferenceGrossD = cart
     .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
     .reduce((s, c) => {
-      // بلا خصمٍ يدويّ = سعرُ القائمة (السعرُ الأصل قبل الخصم) × الكمية. `origPrice` يُضبَط من
-      // Popover خصم السطر ⇒ نستعمله مرجعاً كي يحسب الانحراف السطريّ المسبق.
-      const refUnit = D(c.origPrice ?? c.row.price ?? 0);
-      return s.plus(refUnit.times(c.qty));
+      // بلا خصمٍ يدويّ = سعرُ القائمة بعد العرض الرسمي الموثّق (مطابق لمرجع H6 في sale/create.ts).
+      const hasHistoricalOverride =
+        c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
+      const refUnit = D(hasHistoricalOverride ? c.origPrice! : (c.row.price ?? 0));
+      const rawGross = refUnit.times(c.qty);
+      const promoInfo = officialReceptionPromoInfo(c);
+      const afterPromo = promoInfo
+        ? Decimal.max(0, rawGross.minus(promoInfo.promoDiscountD))
+        : rawGross;
+      return s.plus(afterPromo);
     }, D(0));
   const priorLineDeviationRatioD = regularReferenceGrossD.gt(0)
     ? regularReferenceGrossD.minus(regularSumRawD).div(regularReferenceGrossD)

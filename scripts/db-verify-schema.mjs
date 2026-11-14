@@ -774,6 +774,10 @@ try {
     ["branchStock", "idx_stock_branch_qty"],
     ["crmCampaigns", "idx_crm_campaign_branch_status"],
     ["promotions", "idx_promo_application"],
+    ["promotionTargets", "idx_promo_target_unit"], // 0429
+    ["promotions", "idx_promo_channel"], // 0429
+    ["promotionTiers", "idx_promo_tier_promo"], // 0429
+    ["promotionTiers", "uq_promo_tier_min_qty"], // 0429
     ["coupons", "uq_coupon_hash"],
     ["couponRedemptions", "uq_coupon_redemption_invoice"],
     ["invoices", "idx_invoice_shift"], // ش٠ استقبال (0153): طابور المحطة keyset — غيابه مسح كامل
@@ -988,6 +992,7 @@ try {
     "invoiceItemServiceMaterials", // 0360: لقطة مواد الخدمة وقت البيع
     "digitalIntentInventoryReservations", // 0362: حجز مخزون السلة الرقمية خلال الإصدار الخارجي
     "companyProfile", // 0385: بيانات المنشأة والهوية المؤسسية
+    "promotionTiers", // 0429: شرائح الكميات لعروض TIERED_QTY
   ];
   const CRITICAL_COLUMNS = [
     ["companyProfile", "name"],
@@ -1021,6 +1026,25 @@ try {
     ["purchaseOrders", "agreedRate"], // 0038
     ["promotions", "campaignId"],
     ["promotions", "promotionApplicationMode"], // 0076 CRM
+    ["promotions", "promotionChannel"], // 0429
+    ["promotions", "allowBelowCost"], // 0429
+    ["promotions", "applyToBaseUnitOnly"], // 0429
+    ["promotions", "activeDays"], // 0429
+    ["promotions", "fixedPrice"], // 0429
+    ["promotions", "bundlePrice"], // 0429
+    ["promotions", "promotionBundleMode"], // 0429
+    ["promotions", "bundleQuantity"], // 0429
+    ["promotions", "bogoBuyQuantity"], // 0429
+    ["promotions", "bogoGetQuantity"], // 0429
+    ["promotions", "bogoGetDiscountPercent"], // 0429
+    ["promotions", "promotionTieredMode"], // 0429
+    ["promotionTargets", "productUnitId"], // 0429
+    ["promotionTiers", "promotionId"], // 0429
+    ["promotionTiers", "minQuantity"], // 0429
+    ["promotionTiers", "promotionTierType"], // 0429
+    ["promotionTiers", "discountPercent"], // 0429
+    ["promotionTiers", "discountAmount"], // 0429
+    ["promotionTiers", "fixedPrice"], // 0429
     ["invoices", "taxRatePercent"],
     ["quotations", "taxRatePercent"],
     ["purchaseOrders", "taxRatePercent"], // 0123
@@ -1196,7 +1220,7 @@ try {
     // _utf8mb4\'VALUE\'.  Normalize that display-only introducer before the
     // semantic check so a correct physical CHECK is not rejected merely
     // because the server reports its charset explicitly.
-    .replace(/_[a-z0-9]+\\'/gi, "'")
+    .replace(/(?<!['"\w])_(?:utf8mb[34]|latin1|binary|utf8)\\?'/gi, "'")
     .replaceAll("\\'", "'")
     .replace(/\s+/g, " ")
     .toUpperCase();
@@ -1406,6 +1430,98 @@ try {
     process.exit(1);
   }
 
+  // ── 0429: تحقّق قيم enum لـ promotions (الأنواع الستة والقنوات الثلاث) وعقود CHECK
+  const [promoEnumRows] = await conn.query(
+    "SELECT COLUMN_NAME AS c, COLUMN_TYPE AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'promotions' AND COLUMN_NAME IN ('promotionType', 'promotionChannel')",
+    [dbName],
+  );
+  const promoEnums = new Map(
+    promoEnumRows.map((row) => [String(row.c), String(row.t)]),
+  );
+  const promoType = String(promoEnums.get("promotionType") ?? "");
+  const REQUIRED_PROMO_TYPES = [
+    "PERCENT",
+    "AMOUNT",
+    "FIXED_PRICE",
+    "BUNDLE_PRICE",
+    "BOGO",
+    "TIERED_QTY",
+  ];
+  const missingPromoTypes = REQUIRED_PROMO_TYPES.filter(
+    (t) => !promoType.includes(t),
+  );
+  if (missingPromoTypes.length) {
+    console.error(
+      "⛔ قيم enum مفقودة في promotions.promotionType: " +
+        missingPromoTypes.join(", "),
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  const promoChannel = String(promoEnums.get("promotionChannel") ?? "");
+  const REQUIRED_PROMO_CHANNELS = ["ALL", "POS_ONLY", "STORE_ONLY"];
+  const missingPromoChannels = REQUIRED_PROMO_CHANNELS.filter(
+    (c) => !promoChannel.includes(c),
+  );
+  if (missingPromoChannels.length) {
+    console.error(
+      "⛔ قيم enum مفقودة في promotions.promotionChannel: " +
+        missingPromoChannels.join(", "),
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  const [promoConstraintRows] = await conn.query(
+    `SELECT tc.TABLE_NAME, tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE
+       FROM information_schema.TABLE_CONSTRAINTS tc
+       JOIN information_schema.CHECK_CONSTRAINTS cc
+         ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+        AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+      WHERE tc.TABLE_SCHEMA = ? AND tc.CONSTRAINT_TYPE = 'CHECK'
+        AND ((tc.TABLE_NAME = 'promotions' AND tc.CONSTRAINT_NAME = 'chk_promo_shape')
+          OR (tc.TABLE_NAME = 'promotionTargets' AND tc.CONSTRAINT_NAME = 'chk_promo_target_grain'))`,
+    [dbName],
+  );
+  const promoShapeCheck = promoConstraintRows.find(
+    (r) => r.TABLE_NAME === "promotions" && r.CONSTRAINT_NAME === "chk_promo_shape",
+  );
+  if (!promoShapeCheck) {
+    console.error("⛔ قيد CHECK مفقود: promotions.chk_promo_shape (هجرة 0429 لم تصل).");
+    await conn.end();
+    process.exit(1);
+  }
+  const normalizedPromoShape = String(promoShapeCheck.CHECK_CLAUSE ?? "")
+    .replaceAll("`", "")
+    .replace(/(?<!['"\w])_(?:utf8mb[34]|latin1|binary|utf8)\\?'/gi, "'")
+    .replaceAll("\\'", "'")
+    .toUpperCase();
+  for (const expectedType of ["FIXED_PRICE", "BUNDLE_PRICE", "BOGO", "TIERED_QTY", "FREE_SHIPPING"]) {
+    if (!normalizedPromoShape.includes(expectedType)) {
+      console.error(`⛔ قيد chk_promo_shape لا يحوي النوع المطلوب: ${expectedType}`);
+      await conn.end();
+      process.exit(1);
+    }
+  }
+
+  const promoTargetGrainCheck = promoConstraintRows.find(
+    (r) => r.TABLE_NAME === "promotionTargets" && r.CONSTRAINT_NAME === "chk_promo_target_grain",
+  );
+  if (!promoTargetGrainCheck) {
+    console.error("⛔ قيد CHECK مفقود: promotionTargets.chk_promo_target_grain.");
+    await conn.end();
+    process.exit(1);
+  }
+  const normalizedTargetGrain = String(promoTargetGrainCheck.CHECK_CLAUSE ?? "")
+    .replaceAll("`", "")
+    .toUpperCase();
+  if (!normalizedTargetGrain.includes("PRODUCTUNITID")) {
+    console.error("⛔ قيد chk_promo_target_grain لا يحوي productUnitId.");
+    await conn.end();
+    process.exit(1);
+  }
+
   // ── عقود 0181/0182 الحيّة: لا تعتمد على snapshot لأنه أقدم من الهجرتين.
   //    نتحقق من الدلالة الكاملة (النوع/الفهرس/FK وسياسة الحذف + enum)، لا من اسم العمود فقط.
   const [fulfillmentColumns] = await conn.query(
@@ -1504,6 +1620,9 @@ try {
   );
   console.log(
     "✓ عقد 0359: activeSlot مولّد بالتعبير الصحيح، والفهرس الفريد مطابق، ولا ازدواج أو حارس انتقالي باقٍ.",
+  );
+  console.log(
+    "✓ تحقّق 0429: promotions تدعم الأنواع الستة والقنوات الثلاث وقيود chk_promo_shape وchk_promo_target_grain مطابقة.",
   );
   console.log(
     `✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`,

@@ -41,11 +41,13 @@ export interface DeliveryModeFieldsProps {
   suggestedPartyId?: number | null;
   /** سببُ تعطيل الوضع (الأوفلاين): يُعرض ويُعطّل الحقول. */
   disabledReason?: string | null;
+  /** اسم عرض التوصيل المجاني المؤهّل حالياً في السلة إن وُجد. */
+  freeShippingPromoName?: string | null;
 }
 
 const LABEL = "mb-1 block text-[10px] font-bold text-muted-foreground";
 
-export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId = null, disabledReason = null }: DeliveryModeFieldsProps) {
+export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId = null, disabledReason = null, freeShippingPromoName = null }: DeliveryModeFieldsProps) {
   const disabled = !!disabledReason;
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000, enabled: !disabled });
   const quoteQ = trpc.delivery.previewDeliveryQuoteByGovernorate.useQuery(
@@ -199,6 +201,16 @@ export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId
         </div>
       )}
 
+      {freeShippingPromoName && (
+        <p
+          role="status"
+          data-testid="pos-free-shipping-promo-banner"
+          className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-pos)]"
+        >
+          التوصيل مجاني بالعرض ({freeShippingPromoName}) — الأجرة على حساب المكتبة ومجاناً للزبون، وتنطبع بالوصل وملصق الطلب.
+        </p>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className={LABEL} htmlFor="pos-delivery-fee">أجرة التوصيل (د.ع)</label>
@@ -218,7 +230,14 @@ export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId
           <AppSelect
             id="pos-delivery-fee-collection"
             value={draft.feeCollection}
-            onValueChange={(v) => onChange({ ...draft, feeCollection: v as DeliveryFeeCollection })}
+            onValueChange={(v) =>
+              onChange({
+                ...draft,
+                feeCollection: v as DeliveryFeeCollection,
+                autoFreeShippingOwned: false,
+                autoFreeShippingPrevCollection: undefined,
+              })
+            }
             aria-label="من يقبض أجرة التوصيل"
             className="h-9 text-xs"
             disabled={disabled}

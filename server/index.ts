@@ -1,7 +1,7 @@
+import "dotenv/config";
 import { runtimeWorkDrain, runtimeDrainBoundary } from "./lib/workDrain";
 import { ownerRestoreMaintenanceBoundary, readOwnerRestoreStatus } from "./services/ownerRestoreService";
 import { OWNER_RESTORE_STATUS_PATH } from "../shared/ownerRestore";
-import "dotenv/config";
 import { initSentry, Sentry } from "./sentry";
 // تهيئة Sentry قبل أي شيء (لا أثر إن لم يُضبط DSN).
 const sentryEnabled = initSentry();

@@ -6,7 +6,8 @@ import type {
 } from "@/components/reception/cartMath";
 import type { CustomizationData } from "@/components/CustomizationDialog";
 import { customizationBasePrice } from "@/components/reception/cartMath";
-import { D } from "@/lib/money";
+import Decimal from "decimal.js";
+import { D, round2 } from "@/lib/money";
 import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { toWorkOrderChannel, type WorkOrderChannel } from "@shared/receptionChannel";
@@ -58,7 +59,7 @@ const SENSITIVE_KEYS = new Set([
 
 /** حقول تشغيل السلة فقط؛ تكلفة الصنف وسائر إضافات API المستقبلية لا تُنسخ إلى المتصفح. */
 const RECEPTION_PERSISTED_POS_ROW_KEYS = [
-  "branchId", "productId", "productName", "variantId", "variantName", "color", "colorHex", "size", "sku",
+  "branchId", "productId", "categoryId", "productName", "variantId", "variantName", "color", "colorHex", "size", "sku",
   "productUnitId", "unitName", "conversionFactor", "barcode", "isBaseUnit", "price", "stockBase", "reservedBase",
   "availableBase", "openedAt", "isService", "allowBackorder", "isCustomizable", "isPrintService", "isContractPrice",
   "isBundle", "isConsignment", "promotionId", "promotionName", "promotionDiscountForUnit", "promotionEffectivePrice",
@@ -525,6 +526,7 @@ function isOperationalPosRow(value: Record<string, unknown>, manualService: bool
     ? value.variantId === 0 && value.productUnitId === 0
     : positiveInt(value.variantId) && positiveInt(value.productUnitId) && positiveInt(value.productId);
   return hasOnlyKeys(value, RECEPTION_PERSISTED_POS_ROW_KEYS) && idsValid
+    && (value.categoryId === undefined || nullablePositiveInt(value.categoryId))
     && boundedString(value.productName, 500)
     && value.productName.trim().length > 0
     && boundedString(value.unitName, 120)
@@ -543,7 +545,7 @@ function isCart(value: unknown): value is CartLine[] {
   if (!Array.isArray(value) || value.length > 500 || containsSensitiveKey(value)) return false;
   return value.every((line) => {
     if (!isRecord(line)
-      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponBasePromotion", "disc", "custom", "manualService", "digital"])
+      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponLineDiscount", "couponBasePromotion", "draftLineDiscount", "draftPromo", "disc", "custom", "manualService", "digital"])
       || !boundedString(line.key, 200)
       || line.key.length === 0) return false;
     if (typeof line.qty !== "number" || !Number.isSafeInteger(line.qty) || line.qty <= 0 || line.qty > MAX_LINE_QUANTITY) return false;
@@ -554,6 +556,14 @@ function isCart(value: unknown): value is CartLine[] {
     if (line.origPrice !== undefined && !finiteNumberInRange(line.origPrice, 0, 1_000_000_000_000)) return false;
     if (line.customBasePrice != null && !finiteNumberInRange(line.customBasePrice, 0, MAX_MONEY)) return false;
     if (line.couponPriceSnapshot !== undefined && !finiteNumberInRange(line.couponPriceSnapshot, 0, 1_000_000_000_000)) return false;
+    if (line.couponLineDiscount !== undefined && !decimalText(line.couponLineDiscount)) return false;
+    if (line.draftLineDiscount !== undefined && !decimalText(line.draftLineDiscount)) return false;
+    if (line.draftPromo !== undefined) {
+      if (!isRecord(line.draftPromo) || !hasOnlyKeys(line.draftPromo, ["promotionId", "promotionName", "promotionDiscount"])) return false;
+      if (!Number.isSafeInteger(line.draftPromo.promotionId) || Number(line.draftPromo.promotionId) <= 0) return false;
+      if (line.draftPromo.promotionName !== undefined && line.draftPromo.promotionName !== null && !boundedString(line.draftPromo.promotionName, 200)) return false;
+      if (!decimalText(line.draftPromo.promotionDiscount)) return false;
+    }
     if (line.couponBasePromotion !== undefined) {
       if (!isRecord(line.couponBasePromotion) || !hasOnlyKeys(line.couponBasePromotion, ["promotionId", "promotionName", "promotionEffectivePrice"])) return false;
       if (line.couponBasePromotion.promotionId !== null && (!Number.isSafeInteger(line.couponBasePromotion.promotionId) || Number(line.couponBasePromotion.promotionId) <= 0)) return false;
@@ -617,15 +627,18 @@ export function createReceptionLocalSnapshot(
   input: ReceptionLocalWorkspaceInput,
   now = Date.now(),
 ): ReceptionLocalWorkspaceSnapshot {
-  const normalizedCart = input.cart.map((line) => ({
-    ...line,
-    row: {
-      ...projectReceptionPersistedRow(line.row),
-      isService: line.row.isService === true,
-      isPrintService: line.row.isPrintService === true,
-      isCustomizable: line.row.isCustomizable === true,
-    },
-  }));
+  const normalizedCart = input.cart.map((line) => {
+    const { cartPromo: _transientCartPromo, ...persistedLine } = line;
+    return {
+      ...persistedLine,
+      row: {
+        ...projectReceptionPersistedRow(line.row),
+        isService: line.row.isService === true,
+        isPrintService: line.row.isPrintService === true,
+        isCustomizable: line.row.isCustomizable === true,
+      },
+    };
+  });
   const safeCart = safePlainJson(normalizedCart);
   return {
     version: RECEPTION_WORKSPACE_SCHEMA_VERSION,
@@ -885,7 +898,7 @@ export function reconcileReceptionCartRows(
           isCustomizable: false,
         }
       : live;
-    const { origPrice: _staleOrigPrice, customBasePrice: _staleCustomBase, couponPriceSnapshot: _staleCouponPrice, couponBasePromotion: _staleCouponBase, ...rest } = line;
+    const { origPrice: _staleOrigPrice, customBasePrice: _staleCustomBase, couponPriceSnapshot: _staleCouponPrice, couponLineDiscount: _staleCouponLineDiscount, couponBasePromotion: _staleCouponBase, draftLineDiscount: _staleDraftLineDiscount, draftPromo: _staleDraftPromo, cartPromo: _staleCartPromo, ...rest } = line;
     const next: CartLine = options.preserveStoredPrices ? { ...line, row } : { ...rest, row };
     if (line.custom) next.customBasePrice = options.preserveStoredPrices ? customizationBasePrice(line) : D(row.price).toNumber();
     if (!options.preserveStoredPrices && (line.disc ?? 0) > 0) {
@@ -902,38 +915,194 @@ export function reconcileReceptionCartRows(
 export type ReceptionCouponPreview = {
   code: string;
   programName: string;
+  freeShipping?: boolean;
+  freeShippingPromotionName?: string | null;
   lines: Array<{
     productUnitId: number;
     promotionId: number | null;
     promotionName: string | null;
     promotionEffectivePrice: string | null;
+    promotionLineDiscount?: string | null;
+  }>;
+  lineAllocations?: Array<{
+    lineIndex: number;
+    productUnitId: number;
+    promotionId: number | null;
+    promotionName: string | null;
+    promotionEffectivePrice: string | null;
+    promotionLineDiscount?: string | null;
   }>;
 };
 
 export type ReceptionLocalRestorePreparation =
-  | { ok: true; cart: CartLine[]; customer: ReceptionWorkspaceCustomer; tier: Tier; couponCode: string | null; couponLabel: string | null }
+  | { ok: true; cart: CartLine[]; customer: ReceptionWorkspaceCustomer; tier: Tier; couponCode: string | null; couponLabel: string | null; couponFreeShippingPromo?: string | null }
   | { ok: false; reason: "STALE" | "PRICING_CONTEXT" | "MISSING_CATALOG" | "NO_COUPON_LINES"; missingUnitIds?: number[] };
 
 export function applyReceptionCouponPreview(
   cart: readonly CartLine[],
   coupon: ReceptionCouponPreview,
 ): CartLine[] {
+  const isEligibleLine = (item: CartLine) =>
+    !item.custom && !item.row.isPrintService && !item.digital;
+
+  if (Array.isArray(coupon.lineAllocations)) {
+    const byLineIdx = new Map(
+      coupon.lineAllocations
+        .filter((line) => typeof line.lineIndex === "number")
+        .map((line) => [Number(line.lineIndex), line]),
+    );
+    let eligibleIdx = 0;
+    return cart.map((item) => {
+      if (!isEligibleLine(item)) return item;
+      const currentEligibleIdx = eligibleIdx++;
+      const applied = byLineIdx.get(currentEligibleIdx);
+      if (!applied) {
+        if (item.couponPriceSnapshot == null && item.couponLineDiscount == null && item.cartPromo === undefined) {
+          return item;
+        }
+        const {
+          cartPromo: _clearCartPromo,
+          couponPriceSnapshot: _prevSnap,
+          couponLineDiscount: _prevLineDisc,
+          couponBasePromotion,
+          ...rest
+        } = item;
+        return {
+          ...rest,
+          row: couponBasePromotion
+            ? {
+                ...item.row,
+                promotionId: couponBasePromotion.promotionId,
+                promotionName: couponBasePromotion.promotionName,
+                promotionEffectivePrice: couponBasePromotion.promotionEffectivePrice,
+              }
+            : item.row,
+        };
+      }
+      const couponPrice = Number(applied.promotionEffectivePrice);
+      const { cartPromo: _clearCartPromo, couponLineDiscount: _prevLineDisc, couponPriceSnapshot: _prevSnap, ...baseItem } = item;
+      return {
+        ...baseItem,
+        ...(Number.isFinite(couponPrice) && couponPrice >= 0 ? { couponPriceSnapshot: couponPrice } : {}),
+        ...(applied.promotionLineDiscount != null && D(applied.promotionLineDiscount).gt(0)
+          ? { couponLineDiscount: applied.promotionLineDiscount }
+          : {}),
+        couponBasePromotion: item.couponBasePromotion ?? {
+          promotionId: item.row.promotionId ?? null,
+          promotionName: item.row.promotionName ?? null,
+          promotionEffectivePrice: item.row.promotionEffectivePrice ?? null,
+        },
+        row: {
+          ...item.row,
+          promotionId: applied.promotionId,
+          promotionName: applied.promotionName,
+          promotionEffectivePrice: applied.promotionEffectivePrice,
+        },
+      };
+    });
+  }
+
   const byUnit = new Map(coupon.lines.map((line) => [Number(line.productUnitId), line]));
-  return cart.map((item) => {
-    const applied = !item.custom && !item.row.isPrintService && !item.digital
+  const indicesByUnit = new Map<number, number[]>();
+  cart.forEach((item, idx) => {
+    if (!isEligibleLine(item)) return;
+    const unitId = Number(item.row.productUnitId);
+    if (!byUnit.has(unitId)) return;
+    const list = indicesByUnit.get(unitId);
+    if (list) list.push(idx);
+    else indicesByUnit.set(unitId, [idx]);
+  });
+
+  const splitDiscByIdx = new Map<number, Decimal>();
+  indicesByUnit.forEach((groupIndices, unitId) => {
+    const applied = byUnit.get(unitId);
+    if (!applied || applied.promotionLineDiscount == null) return;
+    const totalDisc = Decimal.max(D(0), round2(D(applied.promotionLineDiscount)));
+    if (groupIndices.length === 1) {
+      splitDiscByIdx.set(groupIndices[0]!, totalDisc);
+      return;
+    }
+    const weights = groupIndices.map((idx) => {
+      const it = cart[idx]!;
+      const gross = round2(round2(D(it.row.price ?? 0)).times(it.qty));
+      return { idx, gross, weight: gross.gt(0) ? gross : D(Math.max(1, it.qty)) };
+    });
+    const totalWeight = weights.reduce((s, w) => s.plus(w.weight), D(0));
+    let remaining = totalDisc;
+    weights.forEach((w, pos) => {
+      const isLast = pos === weights.length - 1;
+      const rawShare = isLast
+        ? remaining
+        : totalWeight.gt(0)
+          ? round2(totalDisc.times(w.weight).div(totalWeight))
+          : D(0);
+      const share = Decimal.min(
+        w.gross.gt(0) ? Decimal.min(w.gross, remaining) : remaining,
+        Decimal.max(D(0), rawShare),
+      );
+      remaining = Decimal.max(D(0), round2(remaining.minus(share)));
+      splitDiscByIdx.set(w.idx, share);
+    });
+  });
+
+  return cart.map((item, idx) => {
+    const applied = isEligibleLine(item)
       ? byUnit.get(Number(item.row.productUnitId))
       : undefined;
-    if (!applied) return item;
-    const couponPrice = Number(applied.promotionEffectivePrice);
+    if (!applied) {
+      if (!isEligibleLine(item)) return item;
+      if (item.couponPriceSnapshot == null && item.couponLineDiscount == null && item.cartPromo === undefined) {
+        return item;
+      }
+      const {
+        cartPromo: _clearCartPromo,
+        couponPriceSnapshot: _prevSnap,
+        couponLineDiscount: _prevLineDisc,
+        couponBasePromotion,
+        ...rest
+      } = item;
+      return {
+        ...rest,
+        row: couponBasePromotion
+          ? {
+              ...item.row,
+              promotionId: couponBasePromotion.promotionId,
+              promotionName: couponBasePromotion.promotionName,
+              promotionEffectivePrice: couponBasePromotion.promotionEffectivePrice,
+            }
+          : item.row,
+      };
+    }
+    const groupLen = indicesByUnit.get(Number(item.row.productUnitId))?.length ?? 1;
+    const allocatedDisc = splitDiscByIdx.get(idx);
+    const computedUnitEff =
+      allocatedDisc != null && groupLen > 1 && item.qty > 0
+        ? Decimal.max(
+            D(0),
+            round2(round2(D(item.row.price ?? 0)).minus(round2(allocatedDisc.div(item.qty)))),
+          )
+        : null;
+    const effPriceStr =
+      computedUnitEff != null ? computedUnitEff.toFixed(2) : applied.promotionEffectivePrice;
+    const couponPrice = Number(effPriceStr);
+    const { cartPromo: _clearCartPromo, couponLineDiscount: _prevLineDisc, couponPriceSnapshot: _prevSnap, ...baseItem } = item;
     return {
-      ...item,
+      ...baseItem,
       ...(Number.isFinite(couponPrice) && couponPrice >= 0 ? { couponPriceSnapshot: couponPrice } : {}),
+      ...(allocatedDisc != null && allocatedDisc.gt(0)
+        ? { couponLineDiscount: allocatedDisc.toFixed(2) }
+        : {}),
       couponBasePromotion: item.couponBasePromotion ?? {
         promotionId: item.row.promotionId ?? null,
         promotionName: item.row.promotionName ?? null,
         promotionEffectivePrice: item.row.promotionEffectivePrice ?? null,
       },
-      row: { ...item.row, promotionId: applied.promotionId, promotionName: applied.promotionName, promotionEffectivePrice: applied.promotionEffectivePrice },
+      row: {
+        ...item.row,
+        promotionId: applied.promotionId,
+        promotionName: applied.promotionName,
+        promotionEffectivePrice: effPriceStr,
+      },
     };
   });
 }
@@ -941,8 +1110,8 @@ export function applyReceptionCouponPreview(
 /** يزيل أثر الكوبون وحده ويُبقي السعر الأساس/الخصم اليدوي مستقلين. */
 export function clearReceptionCouponPricing(cart: readonly CartLine[]): CartLine[] {
   return cart.map((line) => {
-    if (line.custom || line.couponPriceSnapshot == null) return line;
-    const { couponPriceSnapshot: _couponPrice, couponBasePromotion, ...rest } = line;
+    if (line.custom || (line.couponPriceSnapshot == null && line.couponLineDiscount == null)) return line;
+    const { couponPriceSnapshot: _couponPrice, couponLineDiscount: _couponLineDisc, couponBasePromotion, ...rest } = line;
     return { ...rest, row: { ...line.row, promotionId: couponBasePromotion?.promotionId ?? null, promotionName: couponBasePromotion?.promotionName ?? null, promotionEffectivePrice: couponBasePromotion?.promotionEffectivePrice ?? null } };
   });
 }
@@ -1005,6 +1174,9 @@ export async function prepareReceptionLocalWorkspaceRestore(
     tier: pricingContext.tier,
     couponCode: coupon.code,
     couponLabel: coupon.programName,
+    couponFreeShippingPromo: coupon.freeShipping
+      ? (coupon.freeShippingPromotionName ?? coupon.programName)
+      : null,
   };
 }
 
@@ -1018,6 +1190,9 @@ export type ReceptionRestorableDraftLine = {
   productUnitId: number | null;
   title: string | null;
   unitPrice: number | string;
+  discountAmount?: number | string | null;
+  promotionId?: number | null;
+  promotionDiscount?: number | string | null;
 };
 
 export type ReceptionDraftCartPreparation =
@@ -1107,7 +1282,30 @@ export function prepareReceptionDraftCart(
     const restored: CartLine = { key: `r-${line.id}`, row, qty: quantity };
     const storedPrice = Number(line.unitPrice);
     if (!Number.isFinite(storedPrice) || storedPrice < 0 || storedPrice > MAX_MONEY) { missingCount += 1; continue; }
-    if (storedPrice !== Number(row.promotionEffectivePrice ?? row.price ?? 0)) restored.origPrice = storedPrice;
+    const rawStoredDisc = line.discountAmount != null ? Number(line.discountAmount) : 0;
+    if (!Number.isFinite(rawStoredDisc) || rawStoredDisc < 0 || rawStoredDisc > MAX_MONEY) { missingCount += 1; continue; }
+    const storedDiscD = round2(D(rawStoredDisc));
+    if (storedDiscD.gt(0)) {
+      const grossD = round2(round2(D(storedPrice)).times(quantity));
+      if (storedDiscD.gt(grossD)) { missingCount += 1; continue; }
+      restored.origPrice = storedPrice;
+      restored.draftLineDiscount = storedDiscD.toFixed(2);
+      if (line.promotionId != null && Number.isSafeInteger(Number(line.promotionId)) && Number(line.promotionId) > 0) {
+        const rawPromoDisc = line.promotionDiscount != null ? Number(line.promotionDiscount) : 0;
+        if (!Number.isFinite(rawPromoDisc) || rawPromoDisc < 0 || rawPromoDisc > MAX_MONEY) { missingCount += 1; continue; }
+        const promoDiscD = Decimal.min(storedDiscD, round2(D(rawPromoDisc)));
+        if (promoDiscD.gt(0)) {
+          const restoredPromoId = Number(line.promotionId);
+          restored.draftPromo = {
+            promotionId: restoredPromoId,
+            ...(row.promotionId === restoredPromoId && row.promotionName ? { promotionName: row.promotionName } : {}),
+            promotionDiscount: promoDiscD.toFixed(2),
+          };
+        }
+      }
+    } else if (storedPrice !== Number(row.promotionEffectivePrice ?? row.price ?? 0)) {
+      restored.origPrice = storedPrice;
+    }
     cart.push(restored);
   }
   return missingCount > 0 ? { ok: false, missingCount } : { ok: true, cart };

@@ -4,6 +4,7 @@ import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm
 import { baghdadToday } from "./businessDay";
 import { appErrorMessage } from "../../shared/errors";
 import { formatActiveDays, isDayActive, type PromotionDesignMeta } from "../../shared/promotionScheduling";
+import { formatPromotionSummary } from "../../shared/promotionEngine";
 import {
   couponPrograms,
   couponRedemptions,
@@ -290,7 +291,7 @@ export async function lockCouponForSale(
     programName: row.program.name,
     maxDiscountAmount: row.promotion.maxDiscountAmount ? String(row.promotion.maxDiscountAmount) : null,
     minOrderSpend: row.promotion.minOrderSpend ? String(row.promotion.minOrderSpend) : "0.00",
-    freeShipping: Boolean(row.promotion.freeShipping),
+    freeShipping: Boolean(row.promotion.freeShipping) || row.promotion.type === "FREE_SHIPPING",
     shippingDiscountAmount: row.promotion.shippingDiscountAmount ? String(row.promotion.shippingDiscountAmount) : "0.00",
     affiliateCommissionRate: row.program.affiliateCommissionRate ? String(row.program.affiliateCommissionRate) : "0.00",
     affiliateName: row.program.affiliateName ?? null,
@@ -735,6 +736,14 @@ export async function issueBounceBackCouponTx(
       promoType: promotions.type,
       promoPercent: promotions.discountPercent,
       promoAmount: promotions.discountAmount,
+      promoFixedPrice: promotions.fixedPrice,
+      promoBundlePrice: promotions.bundlePrice,
+      promoBundleMode: promotions.bundleMode,
+      promoPickCount: promotions.bundleQuantity,
+      promoBuyQuantity: promotions.bogoBuyQuantity,
+      promoGetQuantity: promotions.bogoGetQuantity,
+      promoGetDiscountPercent: promotions.bogoGetDiscountPercent,
+      promoTierMode: promotions.tieredMode,
       promoMaxDiscount: promotions.maxDiscountAmount,
       promoMinSpend: promotions.minOrderSpend,
     })
@@ -796,19 +805,26 @@ export async function issueBounceBackCouponTx(
     issuedAt,
   });
 
-  let discountText = "";
-  if (matchedProgram.promoType === "PERCENT") {
-    discountText = `${Number(matchedProgram.promoPercent)}%`;
-    if (matchedProgram.promoMaxDiscount && money(matchedProgram.promoMaxDiscount).gt(0)) {
-      discountText += ` (بسقف ${Number(matchedProgram.promoMaxDiscount).toLocaleString()} د.ع)`;
-    }
-  } else {
-    discountText = `${Number(matchedProgram.promoAmount).toLocaleString()} د.ع`;
+  let discountText = formatPromotionSummary({
+    type: matchedProgram.promoType,
+    discountPercent: matchedProgram.promoPercent,
+    discountAmount: matchedProgram.promoAmount,
+    fixedPrice: matchedProgram.promoFixedPrice,
+    bundlePrice: matchedProgram.promoBundlePrice,
+    bundleMode: matchedProgram.promoBundleMode,
+    pickCount: matchedProgram.promoPickCount,
+    buyQuantity: matchedProgram.promoBuyQuantity,
+    getQuantity: matchedProgram.promoGetQuantity,
+    getDiscountPercent: matchedProgram.promoGetDiscountPercent,
+    tierMode: matchedProgram.promoTierMode,
+  });
+  if (matchedProgram.promoType === "PERCENT" && matchedProgram.promoMaxDiscount && money(matchedProgram.promoMaxDiscount).gt(0)) {
+    discountText += ` (بسقف ${Number(matchedProgram.promoMaxDiscount).toLocaleString("en-US")} د.ع)`;
   }
 
   let minSpendText: string | null = null;
   if (matchedProgram.promoMinSpend && money(matchedProgram.promoMinSpend).gt(0)) {
-    minSpendText = `للطلبات بقيمة ${Number(matchedProgram.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+    minSpendText = `للطلبات بقيمة ${Number(matchedProgram.promoMinSpend).toLocaleString("en-US")} د.ع فأكثر`;
   }
 
   let validToText = "";
