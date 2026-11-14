@@ -1109,6 +1109,8 @@ export interface StorefrontPricingBenefit {
   couponShippingActive: boolean;
   /** ميزة الشحن المجاني للعرض التلقائي مفعلة كفائز */
   offerShippingActive?: boolean;
+  /** معرّف العرض المانح للشحن المجاني (تلقائي أو كوبون) لنقله إلى الفاتورة عند الإرسال */
+  freeShippingPromotionId?: number | null;
 }
 
 export interface PricedOnlineOrderLines {
@@ -1562,6 +1564,7 @@ export async function priceOnlineOrderLines(
     priority: number;
     label: string;
     shippingActive: boolean;
+    freeShippingPromotionId: number | null;
   }> = [
     // عند التعادل لا نستهلك كوبوناً بلا توفير إضافي؛ تبقى قيمة الكوبون للعميل لاحقاً.
     {
@@ -1571,6 +1574,7 @@ export async function priceOnlineOrderLines(
       priority: 3,
       label: "سعر الجملة التلقائي",
       shippingActive: false,
+      freeShippingPromotionId: null,
     },
     {
       type: "OFFER" as const,
@@ -1584,6 +1588,10 @@ export async function priceOnlineOrderLines(
             ? "عرض توصيل مجاني"
             : "أفضل عرض تلقائي",
       shippingActive: offerShippingWaiver.gt(0),
+      freeShippingPromotionId:
+        offerShippingWaiver.gt(0) && autoEval.freeShippingPromotion
+          ? autoEval.freeShippingPromotion.promotionId
+          : null,
     },
     {
       type: "COUPON" as const,
@@ -1592,6 +1600,10 @@ export async function priceOnlineOrderLines(
       priority: 1,
       label: options.coupon?.programName ?? (couponShippingWaiver.gt(0) ? "توصيل مجاني" : "خصم الكوبون"),
       shippingActive: couponShippingWaiver.gt(0),
+      freeShippingPromotionId:
+        couponShippingWaiver.gt(0)
+          ? (couponEval?.freeShippingPromotion?.promotionId ?? options.coupon?.promotionId ?? null)
+          : null,
     },
   ].filter((candidate) => candidate.totalBenefit.gt(0));
   candidatesByBenefit.sort((a, b) => {
@@ -1620,6 +1632,7 @@ export async function priceOnlineOrderLines(
           selected.type !== "COUPON",
         couponShippingActive: selected.type === "COUPON" && selected.shippingActive,
         offerShippingActive: selected.type === "OFFER" && selected.shippingActive,
+        freeShippingPromotionId: selected.shippingActive ? selected.freeShippingPromotionId : null,
       }
     : {
         type: "NONE",
@@ -1628,6 +1641,7 @@ export async function priceOnlineOrderLines(
         couponSuperseded: false,
         couponShippingActive: false,
         offerShippingActive: false,
+        freeShippingPromotionId: null,
       };
 
   const items = candidates.map((item) => {
@@ -1761,6 +1775,7 @@ export async function totalOnlineOrderQuote(
   > & {
     couponDeliveryWaivedAmount: string;
     couponShippingApplied: boolean;
+    offerShippingApplied: boolean;
   }
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
@@ -1830,6 +1845,7 @@ export async function totalOnlineOrderQuote(
     deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
     couponDeliveryWaivedAmount: couponDeliveryWaivedAmount.toFixed(2),
     couponShippingApplied: couponFree,
+    offerShippingApplied: offerFree,
     freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
     freeShippingRemaining: freeThreshold
       ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
@@ -2539,6 +2555,10 @@ async function createOnlineOrderAttempt(
       shippingCost: toDbMoney(deliveryFee),
       deliveryFree: quoteTotals.deliveryFree,
       deliveryWaivedAmount: toDbMoney(quoteTotals.deliveryWaivedAmount),
+      freeShippingPromotionId:
+        quoteTotals.offerShippingApplied || quoteTotals.couponShippingApplied
+          ? (currentPricing.benefit.freeShippingPromotionId ?? null)
+          : null,
       taxAmount: "0",
       total: toDbMoney(total),
       status: "PENDING",

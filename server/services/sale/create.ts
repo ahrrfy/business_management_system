@@ -2182,6 +2182,11 @@ export async function createSaleInTx(
     // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
     deliveryFree: isFreeDelivery,
     deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
+    freeShippingPromotionId: isFreeDelivery
+      ? (authoritativeFreeShippingPromo?.promotionId ??
+        input.freeShippingPromotionId ??
+        null)
+      : null,
     status,
     paidAmount: toDbMoney(paidNow),
     paymentMethod: effectiveInvoicePaymentMethod,

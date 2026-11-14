@@ -11,6 +11,7 @@ import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { crmCampaigns, promotions } from "../../drizzle/schema";
+import { MAX_PROMOTION_TARGETS } from "../../shared/promotionEngine";
 import { todayYmdBaghdad } from "../../shared/promotionScheduling";
 import { logAudit } from "../services/auditService";
 import {
@@ -76,7 +77,7 @@ const additionalRuleSchema = z.object({
   tieredMode: z.enum(["PER_ITEM", "POOL_ACROSS_TARGETS"]).optional(),
   tiers: z.array(tierSchema).max(50).optional(),
   scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).optional(),
-  targets: z.array(targetSchema).max(500).optional(),
+  targets: z.array(targetSchema).max(MAX_PROMOTION_TARGETS).optional(),
   allowBelowCost: z.boolean().optional(),
   applyToBaseUnitOnly: z.boolean().optional(),
   minLineAmount: moneyStr.optional(),
@@ -125,7 +126,8 @@ export const promotionsV2Router = router({
     if (ctx.user.role !== "admin" && branchId == null) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد" });
     }
-    return withTx((tx) => loadPromotionPerformance(tx, branchId));
+    const canViewCost = canSeeCostForUser(ctx.user);
+    return withTx((tx) => loadPromotionPerformance(tx, branchId, canViewCost));
   }),
 
   getById: campaignsReadProcedure
@@ -193,7 +195,7 @@ export const promotionsV2Router = router({
         bogoGetDiscountPercent: percentStr.optional(),
         tieredMode: z.enum(["PER_ITEM", "POOL_ACROSS_TARGETS"]).optional(),
         tiers: z.array(tierSchema).max(50).optional(),
-        targets: z.array(targetSchema).max(500).optional(),
+        targets: z.array(targetSchema).max(MAX_PROMOTION_TARGETS).optional(),
         additionalRules: z.array(additionalRuleSchema).max(20).optional(),
       }),
     )
@@ -403,7 +405,7 @@ export const promotionsV2Router = router({
         bogoGetDiscountPercent: percentStr.optional(),
         tieredMode: z.enum(["PER_ITEM", "POOL_ACROSS_TARGETS"]).optional(),
         tiers: z.array(tierSchema).max(50).optional(),
-        targets: z.array(targetSchema).max(500).optional(),
+        targets: z.array(targetSchema).max(MAX_PROMOTION_TARGETS).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

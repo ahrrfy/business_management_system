@@ -328,3 +328,59 @@ SET @target_add_chk = IF(
 PREPARE target_add_stmt FROM @target_add_chk;
 EXECUTE target_add_stmt;
 DEALLOCATE PREPARE target_add_stmt;
+--> statement-breakpoint
+SET @inv_add_free_ship_promo = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'invoices'
+      AND COLUMN_NAME = 'freeShippingPromotionId'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `invoices` ADD COLUMN `freeShippingPromotionId` bigint NULL'
+);
+PREPARE inv_add_free_ship_promo_stmt FROM @inv_add_free_ship_promo;
+EXECUTE inv_add_free_ship_promo_stmt;
+DEALLOCATE PREPARE inv_add_free_ship_promo_stmt;
+--> statement-breakpoint
+SET @inv_add_free_ship_promo_idx = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'invoices'
+      AND INDEX_NAME = 'idx_invoice_free_shipping_promo'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `invoices` ADD INDEX `idx_invoice_free_shipping_promo` (`freeShippingPromotionId`)'
+);
+PREPARE inv_add_free_ship_promo_idx_stmt FROM @inv_add_free_ship_promo_idx;
+EXECUTE inv_add_free_ship_promo_idx_stmt;
+DEALLOCATE PREPARE inv_add_free_ship_promo_idx_stmt;
+--> statement-breakpoint
+SET @ord_add_free_ship_promo = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'onlineOrders'
+      AND COLUMN_NAME = 'freeShippingPromotionId'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `onlineOrders` ADD COLUMN `freeShippingPromotionId` bigint NULL'
+);
+PREPARE ord_add_free_ship_promo_stmt FROM @ord_add_free_ship_promo;
+EXECUTE ord_add_free_ship_promo_stmt;
+DEALLOCATE PREPARE ord_add_free_ship_promo_stmt;
+--> statement-breakpoint
+SET @ord_add_free_ship_promo_idx = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'onlineOrders'
+      AND INDEX_NAME = 'idx_online_order_free_shipping_promo'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `onlineOrders` ADD INDEX `idx_online_order_free_shipping_promo` (`freeShippingPromotionId`)'
+);
+PREPARE ord_add_free_ship_promo_idx_stmt FROM @ord_add_free_ship_promo_idx;
+EXECUTE ord_add_free_ship_promo_idx_stmt;
+DEALLOCATE PREPARE ord_add_free_ship_promo_idx_stmt;

@@ -23,6 +23,9 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_UP, precision: 40 });
 export { isPromotionChannelActive };
 export type { PromotionChannel, EvaluationChannel };
 
+/** السقف الموحد لعدد الأهداف المحفوظة لكل عرض بين الواجهة والراوتر والخدمة. */
+export const MAX_PROMOTION_TARGETS = 5_000;
+
 export type DecimalInput = Decimal | number | string;
 
 // ---------------------------------------------------------------------------

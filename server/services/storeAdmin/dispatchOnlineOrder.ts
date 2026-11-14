@@ -256,6 +256,10 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         deliveryWaivedAmount: cur.deliveryFree === true
           ? String(cur.deliveryWaivedAmount ?? "0")
           : null,
+        freeShippingPromotionId:
+          cur.deliveryFree === true && cur.freeShippingPromotionId != null
+            ? Number(cur.freeShippingPromotionId)
+            : null,
         // طلب المتجر نقدي عند الاستلام بطبيعته: الزبون الجديد يُنشأ بحد ائتمان صفري
         // (نقدي فقط)، لذلك لا يجوز تمرير الفاتورة المؤقتة إلى بوابة الائتمان كبيع آجل.
         // يبقى المبلغ ذمّة تشغيلية حتى تحصيل المندوب، وتُصفّى ذرياً عند التسليم.

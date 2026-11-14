@@ -22,10 +22,13 @@ import {
   validateRuleScopeAndMargin,
   validateRuleTypeFields,
 } from "@/components/offers/offersMultiRuleHelpers";
+import { MAX_PROMOTION_TARGETS } from "@shared/promotionEngine";
 import {
   applyOfferRuleDraftPatch,
   buildRulePayloadCore,
+  capOfferItemsToTargetLimit,
   pullCategorySearchPages,
+  resolveBulkPasteOutcome,
   resolveCategoryPullOutcome,
 } from "@/components/offers/offersDraftGuards";
 import {
@@ -962,6 +965,86 @@ describe("Tier 1: Offers UI Contracts (F13–F18)", () => {
       expect(cappedOutcome.itemsToAdd).toHaveLength(0);
       expect(cappedOutcome.tone).toBe("warn");
       expect(cappedOutcome.notice).toContain("أصنافاً إضافية");
+    });
+
+    it("T1-F19-13: enforces MAX_PROMOTION_TARGETS across bulk pull, paste, and form validation while allowing >500 targets", () => {
+      const makeRow = (id: number) => ({
+        productId: id,
+        productName: `مادة ${id}`,
+        productCode: `SKU-${id}`,
+        categoryId: 7,
+        variantId: id,
+        sku: `SKU-${id}`,
+        variantKind: "VARIANT" as const,
+        isConsignment: false,
+        isBundle: false,
+        costPrice: "500.00",
+        units: [
+          {
+            id: id * 10,
+            unitName: "قطعة",
+            conversionFactor: "1",
+            barcode: `BC-${id}`,
+            isBaseUnit: true,
+            retailPrice: "1000.00",
+          },
+        ],
+      });
+
+      // 1,200 targets (>500) are valid end-to-end
+      const valid1200 = resolveCategoryPullOutcome({
+        fetchedRows: Array.from({ length: 1200 }, (_, i) => makeRow(i + 1)),
+        truncated: false,
+        existingVariantIds: new Set(),
+        catName: "قرطاسية",
+      });
+      expect(valid1200.itemsToAdd).toHaveLength(1200);
+      expect(valid1200.tone).toBe("pos");
+
+      const ruleWith1200 = {
+        ...createDefaultRuleDraft("PERCENT"),
+        scope: "PRODUCTS" as const,
+        selectedProducts: valid1200.itemsToAdd,
+      };
+      expect(validateRuleScopeAndMargin(ruleWith1200, ruleWith1200, "")).toBeNull();
+
+      // Exceeding MAX_PROMOTION_TARGETS is capped upfront with an explicit warning
+      const pullOverflow = resolveCategoryPullOutcome({
+        fetchedRows: Array.from({ length: 200 }, (_, i) => makeRow(6000 + i)),
+        truncated: false,
+        existingVariantIds: new Set(),
+        catName: "قرطاسية",
+        currentSelectedCount: MAX_PROMOTION_TARGETS - 50,
+      });
+      expect(pullOverflow.itemsToAdd).toHaveLength(50);
+      expect(pullOverflow.tone).toBe("warn");
+      expect(pullOverflow.notice).toContain(String(MAX_PROMOTION_TARGETS));
+
+      const pasteOverflow = resolveBulkPasteOutcome({
+        tokens: ["SKU-9001", "SKU-9002", "SKU-9003"],
+        matchedProducts: [makeRow(9001), makeRow(9002), makeRow(9003)],
+        existingVariantIds: new Set(),
+        currentSelectedCount: MAX_PROMOTION_TARGETS - 1,
+      });
+      expect(pasteOverflow.itemsToAdd).toHaveLength(1);
+      expect(pasteOverflow.capped).toBe(true);
+      expect(pasteOverflow.tone).toBe("warn");
+
+      // And validateRuleScopeAndMargin blocks an oversized draft before submission
+      const oversizedRule = {
+        ...ruleWith1200,
+        selectedProducts: Array.from({ length: MAX_PROMOTION_TARGETS + 1 }, (_, i) => ({
+          ...valid1200.itemsToAdd[0]!,
+          productId: i + 1,
+          variantId: i + 1,
+        })),
+      };
+      expect(capOfferItemsToTargetLimit(oversizedRule.selectedProducts, 0).acceptedItems).toHaveLength(
+        MAX_PROMOTION_TARGETS,
+      );
+      expect(validateRuleScopeAndMargin(oversizedRule, oversizedRule, "")).toContain(
+        String(MAX_PROMOTION_TARGETS),
+      );
     });
   });
 });

@@ -111,6 +111,8 @@ export interface CreateSaleInput {
    * و**إلزامية** معه (قرار المالك ٦/٨/٢٦): توصيلٌ مجّانيّ بلا قيمة يُضيّع قياس ما أُهدي.
    */
   deliveryWaivedAmount?: string | null;
+  /** نقل داخلي لمعرّف عرض الشحن المجاني من لقطة طلب المتجر أو تصحيح فاتورة سابقة. */
+  freeShippingPromotionId?: number | null;
   taxRatePercent?: string | null;
   payment?: PaymentLegInput | null;
   /** دفعات مقسّمة (Split / Mixed Payment): عند تمريرها تُنشئ كل رجلٍ إيصالاً وقيد PAYMENT_IN خاصّاً بها، وتُختم الفاتورة بـMIXED عند اختلاف طرق الدفع. */

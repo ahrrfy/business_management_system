@@ -2242,6 +2242,10 @@ export const invoices = mysqlTable(
     })
       .default("0")
       .notNull(),
+    // معرّف عرض الشحن المجاني المطبّق (لقطة مجمّدة لتقارير أداء واستخدام العروض).
+    freeShippingPromotionId: bigint("freeShippingPromotionId", {
+      mode: "number",
+    }),
     status: mysqlEnum("invoiceStatus", [
       "PENDING",
       "CONFIRMED",
@@ -2377,6 +2381,9 @@ export const invoices = mysqlTable(
     // أوفلاين (0084): بحث بالرقم المؤقّت المطبوع على إيصال الزبون (مرتجع/استفسار).
     offlineReceiptIdx: index("idx_invoice_offline_receipt").on(
       table.offlineReceiptNumber,
+    ),
+    freeShippingPromoIdx: index("idx_invoice_free_shipping_promo").on(
+      table.freeShippingPromotionId,
     ),
     salespersonDateIdx: index("idx_invoice_salesperson_date").on(
       table.createdBy,
@@ -8768,6 +8775,10 @@ export const onlineOrders = mysqlTable(
     })
       .default("0")
       .notNull(),
+    // معرّف عرض الشحن المجاني المطبّق (لقطة مجمّدة لتقارير أداء واستخدام العروض).
+    freeShippingPromotionId: bigint("freeShippingPromotionId", {
+      mode: "number",
+    }),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -8859,6 +8870,9 @@ export const onlineOrders = mysqlTable(
     ),
     deliveryPartyIdx: index("idx_order_delivery_party").on(
       table.deliveryPartyId,
+    ),
+    freeShippingPromoIdx: index("idx_online_order_free_shipping_promo").on(
+      table.freeShippingPromotionId,
     ),
   }),
 );

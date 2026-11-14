@@ -115,7 +115,8 @@ export interface OfferPerformanceSummary {
   invoiceCount: number;
   netSales: string | number;
   discount: string | number;
-  grossProfit: string | number;
+  cost?: string | number | null;
+  grossProfit: string | number | null;
 }
 
 export interface OfferFormData {

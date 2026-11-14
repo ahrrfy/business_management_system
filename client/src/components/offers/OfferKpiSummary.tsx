@@ -12,6 +12,7 @@ import type { OfferOperationalSignals, OfferPerformanceSummary } from "./offersT
 export interface OfferKpiSummaryProps {
   summary?: OfferPerformanceSummary;
   signals: OfferOperationalSignals;
+  canSeeCost?: boolean;
   isLoading?: boolean;
 }
 
@@ -27,16 +28,17 @@ function Kpi({ label, value, note }: { label: string; value: string | number; no
   );
 }
 
-export function OfferKpiSummary({ summary, signals }: OfferKpiSummaryProps) {
+export function OfferKpiSummary({ summary, signals, canSeeCost = false }: OfferKpiSummaryProps) {
+  const showProfit = canSeeCost && summary?.grossProfit !== null;
   const hasAlerts =
-    signals.negative.length > 0 ||
+    (showProfit && signals.negative.length > 0) ||
     signals.unusedActive.length > 0 ||
     signals.expiredActive.length > 0;
 
   return (
     <div className="space-y-4">
-      {/* 1. Five Core KPI Metric Cards */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      {/* 1. Core KPI Metric Cards */}
+      <div className={`grid gap-3 sm:grid-cols-2 ${showProfit ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
         <Kpi
           label="العروض الفعّالة الآن"
           value={signals.activeNow.length}
@@ -54,11 +56,13 @@ export function OfferKpiSummary({ summary, signals }: OfferKpiSummaryProps) {
           label="مجموع الخصومات الممنوحة"
           value={formatIqd(summary?.discount ?? "0")}
         />
-        <Kpi
-          label="صافي الربح من العروض"
-          value={formatIqd(summary?.grossProfit ?? "0")}
-          note="بعد الكلفة والراجع"
-        />
+        {showProfit && (
+          <Kpi
+            label="صافي الربح من العروض"
+            value={formatIqd(summary?.grossProfit ?? "0")}
+            note="بعد الكلفة والراجع"
+          />
+        )}
       </div>
 
       {/* 2. Order of Application Rule Guide */}
@@ -90,7 +94,7 @@ export function OfferKpiSummary({ summary, signals }: OfferKpiSummaryProps) {
             <div>
               <div className="font-medium">ملاحظات تحتاج متابعة</div>
               <div className="mt-1 text-muted-foreground">
-                {signals.negative.length > 0 && (
+                {showProfit && signals.negative.length > 0 && (
                   <span>{signals.negative.length} عروض تبيع بخسارة (أقل من الكلفة). </span>
                 )}
                 {signals.unusedActive.length > 0 && (

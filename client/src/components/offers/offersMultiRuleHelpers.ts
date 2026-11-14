@@ -7,7 +7,11 @@
 
 import Decimal from "decimal.js";
 import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
-import { evaluateCartPromotions, type PromotionRule } from "@shared/promotionEngine";
+import {
+  MAX_PROMOTION_TARGETS,
+  evaluateCartPromotions,
+  type PromotionRule,
+} from "@shared/promotionEngine";
 import { D, formatIqd } from "@/lib/money";
 import {
   PROMO_TYPE_LABELS,
@@ -161,8 +165,20 @@ export function validateRuleScopeAndMargin(
   if (scopeHolder.scope === "CATEGORIES" && scopeHolder.selectedCategories.length === 0) {
     return `${prefix}اختر فئة واحدة على الأقل.`;
   }
+  if (
+    scopeHolder.scope === "CATEGORIES" &&
+    scopeHolder.selectedCategories.length > MAX_PROMOTION_TARGETS
+  ) {
+    return `${prefix}عدد الأقسام المختارة (${scopeHolder.selectedCategories.length}) يتجاوز الحد الأقصى المسموح (${MAX_PROMOTION_TARGETS}).`;
+  }
   if (scopeHolder.scope === "PRODUCTS" && scopeHolder.selectedProducts.length === 0) {
     return `${prefix}أضف منتجاً واحداً على الأقل إلى العرض.`;
+  }
+  if (
+    scopeHolder.scope === "PRODUCTS" &&
+    scopeHolder.selectedProducts.length > MAX_PROMOTION_TARGETS
+  ) {
+    return `${prefix}عدد المواد المختارة (${scopeHolder.selectedProducts.length}) يتجاوز الحد الأقصى المسموح للعرض (${MAX_PROMOTION_TARGETS} مادة). قلّل المواد المختارة أو اختر نطاق «أقسام محددة».`;
   }
   if (scopeHolder.scope === "PRODUCTS" && !scopeHolder.allowBelowCost) {
     for (const item of scopeHolder.selectedProducts) {

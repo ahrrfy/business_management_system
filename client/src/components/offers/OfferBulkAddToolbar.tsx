@@ -20,7 +20,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
+import { MAX_PROMOTION_TARGETS } from "@shared/promotionEngine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,7 +37,12 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { formatIqd } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { buildOfferItemFromSearchProduct } from "./offersMultiRuleHelpers";
-import { pullCategorySearchPages, resolveCategoryPullOutcome } from "./offersDraftGuards";
+import {
+  capOfferItemsToTargetLimit,
+  pullCategorySearchPages,
+  resolveBulkPasteOutcome,
+  resolveCategoryPullOutcome,
+} from "./offersDraftGuards";
 import type { SelectedOfferItem } from "./offersTypes";
 
 export interface OfferBulkAddToolbarProps {
@@ -107,10 +112,19 @@ export function OfferBulkAddToolbar({
       .filter((p) => !existingVariantIds.has(p.variantId))
       .map((p) => buildOfferItemFromSearchProduct(p))
       .filter((x): x is SelectedOfferItem => x != null);
-    if (built.length > 0) {
-      onAddItems(built);
+    const { acceptedItems, droppedCount, limitReachedNotice } = capOfferItemsToTargetLimit(
+      built,
+      selectedItems.length,
+    );
+    if (acceptedItems.length > 0) {
+      onAddItems(acceptedItems);
+    }
+    if (droppedCount > 0 && limitReachedNotice) {
+      setInlineNoticeTone("warn");
+      setInlineNotice(limitReachedNotice);
+    } else if (acceptedItems.length > 0) {
       setInlineNoticeTone("pos");
-      setInlineNotice(`تمت إضافة ${built.length} مادة من مستعرض الأصناف.`);
+      setInlineNotice(`تمت إضافة ${acceptedItems.length} مادة من مستعرض الأصناف.`);
     }
     setPickedMap(new Map());
     setBrowserOpen(false);
@@ -132,70 +146,32 @@ export function OfferBulkAddToolbar({
     setIsPasting(true);
     setPasteFeedback(null);
     try {
-      const matchedProducts = await utils.salesPromotions.searchProducts.fetch({
-        codes: tokens.slice(0, 500),
-        limit: 500,
-      });
-
-      const toAdd: SelectedOfferItem[] = [];
-      const seenNewVariants = new Set<number>();
-      let duplicateCount = 0;
-      const unmatchedCodes: string[] = [];
-
-      for (const tok of tokens) {
-        const normTok = normalizeBarcodeScannerInput(tok).toLowerCase();
-        const rawLower = tok.toLowerCase();
-        const found = matchedProducts.find((p: any) => {
-          if (String(p.sku ?? "").toLowerCase() === rawLower || String(p.sku ?? "").toLowerCase() === normTok) {
-            return true;
-          }
-          return (p.units ?? []).some((u: any) => {
-            if (u.barcode && normalizeBarcodeScannerInput(String(u.barcode)).toLowerCase() === normTok) return true;
-            if (Array.isArray(u.altBarcodes)) {
-              return u.altBarcodes.some(
-                (alt: string) => normalizeBarcodeScannerInput(String(alt)).toLowerCase() === normTok
-              );
-            }
-            return false;
-          });
+      const cappedTokens = tokens.slice(0, MAX_PROMOTION_TARGETS);
+      const matchedProducts: any[] = [];
+      for (let offset = 0; offset < cappedTokens.length; offset += 500) {
+        const chunk = cappedTokens.slice(offset, offset + 500);
+        const batch = await utils.salesPromotions.searchProducts.fetch({
+          codes: chunk,
+          limit: 500,
         });
-
-        if (!found) {
-          unmatchedCodes.push(tok);
-          continue;
-        }
-        if (existingVariantIds.has(found.variantId) || seenNewVariants.has(found.variantId)) {
-          duplicateCount++;
-          continue;
-        }
-        const item = buildOfferItemFromSearchProduct(found, tok);
-        if (item) {
-          seenNewVariants.add(found.variantId);
-          toAdd.push(item);
-        }
+        matchedProducts.push(...batch);
       }
-
-      if (toAdd.length > 0) {
-        onAddItems(toAdd);
+      const outcome = resolveBulkPasteOutcome({
+        tokens,
+        matchedProducts,
+        existingVariantIds,
+        currentSelectedCount: selectedItems.length,
+      });
+      if (outcome.itemsToAdd.length > 0) {
+        onAddItems(outcome.itemsToAdd);
       }
-
-      const parts = [`تمت إضافة ${toAdd.length} مادة بنجاح`];
-      if (duplicateCount > 0) parts.push(`${duplicateCount} مضافة مسبقاً`);
-      if (unmatchedCodes.length > 0) {
-        parts.push(
-          `${unmatchedCodes.length} لم يُعثر عليها (${unmatchedCodes.slice(0, 5).join("، ")}${
-            unmatchedCodes.length > 5 ? "…" : ""
-          })`
-        );
-      }
-      const summary = parts.join(" • ");
-      setInlineNoticeTone("pos");
-      setInlineNotice(summary);
-      if (unmatchedCodes.length === 0) {
+      setInlineNoticeTone(outcome.tone);
+      setInlineNotice(outcome.summary);
+      if (outcome.unmatchedCodes.length === 0 && !outcome.capped) {
         setPasteRaw("");
         setPasteOpen(false);
       } else {
-        setPasteFeedback(summary);
+        setPasteFeedback(outcome.summary);
       }
     } catch {
       setPasteFeedback("تعذر مطابقة الأكواد الملصقة حالياً، حاول مرة أخرى.");
@@ -221,6 +197,7 @@ export function OfferBulkAddToolbar({
         truncated,
         existingVariantIds,
         catName,
+        currentSelectedCount: selectedItems.length,
       });
       if (outcome.itemsToAdd.length > 0) {
         onAddItems(outcome.itemsToAdd);

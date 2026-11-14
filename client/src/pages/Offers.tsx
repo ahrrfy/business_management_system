@@ -73,6 +73,7 @@ export default function Offers() {
   const reactivateM = trpc.salesPromotions.reactivate.useMutation({ onSuccess: async () => { await utils.salesPromotions.list.invalidate(); } });
   const duplicateM = trpc.salesPromotions.duplicate.useMutation({ onSuccess: async () => { await utils.salesPromotions.list.invalidate(); } });
 
+  const canSeeCost = performanceQ.data?.canSeeCost === true;
   const performanceById = useMemo(
     () => new Map((performanceQ.data?.rows ?? []).map((row) => [row.promotionId, row])),
     [performanceQ.data?.rows]
@@ -84,9 +85,14 @@ export default function Offers() {
     const scheduled = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) > today);
     const expiredActive = rows.filter((p) => p.isActive && p.effectiveTo && toYmd(p.effectiveTo) < today);
     const unusedActive = activeNow.filter((p) => (performanceById.get(p.id)?.invoiceCount ?? 0) === 0);
-    const negative = rows.filter((p) => D(performanceById.get(p.id)?.grossProfit).isNegative());
+    const negative = canSeeCost
+      ? rows.filter((p) => {
+          const gp = performanceById.get(p.id)?.grossProfit;
+          return gp != null && D(gp).isNegative();
+        })
+      : [];
     return { activeNow, scheduled, expiredActive, unusedActive, negative };
-  }, [listQ.data, performanceById, today]);
+  }, [listQ.data, performanceById, today, canSeeCost]);
 
   const list = useMemo(() => {
     const needle = searchQuery.trim().toLocaleLowerCase("ar");
@@ -110,9 +116,10 @@ export default function Offers() {
   }, [listQ.data, channelFilter, validityFilter, searchQuery, today]);
 
   const marginOf = (promotionId: number): string | null => {
+    if (!canSeeCost) return null;
     const performance = performanceById.get(promotionId);
-    if (D(performance?.netSales).isZero()) return null;
-    return D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
+    if (performance?.grossProfit == null || D(performance?.netSales).isZero()) return null;
+    return D(performance.grossProfit).div(performance.netSales).times(100).toDecimalPlaces(1).toString();
   };
 
   const handleExport = (format: "xlsx" | "csv") => {
@@ -131,7 +138,7 @@ export default function Offers() {
         { key: "status", header: "الحالة", map: (r: any) => offerActivationState(r, today).label },
         { key: "invoiceCount", header: "الفواتير المرتبطة", map: (r: any) => performanceById.get(r.id)?.invoiceCount ?? 0 },
         { key: "netSales", header: "المبيعات المرتبطة", money: true, map: (r: any) => D(performanceById.get(r.id)?.netSales ?? "0").toNumber() },
-        { key: "margin", header: "الهامش", map: (r: any) => (marginOf(r.id) != null ? `${marginOf(r.id)}٪` : "—") },
+        ...(canSeeCost ? [{ key: "margin", header: "الهامش", map: (r: any) => (marginOf(r.id) != null ? `${marginOf(r.id)}٪` : "—") }] : []),
       ],
     });
   };
@@ -259,26 +266,31 @@ export default function Offers() {
       meta: { kind: "money" },
       cell: ({ row }) => formatIqd(performanceById.get(row.original.id)?.discount ?? "0"),
     },
-    {
-      id: "grossProfit",
-      header: "الربح",
-      accessorFn: (p) => formatIqd(performanceById.get(p.id)?.grossProfit ?? "0"),
-      meta: { kind: "money" },
-      cell: ({ row }) => {
-        const val = performanceById.get(row.original.id)?.grossProfit;
-        return <span className={D(val).isNegative() ? "text-destructive" : undefined}>{formatIqd(val ?? "0")}</span>;
-      },
-    },
-    {
-      id: "margin",
-      header: "الهامش",
-      accessorFn: (p) => marginOf(p.id) ?? "—",
-      meta: { kind: "number" },
-      cell: ({ row }) => {
-        const m = marginOf(row.original.id);
-        return <span className={m != null && D(m).isNegative() ? "text-destructive" : undefined}>{m != null ? `${m}٪` : "—"}</span>;
-      },
-    },
+    ...(canSeeCost
+      ? ([
+          {
+            id: "grossProfit",
+            header: "الربح",
+            accessorFn: (p) => formatIqd(performanceById.get(p.id)?.grossProfit ?? "0"),
+            meta: { kind: "money" },
+            cell: ({ row }) => {
+              const val = performanceById.get(row.original.id)?.grossProfit;
+              if (val == null) return "—";
+              return <span className={D(val).isNegative() ? "text-destructive" : undefined}>{formatIqd(val)}</span>;
+            },
+          },
+          {
+            id: "margin",
+            header: "الهامش",
+            accessorFn: (p) => marginOf(p.id) ?? "—",
+            meta: { kind: "number" },
+            cell: ({ row }) => {
+              const m = marginOf(row.original.id);
+              return <span className={m != null && D(m).isNegative() ? "text-destructive" : undefined}>{m != null ? `${m}٪` : "—"}</span>;
+            },
+          },
+        ] as ColumnDef<OfferRow, unknown>[])
+      : []),
     {
       id: "status",
       header: "الحالة",
@@ -290,7 +302,7 @@ export default function Offers() {
       },
     },
     ...(canManage ? [offerActionsColumn] : []),
-  ], [performanceById, canManage, deactivateM.isPending, reactivateM.isPending, duplicateM.isPending, campaignById, today]);
+  ], [performanceById, canSeeCost, canManage, deactivateM.isPending, reactivateM.isPending, duplicateM.isPending, campaignById, today]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 pb-8">
@@ -306,7 +318,7 @@ export default function Offers() {
         }
       />
 
-      <OfferKpiSummary summary={performanceQ.data?.summary} signals={operationalSignals} />
+      <OfferKpiSummary summary={performanceQ.data?.summary} signals={operationalSignals} canSeeCost={canSeeCost} />
 
       {showForm && (
         <OfferForm

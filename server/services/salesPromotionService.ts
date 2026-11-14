@@ -41,7 +41,11 @@ import {
   promotionTiers,
   promotions,
 } from "../../drizzle/schema";
-import type { PromotionRule, TierRule } from "../../shared/promotionEngine";
+import {
+  MAX_PROMOTION_TARGETS,
+  type PromotionRule,
+  type TierRule,
+} from "../../shared/promotionEngine";
 import { isPromotionActiveOnDay } from "../../shared/promotionScheduling";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -431,6 +435,16 @@ function assertTargets(input: CreatePromotionInput) {
       }),
     });
   }
+  if (targets.length > MAX_PROMOTION_TARGETS) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "عدد أهداف العرض تجاوز الحد الأقصى المسموح",
+        why: `تم تمرير ${targets.length} هدفاً بينما السقف الأقصى المسموح للعرض الواحد هو ${MAX_PROMOTION_TARGETS} هدف`,
+        doThis: "استخدم نطاق الفئات (CATEGORIES) لشمول أقسام كاملة أو قلّل عدد الأصناف المحددة",
+      }),
+    });
+  }
   for (const t of targets) {
     const filled = [t.categoryId, t.productId, t.variantId, t.productUnitId].filter((v) => v != null && Number(v) > 0);
     if (filled.length !== 1) {
@@ -673,6 +687,28 @@ async function assertBelowCostTargets(
   }
 }
 
+const TARGET_INSERT_CHUNK_SIZE = 500;
+
+async function insertPromotionTargetsChunked(
+  tx: Tx,
+  promotionId: number,
+  targets: PromotionTargetInput[],
+): Promise<void> {
+  if (targets.length === 0) return;
+  for (let offset = 0; offset < targets.length; offset += TARGET_INSERT_CHUNK_SIZE) {
+    const chunk = targets.slice(offset, offset + TARGET_INSERT_CHUNK_SIZE);
+    await tx.insert(promotionTargets).values(
+      chunk.map((t) => ({
+        promotionId,
+        categoryId: t.categoryId ?? null,
+        productId: t.productId ?? null,
+        variantId: t.variantId ?? null,
+        productUnitId: t.productUnitId ?? null,
+      })),
+    );
+  }
+}
+
 export async function createPromotion(tx: Tx, input: CreatePromotionInput, actorUserId: number): Promise<number> {
   assertShape(input);
   assertDates(input);
@@ -735,17 +771,7 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
   const promotionId = extractInsertId(res);
 
   const targets = input.targets ?? [];
-  if (targets.length > 0) {
-    await tx.insert(promotionTargets).values(
-      targets.map((t) => ({
-        promotionId,
-        categoryId: t.categoryId ?? null,
-        productId: t.productId ?? null,
-        variantId: t.variantId ?? null,
-        productUnitId: t.productUnitId ?? null,
-      })),
-    );
-  }
+  await insertPromotionTargetsChunked(tx, promotionId, targets);
 
   if (input.type === "TIERED_QTY" && input.tiers && input.tiers.length > 0) {
     await tx.insert(promotionTiers).values(
@@ -1096,15 +1122,7 @@ export async function updatePromotion(
   if (input.targets !== undefined || (input.scope === "ALL" && existing.scope !== "ALL")) {
     await tx.delete(promotionTargets).where(eq(promotionTargets.promotionId, input.id));
     if (mergedScope !== "ALL" && input.targets) {
-      for (const t of input.targets) {
-        await tx.insert(promotionTargets).values({
-          promotionId: input.id,
-          categoryId: t.categoryId ?? null,
-          productId: t.productId ?? null,
-          variantId: t.variantId ?? null,
-          productUnitId: t.productUnitId ?? null,
-        });
-      }
+      await insertPromotionTargetsChunked(tx, input.id, input.targets);
     }
   }
 
@@ -2146,17 +2164,7 @@ export async function duplicatePromotion(
   });
   const newId = extractInsertId(res);
 
-  if (existing.targets.length > 0) {
-    await tx.insert(promotionTargets).values(
-      existing.targets.map((t) => ({
-        promotionId: newId,
-        categoryId: t.categoryId,
-        productId: t.productId,
-        variantId: t.variantId,
-        productUnitId: t.productUnitId,
-      })),
-    );
-  }
+  await insertPromotionTargetsChunked(tx, newId, existing.targets);
 
   if (existing.tiers.length > 0) {
     await tx.insert(promotionTiers).values(
@@ -2603,19 +2611,26 @@ export interface PromotionPerformanceRow {
   invoiceCount: number;
   netSales: string;
   discount: string;
-  cost: string;
-  grossProfit: string;
+  cost: string | null;
+  grossProfit: string | null;
 }
 
 /**
- * أثر العروض من لقطات أسطر الفواتير، لا من تعريف العرض الحيّ. المرتجعات الجزئية تُنزّل الإيراد
- * بنسبة الكمية المرتجعة، وتعيد COGS فقط لما عاد فعلياً إلى المخزون. لذلك لا تتضخم الربحية بسبب
- * فاتورة أُرجعت، ولا تختفي تكلفة بضاعة مرتجعة تالفة لم تُسترد للمخزون.
+ * أثر العروض من لقطات الفواتير وبنودها، لا من تعريف العرض الحيّ. المرتجعات الجزئية تُنزّل الإيراد
+ * بنسبة الكمية المرتجعة، وتعيد COGS فقط لما عاد فعلياً إلى المخزون؛ وتُضمَّن عروض الشحن المجاني
+ * (`invoices.freeShippingPromotionId`) في عدّاد الفواتير لكل عرض وفي الملخص الكلي دون تضخيم الإيراد
+ * أو التكلفة (§٦: التوصيل المجاني إفصاحٌ لا محاسبة). عند غياب صلاحية رؤية التكلفة تُقنَّع `cost`
+ * و`grossProfit` بـ `null` خادمياً على الصفوف والملخص معاً.
  */
 export async function loadPromotionPerformance(
   tx: Tx,
   branchId: number | null,
-): Promise<{ rows: PromotionPerformanceRow[]; summary: Omit<PromotionPerformanceRow, "promotionId"> }> {
+  canViewCost = true,
+): Promise<{
+  canSeeCost: boolean;
+  rows: PromotionPerformanceRow[];
+  summary: Omit<PromotionPerformanceRow, "promotionId">;
+}> {
   const { componentRightsNetCostSql, invoiceLineReportProjectionSql } =
     await import("./fulfillment/componentRightsReportSql");
   const branchFilter =
@@ -2628,26 +2643,27 @@ export async function loadPromotionPerformance(
     ELSE GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0) / ii.baseQuantity
   END`;
   const discountExpr = sql`ii.promotionDiscount * (${remainingSaleRatio})`;
-  const costExpr = componentRightsNetCostSql({
-    itemId: sql`ii.id`,
-    originalCost: sql`ii.lineCost`,
-    ordinary: sql`CASE
-      WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-      WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
-      ELSE ii.lineCost - ROUND(
-        ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
-        2
-      )
-    END`,
-  });
+  const costSelectExpr = canViewCost
+    ? componentRightsNetCostSql({
+        itemId: sql`ii.id`,
+        originalCost: sql`ii.lineCost`,
+        ordinary: sql`CASE
+          WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+          WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
+          ELSE ii.lineCost - ROUND(
+            ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
+            2
+          )
+        END`,
+      })
+    : sql`0`;
 
   const queryRes = await tx.execute(sql`
     SELECT
       ii.promotionId AS promotionId,
-      COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ii.invoiceId END) AS invoiceCount,
       CAST(COALESCE(SUM(rp.revenue), 0) AS CHAR) AS netSales,
       CAST(COALESCE(SUM(${discountExpr}), 0) AS CHAR) AS discount,
-      CAST(COALESCE(SUM(${costExpr}), 0) AS CHAR) AS cost
+      CAST(COALESCE(SUM(${costSelectExpr}), 0) AS CHAR) AS cost
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
     INNER JOIN (${projection}) rp ON rp.id = ii.id
@@ -2656,51 +2672,109 @@ export async function loadPromotionPerformance(
       ${branchFilter}
     GROUP BY ii.promotionId
   `);
-  const raw = ((queryRes as unknown as [any[]])[0] ?? queryRes) as Array<{
+  const rawMerch = ((queryRes as unknown as [any[]])[0] ?? queryRes) as Array<{
     promotionId: number | string;
-    invoiceCount: number | string;
     netSales: string;
     discount: string;
     cost: string;
   }>;
 
-  const rows = raw.map((row) => {
-    const netSales = money(row.netSales);
-    const cost = money(row.cost);
+  const qualifyingPromoInvoicesSql = sql`
+    SELECT ii.promotionId AS promotionId, ii.invoiceId AS invoiceId
+    FROM invoiceItems ii
+    INNER JOIN invoices i ON i.id = ii.invoiceId
+    WHERE ii.promotionId IS NOT NULL
+      AND (${remainingSaleRatio}) > 0
+      AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
+      ${branchFilter}
+    UNION
+    SELECT i.freeShippingPromotionId AS promotionId, i.id AS invoiceId
+    FROM invoices i
+    WHERE i.freeShippingPromotionId IS NOT NULL
+      AND i.deliveryFree = 1
+      AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED', 'RETURNED')
+      ${branchFilter}
+      AND (
+        NOT EXISTS (SELECT 1 FROM invoiceItems aii WHERE aii.invoiceId = i.id)
+        OR EXISTS (
+          SELECT 1 FROM invoiceItems rii
+          WHERE rii.invoiceId = i.id
+            AND rii.baseQuantity > COALESCE(rii.returnedBaseQuantity, 0)
+        )
+      )
+  `;
+
+  const perPromoCountRes = await tx.execute(sql`
+    SELECT
+      u.promotionId AS promotionId,
+      COUNT(DISTINCT u.invoiceId) AS invoiceCount
+    FROM (${qualifyingPromoInvoicesSql}) u
+    GROUP BY u.promotionId
+  `);
+  const rawCounts = ((perPromoCountRes as unknown as [any[]])[0] ?? perPromoCountRes) as Array<{
+    promotionId: number | string;
+    invoiceCount: number | string;
+  }>;
+
+  const invoiceCountByPromoId = new Map<number, number>();
+  for (const rc of rawCounts) {
+    invoiceCountByPromoId.set(Number(rc.promotionId), Number(rc.invoiceCount ?? 0));
+  }
+
+  const merchByPromoId = new Map<
+    number,
+    { netSales: Decimal; discount: string; cost: Decimal }
+  >();
+  for (const rm of rawMerch) {
+    merchByPromoId.set(Number(rm.promotionId), {
+      netSales: money(rm.netSales),
+      discount: rm.discount,
+      cost: money(rm.cost),
+    });
+  }
+
+  const allPromotionIdSet = new Set<number>();
+  merchByPromoId.forEach((_v, k) => allPromotionIdSet.add(k));
+  invoiceCountByPromoId.forEach((_v, k) => allPromotionIdSet.add(k));
+  const allPromotionIds = Array.from(allPromotionIdSet).sort((a, b) => a - b);
+
+  const rows: PromotionPerformanceRow[] = allPromotionIds.map((promotionId) => {
+    const merch = merchByPromoId.get(promotionId);
+    const netSales = merch ? merch.netSales : money(0);
+    const cost = merch ? merch.cost : money(0);
     return {
-      promotionId: Number(row.promotionId),
-      invoiceCount: Number(row.invoiceCount ?? 0),
+      promotionId,
+      invoiceCount: invoiceCountByPromoId.get(promotionId) ?? 0,
       netSales: toDbMoney(netSales),
-      discount: toDbMoney(row.discount),
-      cost: toDbMoney(cost),
-      grossProfit: toDbMoney(netSales.minus(cost)),
+      discount: toDbMoney(merch?.discount ?? "0"),
+      cost: canViewCost ? toDbMoney(cost) : null,
+      grossProfit: canViewCost ? toDbMoney(netSales.minus(cost)) : null,
     };
   });
+
   let distinctInvoiceCount = 0;
-  if (rows.length > 0) {
+  if (invoiceCountByPromoId.size > 0) {
     const distinctRes = await tx.execute(sql`
-      SELECT
-        COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ii.invoiceId END) AS invoiceCount
-      FROM invoiceItems ii
-      INNER JOIN invoices i ON i.id = ii.invoiceId
-      WHERE ii.promotionId IS NOT NULL
-        AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
-        ${branchFilter}
+      SELECT COUNT(DISTINCT u.invoiceId) AS invoiceCount
+      FROM (${qualifyingPromoInvoicesSql}) u
     `);
     const distinctRows = ((distinctRes as unknown as [any[]])[0] ?? distinctRes) as Array<{
       invoiceCount?: number | string;
     }>;
     distinctInvoiceCount = Number(distinctRows[0]?.invoiceCount ?? 0);
   }
-  const summary = rows.reduce(
-    (acc, row) => ({
-      invoiceCount: distinctInvoiceCount,
-      netSales: toDbMoney(money(acc.netSales).plus(row.netSales)),
-      discount: toDbMoney(money(acc.discount).plus(row.discount)),
-      cost: toDbMoney(money(acc.cost).plus(row.cost)),
-      grossProfit: toDbMoney(money(acc.grossProfit).plus(row.grossProfit)),
-    }),
-    { invoiceCount: 0, netSales: "0.00", discount: "0.00", cost: "0.00", grossProfit: "0.00" },
-  );
-  return { rows, summary };
+
+  const totalNetSales = rows.reduce((sum, r) => sum.plus(money(r.netSales)), money(0));
+  const totalDiscount = rows.reduce((sum, r) => sum.plus(money(r.discount)), money(0));
+  const totalCost = canViewCost
+    ? rows.reduce((sum, r) => sum.plus(money(r.cost ?? "0")), money(0))
+    : null;
+  const summary: Omit<PromotionPerformanceRow, "promotionId"> = {
+    invoiceCount: distinctInvoiceCount,
+    netSales: toDbMoney(totalNetSales),
+    discount: toDbMoney(totalDiscount),
+    cost: totalCost ? toDbMoney(totalCost) : null,
+    grossProfit: totalCost ? toDbMoney(totalNetSales.minus(totalCost)) : null,
+  };
+  return { canSeeCost: canViewCost, rows, summary };
 }

@@ -1994,6 +1994,7 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(sale.total).toBe("11500.00");
 
     const perf = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    expect(perf.canSeeCost).toBe(true);
     const rowA = perf.rows.find((r) => r.promotionId === promoA);
     const rowB = perf.rows.find((r) => r.promotionId === promoB);
     expect(rowA?.invoiceCount).toBe(1);
@@ -2003,6 +2004,241 @@ describe("اختبارات الانحدار للمراجعة العدائية (S
     expect(perf.summary.netSales).toBe("11500.00");
     expect(perf.summary.cost).toBe("7000.00");
     expect(perf.summary.grossProfit).toBe("4500.00");
+
+    // R9-1: قارئ بلا صلاحية رؤية التكلفة يستلم cost=null و grossProfit=null على الصفوف والملخص معاً
+    const redactedPerf = await withTx((tx) => loadPromotionPerformance(tx, 1, false));
+    expect(redactedPerf.canSeeCost).toBe(false);
+    expect(redactedPerf.summary.cost).toBeNull();
+    expect(redactedPerf.summary.grossProfit).toBeNull();
+    expect(redactedPerf.summary.netSales).toBe("11500.00");
+    expect(redactedPerf.summary.discount).toBe("1500.00");
+    for (const r of redactedPerf.rows) {
+      expect(r.cost).toBeNull();
+      expect(r.grossProfit).toBeNull();
+    }
+  });
+
+  it("R9-2: createPromotion و updatePromotion يحفظان أكثر من 500 هدف عبر إدراج دفعي مجزأ", async () => {
+    const bulkCount = 620;
+    await db().insert(s.products).values(
+      Array.from({ length: bulkCount }, (_, idx) => ({
+        id: 2000 + idx,
+        name: `صنف جملة ${idx + 1}`,
+        categoryId: 1,
+      })),
+    );
+    await db().insert(s.productVariants).values(
+      Array.from({ length: bulkCount }, (_, idx) => ({
+        id: 2000 + idx,
+        productId: 2000 + idx,
+        sku: `BLK-${2000 + idx}`,
+        costPrice: "400.00",
+      })),
+    );
+    await db().insert(s.productUnits).values(
+      Array.from({ length: bulkCount }, (_, idx) => ({
+        id: 2000 + idx,
+        variantId: 2000 + idx,
+        unitName: "قطعة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+      })),
+    );
+    await db().insert(s.productPrices).values(
+      Array.from({ length: bulkCount }, (_, idx) => ({
+        productUnitId: 2000 + idx,
+        priceTier: "RETAIL" as const,
+        price: "1000.00",
+      })),
+    );
+
+    const targets620 = Array.from({ length: bulkCount }, (_, idx) => ({
+      variantId: 2000 + idx,
+    }));
+    const promoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "عرض فئة واسعة 620 صنف",
+          type: "PERCENT",
+          discountPercent: "10",
+          scope: "PRODUCTS",
+          effectiveFrom: "2026-01-01",
+          targets: targets620,
+        },
+        1,
+      ),
+    );
+
+    await withTx((tx) =>
+      updatePromotion(
+        tx,
+        {
+          id: promoId,
+          targets: targets620.slice(0, 580),
+        },
+        1,
+      ),
+    );
+
+    const savedTargets = await db()
+      .select()
+      .from(s.promotionTargets)
+      .where(eq(s.promotionTargets.promotionId, promoId));
+    expect(savedTargets).toHaveLength(580);
+  });
+
+  it("R9-3: عرض التوصيل المجاني يحفظ freeShippingPromotionId على الفاتورة ويظهر في عداد استخدام العرض والملخص دون تضخيم المبيعات", async () => {
+    await db().insert(s.deliveryParties).values({
+      id: 9,
+      name: "مندوب الرصافة",
+      partyType: "INDIVIDUAL",
+      branchId: 1,
+      currentBalance: "0.00",
+      isActive: true,
+      defaultFee: "5000.00",
+    });
+    await db().insert(s.products).values([
+      { id: 198, name: "طابعة مكتبية", categoryId: 1 },
+      { id: 199, name: "ورق A4", categoryId: 1 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 198, productId: 198, sku: "PRN-198", costPrice: "15000.00" },
+      { id: 199, productId: 199, sku: "PPR-199", costPrice: "3000.00" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 198, variantId: 198, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 199, variantId: 199, unitName: "ماعون", conversionFactor: "1", isBaseUnit: true },
+    ]);
+    await db().insert(s.productPrices).values([
+      { productUnitId: 198, priceTier: "RETAIL", price: "25000.00" },
+      { productUnitId: 199, priceTier: "RETAIL", price: "5000.00" },
+    ]);
+    await setStock(198, 1, 10);
+    await setStock(199, 1, 10);
+
+    const shipPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "توصيل مجاني فوق 20 ألف",
+          type: "FREE_SHIPPING",
+          minOrderSpend: "20000.00",
+          scope: "ALL",
+          channel: "ALL",
+          effectiveFrom: "2020-01-01",
+        },
+        1,
+      ),
+    );
+    const merchPromoId = await withTx((tx) =>
+      createPromotion(
+        tx,
+        {
+          name: "خصم ورق A4",
+          type: "AMOUNT",
+          discountAmount: "1000.00",
+          scope: "PRODUCTS",
+          channel: "ALL",
+          effectiveFrom: "2020-01-01",
+          targets: [{ variantId: 199 }],
+        },
+        1,
+      ),
+    );
+
+    const recShiftRes = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 1,
+      shiftType: "RECEPTION",
+      openingBalance: "0",
+      status: "OPEN",
+    });
+    const recShiftId = insertId(recShiftRes);
+
+    // فاتورة 1: عرض شحن مجاني فقط بلا خصم سلعي على أي سطر
+    const shipOnlySale = await checkoutReception(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        paymentMethod: "CASH",
+        paidAmount: "25000.00",
+        clientRequestId: "r9-3-ship-only-1",
+        regularSale: {
+          amount: "25000.00",
+          lines: [{ variantId: 198, productUnitId: 198, quantity: "1" }],
+        },
+        delivery: {
+          partyId: 9,
+          fee: "5000.00",
+          feeCollection: "COURIER",
+          recipientName: "زبون 1",
+          recipientPhone: "07701112233",
+          address: "بغداد",
+        },
+      },
+      actor,
+    );
+    const [inv1] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, shipOnlySale.regularSale!.invoiceId));
+    expect(inv1.freeShippingPromotionId).toBe(shipPromoId);
+
+    const perfAfterShipOnly = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    const shipRow1 = perfAfterShipOnly.rows.find((r) => r.promotionId === shipPromoId);
+    expect(shipRow1).toEqual({
+      promotionId: shipPromoId,
+      invoiceCount: 1,
+      netSales: "0.00",
+      discount: "0.00",
+      cost: "0.00",
+      grossProfit: "0.00",
+    });
+    expect(perfAfterShipOnly.summary.invoiceCount).toBe(1);
+
+    // فاتورة 2: تجمع عرض خصم سلعي + عرض توصيل مجاني معاً — لا تتضاعف summary.invoiceCount
+    await checkoutReception(
+      {
+        branchId: 1,
+        shiftId: recShiftId,
+        paymentMethod: "CASH",
+        paidAmount: "29000.00",
+        clientRequestId: "r9-3-mixed-2",
+        regularSale: {
+          amount: "29000.00",
+          lines: [
+            { variantId: 198, productUnitId: 198, quantity: "1" },
+            {
+              variantId: 199,
+              productUnitId: 199,
+              quantity: "1",
+              discountAmount: "1000.00",
+              promotionDiscount: "1000.00",
+              promotionId: merchPromoId,
+            },
+          ],
+        },
+        delivery: {
+          partyId: 9,
+          fee: "5000.00",
+          feeCollection: "COURIER",
+          recipientName: "زبون 2",
+          recipientPhone: "07701112244",
+          address: "بغداد",
+        },
+      },
+      actor,
+    );
+
+    const perfAfterMixed = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    const shipRow2 = perfAfterMixed.rows.find((r) => r.promotionId === shipPromoId);
+    const merchRow2 = perfAfterMixed.rows.find((r) => r.promotionId === merchPromoId);
+    expect(shipRow2?.invoiceCount).toBe(2);
+    expect(merchRow2?.invoiceCount).toBe(1);
+    expect(perfAfterMixed.summary.invoiceCount).toBe(2);
+    expect(perfAfterMixed.summary.netSales).toBe("4000.00");
+    expect(perfAfterMixed.summary.discount).toBe("1000.00");
   });
 });
 
