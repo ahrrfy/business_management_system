@@ -45,14 +45,15 @@ describe("product studio authority", () => {
     const auditor = caller("auditor");
     await expect(auditor.read()).resolves.toBe(true);
     await expect(auditor.write()).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(caller("cashier").read()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller("courier").read()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller("cashier", { productStudio: "NONE" }).read()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("honours explicit worker grants without granting manager authority", async () => {
-    const delegated = caller("cashier", { productStudio: "FULL" });
-    await expect(delegated.read()).resolves.toBe(true);
-    await expect(delegated.write()).resolves.toBe(true);
-    await expect(delegated.manage()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  it("grants company cashier studio read/write by default without manager authority", async () => {
+    const cashier = caller("cashier");
+    await expect(cashier.read()).resolves.toBe(true);
+    await expect(cashier.write()).resolves.toBe(true);
+    await expect(cashier.manage()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("fails closed for a delegated worker without an assigned branch", async () => {

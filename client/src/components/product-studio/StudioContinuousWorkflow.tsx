@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowRight,
@@ -89,21 +89,35 @@ export function StudioContinuousWorkflow({
   const [isSaving, setIsSaving] = useState(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
+  const [targetProductId, setTargetProductId] = useState<number | null | undefined>(
+    initialProductId,
+  );
+  const [targetVariantId, setTargetVariantId] = useState<number | null | undefined>(
+    initialVariantId,
+  );
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const savingRef = useRef(false);
+  const captureGenRef = useRef(0);
+  const lockedProductIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setTargetProductId(initialProductId);
+    setTargetVariantId(initialVariantId);
+  }, [initialProductId, initialVariantId]);
 
   // استعلام المنتج بالباركود أو المعرف
   const hasLookupInput = Boolean(
     submittedBarcode?.trim() ||
-      (initialProductId != null && Number(initialProductId) > 0),
+      (targetProductId != null && Number(targetProductId) > 0),
   );
 
   // tRPC query الحقيقي (يتعطل عند توفر mockLookupData لتسريع الاختبارات أو العزل)
   const realLookupQuery = trpc.productStudio.quickBarcodeLookup.useQuery(
     {
       barcode: submittedBarcode?.trim() || undefined,
-      productId: initialProductId ?? undefined,
-      variantId: initialVariantId ?? undefined,
+      productId: targetProductId ?? undefined,
+      variantId: targetVariantId ?? undefined,
     },
     {
       enabled: hasLookupInput && mockLookupData === null,
@@ -148,12 +162,45 @@ export function StudioContinuousWorkflow({
   const aiTransformMutation =
     trpc.productStudio.quickAiTransform?.useMutation?.();
 
+  // طفرات قفل التصوير التعاوني
+  const acquireLockMutation =
+    trpc.productStudio.acquireOrCheckLock?.useMutation?.();
+  const heartbeatLockMutation =
+    trpc.productStudio.heartbeatLock?.useMutation?.();
+  const releaseLockMutation =
+    trpc.productStudio.releaseLock?.useMutation?.();
+
+  const releaseActiveLock = () => {
+    const pid = lockedProductIdRef.current;
+    if (pid && releaseLockMutation) {
+      lockedProductIdRef.current = null;
+      releaseLockMutation.mutate({ productId: pid });
+    }
+  };
+
+  useEffect(() => {
+    if (step !== "CAPTURE" && step !== "PREVIEW") return;
+    const pid = lockedProductIdRef.current;
+    if (!pid || !heartbeatLockMutation) return;
+    const timer = window.setInterval(() => {
+      heartbeatLockMutation.mutate({ productId: pid });
+    }, 45_000);
+    return () => window.clearInterval(timer);
+  }, [step, heartbeatLockMutation]);
+
+  useEffect(() => {
+    return () => {
+      releaseActiveLock();
+    };
+  }, []);
+
   // تنفيذ المعالجة الذكية بالذكاء الاصطناعي مع الحماية والبديل المحلي الآمن
   const triggerAiEnhancement = async (
     sourceDataUrl: string,
     productId?: number,
     barcode?: string | null,
   ) => {
+    const gen = captureGenRef.current;
     setIsAiEnhancing(true);
     setFallbackApplied(false);
 
@@ -165,6 +212,7 @@ export function StudioContinuousWorkflow({
           productId,
           barcode,
         });
+        if (captureGenRef.current !== gen) return;
         const enhancedUrl = res?.imageDataUrl || sourceDataUrl;
         setAiEnhancedDataUrl(enhancedUrl);
         setAiEnhancedSizeKB(res?.sizeKB || dataUrlSizeKB(enhancedUrl));
@@ -176,17 +224,20 @@ export function StudioContinuousWorkflow({
           productId,
           barcode: barcode || undefined,
         });
+        if (captureGenRef.current !== gen) return;
         const enhancedUrl = res?.imageDataUrl || sourceDataUrl;
         setAiEnhancedDataUrl(enhancedUrl);
         setAiEnhancedSizeKB(dataUrlSizeKB(enhancedUrl));
         setFallbackApplied(Boolean(res?.fallbackApplied));
       } else {
+        if (captureGenRef.current !== gen) return;
         // بديل محلي سريع في غياب الطفرة
         setAiEnhancedDataUrl(sourceDataUrl);
         setAiEnhancedSizeKB(dataUrlSizeKB(sourceDataUrl));
         setFallbackApplied(true);
       }
     } catch (err: unknown) {
+      if (captureGenRef.current !== gen) return;
       // الاستمرارية عند تعطل الذكاء الاصطناعي (Graceful Fallback):
       // لا يتوقف العمل ولا تضيع الصورة عند تعطل المزود
       console.warn("AI studio enhancement fallback applied:", err);
@@ -194,7 +245,9 @@ export function StudioContinuousWorkflow({
       setAiEnhancedSizeKB(dataUrlSizeKB(sourceDataUrl));
       setFallbackApplied(true);
     } finally {
-      setIsAiEnhancing(false);
+      if (captureGenRef.current === gen) {
+        setIsAiEnhancing(false);
+      }
     }
   };
 
@@ -202,6 +255,10 @@ export function StudioContinuousWorkflow({
   const handleStartSearch = (code: string) => {
     const trimmed = code.trim();
     if (!trimmed) return;
+    captureGenRef.current += 1;
+    releaseActiveLock();
+    setTargetProductId(null);
+    setTargetVariantId(null);
     setSuccessBanner(null);
     setSubmittedBarcode(trimmed);
     setBarcodeInput(trimmed);
@@ -209,6 +266,7 @@ export function StudioContinuousWorkflow({
     setCapturedImage(null);
     setAiEnhancedDataUrl(null);
     setAiEnhancedSizeKB(null);
+    setIsAiEnhancing(false);
     setStep("SCAN");
   };
 
@@ -219,7 +277,30 @@ export function StudioContinuousWorkflow({
   };
 
   // الانتقال إلى خطوة التصوير
-  const handleStartCapture = () => {
+  const handleStartCapture = async () => {
+    captureGenRef.current += 1;
+    if (productData?.id && !mockLookupData && acquireLockMutation) {
+      try {
+        const lockRes = await acquireLockMutation.mutateAsync({
+          productId: productData.id,
+          variantId: productData.variantId ?? undefined,
+        });
+        if (lockRes && lockRes.acquired === false) {
+          toast.error(
+            lockRes.activePhotographerName
+              ? `المنتج قيد التصوير حالياً من قبل ${lockRes.activePhotographerName}`
+              : "المنتج قيد التصوير حالياً من قبل مصوّر آخر",
+          );
+          return;
+        }
+        lockedProductIdRef.current = productData.id;
+      } catch (err: unknown) {
+        const msg =
+          err instanceof Error ? err.message : "تعذّر حجز قفل التصوير للمنتج";
+        toast.error(msg);
+        return;
+      }
+    }
     setSuccessBanner(null);
     setCapturedImage(null);
     setAiEnhancedDataUrl(null);
@@ -259,6 +340,7 @@ export function StudioContinuousWorkflow({
 
   // إعادة التصوير
   const handleRetake = () => {
+    captureGenRef.current += 1;
     setCapturedImage(null);
     setAiEnhancedDataUrl(null);
     setAiEnhancedSizeKB(null);
@@ -292,11 +374,16 @@ export function StudioContinuousWorkflow({
 
       const clientRequestId = `studio-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
+      const safeOriginalDataUrl =
+        capturedImage.originalDataUrl && capturedImage.originalDataUrl.length <= 1_250_000
+          ? capturedImage.originalDataUrl
+          : capturedImage.processedDataUrl;
+
       const payload = {
         productId: productData.id,
         variantId: productData.variantId ?? undefined,
         barcode: submittedBarcode || productData.barcode || undefined,
-        originalDataUrl: capturedImage.originalDataUrl,
+        originalDataUrl: safeOriginalDataUrl,
         processedDataUrl: finalProcessedUrl,
         thumbnailDataUrl,
         mode: (isAi ? "AI" : "FLATTEN") as "AI" | "FLATTEN",
@@ -325,6 +412,7 @@ export function StudioContinuousWorkflow({
           ? `تم اعتماد ونشر صورة «${productData.name}» بنجاح في الكتالوج ونقاط البيع.`
           : `تم إرسال صورة «${productData.name}» بنجاح إلى طابور الاعتماد الإداري.`,
       );
+      lockedProductIdRef.current = null;
       setCapturedImage(null);
       setAiEnhancedDataUrl(null);
       setAiEnhancedSizeKB(null);

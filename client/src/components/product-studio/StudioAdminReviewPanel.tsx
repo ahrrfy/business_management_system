@@ -60,6 +60,64 @@ export interface StudioAdminReviewPanelProps {
   className?: string;
 }
 
+function RemoteCandidatePreview({ task }: { task: StudioAdminReviewTask }) {
+  const previewQuery = trpc.productStudio.candidatePreview.useQuery(
+    { taskId: task.id },
+    { staleTime: 60_000, retry: false },
+  );
+
+  const src = useMemo(() => {
+    const base64 = previewQuery.data?.processedBase64;
+    if (!base64) return null;
+    const mime = previewQuery.data?.processedMime || "image/jpeg";
+    return `data:${mime};base64,${base64}`;
+  }, [previewQuery.data]);
+
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={task.productName}
+        className="w-full h-full object-contain p-2 transition-transform duration-200 hover:scale-105"
+        loading="lazy"
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center p-4 text-muted-foreground">
+      <ImageIcon className="size-12 opacity-40 mb-1" />
+      <span className="text-xs">
+        {previewQuery.isLoading ? "جاري تحميل المعاينة..." : "معاينة الصورة"}
+      </span>
+    </div>
+  );
+}
+
+function ReviewCandidateImage({ task }: { task: StudioAdminReviewTask }) {
+  if (task.previewUrl) {
+    return (
+      <img
+        src={task.previewUrl}
+        alt={task.productName}
+        className="w-full h-full object-contain p-2 transition-transform duration-200 hover:scale-105"
+        loading="lazy"
+      />
+    );
+  }
+
+  if (task.hasCandidate && typeof (trpc.productStudio as any)?.candidatePreview?.useQuery === "function") {
+    return <RemoteCandidatePreview task={task} />;
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center p-4 text-muted-foreground">
+      <ImageIcon className="size-12 opacity-40 mb-1" />
+      <span className="text-xs">معاينة الصورة</span>
+    </div>
+  );
+}
+
 export function StudioAdminReviewPanel({
   mockTasks,
   mockOnApprove,
@@ -221,11 +279,15 @@ export function StudioAdminReviewPanel({
 
   // تعيين الصورة كغلاف رئيسي للمنتج
   const handleSetPrimary = async (task: StudioAdminReviewTask) => {
+    const targetId = task.sourceImageId;
+    if (!targetId && !mockOnSetPrimary) {
+      toast.info("يجب اعتماد الصورة ونشرها أولاً قبل تعيينها كغلاف رئيسي");
+      return;
+    }
     try {
-      const targetId = task.sourceImageId ?? task.id;
       if (mockOnSetPrimary) {
-        await mockOnSetPrimary(targetId);
-      } else {
+        await mockOnSetPrimary(targetId ?? task.id);
+      } else if (targetId) {
         await setPrimaryMutation.mutateAsync({ imageId: targetId });
       }
       toast.success(`تم تعيين صورة "${task.productName}" كغلاف رئيسي`);
@@ -388,15 +450,18 @@ export function StudioAdminReviewPanel({
                     <button
                       type="button"
                       data-testid={`review-card-primary-btn-${task.id}`}
-                      className={`p-1.5 rounded-full backdrop-blur shadow-sm transition-all ${
+                      disabled={!task.sourceImageId && !mockOnSetPrimary}
+                      className={`p-1.5 rounded-full backdrop-blur shadow-sm transition-all disabled:opacity-45 disabled:cursor-not-allowed ${
                         task.isPrimary
                           ? "text-amber-500 bg-amber-50/95 dark:bg-amber-950/80 ring-1 ring-amber-400"
                           : "text-muted-foreground bg-background/90 hover:text-amber-500 hover:bg-background"
                       }`}
                       title={
-                        task.isPrimary
-                          ? "صورة رئيسية معتمدة"
-                          : "تعيين كصورة رئيسية للمنتج"
+                        !task.sourceImageId && !mockOnSetPrimary
+                          ? "تُفعَّل بعد اعتماد الصورة ونشرها"
+                          : task.isPrimary
+                            ? "صورة رئيسية معتمدة"
+                            : "تعيين كصورة رئيسية للمنتج"
                       }
                       onClick={() => handleSetPrimary(task)}
                     >
@@ -411,20 +476,8 @@ export function StudioAdminReviewPanel({
                     </button>
                   </div>
 
-                  {/* عرض الصورة أو الأيقونة البديلة */}
-                  {task.previewUrl ? (
-                    <img
-                      src={task.previewUrl}
-                      alt={task.productName}
-                      className="w-full h-full object-contain p-2 transition-transform duration-200 hover:scale-105"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center p-4 text-muted-foreground">
-                      <ImageIcon className="size-12 opacity-40 mb-1" />
-                      <span className="text-xs">معاينة الصورة</span>
-                    </div>
-                  )}
+                  {/* عرض الصورة أو جلب معاينة المرشح من الخادم */}
+                  <ReviewCandidateImage task={task} />
                 </div>
 
                 {/* تفاصيل المنتج والمصور والتوقيت */}

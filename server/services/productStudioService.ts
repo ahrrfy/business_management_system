@@ -8209,14 +8209,26 @@ export async function bulkApproveStudioTasks(
     const affectedProductIds = new Set<number>();
 
     for (const task of tasks) {
+      assertTaskAccess(actor, task, true);
+    }
+
+    for (const task of tasks) {
+      if (task.status !== "PENDING_REVIEW") {
+        continue;
+      }
       if (
-        task.status !== "PENDING_REVIEW" &&
-        task.status !== "IN_PROGRESS" &&
-        task.status !== "ASSIGNED"
+        !task.productId ||
+        !task.processedObjectKey ||
+        !task.processedContentHash ||
+        !task.processedMime ||
+        !task.processedUrl
       ) {
         continue;
       }
-      if (!task.productId) continue;
+      decodeStudioThumbnail(task.processedUrl, {
+        width: task.processedWidth,
+        height: task.processedHeight,
+      });
 
       const taskId = Number(task.id);
       const productId = Number(task.productId);
@@ -8423,6 +8435,7 @@ export async function bulkRejectStudioTasks(
       .select({
         id: productImageJobs.id,
         productId: productImageJobs.productId,
+        branchId: productImageJobs.branchId,
         sourceImageId: productImageJobs.sourceImageId,
         status: productImageJobs.status,
         assignedTo: productImageJobs.assignedTo,
@@ -8432,6 +8445,10 @@ export async function bulkRejectStudioTasks(
       .from(productImageJobs)
       .where(inArray(productImageJobs.id, cleanTaskIds))
       .for("update");
+
+    for (const task of tasks) {
+      assertTaskAccess(actor, task, true);
+    }
 
     const rejectedTaskIds: number[] = [];
 

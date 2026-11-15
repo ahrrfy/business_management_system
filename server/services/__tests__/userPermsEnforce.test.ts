@@ -41,9 +41,14 @@ describe("قوالب الأدوار الخمسة القديمة — توافق �
     // #26: كتابة الكتالوج مديرية؛ القالب لا يَعِد بأكثر ممّا تمنحه البوّابة (READ = يقرأ/يبحث لا يدير).
     expect(t.products).toBe("READ");
   });
-  it("user: كل شيء READ أو NONE — لا FULL", () => {
+  it("user: كل شيء READ أو NONE — باستثناء productStudio FULL للموظفين", () => {
     const t = ROLE_TEMPLATES.user;
-    expect(Object.values(t).every((v) => v !== "FULL")).toBe(true);
+    expect(t.productStudio).toBe("FULL");
+    expect(
+      Object.entries(t)
+        .filter(([k]) => k !== "productStudio")
+        .every(([, v]) => v !== "FULL"),
+    ).toBe(true);
   });
 });
 

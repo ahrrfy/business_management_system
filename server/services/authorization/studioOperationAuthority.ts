@@ -54,6 +54,11 @@ export const STUDIO_MANAGER_OPERATIONS = new Set([
   "productStudio.cancel",
   "productStudio.cancelCampaignBacklog",
   "productStudio.purge",
+  "productStudio.bulkApproveStudioTasks",
+  "productStudio.bulkRejectStudioTasks",
+  "productStudio.listTemporaryStudioPhotographers",
+  "productStudio.createTemporaryStudioPhotographer",
+  "productStudio.revokeTemporaryStudioPhotographer",
 ]);
 
 function forbiddenStudioOperation(): TRPCError {
