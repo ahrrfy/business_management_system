@@ -5,7 +5,7 @@ import { routeOperationAuthority } from "../services/authorization/operationAuth
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, requireRole, router } from "../trpc";
 import { barcodeString, barcodeStorageString, optionalBarcodeString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, quickAiTransform, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, createTemporaryStudioPhotographer, listTemporaryStudioPhotographers, revokeTemporaryStudioPhotographer, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, quickAiTransform, purgeProductStudioLegacyData, acquireOrCheckLock, heartbeatLock, releaseLock, bulkApproveStudioTasks, bulkRejectStudioTasks, setProductImagePrimaryStatus, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
 import { discoverImageGaps, getGapProductIds, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
@@ -16,6 +16,8 @@ function actor(ctx: {
     branchId?: number | null;
     role: string;
     isOwner?: boolean;
+    name?: string | null;
+    email?: string | null;
   };
  }, path: string): ProductStudioActor {
   const managementPath = STUDIO_REVIEW_READ_OPERATIONS.has(path)
@@ -26,6 +28,8 @@ function actor(ctx: {
     branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
     role: ctx.user.role,
     isOwner: ctx.user.isOwner === true,
+    name: ctx.user.name ?? undefined,
+    email: ctx.user.email ?? undefined,
     operationAuthority: routeOperationAuthority(ctx.user, path),
     managementAuthority: managementPath ? routeOperationAuthority(ctx.user, managementPath) : undefined,
   };
@@ -214,6 +218,14 @@ export const productStudioRouter = router({
   revokeTemporaryPhotographers: productStudioManagerProcedure
     .input(z.object({ campaignId }))
     .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx, "productStudio.revokeTemporaryPhotographers"), input.campaignId)),
+  listTemporaryStudioPhotographers: productStudioManagerProcedure
+    .query(({ ctx }) => listTemporaryStudioPhotographers(actor(ctx, "productStudio.listTemporaryStudioPhotographers"))),
+  createTemporaryStudioPhotographer: productStudioManagerProcedure
+    .input(z.object({ name: z.string().trim().min(3).max(80), hoursValid: z.number().int().min(1).max(24).optional() }))
+    .mutation(({ ctx, input }) => createTemporaryStudioPhotographer(actor(ctx, "productStudio.createTemporaryStudioPhotographer"), input)),
+  revokeTemporaryStudioPhotographer: productStudioManagerProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(({ ctx, input }) => revokeTemporaryStudioPhotographer(actor(ctx, "productStudio.revokeTemporaryStudioPhotographer"), input.userId)),
   claimByBarcode: productStudioWriteProcedure.input(z.object({ barcode: barcodeString })).mutation(({ ctx, input }) => claimStudioProductByBarcode(actor(ctx, "productStudio.claimByBarcode"), input.barcode)),
   linkBarcode: productStudioWriteProcedure
     .input(
@@ -388,6 +400,36 @@ export const productStudioRouter = router({
   quickBarcodeLookup: productStudioReadProcedure
     .input(z.object({ barcode: optionalBarcodeString, productId: z.number().int().positive().optional(), variantId: z.number().int().positive().nullable().optional() }))
     .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx, "productStudio.quickBarcodeLookup"), input)),
+  // قفل التزامن المؤقت: حجز أو فحص القفل بمهلة 90 ثانية
+  acquireOrCheckLock: productStudioWriteProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        variantId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => acquireOrCheckLock(actor(ctx, "productStudio.acquireOrCheckLock"), input)),
+  // نبضات التجديد الدورية للقفل المؤقت (Heartbeat)
+  heartbeatLock: productStudioWriteProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        variantId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => heartbeatLock(actor(ctx, "productStudio.heartbeatLock"), input)),
+  // تحرير القفل المؤقت عند الإغلاق أو انتهاء الجلسة
+  releaseLock: productStudioWriteProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        variantId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => releaseLock(actor(ctx, "productStudio.releaseLock"), input)),
+  // التطهير الذري لمعاملات وحملات الاستوديو السابقة مع الحفاظ الصارم على الصور المعتمدة (للمدير)
+  purgeProductStudioLegacyData: productStudioManagerProcedure
+    .mutation(({ ctx }) => purgeProductStudioLegacyData(actor(ctx, "productStudio.purge"))),
   // الحفظ الفوري والمعالجة: اعتماد مباشر وتلقائي للمدير بلا روتين، وإرسال للاعتماد لغير المدير
   quickSaveBarcodeProductImage: productStudioWriteProcedure
     .input(
@@ -401,6 +443,7 @@ export const productStudioRouter = router({
         mode: z.enum(["FLATTEN", "CUT", "PRO", "AI", "ORIGINAL"]).default("FLATTEN"),
         setAsPrimary: z.boolean().optional(),
         adminOverrideReason,
+        clientRequestId: z.string().trim().min(8).max(64).optional(),
       }),
     )
     .mutation(({ ctx, input }) => quickSaveBarcodeProductImage(actor(ctx, "productStudio.quickSaveBarcodeProductImage"), input)),
@@ -416,4 +459,34 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => quickAiTransform(actor(ctx, "productStudio.quickAiTransform"), input)),
+  // الاعتماد الجماعي لمهام الاستوديو بضغطة واحدة (للمدير/الإدارة)
+  bulkApproveStudioTasks: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(500),
+        adminOverrideReason,
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkApproveStudioTasks(actor(ctx, "productStudio.bulkApproveStudioTasks"), input)),
+  // الرفض الجماعي لمهام الاستوديو مع بيان السبب (للمدير/الإدارة)
+  bulkRejectStudioTasks: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(500),
+        reason: z.string().trim().min(5).max(500),
+        adminOverrideReason,
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkRejectStudioTasks(actor(ctx, "productStudio.bulkRejectStudioTasks"), input)),
+  // إدارة وتعيين الصورة الرئيسية للمنتج (صورة رئيسية واحدة لكل منتج/متغير)
+  setProductImagePrimary: productStudioWriteProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        imageId: z.number().int().positive(),
+        isPrimary: z.boolean(),
+        variantId: z.number().int().positive().nullable().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => setProductImagePrimaryStatus(actor(ctx, "productStudio.setProductImagePrimary"), input)),
 });

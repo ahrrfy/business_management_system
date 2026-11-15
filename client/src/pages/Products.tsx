@@ -4,7 +4,7 @@ import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAcc
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { AlertTriangle, Camera, CheckCircle2, Image as ImageIcon, ImageOff, Sparkles } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { OPERATION_PERMISSIONS, hasOperationPolicy, operationDecision, type OperationUser } from "@shared/operationPermissions";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -186,6 +186,7 @@ export default function Products() {
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
   const { copy } = useClipboard({ successMessage: null });
+  const [, setLocation] = useLocation();
 
   function canRowOpenQuickStudio(r: Row): boolean {
     if (!canQuickStudio || r.isService) return false;
@@ -195,11 +196,8 @@ export default function Products() {
 
   function openQuickStudioForRow(r: Row) {
     if (!canRowOpenQuickStudio(r)) return;
-    setStudioTarget({
-      productId: r.productId,
-      variantId: r.variantId ?? null,
-      barcode: r.barcode ?? r.barcodeAliases?.[0] ?? null,
-    });
+    const barcode = r.barcode ?? r.barcodeAliases?.[0] ?? "";
+    setLocation(`/inventory/studio?productId=${r.productId}&barcode=${encodeURIComponent(barcode)}`);
   }
 
   useEffect(() => {
@@ -592,9 +590,9 @@ export default function Products() {
                 variant="outline"
                 size="sm"
                 className="h-8 gap-1.5 border-primary/40 bg-primary/5 text-primary hover:bg-primary/10"
-                onClick={() => setStudioScannerOpen(true)}
+                onClick={() => setLocation("/inventory/studio")}
                 data-testid="products-quick-camera-scan-btn"
-                title="مسح باركود المنتج بكاميرا الهاتف لفتح نافذة التصوير والمعالجة بالذكاء فوراً"
+                title="فتح استوديو المنتجات للمسح والتصوير بالذكاء"
               >
                 <Camera className="w-4 h-4" />
                 <span>مسح وتصوير بالذكاء</span>

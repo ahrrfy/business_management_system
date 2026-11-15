@@ -53,6 +53,7 @@ export const STUDIO_MANAGER_OPERATIONS = new Set([
   "productStudio.revert",
   "productStudio.cancel",
   "productStudio.cancelCampaignBacklog",
+  "productStudio.purge",
 ]);
 
 function forbiddenStudioOperation(): TRPCError {
@@ -115,6 +116,9 @@ export const STUDIO_PHOTOGRAPHER_OPERATIONS = [
   "productStudio.claimByBarcode",
   "productStudio.submitCandidate",
   "productStudio.revert",
+  "productStudio.acquireOrCheckLock",
+  "productStudio.heartbeatLock",
+  "productStudio.releaseLock",
 ] as const;
 
 /** A proof for approving cannot be reused for cancelling or provisioning accounts. */
