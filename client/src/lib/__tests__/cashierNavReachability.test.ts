@@ -43,8 +43,10 @@ describe("وصول الكاشير الممنوح إلى استوديو المن�
     expect(CASHIER_NAV_PATHS).toContain(STUDIO_PATH);
   });
 
-  it("كاشيرٌ بلا منحٍ صريح لا يراه — الإتاحة ليست منحاً", () => {
-    expect(canSeeGate(STUDIO_GATE, "cashier", ROLE_TEMPLATES.cashier as PermissionMap)).toBe(false);
+  it("الكاشير الافتراضي يملك صلاحية استوديو التصوير، والكاشير المحجوب (NONE) لا يراه", () => {
+    expect(canSeeGate(STUDIO_GATE, "cashier", ROLE_TEMPLATES.cashier as PermissionMap)).toBe(true);
+    const deniedCashier: PermissionMap = { ...ROLE_TEMPLATES.cashier, productStudio: "NONE" } as PermissionMap;
+    expect(canSeeGate(STUDIO_GATE, "cashier", deniedCashier)).toBe(false);
   });
 
   it("القائمة بلا تكرار ومساراتها مطلقة", () => {
