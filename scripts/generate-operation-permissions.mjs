@@ -1793,6 +1793,9 @@ Object.assign(WORDS, {
   redeem: "استبدال",
   points: "النقاط",
   point: "النقطة",
+  acquire: "حجز",
+  heartbeat: "نبضات",
+  lock: "قفل",
 });
 
 function labelFor(path, kind) {

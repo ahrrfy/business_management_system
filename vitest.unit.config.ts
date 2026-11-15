@@ -705,6 +705,13 @@ export const UNIT_TEST_FILES: string[] = [
       "tests/e2e/promotions/tier4_real_world/iraqi_retail_scenarios.test.ts",
       "tests/e2e/promotions/tier5_adversarial/challenger1_engine_pipeline.test.ts",
       "tests/e2e/promotions/tier5_adversarial/challenger2_services_ui.test.ts",
+      "server/services/__tests__/productStudioMilestone1.test.ts",
+      "server/services/__tests__/productStudioMilestone2.test.ts",
+      // Products Studio Redesign E2E Track (Opaque-Box In-Memory Suite)
+      "tests/e2e/products-studio/tier1_features.test.ts",
+      "tests/e2e/products-studio/tier2_boundaries.test.ts",
+      "tests/e2e/products-studio/tier3_combinations.test.ts",
+      "tests/e2e/products-studio/tier4_scenarios.test.ts",
 ];
 
 export default defineConfig({

@@ -2703,6 +2703,13 @@
 			"when": 1788148887000,
 			"tag": "0429_redesign_promotions_and_discounts",
 			"breakpoints": true
+		},
+		{
+			"idx": 430,
+			"version": "5",
+			"when": 1788148888000,
+			"tag": "0430_product_photography_locks",
+			"breakpoints": true
 		}
 	]
 }
