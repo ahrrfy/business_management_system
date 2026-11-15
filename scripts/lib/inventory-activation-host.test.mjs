@@ -941,3 +941,44 @@ test("deploy bootstrap runs before dependencies exist, reexecutes changed contro
     fs.rmSync(temp, { recursive: true });
   }
 });
+
+test("resolveExternalWritersExcluded requires explicit flag for initial activation or schema cutover, but allows routine deploys with priorActive", async () => {
+  const { resolveExternalWritersExcluded } = await import(
+    "./inventory-activation-host.mjs"
+  );
+  const priorActive = { activationId: "prev-1", readyVersion: 1 };
+  const schemaTransition = { id: "fractional-cutover", rollbackPolicy: "FORWARD_ONLY" };
+
+  // Initial activation (!priorActive): requires =1
+  assert.equal(resolveExternalWritersExcluded({}, { priorActive: null }), false);
+  assert.equal(
+    resolveExternalWritersExcluded(
+      { ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED: "1" },
+      { priorActive: null },
+    ),
+    true,
+  );
+
+  // Schema cutover: requires =1 even with priorActive
+  assert.equal(
+    resolveExternalWritersExcluded({}, { priorActive, schemaTransition }),
+    false,
+  );
+  assert.equal(
+    resolveExternalWritersExcluded(
+      { ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED: "1" },
+      { priorActive, schemaTransition },
+    ),
+    true,
+  );
+
+  // Routine code deploy (priorActive present, no schemaTransition): allowed unless explicitly "0"
+  assert.equal(resolveExternalWritersExcluded({}, { priorActive }), true);
+  assert.equal(
+    resolveExternalWritersExcluded(
+      { ERP_INVENTORY_EXTERNAL_WRITERS_EXCLUDED: "0" },
+      { priorActive },
+    ),
+    false,
+  );
+});
