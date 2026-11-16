@@ -2912,7 +2912,14 @@ export async function createTemporaryStudioPhotographer(
       throw error;
     }
   }
-  throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد اسم مستخدم فريد، أعد المحاولة" });
+  throw new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: "تعذّر إصدار اسم مستخدم فريد للحساب المؤقت",
+      why: "تكرّرت محاولات توليد اسم مستخدم غير مستخدم أثناء الضغط المتزامن",
+      doThis: "أعد الضغط على زر إصدار الحساب المؤقت لتوليد اسم جديد",
+    }),
+  });
 }
 
 export async function listTemporaryStudioPhotographers(actor: ProductStudioActor) {
