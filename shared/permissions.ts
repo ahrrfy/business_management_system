@@ -178,7 +178,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     consignments: "FULL",
     pos: "NONE", sales: "READ", purchases: "READ", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "FULL",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
     catalogAnomalies: "READ",
   },
@@ -199,7 +199,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // فبعد ربط requireModule("workorders","FULL") كان سيُحجب الكاشير القالبي عن سلوكه القائم.
     pos: "FULL", sales: "FULL", purchases: "NONE", inventory: "READ", workorders: "FULL", channels: "FULL", treasury: "READ",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "FULL", reports: "NONE",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   warehouse: {
@@ -218,7 +218,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // #26). صدق القالب (قرار المالك: الخادم هو الحقيقة). أمين المخزن يقرأ المنتجات (مخزون/استلام)
     // ويبحثها للشراء (productsPurchaseProcedure #27) — لا يُنشئ/يُعدّل الكتالوج.
     customers: "READ", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   purchasing: {
@@ -233,7 +233,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     consignments: "READ",
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   print_operator: {
@@ -273,7 +273,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "READ", treasury: "NONE",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   auditor: {
@@ -304,7 +304,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
-    productStudio: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   courier: {
@@ -321,6 +321,23 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
 };
+
+/**
+ * جميع أدوار موظفي الشركة المخوّلين بالتقاط صور المنتجات ورفعها للاعتماد في استوديو المنتجات
+ * (عدا مندوب التوصيل `courier` غير المشمول).
+ */
+export const STUDIO_ACCESS_ROLES: RoleKey[] = [
+  "admin",
+  "manager",
+  "accountant",
+  "cashier",
+  "warehouse",
+  "purchasing",
+  "print_operator",
+  "sales_rep",
+  "auditor",
+  "user",
+];
 
 /**
  * أدوار قسم الكاشير الجاهزة (٢٣/٧/٢٦) — «كاشير تجزئة» و«كاشير طباعة»: دورا `cashier` مخصّصان يحصر

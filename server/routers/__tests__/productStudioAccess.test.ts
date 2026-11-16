@@ -41,11 +41,23 @@ describe("product studio authority", () => {
     await expect(operator.manage()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("keeps the auditor read-only and unrelated roles outside", async () => {
+  it("keeps the auditor read-only and excludes delivery couriers", async () => {
     const auditor = caller("auditor");
     await expect(auditor.read()).resolves.toBe(true);
     await expect(auditor.write()).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(caller("cashier").read()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const courier = caller("courier");
+    await expect(courier.read()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(courier.write()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(courier.manage()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("allows all non-courier company employees to read and write for approval, without manager authority", async () => {
+    for (const role of ["accountant", "cashier", "warehouse", "purchasing", "sales_rep", "user"]) {
+      const employee = caller(role);
+      await expect(employee.read()).resolves.toBe(true);
+      await expect(employee.write()).resolves.toBe(true);
+      await expect(employee.manage()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
   });
 
   it("honours explicit worker grants without granting manager authority", async () => {
