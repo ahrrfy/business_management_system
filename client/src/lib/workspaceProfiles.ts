@@ -1,4 +1,5 @@
 import {
+  STUDIO_ACCESS_ROLES,
   type AccessLevel,
   type PermissionMap,
   type PosStation,
@@ -186,11 +187,7 @@ const NAV = {
     "product_studio",
     "استوديو المنتجات",
     "/catalog/image-studio",
-    moduleAccess("productStudio", "READ", [
-      "manager",
-      "print_operator",
-      "auditor",
-    ]),
+    moduleAccess("productStudio", "READ", STUDIO_ACCESS_ROLES),
   ),
   inbox: nav(
     "inbox",

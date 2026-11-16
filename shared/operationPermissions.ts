@@ -355,6 +355,33 @@ const COMPANY_FINANCE_DOMAINS = new Set([
   "supplierPayments",
 ]);
 
+export const STUDIO_EMPLOYEE_CAPTURE_OPERATIONS: readonly string[] = [
+  "productStudio.dashboard",
+  "productStudio.products",
+  "productStudio.resolveBarcode",
+  "productStudio.productUnits",
+  "productStudio.variantMatrix",
+  "productStudio.tasks",
+  "productStudio.myCampaigns",
+  "productStudio.nextPhotographerTask",
+  "productStudio.claimByBarcode",
+  "productStudio.linkBarcode",
+  "productStudio.candidatePreview",
+  "productStudio.taskPreviousImages",
+  "productStudio.saveDraft",
+  "productStudio.bindProcessingProof",
+  "productStudio.reserveImages",
+  "productStudio.submitCandidate",
+  "productStudio.quickBarcodeLookup",
+  "productStudio.acquireOrCheckLock",
+  "productStudio.heartbeatLock",
+  "productStudio.releaseLock",
+  "productStudio.quickSaveBarcodeProductImage",
+  "productStudio.quickAiTransform",
+  "imageStudio.aiConfig",
+  "imageStudio.aiStudioTransform",
+];
+
 /**
  * Order-lifecycle record scopes granted at BRANCH level to cashier profiles so a
  * cashier can print, inspect, advance, and settle colleague/online/reception orders
@@ -652,6 +679,28 @@ export function resolveOperationPolicy(
     grants[operation.key] =
       !explicitlyDenied &&
       nativePaths.some((native) => grants[`operation.${native}`] === true);
+  }
+  // Baseline Product Studio capture & submit-for-approval operations for all
+  // company employees (excluding delivery couriers and read-only auditors),
+  // even when a saved role/user policy snapshot predates this baseline.
+  // Keep fail-closed empty role policies (e.g. inactive/missing custom roles)
+  // and explicit user denials (regardless of policy size) intact.
+  const isEmptyFailClosedRolePolicy =
+    rolePolicy != null && Object.keys(rolePolicy.grants).length === 0;
+  if (
+    !isEmptyFailClosedRolePolicy &&
+    role !== "courier" &&
+    role !== "auditor" &&
+    legacyIndividual?.permissionsOverride?.productStudio !== "NONE"
+  ) {
+    for (const path of STUDIO_EMPLOYEE_CAPTURE_OPERATIONS) {
+      const operation = getOperationPermission(path);
+      if (!operation?.delegable) continue;
+      if (userPolicy?.grants[operation.key] === false) {
+        continue;
+      }
+      grants[operation.key] = true;
+    }
   }
   return {
     version: 1,
