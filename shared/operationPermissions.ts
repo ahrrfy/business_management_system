@@ -376,6 +376,7 @@ export const STUDIO_EMPLOYEE_CAPTURE_OPERATIONS: readonly string[] = [
   "productStudio.quickSaveBarcodeProductImage",
   "productStudio.quickAiTransform",
   "imageStudio.aiConfig",
+  "imageStudio.aiStudioTransform",
 ];
 
 /**
@@ -679,17 +680,20 @@ export function resolveOperationPolicy(
   // Baseline Product Studio capture & submit-for-approval operations for all
   // company employees (excluding delivery couriers and read-only auditors),
   // even when a saved role/user policy snapshot predates this baseline.
+  // Keep fail-closed empty role policies (e.g. inactive/missing custom roles)
+  // and explicit user denials (regardless of policy size) intact.
+  const isEmptyFailClosedRolePolicy =
+    rolePolicy != null && Object.keys(rolePolicy.grants).length === 0;
   if (
+    !isEmptyFailClosedRolePolicy &&
     role !== "courier" &&
     role !== "auditor" &&
     legacyIndividual?.permissionsOverride?.productStudio !== "NONE"
   ) {
-    const isSparseUserPolicy =
-      userPolicy != null && Object.keys(userPolicy.grants).length < 50;
     for (const path of STUDIO_EMPLOYEE_CAPTURE_OPERATIONS) {
       const operation = getOperationPermission(path);
       if (!operation?.delegable) continue;
-      if (isSparseUserPolicy && userPolicy.grants[operation.key] === false) {
+      if (userPolicy?.grants[operation.key] === false) {
         continue;
       }
       grants[operation.key] = true;

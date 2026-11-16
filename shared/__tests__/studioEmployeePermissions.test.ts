@@ -138,4 +138,44 @@ describe("صلاحيات استوديو المنتجات لجميع الموظف
       ).allowed,
     ).toBe(false);
   });
+
+  it("تحفظ المنع الفردي الصريح بغضّ النظر عن حجم سياسة المستخدم، وتبقي الحساب ذو الدور المخصّص المعطّل مغلقاً", () => {
+    const largeUserGrants: Record<string, boolean> = {};
+    for (let i = 0; i < 60; i++) {
+      largeUserGrants[`operation.custom.op${i}`] = true;
+    }
+    largeUserGrants["operation.productStudio.quickSaveBarcodeProductImage"] = false;
+    const resolvedLarge = resolveOperationPolicy(
+      "cashier",
+      ROLE_TEMPLATES.cashier,
+      buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier),
+      { version: 1, grants: largeUserGrants },
+    );
+    expect(
+      operationDecision(
+        {
+          role: "cashier",
+          operationPolicyEnabled: true,
+          resolvedOperationPolicy: resolvedLarge,
+        },
+        "productStudio.quickSaveBarcodeProductImage",
+      ).allowed,
+    ).toBe(false);
+
+    // Fail-closed inactive/missing custom role: resolveOperationPolicy("user", {}, { version: 1, grants: {} }, null)
+    const failClosed = resolveOperationPolicy("user", {}, { version: 1, grants: {} }, null);
+    for (const path of STUDIO_EMPLOYEE_CAPTURE_OPERATIONS) {
+      expect(
+        operationDecision(
+          {
+            role: "user",
+            operationPolicyEnabled: true,
+            resolvedOperationPolicy: failClosed,
+          },
+          path,
+        ).allowed,
+        `failClosed:${path}`,
+      ).toBe(false);
+    }
+  });
 });
