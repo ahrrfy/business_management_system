@@ -362,7 +362,7 @@ export function StudioProductCardStatus({
                 توجد لقطة جديدة مرفوعة بانتظار موافقة الإدارة
               </p>
               <p className="text-muted-foreground text-xs leading-relaxed">
-                ستظهر الصورة في الكتالوج ونقاط البيع فور اعتمادها من قبل المدير.
+                ستظهر الصورة في الكتالوج ونقاط البيع فور اعتمادها من قبل المدير، ويمكنك إضافة صور إضافية أخرى للمنتج.
               </p>
             </div>
           </div>
@@ -376,8 +376,8 @@ export function StudioProductCardStatus({
               data-testid="btn-reshoot-pending"
               className="min-h-10 text-xs sm:text-sm font-semibold gap-1.5"
             >
-              <Camera aria-hidden className="size-4" />
-              <span>إعادة التقاط صورة بديلة</span>
+              <Plus aria-hidden className="size-4" />
+              <span>إضافة صورة أخرى للمنتج</span>
             </Button>
           </div>
         </div>

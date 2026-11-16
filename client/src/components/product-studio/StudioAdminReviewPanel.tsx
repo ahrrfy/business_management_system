@@ -142,8 +142,8 @@ export function StudioAdminReviewPanel({
     },
   );
 
-  const approveMutation = trpc.productStudio.approve.useMutation();
-  const rejectMutation = trpc.productStudio.reject.useMutation();
+  const bulkApproveMutation = trpc.productStudio.bulkApproveStudioTasks.useMutation();
+  const bulkRejectMutation = trpc.productStudio.bulkRejectStudioTasks.useMutation();
   const setPrimaryMutation = trpc.productStudio.setImagePrimary.useMutation();
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -216,16 +216,12 @@ export function StudioAdminReviewPanel({
       if (mockOnApprove) {
         await mockOnApprove(ids);
       } else {
-        // تنفيذ الاعتماد عبر tRPC
-        const selectedTasks = tasks.filter((t) => selectedIds.has(t.id));
-        await Promise.all(
-          selectedTasks.map((task) =>
-            approveMutation.mutateAsync({
-              taskId: task.id,
-              expectedRevision: task.revision ?? 1,
-            }),
-          ),
-        );
+        // تنفيذ الاعتماد الجماعي عبر إجراء واحد بدلاً من تجميع نداءات فردية في طلب دفعي واحد
+        const result = await bulkApproveMutation.mutateAsync({ taskIds: ids });
+        if ((result?.approvedCount ?? 0) === 0) {
+          notify.err("تعذر اعتماد الصور المحددة — تأكد من اكتمال بيانات الصور وحالتها");
+          return;
+        }
       }
 
       // رسالة فخر واعتزاز محلية عراقية
@@ -255,16 +251,10 @@ export function StudioAdminReviewPanel({
       if (mockOnReject) {
         await mockOnReject(ids, reason);
       } else {
-        const selectedTasks = tasks.filter((t) => selectedIds.has(t.id));
-        await Promise.all(
-          selectedTasks.map((task) =>
-            rejectMutation.mutateAsync({
-              taskId: task.id,
-              reason,
-              expectedRevision: task.revision ?? 1,
-            }),
-          ),
-        );
+        await bulkRejectMutation.mutateAsync({
+          taskIds: ids,
+          reason,
+        });
       }
 
       toast.info("تم رفض الصور المحددة وإعادتها للتصوير");
