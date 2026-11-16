@@ -269,10 +269,10 @@ describe("StudioContinuousWorkflow & Components Test Suite", () => {
       expect(details).not.toBeNull();
       expect(details?.textContent).toContain("توجد لقطة جديدة مرفوعة بانتظار موافقة الإدارة");
 
-      // التحقق من زر إعادة التقاط صورة بديلة
+      // التحقق من زر إضافة صورة أخرى للمنتج
       const reshootBtn = host.querySelector('[data-testid="btn-reshoot-pending"]') as HTMLButtonElement;
       expect(reshootBtn).not.toBeNull();
-      expect(reshootBtn.textContent).toContain("إعادة التقاط صورة بديلة");
+      expect(reshootBtn.textContent).toContain("إضافة صورة أخرى للمنتج");
 
       await act(async () => {
         reshootBtn.click();
