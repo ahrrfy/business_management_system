@@ -3591,6 +3591,10 @@ export async function listStudioTasks(
       sourceImageId: productImageJobs.sourceImageId,
       hasOriginal: sql<boolean>`${productImageJobs.originalObjectKey} is not null`,
       hasCandidate: sql<boolean>`${productImageJobs.processedObjectKey} is not null`,
+      previewThumbUrl:
+        input.scope === "REVIEW"
+          ? productImageJobs.processedUrl
+          : sql<string | null>`null`,
       createdAt: productImageJobs.createdAt,
       updatedAt: productImageJobs.updatedAt,
       submittedAt: productImageJobs.submittedAt,
