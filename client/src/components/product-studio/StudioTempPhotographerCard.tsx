@@ -18,6 +18,8 @@ interface IssuedTempAccount {
 export function StudioTempPhotographerCard() {
   const [name, setName] = useState("");
   const [issued, setIssued] = useState<IssuedTempAccount | null>(null);
+  const me = trpc.auth.me.useQuery();
+  const companyCode = (me.data as { companyCode?: string | null } | undefined)?.companyCode?.trim() || "";
 
   const listQuery = trpc.productStudio.listTemporaryStudioPhotographers.useQuery(undefined, {
     staleTime: 30_000,
@@ -64,6 +66,7 @@ export function StudioTempPhotographerCard() {
       "",
       "بيانات الدخول المؤقت (صالح لمدة 24 ساعة):",
       ...(loginUrl ? [`رابط الدخول: ${loginUrl}`] : []),
+      ...(companyCode ? [`رمز الشركة: ${companyCode}`] : []),
       `اسم المستخدم: ${account.username}`,
       `كلمة المرور: ${account.code}`,
       "",

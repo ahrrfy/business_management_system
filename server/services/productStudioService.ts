@@ -2821,14 +2821,23 @@ export async function cleanupExpiredTemporaryStudioPhotographers(now = new Date(
   return cleaned;
 }
 
+const SIMPLE_TEMP_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+
 function generateSimpleTemporaryCode(): string {
-  return String(randomInt(100000, 1000000));
+  const bytes = randomBytes(8);
+  let raw = "";
+  for (let i = 0; i < 8; i++) {
+    raw += SIMPLE_TEMP_CODE_ALPHABET[bytes[i]! % SIMPLE_TEMP_CODE_ALPHABET.length];
+  }
+  return `${raw.slice(0, 4)}-${raw.slice(4)}`;
 }
 
-async function generateSimpleStudioUsername(): Promise<string> {
+async function generateSimpleStudioUsername(attemptOffset = 0): Promise<string> {
   const db = requireDb();
+  const min = attemptOffset >= 6 ? 10000 : 1000;
+  const max = attemptOffset >= 6 ? 100000 : 10000;
   for (let attempt = 0; attempt < 8; attempt++) {
-    const candidate = `studio-${randomInt(1000, 10000)}`;
+    const candidate = `studio-${randomInt(min, max)}`;
     const existing = await db
       .select({ id: users.id })
       .from(users)
@@ -2836,7 +2845,7 @@ async function generateSimpleStudioUsername(): Promise<string> {
       .limit(1);
     if (existing.length === 0) return candidate;
   }
-  return `studio-${randomInt(10000, 100000)}`;
+  return `studio-${randomInt(100000, 1000000)}`;
 }
 
 /**
@@ -2864,37 +2873,46 @@ export async function createTemporaryStudioPhotographer(
   const expiresAt = new Date(Date.now() + hours * 60 * 60_000);
   const code = generateSimpleTemporaryCode();
   const passwordHash = await hashPassword(code);
-  const username = await generateSimpleStudioUsername();
   const branchId = Number(actor.branchId ?? 1);
 
-  const result = await withStudioTx(async (tx) => {
-    const [created] = await tx
-      .insert(users)
-      .values({
-        openId: `studio-temp:${username}`,
-        name,
-        username,
-        passwordHash,
-        role: "print_operator",
-        branchId,
-        isActive: true,
-        accessExpiresAt: expiresAt,
-        permissionsOverride: studioOnlyPermissions(),
-      })
-      .$returningId();
-    const userId = Number(created.id);
-    await tx.insert(auditLogs).values({
-      userId: actor.userId,
-      branchId,
-      action: "productStudio.temporaryPhotographer.create",
-      entityType: "user",
-      entityId: String(userId),
-      newValue: { temporaryUserId: userId, name, username, hours, expiresAt: expiresAt.toISOString() },
-    });
-    return { userId, username };
-  });
-
-  return { ...result, name, code, expiresAt, hours };
+  for (let insertAttempt = 0; insertAttempt < 8; insertAttempt++) {
+    const username = await generateSimpleStudioUsername(insertAttempt);
+    try {
+      const result = await withStudioTx(async (tx) => {
+        const [created] = await tx
+          .insert(users)
+          .values({
+            openId: `studio-temp:${username}`,
+            name,
+            username,
+            passwordHash,
+            role: "print_operator",
+            branchId,
+            isActive: true,
+            accessExpiresAt: expiresAt,
+            permissionsOverride: studioOnlyPermissions(),
+          })
+          .$returningId();
+        const userId = Number(created.id);
+        await tx.insert(auditLogs).values({
+          userId: actor.userId,
+          branchId,
+          action: "productStudio.temporaryPhotographer.create",
+          entityType: "user",
+          entityId: String(userId),
+          newValue: { temporaryUserId: userId, name, username, hours, expiresAt: expiresAt.toISOString() },
+        });
+        return { userId, username };
+      });
+      return { ...result, name, code, expiresAt, hours };
+    } catch (error) {
+      if (mysqlCodeFrom(error) === "ER_DUP_ENTRY" && insertAttempt < 7) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد اسم مستخدم فريد، أعد المحاولة" });
 }
 
 export async function listTemporaryStudioPhotographers(actor: ProductStudioActor) {
@@ -3639,6 +3657,10 @@ export async function listStudioTasks(
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   const items = pageRows.map((row) => ({
     ...row,
+    previewThumbUrl:
+      input.scope === "REVIEW" && (isManager(actor) || Number(row.assignedTo) === actor.userId)
+        ? row.previewThumbUrl
+        : null,
     hasOriginal: Boolean(row.hasOriginal),
     hasCandidate: Boolean(row.hasCandidate),
     overdue: Boolean(row.overdue),
