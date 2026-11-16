@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Clock, Copy, KeyRound, Loader2, Trash2, UserPlus } from "lucide-react";
+import { Clock, Copy, KeyRound, Loader2, MessageCircle, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -55,14 +55,36 @@ export function StudioTempPhotographerCard() {
     createMutation.mutate({ name: trimmed, hoursValid: 24 });
   };
 
+  const buildInviteText = (account: IssuedTempAccount) => {
+    const loginUrl =
+      typeof window !== "undefined" ? `${window.location.origin}/catalog/image-studio` : "";
+    return [
+      `مرحباً ${account.name}، أهلاً بك في فريق استوديو الرؤية العربية!`,
+      `جهودك ولمستك في تصوير المنتجات تصنع فرقاً كبيراً وتُبرز منتجاتنا بأجمل صورة لعملائنا. نتمنى لك وقتاً ممتعاً ومثمراً معنا!`,
+      "",
+      "بيانات الدخول المؤقت (صالح لمدة 24 ساعة):",
+      ...(loginUrl ? [`رابط الدخول: ${loginUrl}`] : []),
+      `اسم المستخدم: ${account.username}`,
+      `كلمة المرور: ${account.code}`,
+      "",
+      "بالتوفيق، وشكراً لتعاونك ومساهمتك القيمة!",
+    ].join("\n");
+  };
+
   const handleCopy = async (account: IssuedTempAccount) => {
-    const text = `حساب تصوير مؤقت (24 ساعة)\nالاسم: ${account.name}\nاسم المستخدم: ${account.username}\nكلمة المرور: ${account.code}`;
+    const text = buildInviteText(account);
     try {
       await navigator.clipboard.writeText(text);
-      toast.success("تم نسخ بيانات الدخول المؤقت");
+      toast.success("تم نسخ بيانات الدخول والرسالة التشجيعية");
     } catch {
-      toast.info(`اسم المستخدم: ${account.username} | الرمز: ${account.code}`);
+      toast.info(`اسم المستخدم: ${account.username} | كلمة المرور: ${account.code}`);
     }
+  };
+
+  const handleWhatsAppShare = (account: IssuedTempAccount) => {
+    const text = buildInviteText(account);
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const activeList = listQuery.data ?? [];
@@ -120,16 +142,28 @@ export function StudioTempPhotographerCard() {
               <span className="text-sm font-semibold text-primary">
                 تم إنشاء حساب «{issued.name}» — يُنسخ الآن (لا يظهر الرمز مرة أخرى)
               </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void handleCopy(issued)}
-                className="gap-1.5"
-              >
-                <Copy className="size-3.5" />
-                <span>نسخ الدخول</span>
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleCopy(issued)}
+                  className="gap-1.5"
+                >
+                  <Copy className="size-3.5" />
+                  <span>نسخ الدخول</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  onClick={() => handleWhatsAppShare(issued)}
+                  className="gap-1.5"
+                >
+                  <MessageCircle className="size-3.5" />
+                  <span>إرسال واتساب</span>
+                </Button>
+              </div>
             </div>
             <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 sm:text-sm">
               <div className="rounded bg-background/80 px-2.5 py-1.5">

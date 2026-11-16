@@ -1,7 +1,7 @@
 import { assertStudioOperationBinding, assertStudioOperationTx, canAutoApproveStudioTx, canStudioPhotographTx, hasStudioManagementOperationsTx, isStudioManager, STUDIO_PHOTOGRAPHER_OPERATIONS } from "./authorization/studioOperationAuthority";
 import { hasServiceOperationAuthority } from "./authorization/operationAuthority";
 import { TRPCError } from "@trpc/server";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productPhotographyLocks, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productStudioSubmitQuota, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -2821,6 +2821,24 @@ export async function cleanupExpiredTemporaryStudioPhotographers(now = new Date(
   return cleaned;
 }
 
+function generateSimpleTemporaryCode(): string {
+  return String(randomInt(100000, 1000000));
+}
+
+async function generateSimpleStudioUsername(): Promise<string> {
+  const db = requireDb();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = `studio-${randomInt(1000, 10000)}`;
+    const existing = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.username, candidate))
+      .limit(1);
+    if (existing.length === 0) return candidate;
+  }
+  return `studio-${randomInt(10000, 100000)}`;
+}
+
 /**
  * إصدار حساب مصور مؤقت من داخل الاستوديو لمدة 24 ساعة (يُحذف تلقائياً بعد الانتهاء).
  * متاح للإدارة فقط، ويفتح الاستوديو وحده دون باقي وحدات النظام.
@@ -2844,9 +2862,9 @@ export async function createTemporaryStudioPhotographer(
   await cleanupExpiredTemporaryStudioPhotographers();
   const hours = Math.max(1, Math.min(24, Math.floor(input.hoursValid ?? 24)));
   const expiresAt = new Date(Date.now() + hours * 60 * 60_000);
-  const code = generateTemporaryCode();
+  const code = generateSimpleTemporaryCode();
   const passwordHash = await hashPassword(code);
-  const username = `studio-${randomBytes(4).toString("hex")}`;
+  const username = await generateSimpleStudioUsername();
   const branchId = Number(actor.branchId ?? 1);
 
   const result = await withStudioTx(async (tx) => {
