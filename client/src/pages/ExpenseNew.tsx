@@ -753,8 +753,7 @@ export default function ExpenseNew() {
           <CardContent className="space-y-3">
             <ProductSearchPicker
               branchId={Number(effectiveBranch)}
-              stockExpenseOnly={true}
-              placeholder="ابحث عن مستلزم تشغيل من المخزون…"
+              placeholder="ابحث عن منتج من المخزون…"
               onPick={(v, u) => setItems((p) => [...p, mkStockLine(v, u)])}
             />
             {items.map((l) => {

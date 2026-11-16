@@ -16,9 +16,14 @@
  */
 
 import {
+  buildAiStudioPrompt,
+  DEFAULT_GEMINI_IMAGE_MODEL,
+  AI_STUDIO_FIDELITY_GUARD,
   normalizeGeminiModelName,
   resolveGeminiImageModel,
 } from "@shared/imageStudio/aiPrompt";
+
+export { DEFAULT_GEMINI_IMAGE_MODEL, AI_STUDIO_FIDELITY_GUARD };
 
 /** قاعدة عنوان Gemini API — قابلة للتجاوز عبر env (لتوجيهٍ لبروكسي/إصدار آخر بلا تغيير كود). */
 const GEMINI_API_BASE = (process.env.GEMINI_API_BASE?.trim() || "https://generativelanguage.googleapis.com/v1").replace(/\/+$/, "");
@@ -417,3 +422,94 @@ export function isModelAvailable(effectiveModel: string, models: string[]): bool
   const target = normalizeGeminiModelName(effectiveModel);
   return models.some((m) => normalizeGeminiModelName(m) === target);
 }
+
+export interface StudioAiTransformInput {
+  imageDataUrl: string;
+  apiKey?: string | null;
+  model?: string | null;
+  userPrompt?: string | null;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  runAttempt?: (run: () => Promise<GenerateStudioImageResult>) => Promise<GenerateStudioImageResult>;
+}
+
+export interface StudioAiTransformResult {
+  imageDataUrl: string;
+  provider: "GEMINI" | "LOCAL_FLATTEN";
+  model?: string;
+  fallbackApplied: boolean;
+  fallbackReason?: string;
+}
+
+/**
+ * غلاف تشغيلي آمن لاستدعاء الذكاء الاصطناعي مع تراجع تلقائي لمعالجة FLATTEN المحلية:
+ * - في حال غياب المفتاح أو انتهاء المهلة أو حدوث خطأ من المزود، لا تضيع صورة العامل مطلقاً.
+ * - يتم تطبيق التراجع التلقائي إلى وضع FLATTEN المحلي وتوضيح حالة التراجع في الرد.
+ */
+export async function executeStudioAiWithFallback(
+  input: StudioAiTransformInput,
+): Promise<StudioAiTransformResult> {
+  const timeoutMs = input.timeoutMs ?? 15_000;
+
+  if (!input.apiKey || !input.apiKey.trim()) {
+    return {
+      imageDataUrl: input.imageDataUrl,
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
+      fallbackReason: "مفتاح الذكاء الاصطناعي غير متوفر، تم التحويل تلقائياً للمعالجة المحلية",
+    };
+  }
+
+  const match = /^data:([^;]+);base64,(.+)$/.exec(input.imageDataUrl);
+  if (!match) {
+    return {
+      imageDataUrl: input.imageDataUrl,
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
+      fallbackReason: "صيغة الصورة غير صالحة لمعالجة الذكاء، تم الإبقاء على الصورة الأصلية",
+    };
+  }
+
+  const mimeType = match[1];
+  const imageBase64 = match[2];
+  const model = input.model || DEFAULT_GEMINI_IMAGE_MODEL;
+
+  try {
+    const result = await generateStudioImage(
+      {
+        apiKey: input.apiKey,
+        model,
+        prompt: buildAiStudioPrompt(input.userPrompt),
+        imageBase64,
+        mimeType,
+      },
+      {
+        timeoutMs,
+        fetchImpl: input.fetchImpl,
+        runAttempt: input.runAttempt,
+      },
+    );
+
+    return {
+      imageDataUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
+      provider: "GEMINI",
+      model,
+      fallbackApplied: false,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof AiImageError
+        ? aiImageErrorMessageAr(error.kind)
+        : error instanceof Error
+          ? error.message
+          : "تعذّر الاتصال بمزوّد الذكاء الاصطناعي";
+
+    return {
+      imageDataUrl: input.imageDataUrl,
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
+      fallbackReason: reason,
+    };
+  }
+}
+

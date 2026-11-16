@@ -243,27 +243,46 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
     expect(purchaseProductIds.has(dualUse.productId)).toBe(true);
     expect(purchaseProductIds.has(operatingSupply.productId)).toBe(true);
 
-    // 5) الصرف الداخلي للمصروفات المخزنية يقبل OPERATING_SUPPLY ويرفض SALE_ONLY
+    // 5) الصرف المخزني (نثرية INTERNAL_USE / تلف WASTAGE) يقبل جميع الأصناف المخزنية المملوكة (بيع / مادة خام / مزدوج / مستلزم تشغيل)
     await db().insert(s.branchStock).values([
       { branchId: 1, variantId: saleVarId, quantity: 10 },
+      { branchId: 1, variantId: matVarId, quantity: 10 },
+      { branchId: 1, variantId: dualVarId, quantity: 10 },
       { branchId: 1, variantId: supplyVarId, quantity: 10 },
     ]);
 
-    await expect(
-      createExpense(
-        {
-          branchId: 1,
-          category: "SUPPLIES",
-          amount: "0",
-          paymentMethod: "CASH",
-          source: "STOCK",
-          stockReason: "INTERNAL_USE",
-          description: "محاولة صرف سلعة بيع كمصروف داخلي",
-          items: [{ variantId: saleVarId, baseQuantity: 1 }],
-        },
-        actor,
-      ),
-    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const saleExp = await createExpense(
+      {
+        branchId: 1,
+        category: "SUPPLIES",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "INTERNAL_USE",
+        description: "صرف سلعة بيع كنثرية من المخزون",
+        items: [{ variantId: saleVarId, baseQuantity: 1 }],
+      },
+      actor,
+    );
+    expect(saleExp.expenseId).toBeGreaterThan(0);
+
+    const matWastageExp = await createExpense(
+      {
+        branchId: 1,
+        category: "OTHER",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "WASTAGE",
+        description: "تلف مادة خام ومزدوج الاستخدام من المخزون",
+        items: [
+          { variantId: matVarId, baseQuantity: 1 },
+          { variantId: dualVarId, baseQuantity: 1 },
+        ],
+      },
+      actor,
+    );
+    expect(matWastageExp.expenseId).toBeGreaterThan(0);
 
     const supplyExp = await createExpense(
       {

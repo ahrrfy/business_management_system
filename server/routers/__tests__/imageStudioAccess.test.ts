@@ -87,7 +87,7 @@ describe("image studio worker permission", () => {
   });
 
   it("blocks a user without productStudio FULL before calling the provider", async () => {
-    await expect(caller("cashier").aiStudioTransform({ imageDataUrl: PNG_1X1, taskId: 920 }))
+    await expect(caller("courier").aiStudioTransform({ imageDataUrl: PNG_1X1, taskId: 920 }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(providerMocks.generateStudioImage).not.toHaveBeenCalled();
   });

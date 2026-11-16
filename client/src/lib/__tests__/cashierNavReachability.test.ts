@@ -15,7 +15,7 @@
  * أو بمنحٍ صريح)، وجب أن يكون في القائمة.
  */
 import { describe, expect, it } from "vitest";
-import { CASHIER_NAV_PATHS, canSeeGate } from "../navVisibility";
+import { CASHIER_NAV_PATHS, canSeeGate, type RoleGate } from "../navVisibility";
 import { visibleApplicationModules } from "../moduleRegistry";
 import { ROLE_TEMPLATES, SECTION_CASHIER_ROLES, STUDIO_ACCESS_ROLES, type PermissionMap } from "@shared/permissions";
 import { buildDefaultRoleOperationPolicy } from "@shared/roleOperationPresets";
@@ -45,6 +45,12 @@ describe("وصول الكاشير الممنوح إلى استوديو المن�
 
   it("مندوب التوصيل غير مشمول بالوصول إلى استوديو المنتجات", () => {
     expect(canSeeGate(STUDIO_GATE, "courier", ROLE_TEMPLATES.courier as PermissionMap)).toBe(false);
+    
+  });
+  it("الكاشير الافتراضي يملك صلاحية استوديو التصوير، والكاشير المحجوب (NONE) لا يراه", () => {
+    expect(canSeeGate(STUDIO_GATE, "cashier", ROLE_TEMPLATES.cashier as PermissionMap)).toBe(true);
+    const deniedCashier: PermissionMap = { ...ROLE_TEMPLATES.cashier, productStudio: "NONE" } as PermissionMap;
+    expect(canSeeGate(STUDIO_GATE, "cashier", deniedCashier)).toBe(false);
   });
 
   it("القائمة بلا تكرار ومساراتها مطلقة", () => {

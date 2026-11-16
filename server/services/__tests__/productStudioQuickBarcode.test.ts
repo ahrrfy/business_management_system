@@ -721,11 +721,11 @@ describe("quickAiTransform", () => {
     });
   });
 
-  it("rejects with PRECONDITION_FAILED when AI key is missing or disabled", async () => {
-    await expect(
-      quickAiTransform(photographer, { imageDataUrl: PNG_1X1, mode: "AI" }),
-    ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
+  it("falls back safely to LOCAL_FLATTEN when AI key is missing or disabled", async () => {
+    const result = await quickAiTransform(photographer, { imageDataUrl: PNG_1X1, mode: "AI" });
+    expect(result).toMatchObject({
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
     });
   });
 

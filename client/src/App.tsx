@@ -478,6 +478,8 @@ export default function App() {
       <Route path="/purchases/supplier-invoice-approvals"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierInvoiceApprovalGovernance /></RequireRole></Shell></Route>
       {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
       <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
+      {/* استوديو المنتجات: مسار مباشر للتصوير والمعالجة بالذكاء — قبل /inventory لكي لا يبتلعه */}
+      <Route path="/inventory/studio"><Shell allowColdOffline><StudioRouteAccess><ProductImageStudio /></StudioRouteAccess></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><RequireRole module="inventory" level="FULL" operations={["stocktakes.create"]}><StocktakeNew /></RequireRole></Shell></Route>

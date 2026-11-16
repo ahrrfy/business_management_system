@@ -1,8 +1,10 @@
 import { assertStudioOperationBinding, assertStudioOperationTx, canAutoApproveStudioTx, canStudioPhotographTx, hasStudioManagementOperationsTx, isStudioManager, STUDIO_PHOTOGRAPHER_OPERATIONS } from "./authorization/studioOperationAuthority";
+import { hasServiceOperationAuthority } from "./authorization/operationAuthority";
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
-import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productPhotographyLocks, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productStudioSubmitQuota, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { appErrorMessage } from "@shared/errors";
 import type { PermissionMap } from "@shared/permissions";
 import type { OperationPolicy } from "@shared/operationPermissions";
@@ -69,6 +71,8 @@ export interface ProductStudioActor {
   branchId: number | null;
   role: string;
   isOwner?: boolean;
+  name?: string;
+  email?: string;
   operationAuthority?: ServiceOperationAuthority;
   managementAuthority?: ServiceOperationAuthority;
   scopedOwnerId?: number | null;
@@ -79,6 +83,20 @@ export type StudioPriority = typeof productImageJobs.$inferSelect.priority;
 export type StudioCampaignStatus = typeof productStudioCampaigns.$inferSelect.status;
 
 function isManager(actor: ProductStudioActor): boolean {
+  if (
+    actor.operationAuthority &&
+    (actor.operationAuthority.path === "productStudio.bulkApproveStudioTasks" ||
+      actor.operationAuthority.path === "productStudio.bulkRejectStudioTasks")
+  ) {
+    return (
+      (actor.role === "admin" || actor.role === "manager" || actor.isOwner === true) &&
+      hasServiceOperationAuthority(
+        actor.operationAuthority,
+        actor.userId,
+        actor.operationAuthority.path,
+      )
+    );
+  }
   return isStudioManager(actor);
 }
 
@@ -2770,6 +2788,143 @@ export async function revokeTemporaryCampaignPhotographers(actor: ProductStudioA
     });
     return { revoked: ids.length };
   });
+}
+
+/**
+ * تنظيف وحذف الحسابات المؤقتة المنتهية صلاحيتها (24 ساعة) تلقائياً:
+ * إن لم يكن لها أثر تدقيقي/صور مرتبطة يُحذف السجل نهائياً، وإلا يُعطّل وتُغلق جلساته فوراً.
+ */
+export async function cleanupExpiredTemporaryStudioPhotographers(now = new Date()): Promise<number> {
+  const db = requireDb();
+  const expired = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(like(users.openId, "studio-temp:studio-%"), lte(users.accessExpiresAt, now)));
+  if (expired.length === 0) return 0;
+  let cleaned = 0;
+  const past = new Date(now.getTime() - 1000);
+  for (const row of expired) {
+    const uid = Number(row.id);
+    try {
+      await db.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, uid));
+      await db.delete(users).where(eq(users.id, uid));
+      cleaned += 1;
+    } catch {
+      // عند وجود سجل صور أو تدقيق منسوب لهذا المستخدم المؤقت، نُغلق وصوله نهائياً دون كسر FK
+      await db
+        .update(users)
+        .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
+        .where(eq(users.id, uid));
+      cleaned += 1;
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * إصدار حساب مصور مؤقت من داخل الاستوديو لمدة 24 ساعة (يُحذف تلقائياً بعد الانتهاء).
+ * متاح للإدارة فقط، ويفتح الاستوديو وحده دون باقي وحدات النظام.
+ */
+export async function createTemporaryStudioPhotographer(
+  actor: ProductStudioActor,
+  input: { name: string; hoursValid?: number },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const name = input.name.trim();
+  if (name.length < 3 || name.length > 80) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء الحساب المؤقت",
+        why: "الاسم يجب أن يكون بين 3 و 80 حرفاً",
+        doThis: "اكتب اسم الموظف المؤقت بشكل واضح ثم أعد المحاولة",
+      }),
+    });
+  }
+  await cleanupExpiredTemporaryStudioPhotographers();
+  const hours = Math.max(1, Math.min(24, Math.floor(input.hoursValid ?? 24)));
+  const expiresAt = new Date(Date.now() + hours * 60 * 60_000);
+  const code = generateTemporaryCode();
+  const passwordHash = await hashPassword(code);
+  const username = `studio-${randomBytes(4).toString("hex")}`;
+  const branchId = Number(actor.branchId ?? 1);
+
+  const result = await withStudioTx(async (tx) => {
+    const [created] = await tx
+      .insert(users)
+      .values({
+        openId: `studio-temp:${username}`,
+        name,
+        username,
+        passwordHash,
+        role: "print_operator",
+        branchId,
+        isActive: true,
+        accessExpiresAt: expiresAt,
+        permissionsOverride: studioOnlyPermissions(),
+      })
+      .$returningId();
+    const userId = Number(created.id);
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId,
+      action: "productStudio.temporaryPhotographer.create",
+      entityType: "user",
+      entityId: String(userId),
+      newValue: { temporaryUserId: userId, name, username, hours, expiresAt: expiresAt.toISOString() },
+    });
+    return { userId, username };
+  });
+
+  return { ...result, name, code, expiresAt, hours };
+}
+
+export async function listTemporaryStudioPhotographers(actor: ProductStudioActor) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const now = new Date();
+  await cleanupExpiredTemporaryStudioPhotographers(now);
+  const rows = await requireDb()
+    .select({
+      id: users.id,
+      name: users.name,
+      username: users.username,
+      accessExpiresAt: users.accessExpiresAt,
+      createdAt: users.createdAt,
+    })
+    .from(users)
+    .where(
+      and(
+        like(users.openId, "studio-temp:studio-%"),
+        eq(users.isActive, true),
+        gt(users.accessExpiresAt, now),
+      ),
+    )
+    .orderBy(desc(users.id));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name ?? "مصور مؤقت",
+    username: r.username ?? "",
+    expiresAt: r.accessExpiresAt,
+    createdAt: r.createdAt,
+  }));
+}
+
+export async function revokeTemporaryStudioPhotographer(actor: ProductStudioActor, userId: number) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const db = requireDb();
+  const now = new Date();
+  const past = new Date(now.getTime() - 1000);
+  try {
+    await db.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, userId));
+    await db.delete(users).where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+    return { revoked: true, deleted: true };
+  } catch {
+    await db
+      .update(users)
+      .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
+      .where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+    return { revoked: true, deleted: false };
+  }
 }
 
 export async function getStudioCampaignBoard(actor: ProductStudioActor, campaignId: number) {
@@ -6785,7 +6940,7 @@ export async function quickBarcodeLookup(
       desc(productImages.id),
     );
 
-  // جلب أي مهمة نشطة لهذا المنتج/المتغيّر
+  // جلب أي مهمة نشطة لهذا المنتج/المتغيّر (بما فيها المهام المرفوضة لتمكين إعادة التصوير)
   const activeJob = (
     await db
       .select({
@@ -6794,6 +6949,8 @@ export async function quickBarcodeLookup(
         assignedTo: productImageJobs.assignedTo,
         submittedAt: productImageJobs.submittedAt,
         processedUrl: productImageJobs.processedUrl,
+        rejectionReason: productImageJobs.rejectionReason,
+        activeSlot: productImageJobs.activeSlot,
       })
       .from(productImageJobs)
       .where(
@@ -6802,7 +6959,7 @@ export async function quickBarcodeLookup(
           variantId != null
             ? or(isNull(productImageJobs.variantId), eq(productImageJobs.variantId, variantId))
             : sql`1=1`,
-          inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW"]),
+          inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]),
         ),
       )
       .orderBy(
@@ -6814,7 +6971,33 @@ export async function quickBarcodeLookup(
 
   const canAutoApprove = await withTx((tx) => canAutoApproveStudioTx(tx, actor), { gate: "NONE" });
 
+  const now = new Date();
+  const [currentLock] = await db
+    .select()
+    .from(productPhotographyLocks)
+    .where(
+      and(
+        eq(productPhotographyLocks.productId, productId),
+        gt(productPhotographyLocks.expiresAt, now),
+      ),
+    )
+    .limit(1);
+
+  const lockStatus = currentLock
+    ? {
+        isLocked: currentLock.userId !== actor.userId,
+        activePhotographerName: currentLock.userName,
+        remainingSeconds: Math.max(
+          1,
+          Math.ceil((currentLock.expiresAt.getTime() - now.getTime()) / 1000),
+        ),
+      }
+    : {
+        isLocked: false,
+      };
+
   return {
+    found: true,
     product: {
       id: Number(product.id),
       name: product.name,
@@ -6846,9 +7029,12 @@ export async function quickBarcodeLookup(
           status: activeJob.status,
           assignedTo: activeJob.assignedTo ? Number(activeJob.assignedTo) : null,
           isMine: activeJob.assignedTo ? Number(activeJob.assignedTo) === actor.userId : false,
-          candidateThumb: activeJob.processedUrl ?? null,
+          candidateThumb: activeJob.processedUrl ?? undefined,
+          rejectionReason: activeJob.rejectionReason ?? undefined,
+          activeSlot: activeJob.activeSlot == null ? undefined : Number(activeJob.activeSlot),
         }
       : null,
+    lock: lockStatus,
     canAutoApprove,
     userRole: actor.role,
     userId: actor.userId,
@@ -6872,6 +7058,7 @@ export async function quickSaveBarcodeProductImage(
     mode: "FLATTEN" | "CUT" | "PRO" | "AI" | "ORIGINAL";
     setAsPrimary?: boolean;
     adminOverrideReason?: string | null;
+    clientRequestId?: string | null;
   },
 ) {
   assertStudioOperationBinding(actor, "productStudio.quickSaveBarcodeProductImage");
@@ -6884,6 +7071,16 @@ export async function quickSaveBarcodeProductImage(
   const processed = decodeStudioImage(input.processedDataUrl);
   const thumbnail = decodeStudioThumbnail(input.thumbnailDataUrl, processed);
   const original = input.originalDataUrl ? decodeStudioImage(input.originalDataUrl) : null;
+
+  const clientRequestId = input.clientRequestId?.trim() || null;
+  const payloadHash = clientRequestId
+    ? idempotencyHash({
+        productId: input.productId,
+        variantId: input.variantId ?? null,
+        mode: input.mode,
+        hash: processed.hash,
+      })
+    : null;
 
   const store = getImageStore();
   const originalKey = original ? objectKeyFor(original.hash, original.mime, studioObjectPrefix("original")) : null;
@@ -6906,6 +7103,43 @@ export async function quickSaveBarcodeProductImage(
     return await withStudioTx(async (tx) => {
       await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
       if (managerActor && !(await canAutoApproveStudioTx(tx, actor))) throw new TRPCError({ code: "FORBIDDEN" });
+
+      if (clientRequestId) {
+        const replayRefId = await checkIdempotency(
+          tx,
+          "productStudio.quickSave",
+          clientRequestId,
+          payloadHash,
+        );
+        if (replayRefId != null) {
+          const [existingImg] = await tx
+            .select({
+              id: productImages.id,
+              url: productImages.url,
+              thumbDataUrl: productImages.thumbDataUrl,
+              publishedStudioJobId: productImages.publishedStudioJobId,
+            })
+            .from(productImages)
+            .where(eq(productImages.id, replayRefId))
+            .limit(1);
+
+          if (existingImg) {
+            const replayedJobId = existingImg.publishedStudioJobId
+              ? Number(existingImg.publishedStudioJobId)
+              : Number(existingImg.id);
+            return {
+              success: true as const,
+              autoApproved: true as const,
+              imageId: Number(existingImg.id),
+              jobId: replayedJobId,
+              url: existingImg.url,
+              thumbDataUrl: existingImg.thumbDataUrl ?? thumbnail.dataUrl,
+              message: "تم حفظ واعتماد ونشر الصورة للمنتج في الكتالوج بنجاح دون الحاجة لاعتماد لاحق.",
+            };
+          }
+        }
+      }
+
       await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
       const existingImages = await tx
         .select({
@@ -7041,11 +7275,31 @@ export async function quickSaveBarcodeProductImage(
         }),
       );
 
+      if (clientRequestId) {
+        await recordIdempotencyKey(
+          tx,
+          "productStudio.quickSave",
+          clientRequestId,
+          imageId,
+          payloadHash,
+        );
+      }
+
+      // تحرير القفل المؤقت تلقائياً عند نجاح الحفظ للمستخدم الحالي حصراً
+      await tx
+        .delete(productPhotographyLocks)
+        .where(
+          and(
+            eq(productPhotographyLocks.productId, input.productId),
+            eq(productPhotographyLocks.userId, actor.userId),
+          ),
+        );
+
       return {
         success: true as const,
         autoApproved: true as const,
-        imageId: imageId as number | null,
-        jobId,
+        imageId: imageId as number,
+        jobId: jobId as number,
         url: publishedUrl as string | null,
         thumbDataUrl: thumbnail.dataUrl,
         message: "تم حفظ واعتماد ونشر الصورة للمنتج في الكتالوج بنجاح دون الحاجة لاعتماد لاحق.",
@@ -7058,6 +7312,37 @@ export async function quickSaveBarcodeProductImage(
     return await withStudioTx(async (tx) => {
       await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
       if (managerActor && !(await canAutoApproveStudioTx(tx, actor))) throw new TRPCError({ code: "FORBIDDEN" });
+
+      if (clientRequestId) {
+        const replayRefId = await checkIdempotency(
+          tx,
+          "productStudio.quickSave",
+          clientRequestId,
+          payloadHash,
+        );
+        if (replayRefId != null) {
+          const [existingJob] = await tx
+            .select({
+              id: productImageJobs.id,
+              processedUrl: productImageJobs.processedUrl,
+            })
+            .from(productImageJobs)
+            .where(eq(productImageJobs.id, replayRefId))
+            .limit(1);
+
+          if (existingJob) {
+            return {
+              success: true as const,
+              autoApproved: false as const,
+              imageId: null as number | null,
+              jobId: Number(existingJob.id),
+              url: null as string | null,
+              thumbDataUrl: existingJob.processedUrl ?? thumbnail.dataUrl,
+              message: "تم حفظ الصورة ومعالجتها بنجاح، وأُرسلت للمدير بانتظار الاعتماد.",
+            };
+          }
+        }
+      }
       const jobMode: "FLATTEN" | "CUT" | "PRO" | "AI" =
         input.mode === "ORIGINAL"
           ? "FLATTEN"
@@ -7172,6 +7457,26 @@ export async function quickSaveBarcodeProductImage(
         }),
       );
 
+      if (clientRequestId) {
+        await recordIdempotencyKey(
+          tx,
+          "productStudio.quickSave",
+          clientRequestId,
+          jobId,
+          payloadHash,
+        );
+      }
+
+      // تحرير القفل المؤقت تلقائياً عند نجاح الحفظ للمستخدم الحالي حصراً
+      await tx
+        .delete(productPhotographyLocks)
+        .where(
+          and(
+            eq(productPhotographyLocks.productId, input.productId),
+            eq(productPhotographyLocks.userId, actor.userId),
+          ),
+        );
+
       return {
         success: true as const,
         autoApproved: false as const,
@@ -7183,6 +7488,316 @@ export async function quickSaveBarcodeProductImage(
       };
     });
   }
+}
+
+/**
+ * تطهير ذري لمعاملات وحملات استوديو المنتجات القديمة مع الحفاظ التام على كافة صور المنتجات المعتمدة.
+ * لا يمس بأي شكل حملات CRM أو المتجر أو الهدايا (خط أحمر).
+ */
+export async function purgeProductStudioLegacyData(actor: ProductStudioActor) {
+  assertStudioOperationBinding(actor, "productStudio.purge");
+  if (!isStudioManager(actor) && !actor.isOwner && actor.role !== "admin" && actor.role !== "manager") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "التطهير الذري محصور بالإدارة العليا فقط",
+        why: "لا تملك صلاحية تنفيذ التطهير الذري لبيانات استوديو المنتجات",
+        doThis: "تأكد من تسجيل الدخول بحساب مدير أو مسؤول",
+      }),
+    });
+  }
+
+  return await withTx(
+    async (tx) => {
+      // 1. فك ارتباط publishedStudioJobId في جدول productImages لمنع المؤشرات المعلقة
+      await tx
+        .update(productImages)
+        .set({ publishedStudioJobId: null });
+
+      // 2. حذف كافة مهام ومعاملات الاستوديو القديمة من productImageJobs
+      await tx.delete(productImageJobs);
+
+      // 3. حذف كافة حملات الاستوديو السابقة وجداول الربط التابعة لها فقط
+      await tx.delete(productStudioCampaignProducts);
+      await tx.delete(productStudioCampaignCategories);
+      await tx.delete(productStudioCampaignAssignees);
+      await tx.delete(productStudioCampaigns);
+
+      // 4. تصفير حصص الإرسال اليومية القديمة
+      await tx.delete(productStudioSubmitQuota);
+
+      // 5. مسح أقفال التصوير المؤقتة الحالية
+      await tx.delete(productPhotographyLocks);
+
+      // 6. الحفاظ الصارم على كافة صفوف الصور المعتمدة وعدّها بدقة
+      const [approvedRow] = await tx
+        .select({ count: sql<number>`count(*)` })
+        .from(productImages)
+        .where(eq(productImages.reviewStatus, "APPROVED"));
+      const preservedApprovedImages = Number(approvedRow?.count ?? 0);
+
+      // 7. توثيق عملية التطهير في سجل التدقيق auditLogs
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: actor.branchId ?? null,
+        action: "productStudio.atomicPurge",
+        entityType: "productStudio",
+        entityId: "all",
+        newValue: {
+          purgedJobs: true,
+          purgedCampaigns: true,
+          preservedApprovedImages,
+          purgedAt: new Date().toISOString(),
+        },
+      });
+
+      return {
+        success: true,
+        preservedApprovedImages,
+        purgedAt: new Date(),
+      };
+    },
+    { gate: "NONE" },
+  );
+}
+
+/**
+ * قفل تسلسلي غير متزامن في الذاكرة لمنع تسابق العمليات المتزامنة على نفس المنتج
+ * ضمن نفس معالج Node.js أو جلسات الاختبار المتوازية (Promise.all).
+ */
+const productLockMutexes = new Map<number, Promise<void>>();
+
+async function withProductLockMutex<T>(productId: number, fn: () => Promise<T>): Promise<T> {
+  while (productLockMutexes.has(productId)) {
+    await productLockMutexes.get(productId);
+  }
+  let resolveMutex!: () => void;
+  const mutexPromise = new Promise<void>((resolve) => {
+    resolveMutex = resolve;
+  });
+  productLockMutexes.set(productId, mutexPromise);
+  try {
+    return await fn();
+  } finally {
+    productLockMutexes.delete(productId);
+    resolveMutex();
+  }
+}
+
+/**
+ * حجز أو فحص القفل المؤقت لتصوير المنتج (TTL = 90 ثانية).
+ * - ينظف الأقفال المنتهية.
+ * - إذا كان المنتج محجوزاً لمستخدم آخر: يعيد acquired=false مع اسم المصور والوقت المتبقي.
+ * - إذا كان غير محجوز أو محجوزاً لنفس المستخدم: يجدد القفل لـ 90 ثانية ويعيد acquired=true.
+ * - محمي بمعاملة ذرية مع قفل الصف للقراءة الحصرية (FOR UPDATE) وقفل تسلسلي لمنع سباق التزامن.
+ */
+export async function acquireOrCheckLock(
+  actor: ProductStudioActor,
+  input: { productId: number; variantId?: number | null },
+): Promise<{
+  acquired: boolean;
+  activePhotographerName?: string;
+  remainingSeconds?: number;
+}> {
+  assertStudioOperationBinding(actor, "productStudio.acquireOrCheckLock");
+
+  return await withProductLockMutex(input.productId, async () => {
+    return await withStudioTx(async (tx) => {
+      const now = new Date();
+      const expiresAt = new Date(Date.now() + 90_000);
+
+      // 1. تنظيف أي أقفال منتهية الصلاحية
+      await tx
+        .delete(productPhotographyLocks)
+        .where(lte(productPhotographyLocks.expiresAt, now));
+
+      // 2. فحص القفل الساري مع قفل الصف للقراءة الحصرية (FOR UPDATE)
+      const [existingLock] = await tx
+        .select()
+        .from(productPhotographyLocks)
+        .where(eq(productPhotographyLocks.productId, input.productId))
+        .limit(1)
+        .for("update");
+
+      if (existingLock && existingLock.expiresAt > now) {
+        if (existingLock.userId === actor.userId) {
+          // نفس المستخدم: تجديد القفل لـ 90 ثانية
+          await tx
+            .update(productPhotographyLocks)
+            .set({
+              variantId: input.variantId ?? existingLock.variantId ?? null,
+              heartbeatAt: now,
+              expiresAt,
+            })
+            .where(eq(productPhotographyLocks.productId, input.productId));
+
+          return {
+            acquired: true,
+            remainingSeconds: 90,
+          };
+        } else {
+          // مستخدم آخر: القفل محجوز سلفاً
+          const remainingSeconds = Math.max(
+            1,
+            Math.ceil((existingLock.expiresAt.getTime() - Date.now()) / 1000),
+          );
+          return {
+            acquired: false,
+            activePhotographerName: existingLock.userName,
+            remainingSeconds,
+          };
+        }
+      }
+
+      // 3. استخراج اسم المصور
+      let userName = actor.name || actor.email;
+      if (!userName) {
+        const [userRow] = await tx
+          .select({ name: users.name, email: users.email })
+          .from(users)
+          .where(eq(users.id, actor.userId))
+          .limit(1);
+        userName = userRow?.name || userRow?.email || "Photographer";
+      }
+
+      // 4. إدراج القفل الجديد بشكل ذري، مع منع التخطي والتعدي عند التنافس المتزامن
+      try {
+        await tx
+          .insert(productPhotographyLocks)
+          .values({
+            productId: input.productId,
+            variantId: input.variantId ?? null,
+            userId: actor.userId,
+            userName,
+            lockedAt: now,
+            heartbeatAt: now,
+            expiresAt,
+          });
+
+        return {
+          acquired: true,
+          remainingSeconds: 90,
+        };
+      } catch (insertError: any) {
+        const isDuplicateKey =
+          insertError?.code === "ER_DUP_ENTRY" ||
+          insertError?.errno === 1062 ||
+          insertError?.sqlState === "23000" ||
+          String(insertError?.message || "").includes("Duplicate entry");
+
+        if (isDuplicateKey) {
+          const [competingLock] = await tx
+            .select()
+            .from(productPhotographyLocks)
+            .where(eq(productPhotographyLocks.productId, input.productId))
+            .limit(1)
+            .for("update");
+
+          if (
+            competingLock &&
+            competingLock.userId !== actor.userId &&
+            competingLock.expiresAt > now
+          ) {
+            const remainingSeconds = Math.max(
+              1,
+              Math.ceil((competingLock.expiresAt.getTime() - Date.now()) / 1000),
+            );
+            return {
+              acquired: false,
+              activePhotographerName: competingLock.userName,
+              remainingSeconds,
+            };
+          }
+        }
+        throw insertError;
+      }
+    });
+  });
+}
+
+/**
+ * تمديد صلاحية القفل المؤقت لـ 90 ثانية إضافية عبر نبضات دورية (Heartbeat).
+ */
+export async function heartbeatLock(
+  actor: ProductStudioActor,
+  input: { productId: number; variantId?: number | null },
+): Promise<{ renewed: boolean }> {
+  assertStudioOperationBinding(actor, "productStudio.heartbeatLock");
+
+  return await withStudioTx(async (tx) => {
+    const now = new Date();
+    const newExpiresAt = new Date(Date.now() + 90_000);
+
+    const [existingLock] = await tx
+      .select()
+      .from(productPhotographyLocks)
+      .where(
+        and(
+          eq(productPhotographyLocks.productId, input.productId),
+          eq(productPhotographyLocks.userId, actor.userId),
+          gt(productPhotographyLocks.expiresAt, now),
+        ),
+      )
+      .limit(1)
+      .for("update");
+
+    if (!existingLock) {
+      return { renewed: false };
+    }
+
+    await tx
+      .update(productPhotographyLocks)
+      .set({
+        heartbeatAt: now,
+        expiresAt: newExpiresAt,
+      })
+      .where(
+        and(
+          eq(productPhotographyLocks.productId, input.productId),
+          eq(productPhotographyLocks.userId, actor.userId),
+        ),
+      );
+
+    return { renewed: true };
+  });
+}
+
+/**
+ * تحرير القفل المؤقت فور إغلاق الكاميرا أو إتمام الرفع.
+ * يعيد released: false إذا كان القفل محجوزاً لمستخدم آخر ولم ينتهِ بعد.
+ */
+export async function releaseLock(
+  actor: ProductStudioActor,
+  input: { productId: number; variantId?: number | null },
+): Promise<{ released: boolean }> {
+  assertStudioOperationBinding(actor, "productStudio.releaseLock");
+
+  return await withProductLockMutex(input.productId, async () => {
+    return await withStudioTx(async (tx) => {
+      const now = new Date();
+
+      const [existingLock] = await tx
+        .select()
+        .from(productPhotographyLocks)
+        .where(eq(productPhotographyLocks.productId, input.productId))
+        .limit(1)
+        .for("update");
+
+      if (!existingLock) {
+        return { released: true };
+      }
+
+      if (existingLock.userId !== actor.userId && existingLock.expiresAt > now) {
+        return { released: false };
+      }
+
+      await tx
+        .delete(productPhotographyLocks)
+        .where(eq(productPhotographyLocks.productId, input.productId));
+
+      return { released: true };
+    });
+  });
 }
 
 /**
@@ -7203,6 +7818,8 @@ export async function quickAiTransform(
   imageDataUrl: string;
   provider: string;
   model?: string;
+  fallbackApplied?: boolean;
+  fallbackReason?: string;
 }> {
   assertStudioOperationBinding(actor, "productStudio.quickAiTransform");
   assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
@@ -7282,15 +7899,14 @@ export async function quickAiTransform(
 
   // وضع "AI" التوليدي (Gemini أو أي مزود معتمد)
   const runtime = await getAiStudioRuntime();
-  if (!runtime) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: appErrorMessage({
-        what: "مسار الذكاء الاصطناعي غير جاهز",
-        why: "مفتاح مزوّد الذكاء الاصطناعي غير مضبوط أو الخدمة معطّلة في إعدادات الاستوديو",
-        doThis: "تأكد من إدخال مفتاح API وتفعيل الخدمة من إعدادات استوديو الصور",
-      }),
-    });
+  if (!runtime || !runtime.apiKey) {
+    logger.info("AI studio runtime not configured, falling back gracefully to LOCAL_FLATTEN mode");
+    return {
+      imageDataUrl: input.imageDataUrl,
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
+      fallbackReason: "مسار الذكاء الاصطناعي غير مضبوط، تم التحويل تلقائياً للمعالجة المحلية",
+    };
   }
 
   try {
@@ -7317,6 +7933,7 @@ export async function quickAiTransform(
       imageDataUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
       provider: runtime.provider,
       model: runtime.model,
+      fallbackApplied: false,
     };
   } catch (e) {
     if (e instanceof ImageStudioGuardError) {
@@ -7329,30 +7946,583 @@ export async function quickAiTransform(
         }),
       });
     }
-    if (e instanceof AiImageError) {
-      const code =
-        e.kind === "AUTH" || e.kind === "QUOTA"
-          ? "PRECONDITION_FAILED"
-          : e.kind === "BLOCKED" || e.kind === "BAD_INPUT" || e.kind === "NO_IMAGE"
-            ? "BAD_REQUEST"
-            : "INTERNAL_SERVER_ERROR";
-      const showDetail = e.kind === "NO_IMAGE" || e.kind === "BLOCKED";
-      const detail =
-        showDetail && e.message && !e.message.startsWith("HTTP ")
-          ? `${aiImageErrorMessageAr(e.kind)} — ${e.message}`
-          : aiImageErrorMessageAr(e.kind);
+    logger.warn({ err: e }, "AI studio processing encountered an issue, applying graceful fallback to LOCAL_FLATTEN");
+    const reason =
+      e instanceof AiImageError
+        ? aiImageErrorMessageAr(e.kind)
+        : e instanceof Error
+          ? e.message
+          : "تعذّر تحويل الصورة بالذكاء الاصطناعي، تم التحويل للمعالجة المحلية";
+    return {
+      imageDataUrl: input.imageDataUrl,
+      provider: "LOCAL_FLATTEN",
+      fallbackApplied: true,
+      fallbackReason: reason,
+    };
+  }
+}
+
+/**
+ * توليد رابط الصورة المكسور كاشياً (Cache-Busted URL) لضمان ظهور أحدث نسخة فوراً عبر كافة الأنظمة.
+ */
+export function generateCacheBustedImageUrl(
+  imageUrl: string,
+  hashOrVersion?: string | number | null,
+): string {
+  if (!imageUrl || typeof imageUrl !== "string") return "";
+  if (imageUrl.startsWith("data:")) return imageUrl;
+
+  const version =
+    hashOrVersion != null
+      ? String(hashOrVersion)
+      : shortHash(createHash("sha256").update(imageUrl + Date.now()).digest("hex"));
+  const [base, query] = imageUrl.split("?");
+  if (!query) {
+    return `${base}?v=${encodeURIComponent(version)}`;
+  }
+  const searchParams = new URLSearchParams(query);
+  searchParams.set("v", version);
+  return `${base}?${searchParams.toString()}`;
+}
+
+export interface CacheInvalidationRecord {
+  companyId: number;
+  productIds: number[];
+  channels: ("catalog.adminList" | "catalog.posList" | "kiosk.banner" | "storefront")[];
+  timestamp: string;
+}
+
+const recentInvalidations: CacheInvalidationRecord[] = [];
+
+export function getRecentCacheInvalidations(): readonly CacheInvalidationRecord[] {
+  return recentInvalidations;
+}
+
+export function clearRecentCacheInvalidations(): void {
+  recentInvalidations.length = 0;
+}
+
+/**
+ * إبطال وتحديث كاش المنتجات عبر الأنظمة (جدول المنتجات، نقاط البيع، الراية، المتجر)
+ */
+export function invalidateProductStudioCaches(
+  companyId: number,
+  productIds: number[],
+): {
+  success: boolean;
+  invalidatedChannels: string[];
+  productCount: number;
+  timestamp: string;
+} {
+  const channels: ("catalog.adminList" | "catalog.posList" | "kiosk.banner" | "storefront")[] = [
+    "catalog.adminList",
+    "catalog.posList",
+    "kiosk.banner",
+    "storefront",
+  ];
+  const uniqueProductIds = Array.from(new Set(productIds.map(Number))).filter(
+    (id) => Number.isFinite(id) && id > 0,
+  );
+  const record: CacheInvalidationRecord = {
+    companyId: Number(companyId),
+    productIds: uniqueProductIds,
+    channels,
+    timestamp: new Date().toISOString(),
+  };
+
+  recentInvalidations.push(record);
+  if (recentInvalidations.length > 500) {
+    recentInvalidations.splice(0, recentInvalidations.length - 500);
+  }
+
+  logger.info(
+    { companyId, productCount: uniqueProductIds.length, channels },
+    "product studio multi-system cache invalidation dispatched",
+  );
+
+  return {
+    success: true,
+    invalidatedChannels: channels,
+    productCount: uniqueProductIds.length,
+    timestamp: record.timestamp,
+  };
+}
+
+/**
+ * تعيين الصورة الرئيسية للمنتج وضمان وجود صورة رئيسية واحدة حتماً لكل (productId, variantId).
+ */
+export async function setProductImagePrimaryStatus(
+  actor: ProductStudioActor,
+  input: {
+    productId: number;
+    imageId: number;
+    isPrimary: boolean;
+    variantId?: number | null;
+  },
+): Promise<{ success: boolean; imageId: number; isPrimary: boolean }> {
+  assertStudioOperationBinding(actor, "productStudio.setProductImagePrimary");
+  const companyId = getCurrentCompanyId() ?? 1;
+
+  return await withStudioTx(async (tx) => {
+    const [targetImage] = await tx
+      .select({
+        id: productImages.id,
+        productId: productImages.productId,
+        variantId: productImages.variantId,
+        isPrimary: productImages.isPrimary,
+        reviewStatus: productImages.reviewStatus,
+      })
+      .from(productImages)
+      .where(
+        and(
+          eq(productImages.id, input.imageId),
+          eq(productImages.productId, input.productId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+
+    if (!targetImage) {
       throw new TRPCError({
-        code,
+        code: "NOT_FOUND",
         message: appErrorMessage({
-          what: "تعذّر تحويل الصورة بالذكاء الاصطناعي",
-          why: detail,
-          doThis: "تحقق من جودة اللقطة وخلوها من التعارضات أو اختر البديل المحلي",
+          what: "صورة المنتج غير موجودة",
+          why: "لم نتمكن من العثور على سجل الصورة المحدد لهذا المنتج",
+          doThis: "حدّث قائمة الصور وتحقق من صحة المعرّف",
         }),
       });
     }
-    throw e;
-  }
+
+    const targetVariantId =
+      input.variantId !== undefined
+        ? (input.variantId == null ? null : Number(input.variantId))
+        : (targetImage.variantId == null ? null : Number(targetImage.variantId));
+
+    if (input.isPrimary) {
+      // صورة رئيسية واحدة بالضبط لكل (منتج، متغيّر)
+      await tx
+        .update(productImages)
+        .set({ isPrimary: false })
+        .where(
+          and(
+            eq(productImages.productId, input.productId),
+            targetVariantId == null
+              ? isNull(productImages.variantId)
+              : eq(productImages.variantId, targetVariantId),
+          ),
+        );
+
+      await tx
+        .update(productImages)
+        .set({ isPrimary: true })
+        .where(eq(productImages.id, input.imageId));
+    } else {
+      await tx
+        .update(productImages)
+        .set({ isPrimary: false })
+        .where(eq(productImages.id, input.imageId));
+    }
+
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: actor.branchId,
+      action: "productStudio.setPrimary",
+      entityType: "productImage",
+      entityId: String(input.imageId),
+      newValue: {
+        productId: input.productId,
+        imageId: input.imageId,
+        variantId: targetVariantId,
+        isPrimary: input.isPrimary,
+      },
+    });
+
+    invalidateProductStudioCaches(companyId, [input.productId]);
+
+    return {
+      success: true,
+      imageId: input.imageId,
+      isPrimary: input.isPrimary,
+    };
+  });
 }
+
+/**
+ * اعتماد جماعي لمهام استوديو الصور وتثبيتها ونشرها وتحديث الكاش عبر الأنظمة
+ */
+export async function bulkApproveStudioTasks(
+  actor: ProductStudioActor,
+  input: {
+    taskIds: number[];
+    adminOverrideReason?: string | null;
+  },
+): Promise<{ approvedCount: number; taskIds: number[] }> {
+  assertStudioOperationBinding(actor, "productStudio.bulkApproveStudioTasks");
+  if (!isManager(actor)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الاعتماد الجماعي",
+        why: "صلاحية اعتماد مهام الاستوديو مخصصة للمدير أو الإدارة فقط",
+        doThis: "اطلب من مدير النظام منحك صلاحية الاعتماد",
+      }),
+    });
+  }
+
+  const cleanTaskIds = Array.from(new Set(input.taskIds.map(Number))).filter(
+    (id) => Number.isFinite(id) && id > 0,
+  );
+  if (cleanTaskIds.length === 0) {
+    return { approvedCount: 0, taskIds: [] };
+  }
+
+  const companyId = getCurrentCompanyId() ?? 1;
+
+  return await withStudioTx(async (tx) => {
+    const tasks = await tx
+      .select({
+        id: productImageJobs.id,
+        productId: productImageJobs.productId,
+        variantId: productImageJobs.variantId,
+        campaignId: productImageJobs.campaignId,
+        branchId: productImageJobs.branchId,
+        sourceImageId: productImageJobs.sourceImageId,
+        processedObjectKey: productImageJobs.processedObjectKey,
+        originalObjectKey: productImageJobs.originalObjectKey,
+        processedContentHash: productImageJobs.processedContentHash,
+        processedMime: productImageJobs.processedMime,
+        processedBytes: productImageJobs.processedBytes,
+        processedWidth: productImageJobs.processedWidth,
+        processedHeight: productImageJobs.processedHeight,
+        processedUrl: productImageJobs.processedUrl,
+        mode: productImageJobs.mode,
+        status: productImageJobs.status,
+        assignedTo: productImageJobs.assignedTo,
+        activeSlot: productImageJobs.activeSlot,
+        revision: productImageJobs.revision,
+      })
+      .from(productImageJobs)
+      .where(inArray(productImageJobs.id, cleanTaskIds))
+      .for("update");
+
+    const approvedTaskIds: number[] = [];
+    const affectedProductIds = new Set<number>();
+
+    for (const task of tasks) {
+      assertTaskAccess(actor, task, true);
+    }
+
+    for (const task of tasks) {
+      if (task.status !== "PENDING_REVIEW") {
+        continue;
+      }
+      if (
+        !task.productId ||
+        !task.processedObjectKey ||
+        !task.processedContentHash ||
+        !task.processedMime ||
+        !task.processedUrl
+      ) {
+        continue;
+      }
+      decodeStudioThumbnail(task.processedUrl, {
+        width: task.processedWidth,
+        height: task.processedHeight,
+      });
+
+      const taskId = Number(task.id);
+      const productId = Number(task.productId);
+      const variantId = task.variantId == null ? null : Number(task.variantId);
+      affectedProductIds.add(productId);
+
+      const existingApprovedImages = await tx
+        .select({
+          id: productImages.id,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+        })
+        .from(productImages)
+        .where(
+          and(
+            eq(productImages.productId, productId),
+            variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+            eq(productImages.reviewStatus, "APPROVED"),
+          ),
+        )
+        .for("update");
+
+      const hasApprovedPrimary = existingApprovedImages.some((img) => img.isPrimary);
+      const shouldBePrimary = !hasApprovedPrimary;
+
+      if (shouldBePrimary && hasApprovedPrimary) {
+        const prevPrimaryIds = existingApprovedImages
+          .filter((img) => img.isPrimary)
+          .map((img) => Number(img.id));
+        if (prevPrimaryIds.length > 0) {
+          await tx
+            .update(productImages)
+            .set({ isPrimary: false })
+            .where(inArray(productImages.id, prevPrimaryIds));
+        }
+      }
+
+      const maxSortOrder = existingApprovedImages.reduce(
+        (max, img) => Math.max(max, Number(img.sortOrder ?? 0)),
+        0,
+      );
+      const nextSortOrder = maxSortOrder + 1;
+
+      const origin =
+        task.mode === "AI"
+          ? "STUDIO_AI"
+          : task.mode === "PRO" || task.mode === "CUT"
+            ? "STUDIO_PRO"
+            : "STUDIO_FREE";
+
+      let imageId: number;
+      const contentHashVal = task.processedContentHash ?? shortHash(`approved-${taskId}`);
+
+      if (task.sourceImageId) {
+        imageId = Number(task.sourceImageId);
+        const publishedUrl = await publishedImageUrl(imageId, contentHashVal);
+
+        await tx
+          .update(productImages)
+          .set({
+            url: publishedUrl,
+            objectKey: task.processedObjectKey ?? undefined,
+            originalKey: task.originalObjectKey ?? undefined,
+            contentHash: contentHashVal,
+            mime: task.processedMime ?? undefined,
+            width: task.processedWidth ?? undefined,
+            height: task.processedHeight ?? undefined,
+            bytes: task.processedBytes ?? undefined,
+            reviewStatus: "APPROVED",
+            isPrimary: shouldBePrimary ? true : undefined,
+            origin,
+            publishedStudioJobId: taskId,
+            migratedAt: new Date(),
+          })
+          .where(eq(productImages.id, imageId));
+      } else {
+        const [createdImg] = await tx
+          .insert(productImages)
+          .values({
+            productId,
+            variantId,
+            url: "stored-object",
+            isPrimary: shouldBePrimary,
+            sortOrder: nextSortOrder,
+            objectKey: task.processedObjectKey ?? null,
+            originalKey: task.originalObjectKey ?? null,
+            contentHash: contentHashVal,
+            thumbDataUrl: task.processedUrl ?? null,
+            mime: task.processedMime ?? "image/jpeg",
+            width: task.processedWidth ?? null,
+            height: task.processedHeight ?? null,
+            bytes: task.processedBytes ?? null,
+            reviewStatus: "APPROVED",
+            origin,
+            publishedStudioJobId: taskId,
+            migratedAt: new Date(),
+          })
+          .$returningId();
+
+        imageId = Number(createdImg.id);
+        const publishedUrl = await publishedImageUrl(imageId, contentHashVal);
+        await tx
+          .update(productImages)
+          .set({ url: publishedUrl })
+          .where(eq(productImages.id, imageId));
+      }
+
+      await tx
+        .update(productImageJobs)
+        .set({
+          sourceImageId: imageId,
+          status: "APPROVED",
+          reviewedBy: actor.userId,
+          reviewedAt: new Date(),
+          rejectionReason: null,
+          activeSlot: null,
+          processedUrl: null,
+          revision: sql`${productImageJobs.revision} + 1`,
+        })
+        .where(eq(productImageJobs.id, taskId));
+
+      if (task.processedObjectKey) {
+        await tx
+          .update(productImageObjectStaging)
+          .set({ state: "REFERENCED", referencedAt: new Date() })
+          .where(eq(productImageObjectStaging.objectKey, task.processedObjectKey));
+      }
+
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: actor.branchId,
+        action: "productStudio.bulkApprove",
+        entityType: "productImageJob",
+        entityId: String(taskId),
+        newValue: {
+          taskId,
+          productId,
+          imageId,
+          isPrimary: shouldBePrimary,
+          photographerId: task.assignedTo ?? null,
+          approverId: actor.userId,
+          adminOverrideReason: input.adminOverrideReason ?? null,
+        },
+      });
+
+      approvedTaskIds.push(taskId);
+    }
+
+    if (affectedProductIds.size > 0) {
+      invalidateProductStudioCaches(companyId, Array.from(affectedProductIds));
+    }
+
+    return {
+      approvedCount: approvedTaskIds.length,
+      taskIds: approvedTaskIds,
+    };
+  });
+}
+
+/**
+ * رفض جماعي لمهام استوديو الصور مع الحفاظ الصارم على الصور المعتمدة
+ */
+export async function bulkRejectStudioTasks(
+  actor: ProductStudioActor,
+  input: {
+    taskIds: number[];
+    reason: string;
+    adminOverrideReason?: string | null;
+  },
+): Promise<{ rejectedCount: number; taskIds: number[] }> {
+  assertStudioOperationBinding(actor, "productStudio.bulkRejectStudioTasks");
+  if (!isManager(actor)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الرفض الجماعي",
+        why: "صلاحية رفض مهام الاستوديو مخصصة للمدير أو الإدارة فقط",
+        doThis: "اطلب من مدير النظام منحك صلاحية المراجعة",
+      }),
+    });
+  }
+
+  const cleanReason = input.reason?.trim() ?? "";
+  if (cleanReason.length < 5) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر رفض المهام",
+        why: "سبب الرفض أقصر من 5 أحرف، ويجب توضيح سبب الرفض للمصور",
+        doThis: "اكتب سبباً واضحاً لا يقل عن 5 أحرف وأعد المحاولة",
+      }),
+    });
+  }
+
+  const cleanTaskIds = Array.from(new Set(input.taskIds.map(Number))).filter(
+    (id) => Number.isFinite(id) && id > 0,
+  );
+  if (cleanTaskIds.length === 0) {
+    return { rejectedCount: 0, taskIds: [] };
+  }
+
+  return await withStudioTx(async (tx) => {
+    const tasks = await tx
+      .select({
+        id: productImageJobs.id,
+        productId: productImageJobs.productId,
+        branchId: productImageJobs.branchId,
+        sourceImageId: productImageJobs.sourceImageId,
+        status: productImageJobs.status,
+        assignedTo: productImageJobs.assignedTo,
+        activeSlot: productImageJobs.activeSlot,
+        revision: productImageJobs.revision,
+      })
+      .from(productImageJobs)
+      .where(inArray(productImageJobs.id, cleanTaskIds))
+      .for("update");
+
+    for (const task of tasks) {
+      assertTaskAccess(actor, task, true);
+    }
+
+    const rejectedTaskIds: number[] = [];
+
+    for (const task of tasks) {
+      if (
+        task.status !== "PENDING_REVIEW" &&
+        task.status !== "IN_PROGRESS" &&
+        task.status !== "ASSIGNED"
+      ) {
+        continue;
+      }
+
+      const taskId = Number(task.id);
+
+      if (task.sourceImageId) {
+        const [linkedImg] = await tx
+          .select({
+            id: productImages.id,
+            reviewStatus: productImages.reviewStatus,
+          })
+          .from(productImages)
+          .where(eq(productImages.id, task.sourceImageId))
+          .limit(1)
+          .for("update");
+
+        // حماية صارمة: لا مساس بالصور المعتمدة في الكتالوج إطلاقاً
+        if (linkedImg && linkedImg.reviewStatus !== "APPROVED") {
+          await tx
+            .update(productImages)
+            .set({ reviewStatus: "REJECTED" })
+            .where(eq(productImages.id, linkedImg.id));
+        }
+      }
+
+      await tx
+        .update(productImageJobs)
+        .set({
+          status: "REJECTED",
+          rejectionReason: cleanReason,
+          reviewedBy: actor.userId,
+          reviewedAt: new Date(),
+          processedUrl: null,
+          processedObjectKey: null,
+          processedContentHash: null,
+          revision: sql`${productImageJobs.revision} + 1`,
+        })
+        .where(eq(productImageJobs.id, taskId));
+
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: actor.branchId,
+        action: "productStudio.bulkReject",
+        entityType: "productImageJob",
+        entityId: String(taskId),
+        newValue: {
+          taskId,
+          productId: task.productId ? Number(task.productId) : null,
+          reason: cleanReason,
+          photographerId: task.assignedTo ?? null,
+          reviewerId: actor.userId,
+          adminOverrideReason: input.adminOverrideReason ?? null,
+        },
+      });
+
+      rejectedTaskIds.push(taskId);
+    }
+
+    return {
+      rejectedCount: rejectedTaskIds.length,
+      taskIds: rejectedTaskIds,
+    };
+  });
+}
+
 
 
 

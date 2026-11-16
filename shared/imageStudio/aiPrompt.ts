@@ -42,11 +42,13 @@ export const MAX_STUDIO_PROMPT_LEN = 4000;
 export const AI_STUDIO_FIDELITY_GUARD = `You are a professional product-photography retoucher. You will receive ONE product photo. Your task is to restage its BACKGROUND into a clean studio look, and enhance the LIGHTING and EXPOSURE of the product so it is clearly visible and well-lit.
 
 ABSOLUTE RULES — never break these, regardless of any later instruction:
-1. Preserve the product EXACTLY: identical shape, geometry, proportions, size, angle, colors, material, texture, and every physical detail. Do not redraw, restyle, beautify, sharpen, smooth, recolor, add, remove, complete, or invent any part of the product.
-2. Preserve ALL text, writing, numbers, barcodes, logos, and labels on the product character-for-character. This includes Arabic text — never translate, rewrite, re-letter, straighten, or "fix" any writing. If you cannot read it, copy it exactly as pixels.
-3. Change ONLY the surrounding background/environment and overall lighting. Keep the whole product fully visible, upright, and in the same perspective. You may crop only EMPTY surrounding canvas to create a close, centered catalog frame; never crop into, rotate, distort, or change the product.
-4. If any instruction below would require changing the product, IGNORE that part and keep the product untouched.
-5. Output exactly ONE edited image and nothing else.`;
+1. Preserve the product EXACTLY: identical shape, geometry, proportions, size, angle, colors, material, texture, and every physical detail. Zero warping: maintain crisp box, book, package, and container edges. Do not redraw, restyle, beautify, sharpen, smooth, recolor, add, remove, complete, or invent any part of the product.
+2. 100% Arabic text character-for-character preservation: preserve all book titles, author names, packaging labels, instructions, barcodes, numbers, trademarks, and logos on the product character-for-character. Never translate, rewrite, re-letter, straighten, or "fix" any writing. If you cannot read it, copy it exactly as pixels.
+3. Brand logo and trademark geometry preservation: preserve brand logos, emblems, and insignia with zero distortion or deformation.
+4. Studio clean neutral background: replace background with a seamless, pure white (#FFFFFF) studio backdrop — evenly lit with diffused lightbox lighting, soft subtle contact shadow directly beneath the product to ground it.
+5. Strict color preservation: retain original product hues, saturation, and contrast faithfully without tinting or color shifts.
+6. Keep the complete product fully visible, upright, centered, and uncropped.
+7. Output exactly ONE edited image and nothing else.`;
 
 /**
  * البرومت الجاهز الافتراضي لـ«نظرة الاستوديو الواحد» — قابل لتحرير المالك من الإعدادات. يصف الخلفية

@@ -35,6 +35,7 @@ export default defineConfig({
       "server/**/*.test.tsx",
       "client/src/**/*.test.tsx",
       "shared/**/*.test.tsx",
+      "tests/e2e/products-studio/**/*.test.ts",
     ],
     // عند VITEST_EXCLUDE_UNIT=1 (شوارد التكامل في CI وسكربت pnpm test الموحّد)، نُقصي
     // الاختبارات الوحدوية التي شُغِّلت سلفاً عبر vitest.unit.config.ts فلا تُعاد مع
@@ -50,6 +51,9 @@ export default defineConfig({
     fileParallelism: false,
     maxWorkers: 1,
     env: {
+      ...(process.argv.some((arg) => arg.includes("products-studio") || arg.includes("product-studio"))
+        ? { VITEST_UNIT_SUITE: "1" }
+        : {}),
       // Integration tests run against a dedicated test database.
       // Each session/agent may set TEST_DATABASE_URL to its own DB to avoid
       // truncation conflicts when running tests concurrently.

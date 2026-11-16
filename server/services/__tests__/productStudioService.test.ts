@@ -3182,7 +3182,7 @@ describe("product studio governed workflow", () => {
       openId: "studio-plain",
       name: "كاشير بلا صلاحية",
       role: "cashier",
-      permissionsOverride: { sales: "NONE" },
+      permissionsOverride: { productStudio: "NONE", sales: "NONE" },
       branchId: 1,
       isActive: true,
     }).$returningId();

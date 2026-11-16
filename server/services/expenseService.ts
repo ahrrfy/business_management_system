@@ -2,7 +2,6 @@ import { lockEconomicInventoryScope, readEconomicVariant } from "./inventory/eco
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
-import { isOperatingSupplyStockUsage } from "@shared/stockUsage";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -578,7 +577,6 @@ async function createStockExpenseTx(
     isBundle: boolean | null;
     isConsignment: boolean | null;
     productType: string | null;
-    stockUsage: typeof products.$inferSelect["stockUsage"];
   };
   const typedExisting = existing as VarLookupRow[];
   const existByVar = new Map<number, VarLookupRow>(typedExisting.map((v) => [Number(v.id), v]));
@@ -601,7 +599,6 @@ async function createStockExpenseTx(
           isBundle: products.isBundle,
           isConsignment: products.isConsignment,
           productType: products.productType,
-          stockUsage: products.stockUsage,
         })
         .from(products)
         .where(inArray(products.id, productIds))
@@ -618,17 +615,7 @@ async function createStockExpenseTx(
         message: appErrorMessage({
           what: `تعذّر صرف «${p?.name ?? `#${id}`}» كمصروف مخزني`,
           why: "الصنف معطّل أو ليس مخزوناً مملوكاً (خدمة أو بكج أو أمانة)",
-          doThis: "اختر مستلزم تشغيل مخزني مملوك نشط للصرف الداخلي",
-        }),
-      });
-    }
-    if (!isOperatingSupplyStockUsage(p.stockUsage)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: `تعذّر صرف «${p.name}» كمصروف تشغيلي داخلي`,
-          why: "تصنيف استخدام الصنف ليس «مستلزم تشغيل» (مخصّص للبيع أو كمادة خام للإنتاج)",
-          doThis: "استعمل مستلزم تشغيل للصرف الداخلي، أو حدّث تصنيف استخدام الصنف إن كان مستلزماً داخلياً",
+          doThis: "اختر صنفاً مخزنياً مملوكاً ونشطاً للصرف من المخزون",
         }),
       });
     }
