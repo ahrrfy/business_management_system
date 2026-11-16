@@ -10,7 +10,7 @@ import { assertPrivateRecoveryDirectory } from "./lib/recovery-mysql.mjs";
 
 const maxSqlBytes = 2 * 1024 ** 3;
 
-function gpgForPlatform() {
+export function gpgForPlatform() {
   if (process.platform !== "win32") return {};
   const gitGpg = path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "usr", "bin", "gpg.exe");
   return existsSync(gitGpg) ? { gpg: gitGpg, msys: true } : {};

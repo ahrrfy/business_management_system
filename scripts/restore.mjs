@@ -50,6 +50,16 @@ try { parsedTarget = parseDbTarget(url); } catch (error) { fail(error.message); 
 const dbName = parsedTarget.db;
 const targetDb = dbName;
 if (!/^[A-Za-z0-9_$-]+$/.test(targetDb)) fail("اسم القاعدة في DATABASE_URL غير صالح للاستعادة الآمنة.");
+const expectedDefiners = argv.flatMap((arg, index) => arg === "--expected-definer" ? [argv[index + 1] ?? ""] : []);
+if (expectedDefiners.some(definer => !/^[A-Za-z0-9_]+@[A-Za-z0-9_.%:-]+$/.test(definer))) {
+  fail("RESTORE_DEFINER_CONFIGURATION_INVALID");
+}
+const databaseDefaults = valueOf("--database-defaults");
+const skipMigrations = flag("--skip-migrations");
+if ((flag("--database-defaults") && !/^[a-z0-9_]+:[a-z0-9_]+$/i.test(databaseDefaults ?? "")) ||
+    ((databaseDefaults || skipMigrations) && (!expectedDefiners.length || !flag("--no-backup")))) {
+  fail("RESTORE_DATABASE_DEFAULTS_INVALID");
+}
 
 const DANGEROUS_SQL_PATTERN = new RegExp(
   [
@@ -71,13 +81,14 @@ const DANGEROUS_SQL_PATTERN = new RegExp(
 
 async function validateDumpTarget() {
   const marker = head.match(/^-- ALROYA_DB_NEUTRAL_BACKUP:([^\r\n]+)$/m);
+  if (expectedDefiners.length && !marker) fail("RESTORE_NEUTRAL_DUMP_REQUIRED");
   if (marker && decodeURIComponent(marker[1]) !== targetDb) {
     fail(`النسخة تخص قاعدة «${decodeURIComponent(marker[1])}» لا القاعدة الهدف «${targetDb}».`);
   }
   let sawTargetDirective = false;
 
   const SAFE_SQL_MODE_VALUE_RE =
-    /^(?:NO_AUTO_VALUE_ON_ZERO|ONLY_FULL_GROUP_BY|STRICT_TRANS_TABLES|STRICT_ALL_TABLES|NO_ZERO_IN_DATE|NO_ZERO_DATE|ERROR_FOR_DIVISION_BY_ZERO|NO_ENGINE_SUBSTITUTION|TRADITIONAL|\s|,)*$/i;
+    /^(?:NO_AUTO_VALUE_ON_ZERO|ONLY_FULL_GROUP_BY|STRICT_TRANS_TABLES|STRICT_ALL_TABLES|NO_ZERO_IN_DATE|NO_ZERO_DATE|ERROR_FOR_DIVISION_BY_ZERO|NO_ENGINE_SUBSTITUTION|IGNORE_SPACE|TRADITIONAL|\s|,)*$/i;
   const SAFE_CHARSET_VALUE_RE = /^(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1)$/i;
   const ALLOWED_TOP_LEVEL_STMT_RE =
     /^(?:SET|USE|CREATE|DROP|ALTER|TRUNCATE|RENAME|LOCK|UNLOCK|INSERT|REPLACE|UPDATE|DELETE|START\s+TRANSACTION|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT)\b/i;
@@ -85,6 +96,13 @@ async function validateDumpTarget() {
   function inspectStatement(rawStmt, stmtLiterals = [], literalsTruncated = false, isTopLevel = true) {
     const stmt = rawStmt.replace(/\s+/g, " ").trim();
     if (!stmt) return;
+    if (expectedDefiners.length) {
+      const count = [...stmt.matchAll(/\bDEFINER\s*=/gi)].length;
+      const definers = [...stmt.matchAll(/\bDEFINER\s*=\s*`([^`]+)`\s*@\s*`([^`]+)`/gi)];
+      if (count !== definers.length || definers.some(([, user, host]) => !expectedDefiners.includes(user + "@" + host))) {
+        fail("RESTORE_DEFINER_NOT_ALLOWED");
+      }
+    }
 
     if (/^(?:DELIMITER|SYSTEM|CHARSET|SOURCE)\b|\b(?:DELIMITER)\b|\\[A-Za-z!?.]/i.test(stmt)) {
       fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
@@ -104,7 +122,7 @@ async function validateDumpTarget() {
 
     if (/\bSQL_MODE\b|@OLD_SQL_MODE\b/i.test(stmt)) {
       const isAllowedSqlModeSet =
-        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:@OLD_SQL_MODE\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?SQL_MODE\s*,\s*)?(?:@@(?:SESSION\.|LOCAL\.)?)?SQL_MODE\s*:?=\s*(?:''|@OLD_SQL_MODE|IFNULL\s*\(\s*@OLD_SQL_MODE\s*,\s*''\s*\))$/i.test(
+        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:@SAVED_SQL_MODE\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?SQL_MODE|(?:@OLD_SQL_MODE\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?SQL_MODE\s*,\s*)?(?:@@(?:SESSION\.|LOCAL\.)?)?SQL_MODE\s*:?=\s*(?:''|@OLD_SQL_MODE|@SAVED_SQL_MODE|IFNULL\s*\(\s*@OLD_SQL_MODE\s*,\s*''\s*\)))$/i.test(
           stmt,
         );
       const allLiteralsSafe =
@@ -122,7 +140,7 @@ async function validateDumpTarget() {
       )
     ) {
       const isAllowedCharsetSet =
-        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:NAMES\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARACTER\s+SET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARSET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client)\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?(?:character_set_client|character_set_results|collation_connection)|(?:@@(?:SESSION\.|LOCAL\.)?)?(?:character_set_client|character_set_connection|character_set_results|collation_connection)\s*:?=\s*(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|''|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client)))\s*$/i.test(
+        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:NAMES\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARACTER\s+SET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARSET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client|saved_cs_results|saved_col_connection)\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?(?:character_set_client|character_set_results|collation_connection)|(?:@@(?:SESSION\.|LOCAL\.)?)?(?:character_set_client|character_set_connection|character_set_results|collation_connection)\s*:?=\s*(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|''|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client|saved_cs_results|saved_col_connection)))\s*$/i.test(
           stmt,
         );
       const allCharsetLiteralsSafe =
@@ -207,7 +225,9 @@ async function validateDumpTarget() {
       }
     }
 
-    if (DANGEROUS_SQL_PATTERN.test(stmt)) {
+    // DECLARE ... HANDLER in a stored program is distinct from the HANDLER table command.
+    const executable = stmt.replace(/\b(DECLARE\s+(?:CONTINUE|EXIT))\s+HANDLER(?=\s+FOR\b)/gi, "$1");
+    if (DANGEROUS_SQL_PATTERN.test(executable)) {
       fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
     }
   }
@@ -402,6 +422,7 @@ async function validateDumpTarget() {
   if (!marker && !sawTargetDirective) fail("نسخة قديمة بلا هوية قاعدة مؤكدة؛ أعد إنشاء النسخة بالأداة الحالية.");
 }
 await validateDumpTarget();
+if (flag("--validate-only")) process.exit(0);
 
 // ── بوّابة التأكيد ──
 if (valueOf("--confirm") !== "RESTORE") {
@@ -458,8 +479,10 @@ if (!flag("--no-backup")) {
 // BC-05: الاستعادة يجب أن تُطابق النسخة تماماً ⇒ نُسقط القاعدة أولاً، وإلا تنجو جداول/صفوف أُنشئت
 // بعد تاريخ النسخة (mysqldump --add-drop-table يُسقط جداول النسخة فقط لا الجداول الأحدث منها).
 // النسخ تُنشأ بـ--databases فتُعيد إنشاء القاعدة بترميزها الأصلي. نسخة الأمان أعلاه تحمي الحالة الراهنة.
+const [charset, collation] = databaseDefaults?.split(":") ?? [];
+const defaults = charset ? " CHARACTER SET " + charset + " COLLATE " + collation : "";
 const dropPrefix = Buffer.from(
-  `DROP DATABASE IF EXISTS \`${targetDb}\`;\nCREATE DATABASE \`${targetDb}\`;\nUSE \`${targetDb}\`;\n`,
+  `DROP DATABASE IF EXISTS \`${targetDb}\`;\nCREATE DATABASE \`${targetDb}\`${defaults};\nUSE \`${targetDb}\`;\n`,
 );
 
 async function streamInto(command, args, env) {
@@ -531,6 +554,8 @@ try {
   await assertDbTarget(resolvedTarget);
   const command = mysqlCommand(resolvedTarget, "mysql", [
     "--binary-mode=1",
+    "--local-infile=0",
+    "--skip-force",
     "--default-character-set=utf8mb4",
     "--batch",
     "--skip-column-names",
@@ -545,12 +570,14 @@ try {
 
 try {
   await assertDbTarget(resolvedTarget, { requireDatabase: true });
-  execFileSync("pnpm", ["db:migrate:apply"], {
-    stdio: "inherit",
-    shell: process.platform === "win32",
-    env: resolvedEnvironment,
-  });
-  await assertDbTarget(resolvedTarget, { requireDatabase: true });
+  if (!skipMigrations) {
+    execFileSync("pnpm", ["db:migrate:apply"], {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env: resolvedEnvironment,
+    });
+    await assertDbTarget(resolvedTarget, { requireDatabase: true });
+  }
   execFileSync("pnpm", ["db:verify"], {
     stdio: "inherit",
     shell: process.platform === "win32",

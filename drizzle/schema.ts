@@ -5621,6 +5621,29 @@ export const productImageObjectStaging = mysqlTable(
   }),
 );
 
+/** قفل تزامن مؤقت وخفيف بجلسة تصوير المنتج لمنع التضارب وتنبيه الزملاء بالاسم (TTL = 90s). */
+export const productPhotographyLocks = mysqlTable(
+  "productPhotographyLocks",
+  {
+    productId: bigint("productId", { mode: "number" }).primaryKey(),
+    variantId: bigint("variantId", { mode: "number" }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    userName: varchar("userName", { length: 120 }).notNull(),
+    lockedAt: timestamp("lockedAt").defaultNow().notNull(),
+    heartbeatAt: timestamp("heartbeatAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+  },
+  (table) => ({
+    expiresIdx: index("idx_pplocks_expires").on(table.expiresAt),
+  }),
+);
+
+export type ProductPhotographyLock = typeof productPhotographyLocks.$inferSelect;
+export type NewProductPhotographyLock = typeof productPhotographyLocks.$inferInsert;
+export type InsertProductPhotographyLock = typeof productPhotographyLocks.$inferInsert;
+
 /* ============================ المشتريات ============================ */
 
 export const purchaseOrders = mysqlTable(

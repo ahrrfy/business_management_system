@@ -15,6 +15,8 @@ import * as maint from "../services/maintenanceService";
 import { getTaxSettings, updateTaxSettings } from "../services/taxSettingsService";
 import { getOpeningMode, getOpeningProgress, updateOpeningMode } from "../services/openingModeService";
 import { getCompanyProfile, updateCompanyProfile } from "../services/companyProfileService";
+import { ownerProductionRestoreAvailable, startOwnerProductionRestore } from "../services/ownerRestoreService";
+import { ownerRestoreConfirmation, ownerRestoreName } from "../../shared/ownerRestore";
 
 /** يتحقّق من كلمة مرور المدير الحالية (دفاع ضد النقر الخاطئ/جلسة مسروقة). */
 async function assertPassword(ctx: TrpcContext, password: string) {
@@ -73,9 +75,10 @@ export const systemRouter = router({
   }),
 
   /** قائمة آخر النسخ الاحتياطية المحلّية (للمدير). */
-  listBackups: adminProcedure.query(async () => ({
+  listBackups: adminProcedure.query(async ({ ctx }) => ({
     dir: process.env.BACKUP_DIR ?? "backups",
     ...(await maint.backupReadiness()),
+    ownerProductionRestoreAvailable: ctx.user.isOwner === true && await ownerProductionRestoreAvailable(),
   })),
 
   /** نسخة احتياطية الآن (تطابق DATABASE_URL). يعيد الملف المُنشأ. */
@@ -262,6 +265,19 @@ export const systemRouter = router({
       const result = await maint.startRestoreDrill(input.name);
       await logAudit(ctx, { action: "system.restore.drill.start", entityType: "system", entityId: result.name });
       return result;
+    }),
+  startOwnerProductionRestore: ownerProcedure
+    .input(z.object({ name: ownerRestoreName, confirm: z.string().max(200), password: z.string().min(1).max(256) }))
+    .mutation(async ({ ctx, input }) => {
+      if (ctx.sessionId == null) throw new TRPCError({ code: "UNAUTHORIZED", message: "أعد تسجيل الدخول قبل الاستعادة." });
+      if (input.confirm.trim() !== ownerRestoreConfirmation(input.name)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب عبارة التأكيد المطابقة للنسخة المختارة." });
+      }
+      await assertPassword(ctx, input.password);
+      if (!await logAudit(ctx, { action: "system.restore.production.request", entityType: "system", newValue: { backupName: input.name } })) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسجيل طلب الاستعادة في سجل التدقيق." });
+      }
+      return startOwnerProductionRestore(input.name, ctx.user.id);
     }),
 });
 
