@@ -51,6 +51,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
   const unconfirmedSaleIntent = unconfirmedSaleIntents[0] ?? null;
   const [foreignOwnerPendingCount, setForeignOwnerPendingCount] = useState(0);
   const [activeInOtherTabCount, setActiveInOtherTabCount] = useState(0);
+  const [earliestOtherTabLeaseExpiryMs, setEarliestOtherTabLeaseExpiryMs] = useState<number | null>(null);
   const [preflightRecheckTick, setPreflightRecheckTick] = useState(0);
   const reconcilingPreflightRef = useRef(false);
   const lastPreflightAttemptMsRef = useRef(0);
@@ -74,6 +75,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
       setUnconfirmedSaleIntents([]);
       setForeignOwnerPendingCount(0);
       setActiveInOtherTabCount(0);
+      setEarliestOtherTabLeaseExpiryMs(null);
       return;
     }
     const res = await listRecoverablePreflightSaleIntents({
@@ -84,6 +86,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
     setUnconfirmedSaleIntents(res.intents);
     setForeignOwnerPendingCount(res.foreignOwnerPendingCount);
     setActiveInOtherTabCount(res.activeInOtherTabCount);
+    setEarliestOtherTabLeaseExpiryMs(res.earliestOtherTabLeaseExpiryMs ?? null);
   }, [branchId, viewerUserId, viewerCanAdminReconcile]);
 
   useEffect(() => {
@@ -100,6 +103,18 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [refreshRecoverablePreflightQueue]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || activeInOtherTabCount <= 0) return;
+    const waitMs =
+      earliestOtherTabLeaseExpiryMs != null
+        ? Math.min(15_000, Math.max(250, earliestOtherTabLeaseExpiryMs - Date.now() + 250))
+        : 12_500;
+    const timer = window.setTimeout(() => {
+      void refreshRecoverablePreflightQueue();
+    }, waitMs);
+    return () => window.clearTimeout(timer);
+  }, [activeInOtherTabCount, earliestOtherTabLeaseExpiryMs, refreshRecoverablePreflightQueue]);
 
   const handleMutationSuccess = useCallback(
     async (doneReqId: string) => {
@@ -374,6 +389,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
       shiftId: number;
       total: string;
       saleInput: Record<string, unknown>;
+      receiptContext?: Record<string, unknown> | null;
       onPersistFailed: () => void;
       dispatch: () => void;
     }) => {
@@ -385,6 +401,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
         capturedByUserId: Number(viewerUserId ?? 0),
         total: params.total,
         saleInput: params.saleInput,
+        receiptContext: params.receiptContext ?? null,
       });
       if (!persisted) {
         params.onPersistFailed();
