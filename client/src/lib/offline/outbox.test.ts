@@ -2,18 +2,37 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OfflineOutboxItem } from "./db";
 
 const storage = vi.hoisted(() => ({
+  meta: new Map<string, string>([["deviceCode", "device-42"]]),
   rows: new Map<string, OfflineOutboxItem>(),
   tail: Promise.resolve(),
   lastSync: new Date().toISOString() as string | null,
   failRead: false,
   failAdd: false,
   inTransaction: false,
+  suppressAutoGrant: false,
+  grantPromise: null as Promise<void> | null,
   key: null as CryptoKey | null,
 }));
 vi.mock("./db", () => ({
-  getMeta: async () => "device-42",
-  setMeta: async () => {},
+  getMeta: async (k: string) => storage.meta.get(k) ?? null,
+  setMeta: async (k: string, v: string) => {
+    storage.meta.set(k, v);
+  },
   offlineDb: {
+    meta: {
+      get: async (key: string) => {
+        const val = storage.meta.get(key);
+        return val === undefined ? undefined : { key, value: val };
+      },
+      put: async ({ key, value }: { key: string; value: string }) => {
+        storage.meta.set(key, value);
+      },
+      delete: async (key: string) => {
+        storage.meta.delete(key);
+      },
+      toArray: async () =>
+        Array.from(storage.meta.entries()).map(([key, value]) => ({ key, value })),
+    },
     transaction: async (
       _mode: string,
       _table: unknown,
@@ -79,7 +98,10 @@ vi.mock("./db", () => ({
   },
 }));
 vi.mock("./catalogSync", () => ({ getLastSyncAt: async () => storage.lastSync }));
-vi.mock("./pinLock", () => ({ getOfflineProfile: async () => null }));
+vi.mock("./pinLock", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pinLock")>()),
+  getOfflineProfile: async () => null,
+}));
 
 function pending(
   key = "saved-request",
@@ -108,10 +130,13 @@ function pending(
 }
 
 beforeEach(() => {
+  storage.meta = new Map<string, string>([["deviceCode", "device-42"]]);
   storage.rows.clear();
   storage.lastSync = new Date().toISOString();
   storage.failRead = false;
   storage.failAdd = false;
+  storage.suppressAutoGrant = false;
+  storage.grantPromise = null;
   storage.key = null;
   vi.resetModules();
 });
@@ -119,12 +144,45 @@ beforeEach(() => {
 // Serialized in-memory Dexie model: checks admission policy/interleavings, not IndexedDB auto-commit.
 describe("offline incoming exposure admission", () => {
   async function capture(total: string, key = "new", kind: OfflineOutboxItem["kind"] = "SALE") {
-    const { enqueueOfflineItem } = await import("./outbox");
+    const { enqueueOfflineItem, setActiveOfflineCaptureGrant } = await import("./outbox");
+    if (kind === "SALE" && !storage.suppressAutoGrant) {
+      if (!storage.grantPromise) {
+        const now = Date.now();
+        storage.grantPromise = setActiveOfflineCaptureGrant({
+          version: 4,
+          keyId: "k1",
+          grantId: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          userId: 11,
+          branchId: 7,
+          shiftId: 42,
+          issuedAt: new Date(now).toISOString(),
+          issuedAtServerMs: now,
+          expiresAtServerMs: now + 48 * 3600_000,
+          captureKeyHex: "b7".repeat(32),
+          grantToken: "c8".repeat(32),
+        }).then(() => undefined);
+      }
+      await storage.grantPromise;
+    }
     return enqueueOfflineItem({
       kind, total, capturedByUserId: 11, offlineReceiptNumber: `OFF-${key}`,
       payload: { branchId: 7, shiftId: 42, clientRequestId: key, lines: [], payment: { amount: total, method: "CASH" } },
     });
   }
+
+  it("fails closed without saving any row when shift capture grant is missing or cleared", async () => {
+    storage.suppressAutoGrant = true;
+    const { assertCanCapture, clearActiveOfflineCaptureGrant } = await import("./outbox");
+    await clearActiveOfflineCaptureGrant();
+    const gate = await assertCanCapture(1000, "SALE", {
+      branchId: 7,
+      shiftId: 42,
+      capturedByUserId: 11,
+    });
+    expect(gate.ok).toBe(false);
+    expect(await capture("1000", "no-grant-sale")).toBe(false);
+    expect(storage.rows.size).toBe(0);
+  });
 
   it("counts PARKED 4.9m and rejects another 0.2m without touching the saved row", async () => {
     const row = { ...pending(), status: "PARKED" as const, total: "4900000" };
@@ -257,6 +315,7 @@ describe("offline interrupted sending recovery", () => {
       capturedAt: row.capturedAt,
       offlineReceiptNumber: row.offlineReceiptNumber,
       deviceId: "device-42",
+      capturedByUserId: 11,
     });
     expect(storage.rows.get(row.clientRequestId)?.status).toBe("SENT");
   });
