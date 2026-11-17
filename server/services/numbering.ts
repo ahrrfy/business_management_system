@@ -124,6 +124,31 @@ async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<
  * نشر الرقم كهوية مكتملة قبل COMMIT. minimumPreviousValue يرفع الأرضية إلى تاريخ موثوق
  * عند نقل مرقّم قديم؛ لا يُنقص عدّاداً متقدماً ولا يغيّر أرقام المستندات السابقة.
  */
+export interface DocumentCounterNodeConfig {
+  nodeId: "cloud" | "local" | null;
+  targetRemainder: 0 | 1 | null;
+}
+
+/**
+ * يحدّد وضع الترقيم حسب `ALROYA_NODE_ID`:
+ *   - غير مضبوط / فارغ: وضع العقدة الواحدة القياسي (زيادة +1 على نفس المفتاح).
+ *   - `"cloud"` أو `"local"`: وضع Active-Active المعزول (سحابة=فردي، محلي=زوجي، مفتاح `key:node`).
+ */
+export function getDocumentCounterNode(
+  env: NodeJS.ProcessEnv = process.env,
+): DocumentCounterNodeConfig {
+  const raw = env.ALROYA_NODE_ID;
+  if (raw == null || String(raw).trim() === "") {
+    return { nodeId: null, targetRemainder: null };
+  }
+  const normalized = String(raw).trim().toLowerCase();
+  if (normalized === "cloud") return { nodeId: "cloud", targetRemainder: 1 };
+  if (normalized === "local") return { nodeId: "local", targetRemainder: 0 };
+  throw new Error(
+    `Invalid ALROYA_NODE_ID "${raw}": expected "cloud" or "local"`,
+  );
+}
+
 export async function nextCounterValue(
   tx: Tx,
   counterKey: string,
@@ -143,11 +168,28 @@ export async function nextCounterValue(
   const floor = Math.max(staticFloor, dynamicFloor, minimumPreviousValue);
   // `LAST_INSERT_ID(expr)` تضبط قيمة الجلسة **وتُعيدها** — فالفرعان (إدراجٌ أوّل / زيادةٌ على
   // قائم) يضبطانها معاً في عبارةٍ ذرّيّةٍ واحدة، بلا قفلٍ على جدول الهدف.
-  await tx.execute(sql`
-    INSERT INTO documentCounters (counterKey, lastValue)
-    VALUES (${counterKey}, LAST_INSERT_ID(${floor + 1}))
-    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${floor + 1}))
-  `);
+  const { nodeId, targetRemainder } = getDocumentCounterNode();
+  if (nodeId !== null && targetRemainder !== null) {
+    const scopedCounterKey = `${counterKey}:${nodeId}`;
+    const minNext = floor + 1;
+    const firstValid = minNext % 2 === targetRemainder ? minNext : minNext + 1;
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      VALUES (${scopedCounterKey}, LAST_INSERT_ID(${firstValid}))
+      ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(
+        GREATEST(
+          CASE WHEN MOD(lastValue + 1, 2) = ${targetRemainder} THEN lastValue + 1 ELSE lastValue + 2 END,
+          ${firstValid}
+        )
+      )
+    `);
+  } else {
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      VALUES (${counterKey}, LAST_INSERT_ID(${floor + 1}))
+      ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${floor + 1}))
+    `);
+  }
   const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
   const value = Number(row?.v ?? 0);
@@ -198,17 +240,22 @@ export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<stri
  * يُورَّث الرقم الأساسي تلقائياً لجميع المستندات والحركات الناتجة عنها.
  */
 export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
+  const { nodeId: unifiedNodeId } = getDocumentCounterNode();
+  const scopedUnifiedKey =
+    unifiedNodeId !== null
+      ? `unified_transaction:${unifiedNodeId}`
+      : "unified_transaction";
   const floorCheck: any = await tx.execute(sql`
     SELECT counterKey, lastValue
     FROM documentCounters
-    WHERE counterKey IN ('unified_transaction_floor', 'unified_transaction')
+    WHERE counterKey IN ('unified_transaction_floor', ${scopedUnifiedKey})
   `);
   const rows: Array<{ counterKey?: string; lastValue?: number | string }> = Array.isArray(floorCheck)
     ? (Array.isArray(floorCheck[0]) ? floorCheck[0] : floorCheck)
     : (floorCheck?.rows ?? []);
   const isMockRowWithoutKey = rows.length > 0 && rows[0]?.counterKey === undefined;
   const hasFloorRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === "unified_transaction_floor");
-  const hasCounterRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === "unified_transaction");
+  const hasCounterRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === scopedUnifiedKey);
   const floorRow = rows.find((r) => r?.counterKey === "unified_transaction_floor") ?? rows[0];
   if (!hasFloorRow || !hasCounterRow) {
     await tx.execute(sql`
@@ -225,7 +272,7 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
     `);
     await tx.execute(sql`
       INSERT INTO documentCounters (counterKey, lastValue)
-      SELECT 'unified_transaction', GREATEST(
+      SELECT ${scopedUnifiedKey}, GREATEST(
         100000 + COALESCE(MAX(id), 0),
         COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
         COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
