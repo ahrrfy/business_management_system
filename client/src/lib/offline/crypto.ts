@@ -11,6 +11,7 @@ import { offlineDb } from "./db";
 const KEY_NAME = "outbox-aes";
 
 let cachedKey: CryptoKey | null = null;
+let inflightKeyPromise: Promise<CryptoKey | null> | null = null;
 
 export function isWebCryptoAvailable(): boolean {
   return (
@@ -20,27 +21,38 @@ export function isWebCryptoAvailable(): boolean {
   );
 }
 
-/** مفتاح AES-GCM غير قابل للاستخراج — يُولَّد مرة ويُخزَّن كـCryptoKey في IndexedDB
- *  (structured clone يحفظ الكائن بلا كشف الخام). */
+/** مفتاح AES-GCM غير قابل للاستخراج — يُولَّد مرة (مع منع سباق التوازي عبر single-flight)
+ *  ويُخزَّن كـCryptoKey في IndexedDB (structured clone يحفظ الكائن بلا كشف الخام). */
 export async function getOrCreateAesKey(): Promise<CryptoKey | null> {
   if (!isWebCryptoAvailable()) return null;
   if (cachedKey) return cachedKey;
-  try {
-    const existing = await offlineDb.keys.get(KEY_NAME);
-    if (existing?.key) {
-      cachedKey = existing.key;
-      return existing.key;
+  if (inflightKeyPromise) return inflightKeyPromise;
+  inflightKeyPromise = (async () => {
+    try {
+      const existing = await offlineDb.keys.get(KEY_NAME);
+      if (existing?.key) {
+        cachedKey = existing.key;
+        return existing.key;
+      }
+      const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
+        "encrypt",
+        "decrypt",
+      ]);
+      const raced = await offlineDb.keys.get(KEY_NAME);
+      if (raced?.key) {
+        cachedKey = raced.key;
+        return raced.key;
+      }
+      await offlineDb.keys.put({ name: KEY_NAME, key });
+      cachedKey = key;
+      return key;
+    } catch {
+      return null;
+    } finally {
+      inflightKeyPromise = null;
     }
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
-      "encrypt",
-      "decrypt",
-    ]);
-    await offlineDb.keys.put({ name: KEY_NAME, key });
-    cachedKey = key;
-    return key;
-  } catch {
-    return null;
-  }
+  })();
+  return inflightKeyPromise;
 }
 
 export interface EncryptedEnvelope {
@@ -75,7 +87,10 @@ export function decodeLegacyZeroIvEnvelope<T>(envelope: EncryptedEnvelope): T {
   return JSON.parse(new TextDecoder().decode(envelope.data)) as T;
 }
 
-export async function encryptJson(value: unknown): Promise<EncryptedEnvelope> {
+export async function encryptJson(
+  value: unknown,
+  additionalData?: Uint8Array,
+): Promise<EncryptedEnvelope> {
   if (!isWebCryptoAvailable()) {
     throw new Error("WebCrypto غير متاح لتشفير البيانات المحلية");
   }
@@ -83,11 +98,17 @@ export async function encryptJson(value: unknown): Promise<EncryptedEnvelope> {
   if (!key) {
     throw new Error("تعذّر الوصول إلى مفتاح التشفير المحلي");
   }
-  return encryptJsonWithKey(value, key);
+  return encryptJsonWithKey(value, key, additionalData);
 }
 
-export async function decryptJson<T>(envelope: EncryptedEnvelope): Promise<T> {
+export async function decryptJson<T>(
+  envelope: EncryptedEnvelope,
+  additionalData?: Uint8Array,
+): Promise<T> {
   if (isLegacyZeroIvEnvelope(envelope)) {
+    if (additionalData && additionalData.byteLength > 0) {
+      throw new Error("مغلّف التوافق القديم لا يدعم بيانات المصادقة الإضافية (AAD)");
+    }
     return decodeLegacyZeroIvEnvelope<T>(envelope);
   }
   if (!isWebCryptoAvailable()) {
@@ -100,30 +121,50 @@ export async function decryptJson<T>(envelope: EncryptedEnvelope): Promise<T> {
   if (!key) {
     throw new Error("تعذّر الوصول إلى مفتاح فك التشفير المحلي");
   }
-  return decryptJsonWithKey<T>(envelope, key);
+  return decryptJsonWithKey<T>(envelope, key, additionalData);
 }
 
 // ── جوهر نقي قابل للحقن (اختبارات node تملك WebCrypto بلا IndexedDB) ─────────
 
-export async function encryptJsonWithKey(value: unknown, key: CryptoKey): Promise<EncryptedEnvelope> {
+export async function encryptJsonWithKey(
+  value: unknown,
+  key: CryptoKey,
+  additionalData?: Uint8Array,
+): Promise<EncryptedEnvelope> {
   if (!isWebCryptoAvailable() || !key) {
     throw new Error("مفتاح التشفير أو WebCrypto غير متاح");
   }
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
-  const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext));
+  const params: AesGcmParams =
+    additionalData && additionalData.byteLength > 0
+      ? { name: "AES-GCM", iv, additionalData: additionalData as BufferSource }
+      : { name: "AES-GCM", iv };
+  const data = new Uint8Array(await crypto.subtle.encrypt(params, key, plaintext));
   return { enc: true, v: 1, iv, data };
 }
 
-export async function decryptJsonWithKey<T>(envelope: EncryptedEnvelope, key: CryptoKey): Promise<T> {
+export async function decryptJsonWithKey<T>(
+  envelope: EncryptedEnvelope,
+  key: CryptoKey,
+  additionalData?: Uint8Array,
+): Promise<T> {
   if (!isWebCryptoAvailable() || !key) {
     throw new Error("مفتاح فك التشفير أو WebCrypto غير متاح");
   }
   if (!(envelope.iv instanceof Uint8Array) || envelope.iv.byteLength !== 12) {
     throw new Error("مغلّف التشفير المحلي غير صالح (IV)");
   }
+  const params: AesGcmParams =
+    additionalData && additionalData.byteLength > 0
+      ? {
+          name: "AES-GCM",
+          iv: envelope.iv as BufferSource,
+          additionalData: additionalData as BufferSource,
+        }
+      : { name: "AES-GCM", iv: envelope.iv as BufferSource };
   const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: envelope.iv as BufferSource },
+    params,
     key,
     envelope.data as BufferSource,
   );
