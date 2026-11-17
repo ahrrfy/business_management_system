@@ -178,4 +178,35 @@ describe("صلاحيات استوديو المنتجات لجميع الموظف
       ).toBe(false);
     }
   });
+
+  it("تمنح عمليات التصوير والمعالجة بالذكاء حتى مع وجود لقطة كتالوج كاملة قديمة (>=500 مفتاح) على حساب الموظف", () => {
+    const fullSnapshotGrants: Record<string, boolean> = {};
+    for (let i = 0; i < 600; i++) {
+      fullSnapshotGrants[`operation.legacy.op${i}`] = i % 2 === 0;
+    }
+    fullSnapshotGrants["operation.productStudio.quickAiTransform"] = false;
+    fullSnapshotGrants["operation.productStudio.quickSaveBarcodeProductImage"] = false;
+    fullSnapshotGrants["operation.imageStudio.aiStudioTransform"] = false;
+
+    const resolvedSnapshot = resolveOperationPolicy(
+      "cashier",
+      ROLE_TEMPLATES.cashier,
+      buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier),
+      { version: 1, grants: fullSnapshotGrants },
+    );
+
+    for (const path of STUDIO_EMPLOYEE_CAPTURE_OPERATIONS) {
+      expect(
+        operationDecision(
+          {
+            role: "cashier",
+            operationPolicyEnabled: true,
+            resolvedOperationPolicy: resolvedSnapshot,
+          },
+          path,
+        ).allowed,
+        `snapshot:${path}`,
+      ).toBe(true);
+    }
+  });
 });

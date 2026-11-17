@@ -684,9 +684,12 @@ export function resolveOperationPolicy(
   // company employees (excluding delivery couriers and read-only auditors),
   // even when a saved role/user policy snapshot predates this baseline.
   // Keep fail-closed empty role policies (e.g. inactive/missing custom roles)
-  // and explicit user denials (regardless of policy size) intact.
+  // and explicit sparse user denials intact, while ignoring stale pre-baseline
+  // full-catalog user snapshots (>= 500 keys) unless productStudio is NONE.
   const isEmptyFailClosedRolePolicy =
     rolePolicy != null && Object.keys(rolePolicy.grants).length === 0;
+  const isFullCatalogUserSnapshot =
+    userPolicy != null && Object.keys(userPolicy.grants).length >= 500;
   if (
     !isEmptyFailClosedRolePolicy &&
     role !== "courier" &&
@@ -696,7 +699,7 @@ export function resolveOperationPolicy(
     for (const path of STUDIO_EMPLOYEE_CAPTURE_OPERATIONS) {
       const operation = getOperationPermission(path);
       if (!operation?.delegable) continue;
-      if (userPolicy?.grants[operation.key] === false) {
+      if (!isFullCatalogUserSnapshot && userPolicy?.grants[operation.key] === false) {
         continue;
       }
       grants[operation.key] = true;
