@@ -161,6 +161,41 @@ export function recordImageStorePublicFallback(): void {
   if (cached instanceof R2ImageStore) cached.recordPublicFallback();
 }
 
+/** يبدأ عامل تصريف طابور الوسائط الهجين دورياً عند تفعيل hybrid_local_r2. */
+export function startHybridImageOutboxWorker(): () => void {
+  if (process.env.NODE_ENV === "test") return () => {};
+  if (normalizedImageStoreDriver(process.env) !== "hybrid_local_r2") return () => {};
+
+  const store = getImageStore();
+  if (!(store instanceof HybridLocalR2ImageStore)) return () => {};
+
+  let stopped = false;
+  let inFlight = false;
+  const runPass = async () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const res = await store.drainPendingOutbox();
+      if (res.synced > 0 || res.failedPermanent > 0) {
+        logger.info({ component: "hybrid_r2_image_store", ...res }, "hybrid media outbox drain pass");
+      }
+    } catch (err) {
+      logger.warn({ component: "hybrid_r2_image_store", err }, "hybrid media outbox drain pass failed");
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void runPass();
+  const timer = setInterval(() => void runPass(), 15_000);
+  timer.unref();
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 /** لإعادة التهيئة في الاختبارات (يُبطل المفرد المُخبَّأ). */
 export function __resetImageStoreForTest(): void {
   cached = null;
