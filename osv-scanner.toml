@@ -1,10 +1,12 @@
-# Assessed 2026-11-01: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides.
-# The advisory mechanism (firstPhasePreProcess with optimizationLevel >=2) is absent from the
-# remaining v3/v5 CJS implementations. Their exact build/lint consumers are allowlisted below,
-# accept repository-owned patterns only, and cannot be major-overridden without breaking the
-# callable CommonJS API. Reassess on expiry or when upstream consumers leave these legacy majors.
-# Exact consumers are enforced by dependencySecurityWorkflow.test.ts.
+# Assessed 2026-11-17: GHSA-fc5q-39xc-vjpf (CVE-2026-112366, ReDoS in analyzeRepeatedExtglob) affects
+# picomatch <= 4.0.7 (including 2.3.2 & 4.0.7), with no patched upstream version published on npm yet
+# (`latest` = 4.0.7). Every resolved consumer across all three lockfiles is strictly build/bundler/test
+# CLI tooling (vite, vitest, @rollup/pluginutils, tinyglobby, fdir, @expo/cli, @expo/metro-config,
+# anymatch, jest-util, micromatch, readdirp); zero server or mobile runtime dependency exposes untrusted
+# user patterns to picomatch (verified dist/index.js & dist/hr-bridge-worker.meta.json). Reassess on expiry
+# or upgrade immediately once picomatch > 4.0.7 releases upstream.
+# Exact consumers and runtime absence are enforced by scripts/__tests__/dependencySecurityWorkflow.test.ts.
 [[IgnoredVulns]]
-id = "GHSA-g3hv-75wg-m249"
-ignoreUntil = 2026-11-30
-reason = "the reported globparts amplification code is absent from the remaining legacy CJS v3/v5 build-tool consumers; all modern consumers are pinned to 11.0.1 and no runtime path accepts untrusted glob patterns"
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-01
+reason = "no patched picomatch release exists beyond 4.0.7 yet; all resolved 2.3.2/4.0.7 consumers are repo-controlled build, bundler, and test CLI tools with zero server or mobile runtime dependency"
