@@ -90,6 +90,7 @@ export interface PreflightSaleIntentV4 {
   hadManagerApprovalAtSubmit: boolean;
   semanticPayloadSha256: string;
   saleInput: Record<string, unknown>;
+  receiptContext?: Record<string, unknown> | null;
   ownerTabInstanceId?: string;
   liveLeaseUntilMs?: number | null;
   commercialPayloadUnavailable?: boolean;
@@ -105,6 +106,7 @@ export interface RecoverablePreflightIntentsResult {
   intents: PreflightSaleIntentV4[];
   foreignOwnerPendingCount: number;
   activeInOtherTabCount: number;
+  earliestOtherTabLeaseExpiryMs?: number | null;
 }
 
 export interface PreUpgradeOutboxAuditReport {
@@ -1251,6 +1253,7 @@ export async function recordPreflightSaleIntent(input: {
   capturedByUserId: number;
   total: string;
   saleInput: Record<string, unknown>;
+  receiptContext?: Record<string, unknown> | null;
 }): Promise<boolean> {
   if (
     !input.clientRequestId ||
@@ -1278,6 +1281,7 @@ export async function recordPreflightSaleIntent(input: {
         hadManagerApprovalAtSubmit,
         semanticPayloadSha256,
         saleInput: sanitizedSaleInput,
+        receiptContext: input.receiptContext ?? existing?.receiptContext ?? null,
         ownerTabInstanceId: currentTabInstanceId,
         liveLeaseUntilMs: nowMs + PREFLIGHT_LIVE_LEASE_TTL_MS,
         commercialPayloadUnavailable: false,
@@ -1399,6 +1403,7 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
   const intents: PreflightSaleIntentV4[] = [];
   let foreignOwnerPendingCount = 0;
   let activeInOtherTabCount = 0;
+  let earliestOtherTabLeaseExpiryMs: number | null = null;
   const nowMs = Date.now();
 
   for (const id of ids) {
@@ -1415,11 +1420,15 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
         continue;
       }
       const ownerId = String(rec.ownerTabInstanceId ?? "");
+      const leaseUntilMs = Number(rec.liveLeaseUntilMs ?? 0);
       const leaseValid =
-        Number(rec.liveLeaseUntilMs ?? 0) > nowMs && !crashedSimulatedTabIds.has(ownerId);
+        leaseUntilMs > nowMs && !crashedSimulatedTabIds.has(ownerId);
       if (leaseValid && ownerId && ownerId !== currentTabInstanceId) {
         // Actively sending in ANOTHER live tab -> NEVER hijack or replay from Tab 2!
         activeInOtherTabCount++;
+        if (earliestOtherTabLeaseExpiryMs == null || leaseUntilMs < earliestOtherTabLeaseExpiryMs) {
+          earliestOtherTabLeaseExpiryMs = leaseUntilMs;
+        }
         continue;
       }
     } else if (rec.status !== "UNCONFIRMED_SERVER_OUTCOME") {
@@ -1435,7 +1444,12 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
     intents.push(rec);
   }
   intents.sort((a, b) => a.updatedAtMs - b.updatedAtMs);
-  return { intents, foreignOwnerPendingCount, activeInOtherTabCount };
+  return {
+    intents,
+    foreignOwnerPendingCount,
+    activeInOtherTabCount,
+    earliestOtherTabLeaseExpiryMs,
+  };
 }
 
 export async function listUnconfirmedPreflightSaleIntents(
