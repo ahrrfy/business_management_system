@@ -156,6 +156,64 @@ export function buildPosSaleReceiptContext(params: {
   };
 }
 
+/** Restores the frozen original sale receipt context for same-key automatic preflight replay. */
+export function restorePosReceiptContextFromPreflightIntent(
+  intent: {
+    tabId: number;
+    total: string;
+    saleInput?: Record<string, unknown>;
+    receiptContext?: Record<string, unknown> | null;
+  },
+  fallbackCashierName?: string,
+): POSSaleReceiptContext {
+  const saved = intent.receiptContext as Partial<POSSaleReceiptContext> | null | undefined;
+  if (saved && typeof saved.tabId === "number" && Array.isArray(saved.lines)) {
+    return {
+      tabId: saved.tabId,
+      lines: saved.lines,
+      subtotal: Number(saved.subtotal ?? intent.total ?? 0),
+      invoiceDiscount: Number(saved.invoiceDiscount ?? 0),
+      cashRounding: Number(saved.cashRounding ?? 0),
+      total: Number(saved.total ?? intent.total ?? 0),
+      received: Number(saved.received ?? intent.total ?? 0),
+      change: Number(saved.change ?? 0),
+      credit: Number(saved.credit ?? 0),
+      isCredit: Boolean(saved.isCredit),
+      method: typeof saved.method === "string" ? saved.method : "نقدي",
+      methodCode: saved.methodCode,
+      paymentLegs: saved.paymentLegs,
+      customerName: saved.customerName,
+      customerPhone: saved.customerPhone ?? null,
+      cashierName: saved.cashierName ?? fallbackCashierName,
+      delivery: saved.delivery ?? null,
+      cartSnapshot: Array.isArray(saved.cartSnapshot) ? saved.cartSnapshot : [],
+      freeShippingPromoName: saved.freeShippingPromoName ?? null,
+      couponLabel: saved.couponLabel ?? null,
+      labelMeta: saved.labelMeta ?? null,
+    };
+  }
+  const rawPayment = intent.saleInput?.payment as { amount?: string; method?: string } | undefined;
+  const totalNum = Number(intent.total || 0);
+  const receivedNum = rawPayment?.amount != null ? Number(rawPayment.amount) : totalNum;
+  return {
+    tabId: intent.tabId,
+    lines: [],
+    subtotal: totalNum,
+    invoiceDiscount: Number(intent.saleInput?.invoiceDiscount ?? 0),
+    cashRounding: 0,
+    total: totalNum,
+    received: receivedNum,
+    change: Math.max(0, receivedNum - totalNum),
+    credit: Math.max(0, totalNum - receivedNum),
+    isCredit: receivedNum < totalNum,
+    method: String(rawPayment?.method ?? "CASH"),
+    methodCode: typeof rawPayment?.method === "string" ? rawPayment.method : "CASH",
+    cashierName: fallbackCashierName,
+    delivery: null,
+    cartSnapshot: [],
+  };
+}
+
 interface UsePOSOfflineCaptureOptions {
   activeTab: POSTab;
   branchId: number;
