@@ -214,14 +214,14 @@ function fixture() {
     `--regid=${GID}`,
     "--init-groups",
     "--",
-    "/opt/alroya-erp/node-v24.22.1-linux-x64/bin/node",
+    "/opt/alroya-erp/node-v24.22.3-linux-x64/bin/node",
     "/usr/lib/node_modules/pm2/bin/pm2",
     "resurrect",
   ]);
   assert.deepEqual(command.options.env, {
     HOME: "/home/deploy",
     LOGNAME: "deploy",
-    PATH: "/opt/alroya-erp/node-v24.22.1-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PATH: "/opt/alroya-erp/node-v24.22.3-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     PM2_HOME: "/home/deploy/.pm2",
     USER: "deploy",
   });
@@ -315,7 +315,7 @@ function fixture() {
   assert.match(dropIn, /^ExecStart=$/mu);
   assert.match(
     dropIn,
-    /^ExecStart=\+\/opt\/alroya-erp\/node-v24\.22\.1-linux-x64\/bin\/node \/usr\/local\/libexec\/erp\/pm2-systemd-start\.mjs$/mu,
+    /^ExecStart=\+\/opt\/alroya-erp\/node-v24\.22\.3-linux-x64\/bin\/node \/usr\/local\/libexec\/erp\/pm2-systemd-start\.mjs$/mu,
   );
   assert.doesNotMatch(dropIn, /\/home\/deploy\/erp/u);
   assert.doesNotMatch(dropIn, /^ExecStop=/mu);
