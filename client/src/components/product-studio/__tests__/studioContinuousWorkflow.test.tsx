@@ -397,6 +397,32 @@ describe("StudioContinuousWorkflow & Components Test Suite", () => {
       });
       expect(onManualSearch).toHaveBeenCalled();
     });
+
+    it("displays specific lookupError message instead of unregistered message when lookupError is provided", async () => {
+      await act(async () => {
+        root.render(
+          <StudioProductCardStatus
+            product={null}
+            barcode="2005247125736"
+            isUnregistered={false}
+            lookupError={{
+              code: "FORBIDDEN",
+              message: "العملية غير مفوضة لحسابك",
+            }}
+          />,
+        );
+      });
+
+      const errorCard = host.querySelector('[data-testid="studio-lookup-error-card"]');
+      expect(errorCard).not.toBeNull();
+      expect(host.querySelector('[data-testid="studio-unregistered-barcode-card"]')).toBeNull();
+
+      const feedback = host.querySelector('[data-testid="lookup-error-feedback"]');
+      expect(feedback?.textContent).toContain("صلاحية غير متوفرة");
+      expect(errorCard?.textContent).toContain("العملية غير مفوضة لحسابك");
+      expect(errorCard?.textContent).toContain("2005247125736");
+      expect(errorCard?.textContent).not.toContain("هذا الباركود غير مسجل بالنظام");
+    });
   });
 
   // =========================================================================
@@ -942,6 +968,29 @@ describe("StudioContinuousWorkflow & Components Test Suite", () => {
       const unregisteredFeedback = host.querySelector('[data-testid="unregistered-barcode-feedback"]');
       expect(unregisteredFeedback).not.toBeNull();
       expect(unregisteredFeedback?.textContent).toContain("هذا الباركود غير مسجل بالنظام");
+    });
+
+    it("displays specific lookup error card when product/unit is disabled or lookup fails with non-unregistered error", async () => {
+      await act(async () => {
+        root.render(
+          <StudioContinuousWorkflow
+            initialBarcode="2005247125736"
+            mockLookupData={{
+              product: null,
+              lookupError: {
+                code: "NOT_FOUND",
+                message: "المنتج أو بديله أو وحدته معطّل في الكتالوج",
+              },
+            }}
+          />,
+        );
+      });
+
+      const errorFeedback = host.querySelector('[data-testid="lookup-error-feedback"]');
+      expect(errorFeedback).not.toBeNull();
+      expect(errorFeedback?.textContent).toContain("تعذّر فتح عمل تصوير لهذا المنتج");
+      expect(host.textContent).toContain("المنتج أو بديله أو وحدته معطّل في الكتالوج");
+      expect(host.querySelector('[data-testid="unregistered-barcode-feedback"]')).toBeNull();
     });
   });
 

@@ -25,6 +25,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   StudioProductCardStatus,
   type StudioActiveJob,
+  type StudioLookupError,
   type StudioProductDetails,
   type StudioProductImage,
   type StudioProductLock,
@@ -50,6 +51,7 @@ export interface StudioContinuousWorkflowProps {
     lock?: StudioProductLock | null;
     canAutoApprove?: boolean;
     isUnregistered?: boolean;
+    lookupError?: StudioLookupError | null;
   } | null;
   /** تجاوز عملية الحفظ للاختبارات الآلية */
   mockOnSave?: (data: any) => Promise<any>;
@@ -159,13 +161,33 @@ export function StudioContinuousWorkflow({
     ? Boolean(mockLookupData.canAutoApprove)
     : Boolean(realLookupQuery.data?.canAutoApprove);
 
+  // فصل خطأ الباركود غير المسجل فعلاً عن أخطاء الصلاحية/التعطيل/التضارب/الشبكة
+  const rawLookupError = !mockLookupData && realLookupQuery.isError ? realLookupQuery.error : null;
+  const rawLookupErrorCode = (rawLookupError as { data?: { code?: string } } | null)?.data?.code;
+  const rawLookupErrorMessage = rawLookupError?.message?.trim() || "";
+  const isTrulyUnregisteredError =
+    rawLookupErrorCode === "NOT_FOUND" &&
+    (!rawLookupErrorMessage || rawLookupErrorMessage.includes("لا يطابق باركود"));
+
+  const lookupError: StudioLookupError | null = mockLookupData
+    ? (mockLookupData.lookupError ?? null)
+    : rawLookupError && !isTrulyUnregisteredError
+      ? {
+          code: rawLookupErrorCode,
+          message:
+            rawLookupErrorMessage ||
+            "تعذّر الاستعلام عن الباركود حالياً، يرجى المحاولة مرة أخرى.",
+        }
+      : null;
+
   // فحص الباركود غير المسجل
   const isUnregistered = mockLookupData
     ? Boolean(mockLookupData.isUnregistered)
     : Boolean(
         submittedBarcode &&
           !isQueryLoading &&
-          (realLookupQuery.isError || !realLookupQuery.data?.product),
+          !lookupError &&
+          (isTrulyUnregisteredError || !realLookupQuery.data?.product),
       );
 
   // طفرة الحفظ الفوري
@@ -702,6 +724,7 @@ export function StudioContinuousWorkflow({
             product={productData}
             barcode={submittedBarcode || barcodeInput}
             isUnregistered={isUnregistered}
+            lookupError={lookupError}
             images={imagesData}
             activeJob={activeJobData}
             lock={lockData}
