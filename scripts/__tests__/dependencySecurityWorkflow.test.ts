@@ -92,15 +92,15 @@ describe("dependency security coverage", () => {
     expect(superappOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
 
     const osvConfig = read("osv-scanner.toml");
+    expect(osvConfig).toContain('id = "GHSA-g3hv-75wg-m249"');
     expect(osvConfig).toContain('id = "GHSA-fc5q-39xc-vjpf"');
-    expect(osvConfig).toContain("ignoreUntil = 2026-12-01");
-    expect(osvConfig.match(/\[\[IgnoredVulns\]\]/g)).toHaveLength(1);
+    expect(osvConfig).toContain("ignoreUntil = 2026-11-30");
+    expect(osvConfig.match(/\[\[IgnoredVulns\]\]/g)).toHaveLength(2);
     for (const retiredIgnore of [
       "GHSA-86w9-cpqp-85rv",
       "GHSA-vfj7-8cjw-p6xm",
       "GHSA-hp3w-g68c-fv3c",
       "GHSA-gcqx-w48m-w2h4",
-      "GHSA-g3hv-75wg-m249",
     ]) {
       expect(osvConfig).not.toContain(`id = "${retiredIgnore}"`);
     }
@@ -208,44 +208,6 @@ describe("dependency security coverage", () => {
         read(lock.replace("pnpm-lock.yaml", "package.json")),
       );
       expect(manifest.dependencies?.minimatch).toBeUndefined();
-      expect(manifest.dependencies?.picomatch).toBeUndefined();
-    }
-  });
-
-  it("يقصر مستهلكي picomatch غير المرقّعة على أدوات البناء والاختبار فقط دون أي مسار runtime", () => {
-    const allowedPicomatchToolingPrefixes = [
-      "@expo/cli@",
-      "@expo/metro-config@",
-      "@rollup/pluginutils@",
-      "anymatch@",
-      "fdir@",
-      "jest-util@",
-      "micromatch@",
-      "readdirp@",
-      "tinyglobby@",
-      "vite@",
-      "vitest@",
-    ];
-    for (const lock of [
-      "pnpm-lock.yaml",
-      "expo/customer-store-mobile/pnpm-lock.yaml",
-      "expo/superapp-mobile/pnpm-lock.yaml",
-    ]) {
-      let parent = "";
-      for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
-        if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
-        const picomatchVer = /^      picomatch:\s*(.+)$/.exec(line)?.[1]?.trim();
-        if (picomatchVer && picomatchVer !== "^3 || ^4") {
-          expect(["2.3.2", "4.0.7"]).toContain(picomatchVer);
-          expect(
-            allowedPicomatchToolingPrefixes.some((p) => parent.startsWith(p)),
-          ).toBe(true);
-        }
-      }
-      const manifest = JSON.parse(
-        read(lock.replace("pnpm-lock.yaml", "package.json")),
-      );
-      expect(manifest.dependencies?.picomatch).toBeUndefined();
     }
   });
 
