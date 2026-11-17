@@ -13,14 +13,20 @@ import {
 
 const dialect = new MySqlDialect();
 
-function makeMockTx(nextValue = 1) {
+function makeMockTx(
+  nextValue = 1,
+  opts: { maxExistingCounter?: number; invoiceHistoryMax?: number } = {},
+) {
   const executed: Array<{ sql: string; params: unknown[] }> = [];
-  const tx = {
+  const tx: any = {
     execute: async (query: any) => {
       const rendered = dialect.sqlToQuery(query);
       executed.push(rendered);
       if (rendered.sql.includes("SELECT counterKey, lastValue")) {
         return [[{ counterKey: "unified_transaction_floor", lastValue: 100050 }]];
+      }
+      if (rendered.sql.includes("AS maxExisting")) {
+        return [[{ maxExisting: opts.maxExistingCounter ?? 0 }]];
       }
       if (rendered.sql.includes("SELECT COALESCE(MAX(")) {
         return [[{ legacyFloor: 0 }]];
@@ -30,7 +36,14 @@ function makeMockTx(nextValue = 1) {
       }
       return [[]];
     },
-  } as any;
+  };
+  if (opts.invoiceHistoryMax !== undefined) {
+    tx.select = () => ({
+      from: () => ({
+        where: async () => [{ maxSeq: opts.invoiceHistoryMax }],
+      }),
+    });
+  }
   return { tx, executed };
 }
 
@@ -73,15 +86,41 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     process.env.ALROYA_NODE_ID = "cloud";
     const cloud = makeMockTx(10001);
     expect(await nextCounterValue(cloud.tx, "invoice")).toBe(10001);
-    expect(cloud.executed[0].params[0]).toBe("invoice:cloud");
-    expect(cloud.executed[0].params[1]).toBe(10001);
-    expect(cloud.executed[0].sql).toContain("MOD(lastValue + 1, 2)");
+    const cloudIns = cloud.executed.find((q) =>
+      q.sql.includes("INSERT INTO documentCounters"),
+    )!;
+    expect(cloudIns.params[0]).toBe("invoice:cloud");
+    expect(cloudIns.params[1]).toBe(10001);
+    expect(cloudIns.sql).toContain("MOD(lastValue + 1, 2)");
 
     process.env.ALROYA_NODE_ID = "local";
     const local = makeMockTx(10002);
     expect(await nextCounterValue(local.tx, "invoice")).toBe(10002);
-    expect(local.executed[0].params[0]).toBe("invoice:local");
-    expect(local.executed[0].params[1]).toBe(10002);
+    const localIns = local.executed.find((q) =>
+      q.sql.includes("INSERT INTO documentCounters"),
+    )!;
+    expect(localIns.params[0]).toBe("invoice:local");
+    expect(localIns.params[1]).toBe(10002);
+  });
+
+  it("seeds node-scoped invoice counters above existing unsuffixed counters and historical invoices", async () => {
+    process.env.ALROYA_NODE_ID = "cloud";
+    const cloudFromCounter = makeMockTx(10451, { maxExistingCounter: 10450 });
+    expect(await nextCounterValue(cloudFromCounter.tx, "invoice")).toBe(10451);
+    const cloudIns = cloudFromCounter.executed.find((q) =>
+      q.sql.includes("INSERT INTO documentCounters"),
+    )!;
+    expect(cloudIns.params[0]).toBe("invoice:cloud");
+    expect(cloudIns.params[1]).toBe(10451);
+
+    process.env.ALROYA_NODE_ID = "local";
+    const localFromHistory = makeMockTx(10482, { invoiceHistoryMax: 10480 });
+    expect(await nextCounterValue(localFromHistory.tx, "invoice")).toBe(10482);
+    const localIns = localFromHistory.executed.find((q) =>
+      q.sql.includes("INSERT INTO documentCounters"),
+    )!;
+    expect(localIns.params[0]).toBe("invoice:local");
+    expect(localIns.params[1]).toBe(10482);
   });
 
   it("nextTransactionTrackingNumber and delivery numbering scope keys per node cleanly", async () => {
