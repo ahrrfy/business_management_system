@@ -38,6 +38,7 @@ import { usePOSPreflightReconciliation } from "@/components/pos/usePOSPreflightR
 import {
   buildPosSaleReceiptContext,
   type POSSaleReceiptContext,
+  restorePosReceiptContextFromPreflightIntent,
   usePOSOfflineCapture,
 } from "@/components/pos/usePOSOfflineCapture";
 import { usePOSExternalPayment } from "@/components/pos/usePOSExternalPayment";
@@ -761,7 +762,10 @@ export default function POS() {
     setSaleError,
     releaseReservedPrintWindow,
     onTriggerSameKeyReplay: (intent) => {
-      saleCtxRef.current = captureSaleCtx();
+      saleCtxRef.current = restorePosReceiptContextFromPreflightIntent(
+        intent,
+        me.data?.name ?? offlineBoot?.name ?? undefined,
+      );
       sale.mutate(intent.saleInput as Parameters<typeof sale.mutate>[0]);
     },
   });
@@ -855,7 +859,8 @@ export default function POS() {
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
-    saleCtxRef.current = captureSaleCtx();
+    const submittedCtx = captureSaleCtx();
+    saleCtxRef.current = submittedCtx;
     reservePrintWindow(); if (deliveryPayload) saleLabelWinRef.current = preopenShippingLabelWindow();
     const splitLegs = activeTab.paymentLegs ?? [];
     const deviceId = isSplitPayment
@@ -913,6 +918,7 @@ export default function POS() {
       shiftId: shift.id,
       total: money(cashFull ? cashRoundedTotal : total),
       saleInput: onlineSubmitPayload as unknown as Record<string, unknown>,
+      receiptContext: submittedCtx as unknown as Record<string, unknown>,
       onPersistFailed: () => {
         saleCtxRef.current = null;
         try { saleLabelWinRef.current?.close(); } catch { /* noop */ }
@@ -952,7 +958,8 @@ export default function POS() {
       return;
     }
     // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده (نفس منطق submitSale أعلاه).
-    saleCtxRef.current = captureSaleCtx();
+    const submittedCtx = captureSaleCtx();
+    saleCtxRef.current = submittedCtx;
     reservePrintWindow();
     const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
@@ -978,6 +985,7 @@ export default function POS() {
       shiftId: shift.id,
       total: payAmount,
       saleInput: quickPayPayload as unknown as Record<string, unknown>,
+      receiptContext: submittedCtx as unknown as Record<string, unknown>,
       onPersistFailed: () => {
         saleCtxRef.current = null;
         try { saleLabelWinRef.current?.close(); } catch { /* noop */ }
