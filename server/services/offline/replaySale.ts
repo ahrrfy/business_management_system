@@ -52,6 +52,11 @@ export interface ReplayOfflineSaleInput {
   /** ش٤: سلطة البيع تحت التكلفة لعنصرٍ عُلِّق FORBIDDEN — يضبطها الراوتر بعد
    *  verifyManagerApproval (أو تلقائياً للمدير/الأدمن المرحِّل). */
   priceOverrideApproved?: boolean;
+  salesRepId?: number | null;
+  attribution?: CreateSaleInput["attribution"];
+  unverifiedOriginalCapturedByUserId?: number | null;
+  submittedByPresenterUserId?: number | null;
+  legacyMissingProof?: boolean;
 }
 
 export async function replayOfflineSale(
@@ -103,6 +108,8 @@ export function offlineSaleInput(
     },
     allowNegativeStock: true,
     priceOverrideApproved: input.priceOverrideApproved ?? false,
+    ...(input.salesRepId != null ? { salesRepId: input.salesRepId } : {}),
+    ...(input.attribution != null ? { attribution: input.attribution } : {}),
     // يُمرَّر من مسار استرداد المدير فقط، من submittedByUserId الخادمي لا من payload العميل.
     attributeToUserId: options?.attributeToUserId ?? null,
   };
