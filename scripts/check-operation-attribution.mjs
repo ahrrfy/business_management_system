@@ -113,6 +113,7 @@ if (!platformRouter.includes("listPlatformAudit")) fail("سجلّ إدارة ا�
 const BACKGROUND_POLICIES = {
   startAppNotificationOutboxWorker: "durable appNotificationOutbox + system summary",
   startDeliveryOutboxWorker: "durable deliveryOutbox + system summary",
+  startHybridImageOutboxWorker: "durable hybrid media outbox + R2 sync summary",
   startLagMonitor: "read-only runtime telemetry",
   startMorningPushCron: "durable pushDailyClaim/pushNotificationLog + system summary",
   startNativePushOutboxWorker: "durable nativePushOutbox + system summary",
