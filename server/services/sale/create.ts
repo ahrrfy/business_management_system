@@ -112,7 +112,7 @@ import {
   reserveSaleIdempotencyInTx,
 } from "../idempotency";
 import { computeSaleSemanticPayloadSha256 } from "@shared/offlineCaptureProof";
-import { enqueuePostCommit } from "../tx";
+import { enqueuePostCommit, enqueuePostRollback } from "../tx";
 import {
   discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
@@ -325,10 +325,10 @@ function canonicalSaleSemanticPayload(
 
 function registerPreDeploySalePayloadBridges(
   currentFingerprint: string,
-  fingerprintInput: Omit<CreateSaleInput, "paymentMode">,
+  canonicalPayload: Record<string, unknown>,
   input: CreateSaleInput,
 ): void {
-  registerLegacyPayloadHash(currentFingerprint, fingerprintInput);
+  registerLegacyPayloadHash(currentFingerprint, canonicalPayload);
 
   if (input.offlineCapture && input.sourceType === "POS" && input.payment) {
     const effectiveDeviceId =
@@ -393,6 +393,9 @@ export async function createSaleInTx(
     enqueuePostCommit(tx, () => {
       activeSaleFlights.delete(trackedFlightId);
     });
+    enqueuePostRollback(tx, () => {
+      activeSaleFlights.delete(trackedFlightId);
+    });
   }
   try {
     return await createSaleInTxInner(tx, rawInput, actor, capability);
@@ -422,13 +425,7 @@ async function createSaleInTxInner(
   const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } =
     input;
   const requestFingerprint = input.clientRequestId
-    ? idempotencyHash(
-        canonicalSaleSemanticPayload(
-          input,
-          effectiveSellerUserId,
-          rawPaymentLegs,
-        ),
-      )
+    ? idempotencyHash(fingerprintInput)
     : null;
   const semanticSaleSha256 = input.clientRequestId
     ? computeSaleSemanticPayloadSha256(input)
@@ -436,7 +433,11 @@ async function createSaleInTxInner(
   if (requestFingerprint) {
     registerPreDeploySalePayloadBridges(
       requestFingerprint,
-      fingerprintInput,
+      canonicalSaleSemanticPayload(
+        input,
+        effectiveSellerUserId,
+        rawPaymentLegs,
+      ),
       input,
     );
   }
