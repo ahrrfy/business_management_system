@@ -659,12 +659,12 @@ interface CrossTabPreflightLockLeaseV4 {
 }
 
 function generateRandomHexId(byteLen = 16): string {
-  if (typeof globalThis.crypto?.getRandomValues === "function") {
-    const buf = new Uint8Array(byteLen);
-    globalThis.crypto.getRandomValues(buf);
-    return bytesToHexLocal(buf);
+  if (typeof globalThis.crypto?.getRandomValues !== "function") {
+    throw new Error("WebCrypto getRandomValues is required for secure offline identifiers");
   }
-  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 14)}`;
+  const buf = new Uint8Array(byteLen);
+  globalThis.crypto.getRandomValues(buf);
+  return bytesToHexLocal(buf);
 }
 
 let currentTabInstanceId = generateRandomHexId(16);
