@@ -187,7 +187,29 @@ const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
 const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 
 function Protected({ children }: { children: React.ReactNode }) {
-  const [loc] = useLocation();   const connectivity = useConnectivity();   const offline =     isDisconnected(connectivity) ||     (typeof navigator !== "undefined" && !navigator.onLine);   const offlineUnlocked = useSyncExternalStore(     subscribeOfflineUnlock,     isOfflineUnlocked,     isOfflineUnlocked,   );   const coldOfflineStudio = isColdOfflineStudioRoute(loc) && offline;   const me = trpc.auth.me.useQuery(undefined, {     enabled: !coldOfflineStudio && !(offline && offlineUnlocked),   });   const retry = useCallback(() => {     void me.refetch();   }, [me.refetch]);   if (coldOfflineStudio)     return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;   if (!me.data && offline && offlineUnlocked)     return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.  if (me.data) {
+  const [loc] = useLocation();
+  const connectivity = useConnectivity();
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const offlineUnlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const coldOfflineStudio = isColdOfflineStudioRoute(loc) && offline;
+  const me = trpc.auth.me.useQuery(undefined, {
+    enabled: !coldOfflineStudio && !(offline && offlineUnlocked),
+  });
+  const retry = useCallback(() => {
+    void me.refetch();
+  }, [me.refetch]);
+  if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
+  if (!me.data && offline && offlineUnlocked)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
+  // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
+  if (me.data) {
     // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير بلا 2FA يُحجَبون على شاشة التفعيل حتى يُفعّلوها.
     if ((me.data as { mustEnroll2FA?: boolean }).mustEnroll2FA) {
       return (
