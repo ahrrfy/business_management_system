@@ -208,5 +208,27 @@ describe("صلاحيات استوديو المنتجات لجميع الموظف
         `snapshot:${path}`,
       ).toBe(true);
     }
+
+    // Current-catalog large policy (includes acquireOrCheckLock) preserves explicit denial
+    const currentLargePolicy = {
+      ...fullSnapshotGrants,
+      "operation.productStudio.acquireOrCheckLock": true,
+    };
+    const resolvedCurrentLarge = resolveOperationPolicy(
+      "cashier",
+      ROLE_TEMPLATES.cashier,
+      buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier),
+      { version: 1, grants: currentLargePolicy },
+    );
+    expect(
+      operationDecision(
+        {
+          role: "cashier",
+          operationPolicyEnabled: true,
+          resolvedOperationPolicy: resolvedCurrentLarge,
+        },
+        "productStudio.quickSaveBarcodeProductImage",
+      ).allowed,
+    ).toBe(false);
   });
 });
