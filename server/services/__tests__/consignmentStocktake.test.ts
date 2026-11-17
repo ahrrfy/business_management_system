@@ -43,7 +43,10 @@ async function mkConsignProduct(consignorId: number, share = "400", sell = "500"
 // رصيد مباشر بلا حركة (نمط setStockRow في stocktake.test) — كي لا تُحسَب حركة إيداعٍ بعد countedAt
 // «تصحيح ما بعد العدّ» فتنحرف اللقطة. الإيداع نفسه مُغطّى في consignmentNotes.test؛ هنا نختبر منطق الجرد.
 async function setStockRow(variantId: number, qty: number, branchId = 1) {
-  await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
+  await db()
+    .insert(s.branchStock)
+    .values({ variantId, branchId, quantity: qty })
+    .onDuplicateKeyUpdate({ set: { quantity: qty } });
 }
 async function supplierBalance(id: number): Promise<string> {
   return String((await db().select({ b: s.suppliers.currentBalance }).from(s.suppliers).where(eq(s.suppliers.id, id)))[0].b);

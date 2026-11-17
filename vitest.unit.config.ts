@@ -708,6 +708,7 @@ export const UNIT_TEST_FILES: string[] = [
       "tests/e2e/promotions/tier5_adversarial/challenger2_services_ui.test.ts",
       "server/services/__tests__/productStudioMilestone1.test.ts",
       "server/services/__tests__/productStudioMilestone2.test.ts",
+      "server/services/__tests__/numberingDualActive.unit.test.ts",
       // Products Studio Redesign E2E Track (Opaque-Box In-Memory Suite)
       "tests/e2e/products-studio/tier1_features.test.ts",
       "tests/e2e/products-studio/tier2_boundaries.test.ts",

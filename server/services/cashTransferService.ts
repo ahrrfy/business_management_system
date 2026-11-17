@@ -4,7 +4,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
-import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, lte, or } from "drizzle-orm";
 import { branches, cashTransfers, receipts, users } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -22,6 +22,7 @@ import {
   computeTreasuryCashBalance,
 } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
+import { nextCounterValue } from "./numbering";
 
 export interface SendTransferInput {
   fromBranchId: number;
@@ -63,14 +64,7 @@ async function nextTransferNumber(
     }
   }
 
-  await tx.execute(sql`
-    INSERT INTO documentCounters (counterKey, lastValue)
-    VALUES (${counterKey}, LAST_INSERT_ID(${maxSeq + 1}))
-    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${maxSeq + 1}))
-  `);
-  const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
-  const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
-  const seq = Number(row?.v ?? 1);
+  const seq = await nextCounterValue(tx, counterKey, maxSeq);
   return prefix + String(seq).padStart(5, "0");
 }
 

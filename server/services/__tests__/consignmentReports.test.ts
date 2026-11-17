@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -58,7 +58,10 @@ describe("بضاعة الأمانة ش٤ — استثناء التقييم", () 
     const row = bal.find((r) => r.consignorId === cid)!;
     expect(row.remainingQty).toBe(20);
     expect(row.remainingValueByShare).toBe("80000.00");
-    await db().update(s.branchStock).set({ quantity: 20.0001 }).where(eq(s.branchStock.variantId, Number(v.id)));
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: 20.0001 })
+      .where(and(eq(s.branchStock.variantId, Number(v.id)), eq(s.branchStock.branchId, 1)));
     const fractional = (await consignmentBalancesReport()).find((r) => r.consignorId === cid)!;
     expect(fractional.remainingQty).toBe(20.0001);
     expect(fractional.remainingValueByShare).toBe("80000.40");

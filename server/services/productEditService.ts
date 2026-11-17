@@ -50,6 +50,7 @@ import {
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
+import { ensureBranchStockRowsForAllBranches } from "./inventory/stockLock";
 import { extractInsertId } from "../lib/insertId";
 import { rejectLegacyCatalogMediaWrite } from "./catalog/mediaWriteGuard";
 import { PRINT_SERVICE_TYPE } from "./printSaleService";
@@ -962,6 +963,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       .where(eq(products.id, input.productId));
 
     let added = 0;
+    const stockEnsureVariantIds: number[] = [];
     // تدقيق ١١/٨ (#2): اسم وحدة الأساس الجديدة (القالب مشترك) — الحارس يفحص كل متغيّرٍ قائمٍ به رصيد/حركة.
     const newBaseName = input.unitTemplate.find((u) => u.isBaseUnit)!.unitName;
 
@@ -1018,9 +1020,13 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
           tx, variantId, { by: "name", unitName: newBaseName }, owned.costPrice, vals.costPrice, actor, v.costChangeReason,
         );
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
+        if (p.isService && !willBeService) {
+          stockEnsureVariantIds.push(variantId);
+        }
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);
+        stockEnsureVariantIds.push(variantId);
         added++;
       }
       await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.barcodeAliases, v.baseRetail, actor);
@@ -1047,6 +1053,10 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
           await tx.delete(productImages).where(eq(productImages.variantId, variantId));
         }
       }
+    }
+
+    if (!willBeService && !p.isBundle && stockEnsureVariantIds.length) {
+      await ensureBranchStockRowsForAllBranches(tx, stockEnsureVariantIds);
     }
 
     // صور المنتج العامّة (variantId=NULL): undefined ⇒ لا تُمَسّ؛ مصفوفة ⇒ يُعاد التوفيق بالمعرّف.
