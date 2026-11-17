@@ -21,18 +21,35 @@ import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { usePosCartPromotions } from "@/components/pos/usePosCartPromotions";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled } from "@/lib/offline/outbox";
+import {
+  clearActiveOfflineCaptureGrant,
+  getDeviceCode,
+  setActiveOfflineCaptureGrant,
+} from "@/lib/offline/outbox";
+import {
+  getCachedOfflinePermSnapshotSync,
+  readCrossTabSessionEpoch,
+  resolveOfflinePermSnapshot,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
 import { setMeta } from "@/lib/offline/db";
+import { POSUnconfirmedSaleBanner } from "@/components/pos/POSUnconfirmedSaleBanner";
+import { usePOSPreflightReconciliation } from "@/components/pos/usePOSPreflightReconciliation";
+import {
+  buildPosSaleReceiptContext,
+  type POSSaleReceiptContext,
+  usePOSOfflineCapture,
+} from "@/components/pos/usePOSOfflineCapture";
+import { usePOSExternalPayment } from "@/components/pos/usePOSExternalPayment";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
 import { trpc } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { variantDisplayName } from "@shared/variantDisplay";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
 import { applyCustomerIdentity, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
@@ -40,7 +57,7 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, buildPosReceiptPromoSummary,
+  lineIdOf, POS_COLORS, fmt, money, buildSaleLine, createTab, buildPosReceiptPromoSummary,
 } from "@/components/pos/posShared";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
@@ -58,8 +75,6 @@ import { usePOSPrinter } from "@/components/pos/usePOSPrinter";
 import { usePOSKeyboardShortcuts } from "@/components/pos/usePOSKeyboardShortcuts";
 import {
   computePOSTotals,
-  computePosSaleReceiptSnapshot,
-  computeSplitLegFingerprint,
   evaluatePosCreditPrompt,
   parsePosLegAmountD,
   validatePosSaleBeforeSubmit,
@@ -98,8 +113,26 @@ export default function POS() {
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   useOfflineCatalogSync(me.data ? branchId : null);
 
-  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة العملاء RECEPTION).
-  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
+  const shiftQueryStartedEpochRef = useRef<number>(readCrossTabSessionEpoch());
+  const shiftQ = trpc.shifts.current.useQuery(
+    { branchId, shiftType: "RETAIL" },
+    {
+      enabled: !offline,
+      refetchInterval: !offline ? 15 * 60_000 : false,
+      refetchOnWindowFocus: !offline,
+    },
+  );
+  useEffect(() => {
+    if (shiftQ.isFetching) {
+      shiftQueryStartedEpochRef.current = readCrossTabSessionEpoch();
+    }
+  }, [shiftQ.isFetching]);
+  useEffect(() => {
+    if (!offline && me.data?.id) {
+      shiftQueryStartedEpochRef.current = readCrossTabSessionEpoch();
+      void shiftQ.refetch();
+    }
+  }, [offline, me.data?.id]);
   // العهدة لا تصل إلى الدرج بمجرد طلب المالك. نظهرها في محطة الكاشير نفسها كي
   // يؤكد الاستلام الفعلي، بدل الاعتماد على رابط إداري مخفي عن تنقله.
   const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery(undefined, { enabled: me.data != null && !offline });
@@ -124,11 +157,23 @@ export default function POS() {
     (request) => shift?.id != null && Number(request.shiftId) === Number(shift.id),
   );
 
-  // ش٥: كاش آخر وردية مفتوحة (يتجدد أونلاين؛ يُمسح عند غيابها كي لا يُلتقط على وردية بائدة).
   useEffect(() => {
-    if (shiftQ.data?.id) void setMeta("lastOpenShift", JSON.stringify({ id: shiftQ.data.id, branchId }));
-    else if (shiftQ.isSuccess && !shiftQ.data) void setMeta("lastOpenShift", "");
-  }, [shiftQ.data?.id, shiftQ.isSuccess, branchId]);
+    if (shiftQ.data?.id) {
+      void setMeta("lastOpenShift", JSON.stringify({ id: shiftQ.data.id, branchId }));
+      void setActiveOfflineCaptureGrant(shiftQ.data.offlineCaptureGrant ?? null, {
+        expectedSessionEpoch: shiftQueryStartedEpochRef.current,
+        expectedUserId: me.data?.id ?? null,
+      });
+    } else if (shiftQ.isSuccess && !shiftQ.data) {
+      void setMeta("lastOpenShift", "");
+      void clearActiveOfflineCaptureGrant("no_open_shift_on_server");
+    }
+  }, [shiftQ.data?.id, shiftQ.data?.offlineCaptureGrant, shiftQ.isSuccess, branchId, me.data?.id]);
+
+  const viewerUserId = me.data?.id ?? offlineBoot?.userId ?? null;
+  const viewerCanAdminReconcile = Boolean(
+    me.data && (me.data.isOwner || me.data.role === "admin" || me.data.role === "manager"),
+  );
 
   // ── Multi-tab State ──────────────────────────────────────────────────────
   const [tabs,     setTabs]     = useState<POSTab[]>([createTab(1, "طلب 1")]);
@@ -290,10 +335,24 @@ export default function POS() {
     externalPaymentFingerprint,
     externalPaymentConfirmed,
   } = computePOSTotals({ cart, activeTab });
-  // الاستجابات المتأخرة للكوبونات يجب ألا تغيّر أسعار سلة صار فيها رقميّ.
-  const canSubmitSale = !me.data || (cartHasDigital
-    ? lifecycleActionAllowed(me.data, "digitalCards.sales.prepare", true) && lifecycleActionAllowed(me.data, "digitalCards.sales.finalize", true)
-    : lifecycleActionAllowed(me.data, "sales.create", true));
+  const offlinePermSnap = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    () => getCachedOfflinePermSnapshotSync(offlineBoot?.userId ?? null),
+    () => getCachedOfflinePermSnapshotSync(offlineBoot?.userId ?? null),
+  );
+  useEffect(() => {
+    if (!me.data && offline && offlineBoot?.userId) {
+      void resolveOfflinePermSnapshot(offlineBoot.userId, branchId).catch(() => null);
+    }
+  }, [me.data, offline, offlineBoot?.userId, branchId]);
+  // v4 fail-closed: when `me.data` is absent offline, NEVER default `canSubmitSale` to true!
+  // Require a valid, AAD-decrypted, non-expired `offlinePermSnap` authorizing retail sales.create.
+  const canSubmitSale = me.data
+    ? cartHasDigital
+      ? lifecycleActionAllowed(me.data, "digitalCards.sales.prepare", true) &&
+        lifecycleActionAllowed(me.data, "digitalCards.sales.finalize", true)
+      : lifecycleActionAllowed(me.data, "sales.create", true)
+    : Boolean(offline && !cartHasDigital && offlinePermSnap?.canCreateRetailSale === true);
   const cartHasDigitalRef = useRef(cartHasDigital);
   cartHasDigitalRef.current = cartHasDigital;
 
@@ -578,24 +637,44 @@ export default function POS() {
   // يكرّر الفاتورة، ولا يتصادم بيع تبويب مع آخر. يتجدّد مفتاح التبويب بعد نجاح بيعه فقط.
   // لقطة البيع (تُلتقط لحظة الإرسال) تجمّد التبويب المُباع وأرقامه ⇒ يُبنى الإيصال ويُفرَّغ
   // التبويب الصحيح في onSuccess حتى لو بدّل الكاشير التبويب أثناء جريان البيع — عزل مالي تام.
-  const saleCtxRef = useRef<{
-    tabId: number;
-    lines: Receipt["lines"];
-    subtotal: number;
-    invoiceDiscount: number;
-    cashRounding: number;
-    total: number; received: number; change: number; credit: number;
-    isCredit: boolean; method: string; methodCode?: string;
-    paymentLegs?: Receipt["paymentLegs"];
-    customerName?: string; customerPhone?: string | null; cashierName?: string;
-    /** م١ PR-B: كتلة التوصيل للإيصال + بيانات الليبل (تُلتقط لحظة الإرسال). */
-    delivery?: Receipt["delivery"]; cartSnapshot: CartItem[]; freeShippingPromoName?: string | null; couponLabel?: string | null;
-    labelMeta?: { governorate?: string | null; recipientName?: string | null; recipientPhone?: string | null; externalTrackingRef?: string | null } | null;
-  } | null>(null);
+  const saleCtxRef = useRef<POSSaleReceiptContext | null>(null);
   const saleLabelWinRef = useRef<Window | null>(null);
+
+  function captureSaleCtx(): POSSaleReceiptContext {
+    return buildPosSaleReceiptContext({
+      activeTab, cart, subtotal, invoiceDiscountAmount, cashRoundingDelta,
+      effectiveTotalD, cashRoundedPaidD, paidD, isCredit, codMode,
+      selectedCustomer, cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
+      deliveryPayload, freeShippingPromoName,
+    });
+  }
+
+  const captureOfflineSale = usePOSOfflineCapture({
+    activeTab,
+    branchId,
+    shift,
+    cart,
+    isCredit,
+    effectiveTier,
+    cashRoundedTotal,
+    invoiceDiscountAmountD,
+    capturedByUserId: viewerUserId,
+    enforceOfflinePermPolicy: !me.data,
+    captureSaleCtx,
+    setSaleError,
+    setReceipt,
+    setLastInv,
+    patchTab,
+    releaseReservedPrintWindow,
+    printAuthorizedReceipt,
+  });
+
+  const preflightRef = useRef<ReturnType<typeof usePOSPreflightReconciliation> | null>(null);
 
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r, submitted) => {
+      const doneReqId = submitted.clientRequestId ?? activeTab.clientRequestId;
+      await preflightRef.current?.handleMutationSuccess(doneReqId);
       const ctx = saleCtxRef.current;
       saleCtxRef.current = null;
       if (!ctx) return; // أمان — لا لقطة (لا يُفترض حدوثه)
@@ -612,7 +691,6 @@ export default function POS() {
         printTime: fmtTime(now),
         cashierName: ctx.cashierName,
         customerName: ctx.customerName,
-        // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
         shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
         lines: ctx.lines,
         subtotal: ctx.subtotal,
@@ -622,15 +700,11 @@ export default function POS() {
         credit: ctx.credit, isCredit: ctx.isCredit,
         method: ctx.method, methodCode: ctx.methodCode,
         paymentLegs: ctx.paymentLegs,
-        // م١ PR-B: الطرد المُنشأ في معاملة البيع (يعود من الخادم) + كتلة التوصيل للإيصال.
         delivery: effDelivery,
         consignmentNumber: r.consignmentNumber ?? null,
         promoSummary: buildPosReceiptPromoSummary({ cart: ctx.cartSnapshot, invoiceDiscount: ctx.invoiceDiscount, delivery: effDelivery, freeShippingPromoName: ctx.freeShippingPromoName, couponLabel: ctx.couponLabel, serverSummary: srvPromo }),
         bounceBackCoupon: (r as { bounceBackCoupon?: Receipt["bounceBackCoupon"] }).bounceBackCoupon ?? null,
       };
-      // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
-      // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
-      // حالياً، لكن الاعتماد على قيمة الخادم يحصّن الإيصال ضدّ أي تعديل مستقبلي على القاعدة).
       const serverTotal = r.total != null ? Number(r.total) : ctx.total;
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
@@ -639,7 +713,6 @@ export default function POS() {
         ? `أُسند الطرد ${r.consignmentNumber} للتوصيل`
         : alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه";
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, saleMsg);
-      // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { extraCharges: undefined, cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, couponFreeShippingPromo: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
 
       const lblWin = saleLabelWinRef.current; saleLabelWinRef.current = null;
@@ -660,23 +733,40 @@ export default function POS() {
       ]);
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
-    onError: (e) => {
+    onError: (e, variables) => {
+      const reqId = (variables as { clientRequestId?: string } | undefined)?.clientRequestId ?? activeTab.clientRequestId;
       try { saleLabelWinRef.current?.close(); } catch { /* noop */ } saleLabelWinRef.current = null;
-      const errData = e.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
-      const code = errData?.code;
       const offlineCapturable = !!shift && cart.length > 0 && !cart.some((c) => c.digital) && !isSplitPayment && activeTab.method === "CASH" && !isCredit && !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
-      if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
-        if (!offlineCapturable) releaseReservedPrintWindow();
-        saleCtxRef.current = null; void captureOfflineSale(); return;
-      }
-      releaseReservedPrintWindow();
-      if (code === "PRECONDITION_FAILED" || (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))))
-        setCreditPrompt(e.message);
-      else { notify.errBig(e); setSaleError(e.message); }
+      preflightRef.current?.handleMutationError({
+        err: e,
+        reqId,
+        offlineCapturable,
+        captureOfflineSale,
+        clearPendingSaleCtx: () => { saleCtxRef.current = null; },
+      });
     },
   });
 
-  const initiateExternalPayment = trpc.sales.initiateExternalPayment.useMutation();
+  const preflight = usePOSPreflightReconciliation({
+    branchId,
+    offline,
+    viewerUserId,
+    hasAuthenticatedUser: Boolean(me.data),
+    viewerCanAdminReconcile,
+    isSalePending: sale.isPending,
+    utils,
+    setLastInv,
+    patchTab,
+    setCreditPrompt,
+    setSaleError,
+    releaseReservedPrintWindow,
+    onTriggerSameKeyReplay: (intent) => {
+      saleCtxRef.current = captureSaleCtx();
+      sale.mutate(intent.saleInput as Parameters<typeof sale.mutate>[0]);
+    },
+  });
+  preflightRef.current = preflight;
+
   const extraCheckout=useCashierExtraCharges({
     channel:"POS",branchId,shiftId:shift?.id,token:activeTab.clientRequestId,tab:activeTab,splitLegs:isSplitPayment?activeTab.paymentLegs:undefined,
     enabled:canSubmitSale,connected:!offline,confirmed:externalPaymentConfirmed,cartLength:cart.length,
@@ -686,62 +776,11 @@ export default function POS() {
     refresh:()=>void shiftQ.refetch(),
   });
   const {submitChargesOnly}=extraCheckout;
-  const confirmExternalPaymentMutation = trpc.sales.confirmExternalPayment.useMutation();
-
-  async function confirmCurrentExternalPayment(legId?: string) {
-    const leg = legId ? (activeTab.paymentLegs ?? []).find((l) => l.id === legId) : null;
-    const method = leg ? leg.method : activeTab.method;
-    if (!shift ||
-      (!cart.length && !checkoutExtraTotal(activeTab.extraCharges).gt(0)) || (legId && !leg) || method === "CASH") return;
-    if (cartHasDigital && method !== "CARD") { notify.err("البيع الرقمي نقداً أو ببطاقة فقط."); return; }
-    const tabId = activeTab.id;
-    const reference = (leg ? leg.paymentRef : (activeTab.paymentRef ?? "")).trim();
-    if (!reference) { notify.err("أدخل مرجع الدفع الخارجي أولاً."); return; }
-    if (leg ? parsePosLegAmountD(leg.amount).lte(0) : activeTab.payInput.trim() !== "" && D(activeTab.payInput).lte(0)) {
-      notify.err("مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية.");
-      return;
-    }
-    const feeForLeg = leg && cart.length>0 && activeTab.paymentLegs?.[0]?.id === leg.id ? deliveryFeeHeldD.plus(checkoutExtraTotal(activeTab.extraCharges))
-        : D(0);
-    const amountStr = leg ? parsePosLegAmountD(leg.amount).plus(feeForLeg).toFixed(2) : externalPaymentAmount;
-    const fingerprint = leg ? computeSplitLegFingerprint(leg, feeForLeg) : externalPaymentFingerprint;
-    const curExt = leg ? leg.externalPayment : activeTab.externalPayment;
-    const prior = curExt?.fingerprint === fingerprint ? curExt : null;
-    const requestId = cartHasDigital ? activeTab.clientRequestId+":card" : prior?.requestId ?? newClientRequestId();
-    let deviceId = prior?.deviceId;
-    if (!deviceId) {
-      try { deviceId = await getDeviceCode(); }
-      catch { notify.err("تعذّر تحديد جهاز الكاشير — لا يمكن تأكيد دفع خارجي بلا هوية جهاز."); return; }
-    }
-    if(cartHasDigital){
-      if(legId || isSplitPayment || activeTab.couponCode || checkoutExtraTotal(activeTab.extraCharges).gt(0) || !D(amountStr).eq(total)){
-        notify.err("قبض البطاقة الرقمية يتطلب كامل المبلغ دون دفعات مقسمة أو إضافات");return;
-      }
-      await startDigitalFulfillment({reference,requestId:activeTab.clientRequestId+":card",deviceId});return;
-    }
-    const writeExt = (state: "INITIATED" | "CONFIRMED", attemptId: number | null) => {
-      const nextExt = { attemptId, requestId, fingerprint, state, deviceId: deviceId! };
-      if (legId) patchLegExternalPayment(tabId, legId, nextExt);
-      else patchTab(tabId, { externalPayment: nextExt });
-    };
-    if (legId) setConfirmingLegId(legId);
-    writeExt(prior?.state ?? "INITIATED", prior?.attemptId ?? null);
-    try {
-      let attemptId = prior?.attemptId ?? null;
-      if (!attemptId) {
-        const initiated = await initiateExternalPayment.mutateAsync({ branchId, method, amount: amountStr, reference, requestId, deviceId });
-        attemptId = initiated.attemptId;
-        writeExt("INITIATED", attemptId);
-      }
-      await confirmExternalPaymentMutation.mutateAsync({ branchId, attemptId, deviceId });
-      writeExt("CONFIRMED", attemptId);
-      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرةً واحدة.`);
-    } catch (error) {
-      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
-    } finally {
-      if (legId) setConfirmingLegId(null);
-    }
-  }
+  const { confirmCurrentExternalPayment, externalPaymentPending } = usePOSExternalPayment({
+    branchId, shift, activeTab, cart, cartHasDigital, isSplitPayment, total,
+    deliveryFeeHeldD, externalPaymentAmount, externalPaymentFingerprint,
+    patchTab, patchLegExternalPayment, setConfirmingLegId, startDigitalFulfillment,
+  });
 
   const couponPreview = trpc.crm.coupons.preview.useMutation();
   const couponLiveRef = useRef({ activeId, branchId, effectiveTier, cartHasDigital, activeTab });
@@ -764,152 +803,21 @@ export default function POS() {
     }
   }
 
-  // §٥: لقطة مبالغ/منتجات البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
-  // المُباع ولا تنجرف لو بدّل الكاشير التبويب. نفس صيغ الحساب القديمة (لا تغيير سلوك).
-  function captureSaleCtx(): NonNullable<typeof saleCtxRef.current> {
-    const snap = computePosSaleReceiptSnapshot({ activeTab, effectiveTotalD, cashRoundedPaidD, paidD, isCredit, codMode });
-    return {
-      tabId: activeTab.id,
-      lines: cart.map((c) => ({
-        name: variantDisplayName({
-          productName: c.row.productName,
-          variantName: c.row.variantName,
-          color: c.row.color,
-          size: c.row.size,
-          sku: c.row.sku,
-        }),
-        unit: c.row.unitName,
-        qty: c.qty, price: effectivePrice(c),
-        disc: c.disc, total: itemTotal(c),
-      })),
-      subtotal: subtotal,
-      invoiceDiscount: invoiceDiscountAmount,
-      cashRounding: cashRoundingDelta,
-      total: snap.total,
-      received: snap.received,
-      change:   snap.change,
-      credit:   snap.credit,
-      isCredit: !codMode && isCredit,
-      method: snap.method,
-      methodCode: snap.effectiveMethodCode,
-      paymentLegs: snap.paymentLegs,
-      customerName: selectedCustomer?.name, customerPhone: activeTab.delivery?.customerPhone || selectedCustomer?.phone || null,
-      cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
-      delivery: activeTab.delivery && deliveryPayload
-        ? { partyName: activeTab.delivery.partyName, fee: deliveryPayload.fee, feeCollection: deliveryPayload.feeCollection, address: deliveryPayload.address ?? null }
-        : null,
-      cartSnapshot: cart, freeShippingPromoName, couponLabel: activeTab.couponLabel,
-      labelMeta: deliveryPayload ? { governorate: deliveryPayload.governorate ?? null, recipientName: deliveryPayload.recipientName ?? null, recipientPhone: deliveryPayload.recipientPhone ?? null, externalTrackingRef: deliveryPayload.externalTrackingRef ?? null } : null,
-    };
-  }
-
-  // ── التقاط البيع دون اتصال (ش٣) ─────────────────────────────────────────────
-  // نقدي كامل فقط (قرار مالك): يُحفظ البيع في طابور Dexie بنفس clientRequestId الذي كان
-  // سيستعمله أونلاين، يُطبع إيصال مؤقّت OFF-... بنفس التصميم، ويُرحَّل تلقائياً عند عودة
-  // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
-  async function captureOfflineSale() {
-    let readyToPrint = false;
-    try {
-    if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
-      notify.err("قبض الأجور يتطلب اتصالاً بالخادم؛ احتُفظ بالمسودة وإثبات الدفع لإعادة المحاولة بنفس المرجع"); return;
-    }
-    if (!shift || !cart.length) return;
-    // م١ PR-B (سلامة ماليّة): الدفاعُ الأخير لكلّ مسارات الالتقاط (٥٠٣ · submitSale · quickPay) —
-    // سلّةُ توصيلٍ لا تُلتقَط نقداً صرفاً دون إسنادِ جهةٍ ولا تحصيلِ COD (الخادم يرفضها من الطابور).
-    if (deliveryBlocksOfflineCapture(activeTab.delivery)) { notify.errBig(OFFLINE_DELIVERY_BLOCK.title, OFFLINE_DELIVERY_BLOCK.body); return; }
-    // البطاقات الرقمية ش٥: البيع الرقميّ **محظور أوفلاين** (مسألة مؤجَّلة صراحةً في §٢٤ من وثيقة
-    // التصميم) — السعر والتنفيذ الخارجيّ واستهلاك المحفظة كلّها تحتاج الخادم لحظةَ البيع.
-    if (cart.some((c) => c.digital)) {
-      notify.errBig("لا بيع رقميّ دون اتصال", "الكروت والاشتراكات تحتاج الخادم للتحقّق من السعر والتنفيذ. أزِلها من السلة.");
-      return;
-    }
-    // الالتقاط مفعَّلٌ تلقائياً على كل جهاز (قرار مالك ١٦/٨). لا يصل هنا إلّا جهازٌ **عُطِّل
-    // صراحةً** من إعدادات الجهاز — فالرسالة تشرح ذلك بدل مطالبة الكاشير بتفعيلٍ مسبق.
-    if (!(await isOfflineSaleEnabled())) {
-      notify.errBig(
-        "البيع دون اتصال مُعطَّل على هذا الجهاز",
-        "عُطِّل يدوياً من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة — أعِد تفعيله ليقبل النقد أثناء الانقطاع.",
-      );
-      return;
-    }
-    if (activeTab.method !== "CASH" || isCredit) {
-      notify.errBig("أثناء انقطاع الاتصال: البيع النقدي الكامل فقط — الآجل والبطاقة يتطلبان اتصالاً بالخادم.");
-      return;
-    }
-    if (activeTab.couponCode) {
-      notify.errBig("الكوبونات غير متاحة دون اتصال — أزل الكوبون أولاً.");
-      return;
-    }
-    // صمّاما الأمان: عمر الأسعار المحلية + سقف قيمة الطابور.
-    const gate = await assertCanCapture(cashRoundedTotal);
-    if (!gate.ok) {
-      notify.errBig(gate.reason);
-      return;
-    }
-    const ctx = captureSaleCtx();
-    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
-    const ok = await enqueueOfflineSale({
-      payload: {
-        branchId,
-        shiftId: shift.id,
-        customerId: activeTab.customerId ?? undefined,
-        priceTier: effectiveTier,
-        // M4 (F25): الحفاظ على promotionId و promotionDiscount في طابور الأوفلاين للتحقق عند المزامنة
-        lines: cart.map(buildSaleLine),
-        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-        // نفس منطق submitSale: نرسل المقرَّب لأنّه ما قبضه الكاشير فعلياً (الأوفلاين نقديّ كامل بحكم القرار).
-        payment: { amount: money(cashRoundedTotal), method: "CASH" },
-        clientRequestId: activeTab.clientRequestId,
-        cashRoundIQD: true,
-      },
-      offlineReceiptNumber: receiptNumber,
-      total: money(cashRoundedTotal),
-    });
-    if (!ok) {
-      notify.errBig("تعذّر حفظ البيع محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
-      return;
-    }
-    const now = new Date();
-    const rec: Receipt = {
-      invoiceNumber: receiptNumber,
-      invoiceId: 0, // لا فاتورة رسمية بعد — الطباعة تستعمل الرقم فقط.
-      date: fmtDateTime(now),
-      printDate: fmtDate(now),
-      printTime: fmtTime(now),
-      cashierName: ctx.cashierName,
-      customerName: ctx.customerName,
-      shiftId: shift?.id ?? null,
-      lines: ctx.lines,
-      subtotal: ctx.subtotal,
-      invoiceDiscount: ctx.invoiceDiscount,
-      total: ctx.total, received: ctx.received, change: ctx.change,
-      credit: ctx.credit, isCredit: ctx.isCredit,
-      method: ctx.method, methodCode: ctx.methodCode,
-      promoSummary: buildPosReceiptPromoSummary({ cart: ctx.cartSnapshot, invoiceDiscount: ctx.invoiceDiscount }),
-    };
-    setReceipt(rec);
-    setLastInv({ num: receiptNumber, total: ctx.total });
-    notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, {
-      extraCharges: undefined,
-      cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
-    readyToPrint = true;
-    try {
-    const printed = await printAuthorizedReceipt(rec);
-    if (!printed.ok) {
-      notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-    } else if (printed.via === "browser") {
-      notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
-    }
-    } catch (cause) {
-      notify.warn("البيع المؤقت محفوظ؛ تعذّرت طباعة الإيصال", errMsg(cause));
-    }
-    } catch (cause) { notify.errBig(errMsg(cause)); } finally { if (!readyToPrint) releaseReservedPrintWindow(); }
-  }
-
   async function submitSale(approval?: ManagerApprovalInput) {
+    const isSameKeyManagerRetry = Boolean(
+      approval &&
+        preflight.unconfirmedSaleIntent &&
+        preflight.unconfirmedSaleIntents.length === 1 &&
+        preflight.unconfirmedSaleIntent.clientRequestId === activeTab.clientRequestId &&
+        preflight.foreignOwnerPendingCount === 0 &&
+        preflight.activeInOtherTabCount === 0,
+    );
+    if (!isSameKeyManagerRetry && preflight.hasBlockingConflict) {
+      notify.errBig(preflight.getBlockingMessage());
+      return;
+    }
     if(durable.pending || durable.busy || (digitalScope && !durable.ready))return;
-    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
+    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); setSaleError("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift) return;
     if (!cart.length) { await submitChargesOnly(); return; }
@@ -965,9 +873,9 @@ export default function POS() {
     const sendsGoodsPayment =
       checkoutExtraTotal(activeTab.extraCharges).gt(0) ||
       isSplitPayment || !((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)));
-    sale.mutate({
+    const onlineSubmitPayload = {
       ...checkoutExtraPayload(activeTab.extraCharges),
-      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      branchId, shiftId: shift.id, sourceType: "POS" as const, clientRequestId: activeTab.clientRequestId,
       ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
@@ -998,16 +906,34 @@ export default function POS() {
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
+    };
+    await preflight.recordAndDispatchPreflightSale({
+      clientRequestId: activeTab.clientRequestId,
+      tabId: activeTab.id,
+      shiftId: shift.id,
+      total: money(cashFull ? cashRoundedTotal : total),
+      saleInput: onlineSubmitPayload as unknown as Record<string, unknown>,
+      onPersistFailed: () => {
+        saleCtxRef.current = null;
+        try { saleLabelWinRef.current?.close(); } catch { /* noop */ }
+        saleLabelWinRef.current = null;
+        releaseReservedPrintWindow();
+      },
+      dispatch: () => sale.mutate(onlineSubmitPayload),
     });
   }
 
   async function quickPay() {
+    if (preflight.hasBlockingConflict) {
+      notify.errBig(preflight.getBlockingMessage());
+      return;
+    }
     if(durable.pending || durable.busy || (digitalScope && !durable.ready))return;
     if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
       await submitSale();
       return;
     }
-    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
+    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); setSaleError("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift || !cart.length) return;
     if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
@@ -1030,15 +956,14 @@ export default function POS() {
     reservePrintWindow();
     const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
-    sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+    const quickPayPayload = {
+      branchId, shiftId: shift.id, sourceType: "POS" as const, clientRequestId: activeTab.clientRequestId,
       ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      // Quick pay means full payment; it must not silently replace CARD/TRANSFER/WALLET with CASH.
       payment: {
         amount: payAmount,
         method: activeTab.method,
@@ -1046,6 +971,20 @@ export default function POS() {
       },
       ...(activeTab.method === "CASH" ? { cashRoundIQD: true } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
+    };
+    await preflight.recordAndDispatchPreflightSale({
+      clientRequestId: activeTab.clientRequestId,
+      tabId: activeTab.id,
+      shiftId: shift.id,
+      total: payAmount,
+      saleInput: quickPayPayload as unknown as Record<string, unknown>,
+      onPersistFailed: () => {
+        saleCtxRef.current = null;
+        try { saleLabelWinRef.current?.close(); } catch { /* noop */ }
+        saleLabelWinRef.current = null;
+        releaseReservedPrintWindow();
+      },
+      dispatch: () => sale.mutate(quickPayPayload),
     });
   }
 
@@ -1079,6 +1018,10 @@ export default function POS() {
     searchRef,
     onSubmitSale: () => submitSaleRef.current(),
     onClearCart: () => {
+      if (preflight.hasBlockingConflict) {
+        notify.errBig("لا يمكن مسح السلة أثناء وجود فاتورة غير مؤكدة بانتظار التحقق التلقائي من الخادم.");
+        return;
+      }
       setCart([]);
       setPayInput("");
       setSelId(null);
@@ -1093,7 +1036,7 @@ export default function POS() {
     <DigitalFulfillmentDialog intentId={durable.intentId} finalizing={durable.busy} finalizeError={durable.error}
       onClose={()=>{releaseReservedPrintWindow();durable.dismiss();}} onAllExecuted={id=>void durable.finish(id)}/>
   </>;
-  if (shiftQ.isLoading || !shift) {
+  if ((shiftQ.isLoading && !shift) || !shift) {
     return (
       <POSShiftOpenScreen
         C={C}
@@ -1119,6 +1062,7 @@ export default function POS() {
   // تدقيق ١٧/٧: أتِح زرّ الدفع للبيع الآجل الجزئي عند اختيار عميل — كان معطَّلاً لأي دفعة أقل من الإجمالي
   // فيستحيل إتمام الآجل الجزئي باللمس/الفأرة (F4 وحده كان يتجاوزه، وهو غائب على اللوحي).
   const canPay =
+    !preflight.hasBlockingConflict &&
     canSubmitSale &&
     cart.length > 0 &&
     !(cartHasDigital && (isSplitPayment || (activeTab.method !== "CASH" && activeTab.method !== "CARD"))) &&
@@ -1161,6 +1105,14 @@ export default function POS() {
         />,
         headerActionsNode,
       )}
+
+      <POSUnconfirmedSaleBanner
+        unconfirmedSaleIntents={preflight.unconfirmedSaleIntents}
+        foreignOwnerPendingCount={preflight.foreignOwnerPendingCount}
+        activeInOtherTabCount={preflight.activeInOtherTabCount}
+        canServerFence={!offline && Boolean(me.data)}
+        onFenceIntent={(intent) => void preflight.fenceAndCancelUnconfirmedIntent(intent)}
+      />
 
       {cartHasDigital && (
         <div
@@ -1235,7 +1187,7 @@ export default function POS() {
           paymentRef={activeTab.paymentRef ?? ""}
           setPaymentRef={(v) => patchActive({ paymentRef: v, externalPayment: null })}
           externalPaymentConfirmed={externalPaymentConfirmed}
-          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+          externalPaymentPending={externalPaymentPending}
           onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
           dueDate={activeTab.dueDate ?? ""}
           setDueDate={(v) => patchActive({ dueDate: v })}
