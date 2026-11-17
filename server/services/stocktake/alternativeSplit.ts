@@ -18,6 +18,7 @@ import {
 import { extractInsertId } from "../../lib/insertId";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { acquireCatalogBarcodeWriteLock, findBarcodeClashes, normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
+import { ensureBranchStockRowsForAllBranches } from "../inventory/stockLock";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 
@@ -319,6 +320,7 @@ export async function splitAliasToAlternative(
       costPrice: toDbMoney(input.cost?.trim() || String(srcVariant.costPrice ?? "0")),
     });
     const newVariantId = extractInsertId(vRes);
+    await ensureBranchStockRowsForAllBranches(tx, [newVariantId]);
 
     // (٦) وحدة الأساس للبديل تحمل الباركود المنقول.
     const uRes = await tx.insert(productUnits).values({

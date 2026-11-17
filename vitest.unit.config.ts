@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 
 /** اختبارات منطقية خالصة لا تحتاج قاعدة MySQL؛ تبقى منفصلة عن حزمة التكامل التي تنظف قاعدة الاختبار. */
 export const UNIT_TEST_FILES: string[] = [
+  "shared/__tests__/studioEmployeePermissions.test.ts",
   "client/src/components/delivery/workflow/workflowScanReset.test.tsx",
   "client/src/pages/reception/ReceptionWorkflowPage.reset.test.tsx",
       "client/src/components/delivery/workflow/__tests__/aftercareResetRecovery.test.tsx",
@@ -707,6 +708,7 @@ export const UNIT_TEST_FILES: string[] = [
       "tests/e2e/promotions/tier5_adversarial/challenger2_services_ui.test.ts",
       "server/services/__tests__/productStudioMilestone1.test.ts",
       "server/services/__tests__/productStudioMilestone2.test.ts",
+      "server/services/__tests__/numberingDualActive.unit.test.ts",
       // Products Studio Redesign E2E Track (Opaque-Box In-Memory Suite)
       "tests/e2e/products-studio/tier1_features.test.ts",
       "tests/e2e/products-studio/tier2_boundaries.test.ts",

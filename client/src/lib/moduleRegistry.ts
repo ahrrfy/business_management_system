@@ -6,7 +6,7 @@ import {
   WalletCards, BellRing,
 } from "lucide-react";
 import { AUDIT_LOGS_GATE, CASHIER_NAV_PATHS, CLOSING_ENTRY_GATE, INVOICE_LIST_GATE, RETURNS_WORKSPACE_GATE, WORK_ORDERS_HUB_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
-import type { PermissionMap } from "@shared/permissions";
+import { STUDIO_ACCESS_ROLES, type PermissionMap } from "@shared/permissions";
 import type { OperationPolicy } from "@shared/operationPermissions";
 
 export type AppSectionId = 1 | 2 | 3 | 4 | 5;
@@ -57,7 +57,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "delivery", href: "/delivery", label: "التوصيل", description: "طلبات وشركات وتحصيل COD", section: 4, icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" },
   { id: "myDeliveries", href: "/my-deliveries", label: "توصيلاتي", description: "طلبات المندوب ومسار التسليم", section: 4, icon: PackageCheck, roles: ["courier"], module: "courier" },
   { id: "store", href: "/store-admin", label: "طلبات المتجر", description: "طلبات وبنرات وإعدادات", section: 4, icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
-  { id: "productStudio", href: "/catalog/image-studio", label: "استوديو المنتجات", description: "صور المنتجات والكتالوج", section: 4, icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
+  { id: "productStudio", href: "/catalog/image-studio", label: "استوديو المنتجات", description: "صور المنتجات والكتالوج", section: 4, icon: Images, roles: STUDIO_ACCESS_ROLES, module: "productStudio" },
   { id: "contentDrafts", href: "/products/content-drafts", label: "مسودّات المحتوى", description: "مراجعة المحتوى المولّد للمنتجات", section: 4, icon: Sparkles, roles: ["admin", "manager"], module: "products" },
   { id: "inventory", href: "/inventory", label: "المخزون والبضاعة", description: "الأرصدة والتسويات", section: 2, icon: Boxes, module: "inventory" },
   { id: "purchases", href: "/purchases", label: "المشتريات", description: "الفواتير والاعتمادات والترحيل التلقائي", section: 2, icon: Package, module: "purchases" },

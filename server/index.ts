@@ -918,6 +918,7 @@ async function startServer() {
   let stopOnlineOrderExpirySweeper: (() => void) | null = null;
   let stopPurchaseIntegrityMonitor: (() => void) | null = null;
   let stopReconcileScheduler: (() => void) | null = null;
+  let stopHybridImageOutboxWorker: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // Run startup writers only after this process successfully owns the hub.
     // A second admin0 during an unsafe overlapping start must fail before writes.
@@ -1047,6 +1048,10 @@ async function startServer() {
     reconcileScheduler.startReconcileScheduler();
     stopReconcileScheduler = reconcileScheduler.stopReconcileScheduler;
 
+    const { startHybridImageOutboxWorker } =
+      await import("./lib/imageStore");
+    stopHybridImageOutboxWorker = startHybridImageOutboxWorker();
+
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
@@ -1088,6 +1093,7 @@ async function startServer() {
       stopOnlineOrderExpirySweeper?.();
       stopPurchaseIntegrityMonitor?.();
       stopReconcileScheduler?.();
+      stopHybridImageOutboxWorker?.();
       await Promise.all([listenerClosed, appNotificationsStopped, campaignsStopped]);
       await runtimeWorkDrain.wait(Math.max(1, deadline - Date.now()));
       // Split requires peer ACK; legacy pre-ACK peers use a flushed TCP close only.

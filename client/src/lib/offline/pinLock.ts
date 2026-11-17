@@ -9,7 +9,10 @@
 // PIN: PBKDF2-SHA-256 بـ٣١٠ ألف تكرار وملح لكل جهاز (توصية OWASP) — يهزم قراءة القرص
 // العرضية، ومقارنة الهاش ثابتة الزمن.
 
-import { offlineDb, type OfflineProfileRow } from "./db";
+import { getMeta, offlineDb, setMeta, type OfflineProfileRow } from "./db";
+import { decryptJson, encryptJson } from "./crypto";
+import type { PermissionMap, RoleKey } from "@shared/permissions";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import {
   isValidStudioTenantScope,
   sameStudioTenantScope,
@@ -232,6 +235,281 @@ export function subscribeOfflineUnlock(cb: UnlockListener): () => void {
   return () => {
     listeners.delete(cb);
   };
+}
+
+// ── v4: لقطة الصلاحيات الفعلية المشفّرة بـAAD والمقيدة بالهوية والمدة + إبطال عبر التبويبات ──
+
+export const ENCRYPTED_PERM_POLICY_META_KEY = "encryptedOfflinePermSnapshot";
+export const OFFLINE_PERM_POLICY_TTL_MS = 48 * 60 * 60 * 1000;
+export const OFFLINE_AUTH_BROADCAST_CHANNEL = "alroya-offline-auth-v4";
+export const OFFLINE_REVOKE_EPOCH_STORAGE_KEY = "alroya.offlineRevokedAtMs.v4";
+export const OFFLINE_SESSION_EPOCH_STORAGE_KEY = "alroya.offlineSessionEpoch.v4";
+
+export interface OfflineEffectivePermSnapshotV4 {
+  __permPolicyV4: 1;
+  userId: number;
+  branchId: number | null;
+  role: RoleKey;
+  isOwner: boolean;
+  permissionsOverride: PermissionMap | null;
+  operationPolicyEnabled: boolean;
+  resolvedOperationPolicy: OperationPolicy | null;
+  canCreateRetailSale: boolean;
+  issuedAtMs: number;
+  expiresAtMs: number;
+}
+
+interface SerializedPermCipherV4 {
+  __permCipherV4: 1;
+  userId: number;
+  branchId: number | null;
+  ivHex: string;
+  dataHex: string;
+}
+
+function buildPermPolicyAad(userId: number, branchId: number | null): Uint8Array {
+  return new TextEncoder().encode(
+    `alroya.perm_policy.v4|${Number(userId)}|${branchId == null ? "null" : Number(branchId)}`,
+  );
+}
+
+function bytesToHexPerm(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytesPerm(hex: string): Uint8Array | null {
+  if (typeof hex !== "string" || hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) {
+    return null;
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+let cachedOfflinePermSnapshot: OfflineEffectivePermSnapshotV4 | null = null;
+let inMemorySessionEpoch = 1;
+
+export function readCrossTabRevokedAtMs(): number {
+  try {
+    if (typeof localStorage === "undefined") return 0;
+    const raw = localStorage.getItem(OFFLINE_REVOKE_EPOCH_STORAGE_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function readCrossTabSessionEpoch(): number {
+  try {
+    if (typeof localStorage === "undefined") return inMemorySessionEpoch;
+    const raw = localStorage.getItem(OFFLINE_SESSION_EPOCH_STORAGE_KEY);
+    const n = raw ? Number(raw) : 0;
+    if (Number.isSafeInteger(n) && n > inMemorySessionEpoch) {
+      inMemorySessionEpoch = n;
+    }
+  } catch {
+    /* ignore private-mode storage read error */
+  }
+  return inMemorySessionEpoch;
+}
+
+export function broadcastCrossTabOfflineRevocation(reason = "session_boundary"): number {
+  const revokedAtMs = Math.max(Date.now() + 1, readCrossTabRevokedAtMs() + 1);
+  const nextSessionEpoch = readCrossTabSessionEpoch() + 1;
+  inMemorySessionEpoch = nextSessionEpoch;
+  cachedOfflinePermSnapshot = null;
+  unlocked = false;
+  unlockedProfile = null;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(OFFLINE_REVOKE_EPOCH_STORAGE_KEY, String(revokedAtMs));
+      localStorage.setItem(OFFLINE_SESSION_EPOCH_STORAGE_KEY, String(nextSessionEpoch));
+      localStorage.setItem(
+        "alroya.offlineRevokeSignal.v4",
+        JSON.stringify({ revokedAtMs, sessionEpoch: nextSessionEpoch, reason, nonce: Math.random() }),
+      );
+    }
+  } catch {
+    /* ignore private-mode storage error; RAM + BroadcastChannel still fire */
+  }
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel(OFFLINE_AUTH_BROADCAST_CHANNEL);
+      bc.postMessage({ type: "REVOKE_ALL", revokedAtMs, sessionEpoch: nextSessionEpoch, reason });
+      bc.close();
+    }
+  } catch {
+    /* ignore environments without BroadcastChannel */
+  }
+  listeners.forEach((cb) => cb());
+  return revokedAtMs;
+}
+
+if (typeof window !== "undefined") {
+  try {
+    window.addEventListener("storage", (ev) => {
+      if (
+        ev.key === OFFLINE_REVOKE_EPOCH_STORAGE_KEY ||
+        ev.key === OFFLINE_SESSION_EPOCH_STORAGE_KEY ||
+        ev.key === "alroya.offlineRevokeSignal.v4"
+      ) {
+        inMemorySessionEpoch = Math.max(inMemorySessionEpoch + 1, readCrossTabSessionEpoch());
+        cachedOfflinePermSnapshot = null;
+        if (unlocked) {
+          unlocked = false;
+          unlockedProfile = null;
+        }
+        listeners.forEach((cb) => cb());
+      }
+    });
+  } catch {
+    /* noop */
+  }
+}
+
+if (typeof BroadcastChannel !== "undefined") {
+  try {
+    const subBc = new BroadcastChannel(OFFLINE_AUTH_BROADCAST_CHANNEL);
+    subBc.onmessage = (ev) => {
+      if (ev?.data?.type === "REVOKE_ALL") {
+        const incomingEpoch = Number(ev?.data?.sessionEpoch ?? 0);
+        inMemorySessionEpoch = Math.max(
+          inMemorySessionEpoch + 1,
+          Number.isSafeInteger(incomingEpoch) ? incomingEpoch : 0,
+        );
+        cachedOfflinePermSnapshot = null;
+        unlocked = false;
+        unlockedProfile = null;
+        listeners.forEach((cb) => cb());
+      }
+    };
+  } catch {
+    /* noop */
+  }
+}
+
+export async function saveOfflinePermSnapshot(params: {
+  userId: number;
+  branchId: number | null;
+  role: RoleKey;
+  isOwner: boolean;
+  permissionsOverride: PermissionMap | null;
+  operationPolicyEnabled: boolean;
+  resolvedOperationPolicy: OperationPolicy | null;
+  canCreateRetailSale: boolean;
+  ttlMs?: number;
+}): Promise<void> {
+  const now = Math.max(Date.now(), readCrossTabRevokedAtMs() + 1);
+  const ttl = params.ttlMs != null && params.ttlMs > 0 ? params.ttlMs : OFFLINE_PERM_POLICY_TTL_MS;
+  const snap: OfflineEffectivePermSnapshotV4 = {
+    __permPolicyV4: 1,
+    userId: Number(params.userId),
+    branchId: params.branchId == null ? null : Number(params.branchId),
+    role: params.role,
+    isOwner: Boolean(params.isOwner),
+    permissionsOverride: params.permissionsOverride ?? null,
+    operationPolicyEnabled: Boolean(params.operationPolicyEnabled),
+    resolvedOperationPolicy: params.resolvedOperationPolicy ?? null,
+    canCreateRetailSale: Boolean(params.canCreateRetailSale),
+    issuedAtMs: now,
+    expiresAtMs: now + ttl,
+  };
+  cachedOfflinePermSnapshot = snap;
+  try {
+    const aad = buildPermPolicyAad(snap.userId, snap.branchId);
+    const env = await encryptJson(snap, aad);
+    const serialized: SerializedPermCipherV4 = {
+      __permCipherV4: 1,
+      userId: snap.userId,
+      branchId: snap.branchId,
+      ivHex: bytesToHexPerm(env.iv),
+      dataHex: bytesToHexPerm(env.data),
+    };
+    await setMeta(ENCRYPTED_PERM_POLICY_META_KEY, JSON.stringify(serialized));
+    listeners.forEach((cb) => cb());
+  } catch {
+    /* keep validated RAM snapshot if IndexedDB unavailable */
+  }
+}
+
+export async function clearOfflinePermSnapshot(): Promise<void> {
+  cachedOfflinePermSnapshot = null;
+  await setMeta(ENCRYPTED_PERM_POLICY_META_KEY, "");
+  listeners.forEach((cb) => cb());
+}
+
+export async function resolveOfflinePermSnapshot(
+  expectedUserId: number,
+  expectedBranchId?: number | null,
+): Promise<OfflineEffectivePermSnapshotV4 | null> {
+  if (!Number.isSafeInteger(expectedUserId) || expectedUserId <= 0) return null;
+  const now = Date.now();
+  const revokedAtMs = readCrossTabRevokedAtMs();
+
+  const isSnapAcceptable = (s: OfflineEffectivePermSnapshotV4 | null): s is OfflineEffectivePermSnapshotV4 => {
+    if (!s || s.__permPolicyV4 !== 1) return false;
+    if (s.userId !== expectedUserId) return false;
+    if (
+      expectedBranchId != null &&
+      s.branchId != null &&
+      Number(s.branchId) !== Number(expectedBranchId)
+    ) {
+      return false;
+    }
+    if (revokedAtMs > 0 && s.issuedAtMs <= revokedAtMs) return false;
+    if (now > s.expiresAtMs || now < s.issuedAtMs - 5 * 60_000) return false;
+    return true;
+  };
+
+  if (isSnapAcceptable(cachedOfflinePermSnapshot)) {
+    return cachedOfflinePermSnapshot;
+  }
+  cachedOfflinePermSnapshot = null;
+
+  const raw = await getMeta(ENCRYPTED_PERM_POLICY_META_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<SerializedPermCipherV4>;
+    if (parsed?.__permCipherV4 !== 1 || Number(parsed.userId) !== expectedUserId) {
+      return null;
+    }
+    const iv = hexToBytesPerm(parsed.ivHex ?? "");
+    const data = hexToBytesPerm(parsed.dataHex ?? "");
+    if (!iv || iv.byteLength !== 12 || !data || data.byteLength === 0) return null;
+    const aad = buildPermPolicyAad(expectedUserId, parsed.branchId ?? null);
+    const decoded = await decryptJson<OfflineEffectivePermSnapshotV4>(
+      { enc: true, v: 1, iv, data },
+      aad,
+    );
+    if (!isSnapAcceptable(decoded)) return null;
+    cachedOfflinePermSnapshot = decoded;
+    listeners.forEach((cb) => cb());
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+export function getCachedOfflinePermSnapshotSync(
+  expectedUserId?: number | null,
+): OfflineEffectivePermSnapshotV4 | null {
+  if (!cachedOfflinePermSnapshot) return null;
+  if (expectedUserId != null && cachedOfflinePermSnapshot.userId !== Number(expectedUserId)) {
+    return null;
+  }
+  const now = Date.now();
+  const revokedAtMs = readCrossTabRevokedAtMs();
+  if (
+    (revokedAtMs > 0 && cachedOfflinePermSnapshot.issuedAtMs <= revokedAtMs) ||
+    now > cachedOfflinePermSnapshot.expiresAtMs
+  ) {
+    cachedOfflinePermSnapshot = null;
+    return null;
+  }
+  return cachedOfflinePermSnapshot;
 }
 
 // ── الدوال النقية للاختبار (بيئة node تملك WebCrypto) ────────────────────────

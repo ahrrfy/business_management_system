@@ -30,6 +30,11 @@ vi.mock("wouter", () => ({
   ),
 }));
 
+const { mockBulkApproveMutateAsync, mockBulkRejectMutateAsync } = vi.hoisted(() => ({
+  mockBulkApproveMutateAsync: vi.fn().mockResolvedValue({ approvedCount: 2, taskIds: [101, 102] }),
+  mockBulkRejectMutateAsync: vi.fn().mockResolvedValue({ rejectedCount: 1, taskIds: [101] }),
+}));
+
 // 3. Mocking tRPC
 vi.mock("@/lib/trpc", () => ({
   trpc: {
@@ -76,6 +81,18 @@ vi.mock("@/lib/trpc", () => ({
       reject: {
         useMutation: () => ({
           mutateAsync: vi.fn().mockResolvedValue({ success: true }),
+          isPending: false,
+        }),
+      },
+      bulkApproveStudioTasks: {
+        useMutation: () => ({
+          mutateAsync: mockBulkApproveMutateAsync,
+          isPending: false,
+        }),
+      },
+      bulkRejectStudioTasks: {
+        useMutation: () => ({
+          mutateAsync: mockBulkRejectMutateAsync,
           isPending: false,
         }),
       },
@@ -281,6 +298,38 @@ describe("StudioAdminReviewPanel & Studio Integration (Milestone 4)", () => {
     expect(mockApprove).toHaveBeenCalledWith([101, 102]);
 
     // انطلاق رسالة الفخر والمدح العراقية المعتمدة
+    expect(toast.success).toHaveBeenCalledWith("كفو! تم اعتماد ونشر الصور");
+  });
+
+  it("Test 3b: Bulk approve via tRPC calls bulkApproveStudioTasks once with all selected IDs", async () => {
+    mockBulkApproveMutateAsync.mockClear();
+    mockBulkApproveMutateAsync.mockResolvedValue({
+      approvedCount: 2,
+      taskIds: [101, 102],
+    });
+
+    await act(async () => {
+      root?.render(<StudioAdminReviewPanel mockTasks={samplePendingTasks} />);
+    });
+
+    const selectAllBtn = container?.querySelector(
+      '[data-testid="select-all-reviews-checkbox"]',
+    ) as HTMLElement | null;
+    await act(async () => {
+      selectAllBtn?.click();
+    });
+
+    const approveBtn = container?.querySelector(
+      '[data-testid="studio-review-bulk-approve-btn"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      approveBtn?.click();
+    });
+
+    expect(mockBulkApproveMutateAsync).toHaveBeenCalledTimes(1);
+    expect(mockBulkApproveMutateAsync).toHaveBeenCalledWith({
+      taskIds: [101, 102],
+    });
     expect(toast.success).toHaveBeenCalledWith("كفو! تم اعتماد ونشر الصور");
   });
 

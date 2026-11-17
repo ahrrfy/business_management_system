@@ -26,6 +26,7 @@ export interface CapturedImageData {
 
 export interface StudioCameraCaptureProps {
   onImageCaptured: (data: CapturedImageData) => void;
+  onImagesCaptured?: (data: CapturedImageData[]) => void;
   isProcessing?: boolean;
   disabled?: boolean;
   className?: string;
@@ -130,6 +131,7 @@ export async function processCameraCaptureFile(
 
 export function StudioCameraCapture({
   onImageCaptured,
+  onImagesCaptured,
   isProcessing = false,
   disabled = false,
   className = "",
@@ -144,15 +146,34 @@ export function StudioCameraCapture({
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const file = files[0];
+    const fileList = Array.from(files);
     setErrorMessage(null);
 
     try {
-      const result = await processCameraCaptureFile(file, (nextStep, msg) => {
-        setStep(nextStep);
-        setStepMessage(msg);
-      });
-      onImageCaptured(result);
+      if (fileList.length === 1) {
+        const result = await processCameraCaptureFile(fileList[0], (nextStep, msg) => {
+          setStep(nextStep);
+          setStepMessage(msg);
+        });
+        onImageCaptured(result);
+      } else {
+        const results: CapturedImageData[] = [];
+        for (let i = 0; i < fileList.length; i++) {
+          const prefix = `(${i + 1}/${fileList.length}) `;
+          const result = await processCameraCaptureFile(fileList[i], (nextStep, msg) => {
+            setStep(nextStep);
+            setStepMessage(`${prefix}${msg}`);
+          });
+          results.push(result);
+        }
+        if (onImagesCaptured) {
+          onImagesCaptured(results);
+        } else {
+          for (const item of results) {
+            onImageCaptured(item);
+          }
+        }
+      }
     } catch (err: unknown) {
       setStep("error");
       const msg = err instanceof Error ? err.message : "تعذر إتمام معالجة الصورة";
@@ -185,11 +206,12 @@ export function StudioCameraCapture({
         disabled={isBusy || disabled}
       />
 
-      {/* اختيار ملف من المعرض أو الاستوديو */}
+      {/* اختيار ملف من المعرض أو الاستوديو (يدعم عدة صور معاً) */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
         data-testid="file-gallery-input"
         onChange={handleFileSelected}
@@ -208,7 +230,7 @@ export function StudioCameraCapture({
           </Badge>
         </div>
         <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-          التقط صورة واضحة لغلاف أو واجهة المنتج. يُصحح اتجاه الكاميرا تلقائياً وتُضغط الصورة محلياً (≤ {COMPRESSION_TARGET_KB} ك.ب).
+          التقط صورة واضحة لغلاف أو واجهة المنتج، أو ارفع صورة أو أكثر من المعرض معاً. يُصحح اتجاه الكاميرا تلقائياً وتُضغط الصور محلياً (≤ {COMPRESSION_TARGET_KB} ك.ب).
         </p>
       </div>
 
