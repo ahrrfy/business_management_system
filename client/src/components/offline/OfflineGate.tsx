@@ -12,6 +12,7 @@ import {
   getOfflineProfile,
   isOfflineUnlocked,
   markOfflineUnlocked,
+  resolveOfflinePermSnapshot,
   subscribeOfflineUnlock,
   verifyOfflinePin,
   type OfflineProfile,
@@ -129,12 +130,14 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
   const submit = () => {
     if (busy || coolingDown || !pin) return;
     setBusy(true);
-    void verifyOfflinePin(pin).then((ok) => {
-      setBusy(false);
+    void verifyOfflinePin(pin).then(async (ok) => {
       if (ok) {
+        await resolveOfflinePermSnapshot(profile.userId, profile.branchId).catch(() => null);
+        setBusy(false);
         markOfflineUnlocked(profile);
         return;
       }
+      setBusy(false);
       setPin("");
       const nextFails = fails + 1;
       setFails(nextFails);

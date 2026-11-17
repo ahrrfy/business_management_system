@@ -40,6 +40,13 @@ export interface OfflineOutboxItem {
   capturedAt: string;
   /** هوية الموظف الذي قبض العملية؛ لا تُعاد العملية آلياً تحت جلسة موظف آخر. */
   capturedByUserId: number | null;
+  capturedShiftId?: number | null;
+  captureProof?: string | null;
+  keyId?: string | null;
+  grantId?: string | null;
+  grantIssuedAtMs?: number | null;
+  grantExpiresAtMs?: number | null;
+  grantToken?: string | null;
   shiftId: number | null;
   branchId: number;
   status: "QUEUED" | "SENDING" | "SENT" | "PARKED";
@@ -149,6 +156,10 @@ export async function setMeta(key: string, value: string): Promise<void> {
   } catch {
     // وضع خاص/حصة ممتلئة — الطبقة اختيارية: فشل الكتابة لا يكسر التشغيل الأونلايني.
   }
+}
+
+export async function setMetaStrict(key: string, value: string): Promise<void> {
+  await offlineDb.meta.put({ key, value });
 }
 
 let persistRequested = false;

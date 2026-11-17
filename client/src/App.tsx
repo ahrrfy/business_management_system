@@ -189,15 +189,24 @@ const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 function Protected({ children }: { children: React.ReactNode }) {
   const [loc] = useLocation();
   const connectivity = useConnectivity();
-  const coldOfflineStudio =
-    isColdOfflineStudioRoute(loc) &&
-    (isDisconnected(connectivity) ||
-      (typeof navigator !== "undefined" && !navigator.onLine));
-  const me = trpc.auth.me.useQuery(undefined, { enabled: !coldOfflineStudio });
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const offlineUnlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const coldOfflineStudio = isColdOfflineStudioRoute(loc) && offline;
+  const me = trpc.auth.me.useQuery(undefined, {
+    enabled: !coldOfflineStudio && !(offline && offlineUnlocked),
+  });
   const retry = useCallback(() => {
     void me.refetch();
   }, [me.refetch]);
   if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
+  if (!me.data && offline && offlineUnlocked)
     return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
   if (me.data) {

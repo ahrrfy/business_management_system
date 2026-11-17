@@ -1,4 +1,12 @@
-import { Suspense, useCallback, useEffect, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getCachedOfflinePermSnapshotSync,
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  resolveOfflinePermSnapshot,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
 import { Link, useLocation, useSearch } from "wouter";
 import { CalendarClock, ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
@@ -97,17 +105,51 @@ export default function PointOfSale() {
     [search],
   );
 
-  const me = trpc.auth.me.useQuery();
-  const myRole = (me.data?.isOwner ? "admin" : me.data?.role) as RoleKey | undefined;
-  const myPerms = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const myOperationPolicy =
-    me.data?.operationPolicyEnabled && !me.data.isOwner
-      ? me.data.resolvedOperationPolicy
-      : null;
-  // P1 (ورشة عَدائية ٢٤/٦/٢٦): لا نَحسب visibleModes/accessDenied قبل اِكتمال me ⇒ سَنَّتظر
-  // الدور قبل عَرض الـtabs/المحتوى. يَحلّ ٤ مَشاكل: وَميض tab RECEPTION، وَميض Forbidden عند
-  // الوصول المُباشر بـURL لـadmin، وحدّة canSee الدلالية، ودَور مُخصَّص يَتأخّر في الوصول.
-  const meLoading = me.isLoading;
+  const connState = useConnectivity();
+  const offline =
+    isDisconnected(connState) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const offlineUnlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const me = trpc.auth.me.useQuery(undefined, {
+    enabled: !(offline && offlineUnlocked),
+    retry: offline ? false : undefined,
+  });
+  const offlineProfile =
+    !me.data && offline && offlineUnlocked ? getOfflineUnlockedProfile() : null;
+  const offlinePermSnap = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    () => getCachedOfflinePermSnapshotSync(offlineProfile?.userId ?? null),
+    () => getCachedOfflinePermSnapshotSync(offlineProfile?.userId ?? null),
+  );
+  useEffect(() => {
+    if (offlineProfile?.userId && !offlinePermSnap) {
+      void resolveOfflinePermSnapshot(offlineProfile.userId).catch(() => null);
+    }
+  }, [offlineProfile?.userId, offlinePermSnap]);
+  const myRole = (
+    me.data
+      ? (me.data.isOwner ? "admin" : me.data.role)
+      : (offlineProfile && activeMode === "RETAIL" && offlinePermSnap?.canCreateRetailSale
+          ? offlinePermSnap.role
+          : undefined)
+  ) as RoleKey | undefined;
+  const myPerms = (
+    me.data
+      ? (me.data.isOwner ? null : (me.data.permissionsOverride ?? null))
+      : (offlinePermSnap?.isOwner ? null : (offlinePermSnap?.permissionsOverride ?? null))
+  ) as PermissionMap | null;
+  const myOperationPolicy = me.data
+    ? (me.data.operationPolicyEnabled && !me.data.isOwner
+        ? me.data.resolvedOperationPolicy
+        : null)
+    : (offlinePermSnap?.operationPolicyEnabled && !offlinePermSnap.isOwner
+        ? offlinePermSnap.resolvedOperationPolicy
+        : null);
+  const meLoading = me.isLoading && !offlineProfile;
 
   const visibleModes = useMemo(
     () => (meLoading ? [] : MODES.filter((m) => canSeeMode(m.v, myRole, myPerms, myOperationPolicy))),
