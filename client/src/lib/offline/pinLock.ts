@@ -327,9 +327,14 @@ export function broadcastCrossTabOfflineRevocation(reason = "session_boundary"):
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(OFFLINE_REVOKE_EPOCH_STORAGE_KEY, String(revokedAtMs));
       localStorage.setItem(OFFLINE_SESSION_EPOCH_STORAGE_KEY, String(nextSessionEpoch));
+      const nonceBytes = new Uint8Array(8);
+      if (typeof globalThis.crypto?.getRandomValues === "function") {
+        globalThis.crypto.getRandomValues(nonceBytes);
+      }
+      const nonce = Array.from(nonceBytes, (b) => b.toString(16).padStart(2, "0")).join("");
       localStorage.setItem(
         "alroya.offlineRevokeSignal.v4",
-        JSON.stringify({ revokedAtMs, sessionEpoch: nextSessionEpoch, reason, nonce: Math.random() }),
+        JSON.stringify({ revokedAtMs, sessionEpoch: nextSessionEpoch, reason, nonce }),
       );
     }
   } catch {

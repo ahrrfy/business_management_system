@@ -252,6 +252,20 @@ export const offlineRouter = router({
         ) {
           throwSemanticPayloadConflictError("الطلب الجاري");
         }
+        if (!isFlightOwner && canAdminReconcile) {
+          await logAudit(ctx, {
+            action: "offline.preflight.adminLookup",
+            entityType: "invoice",
+            entityId: 0,
+            branchId: effectiveBranchId,
+            newValue: {
+              clientRequestId: input.clientRequestId,
+              originalSellerId: Number(activeFlight.sellerUserId),
+              branchId: effectiveBranchId,
+              inFlight: true,
+            },
+          });
+        }
         return { outcome: "UNKNOWN_IN_FLIGHT" as const };
       }
 

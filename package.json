@@ -5,7 +5,7 @@
   "license": "MIT",
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": "24.22.1"
+    "node": "24.22.3"
   },
   "scripts": {
     "dev": "node scripts/db-verify-schema.mjs && cross-env NODE_ENV=development TZ=UTC node --watch-path=./server --watch-path=./shared --watch-path=./drizzle --import tsx server/index.ts",

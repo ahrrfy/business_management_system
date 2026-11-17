@@ -113,3 +113,27 @@ describe("pinLock — عزل مالك PIN بين الشركات", () => {
     ).toBe(false);
   });
 });
+
+describe("hardening — zero Math.random in offline crypto/lock modules & activeFlight admin audit", () => {
+  it("keeps Math.random absent from pinLock.ts and outbox.ts", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const root = path.resolve(import.meta.dirname);
+    for (const file of ["pinLock.ts", "outbox.ts"]) {
+      const text = fs.readFileSync(path.join(root, file), "utf8");
+      expect(text).not.toMatch(/\bMath\.random\s*\(/);
+    }
+  });
+
+  it("logs offline.preflight.adminLookup on admin activeFlight lookups", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const routerText = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../../../../server/routers/offlineRouter.ts"),
+      "utf8",
+    );
+    const matches = routerText.match(/offline\.preflight\.adminLookup/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+    expect(routerText).toContain("inFlight: true");
+  });
+});

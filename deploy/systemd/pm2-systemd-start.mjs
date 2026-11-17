@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const DEPLOY_HOME = "/home/deploy";
 const PM2_HOME = "/home/deploy/.pm2";
 const PM2_BIN = "/usr/lib/node_modules/pm2/bin/pm2";
-const NODE_BIN = "/opt/alroya-erp/node-v24.22.1-linux-x64/bin/node";
+const NODE_BIN = "/opt/alroya-erp/node-v24.22.3-linux-x64/bin/node";
 const SETPRIV_BIN = "/usr/bin/setpriv";
 const PASSWD_FILE = "/etc/passwd";
 const PID_DIRECTORY = "/run/erp-pm2";
@@ -88,7 +88,7 @@ export function assertInventoryResurrection(pm2Home) {
   }
 }
 const DEPLOY_PATH =
-  "/opt/alroya-erp/node-v24.22.1-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  "/opt/alroya-erp/node-v24.22.3-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 function codedError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);

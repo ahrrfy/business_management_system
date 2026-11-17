@@ -41,7 +41,7 @@ cleanup() {
   if [[ "${created_user}" -eq 1 ]]; then
     /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --init-groups -- \
       /usr/bin/env HOME=/home/deploy USER=deploy LOGNAME=deploy PM2_HOME=/home/deploy/.pm2 \
-      /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node "${PM2_BIN}" kill >/dev/null 2>&1 || true
+      /opt/alroya-erp/node-v24.22.3-linux-x64/bin/node "${PM2_BIN}" kill >/dev/null 2>&1 || true
   fi
   rm -f "${UNIT_TARGET}"
   rm -rf "${DROPIN_DIR}"
@@ -94,7 +94,7 @@ assert_active_contract() {
   main_pid="$(systemctl show "${UNIT}" --property=MainPID --value)"
   [[ "$(systemctl is-active "${UNIT}")" == "active" ]]
   [[ "${main_pid}" == "${expected_pid}" ]]
-  [[ "$(readlink -f "/proc/${main_pid}/exe")" == "/opt/alroya-erp/node-v24.22.1-linux-x64/bin/node" ]]
+  [[ "$(readlink -f "/proc/${main_pid}/exe")" == "/opt/alroya-erp/node-v24.22.3-linux-x64/bin/node" ]]
   [[ "$(cat "${PID_FILE}")" == "${expected_pid}" ]]
   [[ "$(stat -c '%U:%G:%a' "${PID_FILE}")" == "root:root:644" ]]
   [[ "$(stat -c '%U:%G:%a' "${HELPER_TARGET}")" == "root:root:755" ]]
@@ -118,9 +118,9 @@ assert_active_contract() {
   rm -f /home/deploy/backup-permission-result
   /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --init-groups -- \
     /usr/bin/env HOME=/home/deploy USER=deploy LOGNAME=deploy PM2_HOME=/home/deploy/.pm2 \
-    /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node "${PM2_BIN}" start /home/deploy/backup-permission-probe.cjs \
+    /opt/alroya-erp/node-v24.22.3-linux-x64/bin/node "${PM2_BIN}" start /home/deploy/backup-permission-probe.cjs \
     --name erp-backup-permission-probe --cwd /home/deploy \
-    --interpreter /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node --no-autorestart >/dev/null
+    --interpreter /opt/alroya-erp/node-v24.22.3-linux-x64/bin/node --no-autorestart >/dev/null
   for attempt in {1..40}; do
     cmp -s /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result && break
     sleep 0.25
@@ -146,14 +146,14 @@ systemd-run --unit="${SEED_UNIT}" --property=User=deploy --property=Type=oneshot
   --property=RemainAfterExit=yes --property=KillMode=none \
   --setenv=HOME=/home/deploy --setenv=USER=deploy --setenv=LOGNAME=deploy \
   --setenv=PM2_HOME=/home/deploy/.pm2 \
-  /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node "${PM2_BIN}" ping >/dev/null
+  /opt/alroya-erp/node-v24.22.3-linux-x64/bin/node "${PM2_BIN}" ping >/dev/null
 systemctl is-active --quiet "${SEED_UNIT}"
 [[ ! -e /home/deploy/.pm2/dump.pm2 && ! -e /home/deploy/.pm2/dump.pm2.bak ]]
 [[ ! -e /home/deploy/.pm2/erp-inventory-activation.json ]]
 existing_pid="$(cat /home/deploy/.pm2/pm2.pid)"
 existing_start="$(proc_start_time "${existing_pid}")"
 grep -Fq "/system.slice/${SEED_UNIT}" "/proc/${existing_pid}/cgroup"
-[[ "$(/opt/alroya-erp/node-v24.22.1-linux-x64/bin/node "${HELPER_TARGET}" --inspect)" == "${existing_pid} ${existing_start}" ]]
+[[ "$(/opt/alroya-erp/node-v24.22.3-linux-x64/bin/node "${HELPER_TARGET}" --inspect)" == "${existing_pid} ${existing_start}" ]]
 systemctl start "${UNIT}"
 assert_active_contract "${existing_pid}" no
 [[ "$(proc_start_time "${existing_pid}")" == "${existing_start}" ]]
