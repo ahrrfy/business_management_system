@@ -11,6 +11,7 @@ import { and, eq } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { idempotencyKeys } from "../../drizzle/schema";
 import type { Tx } from "../db";
 
@@ -138,6 +139,66 @@ export function idempotencyHash(payload: unknown): string {
   return current;
 }
 
+export function registerLegacyPayloadHash(
+  currentHash: string,
+  candidatePayload: unknown,
+): void {
+  const normalizedCandidate = sha256(
+    canonicalJson(toJsonDocument(candidatePayload)),
+  );
+  rememberLegacyHash(currentHash, normalizedCandidate);
+  rememberLegacyHash(currentHash, legacyIdempotencyHash(candidatePayload));
+}
+
+export async function reserveSaleIdempotencyInTx(
+  tx: Tx,
+  clientRequestId: string,
+  payloadHash: string,
+  semanticSha256: string,
+): Promise<void> {
+  await tx.insert(idempotencyKeys).values([
+    {
+      operation: "sale.create",
+      clientRequestId,
+      refId: 0,
+      payloadHash,
+    },
+    {
+      operation: "sale.create.semhash",
+      clientRequestId,
+      refId: 0,
+      payloadHash: semanticSha256.toLowerCase(),
+    },
+  ]);
+}
+
+export async function finalizeSaleIdempotencyInTx(
+  tx: Tx,
+  clientRequestId: string,
+  invoiceId: number,
+  payloadHash: string,
+  semanticSha256: string,
+): Promise<void> {
+  await tx
+    .update(idempotencyKeys)
+    .set({ refId: invoiceId, payloadHash })
+    .where(
+      and(
+        eq(idempotencyKeys.operation, "sale.create"),
+        eq(idempotencyKeys.clientRequestId, clientRequestId),
+      ),
+    );
+  await tx
+    .update(idempotencyKeys)
+    .set({ refId: invoiceId, payloadHash: semanticSha256.toLowerCase() })
+    .where(
+      and(
+        eq(idempotencyKeys.operation, "sale.create.semhash"),
+        eq(idempotencyKeys.clientRequestId, clientRequestId),
+      ),
+    );
+}
+
 /** إن كان clientRequestId مُستهلَكاً سابقاً يُرجع refId الأول؛ وإلّا null. (توافقٌ خلفيّ — بلا فحص hash.) */
 export async function findIdempotentRefId(
   tx: Tx,
@@ -179,6 +240,26 @@ export async function checkIdempotency(
     : await query.limit(1);
   const row = rows[0];
   if (!row) return null;
+  if (Number(row.refId) === -1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تم إلغاء وتسييج الطلب المعلّق خادمياً",
+        why: "حمل هذا المعرّف قيد إبطال صريح مسبقاً قبل الالتزام ولا يجوز إعادة تنفيذه",
+        doThis: "ابدأ عملية جديدة بمعرّف طلب جديد أو راجع سجل المصالحة",
+      }),
+    });
+  }
+  if (Number(row.refId) === 0) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "الطلب الأصلي قيد التنفيذ حالياً",
+        why: "توجد معاملة مفتوحة على الخادم لنفس معرّف الطلب لم تنتهِ بعد",
+        doThis: "انتظر لحظات حتى يكتمل الطلب الجاري ثم تحقق من حالة الفاتورة دون إنشاء معرّف جديد",
+      }),
+    });
+  }
   if (
     options?.requireStoredHash === true &&
     payloadHash != null &&
