@@ -14,6 +14,12 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { replayOfflineSale, type ReplayOfflineSaleInput } from "../offline/replaySale";
+import {
+  computeOfflineCaptureProofHex,
+  computeSaleSemanticPayloadSha256,
+} from "../../../shared/offlineCaptureProof";
+import { issueOfflineShiftCaptureGrant } from "../../lib/offlineCaptureGrant";
+import { registerSaleBeforeCommitPauseHookForTest } from "../sale/create";
 import { truncateTables } from "./__testUtils__";
 
 const TABLES = [
@@ -244,22 +250,439 @@ describe("replayOfflineSale — نافذة الالتقاط والحرّاس", (
   });
 });
 
-describe("offline.replaySale (راوتر) — عزل الفرع", () => {
-  it("كاشير فرع ٢ يمرّر branchId=1 ⇒ يُجبَر على فرعه ٢ (لا IDOR)", async () => {
+describe("offline.replaySale (راوتر v4) — عزل الفرع، الطابور القديم، الانقطاع الطويل >٧٢ ساعة، استعلام المصالحة، الصلاحيات، وتدوير المفاتيح", () => {
+  it("كاشير فرع ٢ يمرّر branchId=1 ⇒ يُجبَر على فرعه ٢ مع منحة v4 موقّعة خادمياً (لا IDOR)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3)));
-    const res = await caller.offline.replaySale({
-      branchId: 1, // ادّعاء فرع آخر
-      shiftId: 2, // وردية كاشير ف٢ نفسه
-      lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }],
-      payment: { amount: "250.00", method: "CASH" },
+    const currentShift = await caller.shifts.current({ branchId: 2 });
+    const g = currentShift!.offlineCaptureGrant!;
+    expect(g.version).toBe(4);
+    expect(g.userId).toBe(3);
+    const capturedAt = new Date(g.issuedAtServerMs + 1000).toISOString();
+    const lines = [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }];
+    const payment = { amount: "250.00", method: "CASH" as const };
+    const captureProof = await computeOfflineCaptureProofHex(g.captureKeyHex, {
+      kind: "SALE",
+      keyId: g.keyId,
+      grantId: g.grantId,
+      grantIssuedAtMs: g.issuedAtServerMs,
+      grantExpiresAtMs: g.expiresAtServerMs,
+      grantToken: g.grantToken,
       clientRequestId: "offline-idor-1",
-      capturedAt: capturedAgoIso(),
-      offlineReceiptNumber: "OFF-2-cd34-1",
+      offlineReceiptNumber: "OFF-2-cd34567890abcdef-1",
+      capturedAt,
+      branchId: 2,
+      capturedShiftId: 2,
+      capturedByUserId: 3,
+      payload: { lines, payment },
+    });
+    const res = await caller.offline.replaySale({
+      branchId: 1,
+      shiftId: 2,
+      lines,
+      payment,
+      clientRequestId: "offline-idor-1",
+      capturedAt,
+      offlineReceiptNumber: "OFF-2-cd34567890abcdef-1",
+      capturedByUserId: 3,
+      capturedShiftId: 2,
+      keyId: g.keyId,
+      grantId: g.grantId,
+      grantIssuedAtMs: g.issuedAtServerMs,
+      grantExpiresAtMs: g.expiresAtServerMs,
+      grantToken: g.grantToken,
+      captureProof,
     });
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId)))[0];
-    expect(Number(inv.branchId)).toBe(2); // فرعه الفعلي لا المُدّعى
-    // المخزون خُصم من فرعه هو.
+    expect(Number(inv.branchId)).toBe(2);
     const stock2 = (await db().select().from(s.branchStock)).find((r) => Number(r.branchId) === 2)!;
     expect(Number(stock2.quantity)).toBe(9);
   });
+
+  it("يعالج الطابور القديم (١): صف قديم غير مرسل بلا captureProof يُحجر مع حفظ هوية الملتقط الأصلي ويُسترد إدارياً دون اختلاق إثبات؛ و(٢) صف قديم التزم قبل انقطاع الرد يتصالح بلا تكرار؛ و(٣) استعلام lookupPreflightSaleOutcome معزول بالهوية ومدقق", async () => {
+    const cashierCaller = appRouter.createCaller(makeCtx(await userById(2)));
+    const adminCaller = appRouter.createCaller(makeCtx(await userById(1)));
+    const lines = [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }];
+    const payment = { amount: "250.00", method: "CASH" as const };
+
+    // (1) Legacy uncommitted row (`captureProof` absent) -> PRECONDITION_FAILED + quarantined preserving `submittedByUserId = 2`!
+    await expect(
+      cashierCaller.offline.replaySale({
+        branchId: 1,
+        shiftId: 1,
+        lines,
+        payment,
+        clientRequestId: "legacy-unsent-row-no-proof-1",
+        capturedAt: capturedAgoIso(),
+        offlineReceiptNumber: "OFF-1-c0fe-7",
+        capturedByUserId: 2,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const queue = await adminCaller.offline.recoveryQueue();
+    const qRow = queue.find((r) => r.offlineReceiptNumber === "OFF-1-c0fe-7")!;
+    expect(qRow).toBeDefined();
+    expect(qRow.submittedByUserId).toBe(2);
+    expect(qRow.quarantineClassification).toBe("LEGACY_UNSENT_WITHOUT_PROOF");
+    // Admin opens replacement drawer & posts quarantined legacy row -> attributed to original cashier user 2!
+    const adminShift = await adminCaller.shifts.open({
+      branchId: 1,
+      openingBalance: "0",
+      shiftType: "RETAIL",
+    });
+    const recovered = await adminCaller.offline.postRecoveryItem({
+      id: qRow.id,
+      targetShiftId: adminShift.shiftId,
+    });
+    const recInv = (
+      await db().select().from(s.invoices).where(eq(s.invoices.id, recovered.invoiceId))
+    )[0];
+    expect(Number(recInv.createdBy)).toBe(2);
+
+    // (2) Legacy row that ALREADY committed online before HTTP response dropped (`captureProof` absent):
+    //     Reconciles idempotently on `offline.replaySale` with ZERO duplicate invoices!
+    const onlineCommitted = await cashierCaller.sales.create({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      clientRequestId: "legacy-committed-before-drop-1",
+      lines,
+      payment,
+    });
+    const invCountBefore = (await db().select().from(s.invoices)).length;
+    const reconciled = await cashierCaller.offline.replaySale({
+      branchId: 1,
+      shiftId: 1,
+      lines,
+      payment,
+      clientRequestId: "legacy-committed-before-drop-1",
+      capturedAt: capturedAgoIso(),
+      offlineReceiptNumber: "OFF-1-c0fe-8",
+      // Notice: NO captureProof, NO grantToken (pre-upgrade legacy row!)
+    });
+    expect(reconciled.invoiceId).toBe(onlineCommitted.invoiceId);
+    expect(reconciled.idempotentReplay).toBe(true);
+    expect((await db().select().from(s.invoices)).length).toBe(invCountBefore);
+
+    // (3) `lookupPreflightSaleOutcome`:
+    //     - owner sees COMMITTED (and CONFLICT on mismatched expectedSemanticSha256);
+    //     - absent key in OBSERVE mode returns UNKNOWN (never NOT_COMMITTED from absence alone!);
+    //     - paused pre-commit `sales.create` returns UNKNOWN_IN_FLIGHT until commit finishes;
+    //     - FENCE_IF_UNCOMMITTED atomically fences an uncommitted key (`FENCED_NOT_COMMITTED`) and blocks late `sales.create` with CONFLICT;
+    //     - foreign cashier on same branch gets FORBIDDEN; admin sees COMMITTED + audit_logs entry!
+    const expectedSemSha = computeSaleSemanticPayloadSha256({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      clientRequestId: "legacy-committed-before-drop-1",
+      lines,
+      payment,
+    });
+    const ownerLookup = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "legacy-committed-before-drop-1",
+      expectedSemanticSha256: expectedSemSha,
+    });
+    expect(ownerLookup.outcome).toBe("COMMITTED");
+    await expect(
+      cashierCaller.offline.lookupPreflightSaleOutcome({
+        branchId: 1,
+        clientRequestId: "legacy-committed-before-drop-1",
+        expectedSemanticSha256: "f".repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const unknownObserveLookup = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "never-sent-client-request-id-99",
+      mode: "OBSERVE",
+    });
+    expect(unknownObserveLookup.outcome).toBe("UNKNOWN");
+
+    const fencedLookup = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "never-sent-client-request-id-99",
+      expectedSemanticSha256: expectedSemSha,
+      mode: "FENCE_IF_UNCOMMITTED",
+    });
+    expect(fencedLookup.outcome).toBe("FENCED_NOT_COMMITTED");
+    await expect(
+      cashierCaller.sales.create({
+        branchId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        clientRequestId: "never-sent-client-request-id-99",
+        lines,
+        payment,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // In-flight pause before commit: `lookupPreflightSaleOutcome` MUST return `UNKNOWN_IN_FLIGHT` (not `UNKNOWN` or `NOT_COMMITTED`)!
+    const { enteredPreCommit, releaseCommit } =
+      registerSaleBeforeCommitPauseHookForTest("paused-in-flight-sale-req-1");
+    const inflightSalePromise = cashierCaller.sales.create({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      clientRequestId: "paused-in-flight-sale-req-1",
+      lines,
+      payment,
+    });
+    await Promise.race([
+      enteredPreCommit,
+      inflightSalePromise.then(() => {
+        throw new Error("Expected paused-in-flight-sale-req-1 to pause before commit");
+      }),
+    ]);
+    const inflightObserve = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "paused-in-flight-sale-req-1",
+      mode: "OBSERVE",
+    });
+    expect(inflightObserve.outcome).toBe("UNKNOWN_IN_FLIGHT");
+    const inflightFenceAttempt = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "paused-in-flight-sale-req-1",
+      expectedSemanticSha256: expectedSemSha,
+      mode: "FENCE_IF_UNCOMMITTED",
+    });
+    expect(inflightFenceAttempt.outcome).toBe("UNKNOWN_IN_FLIGHT");
+    releaseCommit();
+    const finishedSale = await inflightSalePromise;
+    const afterCommitLookup = await cashierCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "paused-in-flight-sale-req-1",
+      mode: "OBSERVE",
+    });
+    expect(afterCommitLookup).toMatchObject({
+      outcome: "COMMITTED",
+      invoiceId: finishedSale.invoiceId,
+    });
+
+    const [foreignCashierInsert] = await db().insert(s.users).values({
+      openId: "cashier-branch1-second",
+      name: "كاشير ١-ب",
+      email: "cashier1b@test.local",
+      role: "cashier",
+      branchId: 1,
+    });
+    const foreignCashierCaller = appRouter.createCaller(
+      makeCtx(await userById(Number(foreignCashierInsert.insertId))),
+    );
+    await expect(
+      foreignCashierCaller.offline.lookupPreflightSaleOutcome({
+        branchId: 1,
+        clientRequestId: "legacy-committed-before-drop-1",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const adminLookup = await adminCaller.offline.lookupPreflightSaleOutcome({
+      branchId: 1,
+      clientRequestId: "legacy-committed-before-drop-1",
+    });
+    expect(adminLookup.outcome).toBe("COMMITTED");
+  }, 30_000);
+
+  it("يعالج الانقطاع الطويل (>٧٢ ساعة بعد إصدار المنحة) بحجر PRECONDITION_FAILED مدقّق مع استرداد إداري، ويرفض تلاعب الساعة وسحب الصلاحية sales=NONE، ويدعم تدوير المفاتيح k1->k2", async () => {
+    const prevKeyring = process.env.OFFLINE_CAPTURE_KEYRING;
+    try {
+      process.env.OFFLINE_CAPTURE_KEYRING = "k1:secret-key-one-minimum-16-chars!!";
+      const caller2 = appRouter.createCaller(makeCtx(await userById(2)));
+      const adminCaller = appRouter.createCaller(makeCtx(await userById(1)));
+      const lines = [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }];
+      const payment = { amount: "250.00", method: "CASH" as const };
+
+      // (3) Capture under k1, then rotate active server keyring to k2,k1 (simulating Cloud->Local cutover rotation!)
+      const gK1 = issueOfflineShiftCaptureGrant({ userId: 2, branchId: 1, shiftId: 1 });
+      expect(gK1.keyId).toBe("k1");
+      const capAtK1 = new Date(gK1.issuedAtServerMs + 2000).toISOString();
+      const proofK1 = await computeOfflineCaptureProofHex(gK1.captureKeyHex, {
+        kind: "SALE",
+        keyId: gK1.keyId,
+        grantId: gK1.grantId,
+        grantIssuedAtMs: gK1.issuedAtServerMs,
+        grantExpiresAtMs: gK1.expiresAtServerMs,
+        grantToken: gK1.grantToken,
+        clientRequestId: "offline-key-rotation-k1-to-k2",
+        offlineReceiptNumber: "OFF-1-0123456789abcdef-11",
+        capturedAt: capAtK1,
+        branchId: 1,
+        capturedShiftId: 1,
+        capturedByUserId: 2,
+        payload: { lines, payment },
+      });
+      process.env.OFFLINE_CAPTURE_KEYRING =
+        "k2:secret-key-two-minimum-16-chars!!,k1:secret-key-one-minimum-16-chars!!";
+      const rotatedRes = await caller2.offline.replaySale({
+        branchId: 1,
+        shiftId: 1,
+        lines,
+        payment,
+        clientRequestId: "offline-key-rotation-k1-to-k2",
+        capturedAt: capAtK1,
+        offlineReceiptNumber: "OFF-1-0123456789abcdef-11",
+        capturedByUserId: 2,
+        capturedShiftId: 1,
+        keyId: gK1.keyId,
+        grantId: gK1.grantId,
+        grantIssuedAtMs: gK1.issuedAtServerMs,
+        grantExpiresAtMs: gK1.expiresAtServerMs,
+        grantToken: gK1.grantToken,
+        captureProof: proofK1,
+      });
+      expect(rotatedRes.invoiceId).toBeGreaterThan(0);
+
+      // (2a) Client clock tamper BEFORE grant issuance -> FORBIDDEN!
+      const gClockTamper = issueOfflineShiftCaptureGrant({ userId: 2, branchId: 1, shiftId: 1 });
+      const backdatedCapturedAt = new Date(gClockTamper.issuedAtServerMs - 3600_000).toISOString();
+      const tamperProof = await computeOfflineCaptureProofHex(gClockTamper.captureKeyHex, {
+        kind: "SALE",
+        keyId: gClockTamper.keyId,
+        grantId: gClockTamper.grantId,
+        grantIssuedAtMs: gClockTamper.issuedAtServerMs,
+        grantExpiresAtMs: gClockTamper.expiresAtServerMs,
+        grantToken: gClockTamper.grantToken,
+        clientRequestId: "offline-clock-tamper-before-grant",
+        offlineReceiptNumber: "OFF-1-0123456789abcdef-11b",
+        capturedAt: backdatedCapturedAt,
+        branchId: 1,
+        capturedShiftId: 1,
+        capturedByUserId: 2,
+        payload: { lines, payment },
+      });
+      await expect(
+        caller2.offline.replaySale({
+          branchId: 1,
+          shiftId: 1,
+          lines,
+          payment,
+          clientRequestId: "offline-clock-tamper-before-grant",
+          capturedAt: backdatedCapturedAt,
+          offlineReceiptNumber: "OFF-1-0123456789abcdef-11b",
+          capturedByUserId: 2,
+          capturedShiftId: 1,
+          keyId: gClockTamper.keyId,
+          grantId: gClockTamper.grantId,
+          grantIssuedAtMs: gClockTamper.issuedAtServerMs,
+          grantExpiresAtMs: gClockTamper.expiresAtServerMs,
+          grantToken: gClockTamper.grantToken,
+          captureProof: tamperProof,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      // (2b) Long LAN disconnection (>24h post-grant expiry, e.g. 80h after grant issue):
+      //      Crypto-verified row is NOT auto-posted (since client clock alone cannot prove capture time)
+      //      AND NOT silently dropped — quarantined as PRECONDITION_FAILED (`LATE_ARRIVAL_BEYOND_GRACE_CRYPTO_VERIFIED`)
+      //      preserving original cashier ID=2 and recoverable by audited admin review!
+      const nowMs = Date.now();
+      const oldIssuedMs = nowMs - 80 * 3600_000;
+      await db().update(s.shifts).set({ openedAt: new Date(oldIssuedMs - 60_000) }).where(eq(s.shifts.id, 1));
+      const gExpired = issueOfflineShiftCaptureGrant({
+        userId: 2,
+        branchId: 1,
+        shiftId: 1,
+        nowMs: oldIssuedMs,
+      });
+      const claimedCapturedAt = new Date(oldIssuedMs + 3600_000).toISOString();
+      const expiredProof = await computeOfflineCaptureProofHex(gExpired.captureKeyHex, {
+        kind: "SALE",
+        keyId: gExpired.keyId,
+        grantId: gExpired.grantId,
+        grantIssuedAtMs: gExpired.issuedAtServerMs,
+        grantExpiresAtMs: gExpired.expiresAtServerMs,
+        grantToken: gExpired.grantToken,
+        clientRequestId: "offline-long-disconnect-80h",
+        offlineReceiptNumber: "OFF-1-0123456789abcdef-12",
+        capturedAt: claimedCapturedAt,
+        branchId: 1,
+        capturedShiftId: 1,
+        capturedByUserId: 2,
+        payload: { lines, payment },
+      });
+      await expect(
+        caller2.offline.replaySale({
+          branchId: 1,
+          shiftId: 1,
+          lines,
+          payment,
+          clientRequestId: "offline-long-disconnect-80h",
+          capturedAt: claimedCapturedAt,
+          offlineReceiptNumber: "OFF-1-0123456789abcdef-12",
+          capturedByUserId: 2,
+          capturedShiftId: 1,
+          keyId: gExpired.keyId,
+          grantId: gExpired.grantId,
+          grantIssuedAtMs: gExpired.issuedAtServerMs,
+          grantExpiresAtMs: gExpired.expiresAtServerMs,
+          grantToken: gExpired.grantToken,
+          captureProof: expiredProof,
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+      const lateQueue = await adminCaller.offline.recoveryQueue();
+      const lateRow = lateQueue.find((r) => r.offlineReceiptNumber === "OFF-1-0123456789abcdef-12")!;
+      expect(lateRow).toBeDefined();
+      expect(lateRow.submittedByUserId).toBe(2);
+      expect(lateRow.quarantineClassification).toBe("LATE_ARRIVAL_BEYOND_GRACE_CRYPTO_VERIFIED");
+      expect(lateRow.cryptoProofVerifiedAtQuarantine).toBe(true);
+      expect(lateRow.clientClockUnverifiedByServerWallClock).toBe(true);
+      const adminShiftForLate = await adminCaller.shifts.open({
+        branchId: 1,
+        openingBalance: "0",
+        shiftType: "RETAIL",
+      });
+      const recoveredLate = await adminCaller.offline.postRecoveryItem({
+        id: lateRow.id,
+        targetShiftId: adminShiftForLate.shiftId,
+      });
+      const recLateInv = (
+        await db().select().from(s.invoices).where(eq(s.invoices.id, recoveredLate.invoiceId))
+      )[0];
+      expect(Number(recLateInv.createdBy)).toBe(2);
+
+      // (1) Permission revoked (`sales: "NONE"` override) while device was unplugged -> quarantined on replay!
+      const gRevoked = issueOfflineShiftCaptureGrant({ userId: 2, branchId: 1, shiftId: 1 });
+      const capRevoked = new Date(gRevoked.issuedAtServerMs + 1000).toISOString();
+      const proofRevoked = await computeOfflineCaptureProofHex(gRevoked.captureKeyHex, {
+        kind: "SALE",
+        keyId: gRevoked.keyId,
+        grantId: gRevoked.grantId,
+        grantIssuedAtMs: gRevoked.issuedAtServerMs,
+        grantExpiresAtMs: gRevoked.expiresAtServerMs,
+        grantToken: gRevoked.grantToken,
+        clientRequestId: "offline-perm-revoked-sales-none",
+        offlineReceiptNumber: "OFF-1-0123456789abcdef-13",
+        capturedAt: capRevoked,
+        branchId: 1,
+        capturedShiftId: 1,
+        capturedByUserId: 2,
+        payload: { lines, payment },
+      });
+      await db()
+        .update(s.users)
+        .set({ permissionsOverride: { sales: "NONE" } })
+        .where(eq(s.users.id, 2));
+      await expect(
+        adminCaller.offline.replaySale({
+          branchId: 1,
+          shiftId: 1,
+          lines,
+          payment,
+          clientRequestId: "offline-perm-revoked-sales-none",
+          capturedAt: capRevoked,
+          offlineReceiptNumber: "OFF-1-0123456789abcdef-13",
+          capturedByUserId: 2,
+          capturedShiftId: 1,
+          keyId: gRevoked.keyId,
+          grantId: gRevoked.grantId,
+          grantIssuedAtMs: gRevoked.issuedAtServerMs,
+          grantExpiresAtMs: gRevoked.expiresAtServerMs,
+          grantToken: gRevoked.grantToken,
+          captureProof: proofRevoked,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    } finally {
+      if (prevKeyring === undefined) delete process.env.OFFLINE_CAPTURE_KEYRING;
+      else process.env.OFFLINE_CAPTURE_KEYRING = prevKeyring;
+    }
+  }, 30_000);
 });
