@@ -153,4 +153,29 @@ describe("HybridLocalR2ImageStore — durable WAN-off upload queue, cold-mirror 
     expect(lagAfterSync.syncedVerifiedCount).toBe(1);
     expect(lagAfterSync.alertLevel).toBe("HEALTHY");
   });
+
+  it("re-uploads identical content-addressed bytes to R2 after PUT -> DELETE -> PUT", async () => {
+    const baseDir = await mkdtemp(path.join(tmpdir(), "hybrid-r2-reput-"));
+    roots.push(baseDir);
+    const localRoot = path.join(baseDir, "local-hybrid");
+    const remoteR2 = new ControllableMockR2Store();
+    const store = new HybridLocalR2ImageStore({
+      localRoot,
+      remoteStore: remoteR2,
+    });
+
+    const bytes = Buffer.from("\x89PNG\r\n\x1a\nreuploadable-content");
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    const key = `single/p/${sha.slice(0, 2)}/${sha}.png`;
+
+    await store.put(key, bytes, "image/png");
+    expect((await remoteR2.head(key)).exists).toBe(true);
+
+    await store.delete(key);
+    expect((await remoteR2.head(key)).exists).toBe(false);
+
+    await store.put(key, bytes, "image/png");
+    expect((await remoteR2.head(key)).exists).toBe(true);
+    expect(remoteR2.objects.get(key)?.body.equals(bytes)).toBe(true);
+  });
 });
