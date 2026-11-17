@@ -10,11 +10,7 @@ import {
 } from "@/lib/productStudio/studioDrafts";
 import {
   getOfflineProfile,
-  isOfflineUnlocked,
-  markOfflineUnlocked,
-  subscribeOfflineUnlock,
-  verifyOfflinePin,
-  type OfflineProfile,
+  isOfflineUnlocked,   markOfflineUnlocked,   resolveOfflinePermSnapshot,   subscribeOfflineUnlock,   verifyOfflinePin,  type OfflineProfile,
 } from "@/lib/offline/pinLock";
 import { KeyRound, RefreshCw, WifiOff } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -127,17 +123,7 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
 
   const coolingDown = Date.now() < cooldownUntil;
   const submit = () => {
-    if (busy || coolingDown || !pin) return;
-    setBusy(true);
-    void verifyOfflinePin(pin).then((ok) => {
-      setBusy(false);
-      if (ok) {
-        markOfflineUnlocked(profile);
-        return;
-      }
-      setPin("");
-      const nextFails = fails + 1;
-      setFails(nextFails);
+    if (busy || coolingDown || !pin) return;     setBusy(true);     void verifyOfflinePin(pin).then(async (ok) => {       if (ok) {         await resolveOfflinePermSnapshot(profile.userId, profile.branchId).catch(() => null);         setBusy(false);         markOfflineUnlocked(profile);         return;       }       setBusy(false);       setPin("");       const nextFails = fails + 1;      setFails(nextFails);
       if (nextFails >= 5) {
         // كبح محاولات محلي: ٥ إخفاقات ⇒ تهدئة ٣٠ ثانية (حماية من العبث السريع على المنضدة).
         setCooldownUntil(Date.now() + 30_000);
