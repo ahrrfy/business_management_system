@@ -5,6 +5,13 @@
 import path from "node:path";
 import { FsImageStore } from "./fsStore";
 import { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
+import {
+  COLD_MIRROR_CADENCE_SECONDS,
+  HybridLocalR2ImageStore,
+  type DbMediaReconciliationReport,
+  type HybridMediaLagSnapshot,
+  type HybridMediaOutboxEntry,
+} from "./hybridLocalR2Store";
 import { readR2ResilienceConfig, type R2ResilienceSnapshot } from "./resilience";
 import { logger } from "../../logger";
 import type { ImageStore } from "./types";
@@ -18,6 +25,13 @@ export type { ImageStore, ImageStoreReadOptions, ObjectHead, PublicProductImageW
 export { contentHash, extForMime, objectKeyFor, shortHash } from "./contentAddress";
 export { FsImageStore } from "./fsStore";
 export { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
+export {
+  COLD_MIRROR_CADENCE_SECONDS,
+  HybridLocalR2ImageStore,
+  type DbMediaReconciliationReport,
+  type HybridMediaLagSnapshot,
+  type HybridMediaOutboxEntry,
+};
 export {
   ImageStoreUnavailableError,
   ImageStoreClientAbortError,
@@ -38,7 +52,7 @@ export {
 } from "./tenantNamespace";
 
 let cached: ImageStore | null = null;
-let cachedDriver: "fs" | "r2" | null = null;
+let cachedDriver: "fs" | "r2" | "hybrid_local_r2" | null = null;
 
 function normalizedImageStoreDriver(env: NodeJS.ProcessEnv): string | undefined {
   return env.IMAGE_STORE_DRIVER?.trim().toLowerCase() || undefined;
@@ -56,8 +70,16 @@ export function assertImageStoreStartupConfiguration(env: NodeJS.ProcessEnv = pr
     readR2ResilienceConfig(env);
     return;
   }
+  if (configuredDriver === "hybrid_local_r2") {
+    readR2ImageStoreConfig(env);
+    readR2ResilienceConfig(env);
+    if (!env.HYBRID_MEDIA_LOCAL_ROOT?.trim()) {
+      throw new Error("ImageStore: HYBRID_MEDIA_LOCAL_ROOT مطلوب مع سائق hybrid_local_r2.");
+    }
+    return;
+  }
   if (configuredDriver !== "fs") {
-    throw new Error("ImageStore: IMAGE_STORE_DRIVER يجب أن يكون fs أو r2.");
+    throw new Error("ImageStore: IMAGE_STORE_DRIVER يجب أن يكون fs أو r2 أو hybrid_local_r2.");
   }
   if (env.NODE_ENV === "production") {
     throw new Error("ImageStore: سائق fs محظور في الإنتاج؛ اضبط IMAGE_STORE_DRIVER=r2 واعتماد R2 الخاص.");
@@ -93,6 +115,22 @@ export function getImageStore(): ImageStore {
   assertImageStoreOperationalConfiguration();
   const driver = normalizedImageStoreDriver(process.env) ?? "fs";
   if (cached && cachedDriver === driver) return cached;
+  if (driver === "hybrid_local_r2") {
+    const remote = new R2ImageStore(readR2ImageStoreConfig(), {
+      onResilienceEvent: (event) => {
+        const fields = { component: "hybrid_r2_image_store", ...event };
+        logger.debug(fields, "hybrid image-store R2 resilience event");
+      },
+    });
+    cached = new HybridLocalR2ImageStore({
+      localRoot: process.env.HYBRID_MEDIA_LOCAL_ROOT!.trim(),
+      remoteStore: remote,
+      coldMirrorRoot: process.env.HYBRID_R2_COLD_MIRROR_ROOT?.trim() || null,
+      coldMirrorStatusFile: process.env.HYBRID_R2_COLD_STATUS_FILE?.trim() || null,
+    });
+    cachedDriver = "hybrid_local_r2";
+    return cached;
+  }
   if (driver === "r2") {
     cached = new R2ImageStore(readR2ImageStoreConfig(), {
       onResilienceEvent: (event) => {
