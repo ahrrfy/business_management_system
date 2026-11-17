@@ -907,10 +907,18 @@ function effectivePolicy(user: OperationUser): OperationPolicy {
 
 /** CASL is an evaluator; the server still enforces state, branch and maker-checker rules. */
 export function operationDecision(
-  user: OperationUser,
+  user: OperationUser | null | undefined,
   path: string,
 ): OperationDecision {
   const operation = getOperationPermission(path);
+  if (!user) {
+    return {
+      allowed: false,
+      key: operation?.key ?? (path.startsWith("operation.") ? path : `operation.${path}`),
+      source: "unknown",
+      reason: "لا مستخدم مصادق",
+    };
+  }
   if (!operation) {
     return {
       allowed: false,
