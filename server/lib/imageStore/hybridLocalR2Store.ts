@@ -248,6 +248,8 @@ export class HybridLocalR2ImageStore implements ImageStore {
     }
     const sha256 = createHash("sha256").update(body).digest("hex");
     const primaryPath = this.resolveSafeUnder(this.objectsRoot, key);
+    const deleteOpId = computeStableOpId("DELETE", key, null);
+    await fs.unlink(this.outboxFilePath(deleteOpId)).catch(() => {});
     let existedLocally = false;
     try {
       const existingBytes = await fs.readFile(primaryPath);
@@ -456,6 +458,12 @@ export class HybridLocalR2ImageStore implements ImageStore {
     }
     const primaryPath = this.resolveSafeUnder(this.objectsRoot, key);
     await fs.unlink(primaryPath).catch(() => {});
+    // Invalidate prior PUT outbox receipts for this key so a subsequent PUT re-uploads to R2.
+    await Promise.all(
+      entries
+        .filter((e) => e.operation === "PUT" && e.key === key)
+        .map((e) => fs.unlink(this.outboxFilePath(e.opId)).catch(() => {})),
+    );
     const nowMs = this.now();
     const opId = computeStableOpId("DELETE", key, null);
     const delEntry: HybridMediaOutboxEntry = {
