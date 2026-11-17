@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -361,7 +361,19 @@ describe("18-F01 consignment replay identity and atomicity", () => {
       ).rejects.toMatchObject({ code: "CONFLICT" });
       expect(await db().select().from(s.consignmentNotes)).toHaveLength(1);
       expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
-      expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
+      expect(
+        (
+          await db()
+            .select()
+            .from(s.branchStock)
+            .where(
+              and(
+                eq(s.branchStock.variantId, input.lines[0].variantId),
+                eq(s.branchStock.branchId, 1),
+              ),
+            )
+        )[0].quantity,
+      ).toBe(10);
       expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
     },
   );
@@ -410,7 +422,17 @@ describe("18-F01 consignment replay identity and atomicity", () => {
     expect(await db().select().from(s.consignmentNotes)).toHaveLength(1);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
     expect([10, 20]).toContain(
-      (await db().select().from(s.branchStock))[0].quantity,
+      (
+        await db()
+          .select()
+          .from(s.branchStock)
+          .where(
+            and(
+              eq(s.branchStock.variantId, input.lines[0].variantId),
+              eq(s.branchStock.branchId, 1),
+            ),
+          )
+      )[0].quantity,
     );
   });
 
@@ -429,7 +451,11 @@ describe("18-F01 consignment replay identity and atomicity", () => {
     });
     expect(await db().select().from(s.consignmentNotes)).toHaveLength(0);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
-    expect(await db().select().from(s.branchStock)).toHaveLength(0);
+    expect(
+      (await db().select().from(s.branchStock)).filter(
+        (r) => Number(r.quantity) !== 0,
+      ),
+    ).toHaveLength(0);
     const created = await createConsignmentNote(input, actor);
     expect(created.idempotentReplay).toBe(false);
   });

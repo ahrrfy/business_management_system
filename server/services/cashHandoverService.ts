@@ -11,6 +11,7 @@ import { createPostingIntent, creditLine, debitLine } from "./accounting/posting
 import { assertCashTransferAvailable, assertTreasuryOutException } from "./cash/cashAvailability";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import { nextCounterValue } from "./numbering";
 import { requireDb, withTx, type Actor } from "./tx";
 
 export interface HandoverResult {
@@ -36,14 +37,7 @@ async function nextHandoverNumber(tx: Tx, branchId: number): Promise<string> {
     if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
   }
 
-  await tx.execute(sql`
-    INSERT INTO documentCounters (counterKey, lastValue)
-    VALUES (${counterKey}, LAST_INSERT_ID(${maxSeq + 1}))
-    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${maxSeq + 1}))
-  `);
-  const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
-  const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
-  const seq = Number(row?.v ?? 1);
+  const seq = await nextCounterValue(tx, counterKey, maxSeq);
   return prefix + String(seq).padStart(4, "0");
 }
 

@@ -24,6 +24,7 @@ import {
 } from "@shared/stockUsage";
 import { logAuditTx, noteIdempotentAuditReplay, type AuditMetadata } from "../auditService";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
+import { ensureBranchStockRowsForAllBranches } from "../inventory/stockLock";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { acquireCatalogBarcodeWriteLock, checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import {
@@ -568,6 +569,7 @@ export async function createProduct(
       let recipeOutputVariantId: number | null = null;
       let recipeOutputUnitId: number | null = null;
       let bundleParentVariantId: number | null = null;
+      const createdVariantIds: number[] = [];
 
       for (let vIdx = 0; vIdx < input.variants.length; vIdx++) {
         const v = input.variants[vIdx];
@@ -596,6 +598,7 @@ export async function createProduct(
           isActive: vIdx === 0 && resolvedSimpleActive !== undefined ? resolvedSimpleActive : (v.isActive ?? true),
         });
         const variantId = extractInsertId(vRes);
+        createdVariantIds.push(variantId);
         if (recipeOutputVariantId == null) recipeOutputVariantId = variantId;
         if (isBundle && bundleParentVariantId == null) bundleParentVariantId = variantId;
 
@@ -626,6 +629,10 @@ export async function createProduct(
             });
           }
         }
+      }
+
+      if (!isService && !isBundle && createdVariantIds.length) {
+        await ensureBranchStockRowsForAllBranches(tx, createdVariantIds);
       }
 
       const recipe = input.recipe ?? [];

@@ -361,9 +361,7 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
             ? ["index.html", "assets/*.{js,css}", "fonts/*.woff2"]
             : [
                 "index.html",
-                "assets/app-*.js",
-                STOREFRONT_SHELL_CSS_GLOB,
-                STOREFRONT_SHELL_CHUNK_GLOB,
+                "assets/*.{js,css}",
                 "fonts/*.woff2",
               ],
           // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
@@ -436,6 +434,44 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
                   : "erp-static-assets",
               },
             },
+            ...(storefront
+              ? []
+              : [
+                  {
+                    urlPattern: ({
+                      request,
+                      url,
+                    }: {
+                      request: Request;
+                      url: URL;
+                    }) =>
+                      request.mode === "navigate" &&
+                      /^\/(?:pos|print-pos|reception|returns|login)?(?:\/|$)/.test(
+                        url.pathname,
+                      ),
+                    handler: async ({ request }: { request: Request }) => {
+                      try {
+                        return await fetch(request);
+                      } catch (err) {
+                        const cacheNames = await caches.keys();
+                        for (const name of cacheNames) {
+                          if (name.includes("precache")) {
+                            const cache = await caches.open(name);
+                            const matched =
+                              (await cache.match("/index.html", {
+                                ignoreSearch: true,
+                              })) ||
+                              (await cache.match("index.html", {
+                                ignoreSearch: true,
+                              }));
+                            if (matched) return matched;
+                          }
+                        }
+                        throw err;
+                      }
+                    },
+                  },
+                ]),
           ],
         },
         manifest: {

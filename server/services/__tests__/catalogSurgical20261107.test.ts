@@ -6,6 +6,7 @@
  * 3) تكافؤ إعادة الطلب (`clientRequestId`) في `createProduct` ومنع التكرار الصامت.
  * 4) مطابقة باركود مكونات البكج مع إرجاع `conversionFactor` وحجب المواد الخام عن البكجات البيعية.
  */
+import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { truncateTables } from "./__testUtils__";
 import type { TrpcContext } from "../../context";
@@ -249,7 +250,7 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
       { branchId: 1, variantId: matVarId, quantity: 10 },
       { branchId: 1, variantId: dualVarId, quantity: 10 },
       { branchId: 1, variantId: supplyVarId, quantity: 10 },
-    ]);
+    ]).onDuplicateKeyUpdate({ set: { quantity: sql`VALUES(quantity)` } });
 
     const saleExp = await createExpense(
       {
@@ -495,7 +496,7 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
       branchId: 1,
       variantId: Number(stockedPrintVar.id),
       quantity: 20,
-    });
+    }).onDuplicateKeyUpdate({ set: { quantity: 20 } });
     await db().insert(s.shifts).values({
       id: 901,
       branchId: 1,

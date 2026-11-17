@@ -53,10 +53,16 @@ export interface StudioActiveJob {
 
 export type StudioBadgeStatus = "PREVIOUSLY_PHOTOGRAPHED" | "PENDING_REVIEW" | "NO_IMAGE";
 
+export interface StudioLookupError {
+  code?: string;
+  message: string;
+}
+
 export interface StudioProductCardStatusProps {
   product?: StudioProductDetails | null;
   barcode?: string | null;
   isUnregistered?: boolean;
+  lookupError?: StudioLookupError | null;
   images?: StudioProductImage[];
   activeJob?: StudioActiveJob | null;
   lock?: StudioProductLock | null;
@@ -90,6 +96,7 @@ export function StudioProductCardStatus({
   product,
   barcode,
   isUnregistered = false,
+  lookupError = null,
   images = [],
   activeJob = null,
   lock = null,
@@ -99,6 +106,65 @@ export function StudioProductCardStatus({
   onManualSearch,
   className = "",
 }: StudioProductCardStatusProps) {
+  // حالة خطأ محدد من الخادم (صلاحية، منتج معطّل، باركود مكرر، أو خطأ اتصال)
+  if (lookupError && !product) {
+    const errorTitle =
+      lookupError.code === "FORBIDDEN"
+        ? "تعذّر الاستعلام — صلاحية غير متوفرة"
+        : lookupError.code === "CONFLICT"
+          ? "تضارب في الباركود"
+          : lookupError.code === "NOT_FOUND"
+            ? "تعذّر فتح عمل تصوير لهذا المنتج"
+            : "تعذّر الاستعلام عن الباركود";
+
+    return (
+      <div
+        dir="rtl"
+        data-testid="studio-lookup-error-card"
+        className={`w-full max-w-xl mx-auto rounded-xl border border-destructive/30 bg-destructive/5 p-4 sm:p-5 text-right space-y-3.5 shadow-sm transition-all ${className}`}
+      >
+        <div className="flex items-start gap-3">
+          <div className="rounded-lg bg-destructive/15 p-2 text-destructive shrink-0 mt-0.5">
+            <AlertCircle aria-hidden className="size-5" />
+          </div>
+          <div className="space-y-1.5 min-w-0">
+            <h3
+              data-testid="lookup-error-feedback"
+              className="text-base font-bold text-destructive"
+            >
+              {errorTitle}
+            </h3>
+            {barcode && (
+              <div>
+                <span className="font-mono text-xs font-semibold text-foreground dir-ltr inline-block px-1.5 py-0.5 bg-muted rounded">
+                  {barcode}
+                </span>
+              </div>
+            )}
+            <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
+              {lookupError.message}
+            </p>
+          </div>
+        </div>
+
+        {onManualSearch && (
+          <div className="pt-1 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onManualSearch}
+              className="min-h-10 text-xs sm:text-sm font-semibold gap-1.5"
+            >
+              <Search aria-hidden className="size-4" />
+              <span>البحث اليدوي عن المنتج</span>
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // حالة الباركود غير المسجل بالنظام
   if (isUnregistered || (!product && barcode)) {
     return (
@@ -362,7 +428,7 @@ export function StudioProductCardStatus({
                 توجد لقطة جديدة مرفوعة بانتظار موافقة الإدارة
               </p>
               <p className="text-muted-foreground text-xs leading-relaxed">
-                ستظهر الصورة في الكتالوج ونقاط البيع فور اعتمادها من قبل المدير.
+                ستظهر الصورة في الكتالوج ونقاط البيع فور اعتمادها من قبل المدير، ويمكنك إضافة صور إضافية أخرى للمنتج.
               </p>
             </div>
           </div>
@@ -376,8 +442,8 @@ export function StudioProductCardStatus({
               data-testid="btn-reshoot-pending"
               className="min-h-10 text-xs sm:text-sm font-semibold gap-1.5"
             >
-              <Camera aria-hidden className="size-4" />
-              <span>إعادة التقاط صورة بديلة</span>
+              <Plus aria-hidden className="size-4" />
+              <span>إضافة صورة أخرى للمنتج</span>
             </Button>
           </div>
         </div>

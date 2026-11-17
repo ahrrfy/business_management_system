@@ -63,15 +63,17 @@ export interface StudioAdminReviewPanelProps {
 function RemoteCandidatePreview({ task }: { task: StudioAdminReviewTask }) {
   const previewQuery = trpc.productStudio.candidatePreview.useQuery(
     { taskId: task.id },
-    { staleTime: 60_000, retry: false },
+    { staleTime: 60_000, retry: 2 },
   );
 
-  const src = useMemo(() => {
+  const highResSrc = useMemo(() => {
     const base64 = previewQuery.data?.processedBase64;
     if (!base64) return null;
     const mime = previewQuery.data?.processedMime || "image/jpeg";
     return `data:${mime};base64,${base64}`;
   }, [previewQuery.data]);
+
+  const src = highResSrc ?? task.previewUrl ?? null;
 
   if (src) {
     return (
@@ -95,6 +97,10 @@ function RemoteCandidatePreview({ task }: { task: StudioAdminReviewTask }) {
 }
 
 function ReviewCandidateImage({ task }: { task: StudioAdminReviewTask }) {
+  if (task.hasCandidate && typeof (trpc.productStudio as any)?.candidatePreview?.useQuery === "function") {
+    return <RemoteCandidatePreview task={task} />;
+  }
+
   if (task.previewUrl) {
     return (
       <img
@@ -104,10 +110,6 @@ function ReviewCandidateImage({ task }: { task: StudioAdminReviewTask }) {
         loading="lazy"
       />
     );
-  }
-
-  if (task.hasCandidate && typeof (trpc.productStudio as any)?.candidatePreview?.useQuery === "function") {
-    return <RemoteCandidatePreview task={task} />;
   }
 
   return (
@@ -140,8 +142,8 @@ export function StudioAdminReviewPanel({
     },
   );
 
-  const approveMutation = trpc.productStudio.approve.useMutation();
-  const rejectMutation = trpc.productStudio.reject.useMutation();
+  const bulkApproveMutation = trpc.productStudio.bulkApproveStudioTasks.useMutation();
+  const bulkRejectMutation = trpc.productStudio.bulkRejectStudioTasks.useMutation();
   const setPrimaryMutation = trpc.productStudio.setImagePrimary.useMutation();
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -170,6 +172,7 @@ export function StudioAdminReviewPanel({
       submittedBy: item.submittedBy,
       createdAt: item.createdAt,
       revision: item.revision,
+      previewUrl: item.previewThumbUrl ?? null,
       hasCandidate: item.hasCandidate,
       sourceImageId: item.sourceImageId,
       isPrimary: false,
@@ -213,16 +216,12 @@ export function StudioAdminReviewPanel({
       if (mockOnApprove) {
         await mockOnApprove(ids);
       } else {
-        // تنفيذ الاعتماد عبر tRPC
-        const selectedTasks = tasks.filter((t) => selectedIds.has(t.id));
-        await Promise.all(
-          selectedTasks.map((task) =>
-            approveMutation.mutateAsync({
-              taskId: task.id,
-              expectedRevision: task.revision ?? 1,
-            }),
-          ),
-        );
+        // تنفيذ الاعتماد الجماعي عبر إجراء واحد بدلاً من تجميع نداءات فردية في طلب دفعي واحد
+        const result = await bulkApproveMutation.mutateAsync({ taskIds: ids });
+        if ((result?.approvedCount ?? 0) === 0) {
+          notify.err("تعذر اعتماد الصور المحددة — تأكد من اكتمال بيانات الصور وحالتها");
+          return;
+        }
       }
 
       // رسالة فخر واعتزاز محلية عراقية
@@ -252,16 +251,10 @@ export function StudioAdminReviewPanel({
       if (mockOnReject) {
         await mockOnReject(ids, reason);
       } else {
-        const selectedTasks = tasks.filter((t) => selectedIds.has(t.id));
-        await Promise.all(
-          selectedTasks.map((task) =>
-            rejectMutation.mutateAsync({
-              taskId: task.id,
-              reason,
-              expectedRevision: task.revision ?? 1,
-            }),
-          ),
-        );
+        await bulkRejectMutation.mutateAsync({
+          taskIds: ids,
+          reason,
+        });
       }
 
       toast.info("تم رفض الصور المحددة وإعادتها للتصوير");

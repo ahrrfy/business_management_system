@@ -22,6 +22,14 @@ export function createOfflineReplayApi(
     capturedAt: args.capturedAt,
     offlineReceiptNumber: args.offlineReceiptNumber,
     deviceId: args.deviceId,
+    ...(args.capturedByUserId != null ? { capturedByUserId: args.capturedByUserId } : {}),
+    ...(args.capturedShiftId != null ? { capturedShiftId: args.capturedShiftId } : {}),
+    ...(args.captureProof != null ? { captureProof: args.captureProof } : {}),
+    ...(args.keyId != null ? { keyId: args.keyId } : {}),
+    ...(args.grantId != null ? { grantId: args.grantId } : {}),
+    ...(args.grantIssuedAtMs != null ? { grantIssuedAtMs: args.grantIssuedAtMs } : {}),
+    ...(args.grantExpiresAtMs != null ? { grantExpiresAtMs: args.grantExpiresAtMs } : {}),
+    ...(args.grantToken != null ? { grantToken: args.grantToken } : {}),
   });
   const approved = (args: ReplayArgs) => ({
     ...input(args),

@@ -323,6 +323,23 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
 };
 
 /**
+ * جميع أدوار موظفي الشركة المخوّلين بالتقاط صور المنتجات ورفعها للاعتماد في استوديو المنتجات
+ * (عدا مندوب التوصيل `courier` غير المشمول).
+ */
+export const STUDIO_ACCESS_ROLES: RoleKey[] = [
+  "admin",
+  "manager",
+  "accountant",
+  "cashier",
+  "warehouse",
+  "purchasing",
+  "print_operator",
+  "sales_rep",
+  "auditor",
+  "user",
+];
+
+/**
  * أدوار قسم الكاشير الجاهزة (٢٣/٧/٢٦) — «كاشير تجزئة» و«كاشير طباعة»: دورا `cashier` مخصّصان يحصر
  * كلٌّ منهما في **تبويب قسمه الواحد**، مع بقاء سائر قدرات الكاشير (وردية/عملاء/مصروفات/متجر…).
  * تُبذَر في جدول `roles` (baseRole=cashier + خريطة كاملة) فتُحَلّ في context إلى permissionsOverride

@@ -24,9 +24,14 @@ import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
 import { replayOfflineReturn } from "../services/offline/replayReturn";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
-import { eq } from "drizzle-orm";
-import { invoices } from "../../drizzle/schema";
-import { requireDb } from "../services/tx";
+import { and, eq, sql } from "drizzle-orm";
+import { idempotencyKeys, invoices, shifts, users } from "../../drizzle/schema";
+import { requireDb, withTx } from "../services/tx";
+import { getInProcessActiveSaleFlight } from "../services/sale/create";
+import { canUseStation, type PermissionMap } from "@shared/permissions";
+import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "../context";
+import { assertOperationAuthorized } from "../operationAuthorization";
+import { verifyOfflineCaptureProofServer } from "../lib/offlineCaptureGrant";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
 import {
   captureRejectedReplay,
@@ -50,6 +55,39 @@ import {
 import { publishRealtimeEvent } from "../realtime";
 import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
+function throwNoAssignedBranchError(): never {
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: appErrorMessage({
+      what: "لا فرع مُسنَد لهذا المستخدم",
+      why: "حسابك غير مرتبط بفرع عامل لتنفيذ أو مراجعة العمليات الأوفلاينية",
+      doThis: "اطلب من مدير النظام ربط حسابك بفرع من شاشة المستخدمين",
+    }),
+  });
+}
+
+function throwForeignBranchIdempotencyError(): never {
+  throw new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: "معرّف الطلب مستعمَل لبيع فرع آخر",
+      why: "مفتاح idempotency مسجّل على فرع مختلف ولا يجوز كشفه أو استخدامه عبر الفروع",
+      doThis: "أنشئ طلب بيع جديد داخل فرعك بمعرّف مستقل",
+    }),
+  });
+}
+
+function throwSemanticPayloadConflictError(targetLabel: string): never {
+  throw new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: `تعارض في بصمة حمولة البيع مقابل ${targetLabel}`,
+      why: "بصمة الحمولة الدلالية للنية لا تطابق البيانات المسجلة لنفس المعرّف",
+      doThis: "راجع بنود السلة والمبلغ الأصلي أو أنشئ عملية جديدة بمعرّف مختلف",
+    }),
+  });
+}
+
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null; isOwner?: boolean | null } }, requested: number): number {
   const elevated = canCrossBranches(ctx.user); // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
@@ -70,7 +108,7 @@ function scopeActor(
   let effectiveBranchId = requestedBranchId;
   if (!crossBranch) {
     if (ctx.user.branchId == null) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      throwNoAssignedBranchError();
     }
     effectiveBranchId = Number(ctx.user.branchId);
   }
@@ -169,6 +207,242 @@ export const offlineRouter = router({
 
   customersSnapshot: customersReadProcedure.query(() => buildCustomersSnapshot()),
 
+  lookupPreflightSaleOutcome: salesCashierProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        clientRequestId: z.string().min(4).max(120),
+        expectedSemanticSha256: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
+        mode: z.enum(["OBSERVE", "FENCE_IF_UNCOMMITTED"]).default("OBSERVE"),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const crossBranch = canCrossBranches(ctx.user);
+      let effectiveBranchId = input.branchId;
+      if (!crossBranch) {
+        if (ctx.user.branchId == null) {
+          throwNoAssignedBranchError();
+        }
+        effectiveBranchId = Number(ctx.user.branchId);
+      }
+      const canAdminReconcile =
+        Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
+      const normalizedExpectedHash = input.expectedSemanticSha256?.toLowerCase() ?? null;
+
+      // 1) Check in-process active sale flight map first (detects requests even before/during InnoDB lock acquisition)
+      const activeFlight = getInProcessActiveSaleFlight(input.clientRequestId);
+      if (activeFlight) {
+        if (Number(activeFlight.branchId) !== effectiveBranchId) {
+          throwForeignBranchIdempotencyError();
+        }
+        const isFlightOwner = Number(activeFlight.sellerUserId) === Number(ctx.user.id);
+        if (!isFlightOwner && !canAdminReconcile) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر الاستعلام عن فاتورة قيد التنفيذ لموظف آخر",
+              why: "الطلب الجاري يعود لكاشير آخر ولا تملك صلاحية مدير أو أدمن للمصالحة",
+              doThis: "استدعِ مدير الفرع لمراجعة الفاتورة المعلّقة أو سجّل الدخول بحساب الكاشير الأصلي",
+            }),
+          });
+        }
+        if (
+          normalizedExpectedHash &&
+          activeFlight.semanticSha256.toLowerCase() !== normalizedExpectedHash
+        ) {
+          throwSemanticPayloadConflictError("الطلب الجاري");
+        }
+        return { outcome: "UNKNOWN_IN_FLIGHT" as const };
+      }
+
+      const isNowaitLockContention = (err: unknown): boolean => {
+        const anyErr = err as {
+          errno?: number;
+          code?: string;
+          message?: string;
+          cause?: { errno?: number; code?: string; message?: string };
+        } | null;
+        const errno = anyErr?.errno ?? anyErr?.cause?.errno;
+        const code = anyErr?.code ?? anyErr?.cause?.code ?? "";
+        const msg = `${anyErr?.message ?? ""} ${anyErr?.cause?.message ?? ""}`;
+        return (
+          errno === 3572 ||
+          errno === 1205 ||
+          errno === 1213 ||
+          code === "ER_LOCK_NOWAIT" ||
+          msg.includes("NOWAIT") ||
+          msg.includes("could not be acquired immediately")
+        );
+      };
+
+      let pendingPostTxAudit: Parameters<typeof logAudit>[1] | null = null;
+      try {
+        const txOutcome = await withTx(
+          async (tx) => {
+          const lockQuery =
+            input.mode === "FENCE_IF_UNCOMMITTED"
+              ? sql`SELECT refId, payloadHash FROM idempotencyKeys WHERE operation = 'sale.create' AND clientRequestId = ${input.clientRequestId} LIMIT 1 FOR UPDATE NOWAIT`
+              : sql`SELECT refId, payloadHash FROM idempotencyKeys WHERE operation = 'sale.create' AND clientRequestId = ${input.clientRequestId} LIMIT 1 FOR SHARE NOWAIT`;
+          const rawLockRes = await tx.execute(lockQuery);
+          const lockRows = (
+            Array.isArray(rawLockRes) && Array.isArray(rawLockRes[0])
+              ? rawLockRes[0]
+              : rawLockRes
+          ) as Array<{ refId: number; payloadHash: string | null }>;
+          const idempRow = lockRows[0] ?? null;
+
+          const [semHashRow] = await tx
+            .select({
+              refId: idempotencyKeys.refId,
+              payloadHash: idempotencyKeys.payloadHash,
+            })
+            .from(idempotencyKeys)
+            .where(
+              and(
+                eq(idempotencyKeys.operation, "sale.create.semhash"),
+                eq(idempotencyKeys.clientRequestId, input.clientRequestId),
+              ),
+            )
+            .limit(1);
+
+          const rawInvRes = await tx.execute(
+            sql`SELECT id, invoiceNumber, total, shiftId, branchId, createdBy FROM invoices WHERE sourceType = 'POS' AND sourceId = ${input.clientRequestId} LIMIT 1 FOR SHARE NOWAIT`,
+          );
+          const invRows = (
+            Array.isArray(rawInvRes) && Array.isArray(rawInvRes[0])
+              ? rawInvRes[0]
+              : rawInvRes
+          ) as Array<{
+            id: number;
+            invoiceNumber: string;
+            total: string;
+            shiftId: number | null;
+            branchId: number;
+            createdBy: number;
+          }>;
+          const existing = invRows[0] ?? null;
+
+          if (existing) {
+            if (Number(existing.branchId) !== effectiveBranchId) {
+              throwForeignBranchIdempotencyError();
+            }
+            const isOriginalSeller = Number(existing.createdBy) === Number(ctx.user.id);
+            if (!isOriginalSeller && !canAdminReconcile) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "تعذّر الاستعلام عن فاتورة معلّقة لموظف آخر",
+                  why: "الفاتورة مسجّلة لكاشير مختلف ولا تملك صلاحية مدير أو أدمن",
+                  doThis: "اطلب من المدير مصالحة الحالة أو سجّل الدخول بحساب الموظف الأصلي",
+                }),
+              });
+            }
+            if (
+              normalizedExpectedHash &&
+              semHashRow?.payloadHash &&
+              semHashRow.payloadHash.toLowerCase() !== normalizedExpectedHash
+            ) {
+              throwSemanticPayloadConflictError("الفاتورة الملتزمة");
+            }
+            if (!isOriginalSeller && canAdminReconcile) {
+              pendingPostTxAudit = {
+                action: "offline.preflight.adminLookup",
+                entityType: "invoice",
+                entityId: Number(existing.id),
+                newValue: {
+                  clientRequestId: input.clientRequestId,
+                  originalSellerId: Number(existing.createdBy),
+                  branchId: effectiveBranchId,
+                },
+              };
+            }
+            return {
+              outcome: "COMMITTED" as const,
+              invoiceId: Number(existing.id),
+              invoiceNumber: existing.invoiceNumber,
+              total: String(existing.total),
+              shiftId: existing.shiftId != null ? Number(existing.shiftId) : null,
+              createdBy: Number(existing.createdBy),
+              semanticPayloadSha256: semHashRow?.payloadHash ?? null,
+            };
+          }
+
+          if (idempRow) {
+            const refNum = Number(idempRow.refId);
+            if (refNum === 0) {
+              return { outcome: "UNKNOWN_IN_FLIGHT" as const };
+            }
+            if (refNum === -1) {
+              if (
+                normalizedExpectedHash &&
+                idempRow.payloadHash &&
+                idempRow.payloadHash.toLowerCase() !== normalizedExpectedHash
+              ) {
+                throwSemanticPayloadConflictError("السجل المسيّج");
+              }
+              return { outcome: "FENCED_NOT_COMMITTED" as const };
+            }
+          }
+
+          // Mere row absence NEVER claims `NOT_COMMITTED`!
+          if (input.mode === "OBSERVE") {
+            return { outcome: "UNKNOWN" as const };
+          }
+
+          // `mode === "FENCE_IF_UNCOMMITTED"`: atomically insert `refId = -1` under `FOR UPDATE NOWAIT`
+          // so no delayed original packet can EVER commit under `input.clientRequestId` after this transaction!
+          if (!normalizedExpectedHash) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "بيانات التسييج غير مكتملة",
+                why: "يلزم تمرير البصمة الدلالية للنية expectedSemanticSha256 عند طلب التسييج الصريح",
+                doThis: "حدّث الواجهة وأعِد طلب التسييج متضمناً بصمة الحمولة",
+              }),
+            });
+          }
+          await tx.insert(idempotencyKeys).values([
+            {
+              operation: "sale.create",
+              clientRequestId: input.clientRequestId,
+              refId: -1,
+              payloadHash: normalizedExpectedHash,
+            },
+            {
+              operation: "sale.create.semhash",
+              clientRequestId: input.clientRequestId,
+              refId: -1,
+              payloadHash: normalizedExpectedHash,
+            },
+          ]);
+          pendingPostTxAudit = {
+            action: "offline.preflight.fencedUncommitted",
+            entityType: "invoice",
+            entityId: 0,
+            newValue: {
+              clientRequestId: input.clientRequestId,
+              branchId: effectiveBranchId,
+              expectedSemanticSha256: normalizedExpectedHash,
+              fencedByUserId: Number(ctx.user.id),
+            },
+          };
+          return { outcome: "FENCED_NOT_COMMITTED" as const };
+        },
+        { gate: "NONE" },
+        );
+        if (pendingPostTxAudit) {
+          await logAudit(ctx, pendingPostTxAudit);
+        }
+        return txOutcome;
+      } catch (err) {
+        if (err instanceof TRPCError) throw err;
+        if (isNowaitLockContention(err) || isDupEntry(err)) {
+          return { outcome: "UNKNOWN_IN_FLIGHT" as const };
+        }
+        throw err;
+      }
+    }),
+
   /** ش٥ — تقرير «المبيعات الأوفلاين» للإدارة: ربط OFF↔INV + زمن الترحيل + وسم «مُزامنة
    *  لاحقاً». خلف بوّابة التقارير القياسية (القائمة + المنح الصريح + عزل فرع غير الأدمن). */
   salesReport: reportViewerProcedure
@@ -233,33 +507,300 @@ export const offlineRouter = router({
         capturedAt: z.string().min(10).max(40),
         offlineReceiptNumber: z.string().min(4).max(40),
         deviceId: z.string().max(40).optional(),
+        capturedByUserId: z.number().int().positive().optional(),
+        capturedShiftId: z.number().int().positive().optional(),
+        captureProof: z.string().min(32).max(128).optional(),
+        keyId: z.string().min(1).max(24).optional(),
+        grantId: z.string().min(16).max(64).optional(),
+        grantIssuedAtMs: z.number().int().positive().optional(),
+        grantExpiresAtMs: z.number().int().positive().optional(),
+        grantToken: z.string().min(32).max(128).optional(),
+        salesRepId: z.number().int().positive().nullish(),
+        attribution: z
+          .object({
+            repId: z.number().int().positive().nullish(),
+            mode: z.enum(["DIRECT", "SPLIT", "POOL"]).optional(),
+          })
+          .optional(),
         // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (شارة باركود / PIN / بريد وكلمة مرور).
         managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع — مرآة saleRouter.create (منع IDOR): غير العابر يُجبَر على فرعه. **فصلٌ عن السلطة** (P2 Codex):
-      // عبور الفروع للمالك/الأدمن فقط؛ سلطة اعتماد التسعير تحت التكلفة (canApprove) تبقى للمدير.
       const crossBranch = canCrossBranches(ctx.user);
       let effectiveBranchId = input.branchId;
       if (!crossBranch) {
         if (ctx.user.branchId == null) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+          throwNoAssignedBranchError();
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role, isOwner: Boolean(ctx.user.isOwner) };
-      // سلطة تحت-التكلفة: المالك/المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval مُتحقَّق.
       const canApprove = Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
-      const { managerApproval, ...replayInput } = input;
+      const {
+        managerApproval,
+        capturedByUserId,
+        capturedShiftId,
+        captureProof,
+        keyId,
+        grantId,
+        grantIssuedAtMs,
+        grantExpiresAtMs,
+        grantToken,
+        ...replayInput
+      } = input;
       let approvedBy: number | null = null;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+
+      const db = requireDb();
+      const [existingCommittedInv] = await db
+        .select({
+          id: invoices.id,
+          createdBy: invoices.createdBy,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.sourceType, "POS"),
+            eq(invoices.sourceId, input.clientRequestId),
+          ),
+        )
+        .limit(1);
+
+      // Preserve verified same-branch original capturer ID in recovery queue WITHOUT fabricating any proof!
+      let verifiedQuarantineOwnerId: number = ctx.user.id;
+      if (capturedByUserId != null) {
+        const [maybeUser] = await db
+          .select({ id: users.id, branchId: users.branchId })
+          .from(users)
+          .where(eq(users.id, Number(capturedByUserId)))
+          .limit(1);
+        if (
+          maybeUser &&
+          (crossBranch || maybeUser.branchId == null || Number(maybeUser.branchId) === effectiveBranchId)
+        ) {
+          verifiedQuarantineOwnerId = Number(maybeUser.id);
+        }
+      }
+
+      const quarantineAndReject = async (
+        reasonMsg: string,
+        usePreconditionFailed = false,
+        quarantineMeta?: Record<string, unknown>,
+      ): Promise<never> => {
+        const errCode = usePreconditionFailed ? "PRECONDITION_FAILED" : "FORBIDDEN";
+        if (!existingCommittedInv) {
+          await captureRejectedReplay(
+            {
+              ...replayInput,
+              branchId: effectiveBranchId,
+              priceOverrideApproved: false,
+              unverifiedOriginalCapturedByUserId: capturedByUserId ?? null,
+              submittedByPresenterUserId: ctx.user.id,
+              ...(usePreconditionFailed && !quarantineMeta ? { legacyMissingProof: true } : {}),
+              ...(quarantineMeta ?? {}),
+            },
+            errCode,
+            reasonMsg,
+            verifiedQuarantineOwnerId,
+            "RETAIL",
+          );
+        }
+        throw new TRPCError({ code: errCode, message: reasonMsg });
+      };
+
+      // Case A: Legacy row that ALREADY committed on the server before HTTP response dropped (`existingCommittedInv` exists)
+      // and carries no `captureProof`: allow idempotent reconciliation via `replayOfflineSale` (`createSaleInTx` still
+      // enforces exact semantic/legacy payload hash match and throws CONFLICT on any altered payload!).
+      let delegatedSellerUserId: number | null = null;
+      if (existingCommittedInv && captureProof == null) {
+        if (Number(existingCommittedInv.branchId) !== effectiveBranchId) {
+          throwForeignBranchIdempotencyError();
+        }
+        const committedSellerId = Number(existingCommittedInv.createdBy);
+        if (capturedByUserId != null && Number(capturedByUserId) !== committedSellerId) {
+          await quarantineAndReject("تعارض هوية الملتقط مع الفاتورة الملتزمة مسبقاً على الخادم");
+        }
+        if (committedSellerId !== Number(ctx.user.id)) {
+          if (!canApprove && approvedBy == null) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: appErrorMessage({
+                what: "تعذّر مصالحة فاتورة ملتزمة لموظف آخر",
+                why: "الموظف الحالي ليس صاحب الفاتورة الأصلي ولا يحمل اعتماد مدير أو أدمن",
+                doThis: "أرفق اعتماد المدير أو نفّذ المصالحة بحساب الموظف الأصلي",
+              }),
+            });
+          }
+          delegatedSellerUserId = committedSellerId;
+        }
+      } else {
+        // Case B: Uncommitted row OR any row supplying `captureProof` — strict v4 verification!
+        if (capturedByUserId == null) {
+          await quarantineAndReject(
+            "هوية الموظف الملتقط الأصلي مفقودة — عُلّقت العملية للمراجعة الإدارية ولا تُرحَّل تلقائياً",
+            true,
+          );
+        }
+
+        const [capturedUserRow] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, Number(capturedByUserId)))
+          .limit(1);
+        if (!capturedUserRow) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر تحديد موظف الالتقاط الأصلي",
+              why: "معرّف موظف الالتقاط المرسل غير موجود في جدول المستخدمين",
+              doThis: "راجع طابور الاسترداد الأوفلايني مع مدير النظام لإسناد العملية يدوياً",
+            }),
+          });
+        }
+        if (
+          !crossBranch &&
+          capturedUserRow.branchId != null &&
+          Number(capturedUserRow.branchId) !== effectiveBranchId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر ترحيل بيع موظف ينتمي لفرع آخر",
+              why: "موظف الالتقاط الأصلي مسجّل على فرع مختلف عن فرع العملية",
+              doThis: "رحّل العملية من الفرع الصحيح أو عبر حساب أدمن مخوّل بعبور الفروع",
+            }),
+          });
+        }
+
+        if (Number(capturedByUserId) !== Number(ctx.user.id)) {
+          if (!canApprove && approvedBy == null) {
+            await quarantineAndReject(
+              "لا يجوز ترحيل بيع التُقط بجلسة موظف آخر دون اعتماد مدير/أدمن",
+            );
+          }
+          delegatedSellerUserId = Number(capturedUserRow.id);
+        }
+
+        // Re-verify authoritative server-side retail sale permissions for the original capturer!
+        if (!existingCommittedInv) {
+          if (capturedUserRow.isActive === false) {
+            await quarantineAndReject(
+              "حساب الموظف الملتقط موقوف حالياً — عُلّقت العملية للمراجعة الإدارية",
+            );
+          }
+          const hydratedCapturer = { ...capturedUserRow } as unknown as AuthUser;
+          await resolveCustomRole(hydratedCapturer);
+          normalizeOwnerAuthority(hydratedCapturer);
+          const stationAllowed = canUseStation(
+            "RETAIL",
+            hydratedCapturer.role,
+            hydratedCapturer.permissionsOverride as PermissionMap | null,
+          );
+          if (!stationAllowed && !hydratedCapturer.isOwner) {
+            await quarantineAndReject(
+              "صلاحية محطة مبيعات التجزئة مسحوبة من الموظف الملتقط — عُلّقت العملية للمراجعة الإدارية",
+            );
+          }
+          try {
+            assertOperationAuthorized(hydratedCapturer, "sales.create");
+          } catch {
+            await quarantineAndReject(
+              "سياسة العمليات تمنع الموظف الملتقط من إنشاء بيع تجزئة — عُلّقت العملية للمراجعة الإدارية",
+            );
+          }
+        }
+
+        const effectiveCapturedShiftId = Number(capturedShiftId ?? input.shiftId ?? 0);
+        let shiftOpenedAtMs: number | null = null;
+        if (!existingCommittedInv) {
+          if (
+            !effectiveCapturedShiftId ||
+            !captureProof ||
+            !keyId ||
+            !grantId ||
+            grantIssuedAtMs == null ||
+            grantExpiresAtMs == null ||
+            !grantToken
+          ) {
+            await quarantineAndReject(
+              "صف قديم غير مرسل يفتقر إلى ختم ومنحة الالتقاط الموقّعة — حُجر في طابور الاسترداد الإداري دون اختلاق إثبات",
+              true,
+            );
+          }
+          const [originShift] = await db
+            .select({
+              id: shifts.id,
+              userId: shifts.userId,
+              branchId: shifts.branchId,
+              openedAt: shifts.openedAt,
+            })
+            .from(shifts)
+            .where(eq(shifts.id, effectiveCapturedShiftId))
+            .limit(1);
+          if (
+            !originShift ||
+            Number(originShift.branchId) !== effectiveBranchId ||
+            Number(originShift.userId) !== Number(capturedByUserId)
+          ) {
+            await quarantineAndReject(
+              "عدم تطابق وردية الالتقاط الأصلية مع هوية الموظف الملتقط",
+            );
+          }
+          shiftOpenedAtMs = originShift.openedAt ? new Date(originShift.openedAt).getTime() : null;
+          if (
+            Number(capturedByUserId) === Number(ctx.user.id) &&
+            input.shiftId != null &&
+            Number(input.shiftId) !== effectiveCapturedShiftId
+          ) {
+            await quarantineAndReject(
+              "لا يجوز للكاشير تغيير وردية الالتقاط الأصلية لعملية غير مرسلة",
+            );
+          }
+        }
+
+        const verifyRes = verifyOfflineCaptureProofServer(
+          captureProof ?? "",
+          {
+            kind: "SALE",
+            keyId: keyId ?? "",
+            grantId: grantId ?? "",
+            grantIssuedAtMs: Number(grantIssuedAtMs ?? 0),
+            grantExpiresAtMs: Number(grantExpiresAtMs ?? 0),
+            grantToken: grantToken ?? "",
+            clientRequestId: input.clientRequestId,
+            offlineReceiptNumber: input.offlineReceiptNumber,
+            capturedAt: input.capturedAt,
+            branchId: effectiveBranchId,
+            capturedShiftId: effectiveCapturedShiftId,
+            capturedByUserId: Number(capturedByUserId),
+            payload: replayInput,
+          },
+          { shiftOpenedAtMs },
+        );
+        if (!verifyRes.ok) {
+          if (verifyRes.code === "LATE_ARRIVAL_BEYOND_OFFLINE_GRACE") {
+            await quarantineAndReject(verifyRes.message, true, {
+              quarantineClassification: "LATE_ARRIVAL_BEYOND_GRACE_CRYPTO_VERIFIED",
+              cryptoProofVerifiedAtQuarantine: true,
+              clientClockUnverifiedByServerWallClock: true,
+              grantId: grantId ?? null,
+              grantIssuedAtMs: grantIssuedAtMs ?? null,
+              grantExpiresAtMs: grantExpiresAtMs ?? null,
+            });
+          }
+          await quarantineAndReject(verifyRes.message);
+        }
+      }
+
       const priceOverrideApprovedBy: number | null = approvedBy ?? (canApprove ? ctx.user.id : null);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await replayOfflineSale(
             { ...replayInput, branchId: effectiveBranchId, priceOverrideApproved: priceOverrideApprovedBy != null },
             actor,
+            delegatedSellerUserId != null ? { attributeToUserId: delegatedSellerUserId } : undefined,
           );
           if (!res.idempotentReplay) {
             await logAudit(ctx, {
