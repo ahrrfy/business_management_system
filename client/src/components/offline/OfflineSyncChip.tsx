@@ -90,7 +90,14 @@ export function OfflineSyncChip({
   );
   useEffect(() => {
     refresh();
-    const offOutbox = subscribeOutbox(refresh);
+    const offOutbox = subscribeOutbox(() => {
+      refresh();
+      if (connectivity.get() === "online") {
+        void readOutboxSummary().then((s) => {
+          if (s.queued > 0 && !s.flushing) void flushNow();
+        });
+      }
+    });
     const offConn = connectivity.subscribe((state) => {
       if (state === "online") void flushNow();
     });
