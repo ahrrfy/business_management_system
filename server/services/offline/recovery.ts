@@ -88,6 +88,10 @@ export async function captureRejectedReplay(
 export interface RecoveryQueueRow {
   id: number;
   branchId: number;
+  submittedByUserId: number | null;
+  quarantineClassification: string | null;
+  cryptoProofVerifiedAtQuarantine: boolean;
+  clientClockUnverifiedByServerWallClock: boolean;
   offlineReceiptNumber: string;
   capturedAt: Date;
   amount: string;
@@ -129,18 +133,28 @@ export async function listRecoveryQueue(
   return rows.map((r) => {
     let amount = "0";
     let lineCount = 0;
+    let quarantineClassification: string | null = null;
+    let cryptoProofVerifiedAtQuarantine = false;
+    let clientClockUnverifiedByServerWallClock = false;
     try {
-      /**
-       * حمولةُ RETURN تحمل المبلغ في `refund.amount` لا `payment.amount` — وقراءتُها بعقد
-       * البيع كانت تُظهر كلّ مرتجعٍ مُلتقَط **بصفرٍ** للمدير بينما النقدُ خرج فعلاً، فيسقط من
-       * أولويّته ومطابقته (أمسكه Codex على PR #932، P2).
-       */
       const p = JSON.parse(r.payload) as ReplayOfflineSaleInput & {
         refund?: { amount?: string };
+        quarantineClassification?: string;
+        cryptoProofVerifiedAtQuarantine?: boolean;
+        clientClockUnverifiedByServerWallClock?: boolean;
+        legacyMissingProof?: boolean;
       };
       amount =
         (r.channel === "RETURN" ? p.refund?.amount : p.payment?.amount) ?? "0";
       lineCount = p.lines?.length ?? 0;
+      quarantineClassification =
+        typeof p.quarantineClassification === "string"
+          ? p.quarantineClassification
+          : p.legacyMissingProof
+            ? "LEGACY_UNSENT_WITHOUT_PROOF"
+            : null;
+      cryptoProofVerifiedAtQuarantine = Boolean(p.cryptoProofVerifiedAtQuarantine);
+      clientClockUnverifiedByServerWallClock = Boolean(p.clientClockUnverifiedByServerWallClock);
     } catch {
       // حمولةٌ تالفة تبقى مرئيّةً بأرقام صفرية — إخفاؤها أسوأ من عرضها ناقصة.
     }
@@ -151,6 +165,10 @@ export async function listRecoveryQueue(
     return {
       id: Number(r.id),
       branchId: Number(r.branchId),
+      submittedByUserId: r.submittedByUserId != null ? Number(r.submittedByUserId) : null,
+      quarantineClassification,
+      cryptoProofVerifiedAtQuarantine,
+      clientClockUnverifiedByServerWallClock,
       offlineReceiptNumber: r.offlineReceiptNumber,
       capturedAt: r.capturedAt,
       amount,
@@ -316,7 +334,7 @@ export async function postRecoveryItem(
     // Evidence lookup never authorizes changed payloads: domain hash checks run.
     if (item.channel === "RETAIL") {
       const [existing] = await tx
-        .select({ id: invoices.id })
+        .select({ id: invoices.id, createdBy: invoices.createdBy })
         .from(invoices)
         .where(
           and(
@@ -328,7 +346,13 @@ export async function postRecoveryItem(
       if (existing) {
         let originalInput = offlineSaleInput(
           { ...payload, branchId: Number(item.branchId) },
-          { skipCaptureWindow: true },
+          {
+            skipCaptureWindow: true,
+            attributeToUserId:
+              existing.createdBy != null
+                ? Number(existing.createdBy)
+                : (item.submittedByUserId ?? actor.userId),
+          },
         );
         // The capture router historically omitted this server-derived approval
         // bit. Reconstruct it only with proof from the full stored request hash.
