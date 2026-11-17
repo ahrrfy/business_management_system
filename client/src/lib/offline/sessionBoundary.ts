@@ -8,7 +8,12 @@ import { sameStudioTenantScope, type StudioTenantScope } from "@/lib/productStud
 import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 import { clearNotificationBadge } from "@/lib/push";
 import { markReceptionWorkspaceBoundaryBlocked, purgeReceptionWorkspaceSnapshots } from "@/lib/receptionWorkspaceState";
-import { offlineDb } from "./db";
+import { offlineDb, setMeta } from "./db";
+import {
+  PREFLIGHT_INTENTS_META_KEY,
+  PREFLIGHT_INTENT_IDB_KEY_PREFIX,
+  clearActiveOfflineCaptureGrant,
+} from "./outbox";
 import { lockOfflineSession } from "./pinLock";
 
 type SessionBoundaryDependencies = {
@@ -34,6 +39,9 @@ const studioDraftDependencies: SessionBoundaryDependencies = {
 export async function resetSessionQueryCache(
   queryClient: QueryClient,
 ): Promise<void> {
+  lockOfflineSession();
+  await clearActiveOfflineCaptureGrant("reset_session_query_cache");
+  await setMeta("lastOpenShift", "");
   await queryClient.cancelQueries();
   queryClient.removeQueries();
 }
@@ -105,12 +113,26 @@ export async function resetSessionForLogout(
     "offlineSaleEnabled",
     "storagePersisted",
     "deviceCode",
+    "legacyDeviceCode",
     "offlineReceiptSeq",
+    PREFLIGHT_INTENTS_META_KEY,
   ];
   const clearTasks: Array<() => Promise<unknown>> = [
     () => offlineDb.profile.clear(),
     () => offlineDb.catalog.clear(),
-    () => offlineDb.meta.where("key").noneOf(PRESERVED_DEVICE_META_KEYS).delete(),
+    async () => {
+      const allMeta =
+        typeof offlineDb.meta.toArray === "function"
+          ? await offlineDb.meta.toArray().catch(() => [])
+          : [];
+      const extraPreserved = allMeta
+        .filter((r) => typeof r?.key === "string" && r.key.startsWith(PREFLIGHT_INTENT_IDB_KEY_PREFIX))
+        .map((r) => r.key);
+      return offlineDb.meta
+        .where("key")
+        .noneOf([...PRESERVED_DEVICE_META_KEYS, ...extraPreserved])
+        .delete();
+    },
     () => offlineDb.customers.clear(),
     () => offlineDb.stock.clear(),
   ];
