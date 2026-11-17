@@ -65,6 +65,7 @@ export function assertGovernanceGateHeld(tx: Tx): void {
  *     side-effect by forgetting to wire it at the router layer.
  */
 const postCommitHooksByTx = new WeakMap<Tx, Array<() => void | Promise<void>>>();
+const postRollbackHooksByTx = new WeakMap<Tx, Array<() => void | Promise<void>>>();
 
 export function enqueuePostCommit(
   tx: Tx,
@@ -73,6 +74,16 @@ export function enqueuePostCommit(
   const list = postCommitHooksByTx.get(tx);
   if (list) list.push(hook);
   else postCommitHooksByTx.set(tx, [hook]);
+}
+
+/** Queues best-effort cleanup (e.g. in-memory flight tracking) if `withTx` rolls back or aborts. */
+export function enqueuePostRollback(
+  tx: Tx,
+  hook: () => void | Promise<void>,
+): void {
+  const list = postRollbackHooksByTx.get(tx);
+  if (list) list.push(hook);
+  else postRollbackHooksByTx.set(tx, [hook]);
 }
 
 async function drainPostCommitHooks(tx: Tx): Promise<void> {
@@ -84,6 +95,19 @@ async function drainPostCommitHooks(tx: Tx): Promise<void> {
       await hook();
     } catch {
       // fail-open: transaction already committed; side-effects don't affect integrity.
+    }
+  }
+}
+
+async function drainPostRollbackHooks(tx: Tx): Promise<void> {
+  const hooks = postRollbackHooksByTx.get(tx);
+  if (!hooks || hooks.length === 0) return;
+  postRollbackHooksByTx.delete(tx);
+  for (const hook of hooks) {
+    try {
+      await hook();
+    } catch {
+      // fail-open: transaction rolled back; cleanup must not mask original error.
     }
   }
 }
@@ -134,12 +158,17 @@ export async function withTx<T>(
 
   try {
     const result = await run();
-    // Transaction committed successfully — fire post-commit hooks.
-    if (capturedTx) await drainPostCommitHooks(capturedTx);
+    // Transaction committed successfully — discard rollback hooks & fire post-commit hooks.
+    if (capturedTx) {
+      postRollbackHooksByTx.delete(capturedTx);
+      await drainPostCommitHooks(capturedTx);
+    }
     return result;
   } catch (error) {
-    // Rollback happened — discard any queued hooks silently.
-    if (capturedTx) postCommitHooksByTx.delete(capturedTx);
+    if (capturedTx) {
+      postCommitHooksByTx.delete(capturedTx);
+      await drainPostRollbackHooks(capturedTx);
+    }
     if (
       !isMonthCloseGateMissing(error) ||
       options.bootstrapMissingGate === false
@@ -149,9 +178,20 @@ export async function withTx<T>(
     // الفشل وقع قبل callback، لذلك الإعادة آمنة ولا تكرر أي أثر أعمال.
     await ensureFinancialPostingGate(database);
     capturedTx = null;
-    const result = await run();
-    if (capturedTx) await drainPostCommitHooks(capturedTx);
-    return result;
+    try {
+      const result = await run();
+      if (capturedTx) {
+        postRollbackHooksByTx.delete(capturedTx);
+        await drainPostCommitHooks(capturedTx);
+      }
+      return result;
+    } catch (retryError) {
+      if (capturedTx) {
+        postCommitHooksByTx.delete(capturedTx);
+        await drainPostRollbackHooks(capturedTx);
+      }
+      throw retryError;
+    }
   }
 }
 

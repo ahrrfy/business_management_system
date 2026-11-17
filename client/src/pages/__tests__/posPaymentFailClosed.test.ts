@@ -14,7 +14,12 @@ const readComponent = (relative: string) =>
  * تغيير سلوكيّ — العقد المحروس يمتدّ على الشاشة **ومكوّنها** معاً (أزرار الطريقة وحقل المرجع
  * في المكوّن، والمحاولة الخارجية المؤكَّدة في الشاشة).
  */
-const readRetailPos = () => readPage("POS.tsx") + "\n" + readComponent("pos/PaymentPanel.tsx");
+const readRetailPos = () =>
+  readPage("POS.tsx") +
+  "\n" +
+  readComponent("pos/PaymentPanel.tsx") +
+  "\n" +
+  readComponent("pos/usePOSExternalPayment.ts");
 const readPrintPos = () =>
   readPage("PrintPOS.tsx") +
   "\n" +

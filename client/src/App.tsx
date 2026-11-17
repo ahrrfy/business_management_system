@@ -32,6 +32,7 @@ import { trpc } from "@/lib/trpc";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
+import { STUDIO_ACCESS_ROLES } from "@shared/permissions";
 import { AUDIT_LOGS_GATE, BARCODE_WORKFLOW_STATION_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
@@ -188,15 +189,24 @@ const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 function Protected({ children }: { children: React.ReactNode }) {
   const [loc] = useLocation();
   const connectivity = useConnectivity();
-  const coldOfflineStudio =
-    isColdOfflineStudioRoute(loc) &&
-    (isDisconnected(connectivity) ||
-      (typeof navigator !== "undefined" && !navigator.onLine));
-  const me = trpc.auth.me.useQuery(undefined, { enabled: !coldOfflineStudio });
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const offlineUnlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const coldOfflineStudio = isColdOfflineStudioRoute(loc) && offline;
+  const me = trpc.auth.me.useQuery(undefined, {
+    enabled: !coldOfflineStudio && !(offline && offlineUnlocked),
+  });
   const retry = useCallback(() => {
     void me.refetch();
   }, [me.refetch]);
   if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
+  if (!me.data && offline && offlineUnlocked)
     return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
   if (me.data) {
@@ -255,18 +265,7 @@ function StudioRouteAccess({ children }: { children: React.ReactNode }) {
   const localProfile = unlocked ? getOfflineUnlockedProfile() : null;
   return (
     <RequireRole
-      roles={[
-        "admin",
-        "manager",
-        "print_operator",
-        "auditor",
-        "cashier",
-        "warehouse",
-        "purchasing",
-        "sales_rep",
-        "accountant",
-        "user",
-      ]}
+      roles={STUDIO_ACCESS_ROLES}
       module="productStudio"
       level="READ"
       localOfflineActor={offline ? localProfile : undefined}

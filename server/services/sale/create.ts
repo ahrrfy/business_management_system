@@ -105,9 +105,14 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import {
   checkIdempotency,
+  finalizeSaleIdempotencyInTx,
   idempotencyHash,
   recordIdempotencyKey,
+  registerLegacyPayloadHash,
+  reserveSaleIdempotencyInTx,
 } from "../idempotency";
+import { computeSaleSemanticPayloadSha256 } from "@shared/offlineCaptureProof";
+import { enqueuePostCommit, enqueuePostRollback } from "../tx";
 import {
   discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
@@ -186,22 +191,230 @@ function withDeliveryDefaults(input: CreateSaleInput): CreateSaleInput {
   return { ...input, codDispatchPending: true, paymentMode: "COD" };
 }
 
+export interface ActiveSaleFlightInfo {
+  branchId: number;
+  sellerUserId: number;
+  semanticSha256: string;
+  startedAtMs: number;
+}
+
+const activeSaleFlights = new Map<string, ActiveSaleFlightInfo>();
+const saleBeforeCommitPauseHooks = new Map<
+  string,
+  { notifyEntered: () => void; waitForRelease: Promise<void> }
+>();
+
+export function getInProcessActiveSaleFlight(
+  clientRequestId: string,
+): ActiveSaleFlightInfo | null {
+  return activeSaleFlights.get(clientRequestId) ?? null;
+}
+
+/**
+ * Isolated test-only coordination hook allowing deterministic verification of concurrent
+ * `lookupPreflightSaleOutcome` while `createSaleInTx` holds uncommitted InnoDB locks right before `COMMIT`.
+ */
+export function registerSaleBeforeCommitPauseHookForTest(clientRequestId: string): {
+  enteredPreCommit: Promise<void>;
+  releaseCommit: () => void;
+} {
+  let notifyEntered!: () => void;
+  let releaseCommit!: () => void;
+  const enteredPreCommit = new Promise<void>((resolve) => {
+    notifyEntered = resolve;
+  });
+  const waitForRelease = new Promise<void>((resolve) => {
+    releaseCommit = resolve;
+  });
+  saleBeforeCommitPauseHooks.set(clientRequestId, {
+    notifyEntered,
+    waitForRelease,
+  });
+  return { enteredPreCommit, releaseCommit };
+}
+
+async function maybeAwaitSaleBeforeCommitPauseHook(clientRequestId: string): Promise<void> {
+  const hook = saleBeforeCommitPauseHooks.get(clientRequestId);
+  if (!hook) return;
+  saleBeforeCommitPauseHooks.delete(clientRequestId);
+  hook.notifyEntered();
+  await hook.waitForRelease;
+}
+
+function canonicalSaleSemanticPayload(
+  input: CreateSaleInput,
+  effectiveSellerUserId: number,
+  rawPaymentLegs: NonNullable<CreateSaleInput["payments"]>,
+) {
+  return {
+    branchId: Number(input.branchId),
+    trackingNumber: input.trackingNumber ?? null,
+    siblingIndex: input.siblingIndex ?? null,
+    shiftId: input.shiftId ?? null,
+    customerId: input.customerId ?? null,
+    contactName: input.contactName?.trim() || null,
+    contactPhone: input.contactPhone?.trim() || null,
+    priceTier: input.priceTier ?? null,
+    sourceType: input.sourceType,
+    effectiveSellerUserId: Number(effectiveSellerUserId),
+    lines: input.lines.map((l) => ({
+      variantId: Number(l.variantId),
+      productUnitId: Number(l.productUnitId),
+      quantity: money(l.quantity).toFixed(3),
+      unitPriceOverride:
+        l.unitPriceOverride != null ? money(l.unitPriceOverride).toFixed(2) : null,
+      discountPercent:
+        l.discountPercent != null ? money(l.discountPercent).toFixed(2) : null,
+      discountAmount:
+        l.discountAmount != null ? money(l.discountAmount).toFixed(2) : null,
+      promotionId: l.promotionId ?? null,
+      promotionDiscount:
+        l.promotionDiscount != null ? money(l.promotionDiscount).toFixed(2) : null,
+      cashierDiscountAmount:
+        l.cashierDiscountAmount != null
+          ? money(l.cashierDiscountAmount).toFixed(2)
+          : null,
+      unitCostOverride:
+        l.unitCostOverride != null ? money(l.unitCostOverride).toFixed(2) : null,
+      isGift: Boolean(l.isGift),
+    })),
+    invoiceDiscount:
+      input.invoiceDiscount != null ? money(input.invoiceDiscount).toFixed(2) : null,
+    deliveryFee:
+      input.deliveryFee != null ? money(input.deliveryFee).toFixed(2) : null,
+    deliveryFree: Boolean(input.deliveryFree),
+    deliveryWaivedAmount:
+      input.deliveryWaivedAmount != null
+        ? money(input.deliveryWaivedAmount).toFixed(2)
+        : null,
+    freeShippingPromotionId: input.freeShippingPromotionId ?? null,
+    taxRatePercent:
+      input.taxRatePercent != null ? money(input.taxRatePercent).toFixed(2) : null,
+    paymentLegs: rawPaymentLegs.map((leg) => ({
+      amount: money(leg.amount).toFixed(2),
+      method: leg.method,
+      reference: (leg.reference ?? "").trim() || null,
+    })),
+    preCollected: input.preCollected
+      ? {
+          amount: money(input.preCollected.amount).toFixed(2),
+          receiptIds: [...input.preCollected.receiptIds]
+            .map(Number)
+            .sort((a, b) => a - b),
+          method: input.preCollected.method ?? null,
+        }
+      : null,
+    attribution: input.attribution ?? null,
+    salesRepId: input.salesRepId ?? null,
+    attributionMode: input.attributionMode ?? null,
+    assistedByUserId: input.assistedByUserId ?? null,
+    couponCode: input.couponCode?.trim() || null,
+    notes: input.notes?.trim() || null,
+    dueDate: input.dueDate?.trim() || null,
+    cashRoundIQD: Boolean(input.cashRoundIQD),
+    cashRoundingBasketOthers:
+      input.cashRoundingBasketOthers != null
+        ? money(input.cashRoundingBasketOthers).toFixed(2)
+        : null,
+    delivery: input.delivery ?? null,
+    deliveryFeeHeld:
+      input.deliveryFeeHeld != null ? money(input.deliveryFeeHeld).toFixed(2) : null,
+    deliveryFeeTender: input.deliveryFeeTender ?? null,
+  };
+}
+
+function registerPreDeploySalePayloadBridges(
+  currentFingerprint: string,
+  canonicalPayload: Record<string, unknown>,
+  input: CreateSaleInput,
+): void {
+  registerLegacyPayloadHash(currentFingerprint, canonicalPayload);
+
+  if (input.offlineCapture && input.sourceType === "POS" && input.payment) {
+    const effectiveDeviceId =
+      input.offlineCapture.deviceId ?? input.deviceId ?? undefined;
+    const legacyPrefixMatch =
+      typeof effectiveDeviceId === "string"
+        ? /^([0-9a-f]{4,8})-[0-9a-f]{12}$/i.exec(effectiveDeviceId)
+        : null;
+    const deviceVariantSet = new Set<string | undefined>();
+    if (effectiveDeviceId !== undefined) deviceVariantSet.add(effectiveDeviceId);
+    if (legacyPrefixMatch) {
+      deviceVariantSet.add(legacyPrefixMatch[1]);
+      deviceVariantSet.add(legacyPrefixMatch[1].toLowerCase());
+      deviceVariantSet.add(legacyPrefixMatch[1].toUpperCase());
+    }
+    deviceVariantSet.add(undefined);
+    for (const priceOverrideApproved of [false, true]) {
+      for (const devId of Array.from(deviceVariantSet)) {
+        const candidate: Record<string, unknown> = {
+          branchId: input.branchId,
+          shiftId: input.shiftId ?? undefined,
+          sourceType: "POS",
+          clientRequestId: input.clientRequestId ?? undefined,
+          lines: input.lines,
+          payment: {
+            amount: input.payment.amount,
+            method: input.payment.method,
+            reference: input.payment.reference ?? null,
+          },
+          creditApproved: false,
+          priceOverrideApproved,
+        };
+        if (devId !== undefined) candidate.deviceId = devId;
+        if (input.customerId != null) candidate.customerId = input.customerId;
+        if (input.priceTier != null) candidate.priceTier = input.priceTier;
+        if (input.invoiceDiscount != null)
+          candidate.invoiceDiscount = input.invoiceDiscount;
+        if (input.notes != null) candidate.notes = input.notes;
+        if (input.cashRoundIQD) candidate.cashRoundIQD = true;
+        if (input.salesRepId != null) candidate.salesRepId = input.salesRepId;
+        if (input.attribution != null) candidate.attribution = input.attribution;
+        registerLegacyPayloadHash(currentFingerprint, candidate);
+      }
+    }
+  }
+}
+
 export async function createSaleInTx(
   tx: Tx,
   rawInput: CreateSaleInput,
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
+  const trackedFlightId = rawInput.clientRequestId ?? null;
+  if (trackedFlightId) {
+    activeSaleFlights.set(trackedFlightId, {
+      branchId: Number(rawInput.branchId),
+      sellerUserId: Number(rawInput.attributeToUserId ?? actor.userId),
+      semanticSha256: computeSaleSemanticPayloadSha256(rawInput),
+      startedAtMs: Date.now(),
+    });
+    enqueuePostCommit(tx, () => {
+      activeSaleFlights.delete(trackedFlightId);
+    });
+    enqueuePostRollback(tx, () => {
+      activeSaleFlights.delete(trackedFlightId);
+    });
+  }
+  try {
+    return await createSaleInTxInner(tx, rawInput, actor, capability);
+  } catch (err) {
+    if (trackedFlightId) {
+      activeSaleFlights.delete(trackedFlightId);
+    }
+    throw err;
+  }
+}
+
+async function createSaleInTxInner(
+  tx: Tx,
+  rawInput: CreateSaleInput,
+  actor: Actor,
+  capability?: typeof DIGITAL_SALE_CAPABILITY,
+): Promise<CreateSaleResult> {
   const input = withDeliveryDefaults(rawInput);
-  // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود `delivery` (COD) لا معلومةٌ مستقلّة، فإدراجُه في
-  // بصمة idempotency يكسر تكرارَ بيعٍ التزم قبل نشر م١ (بصمتُه المخزَّنة بلا paymentMode) بـCONFLICT
-  // بدل replay عبر النشر ⇒ يعيد الموظّف البيعَ بمفتاحٍ جديد = فاتورةٌ مكرَّرة. نستبعده من البصمة
-  // وحدها؛ `delivery` نفسها فيها تحفظ التمييز، فحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى.
-  const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } =
-    input;
-  const requestFingerprint = input.clientRequestId
-    ? idempotencyHash(fingerprintInput)
-    : null;
+  const effectiveSellerUserId = input.attributeToUserId ?? actor.userId;
   const hasExplicitLegs =
     Array.isArray(input.payments) && input.payments.length > 0;
   const rawPaymentLegs = hasExplicitLegs
@@ -209,6 +422,25 @@ export async function createSaleInTx(
     : input.payment
       ? [input.payment]
       : [];
+  const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } =
+    input;
+  const requestFingerprint = input.clientRequestId
+    ? idempotencyHash(fingerprintInput)
+    : null;
+  const semanticSaleSha256 = input.clientRequestId
+    ? computeSaleSemanticPayloadSha256(input)
+    : null;
+  if (requestFingerprint) {
+    registerPreDeploySalePayloadBridges(
+      requestFingerprint,
+      canonicalSaleSemanticPayload(
+        input,
+        effectiveSellerUserId,
+        rawPaymentLegs,
+      ),
+      input,
+    );
+  }
   // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
   for (const leg of rawPaymentLegs) {
     assertPosPaymentMethodEnabled(leg.method);
@@ -264,19 +496,41 @@ export async function createSaleInTx(
       "sale.create",
       input.clientRequestId,
       requestFingerprint,
+      { forUpdate: true },
     );
-    const existing = await tx
+    await checkIdempotency(
+      tx,
+      "sale.create.semhash",
+      input.clientRequestId,
+      semanticSaleSha256,
+      { forUpdate: true },
+    );
+    const baseExistingQuery = tx
       .select()
       .from(invoices)
-      .where(eq(invoices.sourceId, input.clientRequestId))
-      .limit(1);
+      .where(eq(invoices.sourceId, input.clientRequestId));
+    const existing =
+      typeof (baseExistingQuery as unknown as { for?: unknown }).for === "function"
+        ? await (baseExistingQuery as unknown as { for: (m: string) => typeof baseExistingQuery })
+            .for("share")
+            .limit(1)
+        : await baseExistingQuery.limit(1);
     if (existing[0]) {
       const ex = existing[0];
-      // SALES-03: عزل الفرع — مفتاح idempotency يخصّ بيع فرع آخر لا يُكشَف للمستخدم (تعارض، لا تسريب فاتورة).
       if (Number(ex.branchId) !== input.branchId) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح idempotency مستعمَل لبيع فرع آخر",
+        });
+      }
+      if (Number(ex.createdBy) !== Number(effectiveSellerUserId)) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "معرّف الطلب مستعمَل لبيع موظف آخر",
+            why: "تعارض idempotency: المفتاح مستعمَل لبيع موظف آخر ولا يجوز إعادة إسناده",
+            doThis: "أنشئ سلة جديدة بمعرّف طلب جديد أو اطلب من الموظف الأصلي متابعة الفاتورة",
+          }),
         });
       }
       const requestedCustomerId = input.customerId ?? null;
@@ -412,6 +666,15 @@ export async function createSaleInTx(
       code: "BAD_REQUEST",
       message: "لا يمكن إنشاء فاتورة بلا أصناف",
     });
+  }
+
+  if (input.clientRequestId && requestFingerprint && semanticSaleSha256) {
+    await reserveSaleIdempotencyInTx(
+      tx,
+      input.clientRequestId,
+      requestFingerprint,
+      semanticSaleSha256,
+    );
   }
 
   // 2. Shift must be OPEN and belong to the branch (when provided — POS).
@@ -2881,12 +3144,12 @@ export async function createSaleInTx(
     }
   }
   if (input.clientRequestId && requestFingerprint) {
-    await recordIdempotencyKey(
+    await finalizeSaleIdempotencyInTx(
       tx,
-      "sale.create",
       input.clientRequestId,
       invoiceId,
       requestFingerprint,
+      semanticSaleSha256 ?? requestFingerprint,
     );
   }
 
@@ -2986,6 +3249,10 @@ export async function createSaleInTx(
     ]),
   );
 
+  if (input.clientRequestId) {
+    await maybeAwaitSaleBeforeCommitPauseHook(input.clientRequestId);
+  }
+
   return {
     invoiceId,
     invoiceNumber,
@@ -3027,10 +3294,26 @@ export async function createSale(
   input: CreateSaleInput,
   actor: Actor,
 ): Promise<CreateSaleResult> {
-  const result = await withTx(
-    async (tx) => createSaleInTx(tx, input, actor),
-    { gate: "FINANCIAL_WRITER" },
-  );
+  const trackedId = input.clientRequestId ?? null;
+  if (trackedId) {
+    activeSaleFlights.set(trackedId, {
+      branchId: Number(input.branchId),
+      sellerUserId: Number(input.attributeToUserId ?? actor.userId),
+      semanticSha256: computeSaleSemanticPayloadSha256(input),
+      startedAtMs: Date.now(),
+    });
+  }
+  let result: CreateSaleResult;
+  try {
+    result = await withTx(
+      async (tx) => createSaleInTx(tx, input, actor),
+      { gate: "FINANCIAL_WRITER" },
+    );
+  } finally {
+    if (trackedId) {
+      activeSaleFlights.delete(trackedId);
+    }
+  }
 
   // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
   // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق

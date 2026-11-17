@@ -6,10 +6,12 @@ import {
   Check,
   CheckCircle2,
   Loader2,
+  Plus,
   RotateCcw,
   ScanLine,
   Search,
   Sparkles,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   StudioProductCardStatus,
   type StudioActiveJob,
+  type StudioLookupError,
   type StudioProductDetails,
   type StudioProductImage,
   type StudioProductLock,
@@ -48,6 +51,7 @@ export interface StudioContinuousWorkflowProps {
     lock?: StudioProductLock | null;
     canAutoApprove?: boolean;
     isUnregistered?: boolean;
+    lookupError?: StudioLookupError | null;
   } | null;
   /** تجاوز عملية الحفظ للاختبارات الآلية */
   mockOnSave?: (data: any) => Promise<any>;
@@ -78,16 +82,28 @@ export function StudioContinuousWorkflow({
   const [selectedAction, setSelectedAction] = useState<"ADD" | "REPLACE" | null>(
     null,
   );
-  const [capturedImage, setCapturedImage] = useState<CapturedImageData | null>(
-    null,
-  );
-  const [aiEnhancedDataUrl, setAiEnhancedDataUrl] = useState<string | null>(null);
-  const [aiEnhancedSizeKB, setAiEnhancedSizeKB] = useState<number | null>(null);
-  const [previewMode, setPreviewMode] = useState<"AI" | "ORIGINAL">("AI");
-  const [isAiEnhancing, setIsAiEnhancing] = useState<boolean>(false);
-  const [fallbackApplied, setFallbackApplied] = useState<boolean>(false);
+  type QueuedCaptureItem = {
+    id: string;
+    captured: CapturedImageData;
+    aiEnhancedDataUrl: string | null;
+    aiEnhancedSizeKB: number | null;
+    isAiEnhancing: boolean;
+    fallbackApplied: boolean;
+    previewMode: "AI" | "ORIGINAL";
+  };
+
+  const [capturedQueue, setCapturedQueue] = useState<QueuedCaptureItem[]>([]);
+  const [activeQueueIndex, setActiveQueueIndex] = useState<number>(0);
   const [isSaving, setIsSaving] = useState(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
+
+  const activeItem = capturedQueue[activeQueueIndex] ?? null;
+  const capturedImage = activeItem?.captured ?? null;
+  const aiEnhancedDataUrl = activeItem?.aiEnhancedDataUrl ?? null;
+  const aiEnhancedSizeKB = activeItem?.aiEnhancedSizeKB ?? null;
+  const previewMode = activeItem?.previewMode ?? "AI";
+  const isAiEnhancing = capturedQueue.some((it) => it.isAiEnhancing);
+  const fallbackApplied = activeItem?.fallbackApplied ?? false;
 
   const [targetProductId, setTargetProductId] = useState<number | null | undefined>(
     initialProductId,
@@ -145,13 +161,33 @@ export function StudioContinuousWorkflow({
     ? Boolean(mockLookupData.canAutoApprove)
     : Boolean(realLookupQuery.data?.canAutoApprove);
 
+  // فصل خطأ الباركود غير المسجل فعلاً عن أخطاء الصلاحية/التعطيل/التضارب/الشبكة
+  const rawLookupError = !mockLookupData && realLookupQuery.isError ? realLookupQuery.error : null;
+  const rawLookupErrorCode = (rawLookupError as { data?: { code?: string } } | null)?.data?.code;
+  const rawLookupErrorMessage = rawLookupError?.message?.trim() || "";
+  const isTrulyUnregisteredError =
+    rawLookupErrorCode === "NOT_FOUND" &&
+    (!rawLookupErrorMessage || rawLookupErrorMessage.includes("لا يطابق باركود"));
+
+  const lookupError: StudioLookupError | null = mockLookupData
+    ? (mockLookupData.lookupError ?? null)
+    : rawLookupError && !isTrulyUnregisteredError
+      ? {
+          code: rawLookupErrorCode,
+          message:
+            rawLookupErrorMessage ||
+            "تعذّر الاستعلام عن الباركود حالياً، يرجى المحاولة مرة أخرى.",
+        }
+      : null;
+
   // فحص الباركود غير المسجل
   const isUnregistered = mockLookupData
     ? Boolean(mockLookupData.isUnregistered)
     : Boolean(
         submittedBarcode &&
           !isQueryLoading &&
-          (realLookupQuery.isError || !realLookupQuery.data?.product),
+          !lookupError &&
+          (isTrulyUnregisteredError || !realLookupQuery.data?.product),
       );
 
   // طفرة الحفظ الفوري
@@ -196,13 +232,19 @@ export function StudioContinuousWorkflow({
 
   // تنفيذ المعالجة الذكية بالذكاء الاصطناعي مع الحماية والبديل المحلي الآمن
   const triggerAiEnhancement = async (
+    itemId: string,
     sourceDataUrl: string,
     productId?: number,
     barcode?: string | null,
   ) => {
     const gen = captureGenRef.current;
-    setIsAiEnhancing(true);
-    setFallbackApplied(false);
+    const patchItem = (patch: Partial<QueuedCaptureItem>) => {
+      setCapturedQueue((prev) =>
+        prev.map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
+      );
+    };
+
+    patchItem({ isAiEnhancing: true, fallbackApplied: false });
 
     try {
       if (mockOnAiTransform) {
@@ -214,9 +256,11 @@ export function StudioContinuousWorkflow({
         });
         if (captureGenRef.current !== gen) return;
         const enhancedUrl = res?.imageDataUrl || sourceDataUrl;
-        setAiEnhancedDataUrl(enhancedUrl);
-        setAiEnhancedSizeKB(res?.sizeKB || dataUrlSizeKB(enhancedUrl));
-        setFallbackApplied(Boolean(res?.fallbackApplied));
+        patchItem({
+          aiEnhancedDataUrl: enhancedUrl,
+          aiEnhancedSizeKB: res?.sizeKB || dataUrlSizeKB(enhancedUrl),
+          fallbackApplied: Boolean(res?.fallbackApplied),
+        });
       } else if (aiTransformMutation) {
         const res = await aiTransformMutation.mutateAsync({
           imageDataUrl: sourceDataUrl,
@@ -226,27 +270,33 @@ export function StudioContinuousWorkflow({
         });
         if (captureGenRef.current !== gen) return;
         const enhancedUrl = res?.imageDataUrl || sourceDataUrl;
-        setAiEnhancedDataUrl(enhancedUrl);
-        setAiEnhancedSizeKB(dataUrlSizeKB(enhancedUrl));
-        setFallbackApplied(Boolean(res?.fallbackApplied));
+        patchItem({
+          aiEnhancedDataUrl: enhancedUrl,
+          aiEnhancedSizeKB: dataUrlSizeKB(enhancedUrl),
+          fallbackApplied: Boolean(res?.fallbackApplied),
+        });
       } else {
         if (captureGenRef.current !== gen) return;
         // بديل محلي سريع في غياب الطفرة
-        setAiEnhancedDataUrl(sourceDataUrl);
-        setAiEnhancedSizeKB(dataUrlSizeKB(sourceDataUrl));
-        setFallbackApplied(true);
+        patchItem({
+          aiEnhancedDataUrl: sourceDataUrl,
+          aiEnhancedSizeKB: dataUrlSizeKB(sourceDataUrl),
+          fallbackApplied: true,
+        });
       }
     } catch (err: unknown) {
       if (captureGenRef.current !== gen) return;
       // الاستمرارية عند تعطل الذكاء الاصطناعي (Graceful Fallback):
       // لا يتوقف العمل ولا تضيع الصورة عند تعطل المزود
       console.warn("AI studio enhancement fallback applied:", err);
-      setAiEnhancedDataUrl(sourceDataUrl);
-      setAiEnhancedSizeKB(dataUrlSizeKB(sourceDataUrl));
-      setFallbackApplied(true);
+      patchItem({
+        aiEnhancedDataUrl: sourceDataUrl,
+        aiEnhancedSizeKB: dataUrlSizeKB(sourceDataUrl),
+        fallbackApplied: true,
+      });
     } finally {
       if (captureGenRef.current === gen) {
-        setIsAiEnhancing(false);
+        patchItem({ isAiEnhancing: false });
       }
     }
   };
@@ -263,10 +313,8 @@ export function StudioContinuousWorkflow({
     setSubmittedBarcode(trimmed);
     setBarcodeInput(trimmed);
     setSelectedAction(null);
-    setCapturedImage(null);
-    setAiEnhancedDataUrl(null);
-    setAiEnhancedSizeKB(null);
-    setIsAiEnhancing(false);
+    setCapturedQueue([]);
+    setActiveQueueIndex(0);
     setStep("SCAN");
   };
 
@@ -302,102 +350,152 @@ export function StudioContinuousWorkflow({
       }
     }
     setSuccessBanner(null);
-    setCapturedImage(null);
-    setAiEnhancedDataUrl(null);
-    setAiEnhancedSizeKB(null);
+    setCapturedQueue([]);
+    setActiveQueueIndex(0);
     setStep("CAPTURE");
+  };
+
+  const enqueueCapturedImages = (items: CapturedImageData[]) => {
+    if (items.length === 0) return;
+    const created: QueuedCaptureItem[] = items.map((data, idx) => ({
+      id: `cap-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+      captured: data,
+      aiEnhancedDataUrl: null,
+      aiEnhancedSizeKB: null,
+      isAiEnhancing: true,
+      fallbackApplied: false,
+      previewMode: "AI",
+    }));
+
+    setCapturedQueue((prev) => {
+      const next = [...prev, ...created];
+      setActiveQueueIndex(prev.length);
+      return next;
+    });
+    setStep("PREVIEW");
+
+    const barcode = submittedBarcode || productData?.barcode;
+    void (async () => {
+      for (const item of created) {
+        await triggerAiEnhancement(
+          item.id,
+          item.captured.processedDataUrl,
+          productData?.id,
+          barcode,
+        );
+      }
+    })();
   };
 
   // اكتمال تجهيز الصورة من الكاميرا
   const handleImageCaptured = (data: CapturedImageData) => {
-    setCapturedImage(data);
-    setAiEnhancedDataUrl(null);
-    setAiEnhancedSizeKB(null);
-    setPreviewMode("AI");
-    setFallbackApplied(false);
-    setStep("PREVIEW");
-
-    // تشغيل المعالجة بالذكاء الاصطناعي تلقائياً وفورياً بمجرد الالتقاط
-    void triggerAiEnhancement(
-      data.processedDataUrl,
-      productData?.id,
-      submittedBarcode || productData?.barcode,
-    );
+    enqueueCapturedImages([data]);
   };
 
-  // التبديل بين وضع الذكاء الاصطناعي والصورة الأصلية
+  // اكتمال تجهيز عدة صور من المعرض دفعة واحدة
+  const handleImagesCaptured = (items: CapturedImageData[]) => {
+    enqueueCapturedImages(items);
+  };
+
+  // التبديل بين وضع الذكاء الاصطناعي والصورة الأصلية للصورة النشطة
   const handleTogglePreviewMode = (mode: "AI" | "ORIGINAL") => {
-    setPreviewMode(mode);
-    // إذا اختار الذكاء الاصطناعي ولم تكن قد عولجت بعد
-    if (mode === "AI" && !aiEnhancedDataUrl && !isAiEnhancing && capturedImage) {
+    if (!activeItem) return;
+    setCapturedQueue((prev) =>
+      prev.map((it) =>
+        it.id === activeItem.id ? { ...it, previewMode: mode } : it,
+      ),
+    );
+    if (mode === "AI" && !activeItem.aiEnhancedDataUrl && !activeItem.isAiEnhancing) {
       void triggerAiEnhancement(
-        capturedImage.processedDataUrl,
+        activeItem.id,
+        activeItem.captured.processedDataUrl,
         productData?.id,
         submittedBarcode || productData?.barcode,
       );
     }
   };
 
+  // حذف صورة من الدفعة قبل الإرسال
+  const handleRemoveQueuedItem = (indexToRemove: number) => {
+    setCapturedQueue((prev) => {
+      const next = prev.filter((_, idx) => idx !== indexToRemove);
+      if (next.length === 0) {
+        setActiveQueueIndex(0);
+        setStep("CAPTURE");
+      } else if (activeQueueIndex >= next.length) {
+        setActiveQueueIndex(next.length - 1);
+      } else if (indexToRemove < activeQueueIndex) {
+        setActiveQueueIndex((idx) => Math.max(0, idx - 1));
+      }
+      return next;
+    });
+  };
+
   // إعادة التصوير
   const handleRetake = () => {
     captureGenRef.current += 1;
-    setCapturedImage(null);
-    setAiEnhancedDataUrl(null);
-    setAiEnhancedSizeKB(null);
-    setIsAiEnhancing(false);
-    setFallbackApplied(false);
-    setPreviewMode("AI");
+    setCapturedQueue((prev) => {
+      const next = prev.filter((_, idx) => idx !== activeQueueIndex);
+      setActiveQueueIndex(Math.max(0, next.length - 1));
+      return next;
+    });
     setStep("CAPTURE");
   };
 
-  // الإرسال والاعتماد بنقرة واحدة
+  // الإرسال والاعتماد بنقرة واحدة (يدعم صورة واحدة أو عدة صور متتالية لنفس المنتج)
   const handleSubmitImage = async () => {
-    if (savingRef.current || isSaving || !capturedImage || !productData?.id) {
+    if (savingRef.current || isSaving || capturedQueue.length === 0 || !productData?.id) {
       return;
     }
     savingRef.current = true;
     setIsSaving(true);
+    let savedCount = 0;
 
     try {
-      const isAi = previewMode === "AI";
-      const finalProcessedUrl = isAi
-        ? aiEnhancedDataUrl || capturedImage.processedDataUrl
-        : capturedImage.processedDataUrl;
+      for (let i = 0; i < capturedQueue.length; i++) {
+        const item = capturedQueue[i];
+        const isAi = item.previewMode === "AI";
+        const finalProcessedUrl = isAi
+          ? item.aiEnhancedDataUrl || item.captured.processedDataUrl
+          : item.captured.processedDataUrl;
 
-      // توليد مصغرة خفيفة
-      let thumbnailDataUrl: string;
-      try {
-        thumbnailDataUrl = await createProductDisplayThumbnail(finalProcessedUrl);
-      } catch {
-        thumbnailDataUrl = finalProcessedUrl;
+        // توليد مصغرة خفيفة
+        let thumbnailDataUrl: string;
+        try {
+          thumbnailDataUrl = await createProductDisplayThumbnail(finalProcessedUrl);
+        } catch {
+          thumbnailDataUrl = finalProcessedUrl;
+        }
+
+        const clientRequestId = `studio-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
+
+        const safeOriginalDataUrl =
+          item.captured.originalDataUrl && item.captured.originalDataUrl.length <= 1_250_000
+            ? item.captured.originalDataUrl
+            : item.captured.processedDataUrl;
+
+        const payload = {
+          productId: productData.id,
+          variantId: productData.variantId ?? undefined,
+          barcode: submittedBarcode || productData.barcode || undefined,
+          originalDataUrl: safeOriginalDataUrl,
+          processedDataUrl: finalProcessedUrl,
+          thumbnailDataUrl,
+          mode: (isAi ? "AI" : "FLATTEN") as "AI" | "FLATTEN",
+          setAsPrimary:
+            i === 0 && (selectedAction === "REPLACE" || imagesData.length === 0),
+          clientRequestId,
+        };
+
+        if (mockOnSave) {
+          await mockOnSave(payload);
+        } else if (saveMutation) {
+          await saveMutation.mutateAsync(payload);
+        }
+        savedCount += 1;
       }
 
-      const clientRequestId = `studio-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-      const safeOriginalDataUrl =
-        capturedImage.originalDataUrl && capturedImage.originalDataUrl.length <= 1_250_000
-          ? capturedImage.originalDataUrl
-          : capturedImage.processedDataUrl;
-
-      const payload = {
-        productId: productData.id,
-        variantId: productData.variantId ?? undefined,
-        barcode: submittedBarcode || productData.barcode || undefined,
-        originalDataUrl: safeOriginalDataUrl,
-        processedDataUrl: finalProcessedUrl,
-        thumbnailDataUrl,
-        mode: (isAi ? "AI" : "FLATTEN") as "AI" | "FLATTEN",
-        setAsPrimary: selectedAction === "REPLACE" || imagesData.length === 0,
-        clientRequestId,
-      };
-
-      if (mockOnSave) {
-        await mockOnSave(payload);
-      } else if (saveMutation) {
-        await saveMutation.mutateAsync(payload);
-      }
-
-      // إبطال كاش المنتجات والاستوديو لتنعكس الصورة فورياً
+      // إبطال كاش المنتجات والاستوديو لتنعكس الصور فورياً
       if (utils) {
         void utils.productStudio.invalidate();
         void utils.catalog.adminList.invalidate();
@@ -406,16 +504,19 @@ export function StudioContinuousWorkflow({
 
       onProductHandled?.(productData.id);
 
-      // إعادة التوجيه للخطوة الأولى مع راية النجاح لتحقيق التدفق المستمر
+      const totalCount = capturedQueue.length;
       setSuccessBanner(
         canAutoApprove
-          ? `تم اعتماد ونشر صورة «${productData.name}» بنجاح في الكتالوج ونقاط البيع.`
-          : `تم إرسال صورة «${productData.name}» بنجاح إلى طابور الاعتماد الإداري.`,
+          ? totalCount > 1
+            ? `تم اعتماد ونشر ${totalCount} صور لـ «${productData.name}» بنجاح في الكتالوج ونقاط البيع.`
+            : `تم اعتماد ونشر صورة «${productData.name}» بنجاح في الكتالوج ونقاط البيع.`
+          : totalCount > 1
+            ? `تم إرسال ${totalCount} صور لـ «${productData.name}» بنجاح إلى طابور الاعتماد الإداري.`
+            : `تم إرسال صورة «${productData.name}» بنجاح إلى طابور الاعتماد الإداري.`,
       );
       lockedProductIdRef.current = null;
-      setCapturedImage(null);
-      setAiEnhancedDataUrl(null);
-      setAiEnhancedSizeKB(null);
+      setCapturedQueue([]);
+      setActiveQueueIndex(0);
       setSelectedAction(null);
       setStep("SCAN");
 
@@ -424,6 +525,10 @@ export function StudioContinuousWorkflow({
         void realLookupQuery.refetch();
       }
     } catch (err: unknown) {
+      if (savedCount > 0) {
+        setCapturedQueue((prev) => prev.slice(savedCount));
+        setActiveQueueIndex(0);
+      }
       const msg = err instanceof Error ? err.message : "تعذر حفظ واعتماد الصورة";
       toast.error(msg);
       throw err;
@@ -619,6 +724,7 @@ export function StudioContinuousWorkflow({
             product={productData}
             barcode={submittedBarcode || barcodeInput}
             isUnregistered={isUnregistered}
+            lookupError={lookupError}
             images={imagesData}
             activeJob={activeJobData}
             lock={lockData}
@@ -662,6 +768,7 @@ export function StudioContinuousWorkflow({
           {/* مكون التقاط الكاميرا المباشر وتصحيح EXIF والضغط المحلي */}
           <StudioCameraCapture
             onImageCaptured={handleImageCaptured}
+            onImagesCaptured={handleImagesCaptured}
             isProcessing={isSaving}
           />
         </div>
@@ -678,6 +785,11 @@ export function StudioContinuousWorkflow({
                 <span className="text-sm font-bold text-foreground truncate max-w-[220px] sm:max-w-sm">
                   {productData.name}
                 </span>
+                {capturedQueue.length > 1 && (
+                  <Badge variant="secondary" className="text-[11px] font-bold">
+                    {capturedQueue.length} صور
+                  </Badge>
+                )}
               </div>
               {selectedAction && (
                 <Badge variant="outline" className="mt-1 text-[11px]">
@@ -696,6 +808,71 @@ export function StudioContinuousWorkflow({
             >
               <RotateCcw aria-hidden className="size-3.5" />
               <span>إعادة اللقطة</span>
+            </Button>
+          </div>
+
+          {/* شريط الصور الملتقطة + زر إضافة صورة أخرى لنفس المنتج */}
+          <div
+            data-testid="captured-queue-strip"
+            className="flex items-center gap-2 overflow-x-auto rounded-xl border border-border bg-card/70 p-2.5 shadow-xs"
+          >
+            {capturedQueue.map((item, idx) => {
+              const thumbSrc =
+                item.previewMode === "AI"
+                  ? item.aiEnhancedDataUrl || item.captured.processedDataUrl
+                  : item.captured.processedDataUrl;
+              const isSelected = idx === activeQueueIndex;
+              return (
+                <div
+                  key={item.id}
+                  className={`relative shrink-0 rounded-lg border-2 transition-all ${
+                    isSelected
+                      ? "border-primary ring-2 ring-primary/25"
+                      : "border-border opacity-80 hover:opacity-100"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setActiveQueueIndex(idx)}
+                    data-testid={`queue-thumb-${idx}`}
+                    className="block w-14 h-14 overflow-hidden rounded-md bg-muted"
+                    title={`معاينة الصورة ${idx + 1}`}
+                  >
+                    <img
+                      src={thumbSrc}
+                      alt={`${productData.name} - ${idx + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/85 px-1 text-[10px] font-bold text-foreground">
+                    {idx + 1}
+                  </span>
+                  {capturedQueue.length > 1 && !isSaving && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveQueuedItem(idx)}
+                      data-testid={`queue-remove-${idx}`}
+                      className="absolute -top-1.5 -left-1.5 rounded-full bg-destructive text-destructive-foreground p-0.5 shadow"
+                      title="إزالة هذه الصورة"
+                    >
+                      <X aria-hidden className="size-3" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isSaving}
+              onClick={() => setStep("CAPTURE")}
+              data-testid="btn-add-another-capture"
+              className="h-14 shrink-0 px-3 text-xs font-bold gap-1.5 border-dashed"
+            >
+              <Plus aria-hidden className="size-4 text-primary" />
+              <span>إضافة صورة أخرى</span>
             </Button>
           </div>
 
@@ -719,6 +896,13 @@ export function StudioContinuousWorkflow({
             previewMode={previewMode}
             onTogglePreviewMode={handleTogglePreviewMode}
             canAutoApprove={canAutoApprove}
+            submitLabel={
+              capturedQueue.length > 1
+                ? canAutoApprove
+                  ? `اعتماد ونشر ${capturedQueue.length} صور فوراً`
+                  : `إرسال ${capturedQueue.length} صور للاعتماد`
+                : undefined
+            }
             onRetake={handleRetake}
             onSubmit={handleSubmitImage}
             praiseMessage="عاشت إيدك!"

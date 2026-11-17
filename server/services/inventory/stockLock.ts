@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { branchStock, productVariants } from "../../../drizzle/schema";
+import { branches, branchStock, products, productVariants } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 
 const variantLocks = new WeakSet<Tx>();
@@ -22,6 +22,62 @@ export async function ensureBranchStockRows(
       set: { variantId: sql`${branchStock.variantId}` },
     });
   return ordered;
+}
+
+const SEED_CHUNK_SIZE = 500;
+
+async function insertZeroBranchStockPairs(
+  tx: Tx,
+  pairs: Array<{ variantId: number; branchId: number }>,
+): Promise<void> {
+  for (let i = 0; i < pairs.length; i += SEED_CHUNK_SIZE) {
+    const chunk = pairs.slice(i, i + SEED_CHUNK_SIZE);
+    await tx
+      .insert(branchStock)
+      .values(chunk.map((p) => ({ variantId: p.variantId, branchId: p.branchId, quantity: 0 })))
+      .onDuplicateKeyUpdate({
+        set: { variantId: sql`${branchStock.variantId}` },
+      });
+  }
+}
+
+/** يهيّئ صفوف رصيد صفرية لمتغيّرات مخزنية عبر كل الفروع منعاً لتصادم الإدراج الأوّل في Active-Active. */
+export async function ensureBranchStockRowsForAllBranches(
+  tx: Tx,
+  variantIds: number[],
+): Promise<void> {
+  const ordered = Array.from(new Set(variantIds)).sort((a, b) => a - b);
+  if (!ordered.length) return;
+  const branchRows = await tx
+    .select({ id: branches.id })
+    .from(branches)
+    .orderBy(asc(branches.id));
+  if (!branchRows.length) return;
+  const pairs: Array<{ variantId: number; branchId: number }> = [];
+  for (const variantId of ordered) {
+    for (const branch of branchRows) {
+      pairs.push({ variantId, branchId: Number(branch.id) });
+    }
+  }
+  await insertZeroBranchStockPairs(tx, pairs);
+}
+
+/** يهيّئ صفوف رصيد صفرية لكل المتغيّرات المخزنية القائمة عند إنشاء فرع جديد. */
+export async function ensureBranchStockRowsForBranch(
+  tx: Tx,
+  branchId: number,
+): Promise<void> {
+  const variantRows = await tx
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(eq(products.isService, false), eq(products.isBundle, false)))
+    .orderBy(asc(productVariants.id));
+  if (!variantRows.length) return;
+  await insertZeroBranchStockPairs(
+    tx,
+    variantRows.map((v) => ({ variantId: Number(v.id), branchId })),
+  );
 }
 
 /** mutex الصنف الحاكم لكل تغيّر كمية/تكلفة، بترتيب variantId تصاعدي. */
