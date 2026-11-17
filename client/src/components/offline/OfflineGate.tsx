@@ -139,7 +139,8 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
       }
       setBusy(false);
       setPin("");
-      const nextFails = fails + 1;      setFails(nextFails);
+      const nextFails = fails + 1;
+      setFails(nextFails);
       if (nextFails >= 5) {
         // كبح محاولات محلي: ٥ إخفاقات ⇒ تهدئة ٣٠ ثانية (حماية من العبث السريع على المنضدة).
         setCooldownUntil(Date.now() + 30_000);
