@@ -7,6 +7,7 @@ import { appErrorMessage } from "@shared/errors";
 import { branches, roles, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
+import { issueOfflineShiftCaptureGrant } from "../lib/offlineCaptureGrant";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { SHIFT_VARIANCE_CODES } from "@shared/shiftCashGovernance";
 import { managerApprovalSchema } from "@shared/managerApproval";
@@ -297,9 +298,14 @@ export const shiftRouter = router({
           treasuryWarning: res.treasuryWarning,
         },
       });
-      // رصيد الخزينة مكتومٌ عن الكاشير (نمط hideTreasury في اللوحة) — نحجب المبلغ عن غير المرتفعين
-      // ونُبقي treasuryWarning (boolean) كي تُظهر شاشته تنبيهاً عاماً دون كشف رقم خزنة الفرع.
-      return elevated ? res : { ...res, treasuryBalanceAfter: null };
+      const offlineCaptureGrant = issueOfflineShiftCaptureGrant({
+        userId: ctx.user.id,
+        branchId: actorBranchId,
+        shiftId: Number(res.shiftId),
+      });
+      return elevated
+        ? { ...res, offlineCaptureGrant }
+        : { ...res, treasuryBalanceAfter: null, offlineCaptureGrant };
     }),
 
   close: treasuryCashierProcedure
@@ -600,6 +606,15 @@ export const shiftRouter = router({
       const shift = await getOpenShift(ctx.user.id, effective, input.shiftType);
       if (!shift) return null;
       const [enriched] = await enrichShiftListProvenance([shift]);
-      return enriched ?? shift;
+      const baseShift = enriched ?? shift;
+      const offlineCaptureGrant =
+        shift.status === "OPEN" && Number(shift.userId) === Number(ctx.user.id)
+          ? issueOfflineShiftCaptureGrant({
+              userId: ctx.user.id,
+              branchId: Number(shift.branchId),
+              shiftId: Number(shift.id),
+            })
+          : null;
+      return { ...baseShift, offlineCaptureGrant };
     }),
 });
