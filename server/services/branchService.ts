@@ -16,6 +16,7 @@ import { branches, branchStock, storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { createTtlCache } from "../lib/ttlCache";
+import { ensureBranchStockRowsForBranch } from "./inventory/stockLock";
 import { withTx, type Actor } from "./tx";
 
 export type BranchType = "MAIN" | "SALES";
@@ -106,15 +107,20 @@ export async function createBranch(
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الفرع مطلوب." });
   const code = normalizeCode(input.code);
   await assertCodeFree(code);
-  const res = await db.insert(branches).values({
-    name,
-    code,
-    type: input.type,
-    address: input.address?.trim() || null,
-    phone: input.phone?.trim() || null,
+  const newBranchId = await withTx(async (tx) => {
+    const res = await tx.insert(branches).values({
+      name,
+      code,
+      type: input.type,
+      address: input.address?.trim() || null,
+      phone: input.phone?.trim() || null,
+    });
+    const insertedId = extractInsertId(res);
+    await ensureBranchStockRowsForBranch(tx, insertedId);
+    return insertedId;
   });
   invalidateActiveBranchesCache();
-  return { id: extractInsertId(res), name, code };
+  return { id: newBranchId, name, code };
 }
 
 export async function updateBranch(
