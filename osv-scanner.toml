@@ -8,3 +8,8 @@
 id = "GHSA-g3hv-75wg-m249"
 ignoreUntil = 2026-11-30
 reason = "the reported globparts amplification code is absent from the remaining legacy CJS v3/v5 build-tool consumers; all modern consumers are pinned to 11.0.1 and no runtime path accepts untrusted glob patterns"
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-11-30
+reason = "picomatch 4.0.7 is currently the latest version on npm with no upstream patch yet; all consumers in this repo are dev/build-time tools (vite, vitest, typescript-eslint, @tailwindcss/vite, vite-plugin-pwa) and no runtime path passes untrusted input to picomatch"
