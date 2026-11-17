@@ -240,7 +240,9 @@ export async function checkIdempotency(
     : await query.limit(1);
   const row = rows[0];
   if (!row) return null;
-  if (Number(row.refId) === -1) {
+  const isSalePreflightSentinelOp =
+    operation === "sale.create" || operation === "sale.create.semhash";
+  if (isSalePreflightSentinelOp && Number(row.refId) === -1) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -250,7 +252,7 @@ export async function checkIdempotency(
       }),
     });
   }
-  if (Number(row.refId) === 0) {
+  if (isSalePreflightSentinelOp && Number(row.refId) === 0) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
