@@ -315,11 +315,14 @@ export function normalizeSaleSemanticContract(rawPayload: unknown): Record<strin
     invoiceDiscount: normalizeMoneyStr(p.invoiceDiscount),
     paymentLegs: rawLegs.map((rawLeg) => {
       const leg = (rawLeg ?? {}) as Record<string, unknown>;
+      const method = String(leg.method ?? "");
       return {
         amount: normalizeMoneyStr(leg.amount),
-        method: String(leg.method ?? ""),
+        method,
+        // External payment attempts populate `reference` server-side inside `coreSaleInput`, so exclude it
+        // on non-CASH legs to keep client preflight and committed server semantic hashes identical.
         reference:
-          typeof leg.reference === "string" && leg.reference.trim()
+          method === "CASH" && typeof leg.reference === "string" && leg.reference.trim()
             ? leg.reference.trim()
             : null,
       };
