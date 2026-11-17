@@ -447,4 +447,54 @@ describe("offline interrupted sending recovery", () => {
       "INV-recovered",
     );
   });
+
+  it("matches client externalPaymentAttemptId and server externalReference semantic hashes identically", async () => {
+    const { computeSaleSemanticPayloadSha256 } = await import(
+      "@shared/offlineCaptureProof"
+    );
+    const baseSale = {
+      branchId: 1,
+      customerId: 7,
+      priceTier: "RETAIL",
+      lines: [{ variantId: 10, productUnitId: 100, quantity: "2" }],
+    };
+    const clientHash = computeSaleSemanticPayloadSha256({
+      ...baseSale,
+      payment: { amount: "500.00", method: "CARD", externalPaymentAttemptId: 42 },
+    });
+    const serverCoreHash = computeSaleSemanticPayloadSha256({
+      ...baseSale,
+      payment: { amount: "500.00", method: "CARD", reference: "AUTH-998811" },
+    });
+    expect(clientHash).toBe(serverCoreHash);
+  });
+
+  it("restores saved receiptContext cleanly without reading active tab", async () => {
+    const { restorePosReceiptContextFromPreflightIntent } = await import(
+      "@/components/pos/usePOSOfflineCapture"
+    );
+    const restored = restorePosReceiptContextFromPreflightIntent({
+      tabId: 3,
+      total: "750.00",
+      receiptContext: {
+        tabId: 3,
+        lines: [{ name: "قلم", unit: "قطعة", qty: 3, price: 250, disc: 0, total: 750 }],
+        subtotal: 750,
+        invoiceDiscount: 0,
+        cashRounding: 0,
+        total: 750,
+        received: 750,
+        change: 0,
+        credit: 0,
+        isCredit: false,
+        method: "نقدي",
+        customerName: "عميل التبويب ٣",
+        cartSnapshot: [],
+      },
+    });
+    expect(restored.tabId).toBe(3);
+    expect(restored.customerName).toBe("عميل التبويب ٣");
+    expect(restored.lines).toHaveLength(1);
+    expect(restored.total).toBe(750);
+  });
 });
