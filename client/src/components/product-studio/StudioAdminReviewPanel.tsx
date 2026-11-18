@@ -157,28 +157,6 @@ export function StudioAdminReviewPanel({
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [galleryTask, setGalleryTask] = useState<StudioAdminReviewTask | null>(null);
-  const galleryImagesQuery = trpc.productStudio.productImages.useQuery(
-    { productId: galleryTask?.productId ?? 0 },
-    {
-      enabled:
-        !mockTasks &&
-        galleryTask?.productId != null &&
-        (galleryTask.existingImageCount ?? 0) > 3,
-      staleTime: 60_000,
-    },
-  );
-  const galleryImages = useMemo(() => {
-    if (galleryImagesQuery.data?.length) {
-      return galleryImagesQuery.data
-        .map((img) => ({
-          id: img.id,
-          src: img.thumbDataUrl || img.url,
-          isPrimary: img.isPrimary,
-        }))
-        .filter((img) => Boolean(img.src));
-    }
-    return galleryTask?.existingImageThumbs ?? [];
-  }, [galleryImagesQuery.data, galleryTask]);
 
   // دمج المهام المحاكاة أو المسترجعة من الخادم
   const tasks: StudioAdminReviewTask[] = useMemo(() => {
@@ -752,28 +730,67 @@ export function StudioAdminReviewPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={galleryTask != null} onOpenChange={(open) => { if (!open) setGalleryTask(null); }}>
-        <DialogContent dir="rtl" className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{galleryTask?.productName}</DialogTitle>
-            <DialogDescription>
-              الصور المعتمدة حالياً للمنتج ({galleryTask?.existingImageCount ?? 0})
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-3 gap-2 py-2 max-h-[60vh] overflow-y-auto">
-            {galleryImages.map((thumb) => (
-              <div key={thumb.id} className="relative aspect-square rounded-lg border bg-muted/30 overflow-hidden">
-                <img src={thumb.src} alt="" className="w-full h-full object-contain p-1" />
-                {thumb.isPrimary && (
-                  <span className="absolute top-1 end-1 rounded bg-amber-500/90 px-1 py-0.5 text-[9px] font-bold text-white">
-                    رئيسية
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </DialogContent>
-      </Dialog>
+      {galleryTask != null && (
+        <ProductExistingGalleryDialog
+          task={galleryTask}
+          mockMode={Boolean(mockTasks)}
+          onClose={() => setGalleryTask(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function ProductExistingGalleryDialog({
+  task,
+  mockMode,
+  onClose,
+}: {
+  task: StudioAdminReviewTask;
+  mockMode: boolean;
+  onClose: () => void;
+}) {
+  const galleryImagesQuery = trpc.productStudio.productImages.useQuery(
+    { productId: task.productId ?? 0 },
+    {
+      enabled: !mockMode && task.productId != null && (task.existingImageCount ?? 0) > 3,
+      staleTime: 60_000,
+    },
+  );
+  const galleryImages = useMemo(() => {
+    if (galleryImagesQuery.data?.length) {
+      return galleryImagesQuery.data
+        .map((img) => ({
+          id: img.id,
+          src: img.thumbDataUrl || img.url,
+          isPrimary: img.isPrimary,
+        }))
+        .filter((img) => Boolean(img.src));
+    }
+    return task.existingImageThumbs ?? [];
+  }, [galleryImagesQuery.data, task.existingImageThumbs]);
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent dir="rtl" className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{task.productName}</DialogTitle>
+          <DialogDescription>
+            الصور المعتمدة حالياً للمنتج ({task.existingImageCount ?? 0})
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-3 gap-2 py-2 max-h-[60vh] overflow-y-auto">
+          {galleryImages.map((thumb) => (
+            <div key={thumb.id} className="relative aspect-square rounded-lg border bg-muted/30 overflow-hidden">
+              <img src={thumb.src} alt="" className="w-full h-full object-contain p-1" />
+              {thumb.isPrimary && (
+                <span className="absolute top-1 end-1 rounded bg-amber-500/90 px-1 py-0.5 text-[9px] font-bold text-white">
+                  رئيسية
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -72,6 +72,12 @@ vi.mock("@/lib/trpc", () => ({
           refetch: vi.fn(),
         }),
       },
+      productImages: {
+        useQuery: () => ({
+          data: undefined,
+          isLoading: false,
+        }),
+      },
       approve: {
         useMutation: () => ({
           mutateAsync: vi.fn().mockResolvedValue({ success: true }),
