@@ -17,7 +17,16 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir, userInfo } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { assertActivationRecoveryAllowed, readActivationJournal, activeInventoryManifest, JOURNAL_NAME } from "./lib/inventory-activation-journal.mjs";
+import {
+  assertActivationRecoveryAllowed,
+  assertBootInterlock,
+  readActivationJournal,
+  activeInventoryManifest,
+  writeActivationJournal,
+  redactDiagnosticText,
+  redactDiagnosticValue,
+  JOURNAL_NAME,
+} from "./lib/inventory-activation-journal.mjs";
 import { assertForwardSchemaRecovery, FRACTIONAL_SCHEMA_TRANSITION, readFractionalInventorySchema } from "./lib/fractional-inventory-schema.mjs";
 const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
@@ -1814,8 +1823,8 @@ function runControlEnvironmentSelftest() {
   );
 }
 
-function readDeploymentEnvironmentFile(dotenvConfig) {
-  const environmentFile = path.join(PROJECT_ROOT, ".env");
+function readDeploymentEnvironmentFile(dotenvConfig, projectRoot = PROJECT_ROOT) {
+  const environmentFile = path.join(projectRoot, ".env");
   const stat = fs.lstatSync(environmentFile);
   if (
     !stat.isFile() ||
@@ -2647,6 +2656,9 @@ async function deploy(expectedHead, { forwardRecovery = null } = {}) {
   await step("0.5/12 التحقق من اخضرار بوابة CI والأمان على GitHub", () =>
     assertRemoteCiGreenForDeploy(expectedHead),
   );
+  step("0.6/12 التحقق من تطابق حارس إقلاع PM2 مع المستودع", () =>
+    assertBootInterlock({ projectRoot: PROJECT_ROOT }),
+  );
   const releaseLock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
   try {
     if (!forwardRecovery) settleReleasedInventoryBridgeBaseline(releaseTools);
@@ -3007,6 +3019,529 @@ async function recoverPendingWebActivationBeforePull() {
   });
 }
 
+function isPathInsideDirectory(root, target) {
+  const rel = path.relative(root, target);
+  return (
+    rel !== "" &&
+    !rel.startsWith(`..${path.sep}`) &&
+    rel !== ".." &&
+    !path.isAbsolute(rel)
+  );
+}
+
+export async function recoverNonschemaActivation({
+  projectRoot = PROJECT_ROOT,
+  journalFile = inventoryJournalFile(),
+  pm2Home = path.dirname(journalFile),
+  procRoot = "/proc",
+  uid = process.getuid?.(),
+  platform = process.platform,
+  installedHelperPath = "/usr/local/libexec/erp/pm2-systemd-start.mjs",
+  forcePrereleaseRecovery = false,
+  drainTimeoutMs = 45_000,
+  execute = (file, args) =>
+    execFileSync(file, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120_000,
+    }),
+  environment = null,
+  createConnection = null,
+  releaseTools: injectedReleaseTools = null,
+  verifyWebHealth = null,
+  verifyBridgeRuntime = null,
+} = {}) {
+  if (platform !== "linux" || !Number.isInteger(uid)) {
+    throw codedError("DEPLOY_PLATFORM_UNSUPPORTED");
+  }
+  const resolvedRoot = path.resolve(projectRoot);
+  const resolvedPm2Home = path.resolve(pm2Home);
+  const journal = readActivationJournal(journalFile);
+  if (!journal) {
+    throw codedError("NON_SCHEMA_RECOVERY_JOURNAL_MISSING");
+  }
+  if (["RELEASED", "ROLLED_BACK"].includes(journal.phase)) {
+    throw codedError(`NON_SCHEMA_RECOVERY_NOT_NEEDED:${journal.phase}`);
+  }
+  if (journal.schemaTransition?.started === true) {
+    throw codedError("NON_SCHEMA_RECOVERY_REFUSED_SCHEMA_STARTED");
+  }
+  if (journal.phase === "PRE_RELEASE" && !forcePrereleaseRecovery) {
+    throw codedError("NON_SCHEMA_RECOVERY_PRERELEASE_REQUIRES_FORCE");
+  }
+  if (![0, 1].includes(journal.initialReadyVersion)) {
+    throw codedError("NON_SCHEMA_RECOVERY_JOURNAL_UNSUPPORTED");
+  }
+  if (journal.initialReadyVersion === 1) {
+    activeInventoryManifest({
+      ...journal,
+      phase: "ROLLED_BACK",
+      initialReadyVersion: 1,
+      active: journal.priorActive,
+    });
+  } else {
+    if (
+      !Array.isArray(journal.priorArtifacts) ||
+      !journal.priorArtifacts.some((a) => a.name === "erp-server")
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACTS_INVALID");
+    }
+    const seenNames = new Set();
+    for (const a of journal.priorArtifacts) {
+      if (
+        !["erp-server", BRIDGE_PROCESS_NAME].includes(a.name) ||
+        seenNames.has(a.name) ||
+        !path.isAbsolute(a.script) ||
+        !path.isAbsolute(a.bundle) ||
+        !/^[a-f0-9]{64}$/.test(a.hash) ||
+        !/^[a-f0-9]{64}$/.test(a.scriptHash) ||
+        !Number.isSafeInteger(a.instances) ||
+        a.instances < 1
+      ) {
+        throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACTS_INVALID");
+      }
+      seenNames.add(a.name);
+    }
+  }
+
+  let parsedEnv = environment;
+  if (!parsedEnv) {
+    const dotenvModule = await import("dotenv");
+    parsedEnv = readDeploymentEnvironmentFile(dotenvModule.config, resolvedRoot);
+  }
+  if (parsedEnv.CONTROL_DATABASE_URL) {
+    throw codedError("INVENTORY_MULTI_DATABASE_CLASSIFICATION_REQUIRED");
+  }
+  const url =
+    parsedEnv.ERP_INVENTORY_CONTROL_DATABASE_URL || parsedEnv.DATABASE_URL;
+  if (!url) throw codedError("INVENTORY_DATABASE_UNCONFIGURED");
+  const webHealthEnv = normalizeWebHealthEnvironment(parsedEnv);
+
+  const [
+    { parseDbTarget },
+    {
+      buildAllowedUidProcesses,
+      processInventory,
+      readProcessIdentity,
+      savePm2Dump,
+      verifyUidProcessOwnership,
+      withInventoryConnectionDeadline,
+    },
+    releaseModule,
+  ] = await Promise.all([
+    import("./lib/db-target.mjs"),
+    import("./lib/inventory-activation-host.mjs"),
+    injectedReleaseTools
+      ? Promise.resolve({ default: injectedReleaseTools })
+      : import("./hr-bridge-release.cjs"),
+  ]);
+  const releaseTools = releaseModule.default;
+  const runtimeTarget = parseDbTarget(parsedEnv.DATABASE_URL);
+  const controlTarget = parseDbTarget(url);
+  if (
+    runtimeTarget.host !== controlTarget.host ||
+    runtimeTarget.port !== controlTarget.port ||
+    runtimeTarget.db !== controlTarget.db
+  ) {
+    throw codedError("INVENTORY_RUNTIME_DATABASE_TARGET_MISMATCH");
+  }
+
+  const connect =
+    createConnection ??
+    (await import("mysql2/promise")).default.createConnection;
+  const connection = withInventoryConnectionDeadline(await connect(url));
+  try {
+    const [[target]] = await connection.query(
+      "SELECT DATABASE() AS databaseName, @@server_uuid AS serverUuid",
+    );
+    if (
+      target?.databaseName !== journal.database ||
+      target?.serverUuid !== journal.serverUuid ||
+      target?.databaseName !== runtimeTarget.db
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_DB_IDENTITY_MISMATCH");
+    }
+    const [[state]] = await connection.query(
+      "SELECT readyVersion, activatedCommit FROM inventoryProjectionState WHERE id=1",
+    );
+    if (!state) {
+      throw codedError("NON_SCHEMA_RECOVERY_PROJECTION_STATE_MISSING");
+    }
+    if (journal.initialReadyVersion === 1) {
+      if (
+        Number(state.readyVersion) !== 1 ||
+        state.activatedCommit !== journal.priorActive.projectionCommit
+      ) {
+        throw codedError("NON_SCHEMA_RECOVERY_PROJECTION_STATE_MISMATCH");
+      }
+    } else if (Number(state.readyVersion) !== 0) {
+      throw codedError("NON_SCHEMA_RECOVERY_PROJECTION_STATE_MISMATCH");
+    }
+  } finally {
+    await connection.end().catch(() => {});
+  }
+
+  assertBootInterlock({
+    projectRoot: resolvedRoot,
+    installedHelperPath,
+    execute,
+  });
+
+  const rows = () => {
+    const parsed = JSON.parse(execute("pm2", ["jlist"]));
+    if (!Array.isArray(parsed)) throw codedError("INVENTORY_PM2_LIST_INVALID");
+    return parsed;
+  };
+  const currentIdentity = (pid) => readProcessIdentity(pid, procRoot);
+  const initialInventory = processInventory(procRoot);
+  const initialRows = rows();
+  const erpRows = [];
+  const erpIdentities = [];
+  const allowPriorStop = ["PREPARED", "LOCKED", "FATAL"].includes(journal.phase);
+  for (const row of initialRows) {
+    const env = row.pm2_env ?? row;
+    const name = row.name ?? env.name;
+    const cwd = env.pm_cwd;
+    const script = env.pm_exec_path;
+    const ownsRoot =
+      typeof cwd === "string" && path.resolve(cwd) === resolvedRoot;
+    const scriptInside =
+      typeof script === "string" &&
+      script.length > 0 &&
+      isPathInsideDirectory(resolvedRoot, path.resolve(script));
+    if (name === "erp-provision-worker") {
+      throw codedError("INVENTORY_PROVISIONING_CLASSIFICATION_REQUIRED");
+    }
+    if (name === "erp-server" || name === BRIDGE_PROCESS_NAME) {
+      if (
+        !ownsRoot ||
+        !Number.isSafeInteger(row.pm_id ?? env.pm_id) ||
+        !scriptInside
+      ) {
+        throw codedError("INVENTORY_PM2_OWNERSHIP_AMBIGUOUS");
+      }
+      const resolvedScript = path.resolve(script);
+      const matchesCandidate = journal.artifacts.some(
+        (a) => a.name === name && path.resolve(a.script) === resolvedScript,
+      );
+      const matchesPrior =
+        allowPriorStop &&
+        journal.priorArtifacts.some(
+          (a) => a.name === name && path.resolve(a.script) === resolvedScript,
+        );
+      if (!matchesCandidate && !matchesPrior) {
+        throw codedError("INVENTORY_UNKNOWN_ERP_PROCESS");
+      }
+      const identity =
+        Number(row.pid) > 0 ? currentIdentity(Number(row.pid)) : null;
+      if (
+        Number(row.pid) > 0 &&
+        (!identity || identity.uid !== uid || identity.state === "Z")
+      ) {
+        throw codedError("INVENTORY_PROCESS_IDENTITY_AMBIGUOUS");
+      }
+      erpRows.push(row);
+      if (identity) erpIdentities.push(identity);
+    } else if (ownsRoot || scriptInside) {
+      throw codedError("INVENTORY_UNKNOWN_ERP_PROCESS");
+    }
+  }
+
+  const allowedProcesses = buildAllowedUidProcesses({
+    pm2Home: resolvedPm2Home,
+    procRoot,
+    uid,
+    inventory: initialInventory,
+    initialRows,
+    excludedRows: erpRows,
+    excludedIdentities: erpIdentities,
+    currentIdentity,
+  });
+  verifyUidProcessOwnership({
+    inventory: initialInventory,
+    uid,
+    erpIdentities,
+    allowedProcesses,
+    allowErp: true,
+    procRoot,
+    currentIdentity,
+  });
+  for (const row of erpRows) {
+    const pmId = row.pm_id ?? row.pm2_env?.pm_id;
+    execute("pm2", ["delete", String(pmId)]);
+  }
+  const drainDeadline = Date.now() + drainTimeoutMs;
+  while (
+    erpIdentities.some((i) => {
+      const curr = currentIdentity(i.pid);
+      return curr && curr.startTime === i.startTime && curr.uid === i.uid;
+    })
+  ) {
+    verifyUidProcessOwnership({
+      inventory: processInventory(procRoot),
+      uid,
+      erpIdentities,
+      allowedProcesses,
+      allowErp: true,
+      procRoot,
+      currentIdentity,
+    });
+    if (Date.now() >= drainDeadline) {
+      throw codedError("INVENTORY_OLD_PROCESS_STILL_ALIVE");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  verifyUidProcessOwnership({
+    inventory: processInventory(procRoot),
+    uid,
+    erpIdentities,
+    allowedProcesses,
+    allowErp: false,
+    procRoot,
+    currentIdentity,
+  });
+  if (
+    rows().some((r) =>
+      ["erp-server", BRIDGE_PROCESS_NAME, "erp-provision-worker"].includes(
+        r.name ?? r.pm2_env?.name,
+      ),
+    )
+  ) {
+    throw codedError("INVENTORY_ERP_DEFINITION_REAPPEARED");
+  }
+
+  for (const artifact of journal.priorArtifacts) {
+    assertPlainFile(artifact.bundle, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    if (hashFile(artifact.bundle) !== artifact.hash) {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    }
+  }
+  const priorWeb = journal.priorArtifacts.find((a) => a.name === "erp-server");
+  const runtimeRoot = path.join(resolvedRoot, ".runtime");
+  const releasesRoot = path.join(runtimeRoot, "web-releases");
+  const bundleParts = path.relative(releasesRoot, priorWeb.bundle).split(path.sep);
+  if (
+    bundleParts.length !== 3 ||
+    !WEB_ARTIFACT_ID.test(bundleParts[0]) ||
+    !["candidate", "previous"].includes(bundleParts[1]) ||
+    bundleParts[2] !== "index.js" ||
+    path.resolve(priorWeb.bundle) !== path.join(releasesRoot, ...bundleParts)
+  ) {
+    throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+  }
+  assertPlainDirectory(
+    path.join(releasesRoot, bundleParts[0]),
+    "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH",
+  );
+  const priorWebDir = path.dirname(path.resolve(priorWeb.bundle));
+  assertWebArtifactReady(priorWebDir, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+  if (hasPendingWebActivation(resolvedRoot)) {
+    const pending = pendingWebActivationSnapshot(resolvedRoot);
+    replaceWebCurrentLink(pending.activeLinkPath, priorWebDir, pending.runtimeRoot);
+    clearWebActivationJournal(pending);
+  } else {
+    const activeLinkPath = path.join(runtimeRoot, "web-current");
+    const linkStat = lstatOrNull(activeLinkPath);
+    if (
+      !linkStat?.isSymbolicLink() ||
+      fs.realpathSync(activeLinkPath) !== fs.realpathSync(priorWebDir)
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_WEB_POINTER_MISMATCH");
+    }
+  }
+  for (const artifact of journal.priorArtifacts) {
+    assertPlainFile(artifact.script, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    if (hashFile(artifact.script) !== artifact.scriptHash) {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    }
+  }
+
+  const bridgeState = releaseTools.readState(resolvedRoot);
+  if (bridgeState.pending != null) {
+    throw codedError("NON_SCHEMA_RECOVERY_HR_BRIDGE_PENDING");
+  }
+  const priorBridge = journal.priorArtifacts.find(
+    (a) => a.name === BRIDGE_PROCESS_NAME,
+  );
+  if (priorBridge) {
+    if (bridgeState.current?.mode !== "enabled") {
+      throw codedError("NON_SCHEMA_RECOVERY_HR_BRIDGE_STATE_MISMATCH");
+    }
+    const bridgeRelease = releaseTools.validateRelease(
+      resolvedRoot,
+      bridgeState.current.id,
+    );
+    if (
+      path.resolve(bridgeRelease.bootstrapPath) !==
+        path.resolve(priorBridge.script) ||
+      path.resolve(bridgeRelease.artifactPath) !==
+        path.resolve(priorBridge.bundle)
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_HR_BRIDGE_STATE_MISMATCH");
+    }
+  } else if (bridgeState.current?.mode === "enabled") {
+    throw codedError("NON_SCHEMA_RECOVERY_HR_BRIDGE_STATE_MISMATCH");
+  }
+
+  const oldConfigPath = path.join(
+    runtimeRoot,
+    `inventory-prior-${journal.id}.json`,
+  );
+  let oldConfigStat;
+  try {
+    oldConfigStat = fs.lstatSync(oldConfigPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_CONFIG_MISSING", error);
+    }
+    throw error;
+  }
+  if (
+    !oldConfigStat.isFile() ||
+    oldConfigStat.isSymbolicLink() ||
+    oldConfigStat.size > 1024 * 1024 ||
+    (platform !== "win32" && (oldConfigStat.mode & 0o022) !== 0)
+  ) {
+    throw codedError("NON_SCHEMA_RECOVERY_PRIOR_CONFIG_INVALID");
+  }
+  let oldConfigParsed;
+  try {
+    oldConfigParsed = JSON.parse(fs.readFileSync(oldConfigPath, "utf8"));
+  } catch (error) {
+    throw codedError("NON_SCHEMA_RECOVERY_PRIOR_CONFIG_INVALID", error);
+  }
+  const apps = oldConfigParsed?.apps;
+  if (
+    !Array.isArray(apps) ||
+    apps.length !== journal.priorArtifacts.length ||
+    new Set(apps.map((a) => a?.name)).size !== apps.length ||
+    apps.some((a) => a?.name === "erp-provision-worker")
+  ) {
+    throw codedError("NON_SCHEMA_RECOVERY_PRIOR_CONFIG_INVALID");
+  }
+  for (const artifact of journal.priorArtifacts) {
+    const app = apps.find((a) => a?.name === artifact.name);
+    if (
+      !app ||
+      path.resolve(app.script ?? "") !== path.resolve(artifact.script) ||
+      Number(app.instances) !== artifact.instances ||
+      path.resolve(app.cwd ?? "") !== resolvedRoot
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_CONFIG_INVALID");
+    }
+  }
+
+  const rolledBackJournal = {
+    ...journal,
+    phase: "ROLLED_BACK",
+    active: journal.initialReadyVersion === 1 ? journal.priorActive : null,
+  };
+  activeInventoryManifest(rolledBackJournal);
+  writeActivationJournal(journalFile, rolledBackJournal);
+
+  try {
+    execute("pm2", ["start", oldConfigPath]);
+    savePm2Dump(resolvedPm2Home, execute);
+    const dumpPath = path.join(resolvedPm2Home, "dump.pm2");
+    const dumpStat = fs.lstatSync(dumpPath);
+    if (
+      !dumpStat.isFile() ||
+      dumpStat.isSymbolicLink() ||
+      dumpStat.size > 16 * 1024 * 1024
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_DUMP_INVALID");
+    }
+    const dumpRows = JSON.parse(fs.readFileSync(dumpPath, "utf8"));
+    if (
+      !Array.isArray(dumpRows) ||
+      dumpRows.some((r) => r?.name === "erp-provision-worker")
+    ) {
+      throw codedError("NON_SCHEMA_RECOVERY_DUMP_INVALID");
+    }
+    for (const artifact of journal.priorArtifacts) {
+      const matches = dumpRows.filter((r) => r?.name === artifact.name);
+      if (
+        matches.length !== artifact.instances ||
+        matches.some(
+          (r) =>
+            path.resolve(r.pm_exec_path ?? "") !==
+              path.resolve(artifact.script) ||
+            (r.pm_cwd && path.resolve(r.pm_cwd) !== resolvedRoot),
+        )
+      ) {
+        throw codedError("NON_SCHEMA_RECOVERY_DUMP_INVALID");
+      }
+    }
+  } catch (startError) {
+    try {
+      writeActivationJournal(journalFile, {
+        ...journal,
+        phase: "FATAL",
+        active: null,
+      });
+    } catch {}
+    throw startError;
+  }
+
+  if (verifyWebHealth) {
+    await verifyWebHealth(webHealthEnv);
+  } else {
+    verifyInternalWebHealth(webHealthEnv);
+  }
+
+  if (priorBridge) {
+    if (verifyBridgeRuntime) {
+      await verifyBridgeRuntime(bridgeState.current.id);
+    } else {
+      const policy = releaseTools.loadReleasePolicy(
+        resolvedRoot,
+        bridgeState.current.id,
+      );
+      run(
+        process.execPath,
+        [
+          "scripts/verify-hr-bridge-runtime.mjs",
+          "--release-id",
+          bridgeState.current.id,
+        ],
+        { timeoutMs: policy.runtimeGateTimeoutMs + 15_000 },
+      );
+    }
+  }
+
+  return {
+    journal: rolledBackJournal,
+    restoredApps: journal.priorArtifacts.map((a) => a.name),
+  };
+}
+
+async function runRecoverNonschemaActivationCli({
+  forcePrereleaseRecovery = false,
+} = {}) {
+  assertDeploymentIdentity();
+  process.chdir(PROJECT_ROOT);
+  assertDeploymentNodeRuntime();
+  assertInstalledLegacyWebTopology();
+  const releaseSyncLock = acquirePrePullLock();
+  try {
+    const releaseTools = (await import("./hr-bridge-release.cjs")).default;
+    const releaseLock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
+    try {
+      const result = await recoverNonschemaActivation({
+        forcePrereleaseRecovery,
+      });
+      console.log(
+        `✓ تمت استعادة النشر غير المخططي بنجاح (${result.restoredApps.join(", ")}).`,
+      );
+      return result;
+    } finally {
+      releaseLock();
+    }
+  } finally {
+    releaseSyncLock.release();
+  }
+}
+
 function assertDeploymentNodeRuntime() {
   const requiredNodeVersion = fs
     .readFileSync(path.join(PROJECT_ROOT, ".node-version"), "utf8")
@@ -3361,14 +3896,265 @@ async function dispatch() {
     }
     return;
   }
+  if (mode === "--recover-nonschema-activation") {
+    const extraArgs = [directory, ...rest].filter((v) => v !== undefined);
+    if (
+      extraArgs.length > 1 ||
+      extraArgs.some((arg) => arg !== "--force-prerelease-recovery")
+    ) {
+      throw codedError("DEPLOY_ARGUMENTS_INVALID");
+    }
+    await runRecoverNonschemaActivationCli({
+      forcePrereleaseRecovery: extraArgs.includes("--force-prerelease-recovery"),
+    });
+    return;
+  }
   await main({ resumeSchemaCutover: mode === "--resume-fractional-schema-cutover" });
 }
 
-function reportDeploymentFailure(error) {
-  const code = error?.code || error?.message || "DEPLOY_FAILED";
+const MAX_FAILURE_UNWRAP_DEPTH = 5;
+
+function extractFailureDiagnosticNode(error, label, depth, seen) {
+  if (depth > MAX_FAILURE_UNWRAP_DEPTH) {
+    return { label, truncated: "MAX_DEPTH_EXCEEDED" };
+  }
+  if (error == null || typeof error !== "object") {
+    return { label, message: redactDiagnosticText(String(error)) };
+  }
+  if (seen.has(error)) {
+    return { label, circularRef: true };
+  }
+  seen.add(error);
+  const node = {
+    label,
+    name: redactDiagnosticText(String(error.name || "Error")),
+    ...(error.code !== undefined
+      ? { code: redactDiagnosticText(String(error.code)) }
+      : {}),
+    message: redactDiagnosticText(String(error.message ?? "")),
+    ...(error.journalPhase !== undefined
+      ? { journalPhase: redactDiagnosticText(String(error.journalPhase)) }
+      : {}),
+    ...(Array.isArray(error.unownedSessionIds)
+      ? { unownedSessionIds: error.unownedSessionIds }
+      : {}),
+    ...(error.unownedSessionDetails !== undefined
+      ? {
+          unownedSessionDetails: redactDiagnosticValue(
+            error.unownedSessionDetails,
+          ),
+        }
+      : {}),
+    ...(error.unclassifiedProcesses !== undefined
+      ? {
+          unclassifiedProcesses: redactDiagnosticValue(
+            error.unclassifiedProcesses,
+          ),
+        }
+      : {}),
+    ...(error.offendingProcesses !== undefined
+      ? {
+          offendingProcesses: redactDiagnosticValue(error.offendingProcesses),
+        }
+      : {}),
+    ...(typeof error.stack === "string"
+      ? { stack: redactDiagnosticText(error.stack) }
+      : {}),
+  };
+  if (Array.isArray(error.errors) && error.errors.length > 0) {
+    node.errors = error.errors.map((child, index) =>
+      extractFailureDiagnosticNode(
+        child,
+        index === 0
+          ? "PRIMARY_ERROR"
+          : index === 1
+            ? "RECOVERY_ERROR"
+            : `ERROR_${index}`,
+        depth + 1,
+        seen,
+      ),
+    );
+  }
+  if (error.cause !== undefined) {
+    node.cause = extractFailureDiagnosticNode(
+      error.cause,
+      "CAUSE",
+      depth + 1,
+      seen,
+    );
+  }
+  return node;
+}
+
+function printFailureDiagnosticTree(node, indent = "   ") {
+  if (!node) return;
+  if (node.truncated) {
+    console.error(`${indent}[${node.label}] truncated=${node.truncated}`);
+    return;
+  }
+  if (node.circularRef) {
+    console.error(`${indent}[${node.label}] circularRef=true`);
+    return;
+  }
+  const codePart = node.code ? ` code=${node.code}` : "";
+  const phasePart = node.journalPhase
+    ? ` journalPhase=${node.journalPhase}`
+    : "";
+  console.error(
+    `${indent}[${node.label}]${codePart}${phasePart} message=${node.message}`,
+  );
+  if (Array.isArray(node.unownedSessionIds)) {
+    console.error(
+      `${indent}  unownedSessionIds=${JSON.stringify(node.unownedSessionIds)}`,
+    );
+  }
+  if (node.unownedSessionDetails !== undefined) {
+    console.error(
+      `${indent}  unownedSessionDetails=${JSON.stringify(node.unownedSessionDetails)}`,
+    );
+  }
+  if (node.unclassifiedProcesses !== undefined) {
+    console.error(
+      `${indent}  unclassifiedProcesses=${JSON.stringify(node.unclassifiedProcesses)}`,
+    );
+  }
+  if (node.offendingProcesses !== undefined) {
+    console.error(
+      `${indent}  offendingProcesses=${JSON.stringify(node.offendingProcesses)}`,
+    );
+  }
+  if (node.stack) {
+    for (const line of String(node.stack).split("\n")) {
+      console.error(`${indent}  ${line}`);
+    }
+  }
+  if (Array.isArray(node.errors)) {
+    for (const child of node.errors) {
+      printFailureDiagnosticTree(child, `${indent}  `);
+    }
+  }
+  if (node.cause) {
+    printFailureDiagnosticTree(node.cause, `${indent}  `);
+  }
+}
+
+export function reportDeploymentFailure(error) {
+  const code = redactDiagnosticText(
+    String(error?.code || error?.message || "DEPLOY_FAILED"),
+  );
   console.error(`\n⛔ فشل النشر: ${code}`);
-  if (code === "INVENTORY_ACTIVATION_FATAL" || String(code).startsWith("FRACTIONAL_")) {
-    console.error("   أبقِ حاجز الإقلاع وسجل التفعيل محفوظين؛ التعافي الأمامي الموثق: node scripts/deploy.mjs --resume-fractional-schema-cutover (docs/fractional-materials-cutover.md).");
+  const errorTree = extractFailureDiagnosticNode(
+    error,
+    "FAILURE",
+    0,
+    new Set(),
+  );
+  printFailureDiagnosticTree(errorTree);
+
+  if (
+    code === "INVENTORY_ACTIVATION_FATAL" ||
+    String(code).startsWith("FRACTIONAL_")
+  ) {
+    const journalFile = inventoryJournalFile();
+    let journal = null;
+    let journalReadError = null;
+    try {
+      journal = readActivationJournal(journalFile);
+    } catch (readError) {
+      journalReadError = readError;
+    }
+
+    let recommendedCommand = null;
+    if (
+      journal?.schemaTransition?.started === true &&
+      !["RELEASED", "ROLLED_BACK"].includes(journal?.phase)
+    ) {
+      recommendedCommand =
+        "node scripts/deploy.mjs --resume-fractional-schema-cutover";
+      console.error(
+        "   أبقِ حاجز الإقلاع وسجل التفعيل محفوظين؛ التعافي الأمامي الموثق: node scripts/deploy.mjs --resume-fractional-schema-cutover (docs/fractional-materials-cutover.md).",
+      );
+    } else if (
+      journal &&
+      !journal?.schemaTransition?.started &&
+      !["RELEASED", "ROLLED_BACK"].includes(journal?.phase)
+    ) {
+      recommendedCommand =
+        journal.phase === "PRE_RELEASE"
+          ? "node scripts/deploy.mjs --recover-nonschema-activation --force-prerelease-recovery"
+          : "node scripts/deploy.mjs --recover-nonschema-activation";
+      console.error(
+        `   أبقِ حاجز الإقلاع وسجل التفعيل محفوظين؛ هذه الترقية غير مرتبطة بتحول مخطط. التعافي الموثق: ${recommendedCommand}`,
+      );
+    }
+    if (code === "FRACTIONAL_FORWARD_RECOVERY_NOT_AUTHORIZED") {
+      if (!journal) {
+        console.error(
+          "   التعافي الأمامي للتحول الكسري غير مخوّل لغياب سجل التفعيل أو غياب schemaTransition.",
+        );
+      } else if (!journal.schemaTransition) {
+        console.error(
+          `   التعافي الأمامي للتحول الكسري غير مخوّل لأن schemaTransition غائب في سجل التفعيل (phase=${journal.phase}, initialReadyVersion=${journal.initialReadyVersion ?? "unknown"})؛ التعافي الأمامي مخصص فقط لتحول المخطط الكسري عند schemaTransition.started === true.`,
+        );
+      } else if (journal.schemaTransition.started !== true) {
+        console.error(
+          `   التعافي الأمامي للتحول الكسري غير مخوّل لأن schemaTransition.started !== true (phase=${journal.phase}).`,
+        );
+      } else if (["RELEASED", "ROLLED_BACK"].includes(journal.phase)) {
+        console.error(
+          `   التعافي الأمامي للتحول الكسري غير مخوّل لأن سجل التفعيل في حالة منتهية (phase=${journal.phase}).`,
+        );
+      }
+    }
+    if (journalReadError) {
+      console.error(
+        `   تعذر قراءة سجل التفعيل أثناء تشخيص التعافي: ${redactDiagnosticText(journalReadError.message ?? String(journalReadError))}`,
+      );
+    }
+
+    try {
+      const failureFile = path.join(
+        path.dirname(journalFile),
+        "last-activation-failure.json",
+      );
+      const failureDir = path.dirname(failureFile);
+      const dirStat = lstatOrNull(failureDir);
+      const existingStat = lstatOrNull(failureFile);
+      if (
+        dirStat?.isDirectory() &&
+        !dirStat.isSymbolicLink() &&
+        !existingStat?.isSymbolicLink()
+      ) {
+        const payload = {
+          version: 1,
+          recordedAt: new Date().toISOString(),
+          code,
+          journalPhase: journal?.phase ?? errorTree.journalPhase ?? null,
+          journalId: journal?.id ?? null,
+          initialReadyVersion: journal?.initialReadyVersion ?? null,
+          schemaTransitionStarted: Boolean(journal?.schemaTransition?.started),
+          recommendedCommand,
+          error: errorTree,
+        };
+        const tmp = `${failureFile}.tmp-${process.pid}-${randomUUID()}`;
+        const fd = fs.openSync(tmp, "wx", 0o600);
+        try {
+          if (process.platform !== "win32") fs.chmodSync(tmp, 0o600);
+          fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        try {
+          fs.renameSync(tmp, failureFile);
+        } finally {
+          if (lstatOrNull(tmp)) fs.unlinkSync(tmp);
+        }
+        fsyncDirectory(failureDir);
+      }
+    } catch {
+      // Best-effort forensic snapshot; never mask the deployment failure exit code.
+    }
   }
   if (String(code).startsWith("PM2_VERSION_UNSUPPORTED")) {
     console.error("   نفّذ كـ root: sudo npm install -g pm2@7.0.3");
