@@ -982,3 +982,546 @@ test("resolveExternalWritersExcluded requires explicit flag for initial activati
     false,
   );
 });
+
+function createResilienceHostFixture({
+  initialReadyVersion = 1,
+  initialDumpApps = null,
+  threadsProvider,
+  innodbTrxProvider = () => [],
+  replicationConnectionsProvider = () => [],
+  extraProcSetup = null,
+  failVerify = false,
+  dropGateOnRollback = false,
+  schemaTransition = undefined,
+} = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "inventory-resilience-host-"));
+  const procRoot = path.join(temp, "proc");
+  const projectRoot = path.join(temp, "erp");
+  const pm2Home = path.join(temp, "pm2");
+  const helper = path.join(temp, "installed.mjs");
+  const helperOwner = mockInstalledHelperOwner(helper);
+  fs.mkdirSync(procRoot, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(pm2Home, { recursive: true, mode: 0o700 });
+  fs.chmodSync(pm2Home, 0o700);
+  fs.mkdirSync(path.join(projectRoot, ".runtime/web-releases/web-prior/previous/public"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  fs.mkdirSync(path.join(projectRoot, "deploy/systemd"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  fs.writeFileSync(helper, "trusted-helper");
+  fs.chmodSync(helper, 0o444);
+  fs.writeFileSync(
+    path.join(projectRoot, "deploy/systemd/pm2-systemd-start.mjs"),
+    "trusted-helper",
+  );
+  const priorBundle = path.join(
+    projectRoot,
+    ".runtime/web-releases/web-prior/previous/index.js",
+  );
+  const candidateBundle = path.join(projectRoot, "candidate.js");
+  fs.writeFileSync(priorBundle, "prior-web");
+  fs.writeFileSync(
+    path.join(projectRoot, ".runtime/web-releases/web-prior/previous/public/index.html"),
+    "prior-html",
+  );
+  fs.writeFileSync(candidateBundle, "candidate-web");
+
+  const addPid = (pid, startTime = String(pid + 100), parent = 2, uid = 1000, cmdline = `node-${pid}\0`) => {
+    const dir = path.join(procRoot, String(pid));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "stat"),
+      `${pid} (node) S ${parent} ${Array(17).fill("0").join(" ")} ${startTime} 0\n`,
+    );
+    fs.mkdirSync(path.join(dir, "cwd"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "exe"), "node");
+    fs.writeFileSync(path.join(dir, "cmdline"), cmdline);
+    fs.writeFileSync(path.join(dir, "status"), `Uid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+  };
+  addPid(2, "102", 1, 1000, `PM2 v7.0.3: God Daemon (${pm2Home})\0`);
+  addPid(10, "110", 2, 1000);
+  fs.writeFileSync(path.join(pm2Home, "pm2.pid"), "2");
+
+  const makeRow = (name, pid, script) => ({
+    name,
+    pm_id: pid,
+    pid,
+    pm2_env: {
+      name,
+      pm_cwd: projectRoot,
+      pm_exec_path: script,
+      exec_mode: "cluster_mode",
+      env: {},
+    },
+  });
+  let live = [makeRow("erp-server", 10, priorBundle)];
+  if (initialDumpApps) {
+    fs.writeFileSync(path.join(pm2Home, "dump.pm2"), JSON.stringify(initialDumpApps));
+  }
+  const priorArtifacts = [
+    {
+      name: "erp-server",
+      script: priorBundle,
+      bundle: priorBundle,
+      hash: hashFile(priorBundle),
+      scriptHash: hashFile(priorBundle),
+      instances: 1,
+    },
+  ];
+  const candidateArtifacts = [
+    {
+      name: "erp-server",
+      script: candidateBundle,
+      bundle: candidateBundle,
+      hash: hashFile(candidateBundle),
+      scriptHash: hashFile(candidateBundle),
+      instances: 1,
+    },
+  ];
+  const priorActive = {
+    readyVersion: 1,
+    activationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    commit: "e".repeat(40),
+    projectionCommit: "d".repeat(40),
+    database: "erp_test",
+    serverUuid: "server-one",
+    artifacts: priorArtifacts,
+  };
+  if (initialReadyVersion === 1) {
+    writeActivationJournal(path.join(pm2Home, "erp-inventory-activation.json"), {
+      version: 1,
+      id: priorActive.activationId,
+      phase: "RELEASED",
+      nonce: "1".repeat(64),
+      commit: priorActive.commit,
+      database: "erp_test",
+      serverUuid: "server-one",
+      artifacts: priorArtifacts,
+      priorArtifacts,
+      active: priorActive,
+    });
+  }
+  if (extraProcSetup) extraProcSetup({ addPid, procRoot, temp });
+
+  const calls = [];
+  let gateLocked = true;
+  let gateReleased = false;
+  const execute = (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "systemctl") return helper;
+    if (args[0] === "jlist") return JSON.stringify(live);
+    if (args[0] === "delete") {
+      const target = live.find((r) => r.pm_id === Number(args[1]));
+      if (target?.pid > 0) {
+        fs.rmSync(path.join(procRoot, String(target.pid)), { recursive: true, force: true });
+      }
+      live = live.filter((r) => r !== target);
+    }
+    if (args[0] === "save") {
+      fs.writeFileSync(
+        path.join(pm2Home, "dump.pm2"),
+        JSON.stringify(live.map((r) => ({ ...r.pm2_env, name: r.name }))),
+      );
+    }
+    if (args[0] === "start") {
+      const cfg = JSON.parse(fs.readFileSync(args[1], "utf8"));
+      for (const [idx, app] of cfg.apps.entries()) {
+        const pid = args[1].includes("inventory-prior-") ? 40 + idx : 20 + idx;
+        addPid(pid);
+        live.push(makeRow(app.name, pid, app.script));
+      }
+    }
+    return "";
+  };
+  const connectionA = {
+    on() {},
+    beginTransaction: async () => {},
+    commit: async () => {
+      gateReleased = true;
+    },
+    query: async (sql) => {
+      if (sql.startsWith("SHOW GRANTS")) {
+        return [[{ grant: "GRANT ALL PRIVILEGES ON *.* TO root" }]];
+      }
+      if (sql.includes("event_scheduler")) return [[{ scheduler: "OFF" }]];
+      if (sql.includes("replication_connection_status")) {
+        return [replicationConnectionsProvider(sql)];
+      }
+      if (sql.includes("CONNECTION_ID()")) {
+        return [[{ id: 1, db: "erp_test", serverUuid: "server-one" }]];
+      }
+      if (sql.includes("FROM monthCloseSequence")) return [[{ id: 1 }]];
+      if (sql.includes("data_locks")) {
+        if (!gateLocked) return [[]];
+        return [[{ transactionId: 5 }]];
+      }
+      if (sql.includes("innodb_trx")) return [innodbTrxProvider()];
+      if (sql.includes("performance_schema.threads")) return [threadsProvider()];
+      throw new Error(sql);
+    },
+  };
+  const connectionB = {
+    beginTransaction: async () => {},
+    commit: async () => {},
+    rollback: async () => {},
+    query: async (sql) => {
+      if (sql.includes("CONNECTION_ID()")) return [[{ id: 2 }]];
+      if (sql.includes("@@server_uuid")) {
+        return [[{ db: "erp_test", serverUuid: "server-one" }]];
+      }
+      return [[]];
+    },
+  };
+  const journal = {
+    version: 1,
+    id: "12345678-1234-1234-1234-123456789abc",
+    phase: "PREPARED",
+    nonce: "a".repeat(64),
+    commit: "b".repeat(40),
+    database: "erp_test",
+    serverUuid: "server-one",
+    artifacts: candidateArtifacts,
+    priorArtifacts,
+    priorActive: initialReadyVersion === 1 ? priorActive : undefined,
+    schemaTransition,
+  };
+  const op = createLinuxActivationOperations({
+    projectRoot,
+    pm2Home,
+    journal,
+    connectionA,
+    connectionB,
+    candidateWebApp: { name: "erp-server", script: candidateBundle, cwd: projectRoot, instances: 1 },
+    bridgeConfigPath: null,
+    installCandidate: async () => {},
+    restoreArtifact: async () => {},
+    execute,
+    procRoot,
+    uid: 1000,
+    platform: "linux",
+    externalWritersExcluded: true,
+    installedHelperPath: helper,
+    drainTimeoutMs: 100,
+    preflightDbRetryMs: 40,
+    preflightDbRetryIntervalMs: 5,
+    initialReadyVersion,
+    requestAttestation: async (socket) => {
+      if (failVerify) {
+        if (dropGateOnRollback) gateLocked = false;
+        throw new Error("FIXTURE_VERIFY_FAILED");
+      }
+      const pid = Number(path.basename(socket).match(/ia-(\d+)/)[1]);
+      return {
+        pid,
+        startTime: String(pid + 100),
+        name: "erp-server",
+        bundle: candidateBundle,
+        hash: candidateArtifacts[0].hash,
+        capability: CAPABILITY,
+        activationId: journal.id,
+        database: journal.database,
+        serverUuid: journal.serverUuid,
+        held: true,
+      };
+    },
+  });
+  return {
+    temp,
+    pm2Home,
+    procRoot,
+    journal,
+    priorActive,
+    op,
+    calls,
+    get live() {
+      return live;
+    },
+    get gateReleased() {
+      return gateReleased;
+    },
+    setGateLocked(v) {
+      gateLocked = v;
+    },
+    cleanup() {
+      helperOwner.restore();
+      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o600);
+      fs.rmSync(temp, { recursive: true, force: true });
+    },
+  };
+}
+
+test("PRE_STOP_DB_CHECK rejects external root/replication sessions before acquireGate and stopOld while allowing erp_app and transient clear", async (t) => {
+  for (const sessionCase of ["root-persistent", "binlog-dump", "transient-clears", "erp-app-allowed"]) {
+    let callsCount = 0;
+    const fx = createResilienceHostFixture({
+      threadsProvider: () => {
+        callsCount++;
+        const base = [
+          { id: 1, user: "root", host: "localhost", db: "erp_test", command: "Sleep", timeSec: 0, state: "", info: null, name: "thread/sql/one_connection" },
+          { id: 2, user: "root", host: "localhost", db: "erp_test", command: "Sleep", timeSec: 0, state: "", info: null, name: "thread/sql/one_connection" },
+          { id: 50, user: "erp_app", host: "127.0.0.1:44100", db: "erp_test", command: "Sleep", timeSec: 1, state: "", info: null, name: "thread/sql/one_connection" },
+        ];
+        if (sessionCase === "root-persistent") {
+          base.push({
+            id: 77,
+            user: "root",
+            host: "localhost",
+            db: "erp_test",
+            command: "Query",
+            timeSec: 2,
+            state: "executing",
+            info: "SHOW REPLICA STATUS",
+            name: "thread/sql/one_connection",
+          });
+        } else if (sessionCase === "binlog-dump") {
+          base.push({
+            id: 78,
+            user: "alroya_repl",
+            host: "192.168.100.29:51234",
+            db: null,
+            command: "Binlog Dump GTID",
+            timeSec: 120,
+            state: "Source has sent all binlog to replica",
+            info: null,
+            name: "thread/sql/one_connection",
+          });
+        } else if (sessionCase === "transient-clears" && callsCount === 1) {
+          base.push({
+            id: 79,
+            user: "root",
+            host: "localhost",
+            db: null,
+            command: "Query",
+            timeSec: 0,
+            state: "init",
+            info: "SHOW REPLICA STATUS",
+            name: "thread/sql/one_connection",
+          });
+        }
+        return base;
+      },
+    });
+    const stderrLines = [];
+    const errMock = t.mock.method(console, "error", (...args) => stderrLines.push(args.join(" ")));
+    try {
+      if (sessionCase === "root-persistent" || sessionCase === "binlog-dump") {
+        await assert.rejects(fx.op.preflight(), (err) => {
+          assert.equal(err.code, "INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION");
+          assert.equal(err.message, "INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION");
+          assert.ok(Array.isArray(err.externalSessions) && err.externalSessions.length === 1);
+          assert.ok(Array.isArray(err.unownedSessionDetails) && err.unownedSessionDetails.length === 1);
+          assert.equal(err.externalSessions[0].id, sessionCase === "root-persistent" ? 77 : 78);
+          return true;
+        });
+        assert.ok(stderrLines.some((line) => line.includes("[INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION]")));
+        assert.equal(fx.live.length, 1, "production workers must remain untouched");
+        assert.ok(!fx.calls.some((c) => c.includes("delete")));
+      } else {
+        await fx.op.preflight();
+        if (sessionCase === "transient-clears") assert.ok(callsCount >= 2);
+        else assert.equal(callsCount, 1);
+      }
+    } finally {
+      errMock.mock.restore();
+      fx.cleanup();
+    }
+  }
+});
+
+test("saveDump preserves dump.pm2.pre-activation on stopOld and emits [INVENTORY_PRE_STOP_SNAPSHOT]", async (t) => {
+  const initialDump = [{ name: "erp-server", pm_exec_path: "/opt/erp/old/index.js" }];
+  const fx = createResilienceHostFixture({
+    initialDumpApps: initialDump,
+    threadsProvider: () => [
+      { id: 1, user: "root", command: "Sleep", info: null },
+      { id: 2, user: "root", command: "Sleep", info: null },
+    ],
+    replicationConnectionsProvider: (sql) =>
+      sql.includes("SERVICE_STATE='ON'")
+        ? []
+        : [{ channelName: "", serviceState: "OFF" }],
+  });
+  const stderrLines = [];
+  const errMock = t.mock.method(console, "error", (...args) => stderrLines.push(args.join(" ")));
+  try {
+    await fx.op.preflight();
+    await fx.op.acquireGate();
+    await fx.op.stopOld();
+    const preAct = JSON.parse(fs.readFileSync(path.join(fx.pm2Home, "dump.pm2.pre-activation"), "utf8"));
+    assert.deepEqual(preAct, initialDump);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fx.pm2Home, "dump.pm2"), "utf8")), []);
+    const snapLine = stderrLines.find((l) => l.startsWith("[INVENTORY_PRE_STOP_SNAPSHOT] "));
+    assert.ok(snapLine);
+    const snap = JSON.parse(snapLine.slice("[INVENTORY_PRE_STOP_SNAPSHOT] ".length));
+    assert.equal(snap.journalId, fx.journal.id);
+    assert.equal(snap.commit, fx.journal.commit);
+    assert.equal(snap.initialReadyVersion, 1);
+    assert.equal(snap.hasSchemaTransition, false);
+    assert.equal(snap.oldIdentities.length, 1);
+    assert.deepEqual(snap.replicationConnections, [{ channelName: "", serviceState: "OFF" }]);
+  } finally {
+    errMock.mock.restore();
+    fx.cleanup();
+  }
+});
+
+test("refreshOwnership attaches redacted offendingProcesses and assertNoUnownedSessions logs rich unownedSessionDetails", async (t) => {
+  const fakeDbPw = ["top", "secret"].join("");
+  const fakeCliPw = ["my", "secret"].join("");
+  const secretCmd = `node worker.js ${["my", "sql://root:"].join("")}${fakeDbPw}@127.0.0.1:3307/erp ${["--pass", "word="].join("")}${fakeCliPw} ${"x".repeat(260)}\0`;
+  const fx = createResilienceHostFixture({
+    threadsProvider: () => [
+      { id: 1, user: "root", command: "Sleep", info: null },
+      { id: 2, user: "root", command: "Sleep", info: null },
+    ],
+    extraProcSetup: ({ addPid }) => {
+      addPid(777, "877", 1, 1000, secretCmd);
+    },
+  });
+  const stderrLines = [];
+  const errMock = t.mock.method(console, "error", (...args) => stderrLines.push(args.join(" ")));
+  try {
+    await assert.rejects(fx.op.preflight(), (err) => {
+      assert.equal(err.message, "INVENTORY_UNCLASSIFIED_PROCESS");
+      assert.ok(Array.isArray(err.offendingProcesses) && err.offendingProcesses.length === 1);
+      const proc = err.offendingProcesses[0];
+      assert.equal(proc.pid, 777);
+      assert.equal(proc.uid, 1000);
+      assert.equal(proc.ppid, 1);
+      assert.ok(!proc.cmdline.includes(fakeDbPw));
+      assert.ok(!proc.cmdline.includes(fakeCliPw));
+      assert.ok(proc.cmdline.includes("[REDACTED_URL]"));
+      assert.ok(proc.cmdline.endsWith("...[truncated]"));
+      return true;
+    });
+    assert.ok(stderrLines.some((l) => l.includes("[INVENTORY_UNCLASSIFIED_PROCESS]")));
+
+    // Now test assertNoUnownedSessions rich metadata + innodb_trx
+    stderrLines.length = 0;
+    const { assertNoUnownedSessions } = await import("./inventory-activation-fence.mjs");
+    const mockConn = {
+      query: async (sql) => {
+        if (sql.includes("performance_schema.threads")) {
+          return [[
+            { id: 1, user: "root", command: "Sleep", info: null, name: "thread/sql/one_connection" },
+            { id: 55, user: "admin", host: "10.0.0.5:9000", db: "erp", command: "Query", timeSec: 4, state: "updating", info: "UPDATE users SET password='secret'", name: "thread/sql/one_connection" },
+          ]];
+        }
+        if (sql.includes("innodb_trx")) {
+          return [[
+            { id: 55, trxId: "99123", trxState: "RUNNING", trxStarted: "2026-11-18 15:00:00", trxQuery: "UPDATE users SET token=secret", trxIsReadOnly: 0, trxRowsModified: 1 },
+          ]];
+        }
+        throw new Error(sql);
+      },
+    };
+    await assert.rejects(assertNoUnownedSessions(mockConn, new Set([1, 2])), (err) => {
+      assert.equal(err.message, "INVENTORY_UNOWNED_DATABASE_SESSION");
+      assert.deepEqual(err.unownedSessionIds, [55]);
+      assert.equal(err.unownedSessionDetails.length, 1);
+      assert.equal(err.unownedSessionDetails[0].user, "admin");
+      assert.equal(err.unownedSessionDetails[0].inInnodbTrx, true);
+      assert.equal(err.unownedSessionDetails[0].trxRowsModified, 1);
+      assert.ok(!err.unownedSessionDetails[0].info.includes("secret"));
+      return true;
+    });
+    assert.ok(stderrLines.some((l) => l.includes("[INVENTORY_UNOWNED_DB_SESSIONS]")));
+  } finally {
+    errMock.mock.restore();
+    fx.cleanup();
+  }
+});
+
+test("runInventoryActivation non-schema v1 rollback tolerates transient read-only DB session warning while keeping write/lock/hash strict", async (t) => {
+  for (const mode of ["transient-readonly-recovers", "active-write-trx-fatal", "gate-lost-fatal"]) {
+    let phaseInCatch = false;
+    const fx = createResilienceHostFixture({
+      initialReadyVersion: 1,
+      failVerify: true,
+      dropGateOnRollback: mode === "gate-lost-fatal",
+      threadsProvider: () => {
+        const base = [
+          { id: 1, user: "root", command: "Sleep", info: null },
+          { id: 2, user: "root", command: "Sleep", info: null },
+        ];
+        if (phaseInCatch) {
+          base.push({
+            id: 91,
+            user: "root",
+            host: "localhost",
+            db: null,
+            command: "Query",
+            timeSec: 0,
+            state: "executing",
+            info: mode === "active-write-trx-fatal" ? "UPDATE productVariants SET stock=1" : "SHOW REPLICA STATUS",
+            name: "thread/sql/one_connection",
+          });
+        }
+        return base;
+      },
+      innodbTrxProvider: () =>
+        phaseInCatch && mode === "active-write-trx-fatal"
+          ? [{ id: 91, trxId: "42", trxState: "RUNNING", trxIsReadOnly: 0, trxRowsModified: 1, trxQuery: "UPDATE productVariants SET stock=1" }]
+          : [],
+    });
+    const origVerify = fx.op.verifyCandidates;
+    fx.op.verifyCandidates = async (current) => {
+      phaseInCatch = true;
+      let time = 0;
+      const clock = t.mock.method(Date, "now", () => (time += 31000));
+      try {
+        return await origVerify(current);
+      } finally {
+        clock.mock.restore();
+      }
+    };
+    const warnLines = [];
+    const warnMock = t.mock.method(console, "warn", (...args) => warnLines.push(args.join(" ")));
+    const errMock = t.mock.method(console, "error", () => {});
+    let persisted = null;
+    try {
+      if (mode === "transient-readonly-recovers") {
+        await assert.rejects(
+          runInventoryActivation({
+            journal: fx.journal,
+            initialReadyVersion: 1,
+            operations: fx.op,
+            persist: async (j) => {
+              persisted = structuredClone(j);
+              writeActivationJournal(path.join(fx.pm2Home, "erp-inventory-activation.json"), j);
+            },
+          }),
+          /FIXTURE_VERIFY_FAILED/,
+        );
+        assert.equal(persisted.phase, "ROLLED_BACK");
+        assert.deepEqual(persisted.active, fx.priorActive);
+        assert.equal(fx.gateReleased, true);
+        assert.equal(fx.live.length, 1);
+        assert.equal(fx.live[0].pm2_env.pm_exec_path, fx.priorActive.artifacts[0].script);
+        assert.ok(warnLines.some((l) => l.includes("[INVENTORY_ROLLBACK_TRANSIENT_DB_SESSION_WARNING]")));
+      } else {
+        await assert.rejects(
+          runInventoryActivation({
+            journal: fx.journal,
+            initialReadyVersion: 1,
+            operations: fx.op,
+            persist: async (j) => {
+              persisted = structuredClone(j);
+              writeActivationJournal(path.join(fx.pm2Home, "erp-inventory-activation.json"), j);
+            },
+          }),
+          (err) => err.message === "INVENTORY_ACTIVATION_FATAL",
+        );
+        assert.equal(persisted.phase, "FATAL");
+        assert.equal(fx.live.length, 0);
+      }
+    } finally {
+      warnMock.mock.restore();
+      errMock.mock.restore();
+      fx.cleanup();
+    }
+  }
+});

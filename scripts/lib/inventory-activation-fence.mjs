@@ -2,7 +2,10 @@ import {
   activateInventoryProjection,
   invalidateInventoryProjection,
 } from "./inventory-projection-activation.mjs";
-import { activeInventoryManifest } from "./inventory-activation-journal.mjs";
+import {
+  activeInventoryManifest,
+  redactDiagnosticText,
+} from "./inventory-activation-journal.mjs";
 export {
   JOURNAL_NAME,
   CAPABILITY,
@@ -79,25 +82,150 @@ export async function acquireInventoryGate(connection, identity) {
   });
 }
 
+function isReadOnlySql(sql) {
+  if (typeof sql !== "string") return false;
+  const trimmed = sql.trim();
+  if (!trimmed) return false;
+  if (trimmed.replace(/;\s*$/, "").includes(";")) return false;
+  return (
+    /^(?:\/\*[\s\S]*?\*\/\s*)*(SELECT|SHOW|EXPLAIN|DESCRIBE|DESC)\b/i.test(
+      trimmed,
+    ) &&
+    !/\b(FOR\s+UPDATE|FOR\s+SHARE|LOCK\s+IN\s+SHARE\s+MODE|INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i.test(
+      trimmed,
+    )
+  );
+}
+
+export function isTransientReadOnlySessionError(error) {
+  if (
+    error?.message !== "INVENTORY_UNOWNED_DATABASE_SESSION" ||
+    error.emptyThreadCensus ||
+    !Array.isArray(error.unownedSessionDetails) ||
+    !error.unownedSessionDetails.length
+  ) {
+    return false;
+  }
+  return error.unownedSessionDetails.every((detail) => {
+    if (!detail) return false;
+    if (
+      detail.inInnodbTrx &&
+      (Number(detail.trxIsReadOnly) !== 1 ||
+        Number(detail.trxRowsModified) !== 0 ||
+        (detail.trxQuery != null && !isReadOnlySql(detail.trxQuery)))
+    ) {
+      return false;
+    }
+    if (!["Sleep", "Query", "Ping"].includes(detail.command)) return false;
+    if (detail.command === "Query" && !isReadOnlySql(detail.info)) return false;
+    return true;
+  });
+}
+
 /** All foreground sessions must be attributed. No broad KILL, DB-name filtering
  * (a session can USE another DB), or 'sleeping means harmless' exceptions. */
 export async function assertNoUnownedSessions(connection, allowedIds) {
   // MySQL 8.4 reports its internal GTID compactor as FOREGROUND. Exclude that
   // exact engine thread, not NULL users generally (unauthenticated clients matter).
   const [rows] = await connection.query(
-    "SELECT PROCESSLIST_ID AS id FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_ID IS NOT NULL AND NOT (NAME='thread/sql/compress_gtid_table' AND PROCESSLIST_USER IS NULL AND PROCESSLIST_COMMAND='Daemon')",
+    "SELECT PROCESSLIST_ID AS id, PROCESSLIST_USER AS user, PROCESSLIST_HOST AS host, PROCESSLIST_DB AS db, PROCESSLIST_COMMAND AS command, PROCESSLIST_TIME AS timeSec, PROCESSLIST_STATE AS state, LEFT(PROCESSLIST_INFO, 160) AS info, NAME AS name FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_ID IS NOT NULL AND NOT (NAME='thread/sql/compress_gtid_table' AND PROCESSLIST_USER IS NULL AND PROCESSLIST_COMMAND='Daemon')",
   );
   const [transactions] = await connection.query(
-    "SELECT trx_mysql_thread_id AS id FROM information_schema.innodb_trx",
+    "SELECT trx_mysql_thread_id AS id, trx_id AS trxId, trx_state AS trxState, trx_started AS trxStarted, LEFT(trx_query, 160) AS trxQuery, trx_is_read_only AS trxIsReadOnly, trx_rows_modified AS trxRowsModified FROM information_schema.innodb_trx",
   );
-  const unowned = [...rows, ...transactions]
-    .map((r) => Number(r.id))
-    .filter((id) => !allowedIds.has(id));
-  if (!rows.length || unowned.length)
-    throw Object.assign(new Error("INVENTORY_UNOWNED_DATABASE_SESSION"), {
-      unownedSessionIds: [...new Set(unowned)],
-      allowedSessionIds: [...allowedIds],
+  const threadById = new Map();
+  for (const row of rows) {
+    const id = Number(row.id ?? row.PROCESSLIST_ID);
+    if (Number.isFinite(id) && !threadById.has(id)) threadById.set(id, row);
+  }
+  const trxById = new Map();
+  for (const trx of transactions) {
+    const id = Number(trx.id ?? trx.trx_mysql_thread_id);
+    if (Number.isFinite(id) && !trxById.has(id)) trxById.set(id, trx);
+  }
+  const unownedIds = [
+    ...new Set(
+      [...rows, ...transactions]
+        .map((r) => Number(r.id ?? r.PROCESSLIST_ID ?? r.trx_mysql_thread_id))
+        .filter((id) => !allowedIds.has(id)),
+    ),
+  ];
+  if (!rows.length || unownedIds.length) {
+    const unownedSessionDetails = unownedIds.map((id) => {
+      const thread = threadById.get(id);
+      const trx = trxById.get(id);
+      const timeRaw = thread?.timeSec ?? thread?.PROCESSLIST_TIME;
+      const roRaw = trx?.trxIsReadOnly ?? trx?.trx_is_read_only;
+      const modRaw = trx?.trxRowsModified ?? trx?.trx_rows_modified;
+      return {
+        id,
+        ...(thread
+          ? {
+              user:
+                thread.user !== undefined
+                  ? thread.user
+                  : (thread.PROCESSLIST_USER ?? null),
+              host:
+                thread.host !== undefined
+                  ? thread.host
+                  : (thread.PROCESSLIST_HOST ?? null),
+              db:
+                thread.db !== undefined
+                  ? thread.db
+                  : (thread.PROCESSLIST_DB ?? null),
+              command:
+                thread.command !== undefined
+                  ? thread.command
+                  : (thread.PROCESSLIST_COMMAND ?? null),
+              timeSec: timeRaw != null ? Number(timeRaw) : null,
+              state:
+                thread.state !== undefined
+                  ? thread.state
+                  : (thread.PROCESSLIST_STATE ?? null),
+              info: redactDiagnosticText(
+                thread.info !== undefined
+                  ? thread.info
+                  : (thread.PROCESSLIST_INFO ?? null),
+              ),
+              name:
+                thread.name !== undefined
+                  ? thread.name
+                  : (thread.NAME ?? null),
+            }
+          : {}),
+        inInnodbTrx: Boolean(trx),
+        ...(trx
+          ? {
+              trxId:
+                (trx.trxId ?? trx.trx_id) != null
+                  ? String(trx.trxId ?? trx.trx_id)
+                  : null,
+              trxState: trx.trxState ?? trx.trx_state ?? null,
+              trxStarted:
+                (trx.trxStarted ?? trx.trx_started) != null
+                  ? String(trx.trxStarted ?? trx.trx_started)
+                  : null,
+              trxQuery: redactDiagnosticText(
+                trx.trxQuery ?? trx.trx_query ?? null,
+              ),
+              trxIsReadOnly: roRaw != null ? Number(roRaw) : null,
+              trxRowsModified: modRaw != null ? Number(modRaw) : null,
+            }
+          : {}),
+      };
     });
+    const payload = {
+      unownedSessionIds: unownedIds,
+      allowedSessionIds: [...allowedIds],
+      emptyThreadCensus: !rows.length,
+      unownedSessionDetails,
+    };
+    console.error(`[INVENTORY_UNOWNED_DB_SESSIONS] ${JSON.stringify(payload)}`);
+    throw Object.assign(new Error("INVENTORY_UNOWNED_DATABASE_SESSION"), {
+      code: "INVENTORY_UNOWNED_DATABASE_SESSION",
+      ...payload,
+    });
+  }
 }
 
 export async function runInventoryActivation({
@@ -197,8 +325,27 @@ export async function runInventoryActivation({
       if (stopped) await op.stopCandidates();
       if (journal.schemaTransition?.started === true) throw new Error("INVENTORY_SCHEMA_FORWARD_RECOVERY_REQUIRED");
       if (!gate || uncertain) throw new Error("INVENTORY_UNCERTAIN_ACTIVATION");
-      await fence.assertQuiescentAndLocked();
-      if (initialReadyVersion === 0) await invalidate(connectionB, options);
+      if (initialReadyVersion === 0) {
+        await fence.assertQuiescentAndLocked();
+        await invalidate(connectionB, options);
+      } else {
+        await gate.assertLocked();
+        try {
+          await op.assertQuiescent();
+        } catch (quiescentError) {
+          if (!isTransientReadOnlySessionError(quiescentError)) {
+            throw quiescentError;
+          }
+          console.warn(
+            `[INVENTORY_ROLLBACK_TRANSIENT_DB_SESSION_WARNING] ${JSON.stringify({
+              journalId: journal.id,
+              unownedSessionIds: quiescentError.unownedSessionIds,
+              unownedSessionDetails: quiescentError.unownedSessionDetails,
+            })}`,
+          );
+        }
+        await gate.assertLocked();
+      }
       await op.restoreArtifact();
       await save("ROLLBACK_READY");
       committingGate = true;
@@ -209,9 +356,15 @@ export async function runInventoryActivation({
     } catch (recoveryError) {
       // Persist is allowed to fail; never disguise the original failure or start old code.
       await save("FATAL").catch(() => {});
-      throw new AggregateError(
-        [error, recoveryError],
-        "INVENTORY_ACTIVATION_FATAL",
+      throw Object.assign(
+        new AggregateError(
+          [error, recoveryError],
+          "INVENTORY_ACTIVATION_FATAL",
+        ),
+        {
+          code: "INVENTORY_ACTIVATION_FATAL",
+          journalPhase: "FATAL",
+        },
       );
     }
     throw error;
