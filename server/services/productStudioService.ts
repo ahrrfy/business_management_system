@@ -3751,8 +3751,9 @@ export async function listStudioTasks(
   }
   const items = pageRows.map((row) => {
     const unitMeta =
-      (row.variantId != null ? unitByVariant.get(Number(row.variantId)) : undefined) ??
-      (row.productId != null ? unitByProduct.get(Number(row.productId)) : undefined);
+      row.variantId != null
+        ? unitByVariant.get(Number(row.variantId))
+        : (row.productId != null ? unitByProduct.get(Number(row.productId)) : undefined);
     const imgMeta = row.productId != null ? imagesByProduct.get(Number(row.productId)) : undefined;
     const variantDetails = [row.variantName, row.variantColor, row.variantSize]
       .map((v) => (typeof v === "string" ? v.trim() : ""))

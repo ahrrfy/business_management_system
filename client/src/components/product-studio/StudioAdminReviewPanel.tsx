@@ -157,6 +157,28 @@ export function StudioAdminReviewPanel({
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [galleryTask, setGalleryTask] = useState<StudioAdminReviewTask | null>(null);
+  const galleryImagesQuery = trpc.productStudio.productImages.useQuery(
+    { productId: galleryTask?.productId ?? 0 },
+    {
+      enabled:
+        !mockTasks &&
+        galleryTask?.productId != null &&
+        (galleryTask.existingImageCount ?? 0) > 3,
+      staleTime: 60_000,
+    },
+  );
+  const galleryImages = useMemo(() => {
+    if (galleryImagesQuery.data?.length) {
+      return galleryImagesQuery.data
+        .map((img) => ({
+          id: img.id,
+          src: img.thumbDataUrl || img.url,
+          isPrimary: img.isPrimary,
+        }))
+        .filter((img) => Boolean(img.src));
+    }
+    return galleryTask?.existingImageThumbs ?? [];
+  }, [galleryImagesQuery.data, galleryTask]);
 
   // دمج المهام المحاكاة أو المسترجعة من الخادم
   const tasks: StudioAdminReviewTask[] = useMemo(() => {
@@ -738,8 +760,8 @@ export function StudioAdminReviewPanel({
               الصور المعتمدة حالياً للمنتج ({galleryTask?.existingImageCount ?? 0})
             </DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-3 gap-2 py-2">
-            {(galleryTask?.existingImageThumbs ?? []).map((thumb) => (
+          <div className="grid grid-cols-3 gap-2 py-2 max-h-[60vh] overflow-y-auto">
+            {galleryImages.map((thumb) => (
               <div key={thumb.id} className="relative aspect-square rounded-lg border bg-muted/30 overflow-hidden">
                 <img src={thumb.src} alt="" className="w-full h-full object-contain p-1" />
                 {thumb.isPrimary && (
