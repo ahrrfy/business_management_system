@@ -42,6 +42,8 @@ const {
   verifyRollbackWebArtifactCompatibility,
   archiveInterruptedWebActivationForForwardRecovery,
   synchronizeAndMaybeReexec,
+    reportDeploymentFailure,
+  recoverNonschemaActivation,
 } = await import("./deploy.mjs");
 
 {
@@ -1815,6 +1817,609 @@ console.log("deployment storefront-readiness contract test: OK");
 assert.throws(() => assertLegacyWebDeployment({}, [{ name: "erp-server" }], { WEB_RUNTIME_MODE: "split" }), /WEB_RUNTIME_SPLIT_DEPLOY/);
 assert.throws(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "legacy" }, [], { WEB_RUNTIME_MODE: "split" }), /WEB_RUNTIME_SPLIT_DEPLOY/);
 assert.doesNotThrow(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "split" }, [], { WEB_RUNTIME_MODE: "legacy" }));
+
+// 1. Structural checks: Step 0.6/12 boot interlock before install/migrations, and
+//    --recover-nonschema-activation guarded without git pull.
+{
+  const source = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");
+  const bootInterlockIdx = source.indexOf('step("0.6/12');
+  const installIdx = source.indexOf('step("1/12');
+  const migrateIdx = source.indexOf('step("5/12');
+  assert.ok(bootInterlockIdx > 0 && bootInterlockIdx < installIdx && installIdx < migrateIdx,
+    "Step 0.6/12 boot interlock verification must run before pnpm install and migrations");
+
+  const cliBody = source.slice(
+    source.indexOf("async function runRecoverNonschemaActivationCli"),
+    source.indexOf("async function main("),
+  );
+  for (const guard of [
+    "assertDeploymentIdentity()",
+    "assertDeploymentNodeRuntime()",
+    "assertInstalledLegacyWebTopology()",
+    "acquirePrePullLock()",
+    "releaseTools.acquireDeploymentLock(PROJECT_ROOT)",
+    "recoverNonschemaActivation(",
+  ]) {
+    assert.ok(cliBody.includes(guard), `non-schema recovery CLI must enforce ${guard}`);
+  }
+  assert.ok(!cliBody.includes("synchronizeAndMaybeReexec") && !cliBody.includes("git"),
+    "non-schema recovery CLI must never invoke git pull");
+}
+
+// 2. reportDeploymentFailure: AggregateError/cause unwrapping, redaction, forensic JSON, and hints
+{
+  const { writeActivationJournal } = await import("./lib/inventory-activation-journal.mjs");
+  const tempRoot = fs.realpathSync(os.tmpdir());
+  const fixture = fs.mkdtempSync(path.join(tempRoot, "deploy-failure-report-"));
+  const pm2Home = path.join(fixture, "pm2");
+  fs.mkdirSync(pm2Home, { recursive: true, mode: 0o700 });
+  fs.chmodSync(pm2Home, 0o700);
+  const prevPm2Home = process.env.PM2_HOME;
+  const prevExitCode = process.exitCode;
+  const origConsoleError = console.error;
+  const captured = [];
+  console.error = (...args) => captured.push(args.join(" "));
+  process.env.PM2_HOME = pm2Home;
+  try {
+    const baseJournal = {
+      version: 1,
+      id: "12345678-1234-1234-1234-123456789abc",
+      phase: "FATAL",
+      initialReadyVersion: 1,
+      nonce: "a".repeat(64),
+      commit: "b".repeat(40),
+      database: "erp_test",
+      serverUuid: "uuid-1",
+      artifacts: [{
+        name: "erp-server",
+        script: "/opt/erp/candidate/index.js",
+        bundle: "/opt/erp/candidate/index.js",
+        hash: "c".repeat(64),
+        scriptHash: "c".repeat(64),
+        instances: 1,
+      }],
+    };
+    writeActivationJournal(path.join(pm2Home, "erp-inventory-activation.json"), baseJournal);
+
+    const deep5 = Object.assign(new Error("root-cause-6 https://user:secretpass@example.com/hook?token=abc"), {
+      code: "ROOT_CAUSE_6",
+    });
+    let chain = deep5;
+    for (let i = 5; i >= 1; i--) {
+      chain = Object.assign(
+        new Error(`cause-${i} mysql://root:dbsecret@127.0.0.1:3307/erp INTERNAL_PROXY_SECRET=proxytok`),
+        { code: `CAUSE_${i}`, cause: chain },
+      );
+    }
+    const primary = Object.assign(new Error("primary session block"), {
+      code: "INVENTORY_UNOWNED_DATABASE_SESSION",
+      unownedSessionIds: [99],
+      unownedSessionDetails: [{ id: 99, user: "root", info: "SELECT * FROM t WHERE pwd='mysql://root:pw@127.0.0.1/erp'" }],
+      cause: chain,
+    });
+    const recovery = Object.assign(new Error("recovery unclassified"), {
+      code: "INVENTORY_UNCLASSIFIED_PROCESS",
+      unclassifiedProcesses: [{ pid: 88, cmdline: "node worker.js Bearer toksecret123" }],
+      offendingProcesses: [{ pid: 88, uid: 1000, ppid: 1, cmdline: "node worker.js MYSQL_PWD=superpw" }],
+      journalPhase: "FATAL",
+    });
+    const fatal = Object.assign(new AggregateError([primary, recovery], "INVENTORY_ACTIVATION_FATAL"), {
+      code: "INVENTORY_ACTIVATION_FATAL",
+      journalPhase: "FATAL",
+    });
+
+    reportDeploymentFailure(fatal);
+    const stderrText = captured.join("\n");
+    assert.ok(stderrText.includes("[PRIMARY_ERROR]"));
+    assert.ok(stderrText.includes("[RECOVERY_ERROR]"));
+    assert.ok(stderrText.includes("INVENTORY_UNOWNED_DATABASE_SESSION"));
+    assert.ok(stderrText.includes("INVENTORY_UNCLASSIFIED_PROCESS"));
+    assert.ok(stderrText.includes("unownedSessionIds=[99]"));
+    assert.ok(stderrText.includes("unownedSessionDetails="));
+    assert.ok(stderrText.includes("unclassifiedProcesses="));
+    assert.ok(stderrText.includes("offendingProcesses="));
+    assert.ok(stderrText.includes("journalPhase=FATAL"));
+    assert.ok(stderrText.includes("truncated=MAX_DEPTH_EXCEEDED"), "depth > 5 must truncate cleanly");
+    for (const secret of ["dbsecret", "secretpass", "proxytok", "toksecret123", "superpw", "token=abc"]) {
+      assert.ok(!stderrText.includes(secret), `stderr must redact secret ${secret}`);
+    }
+    assert.ok(stderrText.includes("node scripts/deploy.mjs --recover-nonschema-activation"));
+    assert.ok(!stderrText.includes("--resume-fractional-schema-cutover"),
+      "non-schema FATAL deploy must never suggest --resume-fractional-schema-cutover");
+
+    const failureFile = path.join(pm2Home, "last-activation-failure.json");
+    const failureStat = fs.lstatSync(failureFile);
+    assert.equal(failureStat.mode & 0o777, 0o600);
+    const forensic = JSON.parse(fs.readFileSync(failureFile, "utf8"));
+    assert.equal(forensic.code, "INVENTORY_ACTIVATION_FATAL");
+    assert.equal(forensic.journalPhase, "FATAL");
+    assert.equal(forensic.recommendedCommand, "node scripts/deploy.mjs --recover-nonschema-activation");
+    assert.ok(!JSON.stringify(forensic).includes("dbsecret"));
+
+    // FRACTIONAL_FORWARD_RECOVERY_NOT_AUTHORIZED with absent schemaTransition (initialReadyVersion: 1)
+    captured.length = 0;
+    reportDeploymentFailure(Object.assign(new Error("FRACTIONAL_FORWARD_RECOVERY_NOT_AUTHORIZED"), {
+      code: "FRACTIONAL_FORWARD_RECOVERY_NOT_AUTHORIZED",
+    }));
+    const notAuthStderr = captured.join("\n");
+    assert.ok(notAuthStderr.includes("schemaTransition"));
+    assert.ok(notAuthStderr.includes("initialReadyVersion=1"));
+    assert.ok(notAuthStderr.includes("node scripts/deploy.mjs --recover-nonschema-activation"));
+    assert.ok(!notAuthStderr.includes("--resume-fractional-schema-cutover"));
+
+    // schemaTransition.started === false must also recommend --recover-nonschema-activation, not forward cutover
+    captured.length = 0;
+    writeActivationJournal(path.join(pm2Home, "erp-inventory-activation.json"), {
+      ...baseJournal,
+      schemaTransition: { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: false },
+    });
+    reportDeploymentFailure(fatal);
+    assert.ok(captured.join("\n").includes("node scripts/deploy.mjs --recover-nonschema-activation"));
+    assert.ok(!captured.join("\n").includes("--resume-fractional-schema-cutover"));
+
+    // schemaTransition.started === true must recommend --resume-fractional-schema-cutover
+    captured.length = 0;
+    writeActivationJournal(path.join(pm2Home, "erp-inventory-activation.json"), {
+      ...baseJournal,
+      schemaTransition: { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: true },
+    });
+    reportDeploymentFailure(fatal);
+    assert.ok(captured.join("\n").includes("node scripts/deploy.mjs --resume-fractional-schema-cutover"));
+
+    // RELEASED or missing journal must recommend neither recovery command
+    for (const nextJournal of [
+      { ...baseJournal, phase: "RELEASED" },
+      null,
+    ]) {
+      captured.length = 0;
+      if (nextJournal) writeActivationJournal(path.join(pm2Home, "erp-inventory-activation.json"), nextJournal);
+      else fs.unlinkSync(path.join(pm2Home, "erp-inventory-activation.json"));
+      reportDeploymentFailure(fatal);
+      const out = captured.join("\n");
+      assert.ok(!out.includes("--resume-fractional-schema-cutover"));
+      assert.ok(!out.includes("--recover-nonschema-activation"));
+    }
+  } finally {
+    console.error = origConsoleError;
+    process.exitCode = prevExitCode;
+    if (prevPm2Home === undefined) delete process.env.PM2_HOME;
+    else process.env.PM2_HOME = prevPm2Home;
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
+
+
+// 3. recoverNonschemaActivation full recovery + refusal contracts
+{
+  const { createHash } = await import("node:crypto");
+  const { writeActivationJournal, readActivationJournal } = await import("./lib/inventory-activation-journal.mjs");
+  const { mockInstalledHelperOwner } = await import("./lib/installed-helper-fixture.mjs");
+  const { default: releases } = await import("./hr-bridge-release.cjs");
+  const hash = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+  async function withRecoveryFixture({
+    phase = "FATAL",
+    initialReadyVersion = 1,
+    schemaTransition = undefined,
+    withBridge = true,
+    withPendingWeb = true,
+    candidateStillInPm2 = true,
+    projectionState = null,
+    dbIdentity = { databaseName: "erp_rec_test", serverUuid: "uuid-rec-1" },
+    extraSetup = null,
+  } = {}, fn) {
+    const tempRoot = fs.realpathSync(os.tmpdir());
+    const fixture = fs.mkdtempSync(path.join(tempRoot, "deploy-nonschema-recover-"));
+    const projectRoot = path.join(fixture, "erp");
+    const pm2Home = path.join(fixture, "pm2");
+    const procRoot = path.join(fixture, "proc");
+    const helper = path.join(fixture, "pm2-systemd-start.mjs");
+    const helperOwner = mockInstalledHelperOwner(helper);
+    try {
+      for (const dir of [
+        projectRoot,
+        pm2Home,
+        procRoot,
+        path.join(projectRoot, "deploy/systemd"),
+        path.join(projectRoot, "scripts"),
+        path.join(projectRoot, "dist/public"),
+      ]) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      fs.chmodSync(pm2Home, 0o700);
+      fs.writeFileSync(helper, "boot-interlock-v1");
+      fs.chmodSync(helper, 0o444);
+      fs.writeFileSync(path.join(projectRoot, "deploy/systemd/pm2-systemd-start.mjs"), "boot-interlock-v1");
+      for (const name of [
+        "hr-bridge-release-worker.mjs",
+        "hr-bridge-runtime-policy.cjs",
+        "hr-bridge-mode.cjs",
+        "hr-bridge-pm2-app.cjs",
+        "hr-bridge-pm2.config.cjs",
+      ]) {
+        fs.copyFileSync(path.join(root, "scripts", name), path.join(projectRoot, "scripts", name));
+      }
+      fs.writeFileSync(path.join(projectRoot, "dist/index.js"), "prior-web-v1");
+      fs.writeFileSync(path.join(projectRoot, "dist/public/index.html"), "prior-html-v1");
+      fs.writeFileSync(path.join(projectRoot, "dist/hr-bridge-worker.cjs"), "prior-bridge-v1");
+
+      const priorRelease = releases.prepareRelease(projectRoot, {
+        sourceCommit: "e".repeat(40),
+        deploymentEnvironment: {
+          NODE_ENV: "production",
+          HR_DEVICE_BRIDGE: withBridge ? "1" : "0",
+        },
+      });
+      releases.establishBaseline(projectRoot, { id: priorRelease.id, mode: priorRelease.mode });
+
+      const snapshot = snapshotWebArtifact(projectRoot, { id: "web-100-recover" });
+      const candidate = prepareWebCandidate(projectRoot, {
+        id: "candidate-recover",
+        expectedSha: "b".repeat(40),
+        operations: {
+          createWorktree: (src) => fs.mkdirSync(src, { recursive: true }),
+          linkDependencies() {},
+          build(src) {
+            fs.mkdirSync(path.join(src, "dist/public"), { recursive: true });
+            fs.writeFileSync(path.join(src, "dist/index.js"), "candidate-web-v2");
+            fs.writeFileSync(path.join(src, "dist/public/index.html"), "candidate-html-v2");
+          },
+          removeWorktree: (src) => fs.rmSync(src, { recursive: true, force: true }),
+        },
+      });
+      if (withPendingWeb) {
+        installWebCandidate(snapshot, candidate);
+      } else {
+        fs.rmSync(candidate.candidateDirectory, { recursive: true, force: true });
+      }
+
+      const priorWebBundle = path.join(snapshot.previousPath, "index.js");
+      const priorWebScript =
+        initialReadyVersion === 1
+          ? priorWebBundle
+          : path.join(projectRoot, ".runtime/web-current/index.js");
+      const priorWebHash = hash(priorWebBundle);
+      const priorArtifacts = [
+        {
+          name: "erp-server",
+          script: priorWebScript,
+          bundle: priorWebBundle,
+          hash: priorWebHash,
+          scriptHash: priorWebHash,
+          instances: 2,
+        },
+        ...(withBridge
+          ? [{
+              name: "erp-hr-bridge",
+              script: priorRelease.bootstrapPath,
+              bundle: priorRelease.artifactPath,
+              hash: hash(priorRelease.artifactPath),
+              scriptHash: hash(priorRelease.bootstrapPath),
+              instances: 1,
+            }]
+          : []),
+      ];
+
+      const candidateBundle = path.join(snapshot.candidatePath, "index.js");
+      if (!fs.existsSync(snapshot.candidatePath)) {
+        fs.mkdirSync(path.join(snapshot.candidatePath, "public"), { recursive: true });
+        fs.writeFileSync(candidateBundle, "candidate-web-v2");
+        fs.writeFileSync(path.join(snapshot.candidatePath, "public/index.html"), "candidate-html-v2");
+      }
+      const candidateHash = hash(candidateBundle);
+      const candidateArtifacts = [
+        {
+          name: "erp-server",
+          script: candidateBundle,
+          bundle: candidateBundle,
+          hash: candidateHash,
+          scriptHash: candidateHash,
+          instances: 2,
+        },
+      ];
+
+      const priorActive =
+        initialReadyVersion === 1
+          ? {
+              readyVersion: 1,
+              activationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+              commit: "e".repeat(40),
+              projectionCommit: "d".repeat(40),
+              database: "erp_rec_test",
+              serverUuid: "uuid-rec-1",
+              artifacts: priorArtifacts,
+            }
+          : undefined;
+      const journalId = "12345678-1234-1234-1234-123456789abc";
+      const journalFile = path.join(pm2Home, "erp-inventory-activation.json");
+      const journal = {
+        version: 1,
+        id: journalId,
+        phase,
+        initialReadyVersion,
+        nonce: "a".repeat(64),
+        commit: "b".repeat(40),
+        database: "erp_rec_test",
+        serverUuid: "uuid-rec-1",
+        artifacts: candidateArtifacts,
+        priorArtifacts,
+        ...(priorActive ? { priorActive } : {}),
+        ...(schemaTransition ? { schemaTransition } : {}),
+      };
+      writeActivationJournal(journalFile, journal);
+
+      const priorConfigPath = path.join(projectRoot, `.runtime/inventory-prior-${journalId}.json`);
+      fs.writeFileSync(
+        priorConfigPath,
+        JSON.stringify({
+          apps: priorArtifacts.map((a) => ({
+            name: a.name,
+            script: a.script,
+            cwd: projectRoot,
+            instances: a.instances,
+          })),
+        }),
+        { mode: 0o600 },
+      );
+
+      const addPid = (pid, startTime = String(pid + 100), parent = 2, uid = 1000, cmdline = `node-${pid}\0`) => {
+        const d = path.join(procRoot, String(pid));
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(d + "/stat", `${pid} (node) S ${parent} ${Array(17).fill("0").join(" ")} ${startTime} 0\n`);
+        fs.mkdirSync(d + "/cwd", { recursive: true });
+        fs.writeFileSync(d + "/exe", "node");
+        fs.writeFileSync(d + "/cmdline", cmdline);
+        fs.writeFileSync(d + "/status", `Uid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+      };
+      addPid(2, "102", 1, 1000, `PM2 v7.0.3: God Daemon (${pm2Home})\0`);
+      addPid(90, "190", 2, 1000);
+      fs.writeFileSync(path.join(pm2Home, "pm2.pid"), "2");
+
+      const unrelated = {
+        name: "pm2-logrotate",
+        pm_id: 90,
+        pid: 90,
+        pm2_env: { pm_cwd: path.join(fixture, "other"), pm_exec_path: path.join(fixture, "other/index.js") },
+      };
+      let live = [unrelated];
+      if (candidateStillInPm2) {
+        addPid(201, "301", 2, 1000);
+        live.push({
+          name: "erp-server",
+          pm_id: 5,
+          pid: 201,
+          pm2_env: { name: "erp-server", pm_cwd: projectRoot, pm_exec_path: candidateBundle },
+        });
+      }
+
+      const pm2Calls = [];
+      const execute = (command, args) => {
+        pm2Calls.push([command, ...args]);
+        if (command === "systemctl") return helper;
+        if (args[0] === "jlist") return JSON.stringify(live);
+        if (args[0] === "delete") {
+          const target = live.find((r) => String(r.pm_id) === args[1]);
+          if (target?.pid > 0) fs.rmSync(path.join(procRoot, String(target.pid)), { recursive: true, force: true });
+          live = live.filter((r) => r !== target);
+        }
+        if (args[0] === "start") {
+          const cfg = JSON.parse(fs.readFileSync(args[1], "utf8"));
+          for (const app of cfg.apps) {
+            for (let i = 0; i < app.instances; i++) {
+              live.push({
+                name: app.name,
+                pm_id: live.length + 10,
+                pid: 400 + live.length,
+                pm2_env: { name: app.name, pm_cwd: app.cwd, pm_exec_path: app.script },
+              });
+            }
+          }
+        }
+        if (args[0] === "save") {
+          fs.writeFileSync(
+            path.join(pm2Home, "dump.pm2"),
+            JSON.stringify(live.map((r) => ({ ...r.pm2_env, name: r.name }))),
+          );
+        }
+        return "";
+      };
+
+      const stateRow =
+        projectionState ??
+        (initialReadyVersion === 1
+          ? { readyVersion: 1, activatedCommit: "d".repeat(40) }
+          : { readyVersion: 0, activatedCommit: null });
+      const createConnection = async () => ({
+        query: async (sql) => {
+          if (sql.includes("@@server_uuid")) return [[dbIdentity]];
+          if (sql.includes("inventoryProjectionState")) return [[stateRow]];
+          throw new Error(sql);
+        },
+        end: async () => {},
+      });
+      const verified = { web: 0, bridgeId: null };
+      const context = {
+        fixture,
+        projectRoot,
+        pm2Home,
+        procRoot,
+        journalFile,
+        journal,
+        priorActive,
+        priorConfigPath,
+        priorWebBundle,
+        snapshot,
+        helper,
+        addPid,
+        liveRef: () => live,
+        pm2Calls,
+        verified,
+        runRecover: (overrides = {}) =>
+          recoverNonschemaActivation({
+            projectRoot,
+            journalFile,
+            pm2Home,
+            procRoot,
+            uid: 1000,
+            platform: "linux",
+            installedHelperPath: helper,
+            drainTimeoutMs: 50,
+            execute,
+            environment: {
+              DATABASE_URL: "mysql://erp_app:pw@127.0.0.1:3307/erp_rec_test",
+              PORT: "3000",
+              REQUIRE_INTERNAL_PROXY_SECRET: "0",
+            },
+            createConnection,
+            releaseTools: releases,
+            verifyWebHealth: async () => {
+              verified.web++;
+            },
+            verifyBridgeRuntime: async (id) => {
+              verified.bridgeId = id;
+            },
+            ...overrides,
+          }),
+      };
+      if (extraSetup) await extraSetup(context);
+      await fn(context);
+    } finally {
+      helperOwner.restore();
+      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o600);
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  // Happy path: initialReadyVersion=1 FATAL with pending web activation + leftover candidate + HR bridge
+  await withRecoveryFixture({}, async (ctx) => {
+    const res = await ctx.runRecover();
+    assert.equal(res.journal.phase, "ROLLED_BACK");
+    assert.deepEqual(res.journal.active, ctx.priorActive);
+    assert.equal(readActivationJournal(ctx.journalFile).phase, "ROLLED_BACK");
+    assert.equal(hasPendingWebActivation(ctx.projectRoot), false);
+    assert.equal(fs.realpathSync(ctx.snapshot.activeLinkPath), fs.realpathSync(ctx.snapshot.previousPath));
+    assert.ok(ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "delete"));
+    assert.ok(ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "start" && c[2] === ctx.priorConfigPath));
+    assert.ok(ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "save" && c[2] === "--force"));
+    assert.equal(fs.readFileSync(path.join(ctx.pm2Home, "dump.pm2"), "utf8"),
+      fs.readFileSync(path.join(ctx.pm2Home, "dump.pm2.bak"), "utf8"));
+    assert.equal(ctx.verified.web, 1);
+    assert.ok(ctx.verified.bridgeId);
+  });
+
+  // PRE_RELEASE requires --force-prerelease-recovery, succeeds with it (initialReadyVersion=0)
+  await withRecoveryFixture({ phase: "PRE_RELEASE", initialReadyVersion: 0, withBridge: false, withPendingWeb: false }, async (ctx) => {
+    await assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PRERELEASE_REQUIRES_FORCE/);
+    const res = await ctx.runRecover({ forcePrereleaseRecovery: true });
+    assert.equal(res.journal.phase, "ROLLED_BACK");
+    assert.equal(res.journal.active, null);
+    assert.equal(ctx.verified.web, 1);
+    assert.equal(ctx.verified.bridgeId, null);
+  });
+
+  // Refusals
+  await withRecoveryFixture({
+    schemaTransition: { id: "fractional-material-quantities-v1", rollbackPolicy: "FORWARD_ONLY", started: true },
+  }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_REFUSED_SCHEMA_STARTED/));
+
+  await withRecoveryFixture({ phase: "RELEASED" }, (ctx) =>
+    assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_NOT_NEEDED:RELEASED/));
+
+  await withRecoveryFixture({ dbIdentity: { databaseName: "wrong_db", serverUuid: "uuid-rec-1" } }, (ctx) =>
+    assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_DB_IDENTITY_MISMATCH/));
+
+  await withRecoveryFixture({ initialReadyVersion: 0, projectionState: { readyVersion: 1, activatedCommit: "b".repeat(40) } }, (ctx) =>
+    assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PROJECTION_STATE_MISMATCH/));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => { fs.chmodSync(ctx.helper, 0o644); fs.writeFileSync(ctx.helper, "drifted"); },
+  }, (ctx) => assert.rejects(ctx.runRecover(), /INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED/));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => ctx.addPid(888, "988", 1, 1000, "stray-proc\0"),
+  }, (ctx) => assert.rejects(ctx.runRecover(), (err) => err.message === "INVENTORY_UNCLASSIFIED_PROCESS" && err.offendingProcesses?.length === 1));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => fs.appendFileSync(ctx.priorWebBundle, "tampered"),
+  }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH/));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => releases.beginActivation(ctx.projectRoot, { id: releases.readState(ctx.projectRoot).current.id, mode: "enabled" }),
+  }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_HR_BRIDGE_PENDING/));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => fs.unlinkSync(ctx.priorConfigPath),
+  }, async (ctx) => {
+    await assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PRIOR_CONFIG_MISSING/);
+    assert.equal(readActivationJournal(ctx.journalFile).phase, "FATAL");
+  });
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => fs.unlinkSync(ctx.journalFile),
+  }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_JOURNAL_MISSING/));
+
+  await withRecoveryFixture({
+    initialReadyVersion: 1,
+    projectionState: { readyVersion: 0, activatedCommit: null },
+  }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PROJECTION_STATE_MISMATCH/));
+
+  await withRecoveryFixture({
+    extraSetup: (ctx) => ctx.liveRef().push({
+      name: "legacy-unknown-erp",
+      pm_id: 99,
+      pid: 0,
+      pm2_env: { pm_cwd: ctx.projectRoot, pm_exec_path: path.join(ctx.projectRoot, "legacy.js") },
+    }),
+  }, (ctx) => assert.rejects(ctx.runRecover(), /INVENTORY_UNKNOWN_ERP_PROCESS/));
+
+  // Re-running from FATAL when authenticated priorArtifacts already started in PM2 (e.g. savePm2Dump failed)
+  // stops/restarts them cleanly while unknown scripts still throw INVENTORY_UNKNOWN_ERP_PROCESS.
+  await withRecoveryFixture({
+    phase: "FATAL",
+    initialReadyVersion: 1,
+    candidateStillInPm2: false,
+    withPendingWeb: false,
+    extraSetup: (ctx) => {
+      ctx.addPid(301, "401", 2, 1000);
+      ctx.liveRef().push({
+        name: "erp-server",
+        pm_id: 11,
+        pid: 301,
+        pm2_env: { name: "erp-server", pm_cwd: ctx.projectRoot, pm_exec_path: ctx.priorWebBundle },
+      });
+    },
+  }, async (ctx) => {
+    const res = await ctx.runRecover();
+    assert.equal(res.journal.phase, "ROLLED_BACK");
+    assert.deepEqual(res.journal.active, ctx.priorActive);
+    assert.ok(ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "delete" && c[2] === "11"));
+    assert.ok(ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "start" && c[2] === ctx.priorConfigPath));
+    assert.equal(ctx.verified.web, 1);
+  });
+
+  await withRecoveryFixture({
+    phase: "FATAL",
+    candidateStillInPm2: false,
+    extraSetup: (ctx) => ctx.liveRef().push({
+      name: "erp-server",
+      pm_id: 98,
+      pid: 0,
+      pm2_env: { pm_cwd: ctx.projectRoot, pm_exec_path: path.join(ctx.projectRoot, "legacy.js") },
+    }),
+  }, (ctx) => assert.rejects(ctx.runRecover(), /INVENTORY_UNKNOWN_ERP_PROCESS/));
+
+  await withRecoveryFixture({}, (ctx) =>
+    assert.rejects(
+      ctx.runRecover({
+        execute: (cmd, args) => {
+          if (cmd === "systemctl") return "/usr/local/bin/other-helper";
+          return "";
+        },
+      }),
+      /INVENTORY_SYSTEMD_BOOT_INTERLOCK_REQUIRED/,
+    ));
+}
 
 // This entrypoint runs in required CI; keep the worker migration regression gated.
 await import("./build-web.test.mjs");
