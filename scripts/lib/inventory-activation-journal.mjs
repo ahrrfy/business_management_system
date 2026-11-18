@@ -1,6 +1,113 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+
+const hashFile = (file) =>
+  createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+/** Redacts database/broker connection URLs, credentialed URLs, and secret tokens while keeping file:// stack frames intact. */
+export function redactDiagnosticText(value) {
+  if (value == null) return value;
+  return String(value)
+    .replace(
+      /\b(?:mysql2?|postgres(?:ql)?|rediss?|mongodb(?:\+srv)?|amqps?):\/\/[^\s"'`<>]+/gi,
+      "[REDACTED_URL]",
+    )
+    .replace(
+      /\b(https?:\/\/)([^/@\s"'`<>]+@)([^\s"'`<>]+)/gi,
+      "$1[REDACTED]@$3",
+    )
+    .replace(
+      /\b(https?:\/\/[^\s"'`<>?]+)\?[^\s"'`<>]+/gi,
+      "$1?[REDACTED]",
+    )
+    .replace(
+      /(Authorization\s*:\s*(?:Bearer|Basic|Token)\s+)([^\s"',;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})/g, "$1 [REDACTED]")
+    .replace(
+      /\b(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|sk_[A-Za-z0-9_]{8,})\b/g,
+      "[REDACTED_TOKEN]",
+    )
+    .replace(
+      /\b(MYSQL_PWD|DB_ROOT_PW|DB_APP_PW|DB_CONTROL_PW|DATABASE_URL|ERP_INVENTORY_CONTROL_DATABASE_URL|CONTROL_DATABASE_URL|BACKUP_TARGET_URL|INTERNAL_PROXY_SECRET|INTERNAL_PROXY_SECRET_PREVIOUS|GITHUB_TOKEN|GH_TOKEN|ADMIN_PASSWORD|JWT_SECRET|SENTRY_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|PASSWORD|PASSWD|SECRET|TOKEN)\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1$2[REDACTED]",
+    )
+    .replace(
+      /(--(?:password|passwd|secret|token)\s*(?:=|\s+))("[^"]*"|'[^']*'|[^\s"';]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /(\bmysql(?:dump)?\b[^\n;]*?\s-p)("[^"]*"|'[^']*'|[^\s"';]+)/g,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /(IDENTIFIED\s+BY\s+)(?:'[^']*'|"[^"]*")/gi,
+      "$1'[REDACTED]'",
+    );
+}
+
+/** Recursively redacts strings inside diagnostic payloads without mutating the input object. */
+export function redactDiagnosticValue(value, depth = 0) {
+  if (value == null) return value;
+  if (typeof value === "string") return redactDiagnosticText(value);
+  if (typeof value !== "object" || depth >= 6) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDiagnosticValue(item, depth + 1));
+  }
+  const output = {};
+  for (const [key, entry] of Object.entries(value)) {
+    output[key] = redactDiagnosticValue(entry, depth + 1);
+  }
+  return output;
+}
+
+/** Verifies the root-owned pm2-systemd-start.mjs boot interlock matches the repo copy and systemd ExecStart. */
+export function assertBootInterlock({
+  projectRoot,
+  installedHelperPath = "/usr/local/libexec/erp/pm2-systemd-start.mjs",
+  execute = (file, args) =>
+    execFileSync(file, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15_000,
+    }),
+}) {
+  let installedStat;
+  try {
+    installedStat = fs.lstatSync(installedHelperPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    throw Object.assign(new Error("INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED"), {
+      code: "INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED",
+    });
+  }
+  if (
+    !installedStat.isFile() ||
+    installedStat.isSymbolicLink() ||
+    installedStat.uid !== 0 ||
+    installedStat.mode & 0o022 ||
+    hashFile(installedHelperPath) !==
+      hashFile(path.join(projectRoot, "deploy/systemd/pm2-systemd-start.mjs"))
+  ) {
+    throw Object.assign(new Error("INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED"), {
+      code: "INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED",
+    });
+  }
+  const start = execute("systemctl", [
+    "show",
+    "pm2-deploy.service",
+    "--property=ExecStart",
+    "--value",
+  ]);
+  if (!String(start ?? "").includes(installedHelperPath)) {
+    throw Object.assign(new Error("INVENTORY_SYSTEMD_BOOT_INTERLOCK_REQUIRED"), {
+      code: "INVENTORY_SYSTEMD_BOOT_INTERLOCK_REQUIRED",
+    });
+  }
+}
 
 export const JOURNAL_NAME = "erp-inventory-activation.json";
 export const CAPABILITY = "inventory-projection-v1-fenced-boot";
