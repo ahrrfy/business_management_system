@@ -3266,50 +3266,8 @@ export async function recoverNonschemaActivation({
     procRoot,
     currentIdentity,
   });
-  for (const row of erpRows) {
-    const pmId = row.pm_id ?? row.pm2_env?.pm_id;
-    execute("pm2", ["delete", String(pmId)]);
-  }
-  const drainDeadline = Date.now() + drainTimeoutMs;
-  while (
-    erpIdentities.some((i) => {
-      const curr = currentIdentity(i.pid);
-      return curr && curr.startTime === i.startTime && curr.uid === i.uid;
-    })
-  ) {
-    verifyUidProcessOwnership({
-      inventory: processInventory(procRoot),
-      uid,
-      erpIdentities,
-      allowedProcesses,
-      allowErp: true,
-      procRoot,
-      currentIdentity,
-    });
-    if (Date.now() >= drainDeadline) {
-      throw codedError("INVENTORY_OLD_PROCESS_STILL_ALIVE");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  verifyUidProcessOwnership({
-    inventory: processInventory(procRoot),
-    uid,
-    erpIdentities,
-    allowedProcesses,
-    allowErp: false,
-    procRoot,
-    currentIdentity,
-  });
-  if (
-    rows().some((r) =>
-      ["erp-server", BRIDGE_PROCESS_NAME, "erp-provision-worker"].includes(
-        r.name ?? r.pm2_env?.name,
-      ),
-    )
-  ) {
-    throw codedError("INVENTORY_ERP_DEFINITION_REAPPEARED");
-  }
 
+  // Validate all read-only restoration prerequisites BEFORE deleting any running workers.
   for (const artifact of journal.priorArtifacts) {
     assertPlainFile(artifact.bundle, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
     if (hashFile(artifact.bundle) !== artifact.hash) {
@@ -3335,12 +3293,11 @@ export async function recoverNonschemaActivation({
   );
   const priorWebDir = path.dirname(path.resolve(priorWeb.bundle));
   assertWebArtifactReady(priorWebDir, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
-  if (hasPendingWebActivation(resolvedRoot)) {
-    const pending = pendingWebActivationSnapshot(resolvedRoot);
-    replaceWebCurrentLink(pending.activeLinkPath, priorWebDir, pending.runtimeRoot);
-    clearWebActivationJournal(pending);
-  } else {
-    const activeLinkPath = path.join(runtimeRoot, "web-current");
+  const pendingWeb = hasPendingWebActivation(resolvedRoot)
+    ? pendingWebActivationSnapshot(resolvedRoot)
+    : null;
+  const activeLinkPath = path.join(runtimeRoot, "web-current");
+  if (!pendingWeb) {
     const linkStat = lstatOrNull(activeLinkPath);
     if (
       !linkStat?.isSymbolicLink() ||
@@ -3350,6 +3307,7 @@ export async function recoverNonschemaActivation({
     }
   }
   for (const artifact of journal.priorArtifacts) {
+    if (pendingWeb && artifact.name === "erp-server") continue;
     assertPlainFile(artifact.script, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
     if (hashFile(artifact.script) !== artifact.scriptHash) {
       throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
@@ -3431,6 +3389,59 @@ export async function recoverNonschemaActivation({
     }
   }
 
+  for (const row of erpRows) {
+    const pmId = row.pm_id ?? row.pm2_env?.pm_id;
+    execute("pm2", ["delete", String(pmId)]);
+  }
+  const drainDeadline = Date.now() + drainTimeoutMs;
+  while (
+    erpIdentities.some((i) => {
+      const curr = currentIdentity(i.pid);
+      return curr && curr.startTime === i.startTime && curr.uid === i.uid;
+    })
+  ) {
+    verifyUidProcessOwnership({
+      inventory: processInventory(procRoot),
+      uid,
+      erpIdentities,
+      allowedProcesses,
+      allowErp: true,
+      procRoot,
+      currentIdentity,
+    });
+    if (Date.now() >= drainDeadline) {
+      throw codedError("INVENTORY_OLD_PROCESS_STILL_ALIVE");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  verifyUidProcessOwnership({
+    inventory: processInventory(procRoot),
+    uid,
+    erpIdentities,
+    allowedProcesses,
+    allowErp: false,
+    procRoot,
+    currentIdentity,
+  });
+  if (
+    rows().some((r) =>
+      ["erp-server", BRIDGE_PROCESS_NAME, "erp-provision-worker"].includes(
+        r.name ?? r.pm2_env?.name,
+      ),
+    )
+  ) {
+    throw codedError("INVENTORY_ERP_DEFINITION_REAPPEARED");
+  }
+
+  if (pendingWeb) {
+    replaceWebCurrentLink(pendingWeb.activeLinkPath, priorWebDir, pendingWeb.runtimeRoot);
+    clearWebActivationJournal(pendingWeb);
+    assertPlainFile(priorWeb.script, "NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    if (hashFile(priorWeb.script) !== priorWeb.scriptHash) {
+      throw codedError("NON_SCHEMA_RECOVERY_PRIOR_ARTIFACT_MISMATCH");
+    }
+  }
+
   const rolledBackJournal = {
     ...journal,
     phase: "ROLLED_BACK",
@@ -3472,6 +3483,32 @@ export async function recoverNonschemaActivation({
         throw codedError("NON_SCHEMA_RECOVERY_DUMP_INVALID");
       }
     }
+
+    if (verifyWebHealth) {
+      await verifyWebHealth(webHealthEnv);
+    } else {
+      verifyInternalWebHealth(webHealthEnv);
+    }
+
+    if (priorBridge) {
+      if (verifyBridgeRuntime) {
+        await verifyBridgeRuntime(bridgeState.current.id);
+      } else {
+        const policy = releaseTools.loadReleasePolicy(
+          resolvedRoot,
+          bridgeState.current.id,
+        );
+        run(
+          process.execPath,
+          [
+            "scripts/verify-hr-bridge-runtime.mjs",
+            "--release-id",
+            bridgeState.current.id,
+          ],
+          { timeoutMs: policy.runtimeGateTimeoutMs + 15_000 },
+        );
+      }
+    }
   } catch (startError) {
     try {
       writeActivationJournal(journalFile, {
@@ -3481,32 +3518,6 @@ export async function recoverNonschemaActivation({
       });
     } catch {}
     throw startError;
-  }
-
-  if (verifyWebHealth) {
-    await verifyWebHealth(webHealthEnv);
-  } else {
-    verifyInternalWebHealth(webHealthEnv);
-  }
-
-  if (priorBridge) {
-    if (verifyBridgeRuntime) {
-      await verifyBridgeRuntime(bridgeState.current.id);
-    } else {
-      const policy = releaseTools.loadReleasePolicy(
-        resolvedRoot,
-        bridgeState.current.id,
-      );
-      run(
-        process.execPath,
-        [
-          "scripts/verify-hr-bridge-runtime.mjs",
-          "--release-id",
-          bridgeState.current.id,
-        ],
-        { timeoutMs: policy.runtimeGateTimeoutMs + 15_000 },
-      );
-    }
   }
 
   return {
