@@ -6,7 +6,9 @@ import { execFileSync } from "node:child_process";
 import mysql from "mysql2/promise";
 import {
   activeInventoryManifest,
+  assertBootInterlock,
   assertInventoryReadinessLifecycle,
+  redactDiagnosticText,
 } from "./inventory-activation-journal.mjs";
 import { parseDbTarget } from "./db-target.mjs";
 import {
@@ -94,10 +96,261 @@ const same = (a, b) =>
   a.pid === b.pid &&
   a.startTime === b.startTime &&
   a.uid === b.uid;
-function processInventory(procRoot) {
+export function processInventory(procRoot = "/proc") {
   const pids = fs.readdirSync(procRoot).filter((x) => /^\d+$/.test(x));
   if (pids.length > 4096) throw new Error("INVENTORY_PROCESS_CENSUS_LIMIT");
   return pids.map((x) => readProcessIdentity(x, procRoot)).filter(Boolean);
+}
+
+export function readProcCmdline(pid, procRoot = "/proc", maxLength = 240) {
+  try {
+    const raw = fs.readFileSync(path.join(procRoot, String(pid), "cmdline"), "utf8");
+    const formatted = raw.replace(/\0+/g, " ").trim();
+    const redacted = redactDiagnosticText(formatted);
+    return redacted.length > maxLength
+      ? `${redacted.slice(0, maxLength)}...[truncated]`
+      : redacted;
+  } catch {
+    return null;
+  }
+}
+
+function fingerprintProcess(
+  p,
+  procRoot = "/proc",
+  currentIdentity = (pid) => readProcessIdentity(pid, procRoot),
+) {
+  const dir = path.join(procRoot, String(p.pid));
+  try {
+    const result = {
+      ...p,
+      cwd: fs.realpathSync(path.join(dir, "cwd")),
+      exe: fs.realpathSync(path.join(dir, "exe")),
+      command: hashFile(path.join(dir, "cmdline")),
+    };
+    if (!same(p, currentIdentity(p.pid)))
+      throw new Error("INVENTORY_PROCESS_IDENTITY_CHANGED");
+    return result;
+  } catch (e) {
+    if (["ENOENT", "ESRCH"].includes(e.code) && !currentIdentity(p.pid))
+      return null;
+    throw e;
+  }
+}
+
+function expandDescendants(identities, inventory, uid) {
+  const key = (p) => `${p.pid}:${p.startTime}:${p.uid}`;
+  const tracked = new Set(identities.map(key));
+  const children = new Map();
+  for (const p of inventory) {
+    if (!children.has(p.parent)) children.set(p.parent, []);
+    children.get(p.parent).push(p);
+  }
+  const queue = inventory.filter((p) => tracked.has(key(p)));
+  for (let n = 0; n < queue.length; n++) {
+    for (const child of children.get(queue[n].pid) ?? []) {
+      if (tracked.has(key(child))) continue;
+      if (child.uid !== uid) throw new Error("INVENTORY_CHILD_UID_CHANGED");
+      if (identities.length >= 4096)
+        throw new Error("INVENTORY_PROCESS_CENSUS_LIMIT");
+      tracked.add(key(child));
+      identities.push(child);
+      queue.push(child);
+    }
+  }
+}
+
+export function buildAllowedUidProcesses({
+  pm2Home,
+  procRoot = "/proc",
+  uid,
+  inventory,
+  initialRows,
+  excludedRows = [],
+  excludedIdentities = [],
+  currentIdentity = (pid) => readProcessIdentity(pid, procRoot),
+}) {
+  const ancestors = new Set([process.pid]);
+  for (
+    let p = currentIdentity(process.pid);
+    p && p.parent > 1;
+    p = currentIdentity(p.parent)
+  )
+    ancestors.add(p.parent);
+  const daemonPid = Number(
+    fs.readFileSync(path.join(pm2Home, "pm2.pid"), "utf8").trim(),
+  );
+  const daemon = inventory.find((p) => p.pid === daemonPid);
+  const daemonTitle = fs.readFileSync(
+    path.join(procRoot, String(daemonPid), "cmdline"),
+    "utf8",
+  );
+  if (
+    !daemon ||
+    daemon.uid !== uid ||
+    !daemonTitle.includes(`God Daemon (${pm2Home})`)
+  )
+    throw new Error("INVENTORY_PM2_DAEMON_OWNERSHIP_UNPROVEN");
+  ancestors.add(daemonPid);
+  const permitted = [];
+  for (const row of initialRows.filter((r) => !excludedRows.includes(r))) {
+    const identity = inventory.find((p) => p.pid === Number(row.pid));
+    if (identity?.uid === uid) permitted.push(identity);
+  }
+  expandDescendants(permitted, inventory, uid);
+  // The ownership census covers this service UID; sudo/SSH ancestors of
+  // another UID are not exemptions and may deny access to cwd/exe.
+  permitted.push(...inventory.filter((p) => p.uid === uid && ancestors.has(p.pid)));
+  // Descendant expansion above must never make ERP children exempt via the
+  // PM2 daemon/control ancestry: remove every already-owned ERP identity.
+  return permitted
+    .filter((p) => !excludedIdentities.some((i) => same(i, p)))
+    .map((p) => fingerprintProcess(p, procRoot, currentIdentity))
+    .filter(Boolean);
+}
+
+export function verifyUidProcessOwnership({
+  inventory,
+  uid,
+  erpIdentities = [],
+  allowedProcesses = [],
+  allowErp = false,
+  procRoot = "/proc",
+  currentIdentity = (pid) => readProcessIdentity(pid, procRoot),
+}) {
+  const offendingProcesses = [];
+  for (const p of inventory.filter((entry) => entry.uid === uid)) {
+    if (erpIdentities.some((i) => same(i, p))) {
+      if (!allowErp) throw new Error("INVENTORY_ERP_PROCESS_REMAINS");
+      continue;
+    }
+    const trusted = allowedProcesses.find((i) => same(i, p));
+    const current = fingerprintProcess(p, procRoot, currentIdentity);
+    if (!current) continue;
+    if (
+      !trusted ||
+      current.command !== trusted.command ||
+      current.cwd !== trusted.cwd ||
+      current.exe !== trusted.exe
+    ) {
+      offendingProcesses.push({
+        pid: current.pid,
+        uid: current.uid,
+        ppid: current.parent,
+        exe: current.exe,
+        cwd: current.cwd,
+        cmdline: readProcCmdline(current.pid, procRoot),
+        reason: !trusted
+          ? "untrusted_pid"
+          : current.command !== trusted.command
+            ? "cmdline_changed"
+            : current.cwd !== trusted.cwd
+              ? "cwd_changed"
+              : "exe_changed",
+      });
+    }
+  }
+  if (offendingProcesses.length) {
+    console.error(
+      `[INVENTORY_UNCLASSIFIED_PROCESS] ${JSON.stringify({ offendingProcesses })}`,
+    );
+    throw Object.assign(new Error("INVENTORY_UNCLASSIFIED_PROCESS"), {
+      code: "INVENTORY_UNCLASSIFIED_PROCESS",
+      offendingProcesses,
+    });
+  }
+  return inventory;
+}
+
+function preservePreActivationDump(pm2Home, dump) {
+  let dumpStat;
+  try {
+    dumpStat = fs.lstatSync(dump);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!dumpStat.isFile() || dumpStat.isSymbolicLink() || dumpStat.size > 16 * 1024 * 1024) {
+    return;
+  }
+  const raw = fs.readFileSync(dump, "utf8");
+  let rows;
+  try {
+    rows = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (
+    !Array.isArray(rows) ||
+    !rows.some((r) => ["erp-server", "erp-hr-bridge"].includes(r?.name))
+  ) {
+    return;
+  }
+  const preActivation = `${dump}.pre-activation`;
+  try {
+    if (fs.lstatSync(preActivation).isSymbolicLink()) {
+      throw new Error("INVENTORY_PM2_PRE_ACTIVATION_DUMP_UNTRUSTED");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const temporary = `${preActivation}.tmp-${process.pid}-${randomUUID()}`;
+  const fd = fs.openSync(temporary, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, raw, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(temporary, preActivation);
+  } finally {
+    try {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    } catch {}
+  }
+  if (process.platform === "linux") {
+    const dirFd = fs.openSync(pm2Home, "r");
+    try {
+      fs.fsyncSync(dirFd);
+    } finally {
+      fs.closeSync(dirFd);
+    }
+  }
+}
+
+export function savePm2Dump(
+  pm2Home,
+  execute,
+  { preservePreActivation = false } = {},
+) {
+  const dump = path.join(pm2Home, "dump.pm2");
+  if (preservePreActivation) {
+    preservePreActivationDump(pm2Home, dump);
+  }
+  execute("pm2", ["save", "--force"]);
+  const fd = fs.openSync(dump, "r+");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // PM2's automatic .bak fallback must never resurrect the former ERP graph.
+  fs.copyFileSync(dump, `${dump}.bak`);
+  const b = fs.openSync(`${dump}.bak`, "r+");
+  try {
+    fs.fsyncSync(b);
+  } finally {
+    fs.closeSync(b);
+  }
+  if (process.platform === "linux") {
+    const d = fs.openSync(pm2Home, "r");
+    try {
+      fs.fsyncSync(d);
+    } finally {
+      fs.closeSync(d);
+    }
+  }
 }
 export function classifyErpProcesses(rows, projectRoot, processes, uid) {
   if (!Array.isArray(rows)) throw new Error("INVENTORY_PM2_LIST_INVALID");
@@ -224,6 +477,9 @@ export function createLinuxActivationOperations({
   installedHelperPath = "/usr/local/libexec/erp/pm2-systemd-start.mjs",
   requestAttestation = queryWorkerAttestation,
   drainTimeoutMs = 45000,
+  preflightDbRetryMs = 8000,
+  preflightDbRetryIntervalMs = 500,
+  initialReadyVersion = undefined,
   prepareSchema,
   forwardRecoveryJournal = null,
 }) {
@@ -255,98 +511,28 @@ export function createLinuxActivationOperations({
       fs.closeSync(fd);
     }
   };
-  function saveDump() {
-    execute("pm2", ["save", "--force"]);
-    const dump = path.join(pm2Home, "dump.pm2");
-    const fd = fs.openSync(dump, "r+");
-    try {
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    // PM2's automatic .bak fallback must never resurrect the former ERP graph.
-    fs.copyFileSync(dump, `${dump}.bak`);
-    const b = fs.openSync(`${dump}.bak`, "r+");
-    try {
-      fs.fsyncSync(b);
-    } finally {
-      fs.closeSync(b);
-    }
-    if (process.platform === "linux") {
-      const d = fs.openSync(pm2Home, "r");
-      try {
-        fs.fsyncSync(d);
-      } finally {
-        fs.closeSync(d);
-      }
-    }
+  function saveDump(options = {}) {
+    savePm2Dump(pm2Home, execute, options);
   }
   // Bound the census; unknown same-service-UID processes are never assumed safe.
   // Only verified control ancestors/daemon and existing unrelated PM2 trees are
   // exempt. Their kernel identity and execution fingerprint must remain stable.
   const census = () => processInventory(procRoot);
-  function fingerprint(p) {
-    const dir = path.join(procRoot, String(p.pid));
-    try {
-      const result = {
-        ...p,
-        cwd: fs.realpathSync(path.join(dir, "cwd")),
-        exe: fs.realpathSync(path.join(dir, "exe")),
-        command: hashFile(path.join(dir, "cmdline")),
-      };
-      if (!same(p, currentIdentity(p.pid)))
-        throw new Error("INVENTORY_PROCESS_IDENTITY_CHANGED");
-      return result;
-    } catch (e) {
-      if (["ENOENT", "ESRCH"].includes(e.code) && !currentIdentity(p.pid))
-        return null;
-      throw e;
-    }
-  }
-  function descendants(identities, inventory) {
-    const key = (p) => `${p.pid}:${p.startTime}:${p.uid}`;
-    const tracked = new Set(identities.map(key));
-    const children = new Map();
-    for (const p of inventory) {
-      if (!children.has(p.parent)) children.set(p.parent, []);
-      children.get(p.parent).push(p);
-    }
-    const queue = inventory.filter((p) => tracked.has(key(p)));
-    for (let n = 0; n < queue.length; n++) {
-      for (const child of children.get(queue[n].pid) ?? []) {
-        if (tracked.has(key(child))) continue;
-        if (child.uid !== uid) throw new Error("INVENTORY_CHILD_UID_CHANGED");
-        if (identities.length >= 4096)
-          throw new Error("INVENTORY_PROCESS_CENSUS_LIMIT");
-        tracked.add(key(child));
-        identities.push(child);
-        queue.push(child);
-      }
-    }
-  }
   function refreshOwnership({ allowErp = false } = {}) {
     const inventory = census();
-    descendants(oldIdentities, inventory);
-    descendants(candidateIdentities, inventory);
-    for (const p of inventory.filter((p) => p.uid === uid)) {
-      if ([...oldIdentities, ...candidateIdentities].some((i) => same(i, p))) {
-        if (!allowErp) throw new Error("INVENTORY_ERP_PROCESS_REMAINS");
-        continue;
-      }
-      const trusted = allowedProcesses.find((i) => same(i, p));
-      const current = fingerprint(p);
-      if (!current) continue;
-      if (
-        !trusted ||
-        current.command !== trusted.command ||
-        current.cwd !== trusted.cwd ||
-        current.exe !== trusted.exe
-      )
-        throw new Error("INVENTORY_UNCLASSIFIED_PROCESS");
-    }
-    return inventory;
+    expandDescendants(oldIdentities, inventory, uid);
+    expandDescendants(candidateIdentities, inventory, uid);
+    return verifyUidProcessOwnership({
+      inventory,
+      uid,
+      erpIdentities: [...oldIdentities, ...candidateIdentities],
+      allowedProcesses,
+      allowErp,
+      procRoot,
+      currentIdentity,
+    });
   }
-  async function removeErp(identities) {
+  async function removeErp(identities, { preservePreActivation = false } = {}) {
     // Capture children immediately before each parent deletion. A child born
     // during delete/reparenting is caught by the full-UID census afterwards.
     const list = rows().filter((r) =>
@@ -371,7 +557,7 @@ export function createLinuxActivationOperations({
         throw new Error("INVENTORY_STOP_OWNERSHIP_CHANGED");
       execute("pm2", ["delete", String(r.pm_id)]);
     }
-    saveDump();
+    saveDump({ preservePreActivation });
     const deadline = Date.now() + drainTimeoutMs;
     while (
       [...oldIdentities, ...candidateIdentities].some((i) =>
@@ -393,27 +579,7 @@ export function createLinuxActivationOperations({
         !externalWritersExcluded
       )
         throw new Error("INVENTORY_EXTERNAL_WRITER_EXCLUSION_REQUIRED");
-      const installed = installedHelperPath;
-      const installedStat = fs.lstatSync(installed);
-      if (
-        !installedStat.isFile() ||
-        installedStat.isSymbolicLink() ||
-        installedStat.uid !== 0 ||
-        installedStat.mode & 0o022 ||
-        hashFile(installed) !==
-          hashFile(
-            path.join(projectRoot, "deploy/systemd/pm2-systemd-start.mjs"),
-          )
-      )
-        throw new Error("INVENTORY_INSTALLED_BOOT_INTERLOCK_REQUIRED");
-      const start = execute("systemctl", [
-        "show",
-        "pm2-deploy.service",
-        "--property=ExecStart",
-        "--value",
-      ]);
-      if (!start.includes(installed))
-        throw new Error("INVENTORY_SYSTEMD_BOOT_INTERLOCK_REQUIRED");
+      assertBootInterlock({ projectRoot, installedHelperPath, execute });
       const [grants] = await connectionA.query("SHOW GRANTS FOR CURRENT_USER");
       if (
         !grants.some((r) =>
@@ -433,6 +599,101 @@ export function createLinuxActivationOperations({
       );
       if (replicas.length)
         throw new Error("INVENTORY_REPLICATION_WRITER_UNSUPPORTED");
+
+      // PRE_STOP_DB_CHECK: verify no non-erp_app external/root/replication DB
+      // sessions remain BEFORE acquireGate() or stopOld() disrupt live workers.
+      const [[connARow]] = await connectionA.query("SELECT CONNECTION_ID() AS id");
+      const [[connBRow]] = connectionB
+        ? await connectionB.query("SELECT CONNECTION_ID() AS id")
+        : [[null]];
+      const controlIds = new Set(
+        [Number(connARow?.id), Number(connBRow?.id)].filter(Number.isFinite),
+      );
+      const retryDeadline = Date.now() + Math.max(0, Number(preflightDbRetryMs));
+      for (;;) {
+        const [threadRows] = await connectionA.query(
+          "SELECT PROCESSLIST_ID AS id, PROCESSLIST_USER AS user, PROCESSLIST_HOST AS host, PROCESSLIST_DB AS db, PROCESSLIST_COMMAND AS command, PROCESSLIST_TIME AS timeSec, PROCESSLIST_STATE AS state, LEFT(PROCESSLIST_INFO, 160) AS info, NAME AS name FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_ID IS NOT NULL AND NOT (NAME='thread/sql/compress_gtid_table' AND PROCESSLIST_USER IS NULL AND PROCESSLIST_COMMAND='Daemon')",
+        );
+        const hasSessionMetadata =
+          threadRows.length > 0 &&
+          threadRows.some(
+            (r) =>
+              "user" in r ||
+              "PROCESSLIST_USER" in r ||
+              "command" in r ||
+              "PROCESSLIST_COMMAND" in r,
+          );
+        if (threadRows.length > 0 && !hasSessionMetadata) {
+          break;
+        }
+        const normalizedThreads = threadRows.map((row) => ({
+          id: Number(row.id ?? row.PROCESSLIST_ID),
+          user:
+            row.user !== undefined ? row.user : (row.PROCESSLIST_USER ?? null),
+          host:
+            row.host !== undefined ? row.host : (row.PROCESSLIST_HOST ?? null),
+          db: row.db !== undefined ? row.db : (row.PROCESSLIST_DB ?? null),
+          command:
+            row.command !== undefined
+              ? row.command
+              : (row.PROCESSLIST_COMMAND ?? null),
+          timeSec:
+            (row.timeSec ?? row.PROCESSLIST_TIME) != null
+              ? Number(row.timeSec ?? row.PROCESSLIST_TIME)
+              : null,
+          state:
+            row.state !== undefined
+              ? row.state
+              : (row.PROCESSLIST_STATE ?? null),
+          info: redactDiagnosticText(
+            row.info !== undefined ? row.info : (row.PROCESSLIST_INFO ?? null),
+          ),
+          name: row.name !== undefined ? row.name : (row.NAME ?? null),
+        }));
+        const externalSessions = normalizedThreads.filter((session) => {
+          if (controlIds.has(session.id)) return false;
+          if (
+            session.user === "erp_app" &&
+            !["Binlog Dump", "Binlog Dump GTID"].includes(session.command)
+          ) {
+            return false;
+          }
+          return true;
+        });
+        if (threadRows.length > 0 && externalSessions.length === 0) {
+          break;
+        }
+        if (Date.now() >= retryDeadline) {
+          const payload = {
+            journalId: journal.id,
+            emptyThreadCensus: !threadRows.length,
+            allowedSessionIds: [...controlIds],
+            unownedSessionIds: externalSessions.map((s) => s.id),
+            externalSessions,
+            unownedSessionDetails: externalSessions,
+          };
+          console.error(
+            `[INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION] ${JSON.stringify(payload)}`,
+          );
+          throw Object.assign(
+            new Error("INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION"),
+            {
+              code: "INVENTORY_PREFLIGHT_EXTERNAL_DB_SESSION",
+              ...payload,
+            },
+          );
+        }
+        await wait(
+          Math.max(
+            1,
+            Math.min(
+              Number(preflightDbRetryIntervalMs) || 500,
+              retryDeadline - Date.now(),
+            ),
+          ),
+        );
+      }
+
       const inventory = census();
       const initialRows = rows();
       old = classifyErpProcesses(initialRows, projectRoot, inventory, uid);
@@ -471,48 +732,17 @@ export function createLinuxActivationOperations({
           throw new Error("INVENTORY_PRIOR_WORKER_SET_CHANGED");
       }
       oldIdentities = old.map((r) => r.identity).filter(Boolean);
-      descendants(oldIdentities, inventory);
-      const ancestors = new Set([process.pid]);
-      for (
-        let p = currentIdentity(process.pid);
-        p && p.parent > 1;
-        p = currentIdentity(p.parent)
-      )
-        ancestors.add(p.parent);
-      const daemonPid = Number(
-        fs.readFileSync(path.join(pm2Home, "pm2.pid"), "utf8").trim(),
-      );
-      const daemon = inventory.find((p) => p.pid === daemonPid);
-      const daemonTitle = fs.readFileSync(
-        path.join(procRoot, String(daemonPid), "cmdline"),
-        "utf8",
-      );
-      if (
-        !daemon ||
-        daemon.uid !== uid ||
-        !daemonTitle.includes(`God Daemon (${pm2Home})`)
-      )
-        throw new Error("INVENTORY_PM2_DAEMON_OWNERSHIP_UNPROVEN");
-      ancestors.add(daemonPid);
-      const permitted = [];
-      for (const row of initialRows.filter(
-        (r) => !old.some((o) => o.row === r),
-      )) {
-        const identity = inventory.find((p) => p.pid === Number(row.pid));
-        if (identity?.uid === uid) permitted.push(identity);
-      }
-      descendants(permitted, inventory);
-      // The ownership census covers this service UID; sudo/SSH ancestors of
-      // another UID are not exemptions and may deny access to cwd/exe.
-      permitted.push(
-        ...inventory.filter((p) => p.uid === uid && ancestors.has(p.pid)),
-      );
-      // Descendant expansion above must never make ERP children exempt via the
-      // PM2 daemon/control ancestry: remove every already-owned ERP identity.
-      allowedProcesses = permitted
-        .filter((p) => !oldIdentities.some((i) => same(i, p)))
-        .map(fingerprint)
-        .filter(Boolean);
+      expandDescendants(oldIdentities, inventory, uid);
+      allowedProcesses = buildAllowedUidProcesses({
+        pm2Home,
+        procRoot,
+        uid,
+        inventory,
+        initialRows,
+        excludedRows: old.map((o) => o.row),
+        excludedIdentities: oldIdentities,
+        currentIdentity,
+      });
       refreshOwnership({ allowErp: true });
       oldApps = old.map(({ row, name }) => ({
         name,
@@ -547,7 +777,37 @@ export function createLinuxActivationOperations({
       return gate;
     },
     async stopOld() {
-      await removeErp(oldIdentities);
+      let replicationConnections = [];
+      try {
+        const [replicaRows] = await connectionA.query(
+          "SELECT CHANNEL_NAME AS channelName, SERVICE_STATE AS serviceState FROM performance_schema.replication_connection_status",
+        );
+        replicationConnections = replicaRows;
+      } catch (error) {
+        replicationConnections = [
+          { error: redactDiagnosticText(error?.message ?? String(error)) },
+        ];
+      }
+      console.error(
+        `[INVENTORY_PRE_STOP_SNAPSHOT] ${JSON.stringify({
+          journalId: journal.id,
+          commit: journal.commit,
+          initialReadyVersion:
+            initialReadyVersion ??
+            journal.initialReadyVersion ??
+            (journal.priorActive ? 1 : 0),
+          hasSchemaTransition: Boolean(journal.schemaTransition),
+          oldIdentities: oldIdentities.map((p) => ({
+            pid: p.pid,
+            uid: p.uid,
+            parent: p.parent,
+            startTime: p.startTime,
+            state: p.state,
+          })),
+          replicationConnections,
+        })}`,
+      );
+      await removeErp(oldIdentities, { preservePreActivation: true });
     },
     async assertQuiescent() {
       refreshOwnership();
@@ -816,6 +1076,7 @@ export async function executeInventoryDeployment(options) {
       journal,
       connectionA: a,
       connectionB: b,
+      initialReadyVersion: Number(state.readyVersion),
       externalWritersExcluded: resolveExternalWritersExcluded(environment, {
         priorActive,
         schemaTransition: options.schemaTransition,
