@@ -72,6 +72,12 @@ vi.mock("@/lib/trpc", () => ({
           refetch: vi.fn(),
         }),
       },
+      productImages: {
+        useQuery: () => ({
+          data: undefined,
+          isLoading: false,
+        }),
+      },
       approve: {
         useMutation: () => ({
           mutateAsync: vi.fn().mockResolvedValue({ success: true }),
@@ -224,6 +230,40 @@ describe("StudioAdminReviewPanel & Studio Integration (Milestone 4)", () => {
     // التحقق من شارة وضع المعالجة
     const badge1 = container?.querySelector('[data-testid="review-card-mode-badge-101"]');
     expect(badge1?.textContent).toContain("ذكاء اصطناعي");
+  });
+
+  it("renders barcode, primary/alternative badge, variant label, and existing image thumbnails cleanly", async () => {
+    const richTasks: StudioAdminReviewTask[] = [
+      {
+        id: 501,
+        productId: 90,
+        productName: "حقيبة مدرسية",
+        barcode: "2005247125736",
+        variantId: 12,
+        variantName: "أزرق ملكي",
+        variantKind: "ALTERNATIVE",
+        variantLabel: "أزرق ملكي",
+        existingImageCount: 4,
+        existingImageThumbs: [
+          { id: 1, src: "data:image/png;base64,AA", isPrimary: true },
+          { id: 2, src: "data:image/png;base64,BB", isPrimary: false },
+          { id: 3, src: "data:image/png;base64,CC", isPrimary: false },
+        ],
+        status: "PENDING_REVIEW",
+        mode: "AI",
+        assigneeName: "أحمد المصور",
+      },
+    ];
+    await act(async () => {
+      root?.render(<StudioAdminReviewPanel mockTasks={richTasks} />);
+    });
+    expect(container?.querySelector('[data-testid="review-card-kind-501"]')?.textContent).toBe("بديل");
+    expect(container?.querySelector('[data-testid="review-card-variant-501"]')?.textContent).toContain("أزرق ملكي");
+    expect(container?.querySelector('[data-testid="review-card-barcode-501"]')?.textContent).toContain("2005247125736");
+    const imgsRow = container?.querySelector('[data-testid="review-card-existing-images-501"]');
+    expect(imgsRow?.textContent).toContain("4 صور حالية");
+    expect(imgsRow?.textContent).toContain("+1");
+    expect(imgsRow?.querySelectorAll("img").length).toBe(3);
   });
 
   // Test 2: Bulk selection (individual checkboxes and "select all") toggles selection count
