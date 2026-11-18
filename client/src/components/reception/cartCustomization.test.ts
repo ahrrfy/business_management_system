@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emptyCustomization } from "@/components/CustomizationDialog";
 import { prepareReceptionDraftCart, updateRestoredReceptionCustomization } from "@/lib/receptionWorkspaceState";
 import { addPlainCustomizationPiece, canAddPlainCustomizationPiece } from "./cartCustomization";
-import { effectivePrice, lineTotal, withReceptionLineDiscount, withReceptionLineQty, type CartLine, type PosRow } from "./cartMath";
+import { discountAmountToPct, discountPctToAmount, effectivePrice, formatDiscountPct, lineTotal, withReceptionLineDiscount, withReceptionLineQty, type CartLine, type PosRow } from "./cartMath";
 import { buildDraftPayload } from "./draftPayloadBuilder";
 import { freezeReceptionDraftCart } from "./useReceptionCartPromotions";
 
@@ -311,5 +311,14 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
       expect(halved.draftLineDiscount).toBe("500.00");
       expect(lineTotal(halved)).toBe(1_499_500);
     }
+  });
+
+  it("converts between discount amount and percentage cleanly and clamps to maxPct", () => {
+    expect(discountAmountToPct(2000, 20000)).toEqual({ pct: 10, clampedAmount: 2000 });
+    expect(discountAmountToPct(5000, 20000, 15)).toEqual({ pct: 15, clampedAmount: 3000 });
+    expect(discountAmountToPct(5000, 35000, 15)).toEqual({ pct: 14.285714, clampedAmount: 5000 });
+    expect(discountPctToAmount(14.285714, 35000)).toBe(5000);
+    expect(formatDiscountPct(14.285714)).toBe("14.29");
+    expect(formatDiscountPct(10)).toBe("10");
   });
 });

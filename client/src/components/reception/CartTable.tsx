@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fmt, formatQuantity } from "@/lib/money";
+import { D, fmt, formatQuantity, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { variantDisplayName } from "@shared/variantDisplay";
@@ -23,6 +23,9 @@ import { canAddPlainCustomizationPiece } from "./cartCustomization";
 import {
   buildStockState,
   customLineGrand,
+  discountAmountToPct,
+  discountPctToAmount,
+  formatDiscountPct,
   effectivePrice,
   isCustomKind,
   lineTotal,
@@ -372,7 +375,7 @@ export function CartTable({
                           >
                             <span>{fmt(effectivePrice(l))}</span>
                             {l.disc ? (
-                              <span className="text-[10px] font-bold text-[var(--sem-warn)]">−{l.disc}%</span>
+                              <span className="text-[10px] font-bold text-[var(--sem-warn)]">−{formatDiscountPct(l.disc)}%</span>
                             ) : (
                               <Percent aria-hidden className="size-2.5 text-primary/70" strokeWidth={2.5} />
                             )}
@@ -493,19 +496,63 @@ function LineDiscountPopover({ line, isElevated, onApply, onClose }: {
   onApply: (pct: number | null) => void;
   onClose: () => void;
 }) {
-  const [freePct, setFreePct] = useState(line.disc != null ? String(line.disc) : "");
-  const base = line.origPrice ?? Number(line.row.price ?? 0);
-  const pctNum = Math.min(100, Math.max(0, parseFloat(freePct) || 0));
+  const preDiscountTotal = lineTotal({ ...line, disc: undefined });
+  const base = line.qty > 0 ? round2(D(preDiscountTotal).div(line.qty)).toNumber() : 0;
+  const [mode, setMode] = useState<"pct" | "amount">("pct");
+  const [freePct, setFreePct] = useState(line.disc != null ? formatDiscountPct(line.disc) : "");
+  const [freeAmt, setFreeAmt] = useState(line.disc != null && base > 0 ? String(discountPctToAmount(line.disc, base)) : "");
+  const pctNum = mode === "pct"
+    ? Math.min(100, Math.max(0, parseFloat(freePct) || 0))
+    : (base > 0 ? discountAmountToPct(freeAmt || 0, base).pct : 0);
   const preview = base * (1 - pctNum / 100);
   return (
     <div
-      className="absolute start-1/2 top-[calc(100%+4px)] z-40 w-60 -translate-x-1/2 rounded-xl border bg-card p-2.5 text-start shadow-2xl"
+      className="absolute start-1/2 top-[calc(100%+4px)] z-40 w-64 -translate-x-1/2 rounded-xl border bg-card p-2.5 text-start shadow-2xl"
       dir="rtl"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="mb-1.5 flex items-center justify-between gap-1.5">
         <span className="inline-flex items-center gap-1 text-[11px] font-extrabold"><Percent aria-hidden className="size-3" /> خصم الصفّ</span>
-        <button type="button" onClick={onClose} aria-label="إغلاق" className="text-muted-foreground hover:text-foreground"><X aria-hidden className="size-3.5" /></button>
+        <div className="flex items-center gap-1.5">
+          <div
+            role="group"
+            aria-label="نوع خصم الصفّ"
+            className="inline-flex items-center rounded border bg-muted/40 p-0.5 text-[10px] font-bold"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (mode === "pct") return;
+                setFreePct(pctNum > 0 ? formatDiscountPct(pctNum) : "");
+                setMode("pct");
+              }}
+              aria-pressed={mode === "pct"}
+              className={cn(
+                "rounded px-1.5 py-0.5 leading-none transition-colors",
+                mode === "pct" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              %
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (mode === "amount") return;
+                setFreeAmt(pctNum > 0 && base > 0 ? String(discountPctToAmount(pctNum, base)) : "");
+                setMode("amount");
+              }}
+              aria-pressed={mode === "amount"}
+              disabled={base <= 0}
+              className={cn(
+                "rounded px-1.5 py-0.5 leading-none transition-colors disabled:opacity-40",
+                mode === "amount" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              د.ع
+            </button>
+          </div>
+          <button type="button" onClick={onClose} aria-label="إغلاق" className="text-muted-foreground hover:text-foreground"><X aria-hidden className="size-3.5" /></button>
+        </div>
       </div>
       <div className="mb-1.5 flex gap-1.5">
         {[5, 10].map((p) => (
@@ -528,21 +575,45 @@ function LineDiscountPopover({ line, isElevated, onApply, onClose }: {
         </button>
       </div>
       <div className="flex items-center gap-1.5">
-        <input
-          value={freePct}
-          onChange={(e) => setFreePct(e.target.value.replace(/[^\d.]/g, ""))}
-          inputMode="decimal"
-          dir="ltr"
-          placeholder="نسبة حرّة"
-          aria-label="نسبة خصم حرّة"
-          className="h-9 w-full rounded-md border bg-card px-2 text-center text-sm font-bold tabular-nums outline-none focus:border-primary"
-        />
+        {mode === "pct" ? (
+          <input
+            value={freePct}
+            onChange={(e) => setFreePct(e.target.value.replace(/[،,]/g, ".").replace(/[^\d.]/g, ""))}
+            inputMode="decimal"
+            dir="ltr"
+            placeholder="نسبة حرّة %"
+            aria-label="نسبة خصم حرّة"
+            className="h-9 w-full rounded-md border bg-card px-2 text-center text-sm font-bold tabular-nums outline-none focus:border-primary"
+          />
+        ) : (
+          <input
+            value={freeAmt}
+            onChange={(e) => {
+              const cleaned = e.target.value.replace(/[،,]/g, ".").replace(/[^\d.]/g, "");
+              if (cleaned === "") {
+                setFreeAmt("");
+                return;
+              }
+              const n = Number(cleaned);
+              if (Number.isFinite(n) && base > 0 && n > base) {
+                setFreeAmt(String(base));
+                return;
+              }
+              setFreeAmt(cleaned);
+            }}
+            inputMode="decimal"
+            dir="ltr"
+            placeholder="مبلغ الخصم (د.ع)"
+            aria-label="مبلغ خصم حر"
+            className="h-9 w-full rounded-md border bg-card px-2 text-center text-sm font-bold tabular-nums outline-none focus:border-primary"
+          />
+        )}
         <Button size="sm" className="h-9" disabled={pctNum <= 0} onClick={() => onApply(pctNum)}>تطبيق</Button>
       </div>
       {pctNum > 0 && (
         <div className="mt-1.5 rounded-md bg-muted/50 px-2 py-1 text-[11px] tabular-nums" dir="ltr">
           {fmt(base)} ← <span className="font-extrabold">{fmt(preview)}</span>
-          <span className="ms-1 text-money-positive">وفّر {fmt(base - preview)}</span>
+          <span className="ms-1 text-money-positive">وفّر {fmt(base - preview)} ({formatDiscountPct(pctNum)}%)</span>
         </div>
       )}
       {pctNum > 10 && !isElevated && (

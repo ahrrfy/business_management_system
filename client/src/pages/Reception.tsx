@@ -51,7 +51,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
-import { effectivePrice, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount, withReceptionLineQty } from "@/components/reception/cartMath";
+import { effectivePrice, formatDiscountPct, isCustomKind, lineTotal, officialReceptionPromoInfo, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount, withReceptionLineQty } from "@/components/reception/cartMath";
 import { applyFreeShippingToOrderDelivery, freezeReceptionDraftCart, useReceptionCartPromotions } from "@/components/reception/useReceptionCartPromotions";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
@@ -366,7 +366,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const { connectPrinter, testServerPrint } = useReceptionPrinter({ setPrinterReady, setBridge });
   const splitTender = useSplitTender({ branchId, ownerId: me.data?.id, sessionKey: reqIdRef.current, channel: "RECEPTION", additionalFirstPaymentAmount:cart.length?extraChargeAmount.toFixed(2):"0", canConfirm: canAction("reception.initiateExternalPayment") && canAction("reception.confirmExternalPayment"), disabled: offline || submitting || cart.some(line => line.digital) });
   const splitPayInput = splitTender.active ? splitTender.tendered : payInput;
-  const { expectedNow, sumDirectNetD, sumCustomD, hasCustom, heldD, hasDigitalCards, rawInvoiceDiscountPctD, paidD, expectedNowD, mixedRoundEligible, effectiveGrandD, mixedDeltaD, cashRoundActive, regularSumRawD, invoiceDiscountAmountD, mixedCarrier, orderFeeHeldD, grandTotalD, heldDelivery, sumDirectD, cartCount, grandTotal, deferredAvailable, deferredDisabledReason, needPaymentRef, cashRoundingDelta, sumDirect, sumCustom, cashDueNow, deliveryDisclosure, paid, invoiceDiscountAmount, invoiceDiscountAllowed, CASHIER_INVOICE_DISCOUNT_MAX_PCT, change, remaining, isChange, isOwing } = useReceptionAmounts({ cart, orderDelivery, activeDraft, offline, invoiceDiscountPct, draftHeld, method, payInput: splitPayInput, splitPayment: splitTender.active ? { hasCash: splitTender.hasCash, hasNonCash: splitTender.hasNonCash } : undefined, customer, phoneResolution, deferred, setDeferred });
+  const { expectedNow, sumDirectNetD, sumCustomD, hasCustom, heldD, hasDigitalCards, rawInvoiceDiscountPctD, paidD, expectedNowD, mixedRoundEligible, effectiveGrandD, mixedDeltaD, cashRoundActive, regularSumRawD, invoiceDiscountAmountD, mixedCarrier, orderFeeHeldD, grandTotalD, heldDelivery, sumDirectD, cartCount, grandTotal, deferredAvailable, deferredDisabledReason, needPaymentRef, cashRoundingDelta, sumDirect, sumCustom, cashDueNow, deliveryDisclosure, paid, invoiceDiscountAmount, invoiceDiscountAllowed, CASHIER_INVOICE_DISCOUNT_MAX_PCT, effectiveHeaderCapPct, regularSumRaw, change, remaining, isChange, isOwing } = useReceptionAmounts({ cart, orderDelivery, activeDraft, offline, invoiceDiscountPct, draftHeld, method, payInput: splitPayInput, splitPayment: splitTender.active ? { hasCash: splitTender.hasCash, hasNonCash: splitTender.hasNonCash } : undefined, customer, phoneResolution, deferred, setDeferred });
   useEffect(() => { setDigitalCaptureConfirmed(false); }, [cart, method, paymentReference, payInput, branchId, customer.customerId, shift?.id]);
   const paymentPreview = receptionPaymentAmounts({ paid: paidD.toFixed(2), expectedNow: expectedNowD.toFixed(2), hasExplicitAmount: Boolean(splitPayInput), directNet: sumDirectNetD.toFixed(2), deferred, quickFullPay: false, isReservation: false, method: splitTender.active ? "CASH" : method });
   const feePayment = useDeliveryFeeTender({ branchId,ownerId:me.data?.id, method, goodsAmount: splitTender.active ? "0.00" : paymentPreview.appliedPaidD.toFixed(2), feeHeld: D(heldDelivery).plus(!splitTender.active?extraChargeAmount:0).toFixed(2), reference: paymentReference, clientRequestId: reqIdRef.current });
@@ -1172,6 +1172,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         invoiceDiscountAmount={invoiceDiscountAmount}
         invoiceDiscountAllowed={invoiceDiscountAllowed}
         invoiceDiscountMaxPct={CASHIER_INVOICE_DISCOUNT_MAX_PCT}
+        invoiceDiscountBaseAmount={regularSumRaw}
+        invoiceDiscountEffectiveMaxPct={effectiveHeaderCapPct}
         change={change}
         remaining={remaining}
         isChange={isChange}
@@ -1221,7 +1223,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => { if (!lastSale.workOrders.length) { const reprintWin = preopenShippingLabelWindow(); const render = async () => { const result = await triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone, { into: reprintWin, isReprint: true }); return result.ok ? { ok: true as const, via: "browser" as const } : { ok: false as const, via: "browser" as const, reason: "popup-blocked" as const }; }; void printAuthorizedDocument(lastSale.receipts[0]?.invoiceId ?? 0, "SHIPPING_LABEL", true, render).catch((error) => { try { reprintWin?.close(); } catch { /* noop */ } notify.err(error); }); } else { void triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone, { isReprint: true }); } }} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
-      {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(appr) => { mgrCredsRef.current = appr; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
+      {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(appr) => { mgrCredsRef.current = appr; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${formatDiscountPct(approvalAsk.pct)}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
 
       <DigitalCardsPickerDialog
         open={cardsOpen}
