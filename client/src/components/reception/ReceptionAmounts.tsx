@@ -322,6 +322,8 @@ export function useReceptionAmounts({
     invoiceDiscountAmount,
     invoiceDiscountAllowed,
     CASHIER_INVOICE_DISCOUNT_MAX_PCT,
+    effectiveHeaderCapPct,
+    regularSumRaw: round2(regularSumRawD).toNumber(),
     change,
     remaining,
     isChange,

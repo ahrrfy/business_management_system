@@ -167,5 +167,37 @@ describe("reception payment controls", () => {
     expect(host.textContent).not.toContain("بلا قبض الآن");
     const pay=[...host.querySelectorAll("button")].find(b=>b.textContent==="قبض الأجور وطباعة");expect(pay?.disabled).toBe(true);expect(submit).not.toHaveBeenCalled();
   });
+  it("supports toggling invoice discount between percentage (%) and amount (د.ع) while respecting the cap", () => {
+    const setInvoiceDiscountPct = vi.fn();
+    render({
+      invoiceDiscountAllowed: true,
+      invoiceDiscountBaseAmount: 20000,
+      invoiceDiscountMaxPct: 15,
+      invoiceDiscountEffectiveMaxPct: 15,
+      setInvoiceDiscountPct,
+    });
+    const modeGroup = host.querySelector('[aria-label="نوع خصم الفاتورة"]');
+    expect(modeGroup).not.toBeNull();
+    const amountBtn = Array.from(modeGroup!.querySelectorAll("button")).find((b) => b.textContent === "د.ع");
+    expect(amountBtn).toBeDefined();
+    act(() => amountBtn!.click());
+    const amtInput = host.querySelector<HTMLInputElement>('input[aria-label="مبلغ خصم الفاتورة"]');
+    expect(amtInput).not.toBeNull();
+    if (!amtInput) throw new Error("missing amtInput");
+    // 2000 out of 20000 = 10%
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(amtInput, "2000");
+      amtInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(setInvoiceDiscountPct).toHaveBeenCalledWith("10");
+    // 5000 exceeds 15% cap (3000) -> clamps to 3000 (15%)
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(amtInput, "5000");
+      amtInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(setInvoiceDiscountPct).toHaveBeenCalledWith("15");
+  });
 
 });

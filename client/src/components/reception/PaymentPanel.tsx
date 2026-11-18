@@ -82,6 +82,10 @@ export interface PaymentPanelProps {
   /** false = لا سلطة على الرأس (سلّةٌ بلا بيعٍ مباشرٍ، مثلاً طباعة/تخصيص فقط). يُعطَّل الحقلُ بصرياً. */
   invoiceDiscountAllowed: boolean;
   invoiceDiscountMaxPct: number;
+  /** وعاء البيع المباشر الخالص الذي يُحسب عليه خصم رأس الفاتورة (لتحويل المبلغ ⇄ النسبة). */
+  invoiceDiscountBaseAmount?: number;
+  /** السقف الفعّال المتبقي للنسبة بعد خصومات السطر/العروض. */
+  invoiceDiscountEffectiveMaxPct?: number;
   /** ٨/٨ — شفافية أجرة التوصيل: تُعرض دائماً مهما كان القابض (كانت تختفي لـCOURIER/SHOP).
    *  COURIER = المندوب يقبضها من الزبون (خارج فاتورة المكتبة، لكن الزبون يدفعها) ⇒ نُظهر
    *  «إجمالي ما يدفعه الزبون». SHOP = على المكتبة. COUNTER يُعرض عبر heldDelivery أعلاه. */

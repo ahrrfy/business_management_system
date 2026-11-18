@@ -1,9 +1,14 @@
+import { useEffect, useState } from "react";
 import { Banknote, Percent, Ticket, Truck, X } from "lucide-react";
 
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-import { PAY_METHOD_LABEL } from "./cartMath";
+import {
+  discountAmountToPct,
+  formatDiscountPct,
+  PAY_METHOD_LABEL,
+} from "./cartMath";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import type { PaymentPanelProps } from "./PaymentPanel";
 export function ReceptionPaymentSummary(
@@ -25,6 +30,8 @@ export function ReceptionPaymentSummary(
     invoiceDiscountAmount,
     invoiceDiscountAllowed,
     invoiceDiscountMaxPct,
+    invoiceDiscountBaseAmount = 0,
+    invoiceDiscountEffectiveMaxPct,
     orderDelivery,
     heldDeposit,
     paid,
@@ -42,6 +49,21 @@ export function ReceptionPaymentSummary(
     cartEmpty,
     noCollectionNow,
   } = props;
+  const [discountMode, setDiscountMode] = useState<"pct" | "amount">("pct");
+  const [amountDraft, setAmountDraft] = useState("");
+  const effectiveCapPct = invoiceDiscountEffectiveMaxPct ?? invoiceDiscountMaxPct;
+  const canUseAmountMode = invoiceDiscountBaseAmount > 0;
+  useEffect(() => {
+    if (discountMode === "amount" && !canUseAmountMode) {
+      setDiscountMode("pct");
+      setAmountDraft("");
+    }
+  }, [discountMode, canUseAmountMode]);
+  useEffect(() => {
+    if (!invoiceDiscountPct && amountDraft !== "") {
+      setAmountDraft("");
+    }
+  }, [invoiceDiscountPct, amountDraft]);
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
       {cashRoundingDelta !== 0 && (
@@ -144,57 +166,160 @@ export function ReceptionPaymentSummary(
         >
           <Percent aria-hidden className="size-3" strokeWidth={2.5} />
           <span className="text-[10px] font-bold">خصم فاتورة</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={invoiceDiscountPct}
-            onChange={(e) => {
-              // ٢٣/٨ — Codex P1: `.` منفرداً (بلا أرقام) كان يُخزَّن ثم يمرَّر لـD("") فيرمي.
-              // الحلّ: نطلب رقماً على الأقلّ في السلسلة قبل التخزين (فحصٌ إضافيّ فوق regex الصيغة).
-              const src = e.target.value;
-              if (src === "") {
-                setInvoiceDiscountPct("");
-                return;
-              }
-              const norm = src.replace(/[،,]/g, ".");
-              if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(norm)) return;
-              const n = Number(norm);
-              if (!Number.isFinite(n) || n < 0) return;
-              if (n > invoiceDiscountMaxPct) {
-                const capStr = Number.isInteger(invoiceDiscountMaxPct)
-                  ? String(invoiceDiscountMaxPct)
-                  : invoiceDiscountMaxPct.toFixed(2).replace(/\.?0+$/, "");
-                setInvoiceDiscountPct(capStr);
-                return;
-              }
-              setInvoiceDiscountPct(norm);
-            }}
-            onBlur={(e) => {
-              const raw = e.target.value.trim();
-              if (raw === "" || raw === "0" || raw === "0.") {
-                setInvoiceDiscountPct("");
-                return;
-              }
-              const n = Number(raw);
-              if (!Number.isFinite(n) || n <= 0) {
-                setInvoiceDiscountPct("");
-                return;
-              }
-            }}
-            placeholder="0"
-            aria-label="نسبة خصم الفاتورة"
-            dir="ltr"
-            className="w-10 min-w-0 bg-transparent text-center text-sm font-black tabular-nums outline-none"
-          />
-          <span className="text-xs font-bold">%</span>
+          {discountMode === "pct" ? (
+            <input
+              type="text"
+              inputMode="decimal"
+              value={invoiceDiscountPct}
+              onChange={(e) => {
+                // ٢٣/٨ — Codex P1: `.` منفرداً (بلا أرقام) كان يُخزَّن ثم يمرَّر لـD("") فيرمي.
+                // الحلّ: نطلب رقماً على الأقلّ في السلسلة قبل التخزين (فحصٌ إضافيّ فوق regex الصيغة).
+                const src = e.target.value;
+                if (src === "") {
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+                const norm = src.replace(/[،,]/g, ".");
+                if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(norm)) return;
+                const n = Number(norm);
+                if (!Number.isFinite(n) || n < 0) return;
+                if (n > invoiceDiscountMaxPct) {
+                  const capStr = Number.isInteger(invoiceDiscountMaxPct)
+                    ? String(invoiceDiscountMaxPct)
+                    : invoiceDiscountMaxPct.toFixed(2).replace(/\.?0+$/, "");
+                  setInvoiceDiscountPct(capStr);
+                  return;
+                }
+                setInvoiceDiscountPct(norm);
+              }}
+              onBlur={(e) => {
+                const raw = e.target.value.trim();
+                if (raw === "" || raw === "0" || raw === "0.") {
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+                const n = Number(raw);
+                if (!Number.isFinite(n) || n <= 0) {
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+              }}
+              placeholder="0"
+              aria-label="نسبة خصم الفاتورة"
+              dir="ltr"
+              className="w-10 min-w-0 bg-transparent text-center text-sm font-black tabular-nums outline-none"
+            />
+          ) : (
+            <input
+              type="text"
+              inputMode="decimal"
+              value={amountDraft}
+              onChange={(e) => {
+                const src = e.target.value;
+                if (src === "") {
+                  setAmountDraft("");
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+                const norm = src.replace(/[،,]/g, ".");
+                if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(norm)) return;
+                const n = Number(norm);
+                if (!Number.isFinite(n) || n < 0) return;
+                const { pct, clampedAmount } = discountAmountToPct(
+                  norm,
+                  invoiceDiscountBaseAmount,
+                  effectiveCapPct,
+                );
+                if (n > clampedAmount && clampedAmount > 0) {
+                  setAmountDraft(String(clampedAmount));
+                  setInvoiceDiscountPct(pct > 0 ? String(pct) : "");
+                  return;
+                }
+                setAmountDraft(norm);
+                setInvoiceDiscountPct(pct > 0 ? String(pct) : "");
+              }}
+              onBlur={(e) => {
+                const raw = e.target.value.trim();
+                if (raw === "" || raw === "0" || raw === "0.") {
+                  setAmountDraft("");
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+                const n = Number(raw);
+                if (!Number.isFinite(n) || n <= 0) {
+                  setAmountDraft("");
+                  setInvoiceDiscountPct("");
+                  return;
+                }
+                if (invoiceDiscountAmount > 0) {
+                  setAmountDraft(String(invoiceDiscountAmount));
+                }
+              }}
+              placeholder="0"
+              aria-label="مبلغ خصم الفاتورة"
+              dir="ltr"
+              className="w-16 min-w-0 bg-transparent text-center text-sm font-black tabular-nums outline-none"
+            />
+          )}
+          <div
+            role="group"
+            aria-label="نوع خصم الفاتورة"
+            className="inline-flex items-center rounded border bg-muted/40 p-0.5 text-[10px] font-bold"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (discountMode === "pct") return;
+                if (invoiceDiscountPct) {
+                  const formatted = formatDiscountPct(Number(invoiceDiscountPct));
+                  setInvoiceDiscountPct(formatted === "0" ? "" : formatted);
+                }
+                setDiscountMode("pct");
+              }}
+              aria-pressed={discountMode === "pct"}
+              className={cn(
+                "rounded px-1.5 py-0.5 leading-none transition-colors",
+                discountMode === "pct"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              %
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (discountMode === "amount") return;
+                setAmountDraft(
+                  invoiceDiscountAmount > 0 ? String(invoiceDiscountAmount) : "",
+                );
+                setDiscountMode("amount");
+              }}
+              aria-pressed={discountMode === "amount"}
+              disabled={!canUseAmountMode}
+              className={cn(
+                "rounded px-1.5 py-0.5 leading-none transition-colors disabled:opacity-40",
+                discountMode === "amount"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              د.ع
+            </button>
+          </div>
           {invoiceDiscountAmount > 0 && (
             <>
               <span className="text-xs font-black tabular-nums" dir="ltr">
-                −{fmt(invoiceDiscountAmount)}
+                {discountMode === "pct"
+                  ? `−${fmt(invoiceDiscountAmount)}`
+                  : `−${formatDiscountPct(Number(invoiceDiscountPct || 0))}%`}
               </span>
               <button
                 type="button"
-                onClick={() => setInvoiceDiscountPct("")}
+                onClick={() => {
+                  setAmountDraft("");
+                  setInvoiceDiscountPct("");
+                }}
                 aria-label="إزالة خصم الفاتورة"
                 className="inline-flex size-4 items-center justify-center rounded hover:bg-[var(--sem-warn)]/20"
               >

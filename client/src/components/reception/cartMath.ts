@@ -266,6 +266,47 @@ export function customizationBasePrice(line: CartLine): number | null {
   } catch { return null; }
 }
 
+export function formatDiscountPct(pct: number): string {
+  if (!Number.isFinite(pct) || pct <= 0) return "0";
+  return pct.toFixed(2).replace(/\.?0+$/, "");
+}
+
+export function discountPctToAmount(pct: number | string, base: number): number {
+  if (!Number.isFinite(base) || base <= 0) return 0;
+  try {
+    const p = D(pct || 0);
+    if (!p.isFinite() || p.lte(0)) return 0;
+    return round2(D(base).times(p).div(100)).toNumber();
+  } catch {
+    return 0;
+  }
+}
+
+export function discountAmountToPct(
+  amount: number | string,
+  base: number,
+  maxPct?: number,
+): { pct: number; clampedAmount: number } {
+  if (!Number.isFinite(base) || base <= 0) return { pct: 0, clampedAmount: 0 };
+  try {
+    const raw = D(amount || 0);
+    if (!raw.isFinite() || raw.lte(0)) return { pct: 0, clampedAmount: 0 };
+    const baseD = D(base);
+    const maxAmountD =
+      maxPct != null
+        ? baseD.times(maxPct).div(100).toDecimalPlaces(2, Decimal.ROUND_DOWN)
+        : baseD;
+    const clampedD = Decimal.min(maxAmountD, Decimal.max(0, raw));
+    const pct = clampedD.div(baseD).times(100).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toNumber();
+    return {
+      pct: Math.min(maxPct ?? 100, Math.max(0, pct)),
+      clampedAmount: round2(clampedD).toNumber(),
+    };
+  } catch {
+    return { pct: 0, clampedAmount: 0 };
+  }
+}
+
 export function withReceptionLineDiscount(line: CartLine, pct: number | null): CartLine {
   if (line.digital) return line;
   const customBasePrice = line.custom ? customizationBasePrice(line) : null;
