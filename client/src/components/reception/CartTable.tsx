@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fmt, formatQuantity } from "@/lib/money";
+import { D, fmt, formatQuantity, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { variantDisplayName } from "@shared/variantDisplay";
@@ -496,8 +496,8 @@ function LineDiscountPopover({ line, isElevated, onApply, onClose }: {
   onApply: (pct: number | null) => void;
   onClose: () => void;
 }) {
-  const promoPrice = line.row.promotionEffectivePrice;
-  const base = line.couponPriceSnapshot ?? line.origPrice ?? (promoPrice != null ? Number(promoPrice) : Number(line.row.price ?? 0));
+  const preDiscountTotal = lineTotal({ ...line, disc: undefined });
+  const base = line.qty > 0 ? round2(D(preDiscountTotal).div(line.qty)).toNumber() : 0;
   const [mode, setMode] = useState<"pct" | "amount">("pct");
   const [freePct, setFreePct] = useState(line.disc != null ? formatDiscountPct(line.disc) : "");
   const [freeAmt, setFreeAmt] = useState(line.disc != null && base > 0 ? String(discountPctToAmount(line.disc, base)) : "");

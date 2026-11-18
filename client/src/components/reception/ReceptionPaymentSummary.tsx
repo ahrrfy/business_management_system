@@ -51,6 +51,9 @@ export function ReceptionPaymentSummary(
   } = props;
   const [discountMode, setDiscountMode] = useState<"pct" | "amount">("pct");
   const [amountDraft, setAmountDraft] = useState("");
+  const [amountFocused, setAmountFocused] = useState(false);
+  const [pctDraft, setPctDraft] = useState("");
+  const [pctFocused, setPctFocused] = useState(false);
   const effectiveCapPct = invoiceDiscountEffectiveMaxPct ?? invoiceDiscountMaxPct;
   const canUseAmountMode = invoiceDiscountBaseAmount > 0;
   useEffect(() => {
@@ -60,10 +63,13 @@ export function ReceptionPaymentSummary(
     }
   }, [discountMode, canUseAmountMode]);
   useEffect(() => {
-    if (!invoiceDiscountPct && amountDraft !== "") {
+    if (discountMode === "amount" && !amountFocused) {
+      const next = invoiceDiscountAmount > 0 ? String(invoiceDiscountAmount) : "";
+      if (next !== amountDraft) setAmountDraft(next);
+    } else if (!invoiceDiscountPct && amountDraft !== "" && !amountFocused) {
       setAmountDraft("");
     }
-  }, [invoiceDiscountPct, amountDraft]);
+  }, [discountMode, amountFocused, invoiceDiscountAmount, invoiceDiscountPct, amountDraft]);
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
       {cashRoundingDelta !== 0 && (
@@ -170,12 +176,27 @@ export function ReceptionPaymentSummary(
             <input
               type="text"
               inputMode="decimal"
-              value={invoiceDiscountPct}
+              value={
+                pctFocused
+                  ? pctDraft
+                  : invoiceDiscountPct
+                    ? formatDiscountPct(Number(invoiceDiscountPct))
+                    : ""
+              }
+              onFocus={() => {
+                setPctDraft(
+                  invoiceDiscountPct
+                    ? formatDiscountPct(Number(invoiceDiscountPct))
+                    : "",
+                );
+                setPctFocused(true);
+              }}
               onChange={(e) => {
                 // ٢٣/٨ — Codex P1: `.` منفرداً (بلا أرقام) كان يُخزَّن ثم يمرَّر لـD("") فيرمي.
                 // الحلّ: نطلب رقماً على الأقلّ في السلسلة قبل التخزين (فحصٌ إضافيّ فوق regex الصيغة).
                 const src = e.target.value;
                 if (src === "") {
+                  setPctDraft("");
                   setInvoiceDiscountPct("");
                   return;
                 }
@@ -187,19 +208,24 @@ export function ReceptionPaymentSummary(
                   const capStr = Number.isInteger(invoiceDiscountMaxPct)
                     ? String(invoiceDiscountMaxPct)
                     : invoiceDiscountMaxPct.toFixed(2).replace(/\.?0+$/, "");
+                  setPctDraft(capStr);
                   setInvoiceDiscountPct(capStr);
                   return;
                 }
+                setPctDraft(norm);
                 setInvoiceDiscountPct(norm);
               }}
               onBlur={(e) => {
+                setPctFocused(false);
                 const raw = e.target.value.trim();
                 if (raw === "" || raw === "0" || raw === "0.") {
+                  setPctDraft("");
                   setInvoiceDiscountPct("");
                   return;
                 }
                 const n = Number(raw);
                 if (!Number.isFinite(n) || n <= 0) {
+                  setPctDraft("");
                   setInvoiceDiscountPct("");
                   return;
                 }
@@ -214,6 +240,7 @@ export function ReceptionPaymentSummary(
               type="text"
               inputMode="decimal"
               value={amountDraft}
+              onFocus={() => setAmountFocused(true)}
               onChange={(e) => {
                 const src = e.target.value;
                 if (src === "") {
@@ -239,6 +266,7 @@ export function ReceptionPaymentSummary(
                 setInvoiceDiscountPct(pct > 0 ? String(pct) : "");
               }}
               onBlur={(e) => {
+                setAmountFocused(false);
                 const raw = e.target.value.trim();
                 if (raw === "" || raw === "0" || raw === "0.") {
                   setAmountDraft("");
@@ -270,10 +298,6 @@ export function ReceptionPaymentSummary(
               type="button"
               onClick={() => {
                 if (discountMode === "pct") return;
-                if (invoiceDiscountPct) {
-                  const formatted = formatDiscountPct(Number(invoiceDiscountPct));
-                  setInvoiceDiscountPct(formatted === "0" ? "" : formatted);
-                }
                 setDiscountMode("pct");
               }}
               aria-pressed={discountMode === "pct"}
