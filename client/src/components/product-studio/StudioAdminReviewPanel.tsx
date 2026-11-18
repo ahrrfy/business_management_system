@@ -9,6 +9,7 @@ import {
   Clock,
   User,
   Barcode,
+  Copy,
   Image as ImageIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,10 @@ export interface StudioAdminReviewTask {
   barcode?: string | null;
   variantId?: number | null;
   variantName?: string | null;
+  variantKind?: "VARIANT" | "ALTERNATIVE" | string | null;
+  variantLabel?: string | null;
+  existingImageCount?: number;
+  existingImageThumbs?: Array<{ id: number; src: string; isPrimary?: boolean }>;
   status: string;
   mode?: "FLATTEN" | "CUT" | "PRO" | "AI" | "ORIGINAL" | string | null;
   assignedTo?: number | null;
@@ -151,6 +156,7 @@ export function StudioAdminReviewPanel({
   const [rejectReason, setRejectReason] = useState("");
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
+  const [galleryTask, setGalleryTask] = useState<StudioAdminReviewTask | null>(null);
 
   // دمج المهام المحاكاة أو المسترجعة من الخادم
   const tasks: StudioAdminReviewTask[] = useMemo(() => {
@@ -160,9 +166,14 @@ export function StudioAdminReviewPanel({
       id: item.id,
       productId: item.productId,
       productName: item.productName,
-      barcode: undefined,
+      sku: item.sku ?? null,
+      barcode: item.barcode ?? null,
       variantId: item.variantId,
       variantName: item.variantName,
+      variantKind: item.variantKind ?? null,
+      variantLabel: item.variantLabel ?? null,
+      existingImageCount: item.existingImageCount ?? 0,
+      existingImageThumbs: item.existingImageThumbs ?? [],
       status: item.status,
       mode: item.mode,
       assignedTo: item.assignedTo,
@@ -475,7 +486,7 @@ export function StudioAdminReviewPanel({
 
                 {/* تفاصيل المنتج والمصور والتوقيت */}
                 <CardContent className="flex-1 p-3 flex flex-col justify-between space-y-2">
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <h4
                       className="font-bold text-sm line-clamp-1 leading-snug"
                       title={task.productName}
@@ -484,18 +495,96 @@ export function StudioAdminReviewPanel({
                       {task.productName}
                     </h4>
 
-                    {task.variantName && (
-                      <p className="text-xs text-muted-foreground line-clamp-1">
-                        النوع: {task.variantName}
-                      </p>
-                    )}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        data-testid={`review-card-kind-${task.id}`}
+                        className={
+                          task.variantKind === "ALTERNATIVE"
+                            ? "h-5 px-1.5 text-[10px] font-bold border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                            : "h-5 px-1.5 text-[10px] font-semibold border-border bg-muted/50 text-muted-foreground"
+                        }
+                      >
+                        {task.variantKind === "ALTERNATIVE" ? "بديل" : "أساسي"}
+                      </Badge>
+                      {(task.variantLabel || task.variantName) && (
+                        <span
+                          className="text-[11px] text-muted-foreground line-clamp-1"
+                          title={task.variantLabel || task.variantName || undefined}
+                          data-testid={`review-card-variant-${task.id}`}
+                        >
+                          المتغيّر: {task.variantLabel || task.variantName}
+                        </span>
+                      )}
+                    </div>
 
                     {(task.barcode || task.sku) && (
-                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono">
-                        <Barcode className="size-3 shrink-0" />
-                        <span>{task.barcode || task.sku}</span>
+                      <div
+                        className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground font-mono"
+                        data-testid={`review-card-barcode-${task.id}`}
+                      >
+                        <div className="flex items-center gap-1 min-w-0">
+                          <Barcode className="size-3 shrink-0" />
+                          <span className="truncate">{task.barcode || task.sku}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const code = task.barcode || task.sku;
+                            if (!code) return;
+                            void navigator.clipboard?.writeText(code);
+                            toast.success("تم نسخ الباركود");
+                          }}
+                          className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground shrink-0"
+                          title="نسخ الباركود"
+                          aria-label="نسخ الباركود"
+                        >
+                          <Copy className="size-3" />
+                        </button>
                       </div>
                     )}
+
+                    <div
+                      className="flex items-center justify-between gap-2 pt-0.5"
+                      data-testid={`review-card-existing-images-${task.id}`}
+                    >
+                      <button
+                        type="button"
+                        disabled={!task.existingImageThumbs?.length}
+                        onClick={() => setGalleryTask(task)}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:pointer-events-none"
+                      >
+                        <ImageIcon className="size-3 shrink-0" />
+                        <span>
+                          {task.existingImageCount && task.existingImageCount > 0
+                            ? `${task.existingImageCount} صور حالية`
+                            : "لا توجد صور سابقة"}
+                        </span>
+                      </button>
+                      {task.existingImageThumbs && task.existingImageThumbs.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setGalleryTask(task)}
+                          className="flex items-center -space-x-1 rtl:space-x-reverse"
+                          title="معاينة صور المنتج الحالية"
+                        >
+                          {task.existingImageThumbs.slice(0, 3).map((thumb) => (
+                            <img
+                              key={thumb.id}
+                              src={thumb.src}
+                              alt=""
+                              loading="lazy"
+                              className="size-6 rounded border bg-background object-cover ring-1 ring-border"
+                            />
+                          ))}
+                          {(task.existingImageCount ?? 0) > 3 && (
+                            <span className="inline-flex size-6 items-center justify-center rounded border bg-muted text-[9px] font-bold text-muted-foreground">
+                              +{(task.existingImageCount ?? 0) - 3}
+                            </span>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="pt-2 border-t space-y-1 text-xs text-muted-foreground">
@@ -638,6 +727,29 @@ export function StudioAdminReviewPanel({
               تأكيد الرفض
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={galleryTask != null} onOpenChange={(open) => { if (!open) setGalleryTask(null); }}>
+        <DialogContent dir="rtl" className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{galleryTask?.productName}</DialogTitle>
+            <DialogDescription>
+              الصور المعتمدة حالياً للمنتج ({galleryTask?.existingImageCount ?? 0})
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-3 gap-2 py-2">
+            {(galleryTask?.existingImageThumbs ?? []).map((thumb) => (
+              <div key={thumb.id} className="relative aspect-square rounded-lg border bg-muted/30 overflow-hidden">
+                <img src={thumb.src} alt="" className="w-full h-full object-contain p-1" />
+                {thumb.isPrimary && (
+                  <span className="absolute top-1 end-1 rounded bg-amber-500/90 px-1 py-0.5 text-[9px] font-bold text-white">
+                    رئيسية
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

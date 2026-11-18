@@ -3621,6 +3621,10 @@ export async function listStudioTasks(
       // الخطأ (الجذر: مراجعة Codex P1 على PR #807).
       variantId: productImageJobs.variantId,
       variantName: productVariants.variantName,
+      variantKind: productVariants.variantKind,
+      variantSku: productVariants.sku,
+      variantColor: productVariants.color,
+      variantSize: productVariants.size,
       currentDescription: products.description,
       status: productImageJobs.status,
       mode: productImageJobs.mode,
@@ -3662,16 +3666,115 @@ export async function listStudioTasks(
     .limit(limit + 1);
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
-  const items = pageRows.map((row) => ({
-    ...row,
-    previewThumbUrl:
-      input.scope === "REVIEW" && (isManager(actor) || Number(row.assignedTo) === actor.userId)
-        ? row.previewThumbUrl
-        : null,
-    hasOriginal: Boolean(row.hasOriginal),
-    hasCandidate: Boolean(row.hasCandidate),
-    overdue: Boolean(row.overdue),
-  }));
+  const pageProductIds = Array.from(
+    new Set(
+      pageRows
+        .map((r) => r.productId)
+        .filter((id): id is number => id != null && Number(id) > 0),
+    ),
+  );
+  const unitByVariant = new Map<number, { barcode: string | null; sku: string | null }>();
+  const unitByProduct = new Map<number, { barcode: string | null; sku: string | null }>();
+  const imagesByProduct = new Map<
+    number,
+    { count: number; thumbs: Array<{ id: number; src: string; isPrimary: boolean }> }
+  >();
+  if (pageProductIds.length > 0) {
+    const db = requireDb();
+    const [unitRows, imageRows] = await Promise.all([
+      db
+        .select({
+          productId: productVariants.productId,
+          variantId: productUnits.variantId,
+          barcode: productUnits.barcode,
+          sku: productVariants.sku,
+        })
+        .from(productUnits)
+        .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+        .where(
+          and(
+            inArray(productVariants.productId, pageProductIds),
+            eq(productUnits.isActive, true),
+            eq(productVariants.isActive, true),
+          ),
+        )
+        .orderBy(asc(productUnits.conversionFactor), asc(productUnits.id)),
+      db
+        .select({
+          id: productImages.id,
+          productId: productImages.productId,
+          url: productImages.url,
+          thumbDataUrl: productImages.thumbDataUrl,
+          isPrimary: productImages.isPrimary,
+        })
+        .from(productImages)
+        .where(
+          and(
+            inArray(productImages.productId, pageProductIds),
+            eq(productImages.reviewStatus, "APPROVED"),
+          ),
+        )
+        .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id)),
+    ]);
+    for (const u of unitRows) {
+      const vid = Number(u.variantId);
+      const pid = Number(u.productId);
+      const bc = u.barcode?.trim() || null;
+      const existingV = unitByVariant.get(vid);
+      if (!existingV || (!existingV.barcode && bc)) {
+        unitByVariant.set(vid, { barcode: bc, sku: u.sku ?? null });
+      }
+      const existingP = unitByProduct.get(pid);
+      if (!existingP || (!existingP.barcode && bc)) {
+        unitByProduct.set(pid, { barcode: bc, sku: u.sku ?? null });
+      }
+    }
+    for (const img of imageRows) {
+      const pid = Number(img.productId);
+      let entry = imagesByProduct.get(pid);
+      if (!entry) {
+        entry = { count: 0, thumbs: [] };
+        imagesByProduct.set(pid, entry);
+      }
+      entry.count += 1;
+      if (entry.thumbs.length < 3) {
+        const src = img.thumbDataUrl || img.url;
+        if (src) {
+          entry.thumbs.push({
+            id: Number(img.id),
+            src,
+            isPrimary: Boolean(img.isPrimary),
+          });
+        }
+      }
+    }
+  }
+  const items = pageRows.map((row) => {
+    const unitMeta =
+      (row.variantId != null ? unitByVariant.get(Number(row.variantId)) : undefined) ??
+      (row.productId != null ? unitByProduct.get(Number(row.productId)) : undefined);
+    const imgMeta = row.productId != null ? imagesByProduct.get(Number(row.productId)) : undefined;
+    const variantDetails = [row.variantName, row.variantColor, row.variantSize]
+      .map((v) => (typeof v === "string" ? v.trim() : ""))
+      .filter(Boolean);
+    const dedupedVariantLabel = Array.from(new Set(variantDetails)).join(" · ") || null;
+    return {
+      ...row,
+      barcode: unitMeta?.barcode ?? null,
+      sku: row.variantSku ?? unitMeta?.sku ?? null,
+      variantKind: row.variantKind ?? null,
+      variantLabel: dedupedVariantLabel,
+      existingImageCount: imgMeta?.count ?? 0,
+      existingImageThumbs: imgMeta?.thumbs ?? [],
+      previewThumbUrl:
+        input.scope === "REVIEW" && (isManager(actor) || Number(row.assignedTo) === actor.userId)
+          ? row.previewThumbUrl
+          : null,
+      hasOriginal: Boolean(row.hasOriginal),
+      hasCandidate: Boolean(row.hasCandidate),
+      overdue: Boolean(row.overdue),
+    };
+  });
   const last = items[items.length - 1];
   return {
     items,
