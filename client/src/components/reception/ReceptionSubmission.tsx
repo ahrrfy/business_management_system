@@ -4,6 +4,7 @@ import type { OrderDeliveryValue } from "@/components/reception/ReceptionTypes";
 import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
 import { type CustomizationData } from "@/components/CustomizationDialog";
 
+import Decimal from "decimal.js";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -13,6 +14,7 @@ import {
   isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 import {
+  allocateProportionalDiscount,
   customLineGrand,
   effectivePrice,
   isCustomKind,
@@ -37,6 +39,7 @@ export interface ReceptionSubmissionInput {
   orderDelivery: OrderDeliveryValue | null;
   deferred: boolean;
   rawInvoiceDiscountPctD: import("decimal.js").Decimal;
+  woInvoiceDiscountD?: import("decimal.js").Decimal;
   opts: {
     quickFullPay: boolean;
     openingConfirmed?: boolean | undefined;
@@ -73,6 +76,7 @@ export async function prepareReceptionSubmission({
   orderDelivery,
   deferred,
   rawInvoiceDiscountPctD,
+  woInvoiceDiscountD,
   opts,
   paidD,
   payInput,
@@ -186,10 +190,15 @@ export async function prepareReceptionSubmission({
           partyName: null as string | null,
         };
 
-  // سعر كل أمر فقط؛ العربون لم يعد حقلاً على السطر، بل يوزّعه الخادم من دفعة الطلب الكلية.
-  const customWithDeposits = customItems.map((c) => {
+  // سعر كل أمر فقط (بعد خصم السطر + حصة خصم الفاتورة إن وُجدت)؛ العربون يوزّعه الخادم من دفعة الطلب الكلية.
+  const woShares = allocateProportionalDiscount(
+    woInvoiceDiscountD ?? D(0),
+    customItems.map((c) => D(customLineGrand(c))),
+  );
+  const customWithDeposits = customItems.map((c, idx) => {
     const full = D(customLineGrand(c));
-    return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
+    const net = Decimal.max(D(0), round2(full.minus(woShares[idx] ?? D(0))));
+    return { c, depositStr: "0.00", salePriceStr: net.toFixed(2) };
   });
 
   const isReserve = !!opts.isReservation;

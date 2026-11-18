@@ -88,7 +88,11 @@ export interface ReceptionCheckoutInput extends CheckoutChargesInput {
     amount: string;
     invoiceDiscount?: string | null;
   } | null;
-  printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
+  printSale?: {
+    lines: PrintSaleLineInput[];
+    amount: string;
+    invoiceDiscount?: string | null;
+  } | null;
   workOrders?: Array<
     Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">
   >;
@@ -842,6 +846,7 @@ async function checkoutReceptionCoreInTx(
           contactPhone: input.contactPhone ?? null,
           priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
+          invoiceDiscount: input.printSale.invoiceDiscount ?? undefined,
           cashRoundingBasketOthers:
             overrideTarget === "PRINT" ? basketOthers : null,
           preCollected: money(preSplit.print).gt(0)

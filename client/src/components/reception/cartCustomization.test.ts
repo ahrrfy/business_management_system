@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { D } from "@/lib/money";
 import { emptyCustomization } from "@/components/CustomizationDialog";
 import { prepareReceptionDraftCart, updateRestoredReceptionCustomization } from "@/lib/receptionWorkspaceState";
 import { addPlainCustomizationPiece, canAddPlainCustomizationPiece } from "./cartCustomization";
-import { discountAmountToPct, discountPctToAmount, effectivePrice, formatDiscountPct, lineTotal, withReceptionLineDiscount, withReceptionLineQty, type CartLine, type PosRow } from "./cartMath";
+import { allocateProportionalDiscount, discountAmountToPct, discountPctToAmount, effectivePrice, formatDiscountPct, lineTotal, withReceptionLineDiscount, withReceptionLineQty, type CartLine, type PosRow } from "./cartMath";
 import { buildDraftPayload } from "./draftPayloadBuilder";
 import { freezeReceptionDraftCart } from "./useReceptionCartPromotions";
 
@@ -320,5 +321,10 @@ describe("فصل القطعة الجاهزة عن تخصيص الاستقبال"
     expect(discountPctToAmount(14.285714, 35000)).toBe(5000);
     expect(formatDiscountPct(14.285714)).toBe("14.29");
     expect(formatDiscountPct(10)).toBe("10");
+
+    // Proportional discount allocation across regular, print, and custom work orders
+    const shares = allocateProportionalDiscount(D(100), [D(300), D(300), D(300)]);
+    expect(shares.map((s) => s.toNumber())).toEqual([33.34, 33.33, 33.33]);
+    expect(shares.reduce((sum, s) => sum.plus(s), D(0)).toNumber()).toBe(100);
   });
 });

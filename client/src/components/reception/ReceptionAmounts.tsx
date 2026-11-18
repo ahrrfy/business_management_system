@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import Decimal from "decimal.js";
 import { D, round2, roundCashIQD } from "@/lib/money";
 import {
+  allocateProportionalDiscount,
   customLineGrand,
   isCustomKind,
   lineCounterHeldFee,
@@ -54,22 +55,28 @@ export function useReceptionAmounts({
   const regularSumRawD = cart
     .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
     .reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const printSumRawD = cart
+    .filter((c) => !isCustomKind(c) && c.row.isPrintService && !c.digital)
+    .reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const sumCustomD = cart
     .filter((c) => isCustomKind(c))
     .reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
-  // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
-  // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
-  // أيّ حاسوبٍ خلفيّ. `regularSale.invoiceDiscount` يُبعث للخادم مبلغاً مطلقاً لينفّذ الحماية نفسها
-  // على invoice.discountAmount (invoiceDiscountExceedsThreshold على الإجماليّ).
-  //
-  // **السقف الفعّال المتبقّي** (مرآة POS.tsx حرفياً): بوّابة الخادم تقيس (refGross − invoiceNet)/refGross
-  // مقابل ١٥٪، وترى انحراف السطر (عرض/كوبون/خصم يدويّ) والرأس معاً. لولا هذا: سلّةٌ عليها عرضٌ ١٠٪
-  // + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير (بلاغ Codex P1).
-  // الكروت الرقمية ثابتة السعر ولا تدخل وعاء خصم رأس الفاتورة.
+  const customDiscountableRawD = cart
+    .filter((c) => isCustomKind(c) && !c.digital)
+    .reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
+  // خصمُ رأس الفاتورة يشمل كل البنود غير الرقمية (البيع المباشر + الطباعة + التخصيص/أوامر الشغل).
+  // الكروت الرقمية تبقى مستثناة من الخصم تماماً.
+  const discountableSumRawD = regularSumRawD
+    .plus(printSumRawD)
+    .plus(customDiscountableRawD);
   const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
-  const regularReferenceGrossD = cart
-    .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
+  const discountableReferenceGrossD = cart
+    .filter((c) => !c.digital)
     .reduce((s, c) => {
+      if (isCustomKind(c)) {
+        const refUnit = D(c.origPrice ?? (D(c.customBasePrice ?? c.row.price).plus(D(c.custom!.unitPrice)).toNumber()));
+        return s.plus(refUnit.times(c.qty));
+      }
       // بلا خصمٍ يدويّ = سعرُ القائمة بعد العرض الرسمي الموثّق (مطابق لمرجع H6 في sale/create.ts).
       const hasHistoricalOverride =
         c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
@@ -81,17 +88,17 @@ export function useReceptionAmounts({
         : rawGross;
       return s.plus(afterPromo);
     }, D(0));
-  const priorLineDeviationRatioD = regularReferenceGrossD.gt(0)
-    ? regularReferenceGrossD.minus(regularSumRawD).div(regularReferenceGrossD)
+  const priorLineDeviationRatioD = discountableReferenceGrossD.gt(0)
+    ? discountableReferenceGrossD.minus(discountableSumRawD).div(discountableReferenceGrossD)
     : D(0);
   const remainingHeaderAuthorityFractionD = D(0.15).minus(
     priorLineDeviationRatioD,
   );
   const remainingHeaderPctOnSubtotalD =
-    regularSumRawD.gt(0) && regularReferenceGrossD.gt(0)
+    discountableSumRawD.gt(0) && discountableReferenceGrossD.gt(0)
       ? remainingHeaderAuthorityFractionD
-          .times(regularReferenceGrossD)
-          .div(regularSumRawD)
+          .times(discountableReferenceGrossD)
+          .div(discountableSumRawD)
           .times(100)
       : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
   const effectiveHeaderCapPctD = (
@@ -124,14 +131,22 @@ export function useReceptionAmounts({
   // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
   // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
   const invoiceDiscountAllowed =
-    regularSumRawD.gt(0) && !activeDraft && !hasDigitalCards;
+    discountableSumRawD.gt(0) && !activeDraft && !hasDigitalCards;
   const invoiceDiscountAmountD = invoiceDiscountAllowed
-    ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
+    ? round2(discountableSumRawD.times(clampedInvoiceDiscountPctD).div(100))
     : D(0);
   const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
-  const regularSumNetD = regularSumRawD.minus(invoiceDiscountAmountD);
-  const sumDirectNetD = sumDirectD.minus(invoiceDiscountAmountD);
-  const grandTotalD = sumDirectNetD.plus(sumCustomD);
+  const [saleInvoiceDiscountD, printInvoiceDiscountD, woInvoiceDiscountD] =
+    allocateProportionalDiscount(invoiceDiscountAmountD, [
+      regularSumRawD,
+      printSumRawD,
+      customDiscountableRawD,
+    ]);
+  const regularSumNetD = regularSumRawD.minus(saleInvoiceDiscountD);
+  const printSumNetD = printSumRawD.minus(printInvoiceDiscountD);
+  const sumDirectNetD = sumDirectD.minus(saleInvoiceDiscountD).minus(printInvoiceDiscountD);
+  const sumCustomNetD = sumCustomD.minus(woInvoiceDiscountD);
+  const grandTotalD = sumDirectNetD.plus(sumCustomNetD);
   const grandTotal = round2(grandTotalD).toNumber();
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
@@ -230,7 +245,7 @@ export function useReceptionAmounts({
     (cart.some(isCustomKind) || hasPrintInCart) &&
     mixedCarrier != null &&
     !mixedDeltaD.isZero() &&
-    (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD)
+    (mixedCarrier === "SALE" ? regularSumNetD : printSumNetD)
       .plus(mixedDeltaD)
       .gt(0);
   const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
@@ -302,7 +317,11 @@ export function useReceptionAmounts({
     mixedDeltaD,
     cashRoundActive,
     regularSumRawD,
+    printSumRawD,
     invoiceDiscountAmountD,
+    saleInvoiceDiscountD,
+    printInvoiceDiscountD,
+    woInvoiceDiscountD,
     mixedCarrier,
     orderFeeHeldD,
     grandTotalD,
@@ -324,6 +343,7 @@ export function useReceptionAmounts({
     CASHIER_INVOICE_DISCOUNT_MAX_PCT,
     effectiveHeaderCapPct,
     regularSumRaw: round2(regularSumRawD).toNumber(),
+    discountableSumRaw: round2(discountableSumRawD).toNumber(),
     change,
     remaining,
     isChange,

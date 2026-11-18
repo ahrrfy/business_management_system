@@ -51,7 +51,7 @@ import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBa
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
 import {buildPrintPosReceipt,type PrintReceiptSnapshot} from "@/components/print-pos/printPosReceipt";
-import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { CheckoutColumn, computePrintPosTotals, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
 import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
 import {checkoutExtraTotal,checkoutExtraPayload,clearedChargeOnlyTender} from "@/components/pos/checkoutExtraAmounts";
 import type {CheckoutChargesInput,CheckoutChargesResult} from "@shared/checkoutCharges";
@@ -92,6 +92,8 @@ type Tab = {
   externalPayment: ExternalPaymentDraft | null;
   splitMode?: boolean;
   splitLegs?: PosPaymentLegDraft[];
+  invoiceDiscountType?: "percent" | "amount";
+  invoiceDiscountValue?: string;
 };
 
 // ─── Dark mode (يتبع الوضع العام للنظام عبر صنف <html>) ──────────────────────
@@ -224,7 +226,7 @@ export default function PrintPOS() {
   const [addTick, setAddTick] = useState(0);
   const tab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart = tab.cart;
-  const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
+  const { rawTotal, invoiceDiscountAmountD, invoiceDiscountAmount, total } = computePrintPosTotals(cart, tab.editingInvoice, tab.invoiceDiscountType, tab.invoiceDiscountValue);
   const {
     splitLegs,
     isSplitPayment,
@@ -920,6 +922,7 @@ export default function PrintPOS() {
         customerId: tab.customerId ?? undefined, contactName: tab.contactName.trim() || undefined, contactPhone: tab.contactPhone.trim() || undefined,
         channel: tab.channel, isReservation: isReservation ? true : undefined, priceTier: "RETAIL",
         lines: cart.map((c) => ({ variantId: c.svc.variantId, productUnitId: c.svc.productUnitId, quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2) })),
+        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
         payments: splitSub.paymentsPayload,
         ...(splitSub.cashFull ? { cashRoundIQD: true } : {}),
         ...(approval ? { managerApproval: approval } : {}),
@@ -974,6 +977,7 @@ export default function PrintPOS() {
         variantId: c.svc.variantId, productUnitId: c.svc.productUnitId,
         quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
       })),
+      ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       payment: {
         amount:
           extraChargeD.gt(0) && method === "CASH" && !isReservation && !isCredit
@@ -1239,9 +1243,7 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder}
-          addTick={addTick}
-        />
+          editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder} addTick={addTick} subtotal={rawTotal} invoiceDiscountType={tab.invoiceDiscountType} invoiceDiscountValue={tab.invoiceDiscountValue} invoiceDiscountAmount={invoiceDiscountAmount} onInvoiceDiscountChange={(type, value) => patch({ invoiceDiscountType: type, invoiceDiscountValue: value })} />
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 

@@ -266,6 +266,39 @@ export function customizationBasePrice(line: CartLine): number | null {
   } catch { return null; }
 }
 
+export function allocateProportionalDiscount(
+  totalDiscountD: Decimal,
+  rawAmounts: Decimal[],
+): Decimal[] {
+  const zeroList = rawAmounts.map(() => D(0));
+  if (totalDiscountD.lte(0)) return zeroList;
+  const totalRawD = rawAmounts.reduce((s, r) => s.plus(r.gt(0) ? r : D(0)), D(0));
+  if (totalRawD.lte(0)) return zeroList;
+  const targetD = Decimal.min(totalRawD, round2(totalDiscountD));
+  const shares = rawAmounts.map((r) =>
+    r.gt(0) ? round2(targetD.times(r).div(totalRawD)) : D(0),
+  );
+  const sumSharesD = shares.reduce((s, x) => s.plus(x), D(0));
+  const remainderD = round2(targetD.minus(sumSharesD));
+  if (!remainderD.eq(0)) {
+    let bestIdx = -1;
+    let bestRaw = D(-1);
+    rawAmounts.forEach((r, idx) => {
+      if (r.gt(bestRaw)) {
+        bestRaw = r;
+        bestIdx = idx;
+      }
+    });
+    if (bestIdx >= 0) {
+      shares[bestIdx] = Decimal.min(
+        rawAmounts[bestIdx]!,
+        Decimal.max(D(0), round2(shares[bestIdx]!.plus(remainderD))),
+      );
+    }
+  }
+  return shares;
+}
+
 export function formatDiscountPct(pct: number): string {
   if (!Number.isFinite(pct) || pct <= 0) return "0";
   return pct.toFixed(2).replace(/\.?0+$/, "");
