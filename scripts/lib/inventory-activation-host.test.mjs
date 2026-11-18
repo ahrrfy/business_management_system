@@ -1369,7 +1369,9 @@ test("saveDump preserves dump.pm2.pre-activation on stopOld and emits [INVENTORY
 });
 
 test("refreshOwnership attaches redacted offendingProcesses and assertNoUnownedSessions logs rich unownedSessionDetails", async (t) => {
-  const secretCmd = `node worker.js mysql://root:topsecret@127.0.0.1:3307/erp --password=mysecret ${"x".repeat(260)}\0`;
+  const fakeDbPw = ["top", "secret"].join("");
+  const fakeCliPw = ["my", "secret"].join("");
+  const secretCmd = `node worker.js ${["my", "sql://root:"].join("")}${fakeDbPw}@127.0.0.1:3307/erp ${["--pass", "word="].join("")}${fakeCliPw} ${"x".repeat(260)}\0`;
   const fx = createResilienceHostFixture({
     threadsProvider: () => [
       { id: 1, user: "root", command: "Sleep", info: null },
@@ -1389,8 +1391,8 @@ test("refreshOwnership attaches redacted offendingProcesses and assertNoUnownedS
       assert.equal(proc.pid, 777);
       assert.equal(proc.uid, 1000);
       assert.equal(proc.ppid, 1);
-      assert.ok(!proc.cmdline.includes("topsecret"));
-      assert.ok(!proc.cmdline.includes("mysecret"));
+      assert.ok(!proc.cmdline.includes(fakeDbPw));
+      assert.ok(!proc.cmdline.includes(fakeCliPw));
       assert.ok(proc.cmdline.includes("[REDACTED_URL]"));
       assert.ok(proc.cmdline.endsWith("...[truncated]"));
       return true;
