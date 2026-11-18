@@ -279,21 +279,27 @@ export function allocateProportionalDiscount(
     r.gt(0) ? round2(targetD.times(r).div(totalRawD)) : D(0),
   );
   const sumSharesD = shares.reduce((s, x) => s.plus(x), D(0));
-  const remainderD = round2(targetD.minus(sumSharesD));
+  let remainderD = round2(targetD.minus(sumSharesD));
   if (!remainderD.eq(0)) {
-    let bestIdx = -1;
-    let bestRaw = D(-1);
-    rawAmounts.forEach((r, idx) => {
-      if (r.gt(bestRaw)) {
-        bestRaw = r;
-        bestIdx = idx;
+    const order = rawAmounts
+      .map((r, idx) => ({ r, idx }))
+      .filter((x) => x.r.gt(0))
+      .sort((a, b) => b.r.cmp(a.r));
+    for (const { r, idx } of order) {
+      if (remainderD.eq(0)) break;
+      if (remainderD.gt(0)) {
+        const room = round2(r.minus(shares[idx]!));
+        if (room.lte(0)) continue;
+        const delta = Decimal.min(remainderD, room);
+        shares[idx] = round2(shares[idx]!.plus(delta));
+        remainderD = round2(remainderD.minus(delta));
+      } else {
+        const room = round2(shares[idx]!);
+        if (room.lte(0)) continue;
+        const delta = Decimal.min(remainderD.abs(), room);
+        shares[idx] = round2(shares[idx]!.minus(delta));
+        remainderD = round2(remainderD.plus(delta));
       }
-    });
-    if (bestIdx >= 0) {
-      shares[bestIdx] = Decimal.min(
-        rawAmounts[bestIdx]!,
-        Decimal.max(D(0), round2(shares[bestIdx]!.plus(remainderD))),
-      );
     }
   }
   return shares;

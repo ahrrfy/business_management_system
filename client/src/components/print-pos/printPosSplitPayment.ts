@@ -149,10 +149,12 @@ export function buildPrintSplitSubmitPayload(params: {
   cart: CartLine[];
   splitLegs: PosPaymentLegDraft[];
   total: number;
+  rawTotal?: number;
+  invoiceDiscount?: number;
   isReservation: boolean;
   customerName?: string;
 }) {
-  const { cart, splitLegs, total, isReservation, customerName } = params;
+  const { cart, splitLegs, total, rawTotal, invoiceDiscount, isReservation, customerName } = params;
   const splitTotalPaidD = splitLegs.reduce((sum, l) => sum.plus(parsePosLegAmountD(l.amount)), D(0));
   const splitNonCashPaidD = splitLegs.reduce(
     (sum, l) =>
@@ -204,7 +206,8 @@ export function buildPrintSplitSubmitPayload(params: {
     method: effectiveMethod,
     paymentLegs: receiptLegs,
     cashTotal: finalTotal,
-    rawTotal: total,
+    rawTotal: rawTotal ?? total,
+    ...(invoiceDiscount && invoiceDiscount > 0 ? { invoiceDiscount } : {}),
     cashRounding: cashFull ? cashTotal - total : 0,
     received: isReservation || isCredit ? paid : finalTotal,
     change: isReservation || isCredit ? 0 : Math.max(0, paid - finalTotal),

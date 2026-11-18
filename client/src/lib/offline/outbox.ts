@@ -1543,6 +1543,7 @@ export interface OfflinePrintSalePayload {
   contactPhone?: string;
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>;
+  invoiceDiscount?: string;
   payment: { amount: string; method: "CASH" };
   clientRequestId: string;
   cashRoundIQD?: boolean;
@@ -1561,7 +1562,7 @@ export interface OfflineReceptionPayload {
   paymentMethod: "CASH";
   paidAmount: string;
   regularSale?: { lines: OfflineSaleLine[]; amount: string; invoiceDiscount?: string } | null;
-  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>; amount: string } | null;
+  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>; amount: string; invoiceDiscount?: string } | null;
   clientRequestId: string;
 }
 

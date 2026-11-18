@@ -70,37 +70,42 @@ export function useReceptionAmounts({
     .plus(printSumRawD)
     .plus(customDiscountableRawD);
   const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
-  const discountableReferenceGrossD = cart
-    .filter((c) => !c.digital)
-    .reduce((s, c) => {
-      if (isCustomKind(c)) {
-        const refUnit = D(c.origPrice ?? (D(c.customBasePrice ?? c.row.price).plus(D(c.custom!.unitPrice)).toNumber()));
-        return s.plus(refUnit.times(c.qty));
-      }
-      // بلا خصمٍ يدويّ = سعرُ القائمة بعد العرض الرسمي الموثّق (مطابق لمرجع H6 في sale/create.ts).
-      const hasHistoricalOverride =
-        c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
-      const refUnit = D(hasHistoricalOverride ? c.origPrice! : (c.row.price ?? 0));
-      const rawGross = refUnit.times(c.qty);
-      const promoInfo = officialReceptionPromoInfo(c);
-      const afterPromo = promoInfo
-        ? Decimal.max(0, rawGross.minus(promoInfo.promoDiscountD))
-        : rawGross;
-      return s.plus(afterPromo);
-    }, D(0));
-  const priorLineDeviationRatioD = discountableReferenceGrossD.gt(0)
-    ? discountableReferenceGrossD.minus(discountableSumRawD).div(discountableReferenceGrossD)
-    : D(0);
-  const remainingHeaderAuthorityFractionD = D(0.15).minus(
-    priorLineDeviationRatioD,
-  );
-  const remainingHeaderPctOnSubtotalD =
-    discountableSumRawD.gt(0) && discountableReferenceGrossD.gt(0)
-      ? remainingHeaderAuthorityFractionD
-          .times(discountableReferenceGrossD)
-          .div(discountableSumRawD)
-          .times(100)
-      : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
+  // السقف الفعّال المتبقّي يُحسَب لكل فاتورة/أمرٍ مُولَّدٍ على حدة ونأخذ الأدنى منها،
+  // كي لا يتجاوز الخصمُ المشترك سقفَ ١٥٪ لأيّ فاتورةٍ منفردة في السلة المختلطة.
+  let regularRefGrossD = D(0);
+  let printRefGrossD = D(0);
+  let customRefGrossD = D(0);
+  for (const c of cart) {
+    if (c.digital) continue;
+    if (isCustomKind(c)) {
+      const refUnit = D(c.origPrice ?? (D(c.customBasePrice ?? c.row.price).plus(D(c.custom!.unitPrice)).toNumber()));
+      customRefGrossD = customRefGrossD.plus(refUnit.times(c.qty));
+      continue;
+    }
+    const hasHistoricalOverride =
+      c.origPrice != null && !((c.disc ?? 0) > 0 && D(c.origPrice).eq(D(c.row.price ?? 0)));
+    const refUnit = D(hasHistoricalOverride ? c.origPrice! : (c.row.price ?? 0));
+    const rawGross = refUnit.times(c.qty);
+    const promoInfo = officialReceptionPromoInfo(c);
+    const afterPromo = promoInfo
+      ? Decimal.max(0, rawGross.minus(promoInfo.promoDiscountD))
+      : rawGross;
+    if (c.row.isPrintService) printRefGrossD = printRefGrossD.plus(afterPromo);
+    else regularRefGrossD = regularRefGrossD.plus(afterPromo);
+  }
+  const bucketCapPct = (netSumD: Decimal, refGrossD: Decimal) => {
+    if (!netSumD.gt(0) || !refGrossD.gt(0)) return D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
+    const priorDev = refGrossD.minus(netSumD).div(refGrossD);
+    const remAuth = D(0.15).minus(priorDev);
+    return remAuth.times(refGrossD).div(netSumD).times(100);
+  };
+  const activeBucketCaps: Decimal[] = [];
+  if (regularSumRawD.gt(0)) activeBucketCaps.push(bucketCapPct(regularSumRawD, regularRefGrossD));
+  if (printSumRawD.gt(0)) activeBucketCaps.push(bucketCapPct(printSumRawD, printRefGrossD));
+  if (customDiscountableRawD.gt(0)) activeBucketCaps.push(bucketCapPct(customDiscountableRawD, customRefGrossD));
+  const remainingHeaderPctOnSubtotalD = activeBucketCaps.length > 0
+    ? Decimal.min(...activeBucketCaps)
+    : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
   const effectiveHeaderCapPctD = (
     remainingHeaderPctOnSubtotalD.lt(0)
       ? D(0)

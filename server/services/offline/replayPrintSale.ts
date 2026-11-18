@@ -19,6 +19,7 @@ export interface ReplayOfflinePrintSaleInput {
   customerId?: number | null;
   priceTier?: CreatePrintSaleInput["priceTier"];
   lines: PrintSaleLineInput[];
+  invoiceDiscount?: string | null;
   payment: { amount: string; method: "CASH" };
   clientRequestId: string;
   notes?: string | null;
@@ -50,6 +51,7 @@ export async function replayOfflinePrintSale(
       contactPhone: input.contactPhone ?? null,
       priceTier: input.priceTier ?? null,
       lines: input.lines,
+      invoiceDiscount: input.invoiceDiscount ?? null,
       payment: input.payment,
       clientRequestId: input.clientRequestId,
       notes: input.notes ?? null,

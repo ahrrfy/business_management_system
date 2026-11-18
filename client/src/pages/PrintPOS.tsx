@@ -51,7 +51,7 @@ import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBa
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
 import {buildPrintPosReceipt,type PrintReceiptSnapshot} from "@/components/print-pos/printPosReceipt";
-import { CheckoutColumn, computePrintPosTotals, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { CheckoutColumn, computePrintPosTotals, mapHeldOrderToPrintTabPatch, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
 import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
 import {checkoutExtraTotal,checkoutExtraPayload,clearedChargeOnlyTender} from "@/components/pos/checkoutExtraAmounts";
 import type {CheckoutChargesInput,CheckoutChargesResult} from "@shared/checkoutCharges";
@@ -476,7 +476,7 @@ export default function PrintPOS() {
   async function clearCart() {
     if (!cart.length) return;
     if (!(await confirm({ variant: "warning", title: "تفريغ الفاتورة", description: "ستُفقد كل الخدمات المُضافة. هل تتابع؟", confirmText: "تفريغ" }))) return;
-    setCart([]); setPayInput(""); patch({ selUid: null, splitMode: false, splitLegs: [] });
+    setCart([]); setPayInput(""); patch({ selUid: null, splitMode: false, splitLegs: [], invoiceDiscountType: "percent", invoiceDiscountValue: "" });
   }
 
   // ── الدفع ──
@@ -491,7 +491,7 @@ export default function PrintPOS() {
       const rec=buildPrintPosReceipt(r,p,me.data?.name??undefined,shift?.id??null);
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      patchTab(p?.tabId??tab.id,{cart:[],payInput:"",extraCharges:undefined,checkoutRequestId:undefined,selUid:null,paymentRef:"",externalPayment:null,splitMode:false,splitLegs:[]});
+      patchTab(p?.tabId??tab.id,{cart:[],payInput:"",extraCharges:undefined,checkoutRequestId:undefined,selUid:null,paymentRef:"",externalPayment:null,splitMode:false,splitLegs:[],invoiceDiscountType:"percent",invoiceDiscountValue:""});
       setClientRequestId(crypto.randomUUID());
       const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
       setMessage({
@@ -626,7 +626,8 @@ export default function PrintPOS() {
         customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
         shiftId: shift?.id ?? null,
         lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
-        subtotal: total,
+        subtotal: rawTotal,
+        ...(invoiceDiscountAmount > 0 ? { invoiceDiscount: invoiceDiscountAmount } : {}),
         cashRounding: 0,
         total: Number(r.total),
         received: Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0),
@@ -648,6 +649,8 @@ export default function PrintPOS() {
         selUid: null,
         paymentRef: "",
         externalPayment: null,
+        invoiceDiscountType: "percent",
+        invoiceDiscountValue: "",
       });
       setClientRequestId(crypto.randomUUID());
       const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
@@ -665,46 +668,7 @@ export default function PrintPOS() {
   });
 
   function handleEditHeldOrder(order: HeldSaleOrder) {
-    const lines: CartLine[] = order.lines.map((l) => {
-      const matchedSvc: Svc = services.find((s) => s.productUnitId === l.productUnitId) ?? {
-        productUnitId: l.productUnitId,
-        variantId: l.variantId,
-        productId: 0,
-        productName: l.itemNameSnapshot || "خدمة طباعة",
-        unitName: "خدمة",
-        sku: "",
-        price: String(l.unitPrice),
-        categoryId: null,
-        categoryName: null,
-      };
-      return {
-        uid: UID++,
-        svc: matchedSvc,
-        qty: Number(l.quantity),
-        price: Number(l.unitPrice),
-      };
-    });
-
-    let ch: OrderChannel = "WALK_IN";
-    if (order.notes?.includes("واتساب")) ch = "WHATSAPP";
-    else if (order.notes?.includes("تليغرام")) ch = "TELEGRAM";
-    else if (order.notes?.includes("هاتف")) ch = "PHONE";
-
-    patch({
-      cart: lines,
-      customerId: order.customerId,
-      contactName: order.contactName ?? "",
-      contactPhone: order.contactPhone ?? "",
-      channel: ch,
-      editingInvoice: {
-        id: order.id,
-        invoiceNumber: order.invoiceNumber,
-        preCollected: order.paidAmount,
-        originalTotal: order.total,
-      },
-      payInput: "",
-      selUid: lines[0]?.uid ?? null,
-    });
+    patch(mapHeldOrderToPrintTabPatch(order as any, services as any, () => UID++));
     setHeldDrawerOpen(false);
     notify.ok(`تم تحميل الفاتورة #${order.invoiceNumber} للتعديل`);
   }
@@ -803,6 +767,7 @@ export default function PrintPOS() {
         // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
         unitPriceOverride: c.price.toFixed(2),
       })),
+      ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       payment: { amount: total.toFixed(2), method: "CASH" },
       clientRequestId,
       cashRoundIQD: true,
@@ -830,7 +795,8 @@ export default function PrintPOS() {
       customerName: selectedCustomer?.name,
       shiftId: shift?.id ?? null,
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
-      subtotal: total,
+      subtotal: rawTotal,
+      ...(invoiceDiscountAmount > 0 ? { invoiceDiscount: invoiceDiscountAmount } : {}),
       cashRounding: cashTotal - total,
       total: cashTotal,
       received: paid,
@@ -842,7 +808,7 @@ export default function PrintPOS() {
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: cashTotal });
-    setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
+    setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null, invoiceDiscountType: "percent", invoiceDiscountValue: "" });
     setClientRequestId(crypto.randomUUID());
     setMessage({
       kind: "ok",
@@ -887,6 +853,7 @@ export default function PrintPOS() {
           quantity: String(c.qty),
           unitPriceOverride: c.price.toFixed(2),
         })),
+        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
         reason: "تعديل بنود الفاتورة المحجوزة من كاشير الطباعة",
         additionalPayment: additionalAmount ? {
           amount: additionalAmount,
@@ -911,7 +878,7 @@ export default function PrintPOS() {
 
     if (isSplitPayment) {
       if (!splitLegsValid) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: splitNonCashOverpay ? "مجموع الدفعات غير النقدية يتجاوز إجمالي الفاتورة." : "أكمل مبالغ الدفعات وثبّت مراجع الدفعات غير النقدية أولاً." }); return; }
-      const splitSub = buildPrintSplitSubmitPayload({ cart, splitLegs, total, isReservation: Boolean(isReservation), customerName: selectedCustomer?.name ?? (tab.contactName || undefined) });
+      const splitSub = buildPrintSplitSubmitPayload({ cart, splitLegs, total, rawTotal, invoiceDiscount: invoiceDiscountAmount, isReservation: Boolean(isReservation), customerName: selectedCustomer?.name ?? (tab.contactName || undefined) });
       if (isReservation && tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." }); return; }
       if (!isReservation && splitSub.isCredit && tab.customerId == null) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return; }
       pendingRef.current = {...splitSub.pendingSnapshot,tabId:tab.id};
@@ -956,7 +923,8 @@ export default function PrintPOS() {
       customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
       method,
       cashTotal: finalTotal,
-      rawTotal: total,
+      rawTotal,
+      ...(invoiceDiscountAmount > 0 ? { invoiceDiscount: invoiceDiscountAmount } : {}),
       cashRounding: cashFull ? cashTotal - total : 0,
       received: isReservation || isCredit ? paid : finalTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
       change: isReservation || isCredit ? 0 : Math.max(0, tendered - finalTotal),

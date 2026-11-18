@@ -4,6 +4,55 @@ import { D, round2 } from "@/lib/money";
 import { CASHIER_INVOICE_DISCOUNT_MAX_PCT, computeInvoiceDiscount } from "@/components/pos/posShared";
 import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 
+export function mapHeldOrderToPrintTabPatch(
+  order: {
+    id: number;
+    invoiceNumber: string;
+    total: string;
+    paidAmount: string;
+    discountAmount?: string | null;
+    notes?: string | null;
+    customerId: number | null;
+    contactName?: string | null;
+    contactPhone?: string | null;
+    lines: Array<{ productUnitId: number; variantId: number; itemNameSnapshot?: string | null; unitPrice: string | number; quantity: string | number }>;
+  },
+  services: Array<{ productUnitId: number; variantId: number; productId: number; productName: string; unitName: string; sku: string; price: string; categoryId: number | null; categoryName: string | null }>,
+  allocUid: () => number,
+) {
+  const lines: CartLine[] = order.lines.map((l) => {
+    const matchedSvc = services.find((s) => s.productUnitId === l.productUnitId) ?? {
+      productUnitId: l.productUnitId,
+      variantId: l.variantId,
+      productId: 0,
+      productName: l.itemNameSnapshot || "خدمة طباعة",
+      unitName: "خدمة",
+      sku: "",
+      price: String(l.unitPrice),
+      categoryId: null,
+      categoryName: null,
+    };
+    return { uid: allocUid(), svc: matchedSvc as any, qty: Number(l.quantity), price: Number(l.unitPrice) };
+  });
+  let channel: "WALK_IN" | "WHATSAPP" | "TELEGRAM" | "PHONE" = "WALK_IN";
+  if (order.notes?.includes("واتساب")) channel = "WHATSAPP";
+  else if (order.notes?.includes("تليغرام")) channel = "TELEGRAM";
+  else if (order.notes?.includes("هاتف")) channel = "PHONE";
+  const discNum = Number(order.discountAmount || 0);
+  return {
+    cart: lines,
+    customerId: order.customerId,
+    contactName: order.contactName ?? "",
+    contactPhone: order.contactPhone ?? "",
+    channel,
+    editingInvoice: { id: order.id, invoiceNumber: order.invoiceNumber, preCollected: order.paidAmount, originalTotal: order.total },
+    payInput: "",
+    selUid: lines[0]?.uid ?? null,
+    invoiceDiscountType: (discNum > 0 ? "amount" : "percent") as "percent" | "amount",
+    invoiceDiscountValue: discNum > 0 ? String(discNum) : "",
+  };
+}
+
 export function computePrintPosTotals(
   cart: CartLine[],
   editingInvoice: EditingInvoiceInfo | null,
@@ -14,7 +63,7 @@ export function computePrintPosTotals(
   const calc = computeInvoiceDiscount({
     subtotalD: D(rawTotal),
     effectiveHeaderCapPctD: D(CASHIER_INVOICE_DISCOUNT_MAX_PCT),
-    invoiceDiscountAllowed: rawTotal > 0 && !editingInvoice,
+    invoiceDiscountAllowed: rawTotal > 0,
     type: invoiceDiscountType ?? "percent",
     value: invoiceDiscountValue ?? "",
   });
@@ -131,7 +180,7 @@ export function CheckoutColumn(props: CheckoutProps) {
         setCustomerId={props.setCustomerId}
         addTick={props.addTick}
       />
-      {props.onInvoiceDiscountChange && !props.editingInvoice && (props.subtotal ?? 0) > 0 && (() => {
+      {props.onInvoiceDiscountChange && (props.subtotal ?? 0) > 0 && (() => {
         const mode = props.invoiceDiscountType ?? "percent";
         const val = props.invoiceDiscountValue ?? "";
         const discAmt = props.invoiceDiscountAmount ?? 0;

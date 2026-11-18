@@ -908,6 +908,7 @@ export const offlineRouter = router({
             }),
           )
           .min(1),
+        invoiceDiscount: nonNegMoneyString.optional(),
         payment: z.object({ amount: positiveMoneyString, method: z.literal("CASH") }),
         clientRequestId: z.string().min(8).max(50),
         notes: z.string().max(1000).optional(),
