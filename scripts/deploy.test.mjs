@@ -2207,10 +2207,12 @@ assert.doesNotThrow(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "split" 
           const cfg = JSON.parse(fs.readFileSync(args[1], "utf8"));
           for (const app of cfg.apps) {
             for (let i = 0; i < app.instances; i++) {
+              const spawnedPid = 400 + live.length;
+              addPid(spawnedPid, String(spawnedPid + 100), 2, 1000);
               live.push({
                 name: app.name,
                 pm_id: live.length + 10,
-                pid: 400 + live.length,
+                pid: spawnedPid,
                 pm2_env: { name: app.name, pm_cwd: app.cwd, pm_exec_path: app.script },
               });
             }
@@ -2349,11 +2351,54 @@ assert.doesNotThrow(() => assertLegacyWebDeployment({ WEB_RUNTIME_MODE: "split" 
   }, (ctx) => assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_HR_BRIDGE_PENDING/));
 
   await withRecoveryFixture({
-    extraSetup: (ctx) => fs.unlinkSync(ctx.priorConfigPath),
+    phase: "FATAL",
+    initialReadyVersion: 1,
+    candidateStillInPm2: false,
+    withPendingWeb: false,
+    extraSetup: (ctx) => {
+      ctx.addPid(301, "401", 2, 1000);
+      ctx.liveRef().push({
+        name: "erp-server",
+        pm_id: 11,
+        pid: 301,
+        pm2_env: { name: "erp-server", pm_cwd: ctx.projectRoot, pm_exec_path: ctx.priorWebBundle },
+      });
+      fs.unlinkSync(ctx.priorConfigPath);
+    },
   }, async (ctx) => {
     await assert.rejects(ctx.runRecover(), /NON_SCHEMA_RECOVERY_PRIOR_CONFIG_MISSING/);
     assert.equal(readActivationJournal(ctx.journalFile).phase, "FATAL");
+    assert.ok(!ctx.pm2Calls.some((c) => c[0] === "pm2" && c[1] === "delete"),
+      "prerequisite validation must fail BEFORE deleting running prior workers");
+    assert.ok(ctx.liveRef().some((r) => r.pm_id === 11));
   });
+
+  // Failing web health or bridge runtime verification must restore FATAL so recovery remains retryable
+  for (const [failKey, expectedCode] of [
+    ["verifyWebHealth", "WEB_HEALTH_TRANSIENT_FAILURE"],
+    ["verifyBridgeRuntime", "BRIDGE_VERIFY_TRANSIENT_FAILURE"],
+  ]) {
+    await withRecoveryFixture({}, async (ctx) => {
+      let shouldFail = true;
+      await assert.rejects(
+        ctx.runRecover({
+          [failKey]: async () => {
+            if (shouldFail) throw new Error(expectedCode);
+            if (failKey === "verifyWebHealth") ctx.verified.web++;
+            else ctx.verified.bridgeId = "restored-ok";
+          },
+        }),
+        new RegExp(expectedCode),
+      );
+      const afterFail = readActivationJournal(ctx.journalFile);
+      assert.equal(afterFail.phase, "FATAL", `${failKey} failure must revert phase to FATAL`);
+      assert.equal(afterFail.active, null);
+      shouldFail = false;
+      const retried = await ctx.runRecover();
+      assert.equal(retried.journal.phase, "ROLLED_BACK");
+      assert.deepEqual(retried.journal.active, ctx.priorActive);
+    });
+  }
 
   await withRecoveryFixture({
     extraSetup: (ctx) => fs.unlinkSync(ctx.journalFile),
