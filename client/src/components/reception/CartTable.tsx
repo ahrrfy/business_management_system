@@ -357,7 +357,7 @@ export function CartTable({
                       )}
                     </td>
                     <td className="px-1 py-1.5 text-center text-xs tabular-nums" dir="ltr">
-                      {isCustom || l.digital ? (
+                      {l.digital ? (
                         <span>{fmt(effectivePrice(l))}</span>
                       ) : (
                         <div className="relative inline-block">

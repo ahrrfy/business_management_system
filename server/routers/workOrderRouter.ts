@@ -288,8 +288,10 @@ const receptionCheckoutSchema = z.object({
       productUnitId: z.number().int().positive(),
       quantity: quantityString,
       unitPriceOverride: nonNegMoneyString.optional(),
+      discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
     })).min(1),
     amount: positiveMoneyString,
+    invoiceDiscount: nonNegMoneyString.optional(),
   }).nullish(),
   workOrders: z.array(receptionWorkOrderSchema).max(50).default([]),
 }).superRefine((input, ctx) => {

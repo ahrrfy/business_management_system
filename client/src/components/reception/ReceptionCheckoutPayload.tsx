@@ -29,7 +29,10 @@ export interface ReceptionCheckoutPayloadInput {
   cashRoundActive: boolean;
   effectiveGrandD: import("decimal.js").Decimal;
   regularSumRawD: import("decimal.js").Decimal;
+  printSumRawD?: import("decimal.js").Decimal;
   invoiceDiscountAmountD: import("decimal.js").Decimal;
+  saleInvoiceDiscountD?: import("decimal.js").Decimal;
+  printInvoiceDiscountD?: import("decimal.js").Decimal;
   mixedRoundApplied: boolean;
   mixedCarrier: "SALE" | "PRINT" | null;
   mixedDeltaAppliedD: import("decimal.js").Decimal;
@@ -90,7 +93,10 @@ export function buildReceptionCheckoutPayload({
   cashRoundActive,
   effectiveGrandD,
   regularSumRawD,
+  printSumRawD,
   invoiceDiscountAmountD,
+  saleInvoiceDiscountD,
+  printInvoiceDiscountD,
   mixedRoundApplied,
   mixedCarrier,
   mixedDeltaAppliedD,
@@ -123,11 +129,16 @@ export function buildReceptionCheckoutPayload({
   couponCode,
   freeShippingPromoName = null,
 }: ReceptionCheckoutPayloadInput) {
+  const effectiveSaleDiscD = saleInvoiceDiscountD ?? invoiceDiscountAmountD;
+  const effectivePrintDiscD = printInvoiceDiscountD ?? D(0);
+  const resolvedPrintRawD =
+    printSumRawD ??
+    printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const saleAmount = cashRoundActive
     ? round2(effectiveGrandD).toFixed(2)
     : round2(
         regularSumRawD
-          .minus(invoiceDiscountAmountD)
+          .minus(effectiveSaleDiscD)
           .plus(
             mixedRoundApplied && mixedCarrier === "SALE"
               ? mixedDeltaAppliedD
@@ -135,8 +146,8 @@ export function buildReceptionCheckoutPayload({
           ),
       ).toFixed(2);
   const printAmount = round2(
-    printLines
-      .reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+    resolvedPrintRawD
+      .minus(effectivePrintDiscD)
       .plus(
         mixedRoundApplied && mixedCarrier === "PRINT"
           ? mixedDeltaAppliedD
@@ -269,8 +280,8 @@ export function buildReceptionCheckoutPayload({
       regularLines.length > 0
         ? {
             amount: saleAmount,
-            ...(invoiceDiscountAmountD.gt(0)
-              ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) }
+            ...(effectiveSaleDiscD.gt(0)
+              ? { invoiceDiscount: effectiveSaleDiscD.toFixed(2) }
               : {}),
             lines: regularLines.map((c) => {
               const catalogUnit = round2(D(c.row.price ?? 0));
@@ -306,6 +317,9 @@ export function buildReceptionCheckoutPayload({
       printLines.length > 0
         ? {
             amount: printAmount,
+            ...(effectivePrintDiscD.gt(0)
+              ? { invoiceDiscount: effectivePrintDiscD.toFixed(2) }
+              : {}),
             lines: printLines.map((c) => ({
               variantId: c.row.variantId,
               productUnitId: c.row.productUnitId,

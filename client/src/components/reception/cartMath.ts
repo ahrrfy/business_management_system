@@ -266,6 +266,45 @@ export function customizationBasePrice(line: CartLine): number | null {
   } catch { return null; }
 }
 
+export function allocateProportionalDiscount(
+  totalDiscountD: Decimal,
+  rawAmounts: Decimal[],
+): Decimal[] {
+  const zeroList = rawAmounts.map(() => D(0));
+  if (totalDiscountD.lte(0)) return zeroList;
+  const totalRawD = rawAmounts.reduce((s, r) => s.plus(r.gt(0) ? r : D(0)), D(0));
+  if (totalRawD.lte(0)) return zeroList;
+  const targetD = Decimal.min(totalRawD, round2(totalDiscountD));
+  const shares = rawAmounts.map((r) =>
+    r.gt(0) ? round2(targetD.times(r).div(totalRawD)) : D(0),
+  );
+  const sumSharesD = shares.reduce((s, x) => s.plus(x), D(0));
+  let remainderD = round2(targetD.minus(sumSharesD));
+  if (!remainderD.eq(0)) {
+    const order = rawAmounts
+      .map((r, idx) => ({ r, idx }))
+      .filter((x) => x.r.gt(0))
+      .sort((a, b) => b.r.cmp(a.r));
+    for (const { r, idx } of order) {
+      if (remainderD.eq(0)) break;
+      if (remainderD.gt(0)) {
+        const room = round2(r.minus(shares[idx]!));
+        if (room.lte(0)) continue;
+        const delta = Decimal.min(remainderD, room);
+        shares[idx] = round2(shares[idx]!.plus(delta));
+        remainderD = round2(remainderD.minus(delta));
+      } else {
+        const room = round2(shares[idx]!);
+        if (room.lte(0)) continue;
+        const delta = Decimal.min(remainderD.abs(), room);
+        shares[idx] = round2(shares[idx]!.minus(delta));
+        remainderD = round2(remainderD.plus(delta));
+      }
+    }
+  }
+  return shares;
+}
+
 export function formatDiscountPct(pct: number): string {
   if (!Number.isFinite(pct) || pct <= 0) return "0";
   return pct.toFixed(2).replace(/\.?0+$/, "");

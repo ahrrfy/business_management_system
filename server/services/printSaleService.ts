@@ -38,6 +38,7 @@ import {
   computeInvoiceCost,
   computeInvoiceTotals,
   computeLineTotal,
+  invoiceDiscountExceedsThreshold,
   isInvoiceBelowCost,
   lineDiscountExceedsThreshold,
 } from "./billing";
@@ -107,6 +108,7 @@ export interface PrintSaleLineInput {
   quantity: string;
   /** السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير). إن غاب يُؤخذ سعر الفئة. */
   unitPriceOverride?: string | null;
+  discountPercent?: string | null;
 }
 
 export interface CreatePrintSaleInput extends CheckoutChargesInput {
@@ -126,6 +128,7 @@ export interface CreatePrintSaleInput extends CheckoutChargesInput {
   isReservation?: boolean;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
+  invoiceDiscount?: string | null;
   payment?: PrintSalePaymentLegInput | null;
   payments?: PrintSalePaymentLegInput[] | null;
   /** داخلي: printPosRouter وحده يفعّله؛ مسارات الاستقبال/الأوفلاين القديمة لا تتظاهر بتأكيد خارجي. */
@@ -686,6 +689,7 @@ export async function createPrintSaleInTx(
     // الانحراف عن السعر المرجعيّ أيضاً ⇒ سياستان مختلفتان لنفس القرار الماليّ على شاشتين. توحيدُهما
     // هنا يُغلق الباب الخلفيّ: تنازلٌ سعريّ كبيرٌ فوق التكلفة كان يمرّ بلا اعتمادٍ ولا وسمٍ تدقيقيّ.
     let manualDiscountGateTriggered = false;
+    let referenceGross = money(0);
 
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
@@ -696,7 +700,12 @@ export async function createPrintSaleInTx(
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
           : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
-      const lineRes = computeLineTotal({ unitPrice, quantity: money(l.quantity) });
+      const lineRes = computeLineTotal({
+        unitPrice,
+        quantity: money(l.quantity),
+        discountPercent: l.discountPercent ?? null,
+      });
+      referenceGross = referenceGross.plus(round2((listRef ?? unitPrice).times(money(l.quantity))));
       const variant = varMap.get(l.variantId)!;
       const isStocked = variant.isService !== true;
       if (lineDiscountExceedsThreshold(listRef ?? money(0), money(l.quantity), lineRes.total)) {
@@ -773,7 +782,14 @@ export async function createPrintSaleInTx(
     }
 
     // ٧. الإجماليات + COGS. lineCost هو المصدر الحاكم؛ unitCost مدوّر للعرض وقد لا يعيد إنتاجه.
-    const totals = computeInvoiceTotals({ lineTotals: computed.map((c) => c.total) });
+    const totals = computeInvoiceTotals({
+      lineTotals: computed.map((c) => c.total),
+      invoiceDiscount: input.invoiceDiscount ?? null,
+    });
+    const invoiceNet = money(totals.subtotal).minus(money(totals.discountAmount));
+    if (invoiceDiscountExceedsThreshold(referenceGross, invoiceNet)) {
+      manualDiscountGateTriggered = true;
+    }
     const costTotal = money(computeInvoiceCost(computed));
 
     // ٧.b SALES-01/02 (قناة الطباعة) — بوّابة البيع تحت تكلفة المواد. كاشير الطباعة يضبط سعر

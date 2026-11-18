@@ -40,6 +40,7 @@ const lineSchema = z.object({
   quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
   // السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير) — nonNegMoneyString المركزية.
   unitPriceOverride: nonNegMoneyString.optional(),
+  discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
 });
 
 export const printPosRouter = router({
@@ -186,6 +187,7 @@ export const printPosRouter = router({
         isReservation: z.boolean().optional(),
         priceTier: tier.optional(),
         lines: z.array(lineSchema).min(1),
+        invoiceDiscount: nonNegMoneyString.optional(),
         payment: z.object({ amount: nonNegMoneyString, method, externalPaymentAttemptId: z.number().int().positive().optional() }).optional(),
         payments: z.array(z.object({ amount: positiveMoneyString, method, externalPaymentAttemptId: z.number().int().positive().optional() })).min(1).max(10).optional(),
         deviceId: z.string().trim().min(1).max(64).optional(),
@@ -292,6 +294,7 @@ export const printPosRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           status: invoices.status,
           total: invoices.total,
+          discountAmount: invoices.discountAmount,
           paidAmount: invoices.paidAmount,
           createdAt: invoices.createdAt,
           notes: invoices.notes,
@@ -369,6 +372,7 @@ export const printPosRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           status: invoices.status,
           total: invoices.total,
+          discountAmount: invoices.discountAmount,
           paidAmount: invoices.paidAmount,
           branchId: invoices.branchId,
           shiftId: invoices.shiftId,
@@ -547,6 +551,7 @@ export const printPosRouter = router({
       contactPhone: z.string().trim().max(32).nullish(),
       priceTier: tier.nullish(),
       lines: z.array(lineSchema).min(1),
+      invoiceDiscount: nonNegMoneyString.optional(),
       notes: z.string().max(5000).nullish(),
       reason: z.string().trim().min(3, "اكتب سبب التعديل").max(500),
       additionalPayment: z.object({
@@ -623,6 +628,7 @@ export const printPosRouter = router({
           quantity: l.quantity,
           unitPriceOverride: l.unitPriceOverride,
         })),
+        invoiceDiscount: input.invoiceDiscount ?? undefined,
         notes: [input.reason ? `[سبب التعديل: ${input.reason}]` : null, input.notes?.trim() ?? inv.notes ?? null].filter(Boolean).join(" - ") || undefined,
         additionalPayment: input.additionalPayment,
         overpayHandling: input.overpayHandling,
