@@ -248,7 +248,11 @@ export async function cancelVoucher(
       }
     }
 
-    if (r.shiftId != null) {
+    if (
+      r.shiftId != null &&
+      r.paymentMethod === "CASH" &&
+      (r.cashBucket == null || r.cashBucket === "DRAWER")
+    ) {
       const sh = (
         await tx
           .select({ status: shifts.status })
@@ -259,7 +263,11 @@ export async function cancelVoucher(
       if (sh && sh.status === "CLOSED") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن إلغاء سند على وردية مغلقة",
+          message: appErrorMessage({
+            what: "تعذر إلغاء السند النقدي",
+            why: "تمس حركة السند درج الكاشير على وردية مغلقة",
+            doThis: "أصدر حركة خزينة معتمدة أو سنداً عكسياً من وردية مفتوحة",
+          }),
         });
       }
     }

@@ -11,7 +11,10 @@ vi.mock("./brand", async () => {
 
 import { openPrintWindow } from "./brand";
 import { buildBrandedReceipt } from "@/components/pos/posShared";
-import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging, printCustomerStmt } from "./printTemplates";
+import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging, printCustomerStmt, printSupplierStmt } from "./printTemplates";
+import { buildPurchaseInvoiceV2Html, buildVoucherV2Html, printSalesReportV2 } from "./printTemplatesV2";
+import { printVoucherA4, voucherPrintToV2Data } from "./voucherPrint";
+import { buildInvoicesBatchDocuments, printInvoicesBatch, printVouchersBatch, type SplitPrintDocument } from "./batchInvoicePrint";
 
 describe("customer statement scope", () => {
   it("يحفظ نطاق الفرع ورصيد الشركة منفصلين في PDF", () => {
@@ -23,7 +26,6 @@ describe("customer statement scope", () => {
     expect(text).toContain("100");
   });
 });
-import { printSalesReportV2 } from "./printTemplatesV2";
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
@@ -882,6 +884,288 @@ describe("شعارا فيزا وماستركارد في الفواتير وال�
     const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
     expect(html).toContain("/visa-mastercard.png");
     expect(html).toContain("عميل بطاقة");
+  });
+});
+
+describe("print templates audit fixes (vouchers, purchase invoice, statements, batch printing)", () => {
+  beforeEach(() => {
+    vi.mocked(openPrintWindow).mockClear();
+  });
+
+  it("preserves supplier direction on IN receipt (RV-) and Decimal fractional amount with snapshot strip", async () => {
+    const v2 = await voucherPrintToV2Data({
+      voucherNumber: "RV-1-0099",
+      direction: "IN",
+      partyType: "SUPPLIER",
+      voucherDate: "2026-11-18",
+      createdAt: "2026-11-18T10:00:00.000Z",
+      branchName: "الفرع الرئيسي",
+      amount: "50,000.25",
+      paymentMethod: "CASH",
+      paymentMethodLabel: "نقدي",
+      partyTypeLabel: "مورد",
+      partyName: "شركة الأمل",
+      partyBalanceBefore: "100000.00",
+      partyBalanceAfter: "150000.25",
+      cashSourceLabel: "الخزينة الإدارية",
+      description: "استرداد مبلغ من المورد",
+      approvalStatus: "APPROVED",
+      createdByName: "أحمد",
+      approvedByName: "علي",
+    });
+
+    expect(v2.amount).toBe("50000.25");
+    expect(v2.partyType).toBe("SUPPLIER");
+
+    const html = buildVoucherV2Html(v2);
+    expect(html).toContain("سند قبض");
+    expect(html).toContain("RV-1-0099");
+    expect(html).toContain("50,000.25");
+    expect(html).toContain("data-balance-snapshot");
+    expect(html).toContain("100,000");
+    expect(html).toContain("150,000.25");
+    expect(html).toContain("له علينا");
+    expect(html).toContain("الخزينة الإدارية");
+    expect(html).not.toMatch(/[\u23F3\u2713\u2717]/);
+
+    await printVoucherA4({
+      voucherNumber: "RV-1-0099",
+      direction: "IN",
+      partyType: "SUPPLIER",
+      voucherDate: "2026-11-18",
+      createdAt: "2026-11-18T10:00:00.000Z",
+      amount: "50,000.25",
+      paymentMethod: "CASH",
+      paymentMethodLabel: "نقدي",
+      partyTypeLabel: "مورد",
+      partyName: "شركة الأمل",
+      description: "استرداد",
+      approvalStatus: "APPROVED",
+    });
+    expect(openPrintWindow).toHaveBeenCalledTimes(1);
+    const noBeforeHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(noBeforeHtml).not.toContain("data-balance-snapshot");
+
+    const custReceiptV2 = await voucherPrintToV2Data({
+      voucherNumber: "RV-C-10",
+      direction: "IN",
+      partyType: "CUSTOMER",
+      voucherDate: "2026-11-18",
+      createdAt: "2026-11-18T10:00:00.000Z",
+      amount: "30000",
+      paymentMethod: "CASH",
+      paymentMethodLabel: "نقدي",
+      partyTypeLabel: "عميل",
+      partyName: "زبون تجربة",
+      partyBalanceBefore: "100000.00",
+      partyBalanceAfter: "70000.00",
+      description: "تسديد",
+      approvalStatus: "APPROVED",
+    });
+    const custHtml = buildVoucherV2Html(custReceiptV2);
+    expect(custHtml).toContain("data-balance-snapshot");
+    expect(custHtml).toContain("− 30,000");
+    expect(custHtml).not.toContain("+ 30,000");
+  });
+
+  it("renders purchase invoice V2 creator/approver, cash source, and USD conversion equation", () => {
+    const html = buildPurchaseInvoiceV2Html({
+      invoiceNumber: "PO-2026-44",
+      invoiceDate: "2026-11-18",
+      supplierName: "مورد النور",
+      createdByName: "سامر",
+      approvedByName: "ليث",
+      cashSourceLabel: "القاصة الرئيسية",
+      agreedCurrency: "USD",
+      usdTotal: "1000.00",
+      agreedRate: "1500",
+      subtotal: "1500000.00",
+      total: "1500000.00",
+      items: [{ productName: "صنف A", quantity: 10, unitPrice: "150000.00", total: "1500000.00" }],
+    });
+    expect(html).toContain("سامر");
+    expect(html).toContain("ليث");
+    expect(html).toContain("القاصة الرئيسية");
+    expect(html).toContain("$1,000.00");
+    expect(html).toContain("1,500");
+    expect(html).toContain("1,500,000");
+  });
+
+  it("renders statement before/after columns, supplier receipt/USD disclosures, and drops hardcoded page 1 of 1", () => {
+    printSupplierStmt({
+      supplierName: "مورد الشرق",
+      usdReference: "250.50",
+      openingBalance: "1000.00",
+      closingBalance: "1500.00",
+      totalDebit: "200.00",
+      totalCredit: "700.00",
+      transactions: [
+        { date: "2026-11-10", ref: "PO-10", description: "فاتورة شراء", credit: "700.00", debit: null, balanceBefore: "1000.00", balance: "1700.00" },
+        { date: "2026-11-11", ref: "PV-10", description: "سند صرف للمورد", debit: "200.00", credit: null, balanceBefore: "1700.00", balance: "1500.00" },
+      ],
+    });
+    const supHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(supHtml).toContain("قبل");
+    expect(supHtml).toContain("بعد");
+    expect(supHtml).toContain("$250.50");
+    expect(supHtml).not.toMatch(/صفحة 1 من 1/);
+
+    vi.mocked(openPrintWindow).mockClear();
+    printCustomerStmt({
+      customerName: "عميل الجنوب",
+      heldDepositsTotal: "35000.00",
+      openingBalance: "0.00",
+      closingBalance: "0.00",
+      totalDebit: "0.00",
+      totalCredit: "0.00",
+      transactions: [],
+    });
+    const custHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(custHtml).toContain("عربون قيد الاحتجاز");
+    expect(custHtml).toContain("35,000");
+    expect(custHtml).not.toMatch(/صفحة 1 من 1/);
+  });
+
+  it("supports merged and split modes in printInvoicesBatch and printVouchersBatch", async () => {
+    const invoices = [
+      {
+        id: 1,
+        documentNumber: "INV-101",
+        date: "2026-11-18",
+        subtotal: "10000",
+        total: "10000",
+        paidAmount: "10000",
+        remainingAmount: "0",
+        items: [{ productName: "كتاب", quantity: 1, unitPrice: "10000", total: "10000" }],
+      },
+      {
+        id: 2,
+        documentNumber: "INV-102",
+        date: "2026-11-18",
+        subtotal: "20000",
+        total: "20000",
+        paidAmount: "0",
+        remainingAmount: "20000",
+        items: [{ productName: "دفتر", quantity: 2, unitPrice: "10000", total: "20000" }],
+      },
+    ];
+
+    const merged = await printInvoicesBatch({
+      partyType: "CUSTOMER",
+      partyName: "عميل اختبار",
+      invoices,
+      mode: "merged",
+      detailLevel: "detailed",
+    });
+    expect(merged.ok).toBe(true);
+    expect(merged.count).toBe(2);
+    expect(openPrintWindow).toHaveBeenCalledTimes(1);
+    const mergedHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(mergedHtml).toContain("INV-101");
+    expect(mergedHtml).toContain("INV-102");
+    expect(mergedHtml).toContain("مجمّع (2 فاتورة)");
+
+    vi.mocked(openPrintWindow).mockClear();
+    const split = await printInvoicesBatch({
+      partyType: "CUSTOMER",
+      partyName: "عميل اختبار",
+      invoices,
+      mode: "split",
+      detailLevel: "normal",
+    });
+    expect(split.documents).toHaveLength(2);
+    expect(openPrintWindow).toHaveBeenCalledTimes(2);
+
+    vi.mocked(openPrintWindow).mockClear();
+    const supplierDocs = buildInvoicesBatchDocuments({
+      partyType: "SUPPLIER",
+      partyName: "مورد التجهيز",
+      mode: "split",
+      detailLevel: "normal",
+      invoices: [
+        {
+          id: 10,
+          documentNumber: "PO-77",
+          date: "2026-11-18",
+          status: "RECEIVED",
+          subtotal: "50000",
+          total: "50000",
+          paidAmount: "0",
+          remainingAmount: "50000",
+          items: [],
+        },
+      ],
+    });
+    expect(supplierDocs[0]?.html).toContain("مستلم");
+    expect(supplierDocs[0]?.html).not.toContain(">RECEIVED<");
+
+    vi.mocked(openPrintWindow).mockClear();
+    const splitVouchers: SplitPrintDocument[] = [];
+    const okVouchers = await printVouchersBatch({
+      vouchers: [
+        {
+          voucherNumber: "PV-1",
+          direction: "OUT",
+          partyType: "SUPPLIER",
+          voucherDate: "2026-11-18",
+          createdAt: "2026-11-18",
+          amount: "5000",
+          paymentMethod: "CASH",
+          paymentMethodLabel: "نقدي",
+          partyTypeLabel: "مورد",
+          partyName: "مورد أ",
+          description: "دفعة",
+          approvalStatus: "APPROVED",
+        },
+        {
+          voucherNumber: "RV-2",
+          direction: "IN",
+          partyType: "CUSTOMER",
+          voucherDate: "2026-11-18",
+          createdAt: "2026-11-18",
+          amount: "7000",
+          paymentMethod: "CASH",
+          paymentMethodLabel: "نقدي",
+          partyTypeLabel: "عميل",
+          partyName: "عميل ب",
+          description: "قبض",
+          approvalStatus: "APPROVED",
+        },
+      ],
+      mode: "merged",
+      detailLevel: "detailed",
+    });
+    expect(okVouchers).toBe(true);
+    expect(openPrintWindow).toHaveBeenCalledTimes(1);
+    const vchHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(vchHtml).toContain("PV-1");
+    expect(vchHtml).toContain("RV-2");
+
+    vi.mocked(openPrintWindow).mockClear();
+    const okSplitVouchers = await printVouchersBatch({
+      vouchers: [
+        {
+          voucherNumber: "PV-10",
+          direction: "OUT",
+          partyType: "SUPPLIER",
+          voucherDate: "2026-11-18",
+          createdAt: "2026-11-18",
+          amount: "5000",
+          paymentMethod: "CASH",
+          paymentMethodLabel: "نقدي",
+          partyTypeLabel: "مورد",
+          partyName: "مورد أ",
+          description: "دفعة",
+          approvalStatus: "APPROVED",
+        },
+      ],
+      mode: "split",
+      detailLevel: "normal",
+      onSplitDocuments: (docs) => splitVouchers.push(...docs),
+    });
+    expect(okSplitVouchers).toBe(true);
+    expect(splitVouchers).toHaveLength(1);
+    expect(splitVouchers[0]?.filename).toBe("PV-10.html");
   });
 });
 

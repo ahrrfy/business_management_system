@@ -14,6 +14,7 @@ import { exportRows } from "@/lib/export";
 import { buildAgingOutput, AGING_OUTPUT_BUCKETS as BUCKETS } from "@/lib/agingOutput";
 import { printAPAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
+import { splitBidiTokens } from "@/lib/statementPeriodLedger";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
@@ -72,7 +73,7 @@ export default function APAging() {
 
   // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ. (الفرز يتولّاه DataTable.)
   const filtered = useMemo(() => {
-    const q = f.q.trim();
+    const q = f.q;
     return (aging.data ?? []).filter((r) => {
       if (q && !(r.supplierName.includes(q) || (r.phone ?? "").includes(q))) return false;
       if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
@@ -126,7 +127,7 @@ export default function APAging() {
     query: f.q, bucket: f.bucket,
   }), [filtered, branches.data, f.branch, f.q, f.bucket]);
 
-  const activeCount = [f.q.trim(), f.bucket, f.branch].filter(Boolean).length;
+  const activeCount = [f.q, f.bucket, f.branch].filter(Boolean).length;
 
   // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
   const selectedRows = useMemo(
@@ -290,7 +291,7 @@ export default function APAging() {
       </Card>
 
       <Card>
-        <CardContent className="p-2.5 grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
+        <CardContent className="p-2.5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 text-xs">
           <Bucket label="0–30 يوم" value={totals.d0_30} color="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" />
           <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
@@ -353,10 +354,14 @@ export default function APAging() {
 function Bucket({ label, value, color, emphasis }: { label: string; value: string; color: string; emphasis?: boolean }) {
   return (
     <div className={`rounded-md p-3 ${color}`}>
-      {/* bidi: "0–30 يوم" بلا dir="ltr" يُعاد ترتيبه بصرياً "30-0" داخل حاويةٍ RTL — أثبتَتْه
-          جولةٌ بصرية فعلية بقياس مواضع الأحرف (٣/٩). ليس تجميلاً. */}
-      <div className="text-xs opacity-80" dir="ltr">{label}</div>
-      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">{fmt(value)}</div>
+      <div className="text-xs opacity-80">
+        {splitBidiTokens(label).map((tok, i) =>
+          tok.ltr ? <bdi key={i} dir="ltr">{tok.text}</bdi> : <span key={i}>{tok.text}</span>
+        )}
+      </div>
+      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">
+        <bdi dir="ltr">{fmt(value)}</bdi>
+      </div>
     </div>
   );
 }

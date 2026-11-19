@@ -39,6 +39,7 @@ import { selectClsSm } from "@/lib/ui/formStyles";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { InstantGiftModal } from "@/components/crm/InstantGiftModal";
 import { FeedbackModal } from "@/components/crm/FeedbackModal";
+import { QuickVoucherSheet } from "@/components/vouchers/QuickVoucherSheet";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -137,6 +138,7 @@ export default function Customers() {
   const [importOpen, setImportOpen] = useState(false);
   const [followTarget, setFollowTarget] = useState<DisplayRow | null>(null);
   const [selectedDossierCustomerId, setSelectedDossierCustomerId] = useState<number | null>(null);
+  const [quickVoucher, setQuickVoucher] = useState<{ id: number; name: string; balance?: string | null; type: "PAYMENT" | "RECEIPT" } | null>(null);
   const [instantGiftCustomer, setInstantGiftCustomer] = useState<{ id: number; name: string; phone?: string | null } | null>(null);
   const [feedbackCustomer, setFeedbackCustomer] = useState<{ id: number; name: string; phone?: string | null } | null>(null);
   const importMut = trpc.imports.customers.useMutation();
@@ -281,7 +283,10 @@ export default function Customers() {
 
   function printSelectedCollectionList() {
     if (selectedRows.length === 0) return;
-    const totalBalance = selectedRows.reduce((sum, row) => sum + Math.max(0, Number(row.currentBalance ?? 0)), 0);
+    const totalBalance = selectedRows.reduce((sum, row) => {
+      const val = D(row.currentBalance ?? 0);
+      return val.gt(0) ? sum.plus(val) : sum;
+    }, D(0));
     const opened = printReportDoc({
       title: "قائمة متابعة التحصيل",
       headerExtra: [
@@ -301,7 +306,7 @@ export default function Customers() {
         balance: `${fmt(row.currentBalance)} د.ع`,
         status: isOperationsRow(row) ? (COLLECTION_STATUS[row.collectionStatus]?.label ?? row.collectionStatus) : "—",
       })),
-      summary: [{ label: "إجمالي المطلوب متابعته", value: `${fmt(totalBalance)} د.ع`, bold: true, large: true }],
+      summary: [{ label: "إجمالي المطلوب متابعته", value: `${fmt(totalBalance.toFixed(2))} د.ع`, bold: true, large: true }],
     });
     if (!opened) notify.err("حجب المتصفح نافذة الطباعة");
   }
@@ -358,7 +363,7 @@ export default function Customers() {
       summary: [
         {
           label: "إجمالي أرصدة الزبائن المعروضة",
-          value: `${fmt(rows.reduce((sum, r) => sum + Number(r.currentBalance ?? 0), 0))} د.ع`,
+          value: `${fmt(rows.reduce((sum, r) => sum.plus(D(r.currentBalance ?? 0)), D(0)).toFixed(2))} د.ع`,
           bold: true,
           large: true,
         },
@@ -636,8 +641,8 @@ export default function Customers() {
                 {
                   key: "receipt",
                   kind: "pay",
-                  label: "تسجيل دفعة",
-                  href: `/vouchers/receipt/new?customerId=${id}`,
+                  label: "سند قبض سريع",
+                  onSelect: () => setQuickVoucher({ id, name: c.name ?? "", balance: c.currentBalance, type: "RECEIPT" }),
                   hidden: !can("vouchers.create", isElevated),
                   gate: { operations: ["vouchers.create"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                 },
@@ -1119,6 +1124,19 @@ export default function Customers() {
           </Button>
         }
       />
+
+      {quickVoucher && (
+        <QuickVoucherSheet
+          open={!!quickVoucher}
+          onOpenChange={(o) => !o && setQuickVoucher(null)}
+          defaultType={quickVoucher.type}
+          defaultPartyType="CUSTOMER"
+          defaultPartyId={quickVoucher.id}
+          defaultPartyName={quickVoucher.name}
+          currentBalance={quickVoucher.balance ?? undefined}
+          onSuccess={() => invalidateCustomers()}
+        />
+      )}
     </div>
   );
 }

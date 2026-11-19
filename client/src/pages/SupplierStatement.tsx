@@ -1,9 +1,16 @@
+import { MovementTypeBadge, PaymentMethodChip } from "@/components/common/MovementBadges";
 import { CopyInline } from "@/components/CopyButton";
+import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawer";
+import { AccountHealthBanner } from "@/components/statements/AccountHealthBanner";
+import { stmtMoneyCol } from "@/components/statements/CustomerLedgerSection";
+import { BatchInvoicePrintDialog, PartyCommandBar, StatementPeriodDetailBar, type StatementDetailLevel } from "@/components/statements/PartyCommandBar";
+import { SupplierDossierDrawer } from "@/components/suppliers/SupplierDossierDrawer";
+import { QuickVoucherSheet } from "@/components/vouchers/QuickVoucherSheet";
+import { VoucherDetailDrawer } from "@/components/vouchers/VoucherDetailDrawer";
 import SupplierPicker from "@/components/voucher/SupplierPicker";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
@@ -14,6 +21,7 @@ import { notify } from "@/lib/notify";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { D, fmt } from "@/lib/money";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -23,14 +31,15 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { balanceDirectionLabel } from "@shared/balanceTrail";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
+import { fmtQty } from "@shared/quantityFormat";
+import { isUnifiedPaymentMethod } from "@shared/terms";
 import { AlertCircle, ExternalLink, FileText, Info, RefreshCw } from "lucide-react";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
-import { FinancialCellProvenanceHover } from "@/components/financial";
-import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { splitDocumentNotes } from "@/components/invoice/TermsAndNotes";
-import { balanceStatementRows, statementClosingBalance } from "@/lib/statementPeriodLedger";
+import { balanceStatementRows, statementClosingBalance, sumStatementMoneyCol, type StatementLineItem } from "@/lib/statementPeriodLedger";
 
 function cleanStmtNotes(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -38,50 +47,22 @@ function cleanStmtNotes(raw: string | null | undefined): string {
   return parsed.notes || (parsed.poReference ? `مرجع: ${parsed.poReference}` : "") || raw;
 }
 
-
-/** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
-const ymd = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-/** اختصارات الفترة: اليوم / هذا الشهر / الشهر الماضي / الكل (فارغة). */
-const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
-  { label: "اليوم", range: () => ({ from: ymd(new Date()), to: ymd(new Date()) }) },
-  {
-    label: "هذا الشهر",
-    range: () => {
-      const n = new Date();
-      return { from: ymd(new Date(n.getFullYear(), n.getMonth(), 1)), to: ymd(n) };
-    },
-  },
-  {
-    label: "الشهر الماضي",
-    range: () => {
-      const n = new Date();
-      return {
-        from: ymd(new Date(n.getFullYear(), n.getMonth() - 1, 1)),
-        to: ymd(new Date(n.getFullYear(), n.getMonth(), 0)),
-      };
-    },
-  },
-  { label: "الكل", range: () => ({ from: "", to: "" }) },
-];
-
-/** صفوف كشف حساب المورّد — مشتقّةٌ من عقد `reports.supplierStatement` فلا تنجرف عن الخادم.
- *  ⚠️ `NonNullable` إلزاميّ: الراوتر يُرجع `res && {…}` و`getSupplierStatement` تُرجع `null`
- *  حين لا مورّد/لا قاعدة ⇒ نوع المخرَج اتحادٌ مع `null`، والفهرسةُ عليه مباشرةً خطأ ترجمة. */
 type SupplierStatementData = NonNullable<RouterOutputs["reports"]["supplierStatement"]>;
-
-/** صفٌّ واحد في دفتر حركات المورّد الموحَّد — يجمع أوامر الشراء والدفعات في جدولٍ واحد
- *  بنمط دفتر الأستاذ الفرعي (مدين/دائن/رصيدٌ جارٍ) المُتَّبع عالمياً (Odoo Partner Ledger،
- *  ERPNext General Ledger، GnuCash Owner Report، Dolibarr Grand Livre). */
 type LedgerFilterGroup = "buy" | "pay_alloc" | "pay_unalloc" | "other";
+
 interface LedgerRow {
   date: string;
   ref: string;
   description: string;
   descriptionSub?: string;
+  kind: string;
+  paymentMethod?: string | null;
+  cashBucket?: string | null;
+  cardLastFour?: string | null;
   actor: string;
   debit: string | null;
   credit: string | null;
+  balanceBefore: string;
   balance: string;
   filterGroup: LedgerFilterGroup;
   openHref?: string;
@@ -93,33 +74,26 @@ interface LedgerRow {
   remainingAmount?: string;
   poId?: number;
   receiptId?: number;
-  provenance?: FinancialCellProvenancePayload;
+  items?: StatementLineItem[];
+  provenance?: any;
 }
 
-const FILTER_GROUP_LABEL: Record<"all" | LedgerFilterGroup, string> = {
-  all: "الكل",
-  buy: "فواتير شراء",
-  pay_alloc: "دفعات مخصَّصة",
-  pay_unalloc: "دفعات غير مخصَّصة",
-  other: "أخرى",
-};
-
-const PAYMENT_STATUS_CLS: Record<NonNullable<LedgerRow["paymentStatus"]>, string> = {
-  PAID: "badge-status-active",
-  PARTIAL: "badge-status-pending",
-  UNPAID: "badge-stock-out",
-  CREDITED: "badge-status-info",
-};
-
-/** جمعُ عمود مدين/دائن بدقّة Decimal (§٥) — يتجاهل الخلايا الفارغة (—). */
-function sumMoneyCol(values: (string | null | undefined)[]): ReturnType<typeof D> {
-  return values.reduce((acc, v) => (v ? acc.plus(D(v)) : acc), D(0));
+function statusBadgeVariant(status: NonNullable<LedgerRow["paymentStatus"]>, review?: boolean): "success" | "warning" | "destructive" | "info" {
+  if (review) return "warning";
+  if (status === "PAID") return "success";
+  if (status === "PARTIAL") return "warning";
+  if (status === "CREDITED") return "info";
+  return "destructive";
 }
 
-/** أعمدة دفتر الحركات الموحَّد — عمودا مدين/دائن + رصيدٌ جارٍ بارز، مع إمكانية النقر للتدقيق التفصيلي. */
-function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): ColumnDef<LedgerRow, unknown>[] {
+function getLedgerColumns(
+  detailLevel: StatementDetailLevel,
+  onDrilldown: (target: DrilldownTarget) => void,
+  onOpenPo: (poId: number) => void,
+  onOpenVoucher: (receiptId: number) => void,
+): ColumnDef<LedgerRow, unknown>[] {
   return [
-    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
+    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs"><bdi dir="ltr">{row.original.date}</bdi></span> },
     {
       id: "ref",
       header: "المستند",
@@ -135,8 +109,8 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
               <button
                 type="button"
                 onClick={() => {
-                  if (r.poId) onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
-                  else if (r.receiptId) onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
+                  if (r.poId) onOpenPo(r.poId);
+                  else if (r.receiptId) onOpenVoucher(r.receiptId);
                 }}
                 className="text-[11px] text-primary hover:underline cursor-pointer"
                 title="عرض المستند الأصلي"
@@ -149,119 +123,75 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
       },
     },
     {
+      id: "kind",
+      header: "النوع",
+      accessorFn: (r) => r.description,
+      meta: { kind: "status" },
+      cell: ({ row }) => <MovementTypeBadge kind={row.original.kind} />,
+    },
+    {
       id: "description",
       header: "البيان",
       accessorFn: (r) => r.description,
-      meta: { width: "wide" },
-      cell: ({ row }) => (
-        <div>
-          <div className="text-xs">{row.original.description}</div>
-          {row.original.descriptionSub && <div className="text-[10px] text-muted-foreground">{row.original.descriptionSub}</div>}
-        </div>
-      ),
-    },
-    {
-      id: "actor",
-      header: "المنفّذ",
-      accessorFn: (r) => r.actor,
-      meta: { kind: "actor" },
-      cell: ({ row }) => <span className="text-xs">{row.original.actor}</span>,
-    },
-    {
-      id: "debit",
-      header: "مدين (دفع)",
-      accessorFn: (r) => (r.debit == null ? "" : fmt(r.debit)),
-      meta: { kind: "money" },
+      meta: { width: "wide", wrap: true },
       cell: ({ row }) => {
         const r = row.original;
-        if (r.debit == null) return <span className="text-muted-foreground">—</span>;
         return (
-          <FinancialCellProvenanceHover data={r.provenance}>
-            <button
-              type="button"
-              onClick={() => {
-                if (r.receiptId) {
-                  onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
-                } else {
-                  onDrilldown({
-                    type: "GENERIC",
-                    title: r.description,
-                    subtitle: r.descriptionSub,
-                    amount: r.debit ?? "0",
-                    date: r.date,
-                    direction: "DEBIT",
-                    details: {
-                      "المرجع": r.ref,
-                      "المنفذ": r.actor,
-                      "البيان": r.description,
-                      "التفاصيل": r.descriptionSub,
-                    },
-                  });
-                }
-              }}
-              className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
-              title="انقر لعرض تفاصيل السند/الحركة"
-            >
-              {fmt(r.debit)}
-            </button>
-          </FinancialCellProvenanceHover>
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span>{r.description}</span>
+              {r.paymentMethod && isUnifiedPaymentMethod(r.paymentMethod) && (
+                <PaymentMethodChip method={r.paymentMethod} cashBucket={r.cashBucket} cardLastFour={r.cardLastFour} />
+              )}
+            </div>
+            {r.descriptionSub && <div className="text-[11px] text-muted-foreground">{r.descriptionSub}</div>}
+            {detailLevel === "detailed" && r.items && r.items.length > 0 && (
+              <div className="space-y-0.5 rounded border border-border/50 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+                {r.items.map((it, idx) => (
+                  <div key={idx} className="flex items-center justify-between gap-2">
+                    <span>{it.productName}{it.unitName ? ` (${it.unitName})` : ""}</span>
+                    <span className="tabular-nums" dir="ltr">{fmtQty(it.quantity)} × {fmt(it.unitPrice)} = {fmt(it.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         );
       },
-      footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
     },
-    {
-      id: "credit",
-      header: "دائن (مشتريات)",
-      accessorFn: (r) => (r.credit == null ? "" : fmt(r.credit)),
-      meta: { kind: "money" },
-      cell: ({ row }) => {
-        const r = row.original;
-        if (r.credit == null) return <span className="text-muted-foreground">—</span>;
-        return (
-          <FinancialCellProvenanceHover data={r.provenance}>
-            <button
-              type="button"
-              onClick={() => {
-                if (r.poId) {
-                  onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
-                } else {
-                  onDrilldown({
-                    type: "GENERIC",
-                    title: r.description,
-                    subtitle: r.descriptionSub,
-                    amount: r.credit ?? "0",
-                    date: r.date,
-                    direction: "CREDIT",
-                    details: {
-                      "المرجع": r.ref,
-                      "المنفذ": r.actor,
-                      "البيان": r.description,
-                      "التفاصيل": r.descriptionSub,
-                    },
-                  });
-                }
-              }}
-              className="font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
-              title="انقر لعرض تفاصيل أمر الشراء/الحركة"
-            >
-              {fmt(r.credit)}
-            </button>
-          </FinancialCellProvenanceHover>
-        );
+    stmtMoneyCol<LedgerRow>(
+      "debit",
+      "مدين (دفع/مرتجع)",
+      (r) => r.debit ?? "0",
+      (r) => (r.debit == null ? "—" : fmt(r.debit)),
+      "text-money-positive font-semibold",
+      (r) => {
+        if (r.receiptId) onOpenVoucher(r.receiptId);
+        else onDrilldown({ type: "GENERIC", title: r.description, subtitle: r.descriptionSub, amount: r.debit ?? "0", date: r.date, direction: "DEBIT", details: { "المرجع": r.ref, "المنفذ": r.actor, "البيان": r.description, "التفاصيل": r.descriptionSub } });
       },
-      footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
-    },
-    {
-      id: "balance",
-      header: "الرصيد الجاري",
-      accessorFn: (r) => fmt(r.balance),
-      meta: { kind: "money" },
-      cell: ({ row }) => (
-        <FinancialCellProvenanceHover data={row.original.provenance}>
-          <span className="font-bold text-end block w-full hover:underline cursor-pointer">{fmt(row.original.balance)}</span>
-        </FinancialCellProvenanceHover>
-      ),
-    },
+      ({ table }) => fmt(sumStatementMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
+    ),
+    stmtMoneyCol<LedgerRow>(
+      "credit",
+      "دائن (مشتريات/له)",
+      (r) => r.credit ?? "0",
+      (r) => (r.credit == null ? "—" : fmt(r.credit)),
+      "font-semibold",
+      (r) => {
+        if (r.poId) onOpenPo(r.poId);
+        else onDrilldown({ type: "GENERIC", title: r.description, subtitle: r.descriptionSub, amount: r.credit ?? "0", date: r.date, direction: "CREDIT", details: { "المرجع": r.ref, "المنفذ": r.actor, "البيان": r.description, "التفاصيل": r.descriptionSub } });
+      },
+      ({ table }) => fmt(sumStatementMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
+    ),
+    stmtMoneyCol<LedgerRow>("balanceBefore", "قبل", (r) => r.balanceBefore, undefined, "text-muted-foreground text-xs"),
+    stmtMoneyCol<LedgerRow>(
+      "balance",
+      "الرصيد الجاري",
+      (r) => r.balance,
+      undefined,
+      "font-bold",
+      (r) => (r.poId ? onOpenPo(r.poId) : r.receiptId ? onOpenVoucher(r.receiptId) : onDrilldown({ type: "GENERIC", title: r.description, subtitle: r.descriptionSub, amount: r.balance, date: r.date, direction: D(r.balance).gte(0) ? "CREDIT" : "DEBIT", details: { "المرجع": r.ref, "قبل": fmt(r.balanceBefore), "بعد": fmt(r.balance) } })),
+    ),
     {
       id: "paymentStatus",
       header: "الحالة",
@@ -269,24 +199,25 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
       meta: { kind: "status" },
       cell: ({ row }) =>
         row.original.paymentStatus ? (
-          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.paymentReview ? "badge-status-pending" : PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
+          <Badge variant={statusBadgeVariant(row.original.paymentStatus, row.original.paymentReview)}>
             {row.original.paymentStatusLabel}
-            {row.original.paymentReview ? " — يحتاج مراجعة دليل السداد" : ""}
-          </span>
+            {row.original.paymentReview ? " — مراجعة السداد" : ""}
+          </Badge>
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
         ),
     },
+    { id: "actor", header: "المنفذ", accessorFn: (r) => r.actor, meta: { kind: "actor" }, cell: ({ row }) => <span className="text-xs">{row.original.actor}</span> },
     {
       id: "open",
       header: "فتح",
       enableSorting: false,
-      meta: { kind: "actions" },
+      meta: { kind: "actions", stickyActions: false },
       cell: ({ row }) =>
         row.original.openHref ? (
-          <Link href={row.original.openHref}>
-            <Button variant="outline" size="sm">فتح</Button>
-          </Link>
+          <Link href={row.original.openHref}><Button variant="outline" size="sm">فتح</Button></Link>
+        ) : row.original.receiptId ? (
+          <Button variant="outline" size="sm" onClick={() => onOpenVoucher(row.original.receiptId!)}>معاينة</Button>
         ) : null,
     },
   ];
@@ -305,37 +236,60 @@ export default function SupplierStatement() {
     navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
   };
   const [from, setFrom] = useState("");
-  const [ledgerFilter, setLedgerFilter] = useState<"all" | LedgerFilterGroup>("all");
   const [to, setTo] = useState("");
+  const [detailLevel, setDetailLevel] = useState<StatementDetailLevel>("normal");
+  const [ledgerFilter, setLedgerFilter] = useState<"all" | LedgerFilterGroup>("all");
   const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget | null>(null);
+  const [drawerPoId, setDrawerPoId] = useState<number | null>(null);
+  const [drawerVoucherId, setDrawerVoucherId] = useState<number | null>(null);
+  const [quickVoucherType, setQuickVoucherType] = useState<"PAYMENT" | "RECEIPT" | null>(null);
+  const [dossierOpen, setDossierOpen] = useState(false);
+  const [batchPrintOpen, setBatchPrintOpen] = useState(false);
 
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canWriteVoucher = treasuryOperationAllowed(
+    me.data,
+    "vouchers.create",
+    me.data?.role === "manager" || me.data?.role === "accountant" || Boolean(me.data?.isOwner),
+  );
+  const refreshAll = () => {
+    void utils.reports.supplierStatement.invalidate();
+    void utils.reports.apAging.invalidate();
+    void utils.suppliers.invalidate();
+  };
   const autoSettleM = trpc.suppliers.autoSettle.useMutation({
     onSuccess: (res) => {
       notify.ok(
         "تمت تسوية الحساب بنجاح",
-        `سُوّي ${res.settledOrdersCount} أمر شراء مفتوح بمبلغ ${fmt(res.totalSettledAmount)} د.ع.`,
+        `سوي ${res.settledOrdersCount} أمر شراء مفتوح بمبلغ ${fmt(res.totalSettledAmount)} د.ع.`,
       );
-      void utils.reports.supplierStatement.invalidate();
-      void utils.reports.apAging.invalidate();
+      refreshAll();
     },
     onError: (err) => notify.err(err.message),
   });
 
   const ledgerColumns = useMemo(
-    () => getLedgerColumns((target) => setDrilldownTarget(target)),
-    [],
+    () =>
+      getLedgerColumns(
+        detailLevel,
+        (target) => setDrilldownTarget(target),
+        (poId) => setDrawerPoId(poId),
+        (receiptId) => setDrawerVoucherId(receiptId),
+      ),
+    [detailLevel],
   );
 
   const stmt = trpc.reports.supplierStatement.useQuery(
-    { supplierId: supplierId || 0, from: from || undefined, to: to || undefined },
-    { enabled: !!supplierId }
+    { supplierId: supplierId || 0, from: from || undefined, to: to || undefined, includeItems: detailLevel === "detailed" },
+    { enabled: !!supplierId },
   );
   const printAudit = usePrintAudit();
 
   const openOrdersCount = useMemo(() => {
     return (stmt.data?.purchaseOrders ?? []).filter((p) => {
-      const remaining = D(getPurchaseSettlement({ ...p, agreedCurrency: "IQD" }).remainingAmount);
+      const agreedCurrency = (p as { agreedCurrency?: string | null }).agreedCurrency === "USD" ? "USD" : "IQD";
+      const remaining = D(getPurchaseSettlement({ ...p, agreedCurrency }).remainingAmount);
       return p.status !== "CANCELLED" && remaining.gt(0);
     }).length;
   }, [stmt.data?.purchaseOrders]);
@@ -348,20 +302,24 @@ export default function SupplierStatement() {
     return openOrdersCount > 0 && (unallocated.gt(0) || bal.lte(0) || unpaid.gt(bal));
   }, [stmt.data, openOrdersCount]);
 
-  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة والتصدير **والعرض الحيّ**
-  // في الجدول الموحَّد أدناه (لم يعد مقصوراً على الطباعة/التصدير كما كان).
   const ledger = useMemo(() => {
     if (!stmt.data) return null;
     const d = stmt.data;
     const poTxs = d.purchaseOrders.map((p) => {
-      const settlement = getPurchaseSettlement({ ...p, agreedCurrency: "IQD" });
+      const settlement = getPurchaseSettlement({ ...p, agreedCurrency: (p as { agreedCurrency?: string }).agreedCurrency ?? "IQD" });
       return {
         t: new Date(p.orderDate).getTime(),
         date: fmtDate(p.orderDate),
         ref: p.poNumber,
-        description: `فاتورة شراء — بضاعة · ${settlement.intentLabel}`,
+        description: `فاتورة شراء — ${settlement.intentLabel}`,
+        descriptionSub: undefined as string | undefined,
+        kind: "PURCHASE",
+        paymentMethod: null as string | null,
+        cashBucket: null as string | null,
+        cardLastFour: null as string | null,
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
-        debit: null as string | null, credit: ((p as { periodTotal?: string }).periodTotal ?? p.total) as string | null,
+        debit: null as string | null,
+        credit: ((p as { periodTotal?: string }).periodTotal ?? p.total) as string | null,
         filterGroup: "buy" as const,
         openHref: `/purchases/${p.id}`,
         paymentStatus: settlement.status,
@@ -371,80 +329,120 @@ export default function SupplierStatement() {
         returnedAmount: settlement.returnedAmount,
         remainingAmount: settlement.remainingAmount,
         poId: Number(p.id),
-        provenance: (p as any).provenance,
+        receiptId: undefined as number | undefined,
+        items: (p as { items?: StatementLineItem[] }).items,
+        provenance: (p as { provenance?: unknown }).provenance,
       };
     });
-    // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
-    //  PAYMENT_OUT/EXCHANGE_SETTLE ⇒ يخفض AP (−amount) = مدين؛ PAYMENT_IN/PURCHASE (يتيم) ⇒ يزيد (+amount) = دائن؛
-    //  RETURN ⇒ amount مخزَّن سالباً فأثره يخفض AP = مدين. كان الكود السابق يضع كل الدفعات مديناً بلا نظر للنوع
-    //  ⇒ مرتجع الشراء/الاسترداد/الشراء اليتيم بإشارة معكوسة والرصيد الجاري لا يتّزن مع currentBalance.
+
     const payTxs = d.payments.map((p) => {
       const amt = D(p.amount);
-      // قيد فاتورة مورّد GRNI عديمُ الـPO: فاتورةٌ مطابَقة على عدّة أوامر (FORWARD، تزيد ما ندين به)
-      // أو عكسُ فاتورة مورّد (REVERSAL، يخفضه). amount موجبٌ في الحالتين ⇒ العكس يخفض AP كالدفعة.
-      const grni = classifyGrniApEntry(p.entryType, p.dedupeKey);
+      const dedupeKey = (p as { dedupeKey?: string | null }).dedupeKey ?? null;
+      const isFulfillmentCost =
+        dedupeKey?.startsWith("FULFILLMENT_CHARGE_COST:") ||
+        (p.entryType as string) === "FULFILLMENT_CHARGE_COST";
+      const grni = classifyGrniApEntry(p.entryType, dedupeKey);
       const reducesAP = p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE" || grni === "REVERSAL";
-      // signed = أثر AP الموقَّع (موجب=يزيد، سالب=يخفض). RETURN وحده amount سالب أصلاً ⇒ نستعمله كما هو.
       const signed = p.entryType === "RETURN" ? amt : (reducesAP ? amt.neg() : amt);
-      const description =
-        grni === "REVERSAL" ? "عكس فاتورة مورّد"
-        : grni === "FORWARD" ? "فاتورة شراء (عدّة أوامر)"
-        : p.entryType === "RETURN" ? "مرتجع شراء"
-        : p.entryType === "PAYMENT_IN" ? "استرداد من المورد"
-        : p.entryType === "EXCHANGE_SETTLE" ? "تسوية عبر صيرفة"
-        : p.entryType === "PURCHASE" ? "شراء (بلا أمر)"
-        // ب-١: تصحيح الرصيد الافتتاحيّ صار قيد فرقٍ مؤرَّخاً يظهر حركةً داخل فترته (إشارته
-        // كما هي: موجب يزيد ما علينا). بلا هذا السطر يُعرَض باسم «دفعة مستقلة للمورد».
-        : p.entryType === "OPENING" ? "تصحيح رصيد افتتاحي"
-        : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة على الحساب — غير مخصَّصة");
-      // مراجعة Codex #966: جدول الدفعات المنفصل القديم كان يعرض ملاحظات القيد وبيت الصيرفة/المرجع
-      // — الدفتر الموحَّد أسقطها كلياً رغم أنّ الـAPI ما زال يُرجعها، فيتعذّر تمييز/تسوية دفعتين
-      // متشابهتين. الآن تُلحَق كل التفاصيل المتاحة (تخصيص + صيرفة + ملاحظة) بدل استبدالها.
+
+      const kind = isFulfillmentCost
+        ? "FULFILLMENT_CHARGE"
+        : grni === "REVERSAL"
+          ? "ADJUSTMENT"
+          : grni === "FORWARD"
+            ? "GRNI"
+            : p.entryType === "RETURN"
+              ? "PURCHASE_RETURN"
+              : p.entryType === "PAYMENT_IN"
+                ? "PAYMENT_IN"
+                : p.entryType === "EXCHANGE_SETTLE"
+                  ? "PAYMENT_OUT"
+                  : p.entryType === "PURCHASE"
+                    ? "PURCHASE"
+                    : p.entryType === "OPENING"
+                      ? "OPENING"
+                      : "PAYMENT_OUT";
+
+      const description = isFulfillmentCost
+        ? "تكلفة تنفيذ مستحقة للمورد"
+        : grni === "REVERSAL"
+          ? "عكس فاتورة مورد"
+          : grni === "FORWARD"
+            ? "فاتورة شراء (عدة أوامر)"
+            : p.entryType === "RETURN"
+              ? "مرتجع شراء"
+              : p.entryType === "PAYMENT_IN"
+                ? "سند قبض / استرداد من المورد"
+                : p.entryType === "EXCHANGE_SETTLE"
+                  ? "تسوية عبر صيرفة"
+                  : p.entryType === "PURCHASE"
+                    ? "شراء (بلا أمر)"
+                    : p.entryType === "OPENING"
+                      ? "تصحيح رصيد افتتاحي"
+                      : p.purchaseOrderId
+                        ? "سند صرف للمورد"
+                        : "سند صرف على الحساب";
+
       const descriptionSub = [
-        p.entryType === "PAYMENT_OUT" && p.purchaseOrderId ? `مخصَّصة لأمر الشراء #${p.purchaseOrderId}` : undefined,
-        p.entryType === "PAYMENT_OUT" && !p.purchaseOrderId ? "بانتظار التخصيص لفاتورةٍ بعينها" : undefined,
+        p.entryType === "PAYMENT_OUT" && p.purchaseOrderId ? `مخصصة لأمر الشراء #${p.purchaseOrderId}` : undefined,
+        p.entryType === "PAYMENT_OUT" && !p.purchaseOrderId ? "دفعة على الحساب (متاح للتسوية)" : undefined,
         p.entryType === "EXCHANGE_SETTLE" && p.exchangeHouseName
           ? `عبر ${p.exchangeHouseName}${p.referenceNumber ? ` — مرجع ${p.referenceNumber}` : ""}`
           : undefined,
         cleanStmtNotes(p.notes) || undefined,
       ].filter(Boolean).join(" · ") || undefined;
-      // §الفلترة: PAYMENT_OUT وحدها تُصنَّف مخصَّصة/غير مخصَّصة (بحسب purchaseOrderId)؛ كل
-      // الأنواع الأخرى (مرتجع/استرداد/صيرفة/شراء يتيم/تصحيح افتتاحي) تقع في «أخرى».
+
       const filterGroup: LedgerFilterGroup =
-        grni === "FORWARD" ? "buy"
-        : p.entryType === "PAYMENT_OUT" ? (p.purchaseOrderId ? "pay_alloc" : "pay_unalloc")
-        : "other";
+        grni === "FORWARD" ? "buy" : p.entryType === "PAYMENT_OUT" ? (p.purchaseOrderId ? "pay_alloc" : "pay_unalloc") : "other";
+
       return {
         t: new Date(p.entryDate).getTime(),
         date: fmtDate(p.entryDate),
         ref: p.voucherNumber ?? "—",
         description,
         descriptionSub,
+        kind,
+        paymentMethod: (p as { paymentMethod?: string | null }).paymentMethod ?? null,
+        cashBucket: (p as { cashBucket?: string | null }).cashBucket ?? null,
+        cardLastFour: (p as { cardLastFour?: string | null }).cardLastFour ?? null,
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
         debit: signed.isNegative() ? signed.neg().toFixed(2) : (null as string | null),
         credit: signed.isPositive() ? signed.toFixed(2) : (null as string | null),
         filterGroup,
+        openHref: undefined as string | undefined,
+        paymentStatus: undefined,
+        paymentStatusLabel: undefined,
+        paymentReview: undefined,
+        paidAmount: undefined,
+        returnedAmount: undefined,
+        remainingAmount: undefined,
         poId: p.purchaseOrderId ? Number(p.purchaseOrderId) : undefined,
         receiptId: p.receiptId ? Number(p.receiptId) : undefined,
-        provenance: (p as any).provenance,
+        items: undefined as StatementLineItem[] | undefined,
+        provenance: (p as { provenance?: unknown }).provenance,
       };
     });
-    const openingBal = D(d.summary.openingBalance);
-    const balanced = balanceStatementRows([...poTxs, ...payTxs], d.summary.openingBalance, "supplier");
+
+    const openingStr = (d.summary as { openingBeforeFrom?: string }).openingBeforeFrom ?? d.summary.openingBalance;
+    const openingBal = D(openingStr);
+    const balanced = balanceStatementRows([...poTxs, ...payTxs], openingStr, "supplier");
     const activityRows = balanced.rows;
-    // صفّ «رصيد افتتاحي» أوّل السجل — يُثبِّت عمود الرصيد الجاري (نمط Odoo «Initial Balance» /
-    // بداية سجلّ GnuCash). يظهر كلّما وُجد رصيدٌ افتتاحيّ فعليّ (مستورَد)، بفترةٍ أو بلا فترة —
-    // لا يُغيّر مجموع مدين/دائن الفترة (خانتاه فارغتان)، رصيده وحده هو المُرحَّل.
+
     const rows: LedgerRow[] = openingBal.abs().gt(0)
       ? [
           {
             date: from ? fmtDate(from) : "—",
             ref: "—",
-            description: "رصيد افتتاحي مُرحَّل",
-            descriptionSub: from ? "ما قبل الفترة (افتتاحي + نشاط سابق)" : "الرصيد الافتتاحي المستورَد",
+            description: "رصيد افتتاحي مرحل",
+            descriptionSub: from ? "ما قبل الفترة (افتتاحي + نشاط سابق)" : "الرصيد الافتتاحي المستورد",
+            kind: "OPENING",
+            paymentMethod: null,
+            cashBucket: null,
+            cardLastFour: null,
             actor: "—",
             debit: null,
             credit: null,
+            balanceBefore: openingBal.toFixed(2),
             balance: openingBal.toFixed(2),
             filterGroup: "other",
             provenance: {
@@ -459,10 +457,10 @@ export default function SupplierStatement() {
       : activityRows;
     return {
       rows,
+      openingBeforeFrom: openingBal.toFixed(2),
       totalDebit: balanced.totalDebit,
       totalCredit: balanced.totalCredit,
-      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (رصيد المورّد الحقيقيّ
-      // — مصدر حقيقةٍ خادميّ منفصل عن الحساب المحليّ، يبقى الحكم الفصل عند أيّ انحرافٍ نادر).
+      periodClosing: balanced.closingBalance,
       closingBalance: statementClosingBalance(from, to, balanced.closingBalance, d.summary.currentBalance),
     };
   }, [stmt.data, from, to]);
@@ -502,7 +500,7 @@ export default function SupplierStatement() {
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
-      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد", "حالة السداد", "المدفوع", "تخفيض الذمة", "المتبقي"],
+      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "قبل", "الرصيد", "حالة السداد", "المدفوع", "تخفيض الذمة", "المتبقي"],
       ledger.rows.map((r) => ({
         "التاريخ": r.date,
         "المرجع": r.ref,
@@ -510,6 +508,7 @@ export default function SupplierStatement() {
         "المنفذ": r.actor,
         "مدين": r.debit == null ? "" : r.debit,
         "دائن": r.credit == null ? "" : r.credit,
+        "قبل": r.balanceBefore,
         "الرصيد": r.balance,
         "حالة السداد": `${r.paymentStatusLabel ?? ""}${r.paymentReview ? " — يحتاج مراجعة" : ""}`,
         "المدفوع": r.paidAmount ?? "",
@@ -520,10 +519,9 @@ export default function SupplierStatement() {
     return { plain, whatsapp, tsv };
   }, [stmt.data, ledger, to]);
 
-  // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
   const printStatement = async () => {
     if (!stmt.data || !ledger) return;
-    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+    if (!reservePrintWindow()) return notify.err("تعذر فتح نافذة الطباعة — تحقق من مانع النوافذ المنبثقة");
     const d = stmt.data;
     try {
       await printAudit.run({
@@ -531,12 +529,18 @@ export default function SupplierStatement() {
         documentId: Number(d.supplier.id),
         channel: "PDF",
         open: (audit) => printSupplierStmt({
-          supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
+          supplierName: d.supplier.name,
+          supplierPhone: d.supplier.phone ?? undefined,
           fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
           toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
-          transactions: ledger.rows,
-          totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
-          openingBalance: d.summary.openingBalance,
+          usdReference: d.supplier.currentBalanceUsd,
+          transactions: ledger.rows.map((r) => ({
+            ...r,
+            items: detailLevel === "detailed" ? r.items : undefined,
+          })),
+          totalDebit: ledger.totalDebit,
+          totalCredit: ledger.totalCredit,
+          openingBalance: ledger.openingBeforeFrom,
           currentBalance: d.summary.currentBalance,
           closingBalance: ledger.closingBalance,
           printedByName: audit.actorName,
@@ -545,11 +549,10 @@ export default function SupplierStatement() {
       });
     } catch (error) {
       releaseReservedPrintWindow();
-      notify.err(error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة");
+      notify.err(error instanceof Error ? error.message : "تعذر تسجيل طلب الطباعة");
     }
   };
 
-  // يصدّر دفتر الحركات نفسه (تاريخ/مرجع/بيان/مدين/دائن/رصيد) إلى Excel أو CSV.
   const exportStatement = (format?: "csv") => {
     if (!stmt.data || !ledger) return;
     exportRows(ledger.rows, {
@@ -561,14 +564,22 @@ export default function SupplierStatement() {
         { key: "ref", header: "المرجع" },
         { key: "description", header: "البيان" },
         { key: "actor", header: "المنفذ" },
-        { key: "debit", header: "مدين", map: (r) => (r.debit == null ? null : Number(r.debit)) },
-        { key: "credit", header: "دائن", map: (r) => (r.credit == null ? null : Number(r.credit)) },
-        { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+        { key: "debit", header: "مدين", map: (r) => (r.debit == null ? null : D(r.debit).toNumber()) },
+        { key: "credit", header: "دائن", map: (r) => (r.credit == null ? null : D(r.credit).toNumber()) },
+        { key: "balanceBefore", header: "قبل", map: (r) => D(r.balanceBefore).toNumber() },
+        { key: "balance", header: "الرصيد", map: (r) => D(r.balance).toNumber() },
         { key: "paymentStatusLabel", header: "حالة السداد" },
         { key: "paymentReview", header: "مراجعة دليل السداد", map: (r) => r.paymentReview ? "تحتاج مراجعة" : "" },
         { key: "paidAmount", header: "المدفوع (د.ع)", map: (r) => r.paidAmount == null ? null : D(r.paidAmount).toNumber() },
         { key: "returnedAmount", header: "تخفيض الذمة (د.ع)", map: (r) => r.returnedAmount == null ? null : D(r.returnedAmount).toNumber() },
         { key: "remainingAmount", header: "المتبقي (د.ع)", map: (r) => r.remainingAmount == null ? null : D(r.remainingAmount).toNumber() },
+        ...(detailLevel === "detailed" ? [{
+          key: "items" as const,
+          header: "بنود الأصناف",
+          map: (r: LedgerRow) => r.items?.length
+            ? r.items.map((it) => `${it.productName} × ${fmtQty(it.quantity)} = ${fmt(it.total)}`).join(" | ")
+            : "",
+        }] : []),
       ],
     });
   };
@@ -633,8 +644,8 @@ export default function SupplierStatement() {
       />
 
       <Card>
-        <CardContent className="p-2.5 flex flex-wrap items-end gap-2.5">
-          <div className="space-y-1 min-w-64 flex-1">
+        <CardContent className="p-2.5 space-y-2.5">
+          <div className="min-w-64">
             <SupplierPicker
               label="المورد"
               source="reports"
@@ -642,21 +653,13 @@ export default function SupplierStatement() {
               onSupplierChange={(id) => selectSupplier(id ?? 0)}
             />
           </div>
-          <div className="space-y-1 w-36">
-            <Label className="text-[11px] text-muted-foreground">من تاريخ</Label>
-            <Input type="date" dir="ltr" className="h-8 text-xs" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </div>
-          <div className="space-y-1 w-36">
-            <Label className="text-[11px] text-muted-foreground">إلى تاريخ</Label>
-            <Input type="date" dir="ltr" className="h-8 text-xs" value={to} onChange={(e) => setTo(e.target.value)} />
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {PERIOD_PRESETS.map((p) => (
-              <Button key={p.label} variant="secondary" size="sm" className="h-8 px-2.5 text-xs" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
-                {p.label}
-              </Button>
-            ))}
-          </div>
+          <StatementPeriodDetailBar
+            from={from}
+            to={to}
+            onRangeChange={({ from: nextF, to: nextT }) => { setFrom(nextF); setTo(nextT); }}
+            detailLevel={detailLevel}
+            onDetailLevelChange={setDetailLevel}
+          />
         </CardContent>
       </Card>
 
@@ -670,11 +673,11 @@ export default function SupplierStatement() {
         <ErrorState message={stmt.error.message} onRetry={() => stmt.refetch()} />
       )}
 
-      {stmt.data && (
+      {stmt.data && ledger && (
         <>
           <Card>
-            <CardContent className="p-3 space-y-2.5">
-              <div className="flex items-start justify-between flex-wrap gap-2">
+            <CardContent className="p-3 space-y-3">
+              <div className="flex items-start justify-between flex-wrap gap-2.5">
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="text-base font-semibold">{stmt.data.supplier.name}</div>
                   <div className="text-xs"><CopyInline value={stmt.data.supplier.phone} /></div>
@@ -683,25 +686,60 @@ export default function SupplierStatement() {
                     {stmt.data.supplier.paymentTerms ? ` · شروط الدفع: ${stmt.data.supplier.paymentTerms}` : ""}
                   </div>
                 </div>
+                <PartyCommandBar
+                  partyType="SUPPLIER"
+                  partyName={stmt.data.supplier.name}
+                  phone={stmt.data.supplier.phone}
+                  whatsappMessage={copyPayload.plain}
+                  canWriteVoucher={canWriteVoucher}
+                  onOpenQuickVoucher={(type) => setQuickVoucherType(type)}
+                  onOpenDossier={() => setDossierOpen(true)}
+                  onOpenBatchPrint={() => setBatchPrintOpen(true)}
+                />
               </div>
 
-              {/* صفّ مؤشراتٍ واحد (نمط عالمي: Odoo Partner Ledger / ERPNext AP Summary / GnuCash
-                  Owner Report) — رصيدٌ رئيسيٌّ واحد بالدينار (والدولار مرجعٌ ثانويّ تحته، لا بطاقةٌ
-                  منافسة)، رصيدٌ افتتاحي يُثبِّت عمود الرصيد الجاري، ثمّ حركة الفترة، ثمّ الأعمار. */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <AccountHealthBanner partyType="SUPPLIER" partyId={supplierId} onResolved={refreshAll} />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                 <StatBalance
                   label="الرصيد المستحق"
                   value={stmt.data.summary.currentBalance}
                   entityType="supplier"
                   usdValue={stmt.data.supplier.currentBalanceUsd}
                 />
-                <Stat label="الرصيد الافتتاحي" value={stmt.data.summary.openingBalance} />
-                <Stat label="إجمالي المشتريات (الفترة)" value={stmt.data.summary.totalPurchases} />
-                <Stat label="إجمالي المسدَّد (الفترة)" value={stmt.data.summary.totalPaid} />
-                <AgingCard aging={stmt.data.summary.aging} scoped={!!(from || to)} />
+                <Stat
+                  label={from ? "الرصيد الافتتاحي (ما قبل الفترة)" : "الرصيد الافتتاحي"}
+                  value={ledger.openingBeforeFrom}
+                />
+                <Stat
+                  label="إجمالي المشتريات والمستحقات (دائن)"
+                  value={ledger.totalCredit}
+                  sub={!D(ledger.totalCredit).eq(D(stmt.data.summary.totalPurchases))
+                    ? `أوامر الشراء وحدها: ${fmt(stmt.data.summary.totalPurchases)}`
+                    : undefined}
+                />
+                <Stat
+                  label="إجمالي المسدد والمرتجعات (مدين)"
+                  value={ledger.totalDebit}
+                  sub={!D(ledger.totalDebit).eq(D(stmt.data.summary.totalPaid))
+                    ? `سندات الصرف وحدها: ${fmt(stmt.data.summary.totalPaid)}`
+                    : undefined}
+                />
               </div>
 
-              {/* بند تسوية صريح لفجوة تخصيص الدفعات عند وجود أوامر شراء مفتوحة */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+                <span className="text-muted-foreground">
+                  معادلة الرصيد: الافتتاحي (<bdi dir="ltr">{fmt(ledger.openingBeforeFrom)}</bdi>) + الدائن (<bdi dir="ltr">{fmt(ledger.totalCredit)}</bdi>) − المدين (<bdi dir="ltr">{fmt(ledger.totalDebit)}</bdi>) = صافي نهاية الفترة (<bdi dir="ltr">{fmt(ledger.periodClosing)}</bdi>)
+                </span>
+                {!from && !to && !D(ledger.periodClosing).eq(D(stmt.data.summary.currentBalance)) && (
+                  <Badge variant="warning">
+                    فرق عن رصيد المورد المسجل: <bdi dir="ltr">{fmt(D(stmt.data.summary.currentBalance).minus(D(ledger.periodClosing)).toFixed(2))}</bdi>
+                  </Badge>
+                )}
+              </div>
+
+              <AgingCard aging={stmt.data.summary.aging} scoped={!!(from || to)} />
+
               {hasUnsettledMismatch && (
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
                   <div className="flex items-start gap-2">
@@ -712,7 +750,7 @@ export default function SupplierStatement() {
                       </span>
                       <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
                       <p className="text-muted-foreground leading-relaxed">
-                        يوجد رصيد مسدد أو غير مخصص مع وجود أوامر شراء مفتوحة ({openOrdersCount} أمر). يمكنك إجراء تسوية تلقائية بنظام (FIFO) لربط الدفعات بالأوامر وتصفية أعمار الذمم الدائنة تلقائياً.
+                        يوجد رصيد مسدد أو غير مخصص مع وجود أوامر شراء مفتوحة ({openOrdersCount} أمر). يمكنك إجراء تسوية تلقائية بنظام الأقدم فالأقدم لربط الدفعات بالأوامر وتصفية أعمار الذمم الدائنة تلقائياً.
                       </p>
                     </div>
                   </div>
@@ -723,12 +761,11 @@ export default function SupplierStatement() {
                     onClick={() => autoSettleM.mutate({ supplierId })}
                   >
                     <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
-                    تسوية الأوامر تلقائياً (FIFO)
+                    تسوية الأوامر تلقائياً
                   </Button>
                 </div>
               )}
 
-              {/* إشعار معلوماتي في حال وجود دفعات غير مخصصة دون أوامر شراء مفتوحة (دفعة مقدمة / رصيد دائن على الحساب) */}
               {!hasUnsettledMismatch && D(stmt.data.summary.unallocatedPayments).gt(0) && (
                 <div className="flex items-start gap-2 rounded-md border border-border/60 bg-[var(--sem-info-bg)]/60 p-3 text-xs">
                   <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
@@ -738,7 +775,7 @@ export default function SupplierStatement() {
                     </span>
                     <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
                     <p className="text-muted-foreground leading-relaxed">
-                      يوجد رصيد دفعات مستقلة على حساب المورد دون وجود أوامر شراء مفتوحة حالياً (رصيد دائن / دفعة مقدمة). سيتم تخصيص هذا الرصيد تلقائياً عند إصدار أوامر شراء جديدة.
+                      يوجد رصيد دفعات مستقلة على حساب المورد دون وجود أوامر شراء مفتوحة حالياً (رصيد دائن / دفعة مقدمة).
                     </p>
                   </div>
                 </div>
@@ -749,49 +786,37 @@ export default function SupplierStatement() {
                   <div className="flex items-start gap-2">
                     <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
                     <div>
-                      <span className="font-semibold">بضاعة مستلمة مخزنياً بانتظار فاتورة المورد (GRNI): </span>
+                      <span className="font-semibold">بضاعة مستلمة مخزنياً بانتظار فاتورة المورد: </span>
                       <span>
                         توجد {stmt.data.unbilledReceipts?.length} أذونات استلام مخزني غير مفوترة بإجمالي{" "}
                         <span className="tabular-nums font-semibold" dir="ltr">
                           {fmt(
                             stmt.data.unbilledReceipts
-                              ?.reduce(
-                                (sum, r) => sum.plus(D(r.totalAmount || "0")),
-                                D(0),
-                              )
+                              ?.reduce((sum, r) => sum.plus(D(r.totalAmount || "0")), D(0))
                               .toFixed(2) ?? "0.00",
                           )}
                         </span>
-                        {" "}دينار عراقي لم تُرحل إلى ذمم الموردين بعد.
+                        {" "}دينار عراقي لم ترحل إلى ذمم الموردين بعد.
                       </span>
                     </div>
                   </div>
                   <div className="divide-y divide-border/40 rounded border border-border/40 bg-background/50">
                     {stmt.data.unbilledReceipts?.map((r) => (
-                      <div
-                        key={r.goodsReceiptId}
-                        className="flex flex-wrap items-center justify-between gap-2 p-2.5"
-                      >
+                      <div key={r.goodsReceiptId} className="flex flex-wrap items-center justify-between gap-2 p-2.5">
                         <div className="space-y-0.5">
                           <div className="flex items-center gap-2">
                             <span className="font-semibold text-foreground">{r.receiptNumber}</span>
-                            {r.receivedAt && (
-                              <span className="text-muted-foreground">{fmtDate(r.receivedAt)}</span>
-                            )}
+                            {r.receivedAt && <span className="text-muted-foreground">{fmtDate(r.receivedAt)}</span>}
                             {r.poNumber && (
                               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                 أمر شراء: {r.poNumber}
                               </span>
                             )}
                           </div>
-                          {r.notes && (
-                            <p className="text-[11px] text-muted-foreground">{cleanStmtNotes(r.notes)}</p>
-                          )}
+                          {r.notes && <p className="text-[11px] text-muted-foreground">{cleanStmtNotes(r.notes)}</p>}
                         </div>
                         <div className="flex items-center gap-3">
-                          <span className="tabular-nums font-semibold text-foreground" dir="ltr">
-                            {fmt(r.totalAmount)}
-                          </span>
+                          <span className="tabular-nums font-semibold text-foreground" dir="ltr">{fmt(r.totalAmount)}</span>
                           {r.purchaseOrderId && (
                             <Link href={`/purchases/${r.purchaseOrderId}`}>
                               <Button variant="outline" size="sm" className="h-7 text-xs gap-1">
@@ -817,24 +842,20 @@ export default function SupplierStatement() {
             onPdf={printStatement}
           />
 
-          {/* دفتر حركاتٍ موحَّد واحد (مدين/دائن/رصيدٌ جارٍ) بدل جدولَي «أوامر الشراء»/«الدفعات»
-              المنفصلَين سابقاً — نفس نمط Odoo Partner Ledger / ERPNext General Ledger / GnuCash
-              Owner Report / Dolibarr Grand Livre. بحثٌ حرّ مدمج في DataTable + رقاقات نوع الحركة. */}
           <Card>
             <CardContent className="p-0">
               <div className="flex flex-wrap items-center gap-2 p-3 border-b bg-muted/30">
                 <span className="text-sm font-medium">دفتر الحركات</span>
                 <div className="flex flex-wrap gap-1 ms-1">
-                  {(["all", "buy", "pay_alloc", "pay_unalloc", "other"] as const).map((g) => (
-                    <Button
-                      key={g}
-                      type="button"
-                      size="sm"
-                      variant={ledgerFilter === g ? "default" : "outline"}
-                      className="h-7 px-2.5 text-xs"
-                      onClick={() => setLedgerFilter(g)}
-                    >
-                      {FILTER_GROUP_LABEL[g]}
+                  {([
+                    ["all", "الكل"],
+                    ["buy", "فواتير شراء"],
+                    ["pay_alloc", "دفعات مخصصة"],
+                    ["pay_unalloc", "دفعات غير مخصصة"],
+                    ["other", "أخرى"],
+                  ] as const).map(([g, lbl]) => (
+                    <Button key={g} type="button" size="sm" variant={ledgerFilter === g ? "default" : "outline"} className="h-7 px-2.5 text-xs" onClick={() => setLedgerFilter(g)}>
+                      {lbl}
                     </Button>
                   ))}
                 </div>
@@ -845,7 +866,7 @@ export default function SupplierStatement() {
                 pageSize={Infinity}
                 columns={ledgerColumns}
                 data={filteredLedgerRows}
-                searchPlaceholder="ابحث بالمرجع أو البيان أو المنفّذ…"
+                searchPlaceholder="ابحث بالمرجع أو البيان أو المنفذ…"
                 emptyText="لا حركات لهذا المورد."
               />
             </CardContent>
@@ -853,58 +874,78 @@ export default function SupplierStatement() {
         </>
       )}
 
-      <AccountLedgerDrilldownDialog
-        target={drilldownTarget}
-        open={!!drilldownTarget}
-        onOpenChange={(open) => !open && setDrilldownTarget(null)}
-      />
+      <AccountLedgerDrilldownDialog target={drilldownTarget} open={!!drilldownTarget} onOpenChange={(open) => !open && setDrilldownTarget(null)} />
+      <PurchaseDetailDrawer purchaseOrderId={drawerPoId} onClose={() => setDrawerPoId(null)} />
+      <VoucherDetailDrawer voucherId={drawerVoucherId} open={drawerVoucherId != null} onOpenChange={(o) => !o && setDrawerVoucherId(null)} onActionSuccess={refreshAll} />
+      <SupplierDossierDrawer supplierId={dossierOpen ? supplierId : null} open={dossierOpen} onClose={() => setDossierOpen(false)} />
+
+      {stmt.data && canWriteVoucher && quickVoucherType && (
+        <QuickVoucherSheet
+          open={!!quickVoucherType}
+          onOpenChange={(o) => !o && setQuickVoucherType(null)}
+          defaultType={quickVoucherType}
+          defaultPartyType="SUPPLIER"
+          defaultPartyId={supplierId}
+          defaultPartyName={stmt.data.supplier.name}
+          currentBalance={stmt.data.summary.currentBalance}
+          onSuccess={refreshAll}
+        />
+      )}
+
+      {stmt.data && batchPrintOpen && (
+        <BatchInvoicePrintDialog
+          open={batchPrintOpen}
+          onOpenChange={setBatchPrintOpen}
+          partyType="SUPPLIER"
+          partyId={supplierId}
+          partyName={stmt.data.supplier.name}
+          partyPhone={stmt.data.supplier.phone}
+          from={from}
+          to={to}
+        />
+      )}
     </div>
   );
 }
 
-function Stat({ label, value, emphasis }: { label: string; value: string | number; emphasis?: boolean }) {
+function Stat({ label, value, sub, emphasis }: { label: string; value: string | number; sub?: string; emphasis?: boolean }) {
   return (
-    <div className={`rounded-md px-2.5 py-1.5 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
+    <div className={`rounded-md px-2.5 py-2 space-y-0.5 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
       <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
       <div className={`tabular-nums ${emphasis ? "text-base font-bold" : "text-sm font-semibold"}`} dir="ltr">{fmt(value)}</div>
+      {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
     </div>
   );
 }
 
-/** بطاقة الرصيد الرئيسية — الرصيد الدينارّي يقود شكل البطاقة، والدولاريّ (حين وُجد) سطرٌ ثانويّ
- *  تحته بدل بطاقةٍ منفصلة متنافسة (نمط Odoo/ERPNext/Dolibarr).
- *  مراجعة Codex #966: `currentBalanceUsd` ذمّةٌ **مستقلّة الحساب** (سعر فاتورتها وقت الترحيل، لا
- *  تحويلاً بسعر اليوم) — لا معادلاً محوَّلاً لنفس الدَّين الدينارّي كما وُصف سابقاً، وقد تحمل
- *  إشارةً مختلفة عنه تماماً (مورّدٌ رصيدُه الدينارّي صفرٌ وذمّتُه الدولارية موجبة كان يُعرَض «لا
- *  ذمم» بالخطأ؛ وإشارتان متعاكستان كانتا تُعرَضان بلافتة IQD الواحدة). كل عملةٍ تُشتقّ اتجاهها
- *  وتُعرَض بشارتها الخاصّة الآن. */
 function StatBalance({
   label, value, entityType, usdValue,
 }: {
   label: string; value: string | number; entityType: "customer" | "supplier"; usdValue?: string | number | null;
 }) {
-  const num = Number(value);
-  const usdNum = usdValue != null ? Number(usdValue) : 0;
-  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر) — القاعدة نفسها لكلّ
-  // عملةٍ على حدة، مشتقّةً من قيمتها هي لا من الأخرى.
-  const dirOf = (n: number) => (entityType === "customer" ? n > 0 : n < 0);
-  const hasIqd = num !== 0;
-  const weHaveClaimIqd = dirOf(num);
-  const hasUsd = usdNum !== 0;
-  const weHaveClaimUsd = dirOf(usdNum);
+  const numD = D(value);
+  const usdD = usdValue != null ? D(usdValue) : D(0);
+  const weHaveClaimIqd = entityType === "customer" ? numD.gt(0) : numD.lt(0);
+  const hasIqd = !numD.isZero();
+  const hasUsd = !usdD.isZero();
+  const weHaveClaimUsd = entityType === "customer" ? usdD.gt(0) : usdD.lt(0);
+  const partyKind = entityType === "customer" ? "CUSTOMER" : "SUPPLIER";
+
   return (
-    <div className={`rounded-md px-2.5 py-1.5 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
+    <div className={`rounded-md px-2.5 py-2 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
       <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
       <div className={`tabular-nums text-base font-bold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
-        {fmt(Math.abs(num))}
+        {fmt(numD.abs().toFixed(2))}
       </div>
-      <div className={`text-[11px] font-semibold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
-        {!hasIqd ? (hasUsd ? "لا ذمّة بالدينار" : "لا ذمم") : weHaveClaimIqd ? "لنا عليه" : "له علينا"}
+      <div className={`text-xs font-semibold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
+        {!hasIqd ? (hasUsd ? "لا ذمة بالدينار" : "متوازن") : balanceDirectionLabel(partyKind, numD)}
       </div>
       {hasUsd && (
-        <div className={`text-[10px] mt-1 pt-1 border-t border-current/10 tabular-nums flex items-center justify-between gap-2 ${weHaveClaimUsd ? "text-money-positive" : "text-money-negative"}`}>
-          <span dir="ltr">${fmt(Math.abs(usdNum))}</span>
-          <span className="font-semibold">ذمّةٌ دولارية مستقلّة — {weHaveClaimUsd ? "لنا عليه" : "له علينا"}</span>
+        <div className="text-xs mt-1.5 pt-1.5 border-t border-current/15 flex flex-wrap items-center justify-between gap-1.5">
+          <span className="font-bold tabular-nums" dir="ltr">${fmt(usdD.abs().toFixed(2))}</span>
+          <span className="font-medium text-muted-foreground">
+            مرجع الفواتير الدولارية — مشمول بالدينار المثبت ({balanceDirectionLabel(partyKind, usdD)})
+          </span>
         </div>
       )}
     </div>
@@ -918,24 +959,18 @@ const AGING_BUCKETS: { key: "d0_30" | "d31_60" | "d61_90" | "d91p"; label: strin
   { key: "d91p", label: "+90", barCls: "bg-[var(--sem-neg)]", textCls: "text-[var(--sem-neg)]" },
 ];
 
-/** تحليل أعمار الذمم — دلوٌ مدمج داخل نفس صفّ المؤشرات (نمط ERPNext: رسمٌ فوق الجدول مباشرةً
- *  بدل تقريرٍ منفصل كما في Odoo/GnuCash). المجموع قد لا يُطابق «الرصيد المستحق» بالضبط (دفعاتٌ
- *  غير مخصَّصة/رصيدٌ افتتاحيّ) — الفرق مكشوفٌ في بند «غير مصنَّف» بدل إخفائه.
- *  مراجعة Codex #966: كان `unbucketed` يُحسَب من الخادم لكن لا يُعرَض هنا إطلاقاً — مورّدٌ
- *  رصيدُه كلّه افتتاحيّ (بلا أوامر شراء) كان يُظهر رسماً فارغاً و٠ في كل الأعمدة رغم رصيدٍ حقيقيّ
- *  غير صفريّ، عكس النيّة الموثَّقة أعلاه بالضبط. */
 function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; d61_90: string; d91p: string; unbucketed: string }; scoped: boolean }) {
   const values = AGING_BUCKETS.map((b) => D(aging[b.key]));
   const unbucketed = D(aging.unbucketed);
-  // شريط النسب: unbucketed سالبٌ نادرٌ (انحرافٌ محاسبيّ) يُستبعَد من مقام الشريط لا يُقصّ صامتاً —
-  // القيمة الحقيقية (حتى السالبة) تبقى ظاهرة في الخانة النصّية أدناه دائماً.
   const barTotal = values.reduce((acc, v) => acc.plus(v), D(0)).plus(unbucketed.gt(0) ? unbucketed : D(0));
   return (
-    <div className="rounded-md p-2 bg-muted/40">
-      <div className="text-xs text-muted-foreground">
-        تحليل الأعمار {scoped && <span className="opacity-70">(لأوامرَ نشطة ضمن الفترة)</span>}
+    <div className="rounded-md p-2.5 bg-muted/40 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          تحليل أعمار الذمم {scoped && <span className="opacity-70">(لأوامر ضمن الفترة)</span>}
+        </span>
       </div>
-      <div className="flex h-2 rounded-full overflow-hidden bg-muted mt-2 mb-1.5">
+      <div className="flex h-2 rounded-full overflow-hidden bg-muted">
         {barTotal.gt(0)
           ? [
               ...AGING_BUCKETS.map((b, i) => {
@@ -948,20 +983,16 @@ function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; 
             ]
           : <div className="w-full bg-border" />}
       </div>
-      <div className="overflow-x-auto">
-        <div className="min-w-[340px] grid grid-cols-5 gap-x-1 text-[10px]">
-          {AGING_BUCKETS.map((b, i) => (
-            <div key={b.key} className="text-center min-w-0">
-              {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
-                  عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
-              <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
-              <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(values[i].toFixed(0))}</div>
-            </div>
-          ))}
-          <div className="text-center min-w-0">
-            <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
-            <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+        {AGING_BUCKETS.map((b, i) => (
+          <div key={b.key} className="rounded border bg-background/70 px-2 py-1 text-center">
+            <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
+            <div className="tabular-nums text-foreground font-medium" dir="ltr">{fmt(values[i].toFixed(0))}</div>
           </div>
+        ))}
+        <div className="rounded border bg-background/70 px-2 py-1 text-center">
+          <div className="font-semibold text-[var(--sem-info)]">غير مصنف</div>
+          <div className="tabular-nums text-foreground font-medium" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
         </div>
       </div>
     </div>

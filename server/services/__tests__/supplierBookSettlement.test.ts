@@ -10,6 +10,7 @@ import { money, toDbMoney } from "../money";
 import {
   adoptSupplierBookSettlement,
   adoptSupplierBookSettlementBatch,
+  consumeRetainedSupplierBookExcessTx,
   prepareSupplierBookVoucherTx,
   previewSupplierBookSettlement,
   unapplySupplierBookSettlementSourceTx,
@@ -17,6 +18,8 @@ import {
 } from "../purchase/supplierBookSettlement";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
 import { approveVoucher, createVoucher } from "../voucherService";
+import { withTx } from "../tx";
+import { randomUUID } from "node:crypto";
 import { getAPAging } from "../reports/apAging";
 import { getArApAgingDetail } from "../reportsAgingDetailService";
 const db = () => getDb()!;
@@ -1243,5 +1246,88 @@ describe("owned full-source supplier book settlement", () => {
     await expect(
       previewSupplierBookSettlement({ supplierId: 1, branchId: 1 }),
     ).rejects.toThrow(/لا يملك سند قبض أصلي معكوساً مطابقاً/);
+  });
+
+  it("يتيح تخطي سقف الذمة مع allowSupplierOverpay ويستهلك الفائض تلقائياً عند فاتورة لاحقة", async () => {
+    await fixture({ total: "100.00", opening: "0.00", payment: "0.00" });
+    const payVoucher = await createVoucher(
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        amount: "250.00",
+        paymentMethod: "TRANSFER",
+        referenceNumber: "OVERPAY-BOOK-1",
+        partyType: "SUPPLIER",
+        partyId: 1,
+        description: "دفعة تفوق المستحق كرصيد لنا عليه",
+        allowSupplierOverpay: true,
+        clientRequestId: randomUUID(),
+      },
+      { userId: 9, branchId: 1, role: "manager", isOwner: true },
+    );
+    expect(payVoucher.balanceBefore).toBe("100.00");
+    expect(payVoucher.balanceAfter).toBe("-150.00");
+    expect(payVoucher.excessUnallocatedAmount).toBe("150.00");
+
+    // فاتورة مورد جديدة بمبلغ 120.00 — يُفترض أن يستهلك الفائض المحتفظ به تلقائياً
+    await db().insert(s.purchaseOrders).values({
+      id: 2,
+      poNumber: "BOOK-PO-2",
+      supplierId: 1,
+      branchId: 1,
+      status: "RECEIVED",
+      settlementType: "CREDIT",
+      subtotal: "120.00",
+      total: "120.00",
+      paidAmount: "0.00",
+      orderDate: new Date("2026-01-10T00:00:00Z"),
+      agreedCurrency: "IQD",
+    });
+    const entry2 = extractInsertId(
+      await db().insert(s.accountingEntries).values({
+        entryType: "PURCHASE",
+        entryDate: new Date("2026-01-10T00:00:00Z"),
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderId: 2,
+        amount: "120.00",
+        purchaseLiabilityAccount: "AP",
+        createdBy: 7,
+      }),
+    );
+    await db().insert(s.supplierInvoices).values({
+      id: 2,
+      invoiceNumber: "BOOK-SIN-2",
+      clientRequestId: "BOOK-INVOICE-2",
+      origin: "LEGACY",
+      liabilityClass: "LEGACY_AP",
+      paymentGate: "OPEN",
+      legacyPurchaseOrderId: 2,
+      supplierId: 1,
+      branchId: 1,
+      status: "POSTED",
+      invoiceDate: "2026-01-10",
+      currency: "IQD",
+      subtotal: "120.00",
+      totalAmount: "120.00",
+      legacySettledAmount: "0.00",
+      legacySettlementEvidenceHash: "c".repeat(64),
+      payloadCanonical: "{}",
+      payloadHash: "c".repeat(64),
+      evidenceType: "OTHER",
+      postingEntryId: entry2,
+    });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "-30.00" })
+      .where(eq(s.suppliers.id, 1));
+
+    const settled = await withTx((tx) =>
+      consumeRetainedSupplierBookExcessTx(tx, 1, { userId: 9, branchId: 1, role: "manager", isOwner: true }),
+    );
+    expect(settled.settledAmount).toBe("120.00");
+    expect(settled.settledInvoicesCount).toBe(1);
+    const [inv2] = await db().select().from(s.supplierInvoices).where(eq(s.supplierInvoices.id, 2));
+    expect(inv2.paymentGate).toBe("SETTLED");
   });
 });

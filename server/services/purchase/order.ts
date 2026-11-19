@@ -18,6 +18,11 @@ import {
   type PriceCurrency,
 } from "../../../shared/moneyPrecision";
 import { appErrorMessage } from "../../../shared/errors";
+import {
+  assessUnitCostAnomaly,
+  assessUsdRateSanity,
+  USD_RATE_SANITY,
+} from "../../../shared/balanceTrail";
 import { extractInsertId } from "../../lib/insertId";
 import {
   checkIdempotency,
@@ -31,6 +36,7 @@ import {
   restoreVariantsToActiveOpeningStocktakes,
 } from "../stocktake/openingEligibility";
 import type { Tx } from "../../db";
+import type { DB } from "../../db";
 import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
 import type {
@@ -394,7 +400,180 @@ async function variantLabel(tx: Tx, variantId: number): Promise<string> {
  * الشاشتين امتنعتا عن إرسال القيمة أصلاً هرباً من الرفض، فضاع الضابط كلّه وصار الأمر يُحفَظ بلا
  * أيّ تحقّقٍ من مستنده. الرسالة الآن **تشخيصيّة**: الرقمان والفرق واتّجاهه وسببه المعتاد.
  */
-function assertSupplierInvoiceMatch(
+export async function readReferenceUsdRateTx(
+  dbOrTx: DB | Tx,
+  branchId: number,
+  excludePurchaseOrderId?: number,
+): Promise<string | null> {
+  const recentBranch = await dbOrTx
+    .select({
+      id: purchaseOrders.id,
+      agreedRate: purchaseOrders.agreedRate,
+    })
+    .from(purchaseOrders)
+    .where(
+      and(
+        eq(purchaseOrders.branchId, branchId),
+        eq(purchaseOrders.agreedCurrency, "USD"),
+        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+      ),
+    )
+    .orderBy(desc(purchaseOrders.id))
+    .limit(20);
+  const pickNormal = (rows: Array<{ id: number | string; agreedRate: string | null }>) => {
+    const valid = rows
+      .filter((r) => (excludePurchaseOrderId ? Number(r.id) !== excludePurchaseOrderId : true))
+      .map((r) => (r.agreedRate != null ? money(r.agreedRate) : null))
+      .filter(
+        (r): r is Decimal =>
+          r != null &&
+          r.gte(USD_RATE_SANITY.MIN_NORMAL_IQD) &&
+          r.lte(USD_RATE_SANITY.MAX_NORMAL_IQD),
+      );
+    if (!valid.length) return null;
+    // نأخذ أحدث سعر معتمد طبيعي في السجلات (أو متوسط أحدث 5 أسعار متقاربة)
+    return valid[0].toFixed(4);
+  };
+  const branchRef = pickNormal(recentBranch);
+  if (branchRef) return branchRef;
+  const recentCompany = await dbOrTx
+    .select({
+      id: purchaseOrders.id,
+      agreedRate: purchaseOrders.agreedRate,
+    })
+    .from(purchaseOrders)
+    .where(
+      and(
+        eq(purchaseOrders.agreedCurrency, "USD"),
+        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+      ),
+    )
+    .orderBy(desc(purchaseOrders.id))
+    .limit(20);
+  return pickNormal(recentCompany);
+}
+
+export async function assertUsdRateSanityTx(
+  tx: Tx,
+  opts: {
+    branchId: number;
+    agreedCurrency: string;
+    agreedRate: Decimal | string | null | undefined;
+    confirmAnomalousRate?: boolean;
+    rateDeviationReason?: string | null;
+    actor: Actor & { role?: string; isOwner?: boolean };
+    excludePurchaseOrderId?: number;
+  },
+) {
+  if (opts.agreedCurrency !== "USD" || opts.agreedRate == null) {
+    return { anomalousConfirmed: false, sanity: null };
+  }
+  const referenceRate = await readReferenceUsdRateTx(
+    tx,
+    opts.branchId,
+    opts.excludePurchaseOrderId,
+  );
+  const sanity = assessUsdRateSanity(opts.agreedRate, referenceRate);
+  if (sanity.status === "ANOMALOUS") {
+    if (!opts.confirmAnomalousRate) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "سعر صرف الدولار المدخل شاذ عن النطاق المعتاد",
+          why: sanity.message ?? "سعر الصرف المدخل يخرج عن النطاق المتعارف عليه",
+          doThis: sanity.suggestedRate
+            ? `راجع السعر المدخل؛ هل تقصد ${sanity.suggestedRate} د.ع/$؟ صحّح السعر، أو فعّل التأكيد الاستثنائي للمدير/المالك مع ذكر السبب`
+            : "صحّح سعر الصرف بالدينار لكل دولار، أو فعّل التأكيد الاستثنائي للمدير/المالك مع ذكر السبب",
+        }),
+      });
+    }
+    const canOverride =
+      opts.actor.isOwner === true ||
+      opts.actor.role === "admin" ||
+      opts.actor.role === "manager";
+    if (!canOverride) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تجاوز سعر الصرف الاستثنائي مقتصر على المدير أو المالك",
+          why: "صلاحية حسابك لا تسمح بتمرير سعر صرف خارج النطاق المعتاد",
+          doThis: "صحّح سعر الصرف إلى السعر الفعلي أو اطلب من المدير/المالك المراجعة",
+        }),
+      });
+    }
+    const deviationReason = opts.rateDeviationReason?.trim() ?? "";
+    if (deviationReason.length < 5) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مطلوب سبب موثق لقبول سعر الصرف الاستثنائي",
+          why: "النظام يوثق سبب الانحراف الحاد في سعر الصرف لأغراض التدقيق وحماية متوسط الكلفة",
+          doThis: "اكتب سبباً واضحاً لا يقل عن 5 أحرف قبل الحفظ أو الإرسال للاعتماد",
+        }),
+      });
+    }
+    return { anomalousConfirmed: true, sanity };
+  }
+  return { anomalousConfirmed: false, sanity };
+}
+
+export async function computePurchaseUnitCostWarningsTx(
+  dbOrTx: DB | Tx,
+  lines: ReadonlyArray<{
+    variantId: number;
+    baseQuantity: number;
+    total: string | number;
+  }>,
+) {
+  const variantIds = Array.from(
+    new Set(lines.map((l) => Number(l.variantId)).filter((id) => id > 0)),
+  );
+  if (!variantIds.length) return [];
+  const variantRows = await dbOrTx
+    .select({
+      variantId: productVariants.id,
+      costPrice: productVariants.costPrice,
+      sku: productVariants.sku,
+      variantName: productVariants.variantName,
+      productName: products.name,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productVariants.id, variantIds));
+  const byVariant = new Map(variantRows.map((v) => [Number(v.variantId), v]));
+  const warnings: Array<{
+    variantId: number;
+    itemLabel: string;
+    newUnitCostIqd: string;
+    currentCostIqd: string;
+    kind: "SHARP_DROP" | "SHARP_SPIKE";
+    ratio: string | null;
+    message: string;
+  }> = [];
+  for (const line of lines) {
+    const baseQty = Number(line.baseQuantity);
+    if (!Number.isFinite(baseQty) || baseQty <= 0) continue;
+    const v = byVariant.get(Number(line.variantId));
+    if (!v || v.costPrice == null || money(v.costPrice).lte(0)) continue;
+    const newUnitCost = money(line.total).dividedBy(baseQty);
+    const label = [v.productName, v.variantName].filter(Boolean).join(" — ") || `الصنف #${line.variantId}`;
+    const check = assessUnitCostAnomaly(newUnitCost, v.costPrice, label);
+    if (check.isAnomalous && check.kind !== "OK" && check.message) {
+      warnings.push({
+        variantId: Number(line.variantId),
+        itemLabel: label,
+        newUnitCostIqd: newUnitCost.toFixed(2),
+        currentCostIqd: money(v.costPrice).toFixed(2),
+        kind: check.kind,
+        ratio: check.ratio,
+        message: check.message,
+      });
+    }
+  }
+  return warnings;
+}
+
+export function assertSupplierInvoiceMatch(
   declaredRaw: string,
   expected: Decimal,
   currency: "IQD" | "USD",
@@ -775,8 +954,11 @@ async function purchaseCreationReplayTx(
 }
 
 export async function createPurchaseOrder(
-  input: CreatePurchaseOrderInput,
-  actor: Actor,
+  input: CreatePurchaseOrderInput & {
+    confirmAnomalousRate?: boolean;
+    rateDeviationReason?: string | null;
+  },
+  actor: Actor & { role?: string; isOwner?: boolean },
 ) {
   // دفاع الخدمة نفسها: لا يستطيع مستدعٍ داخلي/قديم تجاوز maker-checker بإنشاء أمر معتمد.
   if (input.status != null && input.status !== "DRAFT") {
@@ -923,6 +1105,14 @@ export async function createPurchaseOrder(
       invoiceDiscountIqd,
       usdInvoiceDiscountVal,
     } = await computePurchaseDocument(tx, input);
+    const rateSanityCheck = await assertUsdRateSanityTx(tx, {
+      branchId: input.branchId,
+      agreedCurrency,
+      agreedRate: agreedRateVal,
+      confirmAnomalousRate: input.confirmAnomalousRate,
+      rateDeviationReason: input.rateDeviationReason,
+      actor,
+    });
     const settlementType = input.settlementType ?? "CREDIT";
     if (agreedCurrency === "USD" && settlementType === "CASH") {
       throw new TRPCError({
@@ -1012,6 +1202,12 @@ export async function createPurchaseOrder(
         revisionNo: revision.revisionNo,
         ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
         ...(declaredTender ? { tender: declaredTender } : {}),
+        ...(rateSanityCheck.anomalousConfirmed
+          ? {
+              anomalousRateConfirmed: true,
+              rateDeviationReason: input.rateDeviationReason?.trim() ?? null,
+            }
+          : {}),
       },
     });
     if (shippingSource.shippingFundingSource === "DRAWER") {
@@ -1072,8 +1268,13 @@ export async function createPurchaseOrder(
 
 /** توافق اسمي: «التأكيد» صار إرسالاً وطلب اعتماد صفري الأثر، ولا يفتح الاستلام مباشرة. */
 export async function confirmPurchaseOrder(
-  input: ConfirmPurchaseOrderInput,
-  actor: Actor & { role?: string },
+  input: ConfirmPurchaseOrderInput & {
+    supplierInvoiceTotal?: string | null;
+    requireInvoiceMatch?: boolean;
+    confirmAnomalousRate?: boolean;
+    rateDeviationReason?: string | null;
+  },
+  actor: Actor & { role?: string; isOwner?: boolean },
 ) {
   return submitPurchaseOrderForApproval(
     {
@@ -1081,6 +1282,10 @@ export async function confirmPurchaseOrder(
       expectedVersion: input.expectedVersion,
       reason: input.reason,
       requestKey: input.clientRequestId,
+      supplierInvoiceTotal: input.supplierInvoiceTotal,
+      requireInvoiceMatch: input.requireInvoiceMatch,
+      confirmAnomalousRate: input.confirmAnomalousRate,
+      rateDeviationReason: input.rateDeviationReason,
     },
     actor,
   );
@@ -1102,8 +1307,11 @@ export async function confirmPurchaseOrder(
  * القفل بترتيب الإنشاء نفسه (الفرع ← الأمر) فلا دورةَ انتظارٍ مع مسارٍ آخر.
  */
 export async function updatePurchaseOrder(
-  input: UpdatePurchaseOrderInput,
-  actor: Actor & { role?: string },
+  input: UpdatePurchaseOrderInput & {
+    confirmAnomalousRate?: boolean;
+    rateDeviationReason?: string | null;
+  },
+  actor: Actor & { role?: string; isOwner?: boolean },
 ) {
   return withTx(async (tx) => {
     if (!input.items.length)
@@ -1256,6 +1464,15 @@ export async function updatePurchaseOrder(
       invoiceDiscountIqd,
       usdInvoiceDiscountVal,
     } = await computePurchaseDocument(tx, input);
+    const rateSanityCheck = await assertUsdRateSanityTx(tx, {
+      branchId: Number(po.branchId),
+      agreedCurrency,
+      agreedRate: agreedRateVal,
+      confirmAnomalousRate: input.confirmAnomalousRate,
+      rateDeviationReason: input.rateDeviationReason,
+      actor,
+      excludePurchaseOrderId: input.purchaseOrderId,
+    });
     const effectiveSettlementType = input.settlementType ?? po.settlementType;
     if (agreedCurrency === "USD" && effectiveSettlementType === "CASH") {
       throw new TRPCError({
@@ -1374,6 +1591,12 @@ export async function updatePurchaseOrder(
         version: governed.version,
         ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
         ...(declaredTender ? { tender: declaredTender } : {}),
+        ...(rateSanityCheck.anomalousConfirmed
+          ? {
+              anomalousRateConfirmed: true,
+              rateDeviationReason: input.rateDeviationReason?.trim() ?? null,
+            }
+          : {}),
       },
     });
 

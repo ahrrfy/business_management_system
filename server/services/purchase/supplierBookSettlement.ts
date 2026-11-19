@@ -5,13 +5,15 @@ import {
 } from "./returnEvidence";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   auditLogs,
   exchangeTransactions,
   goodsReceiptItems,
   inventoryMovements,
+  journalEntries,
+  journalLines,
   legacySupplierInvoiceSettlements,
   purchaseOrderControlRequests,
   purchaseOrderItems,
@@ -45,6 +47,7 @@ import { enqueueFinancialRefresh } from "../../realtime/financialRefresh";
 import { appErrorMessage } from "@shared/errors";
 import type { SupplierVoucherAllocation } from "@shared/supplierVoucherSettlement";
 import { logAuditTx } from "../auditService";
+import { baghdadToday } from "../businessDay";
 import { supplierApEffectSql } from "../ledger/supplierApEffect";
 import { adjustSupplierBalanceUsd } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
@@ -54,11 +57,15 @@ import {
   withTx,
   type Actor,
 } from "../tx";
+import { ADVANCE_REFUND_ACTION } from "./advanceRefundEvidence";
 import {
   assertNativePurchaseSettlementEvidence,
   assertSupplierInvoicePayable,
 } from "./supplierPayments";
-import { cumulativeCurrencyDelta } from "./supplierVoucherCurrency";
+import {
+  boundedSupplierUsdDelta,
+  cumulativeCurrencyDelta,
+} from "./supplierVoucherCurrency";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { loadPurchaseSettlements } from "./settlementProjection";
 import {
@@ -121,6 +128,15 @@ export type BookTarget = {
   total: string;
   snapshot: unknown;
 };
+export function isOnAccountRetainedSnapshot(snapshot: string): boolean {
+  try {
+    const value = JSON.parse(snapshot);
+    return value?.onAccountRetained === true;
+  } catch {
+    return false;
+  }
+}
+
 export type BookSource = {
   retainedSourceId?: number;
   entryId: number;
@@ -130,6 +146,10 @@ export type BookSource = {
   date: string;
   /** A verified account credit can be applied now without backdating its allocations. */
   eligibleThrough?: string;
+  /** السماح بترك فائض غير مخصص على المصدر عند السداد على الحساب / الدفع الزائد. */
+  allowUnallocated?: boolean;
+  /** إسقاط قيد target.date <= source.date عند التسوية التلقائية على الحساب. */
+  ignoreTargetDate?: boolean;
   amount: string;
   snapshot: unknown;
 };
@@ -147,14 +167,80 @@ type PlannedSource = BookSource & {
 };
 type ContextOptions = {
   exchangeAccount?: boolean;
+  strictUsdMatch?: boolean;
+  onAccountVoucher?: boolean;
+  allowSupplierOverpay?: boolean;
+  retainedExcessOnly?: boolean;
   verifiedAccountCreditsAt?: string;
   futurePayment?: {
     amount: string;
     date: string;
     allocations?: SupplierVoucherAllocation[];
+    allowSupplierOverpay?: boolean;
   };
   manualSource?: { entryId: number; allocations: SupplierVoucherAllocation[] };
 };
+
+function readSystemRequestKind(note: string | null | undefined): string | null {
+  if (!note?.startsWith("@SYSTEM_PAYMENT_REQUEST:")) return null;
+  try {
+    const parsed = JSON.parse(note.slice("@SYSTEM_PAYMENT_REQUEST:".length)) as {
+      kind?: unknown;
+    } | null;
+    return typeof parsed?.kind === "string" ? parsed.kind : null;
+  } catch {
+    return null;
+  }
+}
+
+function isExcludedNonTradeApEntry(
+  entry: {
+    entryType: string;
+    purchaseOrderId: number | null;
+    amount: string;
+    dedupeKey: string | null;
+    postingProfile: string | null;
+  },
+  receipt?: {
+    referenceNumber: string | null;
+    internalNote: string | null;
+  },
+): boolean {
+  if (
+    entry.entryType === "PURCHASE" &&
+    entry.purchaseOrderId == null &&
+    money(entry.amount).gt(0) &&
+    (entry.dedupeKey?.startsWith("ASSET_ACQ:") ||
+      entry.postingProfile === "ASSET_ACQUISITION")
+  ) {
+    return true;
+  }
+  if (
+    entry.entryType === "ADJUST" &&
+    entry.dedupeKey?.startsWith("FULFILLMENT_CHARGE_COST:")
+  ) {
+    return true;
+  }
+  if (
+    entry.postingProfile === "FULFILLMENT_CHARGE_PAYEE" ||
+    entry.dedupeKey?.startsWith("FULFILLMENT_CHARGE_PAYEE:") ||
+    entry.postingProfile?.includes("SHIPPING") ||
+    entry.dedupeKey?.startsWith("PURCHASE_CHARGE_")
+  ) {
+    return true;
+  }
+  if (receipt) {
+    const sysKind = readSystemRequestKind(receipt.internalNote);
+    if (
+      sysKind === "ASSET_SUPPLIER_SETTLEMENT" ||
+      sysKind === "FULFILLMENT_CHARGE_PAYEE" ||
+      receipt.referenceNumber?.startsWith("ASSET-SUP-SETTLE-")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Present-day FIFO of carrying value; never a claim about historical tender or returned goods. */
 export function buildSupplierBookFifo(
@@ -239,16 +325,16 @@ export function buildSupplierBookFifo(
     } else
       for (const target of state) {
         if (left.isZero()) break;
-        if (
-          (!isExceptionReturnCreditSnapshot(canonical(source.snapshot)) &&
-            target.date > (source.eligibleThrough ?? source.date)) ||
-          !target.remaining.gt(0)
-        )
-          continue;
+        const skipByDate =
+          !source.ignoreTargetDate &&
+          !isExceptionReturnCreditSnapshot(canonical(source.snapshot)) &&
+          target.date > (source.eligibleThrough ?? source.date);
+        if (skipByDate || !target.remaining.gt(0)) continue;
         assign(target, Decimal.min(left, target.remaining));
       }
     if (
       !left.isZero() &&
+      !source.allowUnallocated &&
       !(
         source.kind === "CREDIT" &&
         isExceptionReturnCreditSnapshot(canonical(source.snapshot))
@@ -430,6 +516,48 @@ async function loadContext(
     .from(sources)
     .where(eq(sources.supplierId, input.supplierId));
   const book = await loadSupplierBookInvoiceTotals(tx, ids);
+  const manualApLines = await tx
+    .select({
+      id: journalLines.id,
+      journalId: journalLines.journalId,
+      entryDate: journalEntries.entryDate,
+      branchId: sql<number | null>`COALESCE(${journalLines.branchId}, ${journalEntries.branchId})`,
+      debit: journalLines.debit,
+      credit: journalLines.credit,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.supplierId, input.supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    )
+    .orderBy(asc(journalLines.id));
+  const manualJournalApNet = manualApLines.reduce(
+    (sum, line) => sum.plus(line.credit).minus(line.debit),
+    money(0),
+  );
+  const inReceiptIds = originalReceipts
+    .filter((r) => r.direction === "IN")
+    .map((r) => String(r.id));
+  const advanceRefundEvidenceRows = inReceiptIds.length
+    ? await tx
+        .select({ entityId: auditLogs.entityId })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.action, ADVANCE_REFUND_ACTION),
+            eq(auditLogs.entityType, "receipt"),
+            inArray(auditLogs.entityId, inReceiptIds),
+          ),
+        )
+    : [];
+  const advanceRefundReceiptIds = new Set(
+    advanceRefundEvidenceRows.map((row) => Number(row.entityId)),
+  );
   const formal = await tx
     .select()
     .from(purchaseReturns)
@@ -505,14 +633,21 @@ async function loadContext(
     })
     .from(accountingEntries)
     .where(eq(accountingEntries.supplierId, input.supplierId));
-  if (!money(ledger.amount).eq(supplier.currentBalance))
+  if (!money(ledger.amount).plus(manualJournalApNet).eq(supplier.currentBalance))
     fail("رصيد AP لا يطابق الدفتر الحاكم");
   const branchIds = new Set([
     ...invoices.map((i) => i.branchId),
     ...entries.filter((e) => e.branchId != null).map((e) => e.branchId!),
+    ...manualApLines
+      .filter((l) => l.branchId != null)
+      .map((l) => Number(l.branchId!)),
   ]);
   const openingOnly =
-    options.exchangeAccount && !branchIds.size && !invoices.length;
+    (options.exchangeAccount ||
+      options.allowSupplierOverpay ||
+      Boolean(options.futurePayment)) &&
+    !branchIds.size &&
+    !invoices.length;
   if (!openingOnly && (branchIds.size !== 1 || !branchIds.has(input.branchId)))
     fail(
       "سجلات هذا الحساب لا تتبع فرع السداد وحده؛ راجع كشف المورد وحدّد الذمة لكل فرع قبل الصرف",
@@ -982,12 +1117,99 @@ async function loadContext(
     return { entry, request, returned, reversals: reversalRows, available };
   }
   const candidate: BookSource[] = [];
+  let accountObligationsNet = manualJournalApNet;
+  let excludedFromPlanApNet = money(0);
   for (const entry of entries) {
+    if (entry.purchaseLiabilityAccount === "CASH_CLEARING") continue;
     if (
-      entry.purchaseOrderId != null ||
-      entry.branchId !== input.branchId ||
-      entry.purchaseLiabilityAccount === "CASH_CLEARING"
-    )
+      entry.entryType === "PURCHASE" &&
+      entry.purchaseOrderId == null &&
+      money(entry.amount).gt(0)
+    ) {
+      if (isExcludedNonTradeApEntry(entry)) {
+        excludedFromPlanApNet = excludedFromPlanApNet.plus(entry.amount);
+      } else {
+        accountObligationsNet = accountObligationsNet.plus(entry.amount);
+      }
+      continue;
+    }
+    if (
+      entry.entryType === "ADJUST" &&
+      entry.dedupeKey?.startsWith("FULFILLMENT_CHARGE_COST:")
+    ) {
+      excludedFromPlanApNet = excludedFromPlanApNet.plus(entry.amount);
+      continue;
+    }
+    if (entry.entryType === "OPENING" && money(entry.amount).lt(0)) {
+      if (bookSources.some((b) => b.sourceAccountingEntryId === entry.id))
+        continue;
+      if (options.retainedExcessOnly) {
+        excludedFromPlanApNet = excludedFromPlanApNet.plus(entry.amount);
+        continue;
+      }
+      candidate.push({
+        entryId: entry.id,
+        receiptId: null,
+        exchangeId: null,
+        kind: "CREDIT",
+        date: day(entry.entryDate),
+        allowUnallocated: true,
+        ignoreTargetDate: true,
+        amount: toDbMoney(money(entry.amount).abs()),
+        snapshot: {
+          entry,
+          purpose: "NEGATIVE_OPENING_CREDIT_V1",
+          onAccountRetained: true,
+        },
+      });
+      continue;
+    }
+    if (
+      entry.entryType === "PAYMENT_IN" &&
+      !entry.dedupeKey?.startsWith("PURCHASE_CHARGE_REVERSAL:") &&
+      money(entry.amount).gt(0)
+    ) {
+      const receipt =
+        entry.receiptId != null
+          ? originalReceipts.find((r) => r.id === entry.receiptId)
+          : undefined;
+      if (!receipt) {
+        accountObligationsNet = accountObligationsNet.plus(entry.amount);
+        continue;
+      }
+      if (receipt.status === "REVERSED") continue;
+      if (
+        receipt.status !== "COMPLETED" ||
+        receipt.approvalStatus !== "APPROVED"
+      )
+        continue;
+      if (receipt.referenceNumber?.startsWith("CANCEL-VCH-")) {
+        const cancelledId = Number(
+          /^CANCEL-VCH-([1-9][0-9]*)$/.exec(receipt.referenceNumber)?.[1],
+        );
+        const cancelledOut = originalReceipts.find((r) => r.id === cancelledId);
+        if (
+          cancelledOut &&
+          cancelledOut.direction === "OUT" &&
+          cancelledOut.status === "REVERSED"
+        ) {
+          continue;
+        }
+      }
+      if (advanceRefundReceiptIds.has(receipt.id)) {
+        continue;
+      }
+      if (
+        entry.dedupeKey?.startsWith("PURCHASE_RETURN") ||
+        formal.some((r) => r.cashRefundReceiptId === receipt.id) ||
+        reversed.some((r) => r.cashRepaymentReceiptId === receipt.id)
+      ) {
+        continue;
+      }
+      accountObligationsNet = accountObligationsNet.plus(entry.amount);
+      continue;
+    }
+    if (entry.purchaseOrderId != null || entry.branchId !== input.branchId)
       continue;
     if (
       payments.some(
@@ -1013,23 +1235,28 @@ async function loadContext(
     if (exceptionReturn) {
       if (exceptionReturn.settlement !== "CREDIT") continue;
       const proof = exceptionCredit(exceptionReturn);
-      if (proof.available.gt(0))
-        candidate.push({
-          entryId: entry.id,
-          receiptId: null,
-          exchangeId: null,
-          kind: "CREDIT",
-          date: day(entry.entryDate),
-          amount: toDbMoney(proof.available),
-          snapshot: {
-            purpose: "OWNER_EXCEPTION_RETURN_CREDIT",
-            version: 1,
-            entry: proof.entry,
-            returned: proof.returned,
-            request: proof.request,
-            reversals: proof.reversals,
-          },
-        });
+      if (proof.available.gt(0)) {
+        if (options.retainedExcessOnly) {
+          excludedFromPlanApNet = excludedFromPlanApNet.minus(proof.available);
+        } else {
+          candidate.push({
+            entryId: entry.id,
+            receiptId: null,
+            exchangeId: null,
+            kind: "CREDIT",
+            date: day(entry.entryDate),
+            amount: toDbMoney(proof.available),
+            snapshot: {
+              purpose: "OWNER_EXCEPTION_RETURN_CREDIT",
+              version: 1,
+              entry: proof.entry,
+              returned: proof.returned,
+              request: proof.request,
+              reversals: proof.reversals,
+            },
+          });
+        }
+      }
       continue;
     }
     if (
@@ -1038,15 +1265,19 @@ async function loadContext(
       entry.receiptId == null &&
       !formal.some((r) => r.accountingEntryId === entry.id)
     ) {
-      candidate.push({
-        entryId: entry.id,
-        receiptId: null,
-        exchangeId: null,
-        kind: "CREDIT",
-        date: day(entry.entryDate),
-        amount: toDbMoney(money(entry.amount).abs()),
-        snapshot: { entry, receipt: null, exchange: null },
-      });
+      if (options.retainedExcessOnly) {
+        excludedFromPlanApNet = excludedFromPlanApNet.plus(entry.amount);
+      } else {
+        candidate.push({
+          entryId: entry.id,
+          receiptId: null,
+          exchangeId: null,
+          kind: "CREDIT",
+          date: day(entry.entryDate),
+          amount: toDbMoney(money(entry.amount).abs()),
+          snapshot: { entry, receipt: null, exchange: null },
+        });
+      }
       continue;
     }
     if (
@@ -1055,11 +1286,7 @@ async function loadContext(
       entry.receiptId == null
     )
       continue;
-    if (
-      entry.postingProfile?.includes("SHIPPING") ||
-      entry.dedupeKey?.startsWith("PURCHASE_CHARGE_")
-    )
-      continue;
+    if (entry.dedupeKey?.startsWith("PURCHASE_CHARGE_")) continue;
     const receipt = originalReceipts.find((r) => r.id === entry.receiptId);
     if (
       !receipt ||
@@ -1094,6 +1321,14 @@ async function loadContext(
         fail(`إيصال العكس ${receipt.id} لا يملك سند قبض أصلي معكوساً مطابقاً`);
       continue;
     }
+    if (isExcludedNonTradeApEntry(entry, receipt)) {
+      excludedFromPlanApNet = excludedFromPlanApNet.minus(entry.amount);
+      continue;
+    }
+    if (options.retainedExcessOnly) {
+      excludedFromPlanApNet = excludedFromPlanApNet.minus(entry.amount);
+      continue;
+    }
     if (
       pendingCancellations.some(
         (c) => c.reference === `CANCEL-VCH-${receipt.id}`,
@@ -1126,6 +1361,11 @@ async function loadContext(
     const date = day(entry.entryDate);
     const applyOn = options.verifiedAccountCreditsAt;
     const accountDate = applyOn && date <= applyOn ? applyOn : undefined;
+    const onAccountFlow = Boolean(
+      options.onAccountVoucher ||
+        options.allowSupplierOverpay ||
+        accountObligationsNet.gt(0),
+    );
     candidate.push({
       entryId: entry.id,
       receiptId: receipt.id,
@@ -1133,6 +1373,8 @@ async function loadContext(
       kind: "PAYMENT",
       date,
       ...(accountDate ? { eligibleThrough: accountDate } : {}),
+      ...(options.onAccountVoucher ? { ignoreTargetDate: true } : {}),
+      ...(onAccountFlow ? { allowUnallocated: true } : {}),
       amount: entry.amount,
       snapshot: {
         entry,
@@ -1142,6 +1384,63 @@ async function loadContext(
       },
     });
   }
+  const retainedOnAccountSources = bookSources.filter(
+    (s) =>
+      isOnAccountRetainedSnapshot(s.sourceSnapshot) &&
+      !isPurchaseAdvanceSnapshot(s.sourceSnapshot) &&
+      !isExceptionReturnCreditSnapshot(s.sourceSnapshot),
+  );
+  const retainedWithAvail: Array<{
+    source: (typeof bookSources)[number];
+    avail: Decimal;
+    snapshot: unknown;
+  }> = [];
+  for (const source of retainedOnAccountSources) {
+    if (sha256(source.sourceSnapshot) !== source.sourceHash)
+      fail("تلفت بصمة الرصيد المحتفظ به للمورد");
+    const rows = exceptionAllocations.filter((a) => a.sourceId === source.id);
+    if (rows.some((a) => sha256(a.targetSnapshot) !== a.targetHash))
+      fail("تلفت بصمة تخصيص الرصيد المحتفظ به للمورد");
+    const avail = money(purchaseAdvanceAvailableAmount(source, rows));
+    retainedWithAvail.push({
+      source,
+      avail,
+      snapshot: JSON.parse(source.sourceSnapshot),
+    });
+  }
+  const retainedPoolBefore = retainedWithAvail.reduce(
+    (sum, r) => sum.plus(r.avail),
+    money(0),
+  );
+  const freeExcessPoolBefore = Decimal.max(
+    0,
+    retainedPoolBefore.minus(Decimal.max(0, accountObligationsNet)),
+  );
+  const openTargetsTotal = targets.reduce(
+    (sum, t) => sum.plus(t.amount),
+    money(0),
+  );
+  let toPull = Decimal.min(freeExcessPoolBefore, openTargetsTotal);
+  let pulledRetainedTotal = money(0);
+  for (const item of retainedWithAvail) {
+    if (toPull.lte(0) || item.avail.lte(0)) continue;
+    const take = Decimal.min(toPull, item.avail);
+    candidate.push({
+      retainedSourceId: item.source.id,
+      entryId: item.source.sourceAccountingEntryId,
+      receiptId: item.source.sourceReceiptId,
+      exchangeId: item.source.sourceExchangeTransactionId,
+      kind: item.source.kind,
+      date: day(item.source.adoptedAt),
+      ignoreTargetDate: true,
+      allowUnallocated: true,
+      amount: toDbMoney(take),
+      snapshot: item.snapshot,
+    });
+    toPull = toPull.minus(take);
+    pulledRetainedTotal = pulledRetainedTotal.plus(take);
+  }
+  const unpulledRetainedTotal = retainedPoolBefore.minus(pulledRetainedTotal);
   for (const source of bookSources.filter((s) =>
     isExceptionReturnCreditSnapshot(s.sourceSnapshot),
   )) {
@@ -1165,17 +1464,22 @@ async function loadContext(
     if (rows.some((a) => sha256(a.targetSnapshot) !== a.targetHash))
       fail("تلفت بصمة تخصيص رصيد الاستثناء");
     const available = purchaseAdvanceAvailableAmount(source, rows);
-    if (money(available).gt(0))
-      candidate.push({
-        retainedSourceId: source.id,
-        entryId: source.sourceAccountingEntryId,
-        receiptId: null,
-        exchangeId: null,
-        kind: "CREDIT",
-        date: day(source.adoptedAt),
-        amount: available,
-        snapshot,
-      });
+    if (money(available).gt(0)) {
+      if (options.retainedExcessOnly) {
+        excludedFromPlanApNet = excludedFromPlanApNet.minus(available);
+      } else {
+        candidate.push({
+          retainedSourceId: source.id,
+          entryId: source.sourceAccountingEntryId,
+          receiptId: null,
+          exchangeId: null,
+          kind: "CREDIT",
+          date: day(source.adoptedAt),
+          amount: available,
+          snapshot,
+        });
+      }
+    }
   }
   if (options.futurePayment)
     candidate.push({
@@ -1184,6 +1488,8 @@ async function loadContext(
       exchangeId: null,
       kind: "PAYMENT",
       date: options.futurePayment.date,
+      ignoreTargetDate: !options.futurePayment.allocations,
+      allowUnallocated: !options.futurePayment.allocations,
       amount: options.futurePayment.amount,
       snapshot: { previewOnly: true },
     });
@@ -1246,16 +1552,22 @@ async function loadContext(
     (sum, row) => sum.plus(row.usd),
     money(0),
   );
+  const newSourcesUnallocated = plan.sources.reduce(
+    (sum, s) => sum.plus(s.unallocatedAmount),
+    money(0),
+  );
+  const retainedPoolAfter = unpulledRetainedTotal.plus(newSourcesUnallocated);
+  const freeExcessPoolAfter = Decimal.max(
+    0,
+    retainedPoolAfter.minus(Decimal.max(0, accountObligationsNet)),
+  );
   if (
     !money(plan.remaining)
       .minus(retainedReturnIqd)
       .minus(unusedAdvances)
-      .minus(
-        plan.sources.reduce(
-          (sum, s) => sum.plus(s.unallocatedAmount),
-          money(0),
-        ),
-      )
+      .plus(accountObligationsNet)
+      .plus(excludedFromPlanApNet)
+      .minus(retainedPoolAfter)
       .eq(
         money(supplier.currentBalance).minus(
           options.futurePayment?.amount ?? 0,
@@ -1276,7 +1588,7 @@ async function loadContext(
       (sum, t) => sum.plus(t.currencyTotal).minus(t.currencyUsed),
       retainedReturnUsd.negated(),
     );
-  if (!usdBefore.eq(supplier.currentBalanceUsd))
+  if (options.strictUsdMatch && !usdBefore.eq(supplier.currentBalanceUsd))
     fail(
       "رصيد الدولار المشتق لا يطابق مستندات المورد قبل الربط؛ يلزم تدقيقه قبل الاعتماد",
     );
@@ -1292,8 +1604,11 @@ async function loadContext(
       ),
     money(0),
   );
-  const usdAfter = usdBefore.minus(usdDelta);
-  if (usdAfter.lt(0)) fail("تجاوز التخصيص رصيد عملة مستندات المورد");
+  const usdAfter = options.strictUsdMatch
+    ? usdBefore.minus(usdDelta)
+    : Decimal.max(0, usdBefore.minus(usdDelta));
+  if (options.strictUsdMatch && usdAfter.lt(0))
+    fail("تجاوز التخصيص رصيد عملة مستندات المورد");
   const financial = {
     supplier,
     entries,
@@ -1329,6 +1644,8 @@ async function loadContext(
     usdBefore: toDbMoney(usdBefore),
     usdAfter: toDbMoney(usdAfter),
     usdDelta: toDbMoney(usdDelta),
+    accountObligationsNet: toDbMoney(accountObligationsNet),
+    freeExcessPoolAfter: toDbMoney(freeExcessPoolAfter),
   };
 }
 
@@ -1360,6 +1677,7 @@ export async function prepareSupplierBookExchangeTx(
   const scope = { supplierId: input.supplierId, branchId: input.branchId };
   const options: ContextOptions = {
     exchangeAccount: true,
+    strictUsdMatch: input.currency === "USD",
     verifiedAccountCreditsAt: input.date,
   };
   let c = await loadContext(tx, scope, options);
@@ -1542,6 +1860,8 @@ export type LiveSupplierBookVoucherPlan = {
   amount: string;
   evidenceHash: string;
   allocations?: SupplierVoucherAllocation[];
+  allowSupplierOverpay?: boolean;
+  excessUnallocatedAmount?: string;
 };
 const liveVoucherPlans = new WeakMap<
   LiveSupplierBookVoucherPlan,
@@ -1551,6 +1871,8 @@ const liveVoucherPlans = new WeakMap<
     beforeBalance: string;
     verifiedAccountCreditsAt?: string;
     allocations?: SupplierVoucherAllocation[];
+    allowSupplierOverpay?: boolean;
+    excessUnallocatedAmount?: string;
     planHash: string;
   }
 >();
@@ -1565,6 +1887,7 @@ export async function prepareSupplierBookVoucherTx(
     receiptId?: number;
     voucherDate?: string;
     allocations?: SupplierVoucherAllocation[];
+    allowSupplierOverpay?: boolean;
   },
   actor: Actor,
 ): Promise<LiveSupplierBookVoucherPlan | null> {
@@ -1589,9 +1912,8 @@ export async function prepareSupplierBookVoucherTx(
       ),
     )
     .limit(1);
-  // Without invoices there is nothing to allocate: the existing generic AP
-  // payment already settles the opening-only account and supports advances.
-  if (!invoiceTarget) return null;
+  // Without invoices there is nothing to allocate unless explicit overpay was authorized.
+  if (!invoiceTarget && !input.allowSupplierOverpay) return null;
   if (
     actor.branchId !== input.branchId &&
     !actor.isOwner &&
@@ -1634,27 +1956,48 @@ export async function prepareSupplierBookVoucherTx(
       ),
     )
     .limit(1);
-  if (!opening && !legacyInvoice && !poCredit) return null;
-  if (!money(input.amount).gt(0)) fail("المورد أو مبلغ سند الصرف غير صالح");
-  // Preserve the existing generic advance path for opening-only accounts.
-  // Invoice-backed overpayments still require their explicit advance model.
+  const [existingBookSource] = await tx
+    .select({ id: sources.id })
+    .from(sources)
+    .where(eq(sources.supplierId, input.supplierId))
+    .limit(1);
+  const [accountObligation] = await tx
+    .select({ id: accountingEntries.id })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.supplierId, input.supplierId),
+        eq(accountingEntries.entryType, "PAYMENT_IN"),
+        sql`(${accountingEntries.dedupeKey} IS NULL OR ${accountingEntries.dedupeKey} NOT LIKE 'PURCHASE_CHARGE_REVERSAL:%')`,
+      ),
+    )
+    .limit(1);
+  const [manualAp] = await tx
+    .select({ id: journalLines.id })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.supplierId, input.supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    )
+    .limit(1);
   if (
+    !opening &&
     !legacyInvoice &&
     !poCredit &&
-    money(input.amount).gt(supplier.currentBalance)
-  ) {
-    const [nativeInvoice] = await tx
-      .select({ id: supplierInvoices.id })
-      .from(supplierInvoices)
-      .where(
-        and(
-          eq(supplierInvoices.supplierId, input.supplierId),
-          eq(supplierInvoices.status, "POSTED"),
-          eq(supplierInvoices.liabilityClass, "NATIVE_AP"),
-        ),
-      )
-      .limit(1);
-    if (!nativeInvoice) return null;
+    !existingBookSource &&
+    !accountObligation &&
+    !manualAp &&
+    !input.allowSupplierOverpay
+  )
+    return null;
+  if (!money(input.amount).gt(0)) fail("المورد أو مبلغ سند الصرف غير صالح");
+  if (input.allowSupplierOverpay && input.allocations != null) {
+    fail("الدفع الزائد على الحساب غير متاح مع التخصيص اليدوي للفواتير؛ اترك التوزيع تلقائياً");
   }
   // A pending BOOK receipt reserves account capacity, without creating cash or a fictitious invoice.
   const pendingReceipts = await tx
@@ -1704,20 +2047,26 @@ export async function prepareSupplierBookVoucherTx(
       fail("دليل حجز سند صرف المورد لا يطابق أصله");
     reserved = reserved.plus(receipt.amount);
   }
-  if (money(input.amount).gt(money(supplier.currentBalance).minus(reserved)))
+  if (
+    !input.allowSupplierOverpay &&
+    money(input.amount).gt(money(supplier.currentBalance).minus(reserved))
+  )
     fail("المبلغ يتجاوز صافي الذمة المتاح بعد حجوزات سندات الصرف المعلقة");
-  const voucherDate =
-    input.voucherDate ?? new Date().toISOString().slice(0, 10);
+  const voucherDate = input.voucherDate ?? baghdadToday();
   const verifiedAccountCreditsAt = input.allocations ? undefined : voucherDate;
   const c = await loadContext(
     tx,
     { supplierId: input.supplierId, branchId: input.branchId },
     {
+      onAccountVoucher: !input.allocations,
+      allowSupplierOverpay: Boolean(input.allowSupplierOverpay),
+      strictUsdMatch: false,
       verifiedAccountCreditsAt,
       futurePayment: {
         amount: toDbMoney(money(input.amount)),
         date: voucherDate,
         allocations: input.allocations,
+        allowSupplierOverpay: Boolean(input.allowSupplierOverpay),
       },
     },
   );
@@ -1730,6 +2079,8 @@ export async function prepareSupplierBookVoucherTx(
     ...(input.allocations
       ? { allocations: input.allocations.map((a) => ({ ...a })) }
       : {}),
+    ...(input.allowSupplierOverpay ? { allowSupplierOverpay: true } : {}),
+    excessUnallocatedAmount: c.freeExcessPoolAfter,
   };
   liveVoucherPlans.set(plan, {
     tx,
@@ -1737,7 +2088,16 @@ export async function prepareSupplierBookVoucherTx(
     beforeBalance: supplier.currentBalance,
     verifiedAccountCreditsAt,
     allocations: input.allocations?.map((a) => ({ ...a })),
-    planHash: hash(plan),
+    allowSupplierOverpay: Boolean(input.allowSupplierOverpay),
+    excessUnallocatedAmount: c.freeExcessPoolAfter,
+    planHash: hash({
+      mode: plan.mode,
+      supplierId: plan.supplierId,
+      branchId: plan.branchId,
+      amount: plan.amount,
+      evidenceHash: plan.evidenceHash,
+      ...(plan.allocations ? { allocations: plan.allocations } : {}),
+    }),
   });
   return plan;
 }
@@ -1756,7 +2116,15 @@ export async function applySupplierBookVoucherTx(
   if (
     !prepared ||
     prepared.tx !== tx ||
-    prepared.planHash !== hash(input.plan) ||
+    prepared.planHash !==
+      hash({
+        mode: input.plan.mode,
+        supplierId: input.plan.supplierId,
+        branchId: input.plan.branchId,
+        amount: input.plan.amount,
+        evidenceHash: input.plan.evidenceHash,
+        ...(input.plan.allocations ? { allocations: input.plan.allocations } : {}),
+      }) ||
     (prepared.receiptId != null && prepared.receiptId !== input.receiptId)
   )
     fail("خطة سند الصرف لا تنتمي إلى المعاملة الحالية");
@@ -1796,8 +2164,16 @@ export async function applySupplierBookVoucherTx(
   )
     fail("أصل سند الصرف أو أثر الذمة لا يطابق خطة التسوية");
   const contextOptions: ContextOptions = prepared.allocations
-    ? { manualSource: { entryId: entry.id, allocations: prepared.allocations } }
-    : { verifiedAccountCreditsAt: prepared.verifiedAccountCreditsAt };
+    ? {
+        manualSource: { entryId: entry.id, allocations: prepared.allocations },
+        strictUsdMatch: false,
+      }
+    : {
+        onAccountVoucher: true,
+        allowSupplierOverpay: prepared.allowSupplierOverpay,
+        strictUsdMatch: false,
+        verifiedAccountCreditsAt: prepared.verifiedAccountCreditsAt,
+      };
   const c = await loadContext(
     tx,
     {
@@ -1939,6 +2315,120 @@ export async function adoptSupplierBookSettlement(
     adoptSupplierBookSettlementInTx(tx, input, actor),
   );
 }
+async function persistBookSourcesAndAllocationsTx(
+  tx: Tx,
+  params: {
+    supplierId: number;
+    branchId: number;
+    adoptedBy: number;
+    adoptionKeyPrefix: string;
+    planHash: string;
+    plannedSources: PlannedSource[];
+    usdInvoiceIds: ReadonlySet<number>;
+  },
+): Promise<{
+  sourceIds: number[];
+  touched: Set<number>;
+  settledAmount: Decimal;
+  usdDelta: Decimal;
+}> {
+  const sourceIds: number[] = [];
+  const touched = new Set<number>();
+  let settledAmount = money(0);
+  let usdDelta = money(0);
+
+  for (const source of params.plannedSources) {
+    const rawSnapshot = source.snapshot;
+    const snapshotObj =
+      !source.retainedSourceId &&
+      money(source.unallocatedAmount).gt(0) &&
+      typeof rawSnapshot === "object" &&
+      rawSnapshot !== null &&
+      !isPurchaseAdvanceSnapshot(canonical(rawSnapshot)) &&
+      !isExceptionReturnCreditSnapshot(canonical(rawSnapshot))
+        ? { ...(rawSnapshot as Record<string, unknown>), onAccountRetained: true }
+        : rawSnapshot;
+    const snapshot = canonical(snapshotObj);
+    const sourceId =
+      source.retainedSourceId ??
+      extractInsertId(
+        await tx.insert(sources).values({
+          supplierId: params.supplierId,
+          branchId: params.branchId,
+          sourceAccountingEntryId: source.entryId,
+          sourceReceiptId: source.receiptId,
+          sourceExchangeTransactionId: source.exchangeId,
+          kind: source.kind,
+          amount: source.amount,
+          sourceSnapshot: snapshot,
+          sourceHash: sha256(snapshot),
+          planHash: params.planHash,
+          adoptionKey: `${params.adoptionKeyPrefix}:${source.entryId}`,
+          adoptedBy: params.adoptedBy,
+          reversalHistory: "[]",
+        }),
+      );
+    sourceIds.push(sourceId);
+    if (source.retainedSourceId && source.allocations.length > 0) {
+      await tx
+        .update(sources)
+        .set({ version: sql`${sources.version}+1` })
+        .where(eq(sources.id, sourceId));
+    }
+    for (const a of source.allocations) {
+      settledAmount = settledAmount.plus(a.amount);
+      if (a.supplierInvoiceId != null) {
+        touched.add(a.supplierInvoiceId);
+        if (params.usdInvoiceIds.has(a.supplierInvoiceId)) {
+          usdDelta = usdDelta.plus(a.currencyAmount);
+        }
+      }
+      const [prior] = source.retainedSourceId
+        ? await tx
+            .select()
+            .from(allocations)
+            .where(
+              and(
+                eq(allocations.sourceId, sourceId),
+                a.supplierInvoiceId != null
+                  ? eq(allocations.supplierInvoiceId, a.supplierInvoiceId)
+                  : eq(allocations.openingEntryId, a.openingEntryId!),
+              ),
+            )
+            .for("update")
+        : [];
+      if (prior) {
+        if (sha256(prior.targetSnapshot) !== prior.targetHash) {
+          fail("تلف دليل التخصيص السابق");
+        }
+        await tx
+          .update(allocations)
+          .set({
+            allocatedAmount: toDbMoney(
+              money(prior.allocatedAmount).plus(a.amount),
+            ),
+            allocatedCurrencyAmount: toDbMoney(
+              money(prior.allocatedCurrencyAmount).plus(a.currencyAmount),
+            ),
+          })
+          .where(eq(allocations.id, prior.id));
+      } else {
+        await tx.insert(allocations).values({
+          sourceId,
+          supplierInvoiceId: a.supplierInvoiceId,
+          openingEntryId: a.openingEntryId,
+          allocatedAmount: a.amount,
+          allocatedCurrencyAmount: a.currencyAmount,
+          targetSnapshot: a.targetSnapshot,
+          targetHash: a.targetHash,
+        });
+      }
+    }
+  }
+
+  return { sourceIds, touched, settledAmount, usdDelta };
+}
+
 async function adoptSupplierBookSettlementInTx(
   tx: Tx,
   input: AdoptionInput,
@@ -2024,79 +2514,18 @@ async function adoptSupplierBookSettlementInTx(
       newValue: { liabilityClass: "LEGACY_AP", planHash: c.planHash },
     });
   }
-  const sourceIds: number[] = [];
-  const touched = new Set<number>();
-  for (const source of c.sources) {
-    const snapshot = canonical(source.snapshot);
-    const sourceId =
-      source.retainedSourceId ??
-      extractInsertId(
-        await tx.insert(sources).values({
-          supplierId: input.supplierId,
-          branchId: input.branchId,
-          sourceAccountingEntryId: source.entryId,
-          sourceReceiptId: source.receiptId,
-          sourceExchangeTransactionId: source.exchangeId,
-          kind: source.kind,
-          amount: source.amount,
-          sourceSnapshot: snapshot,
-          sourceHash: sha256(snapshot),
-          planHash: c.planHash,
-          adoptionKey: `${input.requestKey}:${source.entryId}`,
-          adoptedBy: owner.id,
-          reversalHistory: "[]",
-        }),
-      );
-    sourceIds.push(sourceId);
-    if (source.retainedSourceId)
-      await tx
-        .update(sources)
-        .set({ version: sql`${sources.version}+1` })
-        .where(eq(sources.id, sourceId));
-    for (const a of source.allocations) {
-      if (a.supplierInvoiceId) touched.add(a.supplierInvoiceId);
-      const [prior] = source.retainedSourceId
-        ? await tx
-            .select()
-            .from(allocations)
-            .where(
-              and(
-                eq(allocations.sourceId, sourceId),
-                a.supplierInvoiceId != null
-                  ? eq(allocations.supplierInvoiceId, a.supplierInvoiceId)
-                  : eq(allocations.openingEntryId, a.openingEntryId!),
-              ),
-            )
-            .for("update")
-        : [];
-      if (prior) {
-        if (sha256(prior.targetSnapshot) !== prior.targetHash)
-          fail("تلف دليل التخصيص السابق");
-        await tx
-          .update(allocations)
-          .set({
-            allocatedAmount: toDbMoney(
-              money(prior.allocatedAmount).plus(a.amount),
-            ),
-            allocatedCurrencyAmount: toDbMoney(
-              money(prior.allocatedCurrencyAmount).plus(a.currencyAmount),
-            ),
-          })
-          .where(eq(allocations.id, prior.id));
-      } else
-        await tx
-          .insert(allocations)
-          .values({
-            sourceId,
-            supplierInvoiceId: a.supplierInvoiceId,
-            openingEntryId: a.openingEntryId,
-            allocatedAmount: a.amount,
-            allocatedCurrencyAmount: a.currencyAmount,
-            targetSnapshot: a.targetSnapshot,
-            targetHash: a.targetHash,
-          });
-    }
-  }
+  const usdInvoiceIds = new Set(
+    c.invoices.filter((i) => i.currency === "USD").map((i) => i.id),
+  );
+  const { sourceIds, touched } = await persistBookSourcesAndAllocationsTx(tx, {
+    supplierId: input.supplierId,
+    branchId: input.branchId,
+    adoptedBy: owner.id,
+    adoptionKeyPrefix: input.requestKey,
+    planHash: c.planHash,
+    plannedSources: c.sources,
+    usdInvoiceIds,
+  });
   for (const invoice of c.classify) touched.add(invoice.id);
   await refreshTargets(tx, Array.from(touched));
   const resolvedCaseIds: number[] = [];
@@ -2151,10 +2580,18 @@ async function adoptSupplierBookSettlementInTx(
     );
     resolvedCaseIds.push(issue.id);
   }
+  const safeUsdDelta = contextOptions.strictUsdMatch
+    ? money(c.usdDelta)
+    : money(
+        boundedSupplierUsdDelta(
+          c.financial.supplier.currentBalanceUsd,
+          c.usdDelta,
+        ),
+      );
   await adjustSupplierBalanceUsd(
     tx,
     input.supplierId,
-    money(c.usdDelta).negated(),
+    safeUsdDelta.negated(),
   );
   const after = await loadFinancialIdentity(tx, input.supplierId);
   const immutable = (state: typeof after) => ({
@@ -2165,8 +2602,11 @@ async function adoptSupplierBookSettlementInTx(
       updatedAt: undefined,
     },
   });
+  const expectedUsdAfter = contextOptions.strictUsdMatch
+    ? money(c.usdAfter)
+    : money(c.financial.supplier.currentBalanceUsd).minus(safeUsdDelta);
   if (
-    !money(after.supplier.currentBalanceUsd).eq(c.usdAfter) ||
+    !money(after.supplier.currentBalanceUsd).eq(expectedUsdAfter) ||
     hash(immutable(c.financial)) !== hash(immutable(after))
   )
     fail("تغير أصل نقد أو ذمة أثناء اعتماد الروابط؛ ألغيت المعاملة");
@@ -2375,6 +2815,7 @@ export async function unapplySupplierBookSettlementSourceTx(
     .for("update");
   const advance =
     isPurchaseAdvanceSnapshot(source.sourceSnapshot) ||
+    isOnAccountRetainedSnapshot(source.sourceSnapshot) ||
     (source.kind === "CREDIT" &&
       isExceptionReturnCreditSnapshot(source.sourceSnapshot));
   const unusedAdvance = advance
@@ -2453,4 +2894,144 @@ export async function unapplySupplierBookSettlementSourceTx(
     },
   });
   enqueueFinancialRefresh(tx, source.branchId);
+}
+
+/**
+ * استهلاك الفائض الدفتري غير المخصّص (وسندات الصرف الحرة غير المعتمدة كسلف مقفلة)
+ * تلقائياً لتغطية الفواتير الآجلة المفتوحة (`CREDIT`) دون المساس بـ `LEGACY_UNKNOWN`.
+ */
+export async function consumeRetainedSupplierBookExcessTx(
+  tx: Tx,
+  supplierId: number,
+  actor: Actor,
+  options?: { branchId?: number },
+): Promise<{
+  settledInvoicesCount: number;
+  settledAmount: string;
+  settledInvoiceIds: number[];
+}> {
+  // الترتيب القانوني الصارم: purchaseOrders -> suppliers -> supplierInvoices -> sources.
+  await tx
+    .select({ id: purchaseOrders.id })
+    .from(purchaseOrders)
+    .where(
+      and(
+        eq(purchaseOrders.supplierId, supplierId),
+        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+        ...(options?.branchId != null
+          ? [eq(purchaseOrders.branchId, options.branchId)]
+          : []),
+      ),
+    )
+    .orderBy(asc(purchaseOrders.id))
+    .for("update");
+  const [supplier] = await tx
+    .select()
+    .from(suppliers)
+    .where(eq(suppliers.id, supplierId))
+    .for("update");
+  if (!supplier || supplier.supplierKind !== "REGULAR") {
+    return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
+  }
+  const openInvoices = await tx
+    .select({ id: supplierInvoices.id, branchId: supplierInvoices.branchId })
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, supplierId),
+        eq(supplierInvoices.status, "POSTED"),
+        eq(supplierInvoices.paymentGate, "OPEN"),
+        inArray(supplierInvoices.liabilityClass, ["NATIVE_AP", "LEGACY_AP"]),
+        ...(options?.branchId != null
+          ? [eq(supplierInvoices.branchId, options.branchId)]
+          : []),
+      ),
+    )
+    .orderBy(asc(supplierInvoices.id))
+    .for("update");
+  if (!openInvoices.length) {
+    return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
+  }
+  const lockedSources = await tx
+    .select({ id: sources.id, sourceSnapshot: sources.sourceSnapshot })
+    .from(sources)
+    .where(
+      and(
+        eq(sources.supplierId, supplierId),
+        ...(options?.branchId != null ? [eq(sources.branchId, options.branchId)] : []),
+      ),
+    )
+    .orderBy(asc(sources.id))
+    .for("update");
+  const hasRetainedOnAccount = lockedSources.some(
+    (s) =>
+      isOnAccountRetainedSnapshot(s.sourceSnapshot) &&
+      !isPurchaseAdvanceSnapshot(s.sourceSnapshot) &&
+      !isExceptionReturnCreditSnapshot(s.sourceSnapshot),
+  );
+  if (!hasRetainedOnAccount) {
+    return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
+  }
+  const branchIds = Array.from(new Set(openInvoices.map((i) => Number(i.branchId))));
+  let totalSettled = money(0);
+  const touchedAll = new Set<number>();
+
+  for (const branchId of branchIds) {
+    const c = await loadContext(
+      tx,
+      { supplierId, branchId },
+      { onAccountVoucher: true, strictUsdMatch: false, retainedExcessOnly: true },
+    );
+    const actionable = c.sources.filter(
+      (s) => s.retainedSourceId != null && s.allocations.length > 0,
+    );
+    if (!actionable.length) continue;
+
+    const usdInvoiceIds = new Set(
+      c.invoices.filter((i) => i.currency === "USD").map((i) => i.id),
+    );
+    const {
+      touched,
+      settledAmount: branchSettled,
+      usdDelta: branchUsdDelta,
+    } = await persistBookSourcesAndAllocationsTx(tx, {
+      supplierId,
+      branchId,
+      adoptedBy: actor.userId,
+      adoptionKeyPrefix: `AUTO-EXCESS:${supplierId}:${branchId}:${c.planHash.slice(0, 24)}`,
+      planHash: c.planHash,
+      plannedSources: actionable,
+      usdInvoiceIds,
+    });
+    for (const id of Array.from(touched)) touchedAll.add(id);
+
+    if (touched.size > 0) {
+      await refreshTargets(tx, Array.from(touched));
+      const safeUsd = money(
+        boundedSupplierUsdDelta(c.financial.supplier.currentBalanceUsd, toDbMoney(branchUsdDelta)),
+      );
+      if (safeUsd.gt(0)) {
+        await adjustSupplierBalanceUsd(tx, supplierId, safeUsd.negated());
+      }
+      await logAuditTx(tx, actor, {
+        action: "supplier.bookSettlement.consumeExcess",
+        entityType: "supplier",
+        entityId: String(supplierId),
+        branchId,
+        newValue: {
+          settledAmount: toDbMoney(branchSettled),
+          invoiceIds: Array.from(touched),
+          usdReduced: toDbMoney(safeUsd),
+        },
+      });
+      totalSettled = totalSettled.plus(branchSettled);
+      enqueueFinancialRefresh(tx, branchId);
+    }
+  }
+
+  return {
+    settledInvoicesCount: touchedAll.size,
+    settledAmount: toDbMoney(totalSettled),
+    settledInvoiceIds: Array.from(touchedAll),
+  };
 }

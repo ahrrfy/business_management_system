@@ -828,6 +828,7 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
         notes: `محوّل من عرض السعر ${q.quoteNumber}`,
         // SALES-01/02: التحويل إجراء مدير (convert=managerProcedure) والأسعار أُقِرّت عند إنشاء العرض.
         priceOverrideApproved: true,
+        attributeToUserId: q.createdBy != null ? Number(q.createdBy) : undefined,
     };
       let committedSaleInput = saleInput;
       const sale =

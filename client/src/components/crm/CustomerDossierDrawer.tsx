@@ -25,7 +25,12 @@ import { preferredWhatsAppPhone } from "@/lib/whatsapp";
 import { CustomerRadarBadges } from "./CustomerRadarBadges";
 import { InstantGiftModal } from "./InstantGiftModal";
 import { FeedbackModal } from "./FeedbackModal";
-import { RotateCcw, Building2, Loader2, AlertCircle } from "lucide-react";
+import { RotateCcw, Building2, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight } from "lucide-react";
+import { useState } from "react";
+import { AccountHealthBanner } from "@/components/statements/AccountHealthBanner";
+import { QuickVoucherSheet } from "@/components/vouchers/QuickVoucherSheet";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
+import { trpc } from "@/lib/trpc";
 
 import { useCustomerDossier } from "./dossier/useCustomerDossier";
 import { CustomerDossierOverview } from "./dossier/CustomerDossierOverview";
@@ -70,6 +75,13 @@ function CustomerDossierSession({
     isFeedbackSessionCurrent,
   } = model;
   const { dossier, customer, metrics } = model;
+  const me = trpc.auth.me.useQuery();
+  const canWriteVoucher = treasuryOperationAllowed(
+    me.data,
+    "vouchers.create",
+    me.data?.role === "manager" || me.data?.role === "accountant" || Boolean(me.data?.isOwner),
+  );
+  const [quickVoucherType, setQuickVoucherType] = useState<"PAYMENT" | "RECEIPT" | null>(null);
   return (
     <>
       <Sheet open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -92,7 +104,28 @@ function CustomerDossierSession({
                     : ""}
                 </SheetDescription>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {customer && canWriteVoucher && (
+                  <>
+                    <Button
+                      size="sm"
+                      className="gap-1 text-xs"
+                      onClick={() => setQuickVoucherType("RECEIPT")}
+                    >
+                      <ArrowDownLeft aria-hidden className="size-3.5" />
+                      <span>سند قبض</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1 text-xs"
+                      onClick={() => setQuickVoucherType("PAYMENT")}
+                    >
+                      <ArrowUpRight aria-hidden className="size-3.5" />
+                      <span>سند صرف</span>
+                    </Button>
+                  </>
+                )}
                 <Button
                   size="sm"
                   variant="outline"
@@ -172,6 +205,14 @@ function CustomerDossierSession({
 
           {dossier && customer && metrics && (
             <div className="mt-4 space-y-5">
+              <AccountHealthBanner
+                partyType="CUSTOMER"
+                partyId={customer.id}
+                onResolved={() => {
+                  void utils.customers.dossier360.invalidate({ customerId: customer.id });
+                  void utils.reports.invalidate();
+                }}
+              />
               <CustomerDossierOverview model={model} />
               <Tabs defaultValue="timeline" className="w-full">
                 <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 [&>button]:whitespace-normal [&>button]:h-auto">
@@ -257,6 +298,23 @@ function CustomerDossierSession({
           onSuccess={() => {
             utils.customers.dossier360.invalidate({ customerId: customer.id });
             utils.customers.feedbackList.invalidate();
+          }}
+        />
+      )}
+
+      {customer && canWriteVoucher && quickVoucherType && (
+        <QuickVoucherSheet
+          open={!!quickVoucherType}
+          onOpenChange={(o) => !o && setQuickVoucherType(null)}
+          defaultType={quickVoucherType}
+          defaultPartyType="CUSTOMER"
+          defaultPartyId={customer.id}
+          defaultPartyName={customer.name}
+          currentBalance={metrics?.balance != null ? String(metrics.balance) : undefined}
+          onSuccess={() => {
+            void utils.customers.dossier360.invalidate({ customerId: customer.id });
+            void utils.customers.invalidate();
+            void utils.reports.invalidate();
           }}
         />
       )}

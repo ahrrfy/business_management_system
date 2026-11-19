@@ -47,7 +47,9 @@ export type SupplierInvoiceListRow = {
   purchaseOrderNumber?: string | null;
   settlementType?: "CASH" | "CREDIT" | null;
   createdByName?: string | null;
+  approvedByName?: string | null;
   postedByName?: string | null;
+  isAutoPostedFromPo?: boolean;
   postedAt?: string | Date | null;
   totalAmount: string;
   subtotal?: string | null;
@@ -257,13 +259,19 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
       },
       {
         accessorKey: "createdByName",
-        header: "المنفذ",
+        header: "المنفذون",
         cell: ({ row }) => (
           <div className="space-y-0.5 text-xs">
             <div>أنشأها: {row.original.createdByName ?? "—"}</div>
-            {row.original.postedByName && (
+            {row.original.approvedByName && (
               <div className="text-[11px] text-muted-foreground">
-                رحلها: {row.original.postedByName}
+                اعتمدها: {row.original.approvedByName}
+              </div>
+            )}
+            {(row.original.postedByName || row.original.isAutoPostedFromPo) && (
+              <div className="text-[11px] text-muted-foreground">
+                رحّلها:{" "}
+                {row.original.postedByName ?? "ترحيل آلي عند الاعتماد"}
               </div>
             )}
           </div>
@@ -438,7 +446,9 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
                   purchaseOrderNumber: invoice.purchaseOrderNumber,
                   settlementType: invoice.settlementType,
                   createdByName: invoice.createdByName,
+                  approvedByName: invoice.approvedByName,
                   postedByName: invoice.postedByName,
+                  isAutoPostedFromPo: invoice.isAutoPostedFromPo,
                   postedAt: invoice.postedAt,
                   totalAmount: invoice.totalAmount,
                   subtotal: invoice.subtotal,

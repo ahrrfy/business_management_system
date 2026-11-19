@@ -272,6 +272,8 @@ export async function createGoodsReceiptInTx(
      * permits the purchase-order creator to receive their own order.
      */
     allowPurchaseOrderApproverForAutomaticPosting?: boolean;
+    /** Optional creator attribution when the PO approver auto-posts the GRN on behalf of the PO creator. */
+    attributedCreatedById?: number | null;
   } = {},
 ) {
   const requestKey = requireText(input.clientRequestId, "مفتاح الطلب", 120);
@@ -614,7 +616,10 @@ export async function createGoodsReceiptInTx(
       notes: input.notes?.trim() || null,
       payloadCanonical: canonical,
       payloadHash,
-      createdBy: actor.userId,
+      createdBy:
+        options.attributedCreatedById != null
+          ? options.attributedCreatedById
+          : actor.userId,
       postedBy: actor.userId,
       postedAt: new Date(),
     });

@@ -295,4 +295,25 @@ describe("invoiceToReceipt", () => {
     expect(cancelledReceipt.promoSummary).toBeNull();
     expect(buildBrowserReceiptHtml(cancelledReceipt)).not.toContain("مزايا العروض وتوفيرك في هذه الفاتورة");
   });
+
+  it("renders balance snapshot strip (before -> after) on A4 invoice when customer balance bounds exist", async () => {
+    const { buildSalesInvoiceV2Html } = await import("./printTemplatesV2");
+    const html = buildSalesInvoiceV2Html({
+      invoiceNumber: "INV-SNAP-1",
+      invoiceDate: "2026-11-18",
+      statusLabel: "آجلة",
+      customerName: "عميل الرصيد",
+      customerBalanceBefore: "25000.00",
+      customerBalanceAfter: "75000.00",
+      items: [{ productName: "صنف", quantity: 1, unitPrice: "50000", total: "50000" }],
+      subtotal: "50000",
+      total: "50000",
+      paidAmount: "0",
+    });
+    expect(html).toContain("data-balance-snapshot");
+    expect(html).toContain("الرصيد قبل الحركة");
+    expect(html).toContain("الرصيد بعد الحركة");
+    expect(html).toContain("25,000");
+    expect(html).toContain("75,000");
+  });
 });

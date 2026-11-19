@@ -10,6 +10,7 @@ declare module "@tanstack/react-table" {
     align?: TableColumnAlign;
     width?: TableColumnWidth;
     wrap?: boolean;
+    stickyActions?: boolean;
   }
 }
 
@@ -75,7 +76,9 @@ export function columnPresentationClass<T>(column: Column<T, unknown>): string {
     presentation.wrap ? "whitespace-normal [overflow-wrap:anywhere]" : "whitespace-nowrap",
     presentation.kind === "number" || presentation.kind === "money" ? "tabular-nums" : "",
     presentation.kind === "code" ? "font-mono" : "",
-    presentation.kind === "actions" ? "sticky end-0 z-10 bg-card/95 backdrop-blur-xs" : "",
+    presentation.kind === "actions" && column.columnDef.meta?.stickyActions !== false
+      ? "sticky end-0 z-10 bg-card/95 backdrop-blur-xs"
+      : "",
   ].filter(Boolean).join(" ");
 }
 

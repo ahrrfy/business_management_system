@@ -118,6 +118,13 @@ export async function prepareSupplierAdvanceRefundTx(
   actor: Actor,
 ) {
   const receiptId = input.supplierAdvanceRefundReceiptId;
+  const purpose = input.supplierReceiptPurpose;
+  if (
+    purpose != null &&
+    (input.voucherType !== "RECEIPT" || input.partyType !== "SUPPLIER")
+  ) {
+    fail("تصنيف سند قبض المورد متاح لسندات قبض الموردين فقط");
+  }
   if (
     receiptId != null &&
     (input.voucherType !== "RECEIPT" ||
@@ -132,6 +139,19 @@ export async function prepareSupplierAdvanceRefundTx(
   )
     return null;
   await assertBranchOwnership(tx, actor, input.branchId, "استرداد دفعة المورد");
+  if (purpose === "CREDIT_OBLIGATION") {
+    if (receiptId != null) {
+      fail(
+        "المبلغ المستلم أو إشعار الدائن الذي يرفع ذمة المورد لا يرتبط بسند صرف سابق؛ اختر استرداد دفعة إن كان يرد دفعة سابقة",
+      );
+    }
+    return null;
+  }
+  if (purpose === "ADVANCE_REFUND" && receiptId == null) {
+    fail(
+      "يلزم تحديد سند الصرف الأصلي عند تصنيف السند كاسترداد دفعة سابقة",
+    );
+  }
   if (receiptId == null) {
     if ((await candidates(tx, input.partyId, undefined, true)).length)
       fail(

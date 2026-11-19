@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { PurchaseTenderInput } from "@shared/purchaseTender";
 import { TRPCError } from "@trpc/server";
 import { variantDescriptor } from "@shared/variantDisplay";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray } from "drizzle-orm";
 import {
   productUnits,
   productVariants,
@@ -12,6 +12,8 @@ import {
   purchaseOrderRevisionItems,
   purchaseOrderRevisions,
   purchaseOrders,
+  suppliers,
+  users,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
@@ -388,8 +390,12 @@ export async function listPurchaseOrderRevisions(
 ) {
   await assertReadablePurchaseOrder(purchaseOrderId, actor);
   return requireDb()
-    .select()
+    .select({
+      ...getTableColumns(purchaseOrderRevisions),
+      createdByName: users.name,
+    })
     .from(purchaseOrderRevisions)
+    .leftJoin(users, eq(purchaseOrderRevisions.createdBy, users.id))
     .where(eq(purchaseOrderRevisions.purchaseOrderId, purchaseOrderId))
     .orderBy(desc(purchaseOrderRevisions.revisionNo));
 }
@@ -580,5 +586,31 @@ export async function getPurchaseOrderRevisionDiff(
       actor,
     ),
   ]);
-  return diffPurchaseOrderRevisions(from, to);
+  const diff = diffPurchaseOrderRevisions(from, to);
+  const supplierChange = diff.head.find((h) => h.field === "supplierId");
+  if (supplierChange) {
+    const supIds = Array.from(
+      new Set(
+        [supplierChange.before, supplierChange.after]
+          .map((v) => Number(v))
+          .filter((v) => Number.isFinite(v) && v > 0),
+      ),
+    );
+    if (supIds.length) {
+      const supRows = await requireDb()
+        .select({ id: suppliers.id, name: suppliers.name })
+        .from(suppliers)
+        .where(inArray(suppliers.id, supIds));
+      const supMap = new Map(supRows.map((s) => [Number(s.id), s.name]));
+      const fmtSup = (val: unknown) => {
+        const id = Number(val);
+        if (!Number.isFinite(id) || id <= 0) return val;
+        const name = supMap.get(id);
+        return name ? `${name} (#${id})` : `#${id}`;
+      };
+      supplierChange.before = fmtSup(supplierChange.before);
+      supplierChange.after = fmtSup(supplierChange.after);
+    }
+  }
+  return diff;
 }

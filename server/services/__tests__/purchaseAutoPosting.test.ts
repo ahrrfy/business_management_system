@@ -3,7 +3,16 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { decidePurchaseOrderControl } from "../purchase/controls";
+import {
+  decidePurchaseOrderControl,
+  listPurchaseOrderEvents,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
+import { listPurchaseOrderRevisions } from "../purchase/revisions";
+import {
+  getSupplierInvoice,
+  listSupplierInvoices,
+} from "../purchase/supplierInvoices";
 import {
   decideSupplierPayment,
   decideSupplierPaymentRefund,
@@ -314,12 +323,16 @@ describe("اعتماد أمر الشراء يرحّل الفاتورة والا�
       purchaseOrderId: draft.purchaseOrderId,
       status: "POSTED",
       totalAmount: "60.00",
+      createdBy: creator.userId,
+      postedBy: approver.userId,
     });
     expect(invoice).toMatchObject({
       status: "POSTED",
       liabilityClass: "NATIVE_AP",
       paymentGate: "OPEN",
       totalAmount: "60.00",
+      createdBy: creator.userId,
+      postedBy: approver.userId,
     });
     expect(invoice.postingEntryId).not.toBeNull();
     expect(match).toMatchObject({
@@ -816,5 +829,182 @@ describe("اعتماد أمر الشراء النقدي يسدده ذرياً و
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "60.00",
     );
+  });
+});
+
+describe("حماية سعر الصرف ومطابقة الفاتورة وإسناد المنفذ والمعتمد وسجل الأحداث", () => {
+  it("يرفض سعر الصرف الشاذ (169) دون استثناء موثق من مدير/مالك، ويمرر السعر الطبيعي (1500)", async () => {
+    await db().insert(s.users).values({
+      id: 4,
+      openId: "purchase-auto-clerk",
+      name: "موظف مشتريات",
+      role: "purchasing",
+      loginMethod: "local",
+      branchId: 1,
+    });
+    const clerk = { userId: 4, branchId: 1, role: "purchasing" as const };
+
+    await expect(
+      createPurchaseOrder(
+        {
+          supplierId: 1,
+          branchId: 1,
+          status: "DRAFT",
+          settlementType: "CREDIT",
+          agreedCurrency: "USD",
+          agreedRate: "169.00",
+          clientRequestId: "usd-bad-rate-block",
+          items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+        },
+        clerk,
+      ),
+    ).rejects.toThrow(/1,690|شاذ/);
+
+    await expect(
+      createPurchaseOrder(
+        {
+          supplierId: 1,
+          branchId: 1,
+          status: "DRAFT",
+          settlementType: "CREDIT",
+          agreedCurrency: "USD",
+          agreedRate: "169.00",
+          confirmAnomalousRate: true,
+          rateDeviationReason: "سعر خاص",
+          clientRequestId: "usd-clerk-override-block",
+          items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+        },
+        clerk,
+      ),
+    ).rejects.toThrow();
+
+    const normal = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        agreedCurrency: "USD",
+        agreedRate: "1500.00",
+        clientRequestId: "usd-normal-1500",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+      },
+      clerk,
+    );
+    expect(normal.total).toBe("30000.00");
+
+    const ownerOverride = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        agreedCurrency: "USD",
+        agreedRate: "169.00",
+        confirmAnomalousRate: true,
+        rateDeviationReason: "اتفاق خاص موثق مع المورد",
+        clientRequestId: "usd-owner-override",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+      },
+      treasurer,
+    );
+    expect(ownerOverride.total).toBe("3380.00");
+  });
+
+  it("يشترط مطابقة الفاتورة الورقية عند requireInvoiceMatch ويزيل تكرار ORDER_SUBMITTED ويعرض أسماء المنشئ والمعتمد", async () => {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        clientRequestId: "match-attrib-draft",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" }],
+      },
+      creator,
+    );
+
+    await expect(
+      confirmPurchaseOrder(
+        {
+          purchaseOrderId: draft.purchaseOrderId,
+          expectedVersion: draft.version,
+          reason: "إرسال بلا قيمة ورقية",
+          clientRequestId: "match-missing-fail",
+          requireInvoiceMatch: true,
+        },
+        creator,
+      ),
+    ).rejects.toThrow(/إجمالي الفاتورة الورقية/);
+
+    await expect(
+      confirmPurchaseOrder(
+        {
+          purchaseOrderId: draft.purchaseOrderId,
+          expectedVersion: draft.version,
+          reason: "إرسال بقيمة غير مطابقة",
+          clientRequestId: "match-mismatch-fail",
+          supplierInvoiceTotal: "99.00",
+          requireInvoiceMatch: true,
+        },
+        creator,
+      ),
+    ).rejects.toThrow();
+
+    const submitted = await submitPurchaseOrderForApproval(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "إرسال متطابق للمراجعة",
+        requestKey: "match-exact-submit",
+        supplierInvoiceTotal: "60.00",
+        requireInvoiceMatch: true,
+      },
+      creator,
+    );
+
+    const events = await listPurchaseOrderEvents(draft.purchaseOrderId, approver);
+    const submitEvents = events.filter(
+      (ev) => ev.eventType === "ORDER_SUBMITTED" || ev.eventType === "APPROVE_REVISION_REQUESTED",
+    );
+    expect(submitEvents).toHaveLength(1);
+    expect(submitEvents[0]).toMatchObject({
+      eventType: "ORDER_SUBMITTED",
+      actorName: "منشئ أمر الشراء",
+    });
+
+    const revisions = await listPurchaseOrderRevisions(draft.purchaseOrderId, approver);
+    expect(revisions[0]).toMatchObject({ createdByName: "منشئ أمر الشراء" });
+
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `approve-attrib-${randomUUID()}`,
+        approve: true,
+        reason: "اعتماد واستلام كامل",
+        confirmedFullReceipt: true,
+      },
+      approver,
+    );
+
+    const [invRow] = await listSupplierInvoices(
+      { branchId: approver.branchId },
+      approver,
+    );
+    expect(invRow).toMatchObject({
+      createdBy: creator.userId,
+      createdByName: "منشئ أمر الشراء",
+      postedBy: approver.userId,
+      postedByName: "معتمد مستقل",
+      approvedByName: "معتمد مستقل",
+      isAutoPostedFromPo: true,
+    });
+    const detail = await getSupplierInvoice(Number(invRow.id), approver);
+    expect(detail.invoice).toMatchObject({
+      createdBy: creator.userId,
+      createdByName: "منشئ أمر الشراء",
+      approvedByName: "معتمد مستقل",
+      isAutoPostedFromPo: true,
+    });
   });
 });

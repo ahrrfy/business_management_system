@@ -16,7 +16,7 @@ import {
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Building2, ExternalLink, FileText, RotateCcw, ShieldCheck, User, UserCheck } from "lucide-react";
 import { Link } from "wouter";
@@ -159,7 +159,7 @@ export function SupplierInvoiceDetailDrawer({
                   {inv.dueDate && (
                     <div className="flex items-center justify-between">
                       <span className="text-muted-foreground">تاريخ الاستحقاق:</span>
-                      <span className="font-mono text-amber-600 dark:text-amber-400 font-medium">
+                      <span className="font-mono text-[var(--sem-warn)] font-medium">
                         {fmtDate(inv.dueDate)}
                       </span>
                     </div>
@@ -169,7 +169,7 @@ export function SupplierInvoiceDetailDrawer({
             </div>
 
             {/* الموظفون المنفذون */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-muted/30 p-3 rounded-lg border">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-muted/30 p-3 rounded-lg border">
               <div className="flex items-center gap-2">
                 <User aria-hidden className="size-4 text-muted-foreground shrink-0" />
                 <div className="space-y-0.5">
@@ -178,11 +178,23 @@ export function SupplierInvoiceDetailDrawer({
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <ShieldCheck aria-hidden className="size-4 text-muted-foreground shrink-0" />
+                <div className="space-y-0.5">
+                  <div className="text-muted-foreground">اعتمدها:</div>
+                  <div className="font-semibold text-foreground">
+                    {inv.approvedByName ?? "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
                 <UserCheck aria-hidden className="size-4 text-muted-foreground shrink-0" />
                 <div className="space-y-0.5">
                   <div className="text-muted-foreground">رحّلها:</div>
                   <div className="font-semibold text-foreground">
-                    {inv.postedByName ?? (inv.status === "POSTED" ? "ترحيل آلي للنظام" : "لم تُرحّل بعد")}
+                    {inv.postedByName ??
+                      (inv.isAutoPostedFromPo || inv.status === "POSTED"
+                        ? "ترحيل آلي للنظام عند الاعتماد"
+                        : "لم تُرحّل بعد")}
                   </div>
                 </div>
               </div>
@@ -197,15 +209,15 @@ export function SupplierInvoiceDetailDrawer({
                     {fmt(inv.subtotal ?? inv.totalAmount)} {currencySymbol}
                   </span>
                 </div>
-                {inv.discountAmount && Number(inv.discountAmount) > 0 ? (
-                  <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400">
+                {inv.discountAmount && D(inv.discountAmount).gt(0) ? (
+                  <div className="flex items-center justify-between text-[var(--sem-pos)]">
                     <span>الخصم الممنوح:</span>
                     <span className="font-mono font-medium">
                       -{fmt(inv.discountAmount)} {currencySymbol}
                     </span>
                   </div>
                 ) : null}
-                {inv.taxAmount && Number(inv.taxAmount) > 0 ? (
+                {inv.taxAmount && D(inv.taxAmount).gt(0) ? (
                   <div className="flex items-center justify-between text-muted-foreground">
                     <span>الضريبة:</span>
                     <span className="font-mono font-medium text-foreground">
@@ -287,7 +299,7 @@ export function SupplierInvoiceDetailDrawer({
                         <div key={req.id} className="p-3 rounded-md border text-xs space-y-1.5 bg-muted/10">
                           <div className="flex items-center justify-between font-semibold">
                             <span>{req.kind === "REVERSE_INVOICE" ? "طلب عكس فاتورة مورد" : "طلب ترحيل فاتورة"}</span>
-                            <span className={cn("px-2 py-0.5 rounded text-[11px]", req.status === "APPROVED" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" : req.status === "REJECTED" ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300")}>
+                            <span className={cn("px-2 py-0.5 rounded text-[11px]", req.status === "APPROVED" ? "badge-status-active" : req.status === "REJECTED" ? "badge-status-cancelled" : "badge-status-pending")}>
                               {req.status === "APPROVED" ? "معتمد" : req.status === "REJECTED" ? "مرفوض" : "بانتظار الاعتماد"}
                             </span>
                           </div>
@@ -327,8 +339,8 @@ export function SupplierInvoiceDetailDrawer({
                               className={cn(
                                 "px-2 py-0.5 rounded font-medium text-[11px]",
                                 isMatchOk
-                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                                  : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+                                  ? "badge-status-active"
+                                  : "badge-status-pending",
                               )}
                             >
                               {matchLabel}

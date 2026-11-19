@@ -10,6 +10,7 @@ import {
 import { failOpaque } from "../lib/opaqueFailure";
 import { canonicalOperationAllowed } from "../operationAuthorization";
 import { TRPCError } from "@trpc/server";
+import Decimal from "decimal.js";
 import {
   and,
   asc,
@@ -35,6 +36,7 @@ import {
   DEAD_INVOICE_STATUSES,
   isDeadInvoiceStatus,
 } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { nextActionTerminalReason } from "@shared/nextAction";
@@ -73,12 +75,20 @@ import {
 } from "../services/accountAuthenticationLockout";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { processPayment } from "../services/saleService";
+import { applyCustomerHistoricalCreditTx, applyCustomerReceiptCreditTx,
+  computeCustomerBranchScopeTx, findCustomerCreditAuditByRequestIdTx } from "../services/customerReceiptSettlement";
+import { activeDeliveryInvoiceIdsTx } from "../services/delivery/guards";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../services/idempotency";
 import {
   replaySalesControlRequest,
   requestSalesControl,
 } from "../services/sale/controlRequests";
 import { cancelSale, isUnpaidCodCancellationSource } from "../services/sale/cancel";
-import { money } from "../services/money";
+import { money, toDbMoney } from "../services/money";
 import { loadRefundCaps } from "../services/returns/refundCaps";
 import { loadCustomerReceiptInvoicePayments } from "../services/customerReceiptProjection";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
@@ -1515,8 +1525,23 @@ export const saleRouter = router({
             .optional(),
           // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
           clientRequestId: z.string().min(1).max(80).optional(),
+          useCustomerCredit: z.boolean().optional(),
         })
         .superRefine((input, ctx) => {
+          if (input.useCustomerCredit) {
+            if (
+              (input.payments && input.payments.length > 0) ||
+              input.externalPaymentAttemptId != null ||
+              input.externalPaymentDeviceId != null
+            ) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["useCustomerCredit"],
+                message: "التسوية من الرصيد الدائن لا تقبل دفعات نقدية أو إلكترونية مصاحبة",
+              });
+            }
+            return;
+          }
           if (input.payments && input.payments.length > 0) {
             for (let idx = 0; idx < input.payments.length; idx++) {
               const leg = input.payments[idx]!;
@@ -1626,6 +1651,254 @@ export const saleRouter = router({
       } else {
         actorBranchId = enforceBranchId!;
       }
+
+      if (input.useCustomerCredit) {
+        const actor = {
+          userId: ctx.user.id,
+          branchId: actorBranchId,
+          role: ctx.user.role,
+          isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+        };
+        return withTx(async (tx) => {
+          const [inv] = await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, input.invoiceId))
+            .for("update")
+            .limit(1);
+          if (!inv) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: appErrorMessage({
+                what: "تعذر تسديد الفاتورة",
+                why: `الفاتورة رقم ${input.invoiceId} غير موجودة`,
+                doThis: "أعد تحميل سجل الفواتير وتحقق من رقم الفاتورة",
+              }),
+            });
+          }
+          if (enforceBranchId != null && Number(inv.branchId) !== enforceBranchId) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: appErrorMessage({
+                what: "لا تملك صلاحية على فاتورة فرع آخر",
+                why: `الفاتورة تخص الفرع رقم ${Number(inv.branchId)} وأنت مقيد بالفرع رقم ${enforceBranchId}`,
+                doThis: "حصل الفاتورة من فرعها أو عبر المدير العام",
+              }),
+            });
+          }
+          if (!inv.customerId) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تعذر التسديد من الرصيد الدائن",
+                why: "الفاتورة لا ترتبط بعميل مسجل",
+                doThis: "استخدم التحصيل النقدي أو البطاقة لهذه الفاتورة",
+              }),
+            });
+          }
+          if (isDeadInvoice(inv)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذر التسديد من الرصيد الدائن",
+                why: "الفاتورة ملغاة أو مستبدلة أو مرتجعة بالكامل",
+                doThis: "تحقق من الفاتورة الصحيحة قبل المتابعة",
+              }),
+            });
+          }
+          if ((await activeDeliveryInvoiceIdsTx(tx, [inv.id])).has(inv.id)) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذر تسديد فاتورة توصيل نشطة بالرصيد الدائن",
+                why: "للفاتورة إرسالية توصيل قائمة بعهدة تحصيل",
+                doThis: "أتمم تسوية الإرسالية أو ألغ إسنادها أولاً",
+              }),
+            });
+          }
+
+          const creditReqHash = input.clientRequestId
+            ? idempotencyHash({
+                invoiceId: input.invoiceId,
+                amount: input.amount ?? null,
+                useCustomerCredit: true,
+              })
+            : null;
+          if (input.clientRequestId) {
+            const existing = await checkIdempotency(
+              tx,
+              "sale.payCredit",
+              input.clientRequestId,
+              creditReqHash,
+              { forUpdate: true },
+            );
+            if (existing != null) {
+              const [custSnap] = await tx
+                .select({ currentBalance: customers.currentBalance })
+                .from(customers)
+                .where(eq(customers.id, inv.customerId))
+                .limit(1);
+              const curBal = toDbMoney(custSnap?.currentBalance ?? "0");
+              const rem = Decimal.max(
+                0,
+                money(inv.total).minus(inv.returnedTotal ?? 0).minus(inv.paidAmount),
+              );
+              const snapVal = await findCustomerCreditAuditByRequestIdTx(
+                tx,
+                inv.id,
+                input.clientRequestId,
+              );
+              return {
+                invoiceId: inv.id,
+                paidAmount: inv.paidAmount,
+                status: inv.status,
+                newStatus: inv.status,
+                creditApplied: snapVal?.creditApplied ?? "0.00",
+                invoiceRemaining: toDbMoney(rem),
+                balanceBefore: snapVal?.balanceBefore ?? curBal,
+                balanceAfter: snapVal?.balanceAfter ?? curBal,
+                idempotentReplay: true as const,
+              };
+            }
+          }
+
+          const remainingBefore = Decimal.max(
+            0,
+            money(inv.total).minus(inv.returnedTotal ?? 0).minus(inv.paidAmount),
+          );
+          if (!remainingBefore.gt(0)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "الفاتورة مسددة بالكامل",
+                why: "لا يوجد متبق مفتوح على الفاتورة لتسديده",
+                doThis: "حدّث الشاشة لمراجعة حالة الفاتورة",
+              }),
+            });
+          }
+
+          const [cust] = await tx
+            .select()
+            .from(customers)
+            .where(eq(customers.id, inv.customerId))
+            .for("update")
+            .limit(1);
+          const balanceBefore = toDbMoney(cust?.currentBalance ?? "0");
+          const requestedCap = input.amount
+            ? Decimal.min(money(input.amount), remainingBefore)
+            : remainingBefore;
+
+          // الترتيب الإلزامي للتحصيل من الرصيد الدائن للعميل داخل نفس الفرع:
+          // ١) استنفاد السندات المتتبعة (customerReceiptSettlements) أولاً بصون المعادلة
+          // ٢) التراجع عند الحاجة إلى الرصيد التاريخي/اليومية اليدوية بالفرع (مع استبعاد عرابين الحجز)
+          // ٣) قيد التسوية يوازن inv.paidAmount وreconcileCustomerBalances دون مساس بالنقد أو الخزينة
+          // ٤) عند وجود رصيد في فرع آخر يُوجّه للمقاصة الموثقة
+          const trackedApplied = await applyCustomerReceiptCreditTx(
+            tx,
+            inv.id,
+            requestedCap,
+            actor,
+          );
+          const remainingAfterTracked = requestedCap.minus(trackedApplied);
+          const histApplied = remainingAfterTracked.gt(0)
+            ? await applyCustomerHistoricalCreditTx(
+                tx,
+                inv.id,
+                remainingAfterTracked,
+                actor,
+                input.clientRequestId,
+              )
+            : money(0);
+          const applied = trackedApplied.plus(histApplied);
+          if (!applied.gt(0)) {
+            const scopeMap = await computeCustomerBranchScopeTx(tx, {
+              customerIds: [inv.customerId],
+            });
+            const hasOtherBranchCredit = Array.from(scopeMap.values()).some(
+              (scope) =>
+                scope.branchId !== Number(inv.branchId) &&
+                scope.totalCrossBranchCredit.gt(0),
+            );
+            if (hasOtherBranchCredit) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "رصيد العميل الدائن في فرع آخر",
+                  why: `يمتلك العميل رصيداً دائناً غير مخصص في فرع مغاير لفرع هذه الفاتورة (${inv.branchId})`,
+                  doThis: "نفّذ مقاصة بين الفروع من ملف العميل أولاً ثم أعد تسديد الفاتورة",
+                }),
+              });
+            }
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "لا يوجد رصيد دائن متاح للعميل في هذا الفرع",
+                why: "رصيد العميل الدائن مستهلك بالكامل أو لا يغطي الفاتورة الحالية",
+                doThis: "سجل دفعة جديدة أو استخدم تحصيل السندات",
+              }),
+            });
+          }
+
+          const [updatedInv] = await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, inv.id))
+            .limit(1);
+          const [custAfter] = await tx
+            .select({ currentBalance: customers.currentBalance })
+            .from(customers)
+            .where(eq(customers.id, inv.customerId))
+            .limit(1);
+
+          const balanceAfter = toDbMoney(custAfter?.currentBalance ?? balanceBefore);
+          const invoiceRemaining = toDbMoney(
+            Decimal.max(
+              0,
+              money(updatedInv.total)
+                .minus(updatedInv.returnedTotal ?? 0)
+                .minus(updatedInv.paidAmount),
+            ),
+          );
+          const creditAppliedStr = toDbMoney(applied);
+
+          await logAuditTx(tx, actor, {
+            action: "sale.pay.customerCredit",
+            entityType: "invoice",
+            entityId: inv.id,
+            branchId: Number(inv.branchId),
+            newValue: {
+              creditApplied: creditAppliedStr,
+              newStatus: updatedInv.status,
+              invoiceRemaining,
+              balanceBefore,
+              balanceAfter,
+              clientRequestId: input.clientRequestId ?? null,
+            },
+          });
+
+          if (input.clientRequestId) {
+            await recordIdempotencyKey(
+              tx,
+              "sale.payCredit",
+              input.clientRequestId,
+              inv.id,
+              creditReqHash,
+            );
+          }
+
+          return {
+            invoiceId: inv.id,
+            paidAmount: updatedInv.paidAmount,
+            status: updatedInv.status,
+            newStatus: updatedInv.status,
+            creditApplied: creditAppliedStr,
+            invoiceRemaining,
+            balanceBefore,
+            balanceAfter,
+          };
+        });
+      }
+
       const totalPaymentAmount =
         input.payments && input.payments.length > 0
           ? input.payments

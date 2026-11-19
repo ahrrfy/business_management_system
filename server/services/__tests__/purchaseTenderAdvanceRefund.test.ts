@@ -779,4 +779,30 @@ describe("purchase advance refund public voucher lifecycle", () => {
     expect((await advance(sourceId)).reversedAmount).toBe("100.00");
     expect((await availability(sourceId))?.unusedAmount).toBe("50.00");
   });
+
+  it("يتيح تصنيف قبض المورد كـ CREDIT_OBLIGATION رغم وجود دفعات سابقة دون مطالبة بأصل صرف، ويرفض ADVANCE_REFUND بلا أصل", async () => {
+    const sourceId = await previousPayment("150");
+    expect(sourceId).toBeGreaterThan(0);
+
+    await expect(
+      createVoucher(
+        {
+          ...refundInput(undefined, "40"),
+          supplierReceiptPurpose: "ADVANCE_REFUND",
+        },
+        maker,
+      ),
+    ).rejects.toThrow();
+
+    const creditOb = await createVoucher(
+      {
+        ...refundInput(undefined, "40"),
+        supplierReceiptPurpose: "CREDIT_OBLIGATION",
+      },
+      maker,
+    );
+    expect(creditOb.receiptId).toBeGreaterThan(0);
+    // رصيد المورد: 150.00- (من previousPayment) + 40.00 (قبض التزام دائن) = -110.00
+    expect((await balances()).supplier).toBe("-110.00");
+  });
 });

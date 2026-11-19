@@ -157,6 +157,23 @@ export function PipelineTransitionDialog({
   );
 }
 
+function pipelineEventLabel(eventType: string): string {
+  switch (eventType) {
+    case "CREATED":
+      return "تم الإنشاء";
+    case "UPDATED":
+      return "تم التعديل";
+    case "STATUS_CHANGED":
+      return "تغيّرت الحالة";
+    case "STAGE_CHANGED":
+      return "انتقل إلى مرحلة جديدة";
+    case "CONVERTED":
+      return "تم التحويل";
+    default:
+      return eventType;
+  }
+}
+
 export function PipelineHistoryDialog({
   open,
   onOpenChange,
@@ -210,7 +227,7 @@ export function PipelineHistoryDialog({
             {events.map((event) => (
               <div key={event.id} className="rounded-md border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <b className="text-sm">{event.eventType}</b>
+                  <b className="text-sm">{pipelineEventLabel(event.eventType)}</b>
                   <span className="text-2xs text-muted-foreground">
                     {new Date(event.occurredAt).toLocaleString(
                       "ar-IQ-u-nu-latn",

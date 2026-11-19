@@ -2,9 +2,25 @@ import { TRPCError } from "@trpc/server";
 import { INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
-import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import {
+  branches,
+  customers,
+  invoiceItems,
+  invoices,
+  productUnits,
+  productVariants,
+  products,
+  purchaseOrderItems,
+  purchaseOrders,
+  purchaseReturnReversals,
+  purchaseReturns,
+  suppliers,
+  users,
+} from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { parseBusinessYmd } from "../services/businessDay";
 import { maskBankFields } from "../lib/redact";
@@ -91,6 +107,7 @@ import {
   csatReport,
   taskResponseReport,
 } from "../services/reports/whatsappReports";
+import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
 import {
   adminProcedure,
@@ -288,6 +305,7 @@ export const reportsRouter = router({
         customerId: z.number().int().positive(),
         from: ymdStr.optional(),
         to: ymdStr.optional(),
+        includeItems: z.boolean().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -300,6 +318,7 @@ export const reportsRouter = router({
         from: input.from,
         to: input.to,
         branchId,
+        includeItems: input.includeItems,
       });
     }),
 
@@ -355,6 +374,7 @@ export const reportsRouter = router({
         supplierId: z.number().int().positive(),
         from: ymdStr.optional(),
         to: ymdStr.optional(),
+        includeItems: z.boolean().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -365,6 +385,7 @@ export const reportsRouter = router({
         from: input.from,
         to: input.to,
         branchId,
+        includeItems: input.includeItems,
       });
       // حجب الحقول المصرفية (iban/bankName/swift) عن غير المرتفعين (محاسب/مدقّق) — الكشف كان يُرجع
       // صفّ المورّد كاملاً خاماً، التفافاً على الحجب المطبَّق في suppliers.get (تدقيق ١٧/٧).
@@ -474,6 +495,7 @@ export const reportsRouter = router({
         // cursor: آخر invoice.id من الصفحة السابقة. غيابه = أول صفحة.
         // الترتيب desc(id) ⇒ الصفحة التالية = id أصغر من المؤشّر.
         cursor: z.number().int().positive().optional(),
+        includeItems: z.boolean().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -604,6 +626,58 @@ export const reportsRouter = router({
         rows.length === input.limit && lastRow ? lastRow.id : null;
 
       const projection = await loadSalesInvoiceProjection(rows.map(row => row.id));
+      const itemsByInvoiceId = new Map<
+        number,
+        Array<{
+          id: number;
+          productId: number | null;
+          variantId: number;
+          productName: string;
+          unitName: string | null;
+          sku: string | null;
+          quantity: string;
+          unitPrice: string;
+          discountAmount: string;
+          total: string;
+        }>
+      >();
+      if (input.includeItems && rows.length > 0) {
+        const itemRows = await db
+          .select({
+            id: invoiceItems.id,
+            invoiceId: invoiceItems.invoiceId,
+            productId: productVariants.productId,
+            variantId: invoiceItems.variantId,
+            productName: sql<string>`COALESCE(${invoiceItems.itemNameSnapshot}, ${products.name}, 'بند')`,
+            unitName: productUnits.unitName,
+            sku: productVariants.sku,
+            quantity: invoiceItems.quantity,
+            unitPrice: invoiceItems.unitPrice,
+            discountAmount: invoiceItems.discountAmount,
+            total: invoiceItems.total,
+          })
+          .from(invoiceItems)
+          .leftJoin(productVariants, eq(productVariants.id, invoiceItems.variantId))
+          .leftJoin(products, eq(products.id, productVariants.productId))
+          .leftJoin(productUnits, eq(productUnits.id, invoiceItems.productUnitId))
+          .where(inArray(invoiceItems.invoiceId, rows.map((r) => r.id)));
+        for (const it of itemRows) {
+          const list = itemsByInvoiceId.get(Number(it.invoiceId)) ?? [];
+          list.push({
+            id: Number(it.id),
+            productId: it.productId != null ? Number(it.productId) : null,
+            variantId: Number(it.variantId),
+            productName: it.productName,
+            unitName: it.unitName ?? null,
+            sku: it.sku ?? null,
+            quantity: String(it.quantity ?? "0"),
+            unitPrice: toDbMoney(money(it.unitPrice ?? "0")),
+            discountAmount: toDbMoney(money(it.discountAmount ?? "0")),
+            total: toDbMoney(money(it.total ?? "0")),
+          });
+          itemsByInvoiceId.set(Number(it.invoiceId), list);
+        }
+      }
       const showCost = canSeeCostForUser(ctx.user);
       const projectedRows = rows.map(row => {
         const net = projection.get(row.id);
@@ -611,7 +685,9 @@ export const reportsRouter = router({
         return { ...row, netRevenue: net.netRevenue,
           costTotal: showCost ? row.costTotal : null,
           netCOGS: showCost ? net.netCOGS : null,
-          profit: showCost ? net.profit : null };
+          profit: showCost ? net.profit : null,
+          ...(input.includeItems ? { items: itemsByInvoiceId.get(row.id) ?? [] } : {}),
+        };
       });
 
       return {
@@ -964,11 +1040,589 @@ export const reportsRouter = router({
         from: ymdStr,
         to: ymdStr,
         branchId: z.number().int().positive().optional(),
+        includeItems: z.boolean().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getPurchasesReport({ from: input.from, to: input.to, branchId });
+      const report = await getPurchasesReport({ from: input.from, to: input.to, branchId });
+      if (!input.includeItems || report.rows.length === 0) {
+        return report;
+      }
+      const db = getDb();
+      if (!db) return report;
+      const supplierIds = report.rows
+        .map((r) => r.supplierId)
+        .filter((id): id is number => id != null);
+      if (supplierIds.length === 0) return report;
+
+      const poRows = await db
+        .select({
+          id: purchaseOrders.id,
+          supplierId: purchaseOrders.supplierId,
+          poNumber: purchaseOrders.poNumber,
+          orderDate: purchaseOrders.orderDate,
+          status: purchaseOrders.status,
+          agreedCurrency: purchaseOrders.agreedCurrency,
+          agreedRate: purchaseOrders.agreedRate,
+          total: purchaseOrders.total,
+          paidAmount: purchaseOrders.paidAmount,
+        })
+        .from(purchaseOrders)
+        .where(
+          and(
+            inArray(purchaseOrders.supplierId, supplierIds),
+            inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+            sql`${purchaseOrders.orderDate} >= ${localDayStart(input.from)}`,
+            sql`${purchaseOrders.orderDate} < ${localNextDayStart(input.to)}`,
+            branchId != null ? eq(purchaseOrders.branchId, branchId) : undefined,
+          ),
+        )
+        .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id));
+
+      const poIds = poRows.map((p) => Number(p.id));
+      const itemsByPo = new Map<
+        number,
+        Array<{
+          id: number;
+          variantId: number;
+          productName: string;
+          sku: string | null;
+          quantity: string;
+          unitPrice: string;
+          usdUnitPrice: string | null;
+          total: string;
+        }>
+      >();
+      if (poIds.length > 0) {
+        const poItemRows = await db
+          .select({
+            id: purchaseOrderItems.id,
+            poId: purchaseOrderItems.purchaseOrderId,
+            variantId: purchaseOrderItems.variantId,
+            productName: sql<string>`COALESCE(${products.name}, 'صنف')`,
+            sku: productVariants.sku,
+            quantity: purchaseOrderItems.quantity,
+            unitPrice: purchaseOrderItems.unitPrice,
+            total: purchaseOrderItems.total,
+            usdTotal: purchaseOrderItems.usdTotal,
+          })
+          .from(purchaseOrderItems)
+          .leftJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
+          .leftJoin(products, eq(products.id, productVariants.productId))
+          .where(inArray(purchaseOrderItems.purchaseOrderId, poIds));
+        for (const it of poItemRows) {
+          const list = itemsByPo.get(Number(it.poId)) ?? [];
+          const qty = money(it.quantity ?? "0");
+          const usdUnitPrice =
+            it.usdTotal != null && qty.gt(0)
+              ? toDbMoney(money(it.usdTotal).div(qty))
+              : null;
+          list.push({
+            id: Number(it.id),
+            variantId: Number(it.variantId),
+            productName: it.productName,
+            sku: it.sku ?? null,
+            quantity: String(it.quantity ?? "0"),
+            unitPrice: toDbMoney(money(it.unitPrice ?? "0")),
+            usdUnitPrice,
+            total: toDbMoney(money(it.total ?? "0")),
+          });
+          itemsByPo.set(Number(it.poId), list);
+        }
+      }
+
+      const ordersBySup = new Map<
+        number,
+        Array<{
+          purchaseOrderId: number;
+          poNumber: string;
+          orderDate: Date;
+          status: string;
+          agreedCurrency: string;
+          agreedRate: string | null;
+          total: string;
+          paidAmount: string;
+          items: Array<{
+            id: number;
+            variantId: number;
+            productName: string;
+            sku: string | null;
+            quantity: string;
+            unitPrice: string;
+            usdUnitPrice: string | null;
+            total: string;
+          }>;
+        }>
+      >();
+      for (const po of poRows) {
+        const supId = Number(po.supplierId);
+        const list = ordersBySup.get(supId) ?? [];
+        list.push({
+          purchaseOrderId: Number(po.id),
+          poNumber: po.poNumber,
+          orderDate: po.orderDate,
+          status: po.status,
+          agreedCurrency: po.agreedCurrency,
+          agreedRate: po.agreedRate,
+          total: toDbMoney(money(po.total)),
+          paidAmount: toDbMoney(money(po.paidAmount)),
+          items: itemsByPo.get(Number(po.id)) ?? [],
+        });
+        ordersBySup.set(supId, list);
+      }
+
+      return {
+        ...report,
+        rows: report.rows.map((r) => ({
+          ...r,
+          ordersDetail: r.supplierId != null ? (ordersBySup.get(r.supplierId) ?? []) : [],
+        })),
+      };
+    }),
+
+  /** بيانات الفواتير المجمعة للطباعة والتصدير الجماعي لعميل أو مورد ضمن فترة وحالة محددة. */
+  batchInvoicesData: reportsBranchScoped
+    .input(
+      z.object({
+        partyType: z.enum(["CUSTOMER", "SUPPLIER"]),
+        partyId: z.number().int().positive(),
+        from: ymdStr.optional(),
+        to: ymdStr.optional(),
+        includeItems: z.boolean().default(true),
+        statusFilter: z.enum(["ALL", "COMPLETED_ONLY", "OPEN_ONLY"]).default("COMPLETED_ONLY"),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) {
+        return {
+          partyType: input.partyType,
+          partyId: input.partyId,
+          partyName: "",
+          currentBalance: "0.00",
+          currentBalanceUsd: null as string | null,
+          invoices: [] as Array<{
+            id: number;
+            documentNumber: string;
+            date: string;
+            branchId: number;
+            branchName: string | null;
+            status: string;
+            paymentMethod: string | null;
+            currency: "IQD" | "USD";
+            agreedRate: string | null;
+            usdTotal: string | null;
+            subtotal: string;
+            discountAmount: string;
+            taxAmount: string;
+            total: string;
+            paidAmount: string;
+            returnedTotal: string;
+            remainingAmount: string;
+            notes: string | null;
+            createdByName: string | null;
+            approvedByName: string | null;
+            items: Array<{
+              id: number;
+              productName: string;
+              unitName: string | null;
+              sku: string | null;
+              quantity: string;
+              unitPrice: string;
+              discount: string;
+              total: string;
+            }>;
+          }>,
+          totals: { count: 0, total: "0.00", paid: "0.00", returned: "0.00", remaining: "0.00" },
+        };
+      }
+      const branchId = scopedBranchId(ctx);
+
+      if (input.partyType === "CUSTOMER") {
+        const [cust] = await db
+          .select({
+            id: customers.id,
+            name: customers.name,
+            currentBalance: customers.currentBalance,
+          })
+          .from(customers)
+          .where(eq(customers.id, input.partyId))
+          .limit(1);
+        if (!cust) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذر تحميل فواتير العميل",
+              why: `العميل رقم ${input.partyId} غير موجود في السجلات`,
+              doThis: "تحقق من اختيار العميل الصحيح وأعد المحاولة",
+            }),
+          });
+        }
+
+        const invCreator = alias(users, "batchInvCreator");
+        const invRows = await db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            invoiceDate: invoices.invoiceDate,
+            status: invoices.status,
+            branchId: invoices.branchId,
+            branchName: branches.name,
+            subtotal: invoices.subtotal,
+            taxAmount: invoices.taxAmount,
+            discountAmount: invoices.discountAmount,
+            total: invoices.total,
+            paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
+            paymentMethod: invoices.paymentMethod,
+            notes: invoices.notes,
+            createdByName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${invCreator.name})`,
+          })
+          .from(invoices)
+          .leftJoin(branches, eq(branches.id, invoices.branchId))
+          .leftJoin(invCreator, eq(invCreator.id, invoices.createdBy))
+          .where(
+            and(
+              eq(invoices.customerId, input.partyId),
+              branchId != null ? eq(invoices.branchId, branchId) : undefined,
+              input.from ? sql`${invoices.invoiceDate} >= ${localDayStart(input.from)}` : undefined,
+              input.to ? sql`${invoices.invoiceDate} < ${localNextDayStart(input.to)}` : undefined,
+              input.statusFilter === "COMPLETED_ONLY"
+                ? sql`${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')`
+                : input.statusFilter === "OPEN_ONLY"
+                  ? sql`${invoices.status} IN ('PENDING', 'PARTIALLY_PAID')`
+                  : undefined,
+            ),
+          )
+          .orderBy(desc(invoices.invoiceDate), desc(invoices.id));
+
+        const filtered = invRows.filter((row) => {
+          if (input.statusFilter !== "OPEN_ONLY") return true;
+          return money(row.total).minus(row.returnedTotal ?? 0).minus(row.paidAmount).gt(0);
+        });
+
+        const invIds = filtered.map((r) => Number(r.id));
+        const itemsByDoc = new Map<
+          number,
+          Array<{
+            id: number;
+            productName: string;
+            unitName: string | null;
+            sku: string | null;
+            quantity: string;
+            unitPrice: string;
+            discount: string;
+            total: string;
+          }>
+        >();
+        if (input.includeItems && invIds.length > 0) {
+          const itemRows = await db
+            .select({
+              id: invoiceItems.id,
+              invoiceId: invoiceItems.invoiceId,
+              productName: sql<string>`COALESCE(${invoiceItems.itemNameSnapshot}, ${products.name}, 'بند')`,
+              unitName: productUnits.unitName,
+              sku: productVariants.sku,
+              quantity: invoiceItems.quantity,
+              unitPrice: invoiceItems.unitPrice,
+              discountAmount: invoiceItems.discountAmount,
+              total: invoiceItems.total,
+            })
+            .from(invoiceItems)
+            .leftJoin(productVariants, eq(productVariants.id, invoiceItems.variantId))
+            .leftJoin(products, eq(products.id, productVariants.productId))
+            .leftJoin(productUnits, eq(productUnits.id, invoiceItems.productUnitId))
+            .where(inArray(invoiceItems.invoiceId, invIds));
+          for (const it of itemRows) {
+            const list = itemsByDoc.get(Number(it.invoiceId)) ?? [];
+            list.push({
+              id: Number(it.id),
+              productName: it.productName,
+              unitName: it.unitName ?? null,
+              sku: it.sku ?? null,
+              quantity: String(it.quantity ?? "0"),
+              unitPrice: toDbMoney(money(it.unitPrice ?? "0")),
+              discount: toDbMoney(money(it.discountAmount ?? "0")),
+              total: toDbMoney(money(it.total ?? "0")),
+            });
+            itemsByDoc.set(Number(it.invoiceId), list);
+          }
+        }
+
+        let sumTotal = money(0);
+        let sumPaid = money(0);
+        let sumReturned = money(0);
+        let sumRemaining = money(0);
+        const batchInvoices = filtered.map((r) => {
+          const tot = money(r.total);
+          const paid = money(r.paidAmount);
+          const ret = money(r.returnedTotal ?? 0);
+          const rem = Decimal.max(0, tot.minus(ret).minus(paid));
+          sumTotal = sumTotal.plus(tot);
+          sumPaid = sumPaid.plus(paid);
+          sumReturned = sumReturned.plus(ret);
+          sumRemaining = sumRemaining.plus(rem);
+          return {
+            id: Number(r.id),
+            documentNumber: r.invoiceNumber,
+            date: r.invoiceDate instanceof Date ? r.invoiceDate.toISOString() : String(r.invoiceDate),
+            branchId: Number(r.branchId),
+            branchName: r.branchName ?? null,
+            status: r.status,
+            paymentMethod: r.paymentMethod ?? null,
+            currency: "IQD" as const,
+            agreedRate: null as string | null,
+            usdTotal: null as string | null,
+            subtotal: toDbMoney(money(r.subtotal)),
+            discountAmount: toDbMoney(money(r.discountAmount ?? 0)),
+            taxAmount: toDbMoney(money(r.taxAmount ?? 0)),
+            total: toDbMoney(tot),
+            paidAmount: toDbMoney(paid),
+            returnedTotal: toDbMoney(ret),
+            remainingAmount: toDbMoney(rem),
+            notes: r.notes ?? null,
+            createdByName: r.createdByName ?? null,
+            approvedByName: null as string | null,
+            items: itemsByDoc.get(Number(r.id)) ?? [],
+          };
+        });
+
+        return {
+          partyType: input.partyType,
+          partyId: input.partyId,
+          partyName: cust.name,
+          currentBalance: toDbMoney(money(cust.currentBalance)),
+          currentBalanceUsd: null as string | null,
+          invoices: batchInvoices,
+          totals: {
+            count: batchInvoices.length,
+            total: toDbMoney(sumTotal),
+            paid: toDbMoney(sumPaid),
+            returned: toDbMoney(sumReturned),
+            remaining: toDbMoney(sumRemaining),
+          },
+        };
+      }
+
+      const [sup] = await db
+        .select({
+          id: suppliers.id,
+          name: suppliers.name,
+          currentBalance: suppliers.currentBalance,
+          currentBalanceUsd: suppliers.currentBalanceUsd,
+        })
+        .from(suppliers)
+        .where(eq(suppliers.id, input.partyId))
+        .limit(1);
+      if (!sup) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذر تحميل فواتير المورد",
+            why: `المورد رقم ${input.partyId} غير موجود في السجلات`,
+            doThis: "تحقق من اختيار المورد الصحيح وأعد المحاولة",
+          }),
+        });
+      }
+
+      const poCreator = alias(users, "batchPoCreator");
+      const poApprover = alias(users, "batchPoApprover");
+      const poRows = await db
+        .select({
+          id: purchaseOrders.id,
+          poNumber: purchaseOrders.poNumber,
+          orderDate: purchaseOrders.orderDate,
+          status: purchaseOrders.status,
+          branchId: purchaseOrders.branchId,
+          branchName: branches.name,
+          settlementType: purchaseOrders.settlementType,
+          agreedCurrency: purchaseOrders.agreedCurrency,
+          agreedRate: purchaseOrders.agreedRate,
+          usdTotal: purchaseOrders.usdTotal,
+          subtotal: purchaseOrders.subtotal,
+          taxAmount: purchaseOrders.taxAmount,
+          invoiceDiscount: purchaseOrders.invoiceDiscount,
+          total: purchaseOrders.total,
+          paidAmount: purchaseOrders.paidAmount,
+          notes: purchaseOrders.notes,
+          createdByName: poCreator.name,
+          approvedByName: poApprover.name,
+        })
+        .from(purchaseOrders)
+        .leftJoin(branches, eq(branches.id, purchaseOrders.branchId))
+        .leftJoin(poCreator, eq(poCreator.id, purchaseOrders.createdBy))
+        .leftJoin(poApprover, eq(poApprover.id, purchaseOrders.approvedBy))
+        .where(
+          and(
+            eq(purchaseOrders.supplierId, input.partyId),
+            branchId != null ? eq(purchaseOrders.branchId, branchId) : undefined,
+            input.from ? sql`${purchaseOrders.orderDate} >= ${localDayStart(input.from)}` : undefined,
+            input.to ? sql`${purchaseOrders.orderDate} < ${localNextDayStart(input.to)}` : undefined,
+            input.statusFilter === "COMPLETED_ONLY" || input.statusFilter === "OPEN_ONLY"
+              ? inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"])
+              : undefined,
+          ),
+        )
+        .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id));
+
+      const poIds = poRows.map((p) => Number(p.id));
+      const retMap = new Map<number, Decimal>();
+      if (poIds.length > 0) {
+        const [retRows, revRows] = await Promise.all([
+          db
+            .select({
+              poId: purchaseReturns.purchaseOrderId,
+              ret: sql<string>`COALESCE(SUM(${purchaseReturns.creditOffsetAmount}), 0)`,
+            })
+            .from(purchaseReturns)
+            .where(
+              and(
+                inArray(purchaseReturns.purchaseOrderId, poIds),
+                eq(purchaseReturns.settlement, "CREDIT"),
+                sql`${purchaseReturns.status} <> 'REVERSED'`,
+              ),
+            )
+            .groupBy(purchaseReturns.purchaseOrderId),
+          db
+            .select({
+              poId: purchaseReturns.purchaseOrderId,
+              rev: sql<string>`COALESCE(SUM(${purchaseReturnReversals.totalAmount}), 0)`,
+            })
+            .from(purchaseReturnReversals)
+            .innerJoin(
+              purchaseReturns,
+              eq(purchaseReturns.id, purchaseReturnReversals.purchaseReturnId),
+            )
+            .where(
+              and(
+                inArray(purchaseReturns.purchaseOrderId, poIds),
+                eq(purchaseReturns.settlement, "CREDIT"),
+                sql`${purchaseReturns.status} <> 'REVERSED'`,
+              ),
+            )
+            .groupBy(purchaseReturns.purchaseOrderId),
+        ]);
+        for (const rr of retRows) {
+          if (rr.poId != null) retMap.set(Number(rr.poId), money(rr.ret));
+        }
+        for (const rv of revRows) {
+          if (rv.poId == null) continue;
+          const poId = Number(rv.poId);
+          const netRet = Decimal.max(
+            0,
+            (retMap.get(poId) ?? money(0)).minus(rv.rev),
+          );
+          retMap.set(poId, netRet);
+        }
+      }
+
+      const filteredPos = poRows.filter((row) => {
+        if (input.statusFilter !== "OPEN_ONLY") return true;
+        const ret = retMap.get(Number(row.id)) ?? money(0);
+        return money(row.total).minus(ret).minus(row.paidAmount).gt(0);
+      });
+
+      const filteredPoIds = filteredPos.map((p) => Number(p.id));
+      const itemsByPo = new Map<
+        number,
+        Array<{
+          id: number;
+          productName: string;
+          unitName: string | null;
+          sku: string | null;
+          quantity: string;
+          unitPrice: string;
+          discount: string;
+          total: string;
+        }>
+      >();
+      if (input.includeItems && filteredPoIds.length > 0) {
+        const poItemRows = await db
+          .select({
+            id: purchaseOrderItems.id,
+            poId: purchaseOrderItems.purchaseOrderId,
+            productName: sql<string>`COALESCE(${products.name}, 'صنف')`,
+            unitName: productUnits.unitName,
+            sku: productVariants.sku,
+            quantity: purchaseOrderItems.quantity,
+            unitPrice: purchaseOrderItems.unitPrice,
+            total: purchaseOrderItems.total,
+          })
+          .from(purchaseOrderItems)
+          .leftJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
+          .leftJoin(products, eq(products.id, productVariants.productId))
+          .leftJoin(productUnits, eq(productUnits.id, purchaseOrderItems.productUnitId))
+          .where(inArray(purchaseOrderItems.purchaseOrderId, filteredPoIds));
+        for (const it of poItemRows) {
+          const list = itemsByPo.get(Number(it.poId)) ?? [];
+          list.push({
+            id: Number(it.id),
+            productName: it.productName,
+            unitName: it.unitName ?? null,
+            sku: it.sku ?? null,
+            quantity: String(it.quantity ?? "0"),
+            unitPrice: toDbMoney(money(it.unitPrice ?? "0")),
+            discount: "0.00",
+            total: toDbMoney(money(it.total ?? "0")),
+          });
+          itemsByPo.set(Number(it.poId), list);
+        }
+      }
+
+      let sumTotal = money(0);
+      let sumPaid = money(0);
+      let sumReturned = money(0);
+      let sumRemaining = money(0);
+      const batchInvoices = filteredPos.map((po) => {
+        const tot = money(po.total);
+        const paid = money(po.paidAmount);
+        const ret = retMap.get(Number(po.id)) ?? money(0);
+        const rem = Decimal.max(0, tot.minus(ret).minus(paid));
+        sumTotal = sumTotal.plus(tot);
+        sumPaid = sumPaid.plus(paid);
+        sumReturned = sumReturned.plus(ret);
+        sumRemaining = sumRemaining.plus(rem);
+        return {
+          id: Number(po.id),
+          documentNumber: po.poNumber,
+          date: po.orderDate instanceof Date ? po.orderDate.toISOString() : String(po.orderDate),
+          branchId: Number(po.branchId),
+          branchName: po.branchName ?? null,
+          status: po.status,
+          paymentMethod: po.settlementType,
+          currency: (po.agreedCurrency === "USD" ? "USD" : "IQD") as "IQD" | "USD",
+          agreedRate: po.agreedRate ?? null,
+          usdTotal: po.usdTotal ?? null,
+          subtotal: toDbMoney(money(po.subtotal)),
+          discountAmount: toDbMoney(money(po.invoiceDiscount ?? 0)),
+          taxAmount: toDbMoney(money(po.taxAmount ?? 0)),
+          total: toDbMoney(tot),
+          paidAmount: toDbMoney(paid),
+          returnedTotal: toDbMoney(ret),
+          remainingAmount: toDbMoney(rem),
+          notes: po.notes ?? null,
+          createdByName: po.createdByName ?? null,
+          approvedByName: po.approvedByName ?? null,
+          items: itemsByPo.get(Number(po.id)) ?? [],
+        };
+      });
+
+      return {
+        partyType: input.partyType,
+        partyId: input.partyId,
+        partyName: sup.name,
+        currentBalance: toDbMoney(money(sup.currentBalance)),
+        currentBalanceUsd: toDbMoney(money(sup.currentBalanceUsd ?? "0")),
+        invoices: batchInvoices,
+        totals: {
+          count: batchInvoices.length,
+          total: toDbMoney(sumTotal),
+          paid: toDbMoney(sumPaid),
+          returned: toDbMoney(sumReturned),
+          remaining: toDbMoney(sumRemaining),
+        },
+      };
     }),
 
   /** سجلّ المشتريات — تفصيل بنود أوامر الشراء (عدا الملغاة) + ترقيم. manager + عزل الفرع. */

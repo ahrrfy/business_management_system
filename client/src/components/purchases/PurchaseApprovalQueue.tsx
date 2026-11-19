@@ -15,6 +15,7 @@ import {
   usePurchaseCashSourceState,
 } from "@/components/purchases/PurchaseCashSourceField";
 import { purchaseTenderLabel } from "@shared/purchaseTender";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -326,8 +327,58 @@ export function PurchaseApprovalQueue({
                         <dt className="text-xs text-muted-foreground">
                           طالب الإجراء
                         </dt>
-                        <dd>مستخدم #{Number(row.requestedBy)}</dd>
+                        <dd>
+                          {"requestedByName" in row && row.requestedByName?.trim()
+                            ? row.requestedByName
+                            : `مستخدم #${Number(row.requestedBy)}`}
+                        </dd>
                       </div>
+                      {row.documentType === "PURCHASE_ORDER" &&
+                      "creatorName" in row &&
+                      row.creatorName ? (
+                        <div>
+                          <dt className="text-xs text-muted-foreground">
+                            أنشأ الأمر
+                          </dt>
+                          <dd>{row.creatorName}</dd>
+                        </div>
+                      ) : null}
+                      {row.documentType === "PURCHASE_ORDER" &&
+                      "supplierName" in row &&
+                      row.supplierName ? (
+                        <div>
+                          <dt className="text-xs text-muted-foreground">
+                            المورّد
+                          </dt>
+                          <dd>{row.supplierName}</dd>
+                        </div>
+                      ) : null}
+                      {row.documentType === "PURCHASE_ORDER" &&
+                      "total" in row &&
+                      row.total != null ? (
+                        <div>
+                          <dt className="text-xs text-muted-foreground">
+                            الإجمالي والتسوية
+                          </dt>
+                          <dd className="flex flex-wrap items-center gap-1.5">
+                            <span dir="ltr" className="font-mono font-semibold">
+                              {row.agreedCurrency === "USD" && row.usdTotal != null
+                                ? `${fmt(row.usdTotal)} $ (${fmt(row.total)} د.ع)`
+                                : `${fmt(row.total)} د.ع`}
+                            </span>
+                            {row.agreedCurrency === "USD" && row.agreedRate != null ? (
+                              <span className="text-xs text-muted-foreground">
+                                × {fmt(row.agreedRate)}
+                              </span>
+                            ) : null}
+                            {row.settlementType ? (
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
+                                {getPurchaseSettlementIntentLabel(row.settlementType)}
+                              </span>
+                            ) : null}
+                          </dd>
+                        </div>
+                      ) : null}
                       <div>
                         <dt className="text-xs text-muted-foreground">
                           وقت الطلب

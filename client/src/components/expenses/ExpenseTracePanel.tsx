@@ -1,4 +1,55 @@
+import { movementKindLabel } from "@shared/balanceTrail";
+import { EXPENSE_APPROVAL_AR } from "@shared/expenseLabels";
 import { Loader2 } from "lucide-react";
+
+function traceStatusLabel(value: string | null | undefined): string | null | undefined {
+  if (!value) return value;
+  switch (value) {
+    case "COMPLETED":
+    case "ACTIVE":
+    case "POSTED":
+      return "مكتمل ومنفذ";
+    case "PENDING":
+    case "PENDING_APPROVAL":
+      return "بانتظار الاعتماد";
+    case "APPROVED":
+      return EXPENSE_APPROVAL_AR.APPROVED;
+    case "REJECTED":
+      return EXPENSE_APPROVAL_AR.REJECTED;
+    case "CANCELLED":
+      return "ملغى";
+    case "REVERSED":
+      return "معكوس";
+    case "RECOGNIZED":
+      return "اعتراف بالاستحقاق";
+    case "PAYMENT_REQUESTED":
+      return "طلب سداد";
+    case "PAYMENT_SETTLED":
+      return "تمت التسوية الفعلية";
+    case "RECOGNITION_REVERSED":
+      return "عكس الاعتراف";
+    default:
+      return movementKindLabel(value) ?? value;
+  }
+}
+
+function traceAuditActionLabel(action: string): string {
+  switch (action) {
+    case "expense.create":
+      return "إنشاء مصروف";
+    case "expense.update":
+      return "تعديل مصروف";
+    case "expense.approve":
+      return "اعتماد مصروف";
+    case "expense.reject":
+      return "رفض مصروف";
+    case "expense.cancel":
+    case "expense.reverse":
+      return "إلغاء / عكس مصروف";
+    default:
+      return action;
+  }
+}
 import { FinancialTraceDetails } from "@/components/financial/FinancialTraceDetails";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt } from "@/lib/money";
@@ -191,7 +242,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
                 : event.receiptId
                   ? `R#${event.receiptId}`
                   : `AOE#${event.id}`,
-              status: event.eventType,
+              status: traceStatusLabel(event.eventType),
               subtitle: `${fmt(event.amount)} د.ع · ${event.evidenceReference}`,
             }))
           : [
@@ -199,7 +250,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
                 kind: "RECEIPT" as const,
                 label: "إيصال الصرف",
                 value: directReceiptId ? `R#${directReceiptId}` : null,
-                status: expense.receiptStatus,
+                status: traceStatusLabel(expense.receiptStatus),
                 missing: !directReceiptId,
               },
             ]),
@@ -208,7 +259,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           kind: "LEDGER" as const,
           label: "القيد المحاسبي",
           value: `JE#${entry.id}`,
-          status: entry.entryType,
+          status: traceStatusLabel(entry.entryType),
           subtitle: `${fmt(entry.amount ?? 0)} د.ع${entry.notes ? ` · ${entry.notes}` : ""}`,
         })),
         ...trace.data.reversalReceipts.map((entry) => ({
@@ -216,7 +267,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           kind: "RECEIPT" as const,
           label: "إيصال الإلغاء / العكس",
           value: `R#${entry.id}`,
-          status: entry.status,
+          status: traceStatusLabel(entry.status),
           subtitle: `${fmt(entry.amount)} د.ع · ${entry.createdByName ?? "منفذ غير موثق"}`,
         })),
       ]}
@@ -247,9 +298,10 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
       auditTimeline={[
         ...trace.data.auditTrail.map((event) => ({
           id: `audit-${event.id}`,
-          action: event.action,
+          action: traceAuditActionLabel(event.action),
           actor:
-            event.userName ?? (event.userId ? `#${event.userId}` : "غير موثق"),
+            event.userName ??
+            (event.userId ? `مستخدم #${event.userId}` : "غير موثق"),
           at: fmtDateTime(event.createdAt),
           detail: expenseAuditDetail(
             event.action,
@@ -263,18 +315,20 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           action: "إلغاء / عكس المصروف",
           actor:
             event.createdByName ??
-            (event.createdBy ? `#${event.createdBy}` : "غير موثق"),
+            (event.createdBy ? `مستخدم #${event.createdBy}` : "غير موثق"),
           at: fmtDateTime(event.createdAt),
-          status: event.status,
+          status: traceStatusLabel(event.status),
           detail: `${fmt(event.amount)} د.ع`,
           tone: "warning" as const,
         })),
         ...trace.data.correctionRequests.map((event) => ({
           id: `accrual-correction-${event.id}`,
           action: "تصحيح مصدر الاستحقاق",
-          actor: `#${event.requestedBy}`,
+          actor:
+            (event as { requestedByName?: string | null }).requestedByName ??
+            `مستخدم #${event.requestedBy}`,
           at: fmtDateTime(event.requestedAt),
-          status: event.status,
+          status: traceStatusLabel(event.status),
           detail: `${event.reason} · ${event.externalEvidenceReference}`,
           tone:
             event.status === "APPROVED"

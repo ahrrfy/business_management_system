@@ -1,14 +1,14 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { customers, deliveryParties, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
+import { auditLogs, branches, customers, deliveryParties, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
 import { supplierVoucherSettlementDetails } from "./supplierSettlement";
 import { loadSupplierBookReceiptSettlement } from "../purchase/supplierBookProjection";
-import { loadSupplierAdvanceRefundLinks } from "../purchase/advanceRefundEvidence";
+import { ADVANCE_REFUND_ACTION, loadSupplierAdvanceRefundLinks } from "../purchase/advanceRefundEvidence";
 import {
   expensePaymentResubmitKey,
   parseExpensePaymentResubmitDescription,
@@ -124,6 +124,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   const db = getDb();
   if (!db) return [];
   const creator = alias(users, "voucherListCreator");
+  const approver = alias(users, "voucherListApprover");
   const partyCustomer = alias(customers, "voucherListCustomer");
   const partySupplier = alias(suppliers, "voucherListSupplier");
   const partyDelivery = alias(deliveryParties, "voucherListDeliveryParty");
@@ -177,6 +178,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       id: receipts.id,
       voucherNumber: receipts.voucherNumber,
       branchId: receipts.branchId,
+      branchName: branches.name,
       shiftId: receipts.shiftId,
       direction: receipts.direction,
       amount: receipts.amount,
@@ -204,6 +206,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       attachmentUrl: receipts.attachmentUrl,
       approvalStatus: receipts.approvalStatus,
       approvedBy: receipts.approvedBy,
+      approvedByName: sql<string | null>`COALESCE(${approver.name}, ${approver.username})`,
       approvedAt: receipts.approvedAt,
       signatureHash: receipts.signatureHash,
       cashBucket: receipts.cashBucket,
@@ -214,10 +217,47 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       exchangeHouseName: exchangeHouses.name,
       resubmitClientRequestId: resubmitLineageKeySql,
       resubmitLineageCount: resubmitLineageCountSql,
+      partyBalanceBefore: sql<string | null>`(
+        SELECT JSON_UNQUOTE(JSON_EXTRACT(alSnap.newValue, '$.balanceBefore'))
+        FROM auditLogs AS alSnap
+        WHERE alSnap.entityType = 'receipt'
+          AND alSnap.entityId = CONVERT(${receipts.id}, CHAR) COLLATE utf8mb4_unicode_ci
+          AND alSnap.action = 'voucher.balanceSnapshot'
+        ORDER BY alSnap.id DESC
+        LIMIT 1
+      )`,
+      partyBalanceAfter: sql<string | null>`(
+        SELECT JSON_UNQUOTE(JSON_EXTRACT(alSnap.newValue, '$.balanceAfter'))
+        FROM auditLogs AS alSnap
+        WHERE alSnap.entityType = 'receipt'
+          AND alSnap.entityId = CONVERT(${receipts.id}, CHAR) COLLATE utf8mb4_unicode_ci
+          AND alSnap.action = 'voucher.balanceSnapshot'
+        ORDER BY alSnap.id DESC
+        LIMIT 1
+      )`,
+      _advanceRefundMark: sql<number | null>`(
+        SELECT alAdv.id
+        FROM auditLogs AS alAdv
+        WHERE alAdv.entityType = 'receipt'
+          AND alAdv.entityId = CONVERT(${receipts.id}, CHAR) COLLATE utf8mb4_unicode_ci
+          AND alAdv.action = ${ADVANCE_REFUND_ACTION}
+        LIMIT 1
+      )`,
+      _storedReceiptPurpose: sql<string | null>`(
+        SELECT JSON_UNQUOTE(JSON_EXTRACT(alPur.newValue, '$.purpose'))
+        FROM auditLogs AS alPur
+        WHERE alPur.entityType = 'receipt'
+          AND alPur.entityId = CONVERT(${receipts.id}, CHAR) COLLATE utf8mb4_unicode_ci
+          AND alPur.action = 'voucher.supplierReceiptPurpose'
+        ORDER BY alPur.id DESC
+        LIMIT 1
+      )`,
     })
     .from(receipts)
+    .leftJoin(branches, eq(branches.id, receipts.branchId))
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
     .leftJoin(creator, eq(creator.id, receipts.createdBy))
+    .leftJoin(approver, eq(approver.id, receipts.approvedBy))
     .leftJoin(partyCustomer, and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)))
     .leftJoin(partySupplier, and(eq(receipts.partyType, "SUPPLIER"), eq(partySupplier.id, receipts.partyId)))
     .leftJoin(partyDelivery, and(eq(receipts.partyType, "OTHER"), eq(partyDelivery.id, receipts.partyId)))
@@ -228,7 +268,21 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     .orderBy(desc(receipts.id))
     .limit(input.limit ?? 100)
     .offset(input.offset ?? 0);
-  return attachResubmitLineage(db, rows);
+  const withLineage = await attachResubmitLineage(db, rows);
+  return withLineage.map(({ _advanceRefundMark, _storedReceiptPurpose, ...r }) => ({
+    ...r,
+    partyBalanceBefore: r.partyBalanceBefore ?? null,
+    partyBalanceAfter: r.partyBalanceAfter ?? null,
+    supplierReceiptPurpose:
+      r.partyType === "SUPPLIER" && r.direction === "IN"
+        ? _advanceRefundMark != null
+          ? ("ADVANCE_REFUND" as const)
+          : _storedReceiptPurpose === "ADVANCE_REFUND" ||
+              _storedReceiptPurpose === "CREDIT_OBLIGATION"
+            ? (_storedReceiptPurpose as "ADVANCE_REFUND" | "CREDIT_OBLIGATION")
+            : null
+        : null,
+  }));
 }
 
 /** قراءة سند منفرد + معلومات مَوسَّعة (اسم المُنشئ/المُعتمِد/الفئة) للطباعة. */
@@ -285,7 +339,51 @@ export async function getVoucher(receiptId: number) {
   const supplierSettlement = await supplierVoucherSettlementDetails(db, receiptId);
   const bookSettlement = r.partyType === "SUPPLIER" ? await loadSupplierBookReceiptSettlement(db, receiptId) : null;
   const advanceRefund = r.partyType === "SUPPLIER" ? await loadSupplierAdvanceRefundLinks(db, receiptId) : null;
-  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber, exchangeHouseId, exchangeHouseName, supplierSettlement, bookSettlement, advanceRefund };
+  let branchName: string | null = null;
+  if (r.branchId != null) {
+    const [b] = await db.select({ name: branches.name }).from(branches).where(eq(branches.id, Number(r.branchId))).limit(1);
+    branchName = b?.name ?? null;
+  }
+  const detailAudits = await db
+    .select({ action: auditLogs.action, newValue: auditLogs.newValue })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.entityType, "receipt"),
+        eq(auditLogs.entityId, String(receiptId)),
+        inArray(auditLogs.action, ["voucher.balanceSnapshot", "voucher.supplierReceiptPurpose"]),
+      ),
+    );
+  const balanceSnap = detailAudits.find((a) => a.action === "voucher.balanceSnapshot")?.newValue as
+    | { balanceBefore?: string; balanceAfter?: string; excessUnallocatedAmount?: string }
+    | undefined;
+  const storedPurpose = detailAudits.find((a) => a.action === "voucher.supplierReceiptPurpose")?.newValue as
+    | { purpose?: "ADVANCE_REFUND" | "CREDIT_OBLIGATION" }
+    | undefined;
+  const supplierReceiptPurpose =
+    r.partyType === "SUPPLIER" && r.direction === "IN"
+      ? advanceRefund
+        ? ("ADVANCE_REFUND" as const)
+        : (storedPurpose?.purpose ?? null)
+      : null;
+  return {
+    ...r,
+    branchName,
+    createdByName,
+    approvedByName,
+    categoryName,
+    partyName,
+    invoiceNumber,
+    exchangeHouseId,
+    exchangeHouseName,
+    supplierSettlement,
+    bookSettlement,
+    advanceRefund,
+    partyBalanceBefore: balanceSnap?.balanceBefore ?? null,
+    partyBalanceAfter: balanceSnap?.balanceAfter ?? null,
+    excessUnallocatedAmount: balanceSnap?.excessUnallocatedAmount ?? null,
+    supplierReceiptPurpose,
+  };
 }
 
 /** يَجلب السندات الأخيرة لنفس الطرف خلال نافذة أيام محدّدة — للتحذير من الازدواج (دفعة مكرّرة).

@@ -1089,3 +1089,27 @@ it("advertises the same USD remaining amount as returns and voucher settlement",
   expect(projection.returnedAmountCurrency).toBe("0.17");
   expect(projection.remainingAmountCurrency).toBe("0.83");
 });
+
+it("يسمح بسداد دينار متأخر رغم وجود انحراف تاريخي في currentBalanceUsd دون فشل أو نزول تحت الصفر", async () => {
+  await db()
+    .update(s.supplierInvoices)
+    .set({ currency: "IQD", agreedRate: null, usdTotal: null })
+    .where(eq(s.supplierInvoices.id, 1));
+  await db()
+    .update(s.supplierInvoices)
+    .set({ currency: "IQD", agreedRate: null, usdTotal: null })
+    .where(eq(s.supplierInvoices.id, 2));
+  // انحراف تاريخي بالدولار (52,786$) مع ذمة دينارية 100,000 د.ع
+  await db()
+    .update(s.suppliers)
+    .set({ currentBalanceUsd: "52786.00", currentBalance: "100000.00" })
+    .where(eq(s.suppliers.id, 1));
+
+  const v = await createVoucher(input("60000.00"), maker);
+  await approveVoucher(v.receiptId, owner);
+
+  const [sup] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1));
+  expect(sup.currentBalance).toBe("40000.00");
+  // عداد الدولار لا يتسبب برفض سداد الدينار
+  expect(Number(sup.currentBalanceUsd)).toBe(52786);
+});

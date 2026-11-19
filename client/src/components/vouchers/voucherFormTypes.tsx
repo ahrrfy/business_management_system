@@ -7,6 +7,14 @@ import { paymentMethodCompact } from "@shared/terms";
 
 export interface VoucherFormProps {
   voucherType: "RECEIPT" | "PAYMENT";
+  embedded?: boolean;
+  initialPartyType?: "CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER";
+  initialPartyId?: number | null;
+  initialAmount?: string;
+  initialCurrentBalance?: string;
+  initialPendingReserved?: string;
+  onSubmitted?: () => void;
+  onCancel?: () => void;
 }
 
 export type LedgerPreviewRow = {
@@ -17,10 +25,10 @@ export type LedgerPreviewRow = {
 export const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
   {
     id: "side",
-    header: "المُحَدِّد",
+    header: "المحدد",
     accessorFn: (r) => r.side,
     enableSorting: false,
-    meta: { width: "status" },
+    meta: { align: "center" },
     cell: ({ row }) => <span className="font-bold">{row.original.side}</span>,
   },
   {
@@ -28,7 +36,7 @@ export const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
     header: "الحساب",
     accessorFn: (r) => r.account,
     enableSorting: false,
-    meta: { width: "wide", wrap: true },
+    meta: { wrap: true },
     cell: ({ row }) => row.original.account,
   },
   {

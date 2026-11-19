@@ -72,6 +72,8 @@ export interface DecideInput {
   reference?: string | null;
   /** صيغةُ الاعتماد المختارة حين يعلن الصفُّ `approveVariants` (مفتاحٌ من تلك القائمة). */
   variant?: string | null;
+  /** مصدرُ تمويلِ الصرف النقدي عند اعتماد طلبات الشراء النقدية من صندوق القرارات. */
+  cashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null } | null;
 }
 
 /** نطاقُ السرد: الفروع التي يراها الفاعل (`null` = كلّ الفروع) ولحظة «الآن». */

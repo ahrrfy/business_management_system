@@ -422,7 +422,13 @@ export function WorkOrderControlDecisionDialog({
               </div>
               <dl className="mt-3 grid gap-2 sm:grid-cols-3">
                 <div><dt className="text-xs text-muted-foreground">السبب</dt><dd>{request.reason}</dd></div>
-                <div><dt className="text-xs text-muted-foreground">الطالب</dt><dd>مستخدم #{Number(request.requestedBy)}</dd></div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">الطالب</dt>
+                  <dd>
+                    {(request as PendingWorkOrderControl & { requestedByName?: string | null }).requestedByName?.trim() ||
+                      `مستخدم #${Number(request.requestedBy)}`}
+                  </dd>
+                </div>
                 <div><dt className="text-xs text-muted-foreground">النسخة</dt><dd dir="ltr" className="text-end font-mono">v{Number(request.baseVersion)}</dd></div>
               </dl>
               <pre dir="ltr" className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded border bg-background p-3 text-start text-xs">

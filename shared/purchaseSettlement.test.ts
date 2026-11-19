@@ -36,7 +36,7 @@ describe("purchase settlement display", () => {
       paidAmount: "0.00",
       remainingAmount: "240000.00",
       status: "UNPAID",
-      intentLabel: "نقدي (طريقة السداد)",
+      intentLabel: "نقدي — دفع فوري",
       statusLabel: "غير مسددة",
     });
   });

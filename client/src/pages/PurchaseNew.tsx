@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ClipboardList, CheckCircle2, Send } from "lucide-react";
+import { CheckCircle2, Send } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import {
@@ -32,6 +32,14 @@ import {
   PurchaseTenderField,
   usePurchaseTenderState,
 } from "@/components/purchases/PurchaseTenderField";
+import {
+  PurchaseRateGuardBox,
+  usePurchaseRateGuard,
+} from "@/components/purchases/PurchaseRateAnomalyBanner";
+import {
+  PurchaseNewSidebarCards,
+  usePurchaseNewHydrationEffects,
+} from "@/components/purchases/PurchaseNewOrderSections";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -40,7 +48,6 @@ import {
   priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
-import { variantDisplayName } from "@shared/variantDisplay";
 import {
   D,
   fmtAr,
@@ -83,7 +90,6 @@ import {
   type InvoiceActionKind,
   type InvoiceLine,
 } from "@/components/invoice";
-import { derivePurchaseLinePriceFromRequisition } from "@/components/invoice/purchasePrice";
 import { PageHeader } from "@/components/PageHeader";
 
 const INVOICE_TYPE = "PURCHASE" as const;
@@ -185,195 +191,24 @@ export default function PurchaseNew() {
     ),
   }));
 
-  const requisitionHydratedRef = useRef(false);
-  useEffect(() => {
-    if (!requisitionId || requisitionHydratedRef.current || !requisition.data)
-      return;
-    if (requisitionUnitIds.length > 0 && !requisitionCatalog.data) return;
-    if (!["APPROVED", "PARTIALLY_ORDERED"].includes(requisition.data.status)) {
-      notify.warn(
-        "لا يمكن تحويل طلب الشراء قبل اعتماده أو بعد إقفاله بالكامل.",
-      );
-      requisitionHydratedRef.current = true;
-      return;
-    }
-    const catalogByUnit = new Map(
-      (requisitionCatalog.data ?? []).map((row) => [
-        Number(row.productUnitId),
-        row,
-      ]),
-    );
-    const missingUnits: number[] = [];
-    const reqBranchId = Number(requisition.data.branchId);
-    const lines = requisition.data.items.flatMap((item): InvoiceLine[] => {
-      const availableBase =
-        Number(item.approvedBaseQuantity) - Number(item.orderedBaseQuantity);
-      if (availableBase <= 0) return [];
-      const row = catalogByUnit.get(Number(item.productUnitId));
-      if (!row) {
-        missingUnits.push(Number(item.productUnitId));
-        return [];
-      }
-      const conversionFactor = String(row.conversionFactor || "1");
-      return [
-        {
-          productId: Number(row.productId),
-          variantId: Number(row.variantId),
-          productUnitId: Number(row.productUnitId),
-          name: variantDisplayName({
-            productName: row.productName,
-            variantName: row.variantName,
-            color: row.color,
-            size: row.size,
-            sku: row.sku,
-          }),
-          sku: row.sku ?? "",
-          barcode: null,
-          unit: row.unitName ?? "",
-          qty: D(availableBase).dividedBy(D(conversionFactor)).toNumber(),
-          conversionFactor,
-          stockBase: row.stockBase ?? 0,
-          stockBranchId: reqBranchId,
-          reservedBase: 0,
-          availableBase: row.stockBase ?? 0,
-          isService: false,
-          // Codex #980 (٤/٩/٢٦) — Finding 4: مسار الاستحضار من طلب شراء يتخطّى ProductSearchBar
-          // و`BulkPicker`. `estimatedUnitPrice` القادم مُخزَّنٌ بالدينار (عمود `decimal(15,2)`
-          // بلا عمود عملة على `purchaseRequisitionItems`) وقد يكون **مصاباً** بعطب PUR-UNIT-01
-          // القديم (حُقن بـ`costPriceBase` بلا ضربٍ بالمعامل) ⇒ درزنٌ يصل هنا بسعرِ ١٥٠ لا
-          // ١٨٠٠. المساعد المشتَرَك يكشف الإصابة (القادم ≤ تكلفة الأساس بينما المعامل > ١)
-          // ويُعيد الحساب. الأمر يبدأ بالدينار (لا عمود عملة على `purchaseRequisitions`) —
-          // تحويلُ العملة قرارُ المستخدم قبل الحفظ، والمحرّر يرفض الحفظَ الدولاريّ بلا
-          // `agreedRate > 0`.
-          price: derivePurchaseLinePriceFromRequisition(
-            item.estimatedUnitPrice,
-            row.costPriceBase,
-            conversionFactor,
-          ),
-          costBase: row.costPriceBase ?? "0",
-          discount: "0",
-          discountType: "percent",
-          note: item.justification,
-        },
-      ];
-    });
-    dispatch({
-      type: "SET_FIELD",
-      field: "branchId",
-      value: Number(requisition.data.branchId),
-    });
-    const preferredSupplierIds = Array.from(
-      new Set(
-        requisition.data.items
-          .map((item) => item.preferredSupplierId)
-          .filter((id): id is number => id != null)
-          .map(Number),
-      ),
-    );
-    if (preferredSupplierIds.length === 1)
-      dispatch({ type: "SET_ENTITY", id: preferredSupplierIds[0] });
-    dispatch({
-      type: "SET_FIELD",
-      field: "notes",
-      value: `تحويل من طلب الشراء ${requisition.data.requisitionNumber}: ${requisition.data.purpose}`,
-    });
-    if (lines.length) dispatch({ type: "ADD_ITEMS", items: lines });
-    if (missingUnits.length > 0) {
-      notify.warn(
-        "تعذّر تحميل بعض سطور طلب الشراء",
-        `تُخطِّي ${missingUnits.length} سطر من الطلب لأن الصنف أو وحدته معطّل أو غير قابل للشراء (الوحدات: ${missingUnits.map((id) => `#${id}`).join("، ")}).`,
-      );
-    }
-    requisitionHydratedRef.current = true;
-  }, [
-    requisitionId,
-    requisition.data,
-    requisitionCatalog.data,
-    requisitionUnitIds,
-  ]);
-
   const purchaseBranchId = state.branchId || me.data?.branchId;
   const purchasableCatalog = trpc.catalog.forPurchase.useQuery(
-    {
-      branchId: purchaseBranchId as number,
-      limit: 500,
-    },
+    { branchId: purchaseBranchId as number, limit: 500 },
     { enabled: prefillVariantIds.length > 0 && Boolean(purchaseBranchId) },
   );
 
-  const prefillHydratedRef = useRef(false);
-  useEffect(() => {
-    if (
-      prefillHydratedRef.current ||
-      prefillVariantIds.length === 0 ||
-      !purchasableCatalog.data
-    )
-      return;
-    const variantIdSet = new Set(prefillVariantIds);
-    const matchedRows = new Map<
-      number,
-      (typeof purchasableCatalog.data)[number]
-    >();
-    for (const row of purchasableCatalog.data) {
-      if (variantIdSet.has(Number(row.variantId))) {
-        if (!matchedRows.has(Number(row.variantId)) || row.isBaseUnit) {
-          matchedRows.set(Number(row.variantId), row);
-        }
-      }
-    }
-    const lines: InvoiceLine[] = Array.from(matchedRows.values()).map(
-      (row) => ({
-        productId: Number(row.productId),
-        variantId: Number(row.variantId),
-        productUnitId: Number(row.productUnitId),
-        name: variantDisplayName({
-          productName: row.productName,
-          variantName: row.variantName,
-          color: row.color,
-          size: row.size,
-          sku: row.sku,
-        }),
-        sku: row.sku ?? "",
-        barcode: null,
-        unit: row.unitName ?? "",
-        qty: 1,
-        conversionFactor: String(row.conversionFactor || "1"),
-        stockBase: row.stockBase ?? 0,
-        stockBranchId: state.branchId,
-        reservedBase: 0,
-        availableBase: row.stockBase ?? 0,
-        isService: false,
-        price: derivePurchaseLinePriceFromRequisition(
-          null,
-          row.costPriceBase,
-          String(row.conversionFactor || "1"),
-        ),
-        costBase: row.costPriceBase ?? "0",
-        discount: "0",
-        discountType: "percent",
-        note: autoReason === "low_stock" ? "نواقص مخزون بحاجة لتأمين" : "",
-      }),
-    );
-
-    if (lines.length > 0) {
-      dispatch({ type: "ADD_ITEMS", items: lines });
-      notify.ok(
-        `تم إدراج ${lines.length} صنف من نواقص المخزون تلقائياً في مسودة الشراء`,
-      );
-      if (prefillKey) {
-        try {
-          sessionStorage.removeItem(prefillKey);
-        } catch {}
-      }
-    }
-    prefillHydratedRef.current = true;
-  }, [
+  usePurchaseNewHydrationEffects({
+    requisitionId,
+    requisitionData: requisition.data,
+    requisitionUnitIds,
+    requisitionCatalogData: requisitionCatalog.data,
     prefillVariantIds,
-    purchasableCatalog.data,
-    state.branchId,
+    purchasableCatalogData: purchasableCatalog.data,
+    branchId: state.branchId,
     autoReason,
     prefillKey,
-  ]);
+    dispatch,
+  });
 
   // مزامنة الفرع مرة واحدة عند توفّر هويّة المستخدم (إن لم يكن المستخدم قد بدّل الفرع يدوياً).
   const branchInitRef = useRef(false);
@@ -584,6 +419,13 @@ export default function PurchaseNew() {
   useUnsavedGuard(isDirty);
 
   const [workflowPending, setWorkflowPending] = useState(false);
+  const rateGuard = usePurchaseRateGuard({
+    currency: state.currency,
+    agreedRate: state.agreedRate,
+    branchId: state.branchId,
+    items: state.items,
+    meData: me.data,
+  });
 
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async () => {
@@ -690,62 +532,35 @@ export default function PurchaseNew() {
     if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH") {
       return invoiceMatch.message;
     }
-    return null;
+    return rateGuard.validateRateGuard();
   }
 
   function buildPayload() {
     return {
       supplierId: state.entityId!,
       branchId: state.branchId,
-      taxRatePercent: state.taxEnabled
-        ? round2(D(state.taxRatePercent || "0")).toFixed(2)
-        : "0",
-      settlementType:
-        state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
+      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
+      settlementType: state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
       ...(tenderState.payload ? { tender: tenderState.payload } : {}),
       clientRequestId,
       revisionReason: "إنشاء مسودة أمر شراء من شاشة المشتريات",
       requisitionAllocations: requisition.data
         ? requisition.data.items.flatMap((requested) => {
-            const availableBase =
-              Number(requested.approvedBaseQuantity) -
-              Number(requested.orderedBaseQuantity);
+            const availableBase = Number(requested.approvedBaseQuantity) - Number(requested.orderedBaseQuantity);
             const lineIndex = state.items.findIndex(
-              (line) =>
-                line.variantId === Number(requested.variantId) &&
-                line.productUnitId === Number(requested.productUnitId),
+              (line) => line.variantId === Number(requested.variantId) && line.productUnitId === Number(requested.productUnitId),
             );
             if (availableBase <= 0 || lineIndex < 0) return [];
-            const lineBase = toBase(
-              state.items[lineIndex].qty,
-              state.items[lineIndex].conversionFactor,
-            ).toNumber();
+            const lineBase = toBase(state.items[lineIndex].qty, state.items[lineIndex].conversionFactor).toNumber();
             const allocatedBaseQuantity = Math.min(availableBase, lineBase);
-            if (
-              !Number.isInteger(allocatedBaseQuantity) ||
-              allocatedBaseQuantity <= 0
-            )
-              return [];
-            return [
-              {
-                lineNo: lineIndex + 1,
-                requisitionItemId: Number(requested.id),
-                allocatedBaseQuantity,
-              },
-            ];
+            if (!Number.isInteger(allocatedBaseQuantity) || allocatedBaseQuantity <= 0) return [];
+            return [{ lineNo: lineIndex + 1, requisitionItemId: Number(requested.id), allocatedBaseQuantity }];
           })
         : undefined,
-      notes: composeDocumentNotes({
-        notes: state.notes,
-        terms: state.terms,
-        poReference: state.poReference,
-      }),
-      // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
+      notes: composeDocumentNotes({ notes: state.notes, terms: state.terms, poReference: state.poReference }),
       agreedCurrency: state.currency,
-      agreedRate:
-        state.currency === "USD"
-          ? safeMoney(state.agreedRate).toFixed(4)
-          : undefined,
+      agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      ...rateGuard.overridePayload,
       invoiceDiscount: invoiceDiscountAmount.gt(0)
         ? invoiceDiscountAmount.toFixed(2)
         : undefined,
@@ -870,15 +685,21 @@ export default function PurchaseNew() {
     }
     if (isAnySaving || !state.entityId) return;
     const err = validate();
-    if (err) {
-      notify.warn(err);
-      return;
+    if (err) return notify.warn(err);
+    if (!state.supplierInvoiceTotal.trim()) {
+      return notify.warn("أدخل إجمالي الفاتورة الورقية ومطابقته مع البنود قبل الإرسال للاعتماد.");
     }
     await runSubmitForApprovalWorkflow({
       isCash: state.paymentTerms === "CASH",
       clientRequestId,
       createOrder: () => createAsyncMut.mutateAsync(buildPayload()),
-      confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
+      confirmOrder: (input) =>
+        confirmAsyncMut.mutateAsync({
+          ...input,
+          supplierInvoiceTotal: round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2),
+          requireInvoiceMatch: true,
+          ...rateGuard.overridePayload,
+        }),
       invalidateAll: invalidatePurchaseWorkflowQueries,
       onSuccessToast: (msg) => notify.ok(msg),
       onWarnToast: (msg) => notify.warn(msg),
@@ -900,27 +721,21 @@ export default function PurchaseNew() {
     }
     if (isAnySaving || !state.entityId) return;
     const err = validate();
-    if (err) {
-      notify.warn(err);
-      return;
+    if (err) return notify.warn(err);
+    if (!state.supplierInvoiceTotal.trim()) {
+      return notify.warn("أدخل إجمالي الفاتورة الورقية ومطابقته مع البنود قبل الاعتماد والترحيل.");
     }
     const isCash = state.paymentTerms === "CASH";
     const sourceLabel = tenderState.sourceSummaryLabel;
     const displayTotal =
-      state.currency === "USD"
-        ? `${fmtAr(docTotals.total)} $`
-        : `${fmtAr(landed.grand.toFixed(2))} د.ع`;
+      state.currency === "USD" ? `${fmtAr(docTotals.total)} $` : `${fmtAr(landed.grand.toFixed(2))} د.ع`;
     const ok = await confirm({
       variant: "info",
-      title: isCash
-        ? "حفظ وترحيل وسداد الفاتورة النقدية فورا"
-        : "حفظ وترحيل الفاتورة الاجلة فورا",
+      title: isCash ? "حفظ وترحيل وسداد الفاتورة النقدية فورا" : "حفظ وترحيل الفاتورة الاجلة فورا",
       description: isCash
         ? `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد وسداد مبلغ ${displayTotal} من (${sourceLabel}) مع احتساب الدفعة السابقة المحددة في معاملة واحدة، وتصبح ذمة الفاتورة صفرا (0.00). هل تؤكد استلام البضاعة كاملة؟`
         : `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد بقيمة ${displayTotal} كذمة اجلة على المورد في معاملة واحدة. هل تؤكد استلام البضاعة كاملة؟`,
-      confirmText: isCash
-        ? "تأكيد الاستلام والسداد النقدي"
-        : "تأكيد الاستلام والترحيل",
+      confirmText: isCash ? "تأكيد الاستلام والسداد النقدي" : "تأكيد الاستلام والترحيل",
       cancelText: "تراجع",
     });
     if (!ok) return;
@@ -930,7 +745,13 @@ export default function PurchaseNew() {
       clientRequestId,
       cashSource: undefined,
       createOrder: () => createAsyncMut.mutateAsync(buildPayload()),
-      confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
+      confirmOrder: (input) =>
+        confirmAsyncMut.mutateAsync({
+          ...input,
+          supplierInvoiceTotal: round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2),
+          requireInvoiceMatch: true,
+          ...rateGuard.overridePayload,
+        }),
       decideOrder: (input) =>
         decideAsyncMut.mutateAsync({
           ...input,
@@ -1219,6 +1040,20 @@ export default function PurchaseNew() {
                 : landed.grand.toFixed(2)
             }
           />
+          <PurchaseRateGuardBox
+            currency={state.currency}
+            agreedRate={state.agreedRate}
+            referenceRate={rateGuard.referenceRate}
+            canOverrideAnomaly={rateGuard.canOverrideRateAnomaly}
+            confirmAnomalousRate={rateGuard.confirmAnomalousRate}
+            rateDeviationReason={rateGuard.rateDeviationReason}
+            onApplySuggestedRate={(suggested) =>
+              dispatch({ type: "SET_FIELD", field: "agreedRate", value: suggested })
+            }
+            onToggleConfirm={rateGuard.setConfirmAnomalousRate}
+            onReasonChange={rateGuard.setRateDeviationReason}
+            unitCostWarnings={rateGuard.unitCostWarnings}
+          />
           {/* مطابقة فاتورة المورّد: الإجماليّ المشتقّ يُقارَن بعملة الأمر — الدولاريّ بإجماليه
               الدولاريّ (مستند المورّد) والدينارّي بإجماليه الدينارّي، مطابقةً لحارس الخادم. */}
           <SupplierInvoiceMatch
@@ -1240,50 +1075,22 @@ export default function PurchaseNew() {
             onApplyAsDiscount={applyDifferenceAsDiscount}
             canDistribute={D(totals.subtotal).gt(0)}
           />
-          {state.currency === "USD" && landed.rate.gt(0) && (
-            <section className="rounded-lg border bg-card px-3 py-2 text-xs">
-              <div className="flex justify-between text-muted-foreground">
-                <span>إجمالي فاتورة المورد (دولار)</span>
-                <span dir="ltr" className="font-bold text-foreground">
-                  {fmtAr(totals.grandTotal)} $
-                </span>
-              </div>
-              <div className="mt-1 flex justify-between text-muted-foreground">
-                <span>سعر التثبيت</span>
-                <span dir="ltr" className="font-bold text-foreground">
-                  {fmtAr(state.agreedRate)} د.ع/$
-                </span>
-              </div>
-              {/* التكلفة بالدينار = فاتورة المورد × سعر التثبيت. الشحن/الكمرك **ليسا** ضمنها
-                  (مصروفُ نقلٍ مستقلٌّ لحظة الاستلام، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
-              <div className="mt-1 flex justify-between border-t pt-1.5 font-bold">
-                <span>التكلفة بالدينار</span>
-                <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
-              </div>
-            </section>
-          )}
-          {!state.entityId && state.items.length > 0 && (
-            <section className="rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/20 p-2.5 flex flex-col gap-1.5">
-              <div className="text-xs font-semibold text-foreground">
-                مسودة بدون مورد محدد (سوق مفتوح):
-              </div>
-              <Button
-                type="button"
-                className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-8 shadow-sm gap-1.5"
-                disabled={
-                  !canLifecycleOperation(
-                    me.data,
-                    "purchases.createRequisition",
-                    true,
-                  ) || isAnySaving
-                }
-                onClick={handleSaveRequisition}
-              >
-                <ClipboardList className="size-4" />
-                حفظ كطلب تأمين (إسناد للمدير للتفاوض)
-              </Button>
-            </section>
-          )}
+          <PurchaseNewSidebarCards
+            currency={state.currency}
+            grandTotal={totals.grandTotal}
+            agreedRate={state.agreedRate}
+            landedGrand={landed.grand.toFixed(2)}
+            hasLandedRate={landed.rate.gt(0)}
+            hasEntityId={Boolean(state.entityId)}
+            hasItems={state.items.length > 0}
+            canCreateRequisition={canLifecycleOperation(
+              me.data,
+              "purchases.createRequisition",
+              true,
+            )}
+            isAnySaving={isAnySaving}
+            onSaveRequisition={handleSaveRequisition}
+          />
           <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t space-y-1.5">
             {Boolean(state.entityId) &&
               state.items.length > 0 &&

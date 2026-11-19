@@ -475,6 +475,8 @@ export async function postApprovedPurchaseInvoiceInTx(
   const expectedOrderVersion = priorAutomaticReceipt
     ? originalReceiptOrderVersion(priorAutomaticReceipt.payloadCanonical)
     : Number(po.version);
+  const attributedCreatorUserId =
+    po.createdBy != null ? Number(po.createdBy) : null;
   const receiptResult = await createGoodsReceiptInTx(
     tx,
     {
@@ -491,7 +493,10 @@ export async function postApprovedPurchaseInvoiceInTx(
       })),
     },
     actor,
-    { allowPurchaseOrderApproverForAutomaticPosting: true },
+    {
+      allowPurchaseOrderApproverForAutomaticPosting: true,
+      attributedCreatedById: attributedCreatorUserId,
+    },
   );
   const goodsReceiptId = Number(
     "goodsReceiptId" in receiptResult
@@ -573,6 +578,7 @@ export async function postApprovedPurchaseInvoiceInTx(
     },
     actor,
     {
+      attributedCreatedById: attributedCreatorUserId,
       approvedRevisionExactAmounts: revisionItems.map((item) => {
         const grossDocumentUnitPrice =
           revision.agreedCurrency === "USD"

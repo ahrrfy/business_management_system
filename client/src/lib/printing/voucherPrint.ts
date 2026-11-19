@@ -7,17 +7,19 @@
 //     شارة اعتماد + بَصمة مُختصَرة + QR للتَحقّق ⇒ مَلفّ تَدقيقي رَسمي.
 import { printDoc } from "./print";
 import { BRAND, CO } from "./brand";
-import { printVoucherV2 } from "./printTemplatesV2";
+import { printVoucherV2, type VoucherV2Data } from "./printTemplatesV2";
 import { qrCodeSvg } from "./qr";
 import type { DocHeaderBarcode } from "./docHtml";
+import { D } from "@/lib/money";
 
 export interface VoucherPrintData {
   voucherNumber: string;
   direction: "IN" | "OUT";
+  partyType?: "SUPPLIER" | "CUSTOMER" | "DELIVERY_PARTY" | "OTHER" | null;
   voucherDate: string; // YYYY-MM-DD
   createdAt: string;   // ISO أو نص قَريب
   branchName?: string | null;
-  amount: string;      // مُنسَّق سَلفاً (مَثلاً "50,000")
+  amount: string;      // مُنسَّق سَلفاً (مَثلاً "50,000") أو رقم عشري
   paymentMethod: string;
   paymentMethodLabel: string; // عربي
   referenceNumber?: string | null;
@@ -26,16 +28,20 @@ export interface VoucherPrintData {
   partyTypeLabel: string;
   partyName: string;
   partyBalance?: string | null; // مُنسَّق مع علامة "لنا/علينا"
+  partyBalanceBefore?: string | number | null;
+  partyBalanceAfter?: string | number | null;
   categoryName?: string | null;
   description: string;
   counterpartyName?: string | null;
   approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
+  status?: string | null;
   approvedByName?: string | null;
   approvedAt?: string | null;
   createdByName?: string | null;
   printedByName?: string | null;
   printRequestedAt?: string | null;
   cashBucket?: "DRAWER" | "TREASURY" | null;
+  cashSourceLabel?: string | null;
   signatureHash?: string | null;
   attachmentUrl?: string | null;
   /** attachment-upload (٥/٧): رقم الفاتورة المرتبطة بسند العميل (اختياري). */
@@ -47,9 +53,9 @@ export interface VoucherPrintData {
 }
 
 const STATUS_LABEL: Record<VoucherPrintData["approvalStatus"], string> = {
-  APPROVED: "مُعتمَد",
+  APPROVED: "معتمد",
   PENDING_APPROVAL: "بانتظار الاعتماد",
-  REJECTED: "مَرفوض",
+  REJECTED: "مرفوض",
 };
 
 function shortHash(h?: string | null): string {
@@ -73,10 +79,37 @@ function printRequestedAtLabel(value?: string | null): string | null {
       });
 }
 
+function inferPartyTypeFromPrintData(d: VoucherPrintData): VoucherPrintData["partyType"] {
+  if (d.partyType) return d.partyType;
+  const lbl = d.partyTypeLabel ?? "";
+  if (lbl.includes("مورد") || lbl.includes("مورّد")) return "SUPPLIER";
+  if (lbl.includes("عميل") || lbl.includes("زبون")) return "CUSTOMER";
+  if (lbl.includes("توصيل")) return "DELIVERY_PARTY";
+  return undefined;
+}
+
+function parsePartyBalanceDecimal(d: VoucherPrintData): string | null {
+  if (d.partyBalanceBefore != null && d.partyBalanceBefore !== "") {
+    return D(d.partyBalanceBefore).toFixed(2);
+  }
+  if (!d.partyBalance) return null;
+  const m = /-?[\d,]+(?:\.\d+)?/.exec(d.partyBalance);
+  if (!m) return null;
+  const mag = D(m[0].replace(/,/g, ""));
+  const pt = inferPartyTypeFromPrintData(d);
+  if (d.partyBalance.includes("علينا") && pt === "CUSTOMER") {
+    return mag.abs().neg().toFixed(2);
+  }
+  if (d.partyBalance.includes("لنا") && pt === "SUPPLIER") {
+    return mag.abs().neg().toFixed(2);
+  }
+  return mag.toFixed(2);
+}
+
 /** طباعة السند الحرارية (٨٠مم) — تَمُرّ بـprintDoc لتَستفيد من السَلسلة الكاملة. */
 export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "server" | "thermal" | "browser" }> {
-  const title = d.direction === "IN" ? "سَند قَبض" : "سَند صَرف";
-  const subtitle = d.approvalStatus === "PENDING_APPROVAL" ? "⏳ بانتظار اعتماد مدير ثانٍ" : undefined;
+  const title = d.direction === "IN" ? "سند قبض" : "سند صرف";
+  const subtitle = d.approvalStatus === "PENDING_APPROVAL" ? "بانتظار اعتماد مدير ثان" : undefined;
 
   const meta: string[] = [
     `رقم السند: ${d.voucherNumber}`,
@@ -85,15 +118,19 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   if (d.branchName) meta.push(`الفرع: ${d.branchName}`);
   if (d.categoryName) meta.push(`الفئة: ${d.categoryName}`);
   meta.push(`الطرف: ${d.partyTypeLabel} — ${d.partyName}`);
+  if (d.partyBalanceBefore != null) meta.push(`الرصيد قبل السند: ${String(d.partyBalanceBefore)}`);
   if (d.partyBalance) meta.push(`رصيد الطرف: ${d.partyBalance}`);
+  if (d.partyBalanceAfter != null) meta.push(`الرصيد بعد السند: ${String(d.partyBalanceAfter)}`);
   if (d.relatedInvoiceNumber) meta.push(`الفاتورة المرتبطة: ${d.relatedInvoiceNumber}`);
   if (d.counterpartyName && d.counterpartyName !== d.partyName) {
-    meta.push(`اسم المُستفيد: ${d.counterpartyName}`);
+    meta.push(`اسم المستفيد: ${d.counterpartyName}`);
   }
   meta.push(`الوصف: ${d.description}`);
-  if (d.cashBucket) meta.push(`نَوع النَقد: ${bucketLabel(d.cashBucket)}`);
-  if (d.createdByName) meta.push(`المُنشئ: ${d.createdByName}`);
-  if (d.approvedByName) meta.push(`المُعتمِد: ${d.approvedByName}`);
+  if (d.cashSourceLabel || d.cashBucket) {
+    meta.push(`نوع النقد: ${d.cashSourceLabel ?? bucketLabel(d.cashBucket)}`);
+  }
+  if (d.createdByName) meta.push(`المنشئ: ${d.createdByName}`);
+  if (d.approvedByName) meta.push(`المعتمد: ${d.approvedByName}`);
   if (d.printedByName) meta.push(`الطابع: ${d.printedByName}`);
   const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
   if (printRequestedAt) meta.push(`وقت طلب الطباعة: ${printRequestedAt}`);
@@ -104,83 +141,57 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
     { label: "طريقة الدفع", value: d.paymentMethodLabel },
   ];
   if (d.referenceNumber) totals.push({ label: "الرقم المرجعي", value: d.referenceNumber });
-  if (d.checkNumber) totals.push({ label: "رقم الصكّ", value: d.checkNumber });
+  if (d.checkNumber) totals.push({ label: "رقم الصك", value: d.checkNumber });
   if (d.cardLastFour) totals.push({ label: "البطاقة xxxx", value: d.cardLastFour });
-  if (d.signatureHash) totals.push({ label: "بَصمة #", value: shortHash(d.signatureHash) });
+  if (d.signatureHash) totals.push({ label: "بصمة #", value: shortHash(d.signatureHash) });
 
-  // مَلاحظة: «opening» kind يَطبع meta+totals بلا columns ⇒ تَخطيط مُتسق لأنواع الإيصالات
-  // غير-المُجدوَلة (z-report/سند). توقيع الكاشير/المُستلم يَنزل في footer.
   return printDoc({
     kind: "opening",
     title,
     subtitle: subtitle,
     meta,
     totals,
-    footer: "توقيع المُحاسِب / المُستلم: ____________________",
+    footer: "توقيع المحاسب / المستلم: ____________________",
   });
 }
 
-/**
- * بَناء HTML سندٍ بحَجم A4 (هوية الشركة كاملة) — يَفتح نافذة طباعة المتصفّح.
- * hifi-redesign (٥/٧/٢٦): يَحوَّل إلى printVoucherV2 (التصميم المرجعي: طرف بخطّ سميك يَحوي الرصيد
- * قبل السند بلُنا/علينا، شريط أخضر كبير للمبلغ، تفقيط، QR + ٣ توقيعات، تذييل بـHASH). المُرفَق
- * والحقول الإضافية (بَصمة/فئة/مُستفيد/رقم الفاتورة المرتبطة) تُضاف كسطور «الوصف/الغرض» لأن التصميم
- * الجديد يَحصر البطاقات في اثنتين فقط (طرف مقابل + تفاصيل دفع).
- */
-export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
-  // الرقم المرجعي الظاهر ضمن «تفاصيل الدفع»: أولوية referenceNumber ← checkNumber ← البطاقة.
+export async function voucherPrintToV2Data(d: VoucherPrintData): Promise<VoucherV2Data> {
   const refNumber = d.referenceNumber
     || (d.checkNumber ? `CHQ-${d.checkNumber}` : null)
     || (d.cardLastFour ? `xxxx ${d.cardLastFour}` : null);
 
-  // الوَصف المُوسَّع: الوصف الأصلي + الحقول التي كانت في البطاقة القديمة (فئة/مُستفيد/فاتورة مرتبطة/مُنشئ/معتمِد).
-  const parts: string[] = [d.description];
-  if (d.categoryName) parts.push(`الفئة: ${d.categoryName}`);
-  if (d.counterpartyName && d.counterpartyName !== d.partyName) parts.push(`المُستفيد: ${d.counterpartyName}`);
-  if (d.relatedInvoiceNumber) parts.push(`الفاتورة المرتبطة: ${d.relatedInvoiceNumber}`);
-  if (d.cashBucket) parts.push(`نوع النقد: ${bucketLabel(d.cashBucket) ?? '—'}`);
-  if (d.branchName) parts.push(`الفرع: ${d.branchName}`);
-  if (d.createdByName) parts.push(`المُنشئ: ${d.createdByName}`);
-  if (d.approvedByName) parts.push(`المُعتمِد: ${d.approvedByName}`);
-  if (d.printedByName) parts.push(`الطابع: ${d.printedByName}`);
-  const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
-  if (printRequestedAt) parts.push(`وقت طلب الطباعة: ${printRequestedAt}`);
-  const description = parts.filter(Boolean).join(' · ');
-
-  // شارة الحالة تُلوَّن حسب approvalStatus.
-  const statusLabel = d.approvalStatus === 'APPROVED' ? '✓ معتمَد'
-    : d.approvalStatus === 'PENDING_APPROVAL' ? '⏳ بانتظار الاعتماد'
-    : '✗ مرفوض';
-  const statusColor = d.approvalStatus === 'APPROVED' ? BRAND.green
+  const isReversed = d.status === 'REVERSED';
+  const isIncomplete = Boolean(d.status && d.status !== 'COMPLETED' && !isReversed);
+  const statusLabel = isReversed ? 'ملغى / معكوس'
+    : isIncomplete ? 'غير مكتمل'
+    : d.approvalStatus === 'APPROVED' ? 'معتمد'
+    : d.approvalStatus === 'PENDING_APPROVAL' ? 'بانتظار الاعتماد'
+    : 'مرفوض';
+  const statusColor = isReversed ? '#b91c1c'
+    : isIncomplete ? BRAND.orange
+    : d.approvalStatus === 'APPROVED' ? BRAND.green
     : d.approvalStatus === 'PENDING_APPROVAL' ? BRAND.orange
     : '#b91c1c';
 
-  // رصيد الطرف قبل السند (المُمرَّر نصّاً «250,000 (لنا)») → نستخرج الجزء الرقمي فقط ليعرضه القالب الجديد بإشارة موحّدة.
-  let balBefore: number | null = null;
-  if (d.partyBalance) {
-    const m = /-?[\d,]+/.exec(d.partyBalance);
-    if (m) balBefore = Number(m[0].replace(/,/g, ''));
-    // إذا احتوى النَص «(لنا)» / «(علينا)» فذلك يحدّد الاتجاه (لكن direction=IN/OUT يكفي لتحديده).
-  }
+  const balBefore = parsePartyBalanceDecimal(d);
+  const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
+  const amountClean = D(String(d.amount).replace(/[^\d.-]/g, '') || '0').toFixed(2);
 
-  // QR: نستعمل رقم السند + بَصمة إن وُجدت (تدهور سَلِس عند الفشل).
   let qrSvg: string | null = null;
   try {
     const qrPayload = d.signatureHash
       ? `VCH:${d.voucherNumber}|H:${shortHash(d.signatureHash)}`
       : `VCH:${d.voucherNumber}`;
     qrSvg = await qrCodeSvg(qrPayload, { size: 90, margin: 1 });
-  } catch { /* تَدهور سَلِس ⇒ placeholder افتراضي */ }
+  } catch { /* تدهور سلس */ }
 
-  // attachment-upload (٥/٧): مُرفَق صورة فعلي (data: URL) يُطبَع كمصغَّرة أسفل التوقيعات في نسخة A4 —
-  // كان قد سقط بالكامل عند التحويل لـV2 (لا حقل مُرفَق في القالب الجديد آنذاك)، فتُفقَد صورة الإثبات
-  // من النسخة الرسمية المؤرشَفة. روابط قديمة غير data: (نادرة) لا تُطبَع كصورة لتفادي طلب شبكي فاشل صامت.
   const attachmentImageUrl = d.attachmentUrl && /^data:image\//.test(d.attachmentUrl)
     ? d.attachmentUrl
     : null;
 
-  return printVoucherV2({
+  return {
     direction: d.direction,
+    partyType: inferPartyTypeFromPrintData(d),
     voucherNumber: d.voucherNumber,
     voucherDate: d.voucherDate,
     statusLabel,
@@ -188,10 +199,20 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
     partyName: d.partyName,
     partyTypeLabel: d.partyTypeLabel,
     partyBalanceBefore: balBefore,
+    partyBalanceAfter: d.partyBalanceAfter ?? null,
     paymentMethodLabel: d.paymentMethodLabel,
     referenceNumber: refNumber,
-    description,
-    amount: d.amount.replace(/[^\d.-]/g, ''), // «50,000» ⇒ «50000» ⇒ يُنسَّق داخل V2 بلا كسور
+    cashSourceLabel: d.cashSourceLabel ?? bucketLabel(d.cashBucket),
+    branchName: d.branchName ?? null,
+    categoryName: d.categoryName ?? null,
+    relatedInvoiceNumber: d.relatedInvoiceNumber ?? null,
+    counterpartyName: d.counterpartyName ?? null,
+    createdByName: d.createdByName ?? null,
+    approvedByName: d.approvedByName ?? null,
+    printedByName: d.printedByName ?? null,
+    printRequestedAt,
+    description: d.description,
+    amount: amountClean,
     qrSvg,
     signatureShortHash: d.signatureHash ? shortHash(d.signatureHash) : null,
     attachmentImageUrl,
@@ -202,7 +223,12 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
       commercialRegistry: CO.commercialRegistry,
       chamberLicense: CO.chamberLicense,
     },
-  });
+  };
+}
+
+/** بناء HTML سند بحجم A4 (هوية الشركة كاملة) — يفتح نافذة طباعة المتصفّح. */
+export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
+  return printVoucherV2(await voucherPrintToV2Data(d));
 }
 
 /** اختيار المسار حسب الرَغبة: thermal (الافتراضي للمَنفذ) أو A4 (للأرشَفة). */

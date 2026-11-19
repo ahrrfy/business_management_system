@@ -12,7 +12,7 @@ import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
-import { fmtAr as fmt } from "@/lib/money";
+import { D, fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -20,7 +20,10 @@ import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { User } from "lucide-react";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { SupplierDossierDrawer } from "@/components/suppliers/SupplierDossierDrawer";
+import { QuickVoucherSheet } from "@/components/vouchers/QuickVoucherSheet";
 
 /** نوع صفّ المورّد صريحاً — يتجنّب فشل استدلال T بسبب اتحاد تقنيع التكلفة (maskSupplierSensitive). */
 type Row = RouterOutputs["suppliers"]["search"]["rows"][number];
@@ -70,6 +73,13 @@ export default function Suppliers() {
   const setPage = (updater: number | ((p: number) => number)) =>
     setFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
   const [importOpen, setImportOpen] = useState(false);
+  const [dossierSupplierId, setDossierSupplierId] = useState<number | null>(null);
+  const [quickVoucher, setQuickVoucher] = useState<{
+    id: number;
+    name: string;
+    balance?: string | null;
+    type: "PAYMENT" | "RECEIPT";
+  } | null>(null);
   const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
 
@@ -200,11 +210,11 @@ export default function Suppliers() {
     {
       id: "balanceUsd",
       header: "الرصيد $",
-      accessorFn: (s) => (Number(s.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(s.currentBalanceUsd)}` : "—"),
+      accessorFn: (s) => (!D(s.currentBalanceUsd ?? 0).isZero() ? `$${fmt(s.currentBalanceUsd)}` : "—"),
       meta: { kind: "money" },
       cell: ({ row }) => (
         <span className="font-medium">
-          {Number(row.original.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(row.original.currentBalanceUsd)}` : "—"}
+          {!D(row.original.currentBalanceUsd ?? 0).isZero() ? `$${fmt(row.original.currentBalanceUsd)}` : "—"}
         </span>
       ),
     },
@@ -235,71 +245,90 @@ export default function Suppliers() {
         const id = Number(s.id);
         const isActive = !!s.isActive;
         return (
-          /* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */
-          <RowActions
-            contact={{
-              phone: s.phone,
-              whatsapp: (s as { whatsapp?: string | null }).whatsapp,
-              alternativePhones: [
-                (s as { phone2?: string | null }).phone2,
-                (s as { phone3?: string | null }).phone3,
-              ],
-              label: `واتساب ${s.name}`,
-              message: buildOperationalContactMessage({
-                partyName: s.name,
-                entityLabel: "حساب المورّد",
-                nextAction: "نتواصل معكم لمتابعة طلب شراء أو تسوية الحساب. يرجى الرد عند الملاءمة.",
-              }),
-              gate: { module: "suppliers", level: "READ" },
-            }}
-            actions={[
-              {
-                key: "edit",
-                kind: "edit",
-                label: "تعديل",
-                href: `/suppliers/${id}/edit`,
-                hidden: !canWrite,
-                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: ["suppliers.update"] },
-              },
-              // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
-              {
-                key: "stmt",
-                kind: "view",
-                label: "كشف حساب",
-                href: `/suppliers-statement?id=${id}`,
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="size-7 text-primary hover:bg-primary/10"
+              onClick={() => setDossierSupplierId(id)}
+              title="ملف المورد 360°"
+              aria-label={`ملف المورد 360° للمورد ${s.name}`}
+            >
+              <User className="size-3.5" aria-hidden />
+            </Button>
+            <RowActions
+              contact={{
+                phone: s.phone,
+                whatsapp: (s as { whatsapp?: string | null }).whatsapp,
+                alternativePhones: [
+                  (s as { phone2?: string | null }).phone2,
+                  (s as { phone3?: string | null }).phone3,
+                ],
+                label: `واتساب ${s.name}`,
+                message: buildOperationalContactMessage({
+                  partyName: s.name,
+                  entityLabel: "حساب المورد",
+                  nextAction: "نتواصل معكم لمتابعة طلب شراء أو تسوية الحساب. يرجى الرد عند الملاءمة.",
+                }),
                 gate: { module: "suppliers", level: "READ" },
-              },
-              {
-                key: "pay",
-                kind: "pay",
-                label: "سند صرف له",
-                href: "/vouchers/payment/new",
-                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-              },
-              {
-                key: "toggle",
-                kind: "approve",
-                label: isActive ? "تعطيل" : "تفعيل",
-                variant: isActive ? "destructive" : "default",
-                disabled: deactivate.isPending || activate.isPending,
-                disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                hidden: !canLifecycleOperation(me.data, isActive ? "suppliers.deactivate" : "suppliers.activate", legacyWrite),
-                onSelect: () => void toggle(id, isActive, s.name ?? ""),
-                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: [isActive ? "suppliers.deactivate" : "suppliers.activate"] },
-              },
-              {
-                key: "delete",
-                kind: "delete",
-                label: "حذف نهائي",
-                variant: "destructive",
-                disabled: del.isPending,
-                disabledReason: "توجد عملية حذف قيد التنفيذ",
-                hidden: !canDelete,
-                onSelect: () => void remove(id, s.name ?? ""),
-                gate: { managerOnly: true, operations: ["suppliers.delete"] },
-              },
-            ]}
-          />
+              }}
+              actions={[
+                {
+                  key: "dossier360",
+                  kind: "view",
+                  label: "ملف المورد 360°",
+                  icon: User,
+                  onSelect: () => setDossierSupplierId(id),
+                  gate: { module: "suppliers", level: "READ" },
+                },
+                {
+                  key: "edit",
+                  kind: "edit",
+                  label: "تعديل",
+                  href: `/suppliers/${id}/edit`,
+                  hidden: !canWrite,
+                  gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: ["suppliers.update"] },
+                },
+                {
+                  key: "stmt",
+                  kind: "view",
+                  label: "كشف حساب",
+                  href: `/suppliers-statement?id=${id}`,
+                  gate: { module: "suppliers", level: "READ" },
+                },
+                {
+                  key: "pay",
+                  kind: "pay",
+                  label: "سند صرف سريع",
+                  onSelect: () => setQuickVoucher({ id, name: s.name ?? "", balance: s.currentBalance, type: "PAYMENT" }),
+                  gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: isActive ? "تعطيل" : "تفعيل",
+                  variant: isActive ? "destructive" : "default",
+                  disabled: deactivate.isPending || activate.isPending,
+                  disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                  hidden: !canLifecycleOperation(me.data, isActive ? "suppliers.deactivate" : "suppliers.activate", legacyWrite),
+                  onSelect: () => void toggle(id, isActive, s.name ?? ""),
+                  gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: [isActive ? "suppliers.deactivate" : "suppliers.activate"] },
+                },
+                {
+                  key: "delete",
+                  kind: "delete",
+                  label: "حذف نهائي",
+                  variant: "destructive",
+                  disabled: del.isPending,
+                  disabledReason: "توجد عملية حذف قيد التنفيذ",
+                  hidden: !canDelete,
+                  onSelect: () => void remove(id, s.name ?? ""),
+                  gate: { managerOnly: true, operations: ["suppliers.delete"] },
+                },
+              ]}
+            />
+          </div>
         );
       },
     },
@@ -363,9 +392,9 @@ export default function Suppliers() {
             },
             {
               key: "net",
-              label: Number(summary.data?.netIqd ?? 0) === 0 ? "الصافي متعادل" : Number(summary.data?.netIqd ?? 0) > 0 ? "صافي علينا" : "صافي لنا",
-              value: `${fmt(Math.abs(Number(summary.data?.netIqd ?? 0)))} د.ع`,
-              tone: Number(summary.data?.netIqd ?? 0) === 0 ? "neutral" : Number(summary.data?.netIqd ?? 0) > 0 ? "danger" : "success",
+              label: D(summary.data?.netIqd ?? 0).isZero() ? "الصافي متعادل" : D(summary.data?.netIqd ?? 0).gt(0) ? "صافي علينا" : "صافي لنا",
+              value: `${fmt(D(summary.data?.netIqd ?? 0).abs().toFixed(2))} د.ع`,
+              tone: D(summary.data?.netIqd ?? 0).isZero() ? "neutral" : D(summary.data?.netIqd ?? 0).gt(0) ? "danger" : "success",
             },
             {
               key: "usd",
@@ -506,7 +535,24 @@ export default function Suppliers() {
         </CardContent>
       </Card>
 
+      <SupplierDossierDrawer
+        supplierId={dossierSupplierId}
+        open={dossierSupplierId != null}
+        onClose={() => setDossierSupplierId(null)}
+      />
 
+      {quickVoucher && (
+        <QuickVoucherSheet
+          open={!!quickVoucher}
+          onOpenChange={(o) => !o && setQuickVoucher(null)}
+          defaultType={quickVoucher.type}
+          defaultPartyType="SUPPLIER"
+          defaultPartyId={quickVoucher.id}
+          defaultPartyName={quickVoucher.name}
+          currentBalance={quickVoucher.balance ?? undefined}
+          onSuccess={() => invalidate()}
+        />
+      )}
     </div>
   );
 }

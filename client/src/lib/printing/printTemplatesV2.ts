@@ -38,6 +38,11 @@ import { formatArabicMoneyWords } from './tafqit';
 import { formatPaymentMethodPrintHtml } from './cardBrandLogos';
 import { isDeadInvoice } from '@shared/predicates';
 import { renderA4PromoBannerHtml, type PromoPrintSummary } from './promoPrintSummary';
+import {
+  balanceDirectionLabel,
+  buildBalanceTrailSnapshot,
+  type LedgerPartyKind,
+} from '@shared/balanceTrail';
 
 // ─── مساعدات مشتركة ──────────────────────────────────────────────────────────
 
@@ -51,23 +56,29 @@ function fmtDate(d?: string | Date | null): string {
   return formatDate(d ?? new Date());
 }
 
-/** أرقام IQD بلا كسور — الفلوس لا تُتداول. للمبالغ فقط لا الكميات. */
-function fmtIQD(n: string | number | null | undefined): string {
-  return fmt(Math.round(Number(n ?? 0)));
+function dMoney(n: string | number | Decimal | null | undefined): Decimal {
+  if (n == null || n === '') return new Decimal(0);
+  try {
+    const cleaned = typeof n === 'string' ? n.replace(/,/g, '').trim() : n;
+    const val = new Decimal(cleaned || 0);
+    return val.isFinite() ? val : new Decimal(0);
+  } catch {
+    return new Decimal(0);
+  }
 }
 
-/**
- * #17 (تدقيق التثبيت): نسبة الضريبة تُحسَب من البيانات لا من قيمة مسمَّرة (15٪ كانت خاطئة —
- * ضريبة العراق 0٪ افتراضياً). الأولوية: taxRate الصريح ⇒ الحساب من taxAmount/(subtotal−discount)
- * ⇒ نصّ بلا نسبة إن لم يُتحقّق شيء. الحساب يبني نسبةً مقرَّبة لأقرب رقم عشري (0.5٪ خطأ مقبول).
- */
+/** تنسيق دينار عراقي بـDecimal مع حفظ الكسور غير الصفرية (حتى خانتين عشريتين). */
+function fmtIQD(n: string | number | null | undefined): string {
+  return fmt(dMoney(n).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2));
+}
+
 function taxLabel(taxAmount: string | number | null | undefined, taxRate: number | null | undefined, subtotal: string | number, discount: string | number | null | undefined): string {
   const explicitRate = taxRate != null && Number.isFinite(taxRate) ? Number(taxRate) : null;
   if (explicitRate != null && explicitRate > 0) return `ضريبة المبيعات (${explicitRate}٪)`;
-  const tx = Number(taxAmount ?? 0);
-  const base = Number(subtotal ?? 0) - Number(discount ?? 0);
-  if (base > 0 && tx > 0) {
-    const computed = Math.round((tx / base) * 1000) / 10; // نسبة بدقّة رقم عشري واحد
+  const tx = dMoney(taxAmount);
+  const base = dMoney(subtotal).minus(dMoney(discount));
+  if (base.gt(0) && tx.gt(0)) {
+    const computed = tx.div(base).times(100).toDecimalPlaces(1, Decimal.ROUND_HALF_UP).toNumber();
     return `ضريبة المبيعات (${computed}٪)`;
   }
   return 'ضريبة المبيعات';
@@ -76,14 +87,59 @@ function taxLabel(taxAmount: string | number | null | undefined, taxRate: number
 export { fmtQty };
 
 /** اتّجاه رصيد العميل (الموجب = لنا عليه). */
-function balanceDirCustomer(balance: number): string {
-  if (Math.abs(balance) < 0.01) return 'خالص';
-  return balance > 0 ? 'لنا' : 'علينا';
+function balanceDirCustomer(balance: string | number | Decimal): string {
+  const b = dMoney(balance);
+  if (b.abs().lt('0.01')) return 'خالص';
+  return b.gt(0) ? 'لنا' : 'علينا';
 }
 /** اتّجاه رصيد المورّد (الموجب = علينا نحن للمورّد). */
-function balanceDirSupplier(balance: number): string {
-  if (Math.abs(balance) < 0.01) return 'خالص';
-  return balance > 0 ? 'علينا' : 'لنا';
+function balanceDirSupplier(balance: string | number | Decimal): string {
+  const b = dMoney(balance);
+  if (b.abs().lt('0.01')) return 'خالص';
+  return b.gt(0) ? 'علينا' : 'لنا';
+}
+
+function balanceSnapshotPrintHtml(input: {
+  partyType: LedgerPartyKind;
+  before: string | number | null | undefined;
+  after?: string | number | null | undefined;
+  debit?: string | number | null | undefined;
+  credit?: string | number | null | undefined;
+  unit?: string;
+}): string {
+  const unit = input.unit ?? 'د.ع';
+  const snap = buildBalanceTrailSnapshot({
+    partyType: input.partyType,
+    before: input.before,
+    debit: input.debit,
+    credit: input.credit,
+  });
+  const afterVal = input.after != null ? dMoney(input.after) : dMoney(snap.after);
+  const afterAbs = fmtIQD(afterVal.abs().toFixed(2));
+  const afterDir = balanceDirectionLabel(input.partyType, afterVal);
+  const debitD = dMoney(snap.debit);
+  const creditD = dMoney(snap.credit);
+  const deltaD = dMoney(input.after != null ? afterVal.minus(dMoney(snap.before)) : snap.delta);
+  const sign = deltaD.isNegative() ? '− ' : deltaD.gt(0) ? '+ ' : '';
+  const effectText = `${sign}${fmtIQD(deltaD.abs().toFixed(2))}`;
+  const effectKind = debitD.gt(0) && creditD.isZero() ? 'مدين' : creditD.gt(0) && debitD.isZero() ? 'دائن' : 'الأثر';
+
+  return `<div data-balance-snapshot style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px 10px;background:${B.bgWarm};border:1px solid ${B.border};border-radius:4px">
+    <div style="text-align:center">
+      <div style="font-size:9px;color:${B.textFaint};font-weight:700">الرصيد قبل الحركة</div>
+      <div style="font-size:12px;font-weight:800;color:#000;direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums">${esc(fmtIQD(snap.beforeAbs))} ${esc(unit)}</div>
+      <div style="font-size:9.5px;color:${B.textFaint};font-weight:700">${esc(snap.beforeDirectionLabel)}</div>
+    </div>
+    <div style="text-align:center;border-inline:1px dashed ${B.border};padding-inline:6px">
+      <div style="font-size:9px;color:${B.textFaint};font-weight:700">${esc(effectKind)}</div>
+      <div style="font-size:12px;font-weight:900;color:${deltaD.isNegative() ? B.green : B.alert};direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums">${esc(effectText)} ${esc(unit)}</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:9px;color:${B.textFaint};font-weight:700">الرصيد بعد الحركة</div>
+      <div style="font-size:12.5px;font-weight:900;color:#000;direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums">${esc(afterAbs)} ${esc(unit)}</div>
+      <div style="font-size:9.5px;color:${afterVal.gt(0) ? (input.partyType === 'SUPPLIER' ? B.alert : B.green) : B.textFaint};font-weight:800">${esc(afterDir)}</div>
+    </div>
+  </div>`;
 }
 
 /**
@@ -234,7 +290,7 @@ export interface SalesInvoiceV2Data {
   settings?: CompanySettings;
 }
 
-export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
+export function buildSalesInvoiceV2Body(d: SalesInvoiceV2Data): string {
   const date = fmtDate(d.invoiceDate);
   const badge = d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null;
 
@@ -277,9 +333,9 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
   ]);
 
   const hasTax =
-    Number(d.taxAmount ?? 0) > 0 ||
-    Number(d.taxRate ?? 0) > 0 ||
-    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+    dMoney(d.taxAmount).gt(0) ||
+    dMoney(d.taxRate).gt(0) ||
+    d.items.some((it) => dMoney(it.taxAmount).gt(0));
   const showBarcode =
     d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
 
@@ -300,15 +356,13 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
         { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
         { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
       ];
-  // الهدية تُطبَع «مجاناً» لا «0»: الصفر على مستندٍ رسميّ يُقرأ خطأَ تسعيرٍ أو سهواً، والوسم
-  // يُثبت للزبون (وللمراجع) أنّ المجّانيّة قرارٌ مقصود — وتكلفتها مُرحَّلة مصروفَ هدايا في الدفتر.
   const rows = d.items.map((it) => ({
     name: it.isGift ? `${it.productName} (هدية)` : it.productName,
     unit: it.unitName ?? '',
     qty:  fmtQty(it.quantity),
     price: it.isGift ? 'مجاناً' : fmtIQD(it.unitPrice),
     barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
-    tax:  Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
+    tax:  dMoney(it.taxAmount).gt(0) ? fmtIQD(it.taxAmount) : '—',
     total: it.isGift ? 'مجاناً' : fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
@@ -316,7 +370,21 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
 
   const totals = salesInvoiceTotals(d, fmtIQD, taxLabel);
 
-  const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
+  let balanceStrip = '';
+  if (d.customerBalanceBefore != null && d.customerBalanceAfter != null) {
+    const beforeD = dMoney(d.customerBalanceBefore);
+    const afterD = dMoney(d.customerBalanceAfter);
+    const diffD = afterD.minus(beforeD);
+    balanceStrip = balanceSnapshotPrintHtml({
+      partyType: 'CUSTOMER',
+      before: beforeD.toFixed(2),
+      after: afterD.toFixed(2),
+      debit: diffD.gt(0) ? diffD.toFixed(2) : '0',
+      credit: diffD.lt(0) ? diffD.abs().toFixed(2) : '0',
+    });
+  }
+
+  const tafqit = tafqitLine(formatArabicMoneyWords(dMoney(d.total).toNumber()));
 
   const sig = signaturesBlock({
     qrSvg: d.qrSvg ?? null,
@@ -328,8 +396,11 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     ],
   });
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${promoBanner}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
-  return wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body);
+  return `${pageBodyOpen()}${header}${cards}${table}${promoBanner}${totals}${balanceStrip}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+}
+
+export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
+  return wrapA4Doc(`فاتورة ${d.invoiceNumber}`, buildSalesInvoiceV2Body(d));
 }
 
 export function printSalesInvoiceV2(d: SalesInvoiceV2Data, options?: PrintWindowOptions): boolean {
@@ -389,12 +460,19 @@ export interface PurchaseInvoiceV2Data {
   supplierBalanceBefore?: string | number | null;
   supplierBalanceAfter?: string | number | null;
 
+  createdByName?: string | null;
+  approvedByName?: string | null;
+  cashSourceLabel?: string | null;
+  agreedCurrency?: string | null;
+  agreedRate?: string | number | null;
+  usdTotal?: string | number | null;
+
   qrSvg?: string | null;
   qrCaption?: string | null;
   settings?: CompanySettings;
 }
 
-export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
+export function buildPurchaseInvoiceV2Body(d: PurchaseInvoiceV2Data): string {
   const date = fmtDate(d.invoiceDate);
   const badge = d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null;
 
@@ -408,6 +486,7 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     barcode: resolveDocBarcode('PO', d.invoiceNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
+  const isUsd = d.agreedCurrency === 'USD' || (dMoney(d.usdTotal).gt(0) && dMoney(d.agreedRate).gt(0));
   const cards = infoCards([
     {
       title: 'معلومات المورّد',
@@ -416,6 +495,8 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
         { label: 'الاسم', value: d.supplierName ?? '—' },
         ...(d.supplierAddress ? [{ label: 'العنوان', value: d.supplierAddress }] : []),
         ...(d.supplierPhone ? [{ label: 'الهاتف', value: d.supplierPhone }] : []),
+        ...(d.createdByName ? [{ label: 'المنشئ', value: d.createdByName }] : []),
+        ...(d.approvedByName ? [{ label: 'المعتمد', value: d.approvedByName }] : []),
       ],
     },
     {
@@ -423,16 +504,27 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
       variant: 'gray',
       fields: [
         ...(d.paymentMethod ? [{ label: 'طريقة الدفع', value: d.paymentMethod }] : []),
+        ...(d.cashSourceLabel ? [{ label: 'مصدر الصرف', value: d.cashSourceLabel }] : []),
         ...(d.linkedPO ? [{ label: 'رقم أمر الشراء المرتبط', value: d.linkedPO }] : []),
         ...(d.warehouseName ? [{ label: 'المخزن المستلم', value: d.warehouseName }] : []),
+        ...(isUsd && d.agreedRate ? [{ label: 'العملة المثبتة', value: `USD (${fmtIQD(d.agreedRate)} د.ع/$)` }] : []),
       ],
     },
   ]);
 
+  const fmtUsd2 = (v: string | number | null | undefined) =>
+    dMoney(v).toNumber().toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const usdEquation = isUsd && dMoney(d.usdTotal).gt(0) && dMoney(d.agreedRate).gt(0)
+    ? `<div style="margin-top:8px;padding:7px 12px;border:1px solid ${B.border};border-radius:4px;background:${B.bgWarm};font-size:10.75px;font-weight:700;color:${B.ink};display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <span>تفصيل العملة المثبتة:</span>
+        <span style="direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums">$${esc(fmtUsd2(d.usdTotal))} × ${esc(fmtIQD(d.agreedRate))} د.ع/$ = ${esc(fmtIQD(d.total))} د.ع</span>
+      </div>`
+    : '';
+
   const hasTax =
-    Number(d.taxAmount ?? 0) > 0 ||
-    Number(d.taxRate ?? 0) > 0 ||
-    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+    dMoney(d.taxAmount).gt(0) ||
+    dMoney(d.taxRate).gt(0) ||
+    d.items.some((it) => dMoney(it.taxAmount).gt(0));
   const showBarcode =
     d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
 
@@ -459,35 +551,49 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
-    tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
+    tax: dMoney(it.taxAmount).gt(0) ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
 
-  const remainingNum = Number(d.remainingAmount ?? (Number(d.total) - Number(d.paidAmount ?? 0)));
-  const balBefore = d.supplierBalanceBefore != null ? Number(d.supplierBalanceBefore) : null;
-  const balAfter = d.supplierBalanceAfter != null ? Number(d.supplierBalanceAfter) : null;
+  const remainingD = d.remainingAmount != null
+    ? dMoney(d.remainingAmount)
+    : dMoney(d.total).minus(dMoney(d.paidAmount));
+  const balBeforeD = d.supplierBalanceBefore != null ? dMoney(d.supplierBalanceBefore) : null;
+  const balAfterD = d.supplierBalanceAfter != null ? dMoney(d.supplierBalanceAfter) : null;
 
   const totals = totalsBox({
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
-      ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'خصم المورّد', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(dMoney(d.discountAmount).gt(0) ? [{ label: 'خصم المورّد', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
+      ...(dMoney(d.taxAmount).gt(0) ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'إجمالي أمر الشراء', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
-    remaining: remainingNum > 0 ? { label: 'المتبقّي', value: fmtIQD(remainingNum) } : null,
-    balance: balAfter != null ? {
+    remaining: remainingD.gt(0) ? { label: 'المتبقّي', value: fmtIQD(remainingD.toFixed(2)) } : null,
+    balance: balAfterD != null ? {
       beforeLabel: 'الرصيد السابق',
-      before: fmtIQD(balBefore ?? 0),
+      before: fmtIQD((balBeforeD ?? new Decimal(0)).toFixed(2)),
       afterLabel: 'الرصيد النهائي (المستحق للمورّد)',
-      after: fmtIQD(Math.abs(balAfter)),
-      direction: balanceDirSupplier(balAfter),
+      after: fmtIQD(balAfterD.abs().toFixed(2)),
+      direction: balanceDirSupplier(balAfterD),
       directionColor: B.alert,
     } : null,
   });
 
-  const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
+  let balanceStrip = '';
+  if (balBeforeD != null && balAfterD != null) {
+    const diffD = balAfterD.minus(balBeforeD);
+    balanceStrip = balanceSnapshotPrintHtml({
+      partyType: 'SUPPLIER',
+      before: balBeforeD.toFixed(2),
+      after: balAfterD.toFixed(2),
+      credit: diffD.gt(0) ? diffD.toFixed(2) : '0',
+      debit: diffD.lt(0) ? diffD.abs().toFixed(2) : '0',
+    });
+  }
+
+  const tafqit = tafqitLine(formatArabicMoneyWords(dMoney(d.total).toNumber()));
 
   const sig = signaturesBlock({
     qrSvg: d.qrSvg ?? null,
@@ -499,12 +605,15 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     ],
   });
 
-  const reduction = new Decimal(d.returnedAmount ?? 0).gt(0)
+  const reduction = dMoney(d.returnedAmount).gt(0)
     ? `<p style="font-size:11px;color:${B.ink};margin:8px 0">تخفيض الذمة بعد الشراء: ${esc(fmtIQD(d.returnedAmount))}</p>` : '';
-  const recognition = d.recognizedAmount != null && !new Decimal(d.recognizedAmount).eq(d.total)
+  const recognition = d.recognizedAmount != null && !dMoney(d.recognizedAmount).eq(dMoney(d.total))
     ? `<p style="font-size:11px;color:${B.ink};margin:8px 0">المفوتر بذمة المورد: ${esc(fmtIQD(d.recognizedAmount))}</p>` : '';
-  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${reduction}${recognition}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
-  return wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, body);
+  return `${pageBodyOpen()}${header}${cards}${usdEquation}${table}${totals}${balanceStrip}${reduction}${recognition}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+}
+
+export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
+  return wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, buildPurchaseInvoiceV2Body(d));
 }
 
 export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
@@ -550,6 +659,13 @@ export interface SalesReportV2Data {
     status: string;
     /** لون شارة الحالة (`#0D6B52`/`#92400E`/`#8A1F11`). */
     statusColor?: string;
+    items?: {
+      productName: string;
+      unitName?: string | null;
+      quantity: string | number;
+      unitPrice: string | number;
+      total: string | number;
+    }[];
   }[];
 
   settings?: CompanySettings;
@@ -623,9 +739,14 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
       ['الوردية', esc(rows[i].shift)], ['الدفع', rows[i].payment],
       ['الحالة', `<span style="color:${statusColor};font-weight:800">${esc(rows[i].status)}</span>`],
     ].map(([label, value]) => `<span style="max-width:100%;overflow-wrap:anywhere"><strong>${label}:</strong> ${value}</span>`).join('');
+    const itemLines = r.items && r.items.length > 0
+      ? `<div style="margin-top:4px;padding-top:4px;border-top:1px dashed ${B.border};display:flex;flex-wrap:wrap;gap:6px 14px;font-size:8.75px;color:${B.textFaint}">
+          ${r.items.map((it) => `<span>• ${esc(it.productName)}${it.unitName ? ` (${esc(it.unitName)})` : ''}: ${esc(fmtQty(it.quantity))} × ${esc(fmtIQD(it.unitPrice))} = <strong style="color:${B.ink}">${esc(fmtIQD(it.total))}</strong></span>`).join('')}
+        </div>`
+      : '';
     return `<tbody style="background:${bg};break-inside:avoid">
       <tr data-sales-financial>${cell(String(i + 1))}${cols.map(c => cell(rows[i][c.key as keyof typeof rows[number]], c.key !== 'num', c.color)).join('')}</tr>
-      <tr><td colspan="${cols.length + 1}" style="padding:6px 10px;border:1.5px solid ${B.borderDk};font-size:9.25px;font-weight:700;line-height:1.7;text-align:right"><div data-sales-metadata style="display:flex;flex-wrap:wrap;column-gap:16px;row-gap:4px">${metadata}</div></td></tr>
+      <tr><td colspan="${cols.length + 1}" style="padding:6px 10px;border:1.5px solid ${B.borderDk};font-size:9.25px;font-weight:700;line-height:1.7;text-align:right"><div data-sales-metadata style="display:flex;flex-wrap:wrap;column-gap:16px;row-gap:4px">${metadata}</div>${itemLines}</td></tr>
     </tbody>`;
   }).join('');
   const table = `<div style="margin-top:13px;border:2px solid ${B.ink};border-radius:4px">
@@ -637,7 +758,7 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
 
   const note = `<div style="margin-top:10px;font-size:9.75px;color:${B.textFaint}">مُولَّد آلياً من مركز التقارير · لا يتطلّب توقيعاً — للاستخدام الداخلي</div>`;
 
-  const body = `${pageBodyOpen()}${header}${summary}${table}${note}${pageBodyClose()}${pageFooter(d.settings, { rightText: 'صفحة 1 من 1' })}`;
+  const body = `${pageBodyOpen()}${header}${summary}${table}${note}${pageBodyClose()}${pageFooter(d.settings, { rightText: `تقرير المبيعات · ${d.invoiceCount} فاتورة` })}`;
   return openPrintWindow(wrapA4Doc('تقرير المبيعات', body, { orientation: 'landscape' }));
 }
 
@@ -721,9 +842,9 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   ]);
 
   const hasTax =
-    Number(d.taxAmount ?? 0) > 0 ||
-    Number(d.taxRate ?? 0) > 0 ||
-    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+    dMoney(d.taxAmount).gt(0) ||
+    dMoney(d.taxRate).gt(0) ||
+    d.items.some((it) => dMoney(it.taxAmount).gt(0));
   const showBarcode =
     d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
 
@@ -750,7 +871,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
-    tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
+    tax: dMoney(it.taxAmount).gt(0) ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
@@ -758,8 +879,8 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   const totals = totalsBox({
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
-      ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(dMoney(d.discountAmount).gt(0) ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
+      ...(dMoney(d.taxAmount).gt(0) ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'الإجمالي', value: fmtIQD(d.total) },
   });
@@ -909,6 +1030,8 @@ export interface StatementV2Data {
   printRequestedAt?: string | null;
   openingBalance: string | number;
   currentBalance?: string | number | null;
+  usdReference?: string | number | null;
+  heldDepositsTotal?: string | number | null;
   transactionsCount: number;
 
   transactions: {
@@ -917,6 +1040,7 @@ export interface StatementV2Data {
     description: string;
     debit?: string | number | null;
     credit?: string | number | null;
+    balanceBefore?: string | number | null;
     balance: string | number;
     /** نوع الحركة كنصّ عربي: «فاتورة»، «سند قبض»، «سند دفع»، … */
     typeLabel: string;
@@ -925,6 +1049,13 @@ export interface StatementV2Data {
     /** نص التفاصيل الإضافيّة أسفل قيم الصف — يشرح محتوى الفاتورة/السند. */
     details: string;
     actor?: string | null;
+    items?: {
+      productName: string;
+      unitName?: string | null;
+      quantity: string | number;
+      unitPrice: string | number;
+      total: string | number;
+    }[];
   }[];
 
   totalDebit: string | number;
@@ -934,7 +1065,7 @@ export interface StatementV2Data {
   settings?: CompanySettings;
 }
 
-export function printStatementV2(d: StatementV2Data): boolean {
+export function buildStatementV2Html(d: StatementV2Data): string {
   const isCustomer = d.partyKind === 'customer';
   const header = pageHeader({
     title: 'كشف حساب',
@@ -947,6 +1078,8 @@ export function printStatementV2(d: StatementV2Data): boolean {
     ],
   }, d.settings);
 
+  const usdD = dMoney(d.usdReference);
+  const heldD = dMoney(d.heldDepositsTotal);
   const cards = infoCards([
     {
       title: isCustomer ? 'معلومات العميل' : 'معلومات المورّد',
@@ -968,56 +1101,81 @@ export function printStatementV2(d: StatementV2Data): boolean {
     },
   ]);
 
+  const extraRefLines: string[] = [];
+  if (!isCustomer && !usdD.isZero()) {
+    extraRefLines.push(
+      `مرجع الفواتير الدولارية (مشمول بالدينار المثبت): $${usdD.abs().toNumber().toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} — ${balanceDirectionLabel('SUPPLIER', usdD)}`,
+    );
+  }
+  if (isCustomer && heldD.gt(0)) {
+    extraRefLines.push(
+      `عربون قيد الاحتجاز (غير مطبق على فاتورة): ${fmtIQD(heldD.toFixed(2))} د.ع`,
+    );
+  }
+  const disclosureLine = extraRefLines.length > 0
+    ? `<div style="margin-top:8px;padding:6px 10px;border:1px solid ${B.border};border-radius:4px;background:${B.bgWarm};font-size:10px;font-weight:700;color:${B.ink}">${esc(extraRefLines.join(' · '))}</div>`
+    : '';
+
   // بناء الجدول يدوياً: كل حركة = صفّان (قيم + تفاصيل).
   const cols: DocTableCol[] = [
-    { key: 'date', label: 'التاريخ', width: 74 },
-    { key: 'ref', label: 'المرجع', width: 130 },
+    { key: 'date', label: 'التاريخ', width: 66 },
+    { key: 'ref', label: 'المرجع', width: 98 },
     { key: 'desc', label: 'البيان' },
-    { key: 'debit', label: 'مدين', width: 84, color: B.alert },
-    { key: 'credit', label: 'دائن', width: 84, color: B.green },
-    { key: 'balance', label: 'الرصيد', width: 90, color: B.ink },
+    { key: 'debit', label: 'مدين', width: 72, color: B.alert },
+    { key: 'credit', label: 'دائن', width: 72, color: B.green },
+    { key: 'before', label: 'قبل', width: 76, color: B.textFaint },
+    { key: 'balance', label: 'بعد', width: 80, color: B.ink },
   ];
 
-  // الرأس (استعارة نمط docTableV2 دون totalsRow؛ صفوف الجسم مخصّصة).
   const th = (label: string, width?: number) =>
-    `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:10.75px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ''}">${esc(label)}</th>`;
+    `<th style="vertical-align:middle;padding:7px 6px;text-align:center;font-size:10.5px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ''}">${esc(label)}</th>`;
   const head = `<tr style="background:${B.greenDark}">${cols.map((c) => th(c.label, c.width)).join('')}</tr>`;
 
-  const cellStyle = (color = '#000', size = 11.75, opts: { money?: boolean; noBottom?: boolean } = {}) => {
+  const cellStyle = (color = '#000', size = 11.25, opts: { money?: boolean; noBottom?: boolean } = {}) => {
     const money = opts.money ? 'direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums;' : '';
     const nb = opts.noBottom ? 'border-bottom:none;' : '';
-    return `vertical-align:middle;padding:6px;text-align:center;font-size:${size}px;color:${color};font-weight:${opts.money ? '800' : '700'};border:1.5px solid ${B.borderDk};${nb}${money}`;
+    return `vertical-align:middle;padding:5px;text-align:center;font-size:${size}px;color:${color};font-weight:${opts.money ? '800' : '700'};border:1.5px solid ${B.borderDk};${nb}${money}`;
   };
 
+  let runningPrev = dMoney(d.openingBalance);
   const bodyRows = d.transactions.map((t, i) => {
     const bg = i % 2 === 0 ? '#fff' : B.zebra;
-    const debit = Number(t.debit ?? 0) > 0 ? fmtIQD(t.debit) : '—';
-    const credit = Number(t.credit ?? 0) > 0 ? fmtIQD(t.credit) : '—';
-    const debitColor = Number(t.debit ?? 0) > 0 ? B.alert : '#000';
-    const creditColor = Number(t.credit ?? 0) > 0 ? B.green : '#000';
+    const debitD = dMoney(t.debit);
+    const creditD = dMoney(t.credit);
+    const debit = debitD.gt(0) ? fmtIQD(debitD.toFixed(2)) : '—';
+    const credit = creditD.gt(0) ? fmtIQD(creditD.toFixed(2)) : '—';
+    const debitColor = debitD.gt(0) ? B.alert : '#000';
+    const creditColor = creditD.gt(0) ? B.green : '#000';
+    const rowBeforeD = t.balanceBefore != null ? dMoney(t.balanceBefore) : runningPrev;
+    const rowAfterD = dMoney(t.balance);
+    runningPrev = rowAfterD;
 
     const valueRow = `<tr style="background:${bg}">
-      <td style="${cellStyle('#000', 11.5, { money: true, noBottom: true })}">${esc(t.date)}</td>
-      <td style="${cellStyle('#000', 11.75, { money: true, noBottom: true })}">${esc(t.ref)}</td>
-      <td style="${cellStyle('#000', 11.25, { noBottom: true })}">${esc(t.description)}</td>
-      <td style="${cellStyle(debitColor, 11.75, { money: true, noBottom: true })}">${esc(debit)}</td>
-      <td style="${cellStyle(creditColor, 11.75, { money: true, noBottom: true })}">${esc(credit)}</td>
-      <td style="${cellStyle(B.ink, 12, { money: true, noBottom: true })};font-weight:900">${esc(fmtIQD(t.balance))}</td>
+      <td style="${cellStyle('#000', 10.75, { money: true, noBottom: true })}">${esc(t.date)}</td>
+      <td style="${cellStyle('#000', 10.75, { money: true, noBottom: true })}">${esc(t.ref)}</td>
+      <td style="${cellStyle('#000', 10.75, { noBottom: true })}">${esc(t.description)}</td>
+      <td style="${cellStyle(debitColor, 11, { money: true, noBottom: true })}">${esc(debit)}</td>
+      <td style="${cellStyle(creditColor, 11, { money: true, noBottom: true })}">${esc(credit)}</td>
+      <td style="${cellStyle(B.textFaint, 10.75, { money: true, noBottom: true })}">${esc(fmtIQD(rowBeforeD.toFixed(2)))}</td>
+      <td style="${cellStyle(B.ink, 11.25, { money: true, noBottom: true })};font-weight:900">${esc(fmtIQD(rowAfterD.toFixed(2)))}</td>
     </tr>`;
-    const details = t.actor ? `${t.details} — المنفّذ: ${t.actor}` : t.details;
+    const itemText = t.items && t.items.length > 0
+      ? ` · البنود: ${t.items.map((it) => `${it.productName}${it.unitName ? ` (${it.unitName})` : ''} × ${fmtQty(it.quantity)} = ${fmtIQD(it.total)}`).join(' | ')}`
+      : '';
+    const details = `${t.actor ? `${t.details} — المنفذ: ${t.actor}` : t.details}${itemText}`;
     const detailRow = docTableDetailRow(i, t.typeLabel, t.typeColor ?? B.alert, details, cols.length);
     return valueRow + detailRow;
   }).join('');
 
-  // تذييل جدول: صف الإجمالي
   const foot = `<tfoot><tr style="background:#F2F2EC">
     <td colspan="3" style="vertical-align:middle;padding:6px;text-align:center;font-size:10.75px;font-weight:800;color:${B.ink};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink}">الإجمالي</td>
-    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;font-weight:900;color:${B.alert};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.totalDebit))}</td>
-    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;font-weight:900;color:${B.green};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.totalCredit))}</td>
-    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;font-weight:900;color:${B.ink};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.closingBalance))}</td>
+    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11px;font-weight:900;color:${B.alert};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.totalDebit))}</td>
+    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11px;font-weight:900;color:${B.green};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.totalCredit))}</td>
+    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:10.5px;font-weight:800;color:${B.textFaint};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.openingBalance))}</td>
+    <td style="vertical-align:middle;padding:6px;text-align:center;font-size:11px;font-weight:900;color:${B.ink};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(fmtIQD(d.closingBalance))}</td>
   </tr></tfoot>`;
 
-  const table = `<div style="margin-top:18px;border:2px solid ${B.ink};border-radius:4px;overflow:hidden">
+  const table = `<div style="margin-top:14px;border:2px solid ${B.ink};border-radius:4px;overflow:hidden">
     <table style="width:100%;border-collapse:collapse;table-layout:fixed">
       <thead>${head}</thead>
       <tbody>${bodyRows}</tbody>
@@ -1025,25 +1183,26 @@ export function printStatementV2(d: StatementV2Data): boolean {
     </table>
   </div>`;
 
-  // شريط الرصيد الختامي — الاتّجاه يُحسَب من إشارة الرصيد + نوع الطرف (عميل موجب=«لنا»، مورّد موجب=«علينا»).
-  // القيمة تُعرَض بالقيمة المطلقة والاتّجاه بجانبها ⇒ لا تلغى دلالة الائتمان/الدين عند سالبية الرصيد
-  // (مورّد ذو رصيد سالب = دفعنا زيادةً، «لنا عليه» — تظهر بوضوح بدل الابتلاع بـabs الصامت).
-  const closingSigned = Number(d.closingBalance);
-  const closingAbs = Math.abs(closingSigned);
+  const closingSigned = dMoney(d.closingBalance);
+  const closingAbs = closingSigned.abs();
   const closingDir = isCustomer ? balanceDirCustomer(closingSigned) : balanceDirSupplier(closingSigned);
   const closingBar = `<div style="display:flex;justify-content:flex-end;margin-top:10px">
-    <div style="width:290px">${grandTotalBar(`الرصيد الختامي المستحق (${closingDir})`, fmtIQD(closingAbs)).replace('margin-top:16px;', 'margin-top:0;')}</div>
+    <div style="width:290px">${grandTotalBar(`الرصيد الختامي المستحق (${closingDir})`, fmtIQD(closingAbs.toFixed(2))).replace('margin-top:16px;', 'margin-top:0;')}</div>
   </div>`;
 
-  const sig = `<div style="display:flex;justify-content:flex-start;margin-top:26px">
+  const sig = `<div style="display:flex;justify-content:flex-start;margin-top:24px">
     <div style="text-align:center;width:260px">
       <div style="height:28px"></div>
       <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">توقيع ${isCustomer ? 'العميل' : 'المورّد'} إقراراً بمطابقة الرصيد أعلاه — التاريخ: ___________</div>
     </div>
   </div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${closingBar}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: 'صفحة 1 من 1' })}`;
-  return openPrintWindow(wrapA4Doc(`كشف حساب — ${d.partyName}`, body));
+  const body = `${pageBodyOpen()}${header}${cards}${disclosureLine}${table}${closingBar}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `${isCustomer ? 'كشف حساب عميل' : 'كشف حساب مورد'} · ${d.transactionsCount} حركة` })}`;
+  return wrapA4Doc(`كشف حساب — ${d.partyName}`, body);
+}
+
+export function printStatementV2(d: StatementV2Data): boolean {
+  return openPrintWindow(buildStatementV2Html(d));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1051,97 +1210,151 @@ export function printStatementV2(d: StatementV2Data): boolean {
 // ═════════════════════════════════════════════════════════════════════════════
 
 export interface VoucherV2Data {
-  /** «IN» = سند قبض من عميل، «OUT» = سند دفع لمورّد. */
+  /** «IN» = سند قبض، «OUT» = سند دفع/صرف. */
   direction: 'IN' | 'OUT';
+  /** نوع الطرف الحقيقي (لئلا يُعكس «له علينا/لنا عليه» عند RV المورد أو PV العميل). */
+  partyType?: 'SUPPLIER' | 'CUSTOMER' | 'DELIVERY_PARTY' | 'OTHER' | null;
   voucherNumber: string;
   voucherDate?: string | Date | null;
 
-  /** «✓ معتمَد» أو «بانتظار اعتماد». افتراضي «معتمَد». */
+  /** «معتمد» أو «بانتظار الاعتماد» أو «مرفوض». */
   statusLabel?: string | null;
   statusColor?: string | null;
 
-  /** اسم الطرف المُقابل (عميل للـIN، مورّد للـOUT). */
   partyName: string;
-  /** كلمة تعريف الطرف: «عميل»، «مورّد»، «موظّف»، … */
   partyTypeLabel: string;
-  /** رصيد الطرف قبل السند (رقم). عرضٌ لُنا/علينا يُحسَب من الاتجاه. */
   partyBalanceBefore?: string | number | null;
+  partyBalanceAfter?: string | number | null;
 
   paymentMethodLabel: string;
-  /** رقم مرجعي حرّ — TRF-88231 أو CHQ-77410 أو رقم البطاقة (xxxx). */
   referenceNumber?: string | null;
+  cashSourceLabel?: string | null;
+  branchName?: string | null;
+  categoryName?: string | null;
+  relatedInvoiceNumber?: string | null;
+  counterpartyName?: string | null;
+  createdByName?: string | null;
+  approvedByName?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
 
   description: string;
 
-  /** المبلغ الرَقمي. */
+  /** المبلغ الرقمي بـDecimal. */
   amount: string | number;
 
   qrSvg?: string | null;
   qrCaption?: string | null;
-  /** بَصمة SHA-256 مختصرة تُعرَض في يمين التذييل: `HASH 9F3C-…`. */
   signatureShortHash?: string | null;
-
-  /**
-   * مُرفَق السند كصورة (data: URL أو رابط مباشر) — يُطبَع كصورة مصغَّرة أسفل التوقيعات في نسخة A4
-   * الرسمية (لا يُطبَع نصّاً خاماً؛ روابط data: الطويلة كانت ستُفسِد الصفحة قبل هذا التعديل).
-   */
   attachmentImageUrl?: string | null;
-
-  /** باركود رقم السند للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
   barcode?: DocHeaderBarcode | string | boolean | null;
-  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
   barcodePlacement?: 'beside' | 'below';
 
   settings?: CompanySettings;
 }
 
-export function printVoucherV2(d: VoucherV2Data): boolean {
+function resolveVoucherPartyKind(d: VoucherV2Data): LedgerPartyKind | null {
+  if (d.partyType === 'SUPPLIER') return 'SUPPLIER';
+  if (d.partyType === 'CUSTOMER') return 'CUSTOMER';
+  if (d.partyType === 'DELIVERY_PARTY' || d.partyType === 'OTHER') return null;
+  const lbl = d.partyTypeLabel ?? '';
+  if (lbl.includes('مورد') || lbl.includes('مورّد')) return 'SUPPLIER';
+  if (lbl.includes('عميل') || lbl.includes('زبون')) return 'CUSTOMER';
+  return d.direction === 'IN' ? 'CUSTOMER' : 'SUPPLIER';
+}
+
+export function buildVoucherV2Body(d: VoucherV2Data): string {
   const isReceipt = d.direction === 'IN';
   const title = isReceipt ? 'سند قبض' : 'سند دفع';
+  const ledgerParty = resolveVoucherPartyKind(d);
+  const amtD = dMoney(d.amount);
 
-  // اتّجاه رصيد الطرف قبل السند (نصّ العرض «(لنا)» / «(علينا)»).
-  const balBefore = d.partyBalanceBefore != null ? Number(d.partyBalanceBefore) : null;
-  const balBeforeText = balBefore != null
-    ? `${d.partyTypeLabel} — رصيد قبل السند: ${fmt(Math.abs(balBefore))} (${isReceipt ? balanceDirCustomer(balBefore) : balanceDirSupplier(balBefore)})`
+  const hasBefore = d.partyBalanceBefore != null && d.partyBalanceBefore !== '';
+  const hasAfter = d.partyBalanceAfter != null && d.partyBalanceAfter !== '';
+  const balBeforeD = hasBefore ? dMoney(d.partyBalanceBefore) : null;
+  const derivedAfterD = balBeforeD != null && ledgerParty != null
+    ? (ledgerParty === 'SUPPLIER'
+        ? (isReceipt ? balBeforeD.plus(amtD) : balBeforeD.minus(amtD))
+        : (isReceipt ? balBeforeD.minus(amtD) : balBeforeD.plus(amtD)))
+    : null;
+  const balAfterD = hasAfter ? dMoney(d.partyBalanceAfter) : derivedAfterD;
+
+  const balBeforeText = balBeforeD != null
+    ? `${d.partyTypeLabel} — رصيد قبل السند: ${fmtIQD(balBeforeD.abs().toFixed(2))} (${ledgerParty === 'CUSTOMER' ? balanceDirCustomer(balBeforeD) : balanceDirSupplier(balBeforeD)})`
     : d.partyTypeLabel;
 
-  const badge = { label: d.statusLabel ?? '✓ معتمَد', color: d.statusColor ?? B.green };
+  const cleanStatus = (d.statusLabel ?? 'معتمد').replace(/[✓✗⏳]/g, '').trim() || 'معتمد';
+  const badge = { label: cleanStatus, color: d.statusColor ?? B.green };
 
   const header = pageHeader({
     title,
     fields: [
       { label: 'رقم السند', value: d.voucherNumber },
       { label: 'التاريخ', value: fmtDate(d.voucherDate) },
+      ...(d.branchName ? [{ label: 'الفرع', value: d.branchName }] : []),
     ],
     badge,
     barcode: resolveDocBarcode('VCH', d.voucherNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
+  const partyFields = [
+    ...(d.counterpartyName && d.counterpartyName !== d.partyName ? [{ label: 'المستفيد / المستلم', value: d.counterpartyName }] : []),
+    ...(d.categoryName ? [{ label: 'الفئة', value: d.categoryName }] : []),
+    ...(d.relatedInvoiceNumber ? [{ label: 'الفاتورة المرتبطة', value: d.relatedInvoiceNumber }] : []),
+  ];
+
   const cards = infoCards([
     {
       title: 'الطرف المُقابل',
       variant: 'green',
-      fields: [],
-      bigLine: { primary: d.partyName, secondary: balBeforeText },
+      ...(partyFields.length === 0
+        ? { fields: [], bigLine: { primary: d.partyName, secondary: balBeforeText } }
+        : {
+            fields: [
+              { label: 'الاسم', value: d.partyName },
+              { label: 'التصنيف', value: balBeforeText },
+              ...partyFields,
+            ],
+          }),
     },
     {
-      title: 'تفاصيل الدفع',
+      title: 'تفاصيل الدفع والاعتماد',
       variant: 'gray',
       fields: [
         { label: 'الطريقة', value: d.paymentMethodLabel },
+        ...(d.cashSourceLabel ? [{ label: 'مصدر النقد', value: d.cashSourceLabel }] : []),
         ...(d.referenceNumber ? [{ label: 'الرقم المرجعي', value: d.referenceNumber }] : []),
+        ...(d.createdByName ? [{ label: 'المنشئ', value: d.createdByName }] : []),
+        ...(d.approvedByName ? [{ label: 'المعتمد', value: d.approvedByName }] : []),
+        ...(d.printedByName ? [{ label: 'الطابع', value: d.printedByName }] : []),
+        ...(d.printRequestedAt ? [{ label: 'وقت الطباعة', value: d.printRequestedAt }] : []),
       ],
     },
   ]);
 
-  const descBox = `<div style="margin-top:14px;padding:11px 14px;background:${B.bgWarm};border:1px solid ${B.border};border-radius:4px">
+  const balanceStrip = ledgerParty != null && balBeforeD != null
+    ? balanceSnapshotPrintHtml({
+        partyType: ledgerParty,
+        before: balBeforeD.toFixed(2),
+        after: balAfterD ? balAfterD.toFixed(2) : undefined,
+        credit: isReceipt ? amtD.toFixed(2) : '0',
+        debit: isReceipt ? '0' : amtD.toFixed(2),
+      })
+    : '';
+
+  const descBox = `<div style="margin-top:12px;padding:10px 14px;background:${B.bgWarm};border:1px solid ${B.border};border-radius:4px">
     <div style="font-size:10.25px;font-weight:800;color:#000;margin-bottom:4px">الوصف / الغرض</div>
     <div style="font-size:12.25px;color:#000;line-height:1.6">${esc(d.description)}</div>
   </div>`;
 
-  const amountBar = grandTotalBar(isReceipt ? 'المبلغ المُستلَم' : 'المبلغ المدفوع', fmtIQD(d.amount), { big: true });
+  const amountBar = grandTotalBar(isReceipt ? 'المبلغ المُستلَم' : 'المبلغ المدفوع', fmtIQD(amtD.toFixed(2)), { big: true });
 
-  const tafqit = tafqitLine(formatArabicMoneyWords(d.amount));
+  const wholeD = amtD.abs().floor();
+  const fracFils = amtD.abs().minus(wholeD).times(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+  const wordsText = fracFils.isZero()
+    ? formatArabicMoneyWords(wholeD.toFixed(0))
+    : `${formatArabicMoneyWords(wholeD.toFixed(0)).replace(/ لا غير$/, '')} و${fracFils.toFixed(0)}/100 لا غير`;
+  const tafqit = tafqitLine(wordsText);
 
   const sig = signaturesBlock({
     qrSvg: d.qrSvg ?? null,
@@ -1150,8 +1363,8 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
     spaceHeight: 28,
     labelSize: 9.75,
     items: [
-      { kind: 'sig', label: 'المُنشئ / المحاسب', width: 110 },
-      { kind: 'sig', label: 'المُعتمِد', width: 110 },
+      { kind: 'sig', label: d.createdByName ? `المنشئ (${d.createdByName})` : 'المُنشئ / المحاسب', width: 115 },
+      { kind: 'sig', label: d.approvedByName ? `المعتمد (${d.approvedByName})` : 'المُعتمِد', width: 115 },
       { kind: 'sig', label: 'المُستلم', width: 110 },
     ],
   });
@@ -1167,7 +1380,6 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
   const footerRef = d.signatureShortHash ? `HASH ${d.signatureShortHash}` : `REF ${d.voucherNumber}`;
   const footerLeft = 'سند مرقّم تسلسلياً ومؤرشف إلكترونياً — لا يُعتمد بلا توقيع مستلم';
 
-  // تذييل مخصّص: النص الأيسر بدل «footerLine» الافتراضي
   const customFooter = `<div class="page-footer">
     <div style="height:1px;background:${B.border};margin-bottom:10px"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -1176,8 +1388,16 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
     </div>
   </div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${descBox}${amountBar}${tafqit}${sig}${attachmentBlock}${pageBodyClose()}${customFooter}`;
-  return openPrintWindow(wrapA4Doc(`${title} ${d.voucherNumber}`, body));
+  return `${pageBodyOpen()}${header}${cards}${balanceStrip}${descBox}${amountBar}${tafqit}${sig}${attachmentBlock}${pageBodyClose()}${customFooter}`;
+}
+
+export function buildVoucherV2Html(d: VoucherV2Data): string {
+  const title = d.direction === 'IN' ? 'سند قبض' : 'سند دفع';
+  return wrapA4Doc(`${title} ${d.voucherNumber}`, buildVoucherV2Body(d));
+}
+
+export function printVoucherV2(d: VoucherV2Data): boolean {
+  return openPrintWindow(buildVoucherV2Html(d));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

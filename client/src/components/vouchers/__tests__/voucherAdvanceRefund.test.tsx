@@ -150,6 +150,13 @@ async function supplier() {
     model.setVoucherDate("2026-10-26");
   });
 }
+async function selectRefundMode() {
+  const buttons = host.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+  const refundBtn = buttons[1]!;
+  await act(async () => {
+    refundBtn.click();
+  });
+}
 async function select() {
   const field = host.querySelector<HTMLSelectElement>(
     '[aria-label="الدفعة السابقة المستردة"]',
@@ -189,12 +196,32 @@ afterEach(async () => {
 });
 
 describe("supplier advance refund source binding", () => {
-  it("requires an explicit source and submits its identity with the actual refund rail", async () => {
+  it("defaults supplier receipts to CREDIT_OBLIGATION and enforces source binding only in ADVANCE_REFUND mode", async () => {
     await supplier();
+    expect(model.supplierReceiptPurpose).toBe("CREDIT_OBLIGATION");
     expect(model.supplierAdvanceRefundReceiptId).toBeNull();
+    expect(model.supplierAdvanceRefundBlocked).toBe(false);
+    await act(async () => model.submit());
+    expect(mock.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voucherType: "RECEIPT",
+        partyType: "SUPPLIER",
+        partyId: 1,
+        supplierReceiptPurpose: "CREDIT_OBLIGATION",
+        paymentMethod: "CASH",
+        amount: "10",
+      }),
+    );
+    expect(mock.mutate.mock.calls[0]?.[0]).not.toHaveProperty("supplierAdvanceRefundReceiptId");
+
+    mock.mutate.mockClear();
+    mock.confirm.mockClear();
+    await selectRefundMode();
+    expect(model.supplierReceiptPurpose).toBe("ADVANCE_REFUND");
     await act(async () => model.submit());
     expect(mock.mutate).not.toHaveBeenCalled();
     expect(mock.confirm).not.toHaveBeenCalled();
+
     await select();
     expect(host.textContent).toContain("PV-71");
     expect(host.textContent).toContain("طريقة الدفعة الأصلية");
@@ -206,6 +233,7 @@ describe("supplier advance refund source binding", () => {
         voucherType: "RECEIPT",
         partyType: "SUPPLIER",
         partyId: 1,
+        supplierReceiptPurpose: "ADVANCE_REFUND",
         supplierAdvanceRefundReceiptId: 71,
         paymentMethod: "CASH",
         amount: "10",
@@ -213,9 +241,10 @@ describe("supplier advance refund source binding", () => {
     );
   });
   it.each(["branch", "supplier", "party", "direction"] as const)(
-    "clears a selected source on %s change",
+    "clears selected source and resets mode on %s change",
     async (scope) => {
       await supplier();
+      await selectRefundMode();
       await select();
       if (scope === "direction") await render("PAYMENT");
       else
@@ -228,6 +257,7 @@ describe("supplier advance refund source binding", () => {
           }
         });
       expect(model.supplierAdvanceRefundReceiptId).toBeNull();
+      expect(model.supplierReceiptPurpose).toBe("CREDIT_OBLIGATION");
       expect(model.buildPayload()).not.toHaveProperty(
         "supplierAdvanceRefundReceiptId",
       );
@@ -235,6 +265,7 @@ describe("supplier advance refund source binding", () => {
   );
   it("blocks amounts above refundable money and warns before reopening linked invoices", async () => {
     await supplier();
+    await selectRefundMode();
     await select();
     await act(async () => model.setAmount("60"));
     expect(model.supplierAdvanceRefundBlocked).toBe(false);
@@ -245,6 +276,7 @@ describe("supplier advance refund source binding", () => {
   });
   it("retains the current refund method's own card and transfer evidence checks", async () => {
     await supplier();
+    await selectRefundMode();
     await select();
     await act(async () => model.setMethod("CARD"));
     expect(model.validate()).toContain("آخر 4");
@@ -254,18 +286,21 @@ describe("supplier advance refund source binding", () => {
     expect(model.validate()).toContain("الرقم المرجعي");
     await act(async () => model.setReferenceNumber("ACTUAL-REFUND-TRANSFER"));
     expect(model.buildPayload()).toMatchObject({
+      supplierReceiptPurpose: "ADVANCE_REFUND",
       supplierAdvanceRefundReceiptId: 71,
       paymentMethod: "TRANSFER",
       referenceNumber: "ACTUAL-REFUND-TRANSFER",
     });
   });
-  it("blocks unavailable or loading evidence and displays the backend's actionable error", async () => {
+  it("blocks unavailable or loading evidence only in ADVANCE_REFUND mode and displays the backend error", async () => {
     await supplier();
     mock.sources.isError = true;
     mock.sources.error = {
       message: "المصدر التاريخي ملتبس؛ راجع السند وتخصيصاته",
     };
     await render();
+    expect(model.supplierAdvanceRefundBlocked).toBe(false);
+    await selectRefundMode();
     expect(host.textContent).toContain("المصدر التاريخي ملتبس");
     expect(model.supplierAdvanceRefundBlocked).toBe(true);
     await act(async () => model.submit());
@@ -276,12 +311,12 @@ describe("supplier advance refund source binding", () => {
     await render();
     expect(model.supplierAdvanceRefundBlocked).toBe(true);
   });
-  it("keeps ordinary customer receipts and supplier receipts with no advances unchanged", async () => {
+  it("keeps ordinary customer receipts and supplier credit receipts unblocked when sources fail or are empty", async () => {
     await supplier();
     mock.sources.data = [];
     await render();
     expect(model.supplierAdvanceRefundBlocked).toBe(false);
-    expect(host.textContent).toBe("");
+    expect(host.textContent).toContain("تصنيف قبض المورد");
     expect(model.validate()).toBe("");
     await act(async () => {
       model.setPartyType("CUSTOMER");

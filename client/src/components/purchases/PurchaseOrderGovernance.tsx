@@ -9,28 +9,15 @@ import { ErrorState, LoadingState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  formatPurchaseEventActor,
+  formatPurchaseRevisionHeadValue,
+  PURCHASE_REVISION_HEAD_LABELS,
+  purchaseOrderEventLabel,
+} from "@shared/purchaseOrderEventType";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr, formatQuantity } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-
-const HEAD_LABEL: Record<string, string> = {
-  supplierId: "المورّد",
-  agreedCurrency: "العملة",
-  agreedRate: "سعر الصرف",
-  settlementType: "نوع التسوية",
-  paymentSource: "مصدر سداد البضاعة",
-  expectedDeliveryDate: "تاريخ التسليم المتوقع",
-  subtotal: "المجموع",
-  taxAmount: "الضريبة",
-  shippingCost: "الشحن",
-  shippingFundingSource: "حالة سداد الشحن",
-  shippingFundingShiftId: "وردية منشئ الفاتورة الدافعة للشحن",
-  customsCost: "الكمرك",
-  invoiceDiscount: "خصم فاتورة المورّد",
-  total: "الإجمالي",
-  usdTotal: "إجمالي الدولار",
-  notesSnapshot: "الملاحظات",
-};
 
 const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "usdUnitPrice" | "qty" }> = [
   { key: "variantId", label: "معرّف المتغيّر" },
@@ -127,10 +114,6 @@ export function PurchaseOrderGovernance({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <p className="text-sm text-muted-foreground">
-          كل حفظ يُنشئ مراجعة ثابتة. طلب الاعتماد يطابق مراجعة ونسخة بعينهما،
-          والأحداث سلسلة تدقيق لا تستبدلها الحالة الحالية.
-        </p>
         {revisions.isLoading || events.isLoading ? (
           <LoadingState message="جارٍ تحميل سجل أمر الشراء…" />
         ) : null}
@@ -170,11 +153,25 @@ export function PurchaseOrderGovernance({
                       <div className="mt-1 text-muted-foreground">
                         {revision.revisionReason}
                       </div>
-                      <div className="mt-1 text-xs">
-                        بصمة:{" "}
-                        <bdi dir="ltr" className="font-mono">
-                          {revision.payloadHash.slice(0, 16)}…
-                        </bdi>
+                      <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span>
+                          بواسطة:{" "}
+                          {formatPurchaseEventActor(
+                            (revision as { createdByName?: string | null }).createdByName,
+                            revision.createdBy,
+                          )}
+                        </span>
+                        <details>
+                          <summary className="cursor-pointer hover:text-foreground">
+                            تفاصيل التدقيق التقنية
+                          </summary>
+                          <span className="ms-1">
+                            بصمة المراجعة:{" "}
+                            <bdi dir="ltr" className="font-mono">
+                              {revision.payloadHash.slice(0, 16)}…
+                            </bdi>
+                          </span>
+                        </details>
                       </div>
                     </div>
                   ))}
@@ -196,7 +193,9 @@ export function PurchaseOrderGovernance({
                       className="rounded border bg-muted/20 p-2 text-sm"
                     >
                       <div className="flex flex-wrap justify-between gap-2">
-                        <span className="font-semibold">{event.eventType}</span>
+                        <span className="font-semibold">
+                          {purchaseOrderEventLabel(event.eventType)}
+                        </span>
                         <span
                           dir="ltr"
                           className="text-xs text-muted-foreground"
@@ -209,11 +208,12 @@ export function PurchaseOrderGovernance({
                           {event.reason}
                         </div>
                       ) : null}
-                      <div className="mt-1 text-xs">
-                        فاعل:{" "}
-                        {event.actorUserId
-                          ? `مستخدم #${Number(event.actorUserId)}`
-                          : "النظام"}
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        المنفذ:{" "}
+                        {formatPurchaseEventActor(
+                          (event as { actorName?: string | null }).actorName,
+                          event.actorUserId,
+                        )}
                       </div>
                     </div>
                   ))}
@@ -271,13 +271,17 @@ export function PurchaseOrderGovernance({
                         className="grid gap-1 rounded border p-2 sm:grid-cols-[10rem_1fr_1fr]"
                       >
                         <span className="font-semibold">
-                          {HEAD_LABEL[change.field] ?? change.field}
+                          {PURCHASE_REVISION_HEAD_LABELS[change.field] ?? change.field}
                         </span>
                         <span className="text-[var(--sem-neg)]">
-                          قبل: {valueText(change.before)}
+                          قبل:{" "}
+                          {formatPurchaseRevisionHeadValue(change.field, change.before) ??
+                            valueText(change.before)}
                         </span>
                         <span className="text-[var(--sem-pos)]">
-                          بعد: {valueText(change.after)}
+                          بعد:{" "}
+                          {formatPurchaseRevisionHeadValue(change.field, change.after) ??
+                            valueText(change.after)}
                         </span>
                       </div>
                     ))}

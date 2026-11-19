@@ -123,6 +123,8 @@ export const voucherRouter = router({
         supplierAllocations: z.array(z.object({ supplierInvoiceId: z.number().int().positive(), invoiceVersion: z.number().int().positive(), amount: positiveMoneyString })).min(1).max(500).optional(),
         supplierCashSource: z.object({ mode: z.enum(["DRAWER", "TREASURY"]), shiftId: z.number().int().positive().nullish() }).optional(),
         supplierAdvanceRefundReceiptId: z.number().int().positive().optional(),
+        supplierReceiptPurpose: z.enum(["ADVANCE_REFUND", "CREDIT_OBLIGATION"]).optional(),
+        allowSupplierOverpay: z.boolean().optional(),
         clientRequestId: z.string().min(1).max(80),
       }),
     )

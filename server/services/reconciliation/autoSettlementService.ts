@@ -1,6 +1,7 @@
 import { activeDeliveryInvoiceIdsTx } from "../delivery/guards";
 import { loadRefundCaps } from "../returns/refundCaps";
 import { applyCustomerReceiptCreditTx, customerReceiptCreditTotalTx } from "../customerReceiptSettlement";
+import { consumeRetainedSupplierBookExcessTx } from "../purchase/supplierBookSettlement";
 /**
  * خدمة التسوية التلقائية والمطابقة الذكية لذمم العملاء والموردين (FIFO Auto-Settlement).
  *
@@ -398,6 +399,13 @@ export async function autoSettleSupplierAccountTx(
       ? options.branchId
       : undefined;
 
+  const bookExcessResult = await consumeRetainedSupplierBookExcessTx(
+    tx,
+    supplierId,
+    actor,
+    { branchId: scopedBranchId },
+  );
+
   // 1) قفل أوامر الشراء المفتوحة أولاً بترتيب معرفاتها (purchaseOrders -> suppliers)
   // لمنع أي تعارض أقفال تبادلي مع مسارات سداد المشتريات، وحساب إجمالي الدين المفتوح عبر كل الفروع بدقة مقابل الرصيد العام للمورد
   const openOrders = await tx
@@ -429,9 +437,9 @@ export async function autoSettleSupplierAccountTx(
     return {
       supplierId,
       supplierName: sup.name,
-      settledOrdersCount: 0,
+      settledOrdersCount: bookExcessResult.settledInvoicesCount,
       partiallySettledOrdersCount: 0,
-      totalSettledAmount: "0.00",
+      totalSettledAmount: bookExcessResult.settledAmount,
       remainingOpenDebt: "0.00",
       settledOrderNumbers: [],
     };
@@ -463,9 +471,9 @@ export async function autoSettleSupplierAccountTx(
     return {
       supplierId,
       supplierName: sup.name,
-      settledOrdersCount: 0,
+      settledOrdersCount: bookExcessResult.settledInvoicesCount,
       partiallySettledOrdersCount: 0,
-      totalSettledAmount: "0.00",
+      totalSettledAmount: bookExcessResult.settledAmount,
       remainingOpenDebt: "0.00",
       settledOrderNumbers: [],
     };
@@ -484,9 +492,9 @@ export async function autoSettleSupplierAccountTx(
     return {
       supplierId,
       supplierName: sup.name,
-      settledOrdersCount: 0,
+      settledOrdersCount: bookExcessResult.settledInvoicesCount,
       partiallySettledOrdersCount: 0,
-      totalSettledAmount: "0.00",
+      totalSettledAmount: bookExcessResult.settledAmount,
       remainingOpenDebt: toDbMoney(scopedOpenPoRemaining),
       settledOrderNumbers: [],
     };
@@ -551,9 +559,9 @@ export async function autoSettleSupplierAccountTx(
   return {
     supplierId,
     supplierName: sup.name,
-    settledOrdersCount: settledCount,
+    settledOrdersCount: settledCount + bookExcessResult.settledInvoicesCount,
     partiallySettledOrdersCount: partiallySettledCount,
-    totalSettledAmount: toDbMoney(totalSettled),
+    totalSettledAmount: toDbMoney(totalSettled.plus(bookExcessResult.settledAmount)),
     remainingOpenDebt: toDbMoney(remainingOpenDebt.gt(0) ? remainingOpenDebt : money(0)),
     settledOrderNumbers,
   };
