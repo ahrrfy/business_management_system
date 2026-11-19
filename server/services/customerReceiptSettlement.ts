@@ -1277,7 +1277,17 @@ export async function transferCustomerReceiptAllocationsTx(
   originalInvoiceId: number,
   replacementInvoiceId: number,
   paidCapacity: Decimal,
+  options?: {
+    actor?: Actor;
+    requestKey?: string;
+    unwindInterbranchReleased?: boolean;
+  },
 ) {
+  const [origInv] = await tx
+    .select({ id: invoices.id, branchId: invoices.branchId })
+    .from(invoices)
+    .where(eq(invoices.id, originalInvoiceId))
+    .limit(1);
   const rows = await tx
     .select({ a: allocations, h: settlements })
     .from(allocations)
@@ -1298,13 +1308,67 @@ export async function transferCustomerReceiptAllocationsTx(
       .update(allocations)
       .set({ invoiceId: replacementInvoiceId, amount: toDbMoney(carried) })
       .where(eq(allocations.id, a.id));
-    if (released.gt(0))
+    if (released.gt(0)) {
       await tx
         .update(settlements)
         .set({
           unallocatedAmount: sql`${settlements.unallocatedAmount} + ${toDbMoney(released)}`,
         })
         .where(eq(settlements.id, h.id));
+      if (
+        options?.unwindInterbranchReleased &&
+        options.actor &&
+        origInv &&
+        Number(h.branchId) !== Number(origInv.branchId)
+      ) {
+        const revHash = createHash("sha256")
+          .update(`${originalInvoiceId}:${replacementInvoiceId}:${h.id}:${a.id}:${options.requestKey ?? ""}`)
+          .digest("hex")
+          .slice(0, 32);
+        const revOutComponents = {
+          roleDebits: { AR: released },
+          roleCredits: { INTERBRANCH_CLEARING: released },
+        };
+        await postEntry(tx, {
+          entryType: "ADJUST",
+          branchId: Number(origInv.branchId),
+          createdBy: options.actor.userId,
+          customerId: h.customerId,
+          invoiceId: originalInvoiceId,
+          amount: released,
+          dedupeKey: `CUSTOMER_INTERBRANCH_OUT:CORR:${revHash}`,
+          notes: `عكس مقاصة بين الفروع لفاتورة مصحَّحة #${originalInvoiceId} → #${replacementInvoiceId}`,
+          postingIntent: createPostingIntent(
+            "ADJUST_CUSTOMER_AR_INTERBRANCH_OUT",
+            "ADJUST",
+            [debitLine("AR", released), creditLine("INTERBRANCH_CLEARING", released)],
+            revOutComponents,
+          ),
+          postingSourceComponents: revOutComponents,
+        });
+        const revInComponents = {
+          roleDebits: { INTERBRANCH_CLEARING: released },
+          roleCredits: { AR: released },
+        };
+        await postEntry(tx, {
+          entryType: "ADJUST",
+          branchId: Number(h.branchId),
+          createdBy: options.actor.userId,
+          customerId: h.customerId,
+          invoiceId: originalInvoiceId,
+          amount: released,
+          dedupeKey: `CUSTOMER_INTERBRANCH_IN:CORR:${revHash}`,
+          notes: `استرجاع مقاصة بين الفروع لفرع المصدر #${h.branchId} بعد تصحيح الفاتورة #${originalInvoiceId}`,
+          postingIntent: createPostingIntent(
+            "ADJUST_CUSTOMER_AR_INTERBRANCH_IN",
+            "ADJUST",
+            [debitLine("INTERBRANCH_CLEARING", released), creditLine("AR", released)],
+            revInComponents,
+          ),
+          postingSourceComponents: revInComponents,
+        });
+      }
+    }
     await assertCustomerReceiptConservationTx(tx, h.id);
     remaining = remaining.minus(carried);
   }

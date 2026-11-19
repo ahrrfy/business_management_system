@@ -2953,7 +2953,7 @@ export async function consumeRetainedSupplierBookExcessTx(
     return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
   }
   const lockedSources = await tx
-    .select({ id: sources.id, sourceSnapshot: sources.sourceSnapshot })
+    .select()
     .from(sources)
     .where(
       and(
@@ -2963,20 +2963,68 @@ export async function consumeRetainedSupplierBookExcessTx(
     )
     .orderBy(asc(sources.id))
     .for("update");
-  const hasRetainedOnAccount = lockedSources.some(
+  const retainedOnAccount = lockedSources.filter(
     (s) =>
       isOnAccountRetainedSnapshot(s.sourceSnapshot) &&
       !isPurchaseAdvanceSnapshot(s.sourceSnapshot) &&
       !isExceptionReturnCreditSnapshot(s.sourceSnapshot),
   );
-  if (!hasRetainedOnAccount) {
+  if (!retainedOnAccount.length) {
     return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
   }
+  const retainedAllocations = await tx
+    .select()
+    .from(allocations)
+    .where(
+      inArray(
+        allocations.sourceId,
+        retainedOnAccount.map((s) => s.id),
+      ),
+    );
+  const usableRetainedSources = retainedOnAccount.filter((src) =>
+    money(
+      purchaseAdvanceAvailableAmount(
+        src,
+        retainedAllocations.filter((a) => a.sourceId === src.id),
+      ),
+    ).gt(0),
+  );
+  if (!usableRetainedSources.length) {
+    return { settledInvoicesCount: 0, settledAmount: "0.00", settledInvoiceIds: [] };
+  }
+  const supplierBranchRows = await tx
+    .select({ branchId: supplierInvoices.branchId })
+    .from(supplierInvoices)
+    .where(eq(supplierInvoices.supplierId, supplierId));
+  const entryBranchRows = await tx
+    .select({ branchId: accountingEntries.branchId })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.supplierId, supplierId));
+  const manualBranchRows = await tx
+    .select({
+      branchId: sql<number | null>`COALESCE(${journalLines.branchId}, ${journalEntries.branchId})`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.supplierId, supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    );
+  const supplierBranches = new Set<number>([
+    ...supplierBranchRows.map((r) => Number(r.branchId)),
+    ...entryBranchRows.filter((r) => r.branchId != null).map((r) => Number(r.branchId)),
+    ...manualBranchRows.filter((r) => r.branchId != null).map((r) => Number(r.branchId)),
+  ]);
   const branchIds = Array.from(new Set(openInvoices.map((i) => Number(i.branchId))));
   let totalSettled = money(0);
   const touchedAll = new Set<number>();
 
   for (const branchId of branchIds) {
+    if (supplierBranches.size !== 1 || !supplierBranches.has(branchId)) continue;
     const c = await loadContext(
       tx,
       { supplierId, branchId },

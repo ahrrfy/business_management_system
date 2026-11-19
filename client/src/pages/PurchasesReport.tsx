@@ -21,7 +21,8 @@ import { fmtQty } from "@shared/quantityFormat";
 type Row = RouterOutputs["reports"]["purchasesReport"]["rows"][number];
 
 interface PurchaseOrderDetail {
-  id: number;
+  purchaseOrderId: number;
+  id?: number;
   poNumber: string;
   orderDate: string | Date;
   total: string;
@@ -168,10 +169,12 @@ export default function PurchasesReport() {
             )}
             {detailLevel === "detailed" && ordersDetail && ordersDetail.length > 0 && (
               <div className="space-y-1 rounded border border-border/50 bg-muted/30 p-2 text-[11px]">
-                {ordersDetail.map((ord) => (
-                  <div key={ord.id} className="space-y-0.5">
+                {ordersDetail.map((ord) => {
+                  const orderId = ord.purchaseOrderId ?? ord.id;
+                  return (
+                  <div key={orderId ?? ord.poNumber} className="space-y-0.5">
                     <div className="flex items-center justify-between gap-2 font-semibold text-foreground">
-                      <Link href={`/purchases/${ord.id}`} className="font-mono text-primary hover:underline" dir="ltr">
+                      <Link href={`/purchases/${orderId}`} className="font-mono text-primary hover:underline" dir="ltr">
                         {ord.poNumber}
                       </Link>
                       <span className="text-muted-foreground tabular-nums" dir="ltr">
@@ -187,7 +190,8 @@ export default function PurchasesReport() {
                       </div>
                     ))}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -840,7 +840,11 @@ export async function correctSaleInTx(
       // Retain gross portions behind actual refunds. A credited price difference
       // becomes tracked advance; an actual cash refund stays in the invoice pool.
       const capacity = cashRefund ? allocatedAmount : Decimal.max(0, newTotal.minus(deliveryPaid).minus(nativeGross).plus(priorRefundAmount));
-      await transferCustomerReceiptAllocationsTx(tx, input.originalInvoiceId, newId, capacity);
+      await transferCustomerReceiptAllocationsTx(tx, input.originalInvoiceId, newId, capacity, {
+        actor,
+        requestKey: input.clientRequestId ?? `correct-${input.originalInvoiceId}`,
+        unwindInterbranchReleased: !cashRefund,
+      });
     }
     if (deliveryAmendment) {
       const reversedExcess = await reverseInvoiceDeliveryExcessTx(tx, deliveryAmendment,
