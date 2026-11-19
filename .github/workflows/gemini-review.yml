@@ -106,5 +106,5 @@ jobs:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           GEMINI_TRIGGER_MODE: ${{ steps.pr.outputs.trigger_mode }}
-          GEMINI_REVIEW_MODEL: ${{ github.event.inputs.model || vars.GEMINI_REVIEW_MODEL || 'gemini-4-carbon' }}
+          GEMINI_REVIEW_MODEL: ${{ github.event.inputs.model || vars.GEMINI_REVIEW_MODEL || 'gemini-4-hydrogen' }}
         run: node scripts/gemini-pr-review.mjs

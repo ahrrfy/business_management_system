@@ -60,6 +60,9 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
       seenUrls.push(url);
       seenHeaders.push((init?.headers as Record<string, string>) ?? {});
       if (url.includes("gemini-4-carbon")) {
+        throw new TypeError("fetch failed (HeadersTimeoutError)");
+      }
+      if (url.includes("gemini-4-argon")) {
         return new Response("quota exceeded", { status: 429 });
       }
       return new Response(
@@ -97,7 +100,7 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
       fetchFn: mockFetch,
     });
 
-    expect(result.model).toBe("gemini-4-argon");
+    expect(result.model).toBe("gemini-4-hydrogen");
     expect(result.verdict).toBe("approve");
     expect(result.findings).toEqual([]);
     expect(seenUrls.every((u) => !u.includes("key="))).toBe(true);
