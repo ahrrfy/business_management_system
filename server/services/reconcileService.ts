@@ -589,12 +589,13 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   const chargeSum = await db.select({
     customerId: accountingEntries.customerId,
     net: sql<string>`COALESCE(SUM(CASE
-      WHEN ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%' THEN -${accountingEntries.amount}
+      WHEN ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%'
+        OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST_REV:%' THEN -${accountingEntries.amount}
       ELSE ${accountingEntries.amount}
     END), 0)`,
   }).from(accountingEntries).where(and(
     sql`${accountingEntries.customerId} IS NOT NULL`,
-    sql`(${invoiceCorrectionArMovement()} OR (${accountingEntries.entryType} = 'ADJUST' AND (${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%')))`,
+    sql`(${invoiceCorrectionArMovement()} OR (${accountingEntries.entryType} = 'ADJUST' AND (${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST_REV:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%')))`,
   )).groupBy(accountingEntries.customerId);
   const chargeMap = new Map(chargeSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
 

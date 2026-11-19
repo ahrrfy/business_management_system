@@ -911,12 +911,23 @@ export async function applyCustomerHistoricalCreditTx(
  * إجمالي الرصيد التاريخي غير المتتبع المُطبّق فعلياً على فاتورة محددة (بما يشمل تسويات الفروع)،
  * مع مراعاة حالات التصحيح السابقة للفاتورة عبر `customer.historicalCredit.correctionState`.
  */
-export async function loadHistoricalCreditAllocatedForInvoiceTx(
+type HistoricalCreditSourceSlice = { sourceBranchId: number; amount: string };
+
+async function loadHistoricalCreditBreakdownForInvoiceTx(
   tx: Tx,
   invoiceId: number,
-): Promise<Decimal> {
+  invoiceBranchId?: number | null,
+): Promise<{
+  total: Decimal;
+  sameBranch: Decimal;
+  interbranchBySource: Map<number, Decimal>;
+}> {
   const rows = await tx
-    .select({ action: auditLogs.action, newValue: auditLogs.newValue })
+    .select({
+      action: auditLogs.action,
+      branchId: auditLogs.branchId,
+      newValue: auditLogs.newValue,
+    })
     .from(auditLogs)
     .where(
       and(
@@ -930,16 +941,172 @@ export async function loadHistoricalCreditAllocatedForInvoiceTx(
     )
     .orderBy(asc(auditLogs.id));
 
-  let total = money(0);
+  let sameBranch = money(0);
+  let interbranchBySource = new Map<number, Decimal>();
   for (const row of rows) {
-    const val = row.newValue as { amount?: unknown; activeAmount?: unknown } | null;
+    const val = row.newValue as {
+      amount?: unknown;
+      activeAmount?: unknown;
+      sourceBranchId?: unknown;
+      interbranchSources?: HistoricalCreditSourceSlice[];
+    } | null;
     if (row.action === "customer.historicalCredit.correctionState") {
-      total = money((val?.activeAmount as string | number | undefined) ?? "0");
+      interbranchBySource = new Map<number, Decimal>();
+      const activeTotal = round2(Decimal.max(0, money((val?.activeAmount as string | number | undefined) ?? "0")));
+      let ibSum = money(0);
+      if (Array.isArray(val?.interbranchSources) && activeTotal.gt(0)) {
+        for (const item of val.interbranchSources) {
+          const sb = Number(item.sourceBranchId);
+          const amt = round2(Decimal.max(0, money(item.amount ?? "0")));
+          if (Number.isSafeInteger(sb) && sb > 0 && amt.gt(0)) {
+            interbranchBySource.set(sb, (interbranchBySource.get(sb) ?? money(0)).plus(amt));
+            ibSum = ibSum.plus(amt);
+          }
+        }
+      }
+      sameBranch = round2(Decimal.max(0, activeTotal.minus(ibSum)));
     } else {
-      total = total.plus(money((val?.amount as string | number | undefined) ?? "0"));
+      const amt = round2(Decimal.max(0, money((val?.amount as string | number | undefined) ?? "0")));
+      if (!amt.gt(0)) continue;
+      const srcBranch = val?.sourceBranchId != null ? Number(val.sourceBranchId) : null;
+      const targetBranch = invoiceBranchId ?? (row.branchId != null ? Number(row.branchId) : null);
+      if (srcBranch != null && targetBranch != null && srcBranch !== targetBranch) {
+        interbranchBySource.set(srcBranch, (interbranchBySource.get(srcBranch) ?? money(0)).plus(amt));
+      } else {
+        sameBranch = sameBranch.plus(amt);
+      }
     }
   }
-  return round2(Decimal.max(0, total));
+  const ibTotal = Array.from(interbranchBySource.values()).reduce((s, a) => s.plus(a), money(0));
+  return {
+    total: round2(sameBranch.plus(ibTotal)),
+    sameBranch: round2(sameBranch),
+    interbranchBySource,
+  };
+}
+
+/**
+ * إجمالي الرصيد التاريخي غير المتتبع المُطبّق فعلياً على فاتورة محددة (بما يشمل تسويات الفروع)،
+ * مع مراعاة حالات التصحيح والإلغاء السابقة للفاتورة عبر `customer.historicalCredit.correctionState`.
+ */
+export async function loadHistoricalCreditAllocatedForInvoiceTx(
+  tx: Tx,
+  invoiceId: number,
+): Promise<Decimal> {
+  return (await loadHistoricalCreditBreakdownForInvoiceTx(tx, invoiceId)).total;
+}
+
+async function postSameBranchHistoricalCreditReversalTx(
+  tx: Tx,
+  input: {
+    branchId: number;
+    customerId: number;
+    amount: Decimal;
+    actor: Actor;
+    token: string;
+    noteSuffix: string;
+  },
+): Promise<void> {
+  const amt = round2(Decimal.max(0, input.amount));
+  if (!amt.gt(0)) return;
+  const revComponents = {
+    roleDebits: { INTERBRANCH_CLEARING: amt },
+    roleCredits: { AR: amt },
+  };
+  const revOffsetComponents = {
+    roleDebits: { AR: amt },
+    roleCredits: { INTERBRANCH_CLEARING: amt },
+  };
+  await postEntry(tx, {
+    entryType: "ADJUST",
+    branchId: input.branchId,
+    createdBy: input.actor.userId,
+    customerId: input.customerId,
+    amount: amt,
+    dedupeKey: `CUSTOMER_CREDIT_APPLY:HIST_REV:${input.token}`,
+    notes: `عكس رصيد عميل تاريخي مطبّق (${input.noteSuffix})`,
+    postingIntent: createPostingIntent(
+      "ADJUST_CUSTOMER_AR_INTERBRANCH_IN",
+      "ADJUST",
+      [debitLine("INTERBRANCH_CLEARING", amt), creditLine("AR", amt)],
+      revComponents,
+    ),
+    postingSourceComponents: revComponents,
+  });
+  await postEntry(tx, {
+    entryType: "ADJUST",
+    branchId: input.branchId,
+    createdBy: input.actor.userId,
+    customerId: input.customerId,
+    amount: amt,
+    dedupeKey: `CUSTOMER_CREDIT_APPLY:OFFSET_REV:${input.token}`,
+    notes: `مقابل عكس رصيد عميل تاريخي مطبّق (${input.noteSuffix})`,
+    postingIntent: createPostingIntent(
+      "ADJUST_CUSTOMER_AR_INTERBRANCH_OUT",
+      "ADJUST",
+      [debitLine("AR", amt), creditLine("INTERBRANCH_CLEARING", amt)],
+      revOffsetComponents,
+    ),
+    postingSourceComponents: revOffsetComponents,
+  });
+}
+
+async function postInterbranchHistoricalCreditReversalTx(
+  tx: Tx,
+  input: {
+    invoiceId: number;
+    invoiceBranchId: number;
+    sourceBranchId: number;
+    customerId: number;
+    amount: Decimal;
+    actor: Actor;
+    token: string;
+    noteSuffix: string;
+  },
+): Promise<void> {
+  const amt = round2(Decimal.max(0, input.amount));
+  if (!amt.gt(0)) return;
+  const outComponents = {
+    roleDebits: { AR: amt },
+    roleCredits: { INTERBRANCH_CLEARING: amt },
+  };
+  const inComponents = {
+    roleDebits: { INTERBRANCH_CLEARING: amt },
+    roleCredits: { AR: amt },
+  };
+  await postEntry(tx, {
+    entryType: "ADJUST",
+    branchId: input.invoiceBranchId,
+    createdBy: input.actor.userId,
+    customerId: input.customerId,
+    invoiceId: input.invoiceId,
+    amount: amt,
+    dedupeKey: `CUSTOMER_INTERBRANCH_OUT:HIST_REV:${input.token}`,
+    notes: `عكس مقاصة تاريخية بين الفروع (${input.noteSuffix})`,
+    postingIntent: createPostingIntent(
+      "ADJUST_CUSTOMER_AR_INTERBRANCH_OUT",
+      "ADJUST",
+      [debitLine("AR", amt), creditLine("INTERBRANCH_CLEARING", amt)],
+      outComponents,
+    ),
+    postingSourceComponents: outComponents,
+  });
+  await postEntry(tx, {
+    entryType: "ADJUST",
+    branchId: input.sourceBranchId,
+    createdBy: input.actor.userId,
+    customerId: input.customerId,
+    amount: amt,
+    dedupeKey: `CUSTOMER_INTERBRANCH_IN:HIST_REV:${input.token}`,
+    notes: `استرجاع مقاصة تاريخية لفرع المصدر #${input.sourceBranchId} (${input.noteSuffix})`,
+    postingIntent: createPostingIntent(
+      "ADJUST_CUSTOMER_AR_INTERBRANCH_IN",
+      "ADJUST",
+      [debitLine("INTERBRANCH_CLEARING", amt), creditLine("AR", amt)],
+      inComponents,
+    ),
+    postingSourceComponents: inComponents,
+  });
 }
 
 /**
@@ -961,6 +1128,27 @@ export async function transferHistoricalCreditAllocationOnCorrectionTx(
 ): Promise<void> {
   const carried = round2(Decimal.max(0, input.carriedAmount));
   const released = round2(Decimal.max(0, input.releasedToCreditAmount));
+  const breakdown = await loadHistoricalCreditBreakdownForInvoiceTx(
+    tx,
+    input.fromInvoiceId,
+    input.branchId,
+  );
+
+  // احتساب الجزء المحمول للمصادر المتفرعة والمحليّة على الترتيب
+  let remCarry = carried;
+  const carriedIb: HistoricalCreditSourceSlice[] = [];
+  const releasedIb: Array<{ sourceBranchId: number; amount: Decimal }> = [];
+  for (const [srcBranchId, amt] of Array.from(breakdown.interbranchBySource.entries())) {
+    const take = round2(Decimal.min(remCarry, amt));
+    if (take.gt(0)) carriedIb.push({ sourceBranchId: srcBranchId, amount: toDbMoney(take) });
+    const drop = round2(amt.minus(take));
+    if (drop.gt(0)) releasedIb.push({ sourceBranchId: srcBranchId, amount: drop });
+    remCarry = round2(remCarry.minus(take));
+  }
+  const carriedSame = round2(Decimal.min(remCarry, breakdown.sameBranch));
+  const releasedSame = round2(
+    Decimal.min(released, Decimal.max(0, breakdown.sameBranch.minus(carriedSame))),
+  );
 
   await logAuditTx(tx, input.actor, {
     action: "customer.historicalCredit.correctionState",
@@ -983,6 +1171,7 @@ export async function transferHistoricalCreditAllocationOnCorrectionTx(
       newValue: {
         activeAmount: toDbMoney(carried),
         fromInvoiceId: input.fromInvoiceId,
+        ...(carriedIb.length > 0 ? { interbranchSources: carriedIb } : {}),
       },
     });
   }
@@ -992,47 +1181,104 @@ export async function transferHistoricalCreditAllocationOnCorrectionTx(
       .update(`${input.fromInvoiceId}:${input.toInvoiceId}:${input.requestKey}`)
       .digest("hex")
       .slice(0, 32);
-    const revComponents = {
-      roleDebits: { INTERBRANCH_CLEARING: released },
-      roleCredits: { AR: released },
-    };
-    const revOffsetComponents = {
-      roleDebits: { AR: released },
-      roleCredits: { INTERBRANCH_CLEARING: released },
-    };
-    await postEntry(tx, {
-      entryType: "ADJUST",
+    const noteSuffix = `تصحيح #${input.fromInvoiceId} ← #${input.toInvoiceId}`;
+    await postSameBranchHistoricalCreditReversalTx(tx, {
       branchId: input.branchId,
-      createdBy: input.actor.userId,
       customerId: input.customerId,
-      amount: released,
-      dedupeKey: `CUSTOMER_CREDIT_APPLY:HIST_REV:${revToken}`,
-      notes: `تحرير رصيد عميل تاريخي مطبّق بعد تصحيح الفاتورة (#${input.fromInvoiceId} ← #${input.toInvoiceId})`,
-      postingIntent: createPostingIntent(
-        "ADJUST_CUSTOMER_AR_INTERBRANCH_IN",
-        "ADJUST",
-        [debitLine("INTERBRANCH_CLEARING", released), creditLine("AR", released)],
-        revComponents,
-      ),
-      postingSourceComponents: revComponents,
+      amount: releasedSame,
+      actor: input.actor,
+      token: revToken,
+      noteSuffix,
     });
-    await postEntry(tx, {
-      entryType: "ADJUST",
-      branchId: input.branchId,
-      createdBy: input.actor.userId,
+    let ibRemRelease = round2(Decimal.max(0, released.minus(releasedSame)));
+    for (const ib of releasedIb) {
+      if (!ibRemRelease.gt(0)) break;
+      const step = round2(Decimal.min(ibRemRelease, ib.amount));
+      const ibToken = createHash("sha256")
+        .update(`${revToken}:${ib.sourceBranchId}`)
+        .digest("hex")
+        .slice(0, 32);
+      await postInterbranchHistoricalCreditReversalTx(tx, {
+        invoiceId: input.fromInvoiceId,
+        invoiceBranchId: input.branchId,
+        sourceBranchId: ib.sourceBranchId,
+        customerId: input.customerId,
+        amount: step,
+        actor: input.actor,
+        token: ibToken,
+        noteSuffix,
+      });
+      ibRemRelease = round2(ibRemRelease.minus(step));
+    }
+  }
+}
+
+/**
+ * عكس تسويات الرصيد التاريخي (نفس الفرع وبين الفروع) عند إلغاء الفاتورة بالكامل
+ * حتى يتطابق `reconcileCustomerBalances` مع عكس ذمة العميل بعد الإلغاء.
+ */
+export async function releaseHistoricalCreditOnInvoiceCancelTx(
+  tx: Tx,
+  input: {
+    invoiceId: number;
+    customerId: number | null;
+    branchId: number;
+    actor: Actor;
+    requestKey: string;
+  },
+): Promise<void> {
+  if (input.customerId == null) return;
+  const breakdown = await loadHistoricalCreditBreakdownForInvoiceTx(
+    tx,
+    input.invoiceId,
+    input.branchId,
+  );
+  if (!breakdown.total.gt(0)) return;
+
+  const cancelToken = createHash("sha256")
+    .update(`cancel:${input.invoiceId}:${input.requestKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  const noteSuffix = `إلغاء فاتورة #${input.invoiceId}`;
+
+  await postSameBranchHistoricalCreditReversalTx(tx, {
+    branchId: input.branchId,
+    customerId: input.customerId,
+    amount: breakdown.sameBranch,
+    actor: input.actor,
+    token: cancelToken,
+    noteSuffix,
+  });
+
+  for (const [srcBranchId, ibAmt] of Array.from(breakdown.interbranchBySource.entries())) {
+    if (!ibAmt.gt(0)) continue;
+    const ibToken = createHash("sha256")
+      .update(`${cancelToken}:${srcBranchId}`)
+      .digest("hex")
+      .slice(0, 32);
+    await postInterbranchHistoricalCreditReversalTx(tx, {
+      invoiceId: input.invoiceId,
+      invoiceBranchId: input.branchId,
+      sourceBranchId: srcBranchId,
       customerId: input.customerId,
-      amount: released,
-      dedupeKey: `CUSTOMER_CREDIT_APPLY:OFFSET_REV:${revToken}`,
-      notes: `مقابل تحرير رصيد عميل تاريخي مطبّق بعد تصحيح الفاتورة (#${input.fromInvoiceId} ← #${input.toInvoiceId})`,
-      postingIntent: createPostingIntent(
-        "ADJUST_CUSTOMER_AR_INTERBRANCH_OUT",
-        "ADJUST",
-        [debitLine("AR", released), creditLine("INTERBRANCH_CLEARING", released)],
-        revOffsetComponents,
-      ),
-      postingSourceComponents: revOffsetComponents,
+      amount: ibAmt,
+      actor: input.actor,
+      token: ibToken,
+      noteSuffix,
     });
   }
+
+  await logAuditTx(tx, input.actor, {
+    action: "customer.historicalCredit.correctionState",
+    entityType: "invoice",
+    entityId: input.invoiceId,
+    branchId: input.branchId,
+    newValue: {
+      activeAmount: "0.00",
+      cancelledInvoiceId: input.invoiceId,
+      releasedOnCancelAmount: toDbMoney(breakdown.total),
+    },
+  });
 }
 
 /** Track real account refunds so refunded advances cannot pay a later invoice again. */

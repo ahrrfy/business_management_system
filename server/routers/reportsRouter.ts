@@ -58,6 +58,7 @@ import {
   getSalesByDimension,
 } from "../services/reportsSalesService";
 import {
+  getPeriodPurchaseOrderIds,
   getPurchasesReport,
   getPurchaseRegister,
 } from "../services/reportsPurchasesService";
@@ -1056,29 +1057,37 @@ export const reportsRouter = router({
         .filter((id): id is number => id != null);
       if (supplierIds.length === 0) return report;
 
-      const poRows = await db
-        .select({
-          id: purchaseOrders.id,
-          supplierId: purchaseOrders.supplierId,
-          poNumber: purchaseOrders.poNumber,
-          orderDate: purchaseOrders.orderDate,
-          status: purchaseOrders.status,
-          agreedCurrency: purchaseOrders.agreedCurrency,
-          agreedRate: purchaseOrders.agreedRate,
-          total: purchaseOrders.total,
-          paidAmount: purchaseOrders.paidAmount,
-        })
-        .from(purchaseOrders)
-        .where(
-          and(
-            inArray(purchaseOrders.supplierId, supplierIds),
-            inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
-            sql`${purchaseOrders.orderDate} >= ${localDayStart(input.from)}`,
-            sql`${purchaseOrders.orderDate} < ${localNextDayStart(input.to)}`,
-            branchId != null ? eq(purchaseOrders.branchId, branchId) : undefined,
-          ),
-        )
-        .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id));
+      const periodPoIds = await getPeriodPurchaseOrderIds({
+        from: input.from,
+        to: input.to,
+        branchId,
+        supplierIds,
+      });
+
+      const poRows = periodPoIds.length > 0
+        ? await db
+            .select({
+              id: purchaseOrders.id,
+              supplierId: purchaseOrders.supplierId,
+              poNumber: purchaseOrders.poNumber,
+              orderDate: purchaseOrders.orderDate,
+              status: purchaseOrders.status,
+              agreedCurrency: purchaseOrders.agreedCurrency,
+              agreedRate: purchaseOrders.agreedRate,
+              total: purchaseOrders.total,
+              paidAmount: purchaseOrders.paidAmount,
+            })
+            .from(purchaseOrders)
+            .where(
+              and(
+                inArray(purchaseOrders.id, periodPoIds),
+                inArray(purchaseOrders.supplierId, supplierIds),
+                inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+                branchId != null ? eq(purchaseOrders.branchId, branchId) : undefined,
+              ),
+            )
+            .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id))
+        : [];
 
       const poIds = poRows.map((p) => Number(p.id));
       const itemsByPo = new Map<

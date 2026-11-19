@@ -1896,7 +1896,7 @@ export const saleRouter = router({
             balanceBefore,
             balanceAfter,
           };
-        });
+        }, { isolationLevel: "read committed" });
       }
 
       const totalPaymentAmount =

@@ -1606,5 +1606,5 @@ export async function reconcileCustomerCrossBranch(
     }
 
     return payload;
-  });
+  }, { isolationLevel: "read committed" });
 }
