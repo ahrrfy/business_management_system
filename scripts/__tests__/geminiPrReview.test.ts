@@ -127,7 +127,7 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
 
   it("يقبل Gemini 4 كبديل في safe-merge عند فشل Codex فقط ويرفض الانتحال والملاحظات المفتوحة", () => {
     const trustedGemini = {
-      author: { login: "github-actions[bot]" },
+      author: { login: "github-actions" },
       body: formatStickyStateComment({
         commitSha: "headsha12345",
         model: "gemini-4-carbon",

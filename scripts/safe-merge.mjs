@@ -400,7 +400,10 @@ const TRUSTED_CODEX_BOT_LOGINS = new Set([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
-const TRUSTED_GEMINI_BOT_LOGINS = new Set(["github-actions[bot]"]);
+const TRUSTED_GEMINI_BOT_LOGINS = new Set([
+  "github-actions",
+  "github-actions[bot]",
+]);
 const TRUSTED_GEMINI_CODE_ASSIST_LOGINS = new Set([
   "gemini-code-assist",
   "gemini-code-assist[bot]",
