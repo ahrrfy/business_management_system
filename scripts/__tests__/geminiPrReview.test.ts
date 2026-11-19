@@ -215,5 +215,63 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
       ready: false,
       code: "PR_UNADDRESSED_REVIEW_COMMENTS",
     });
+
+    const geminiCodeAssistAppPass = evaluatePrMergeReadiness({
+      prView: {
+        number: 503,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "headsha12345",
+        statusCheckRollup: greenRollup,
+        comments: [
+          {
+            author: { login: "chatgpt-codex-connector" },
+            body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"headsha12345","status":"failed"}} -->',
+          },
+        ],
+        reviews: [
+          {
+            author: { login: "gemini-code-assist" },
+            state: "COMMENTED",
+            commit: { oid: "headsha12345" },
+            body: "## Code Review\n\nLooks good overall.",
+          },
+        ],
+      },
+    });
+    expect(geminiCodeAssistAppPass).toMatchObject({
+      ready: true,
+      code: "OK",
+    });
+
+    const geminiCodeAssistChangesRequested = evaluatePrMergeReadiness({
+      prView: {
+        number: 504,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "headsha12345",
+        statusCheckRollup: greenRollup,
+        comments: [
+          {
+            author: { login: "chatgpt-codex-connector" },
+            body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"headsha12345","status":"failed"}} -->',
+          },
+        ],
+        reviews: [
+          {
+            author: { login: "gemini-code-assist[bot]" },
+            state: "CHANGES_REQUESTED",
+            commit: { oid: "headsha12345" },
+            body: "Found critical issue.",
+          },
+        ],
+      },
+    });
+    expect(geminiCodeAssistChangesRequested).toMatchObject({
+      ready: false,
+      code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+    });
   });
 });

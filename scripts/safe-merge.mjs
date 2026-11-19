@@ -401,6 +401,12 @@ const TRUSTED_CODEX_BOT_LOGINS = new Set([
   "chatgpt-codex-connector[bot]",
 ]);
 const TRUSTED_GEMINI_BOT_LOGINS = new Set(["github-actions[bot]"]);
+const TRUSTED_GEMINI_CODE_ASSIST_LOGINS = new Set([
+  "gemini-code-assist",
+  "gemini-code-assist[bot]",
+]);
+const GEMINI_CODE_ASSIST_FAILURE_RE =
+  /\b(?:unable to review|could not review|couldn't complete|usage limit|quota exceeded|rate limit)\b/i;
 
 function parseBotReviewStateMarker({
   prComments = [],
@@ -461,8 +467,8 @@ export function parseCodexReviewState(prComments = []) {
   });
 }
 
-export function parseGeminiReviewState(prComments = []) {
-  return parseBotReviewStateMarker({
+export function parseGeminiReviewState(prComments = [], prReviews = []) {
+  const workflowMarkerState = parseBotReviewStateMarker({
     prComments,
     trustedLogins: TRUSTED_GEMINI_BOT_LOGINS,
     marker: GEMINI_STATE_MARKER,
@@ -476,6 +482,41 @@ export function parseGeminiReviewState(prComments = []) {
         parsed.hasUnresolvedFindings === true,
     }),
   });
+  if (workflowMarkerState) return workflowMarkerState;
+
+  const flatReviews = Array.isArray(prReviews)
+    ? prReviews
+    : Array.isArray(prReviews?.nodes)
+      ? prReviews.nodes
+      : [];
+  let latestCodeAssist = null;
+  for (const rev of flatReviews) {
+    if (!rev || typeof rev !== "object") continue;
+    const login = String(rev?.author?.login ?? rev?.user?.login ?? "")
+      .trim()
+      .toLowerCase();
+    if (!TRUSTED_GEMINI_CODE_ASSIST_LOGINS.has(login)) continue;
+    const state = String(rev.state ?? "").trim().toUpperCase();
+    if (state === "PENDING" || state === "DISMISSED") continue;
+    const sha = String(rev?.commit?.oid ?? rev?.commit_id ?? "").trim() || null;
+    const body = String(rev.body ?? "");
+    if (GEMINI_CODE_ASSIST_FAILURE_RE.test(body)) {
+      latestCodeAssist = {
+        provider: "gemini-code-assist",
+        state: "failed",
+        sha,
+        has_unresolved_findings: true,
+      };
+      continue;
+    }
+    latestCodeAssist = {
+      provider: "gemini-code-assist",
+      state: "completed",
+      sha,
+      has_unresolved_findings: state === "CHANGES_REQUESTED",
+    };
+  }
+  return latestCodeAssist;
 }
 
 function normalizeReviewThreadEntry(entry) {
@@ -712,7 +753,7 @@ export function evaluatePrMergeReadiness({
   }
 
   const codexState = parseCodexReviewState(commentsPayload);
-  const geminiState = parseGeminiReviewState(commentsPayload);
+  const geminiState = parseGeminiReviewState(commentsPayload, prView.reviews);
   const geminiStatus = String(geminiState?.state ?? "").trim().toLowerCase();
   const geminiSha = String(geminiState?.sha ?? "").trim();
   const geminiFresh = doesCodexShaMatchHead(geminiSha, headRefOid);
@@ -3180,7 +3221,7 @@ function fetchPrStateAndThreads(prArg) {
   }
   viewArgs.push(
     "--json",
-    "id,number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup",
+    "id,number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,reviews,statusCheckRollup",
   );
   const prView = captureJson("gh", viewArgs);
   prView.baseRefName = String(prView?.baseRefName ?? "");
