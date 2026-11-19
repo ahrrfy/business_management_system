@@ -28,6 +28,10 @@ export interface VoucherInput {
   supplierCashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
   /** Original approved supplier OUT receipt whose advance is being refunded. */
   supplierAdvanceRefundReceiptId?: number;
+  /** التصنيف الصريح لسند قبض من مورد: استرداد دفعة سابقة أو إشعار/مبلغ دائن يرفع ذمة المورد. */
+  supplierReceiptPurpose?: "ADVANCE_REFUND" | "CREDIT_OBLIGATION";
+  /** السماح الصريح بصرف لمورد عادي يتجاوز الرصيد المستحق المسجّل حالياً (إنشاء رصيد «لنا عليه»). */
+  allowSupplierOverpay?: boolean;
   /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId: string;
 }
@@ -38,6 +42,9 @@ export interface VoucherResult {
   direction: "IN" | "OUT";
   /** APPROVED = أَثَّر مباشرةً؛ PENDING_APPROVAL = يَحتاج اعتماد مدير ثانٍ قبل التأثير. */
   approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
+  balanceBefore?: string;
+  balanceAfter?: string;
+  excessUnallocatedAmount?: string;
 }
 
 

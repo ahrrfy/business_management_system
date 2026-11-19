@@ -48,6 +48,41 @@ export interface PurchasesReportResult {
   totals: { count: number; total: string; paid: string; unpaid: string };
 }
 
+export function buildPurchasesPeriodEntryFilterSql(opts: {
+  from: string;
+  to: string;
+  branchId?: number;
+}) {
+  const branchPo = opts.branchId ? sql`AND ae.branchId = ${opts.branchId}` : sql``;
+  return sql`ae.supplierId IS NOT NULL
+    AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE') OR ${GRNI_LEDGER_ENTRY_COND})
+    AND ${isSupplierApLedgerEntrySql({ entryType: sql`ae.entryType`, dedupeKey: sql`ae.dedupeKey` })}
+    AND ae.entryDate >= ${opts.from} AND ae.entryDate <= ${opts.to}
+    ${branchPo}`;
+}
+
+export async function getPeriodPurchaseOrderIds(opts: {
+  from: string;
+  to: string;
+  branchId?: number;
+  supplierIds: number[];
+}): Promise<number[]> {
+  const db = getDb();
+  if (!db || opts.supplierIds.length === 0) return [];
+  const supList = sql.join(opts.supplierIds.map((id) => sql`${id}`), sql`, `);
+  const periodFilter = buildPurchasesPeriodEntryFilterSql(opts);
+  const raw = rowsOf(
+    await db.execute(sql`
+      SELECT DISTINCT ae.purchaseOrderId AS poId
+      FROM accountingEntries ae
+      WHERE ae.purchaseOrderId IS NOT NULL
+        AND ae.supplierId IN (${supList})
+        AND ${periodFilter}
+    `),
+  );
+  return raw.map((r) => Number(r.poId)).filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
 export async function getPurchasesReport(opts: {
   from: string;
   to: string;
@@ -60,7 +95,7 @@ export async function getPurchasesReport(opts: {
   };
   if (!db) return empty;
 
-  const branchPo = opts.branchId ? sql`AND ae.branchId = ${opts.branchId}` : sql``;
+  const periodFilter = buildPurchasesPeriodEntryFilterSql(opts);
 
   // ملخّص لكل مورّد على أوامر الشراء الملتزمة (CONFIRMED/RECEIVED) ضمن النطاق.
   // unpaid = SUM(GREATEST(total - paidAmount, 0)) — لا قيم سالبة (الدفع الزائد لا يقلب الذمّة).
@@ -79,11 +114,7 @@ export async function getPurchasesReport(opts: {
           ELSE 0 END), 0), 0) AS CHAR) AS unpaid
       FROM accountingEntries ae
       JOIN suppliers s ON s.id = ae.supplierId
-      WHERE ae.supplierId IS NOT NULL
-        AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE') OR ${GRNI_LEDGER_ENTRY_COND})
-        AND ${isSupplierApLedgerEntrySql({ entryType: sql`ae.entryType`, dedupeKey: sql`ae.dedupeKey` })}
-        AND ae.entryDate >= ${opts.from} AND ae.entryDate <= ${opts.to}
-        ${branchPo}
+      WHERE ${periodFilter}
       GROUP BY ae.supplierId, s.name
       ORDER BY SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END) DESC
     `),

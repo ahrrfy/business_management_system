@@ -1,16 +1,20 @@
-// نَموذج مُوحَّد لإنشاء سند قبض/صرف (vouchers-pro ٣٠/٦/٢٦).
-// يَشمل: تَصنيف + اسم طَرف للسندات «أخرى» + Maker-Checker + مُرفق + بَصمة + تَحذير الازدواج
-// + معاينة قَيد دفتر + اختصارات لوحة المفاتيح + حفظ+طباعة + استخدام CustomerPicker/SupplierPicker.
 import CustomerPicker from "@/components/CustomerPicker";
 import SupplierPicker from "@/components/voucher/SupplierPicker";
 import DeliveryPartyPicker from "@/components/voucher/DeliveryPartyPicker";
+import { PaymentMethodChip } from "@/components/common/MovementBadges";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { VoucherDetailDrawer } from "@/components/vouchers/VoucherDetailDrawer";
+import { voucherApprovalLabel } from "@/components/vouchers/voucherUiPolicy";
+import { fmtDate } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { AlertTriangle, Hourglass, Info } from "lucide-react";
+import { AlertTriangle, Eye, Info } from "lucide-react";
+import { useState } from "react";
 import { Link } from "wouter";
 import type { VoucherFormModel } from "./useVoucherForm";
 
@@ -26,6 +30,9 @@ type Props = Pick<
   | "setCustomerId"
   | "supplierId"
   | "setSupplierId"
+  | "supplierReceiptPurpose"
+  | "allowSupplierOverpay"
+  | "setAllowSupplierOverpay"
   | "deliveryPartyId"
   | "setDeliveryPartyId"
   | "counterpartyName"
@@ -33,6 +40,7 @@ type Props = Pick<
   | "invoiceId"
   | "setInvoiceId"
   | "customerData"
+  | "supplierData"
   | "invoiceQ"
   | "setInvoiceQ"
   | "outstandingInvoiceOptions"
@@ -45,15 +53,16 @@ type Props = Pick<
 >;
 export function VoucherPartyAllocationFields({
   isReceipt,
-  direction,
   branchId,
-  amount,
   partyType,
   setPartyType,
   customerId,
   setCustomerId,
   supplierId,
   setSupplierId,
+  supplierReceiptPurpose,
+  allowSupplierOverpay,
+  setAllowSupplierOverpay,
   deliveryPartyId,
   setDeliveryPartyId,
   counterpartyName,
@@ -61,6 +70,7 @@ export function VoucherPartyAllocationFields({
   invoiceId,
   setInvoiceId,
   customerData,
+  supplierData,
   invoiceQ,
   setInvoiceQ,
   outstandingInvoiceOptions,
@@ -71,6 +81,7 @@ export function VoucherPartyAllocationFields({
   recent,
   balanceWarn,
 }: Props) {
+  const [previewVoucherId, setPreviewVoucherId] = useState<number | null>(null);
   return (
     <Card>
       <CardHeader className="py-2.5 px-3.5">
@@ -83,13 +94,15 @@ export function VoucherPartyAllocationFields({
             <span className="text-[11px] text-muted-foreground">
               {partyType === "OTHER" && "تأثير على الصندوق/الدفتر فقط"}
               {partyType === "CUSTOMER" &&
-                (isReceipt ? "AR ينقص بقيمة السند" : "AR يَزيد (استرداد)")}
+                (isReceipt ? "تخفيض ذمة العميل" : "استرداد للعميل")}
               {partyType === "SUPPLIER" &&
                 (isReceipt
-                  ? "مبلغ وارد من المورد"
-                  : "دفعة من حساب الشركة للمورد")}
+                  ? supplierReceiptPurpose === "ADVANCE_REFUND"
+                    ? "استرداد دفعة سابقة"
+                    : "يرفع مستحق المورد (له علينا)"
+                  : "سداد من حساب الشركة للمورد")}
               {partyType === "DELIVERY_PARTY" &&
-                (isReceipt ? "تحصيل عهدة COD" : "صرف مستحقات توصيل")}
+                (isReceipt ? "تحصيل عهدة التوصيل" : "صرف مستحقات التوصيل")}
             </span>
           </div>
           <AppSelect
@@ -196,13 +209,12 @@ export function VoucherPartyAllocationFields({
               onSupplierChange={setSupplierId}
             />
             {!isReceipt && supplierId != null ? (
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p>بعد اعتماد السند وصرفه، يوزّع النظام الدفعة بالدينار على أقدم مستحقات المورد.</p>
-                <p>
-                  للدفع من محفظة الصيرفة، افتح{" "}
-                  <Link href={`/exchange?tab=settle&supplierId=${supplierId}`} className="underline font-medium">تسديد مورد عبر الصيرفة</Link>.
-                  {" "}لا تسجّل دفعة الصيرفة مرة أخرى كسند نقد أو بطاقة.
-                </p>
+              <div className="text-xs text-muted-foreground">
+                للدفع من محفظة الصيرفة، استخدم{" "}
+                <Link href={`/exchange?tab=settle&supplierId=${supplierId}`} className="underline font-medium text-primary">
+                  تسديد مورد عبر الصيرفة
+                </Link>
+                .
               </div>
             ) : null}
           </>
@@ -216,53 +228,87 @@ export function VoucherPartyAllocationFields({
         )}
         {partyType === "OTHER" && (
           <div className="space-y-1">
-            <Label title="مَوصى به — يُمكّن تَقرير «كل ما دُفع/قُبض من فلان» (مفيد للرواتب والإيجارات المُكرَّرة).">
-              اسم المُستفيد / الدافع
+            <Label title="موصى به — يمكن تقرير «كل ما دفع/قبض من فلان» (مفيد للرواتب والإيجارات المتكررة).">
+              اسم المستفيد / الدافع
             </Label>
             <Input
               value={counterpartyName}
               onChange={(e) => setCounterpartyName(e.target.value)}
               placeholder={
                 isReceipt
-                  ? "مَثلاً: المستثمر / شركة الإعلان — تَحصيل"
-                  : "مَثلاً: المستثمر (مثل: سلمى أحمد) / الموظف أحمد محمد"
+                  ? "مثلا: المستثمر / شركة الإعلان — تحصيل"
+                  : "مثلا: المستثمر (مثل: سلمى أحمد) / الموظف أحمد محمد"
               }
             />
           </div>
         )}
 
         {balanceWarn && (
-          <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-xs p-2 flex items-start gap-2">
-            <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
-            <span>{balanceWarn}</span>
+          <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-xs p-2 space-y-1.5">
+            <div className="flex items-start gap-2">
+              <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
+              <span>{balanceWarn}</span>
+            </div>
+            {!isReceipt &&
+              partyType === "SUPPLIER" &&
+              supplierData.data?.supplierKind !== "CONSIGNOR" && (
+                <label className="flex items-center gap-2 cursor-pointer text-foreground pt-1 border-t border-[var(--sem-warn)]/25">
+                  <input
+                    type="checkbox"
+                    checked={allowSupplierOverpay}
+                    onChange={(e) => setAllowSupplierOverpay(e.target.checked)}
+                    className="rounded border-input"
+                  />
+                  <span>اعتماد الفرق الزائد كسلفة على الحساب (لنا عليه)</span>
+                </label>
+              )}
           </div>
         )}
 
         {(recent.data ?? []).length > 0 && (
-          <div className="rounded-md border bg-muted/30 p-2 text-[12px] space-y-1">
+          <div className="rounded-md border bg-muted/30 p-2.5 text-xs space-y-1.5">
             <div className="font-bold text-foreground flex items-center gap-1">
               <Info aria-hidden className="size-3.5" />
-              آخر سندات لنفس الطَرف (7 أيام):
+              <span>آخر سندات لنفس الطرف (7 أيام):</span>
             </div>
             {(recent.data ?? []).map((r) => (
               <div
                 key={Number(r.id)}
-                className="flex items-center justify-between gap-2 text-muted-foreground"
+                className="flex flex-wrap items-center justify-between gap-2 rounded bg-background/70 px-2 py-1 border"
               >
-                <span className="truncate">
-                  {r.voucherNumber} — {r.direction === "IN" ? "قبض" : "صرف"}
-                  {r.approvalStatus === "PENDING_APPROVAL" ? (
-                    <Hourglass aria-hidden className="inline size-3 ms-1" />
-                  ) : null}
-                </span>
-                <span className="tabular-nums shrink-0" dir="ltr">
-                  {fmt(r.amount)}
-                </span>
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                  <span className="font-mono font-medium" dir="ltr">{r.voucherNumber}</span>
+                  <Badge variant={r.approvalStatus === "PENDING_APPROVAL" ? "warning" : r.approvalStatus === "REJECTED" ? "destructive" : "success"}>
+                    {voucherApprovalLabel(r)}
+                  </Badge>
+                  <PaymentMethodChip method={r.paymentMethod} />
+                  <span className="text-[11px] text-muted-foreground">{fmtDate(r.voucherDate ?? r.createdAt)}</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <bdi dir="ltr" className="tabular-nums font-semibold">{fmt(r.amount)} د.ع</bdi>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[11px]"
+                    title="معاينة السند"
+                    onClick={() => setPreviewVoucherId(Number(r.id))}
+                  >
+                    <Eye aria-hidden className="size-3.5" />
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </CardContent>
+      <VoucherDetailDrawer
+        voucherId={previewVoucherId}
+        open={previewVoucherId != null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewVoucherId(null);
+        }}
+      />
     </Card>
   );
 }

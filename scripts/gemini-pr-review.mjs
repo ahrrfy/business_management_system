@@ -23,8 +23,8 @@ const IGNORED_DIFF_PATTERNS = [
 
 const RETRYABLE_HTTP_STATUSES = new Set([404, 408, 429, 500, 502, 503, 504]);
 const NON_RETRYABLE_HTTP_STATUSES = new Set([400, 401, 403]);
-const MAX_DIFF_CHARS = 160_000;
-const DEFAULT_PER_MODEL_TIMEOUT_MS = 90_000;
+const MAX_DIFF_CHARS = 85_000;
+const DEFAULT_PER_MODEL_TIMEOUT_MS = 180_000;
 
 export function resolveModelChain(requestedModel = "") {
   const clean = String(requestedModel ?? "").trim();
@@ -204,6 +204,7 @@ export async function callGeminiWithFallback({
   prompt,
   fetchFn = globalThis.fetch,
   timeoutMs = DEFAULT_PER_MODEL_TIMEOUT_MS,
+  retryDelayMs = fetchFn === globalThis.fetch ? 5_000 : 0,
 }) {
   const cleanKey = String(apiKey ?? "").trim();
   if (!cleanKey) {
@@ -212,53 +213,61 @@ export async function callGeminiWithFallback({
   const errors = [];
   for (const model of models) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    let res;
-    try {
-      res = await fetchFn(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": cleanKey,
-        },
-        ...(timeoutMs > 0 && typeof AbortSignal?.timeout === "function"
-          ? { signal: AbortSignal.timeout(timeoutMs) }
-          : {}),
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res;
+      try {
+        res = await fetchFn(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": cleanKey,
           },
-        }),
-      });
-    } catch (err) {
-      const msg = `${model} network/timeout error: ${err instanceof Error ? err.message : String(err)}`;
-      errors.push(msg);
-      continue;
-    }
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      const msg = `${model} HTTP ${res.status}: ${errText.slice(0, 300)}`;
-      errors.push(msg);
-      if (NON_RETRYABLE_HTTP_STATUSES.has(res.status)) {
+          ...(timeoutMs > 0 && typeof AbortSignal?.timeout === "function"
+            ? { signal: AbortSignal.timeout(timeoutMs) }
+            : {}),
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          }),
+        });
+      } catch (err) {
+        const msg = `${model} network/timeout error: ${err instanceof Error ? err.message : String(err)}`;
+        errors.push(msg);
+        break;
+      }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        const msg = `${model} HTTP ${res.status}: ${errText.slice(0, 300)}`;
+        if (res.status === 503 && attempt === 0) {
+          if (retryDelayMs > 0) {
+            await new Promise((r) => setTimeout(r, retryDelayMs));
+          }
+          continue;
+        }
+        errors.push(msg);
+        if (NON_RETRYABLE_HTTP_STATUSES.has(res.status)) {
+          throw new Error(msg);
+        }
+        if (RETRYABLE_HTTP_STATUSES.has(res.status) || res.status >= 500) {
+          break;
+        }
         throw new Error(msg);
       }
-      if (RETRYABLE_HTTP_STATUSES.has(res.status) || res.status >= 500) {
-        continue;
+      const json = await res.json();
+      const text = json?.candidates?.[0]?.content?.parts
+        ?.map((p) => p?.text ?? "")
+        .join("")
+        .trim();
+      if (!text) {
+        errors.push(`${model}: empty candidate text`);
+        break;
       }
-      throw new Error(msg);
+      const parsed = parseGeminiReviewResponse(text);
+      return { model, ...parsed };
     }
-    const json = await res.json();
-    const text = json?.candidates?.[0]?.content?.parts
-      ?.map((p) => p?.text ?? "")
-      .join("")
-      .trim();
-    if (!text) {
-      errors.push(`${model}: empty candidate text`);
-      continue;
-    }
-    const parsed = parseGeminiReviewResponse(text);
-    return { model, ...parsed };
   }
   throw new Error(`All Gemini models failed: ${errors.join(" | ")}`);
 }

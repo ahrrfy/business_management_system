@@ -1,61 +1,36 @@
-import { BalanceBadge } from "@/components/BalanceBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { FormError } from "@/components/form/FormError";
 import { ImageUploader } from "@/components/form/ImageUploader";
 import { DataTable } from "@/components/data-table/DataTable";
-import { AlertTriangle, Building2, Printer, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Printer } from "lucide-react";
 import { Link } from "wouter";
 import { voucherCreateActionLabel } from "@/components/vouchers/voucherUiPolicy";
 import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategoryQuickCreate";
-import React from "react";
-import { AppSelect } from "@/components/ui/AppSelect";
-import { fmtAr } from "@/lib/money";
-import { paymentMethodCompact } from "@shared/terms";
 import { useVoucherForm } from "./useVoucherForm";
-import type { VoucherFormModel } from "./useVoucherForm";
 import type { VoucherFormProps } from "./voucherFormTypes";
-export type { VoucherFormProps } from "./voucherFormTypes";
-import { LedgerPreviewRow } from "./voucherFormTypes";
-import { ledgerPreviewColumns } from "./voucherFormTypes";
+import { ledgerPreviewColumns, type LedgerPreviewRow } from "./voucherFormTypes";
 import { VoucherPaymentFields } from "./VoucherPaymentFields";
 import { VoucherPartyAllocationFields } from "./VoucherPartyAllocationFields";
+import {
+  SupplierAdvanceRefundFields,
+  SupplierReceiptModeFields,
+} from "./SupplierReceiptModeFields";
+import { VoucherBalanceImpactCard } from "./VoucherBalanceImpactCard";
+import { VoucherErrorRecoveryBanner } from "./VoucherErrorRecoveryBanner";
 
-export function SupplierAdvanceRefundFields({ model }: { model: Pick<VoucherFormModel,
-  "supplierAdvanceRefundActive" | "supplierAdvanceRefundSources" | "supplierAdvanceRefundReceiptId" |
-  "setSupplierAdvanceRefundReceiptId" | "selectedSupplierAdvanceRefund" | "supplierAdvanceRefundValidationError" |
-  "supplierAdvanceRefundWarning" | "method"
-> }) {
-  const sources = model.supplierAdvanceRefundSources.data ?? [];
-  if (!model.supplierAdvanceRefundActive || (!sources.length && !model.supplierAdvanceRefundValidationError && model.supplierAdvanceRefundReceiptId == null)) return null;
-  const selected = model.selectedSupplierAdvanceRefund;
-  return <Card className="lg:col-span-2"><CardContent className="space-y-2 p-3.5 text-xs">
-    <Label htmlFor="supplier-advance-refund-source">الدفعة السابقة المستردة</Label>
-    {sources.length > 0 ? <AppSelect id="supplier-advance-refund-source" aria-label="الدفعة السابقة المستردة" value={model.supplierAdvanceRefundReceiptId == null ? "" : String(model.supplierAdvanceRefundReceiptId)} onValueChange={(value) => model.setSupplierAdvanceRefundReceiptId(value ? Number(value) : null)}>
-      <option value="">اختر سند الدفعة السابقة</option>
-      {sources.map((source) => <option key={source.id} value={String(source.id)}>{source.voucherNumber ?? `سند #${source.id}`} — {paymentMethodCompact(source.paymentMethod)} — المتبقي {fmtAr(source.remainingAmount)} د.ع</option>)}
-    </AppSelect> : null}
-    {selected ? <div className="flex flex-wrap gap-x-5 gap-y-1">
-      <span>السند الأصلي: {selected.voucherNumber ?? `#${selected.id}`}</span>
-      <span>أصل الدفعة: {fmtAr(selected.amount)} د.ع</span>
-      <span>المتبقي القابل للاسترداد: {fmtAr(selected.remainingAmount)} د.ع</span>
-      <span>الجزء غير المستخدم: {fmtAr(selected.unusedAmount)} د.ع</span>
-      <span>طريقة الدفعة الأصلية: {paymentMethodCompact(selected.paymentMethod)}</span>
-      <span>طريقة الاسترداد الفعلية: {paymentMethodCompact(model.method)}</span>
-    </div> : null}
-    {model.supplierAdvanceRefundWarning ? <p className="text-[var(--sem-warn)]">{model.supplierAdvanceRefundWarning}</p> : null}
-    {model.supplierAdvanceRefundValidationError ? <p role="alert" className="text-[var(--sem-warn)]">{model.supplierAdvanceRefundValidationError}</p> : null}
-    {model.supplierAdvanceRefundSources.isError ? <Button type="button" variant="outline" size="sm" onClick={() => void model.supplierAdvanceRefundSources.refetch()}>إعادة التحقق من الدفعات السابقة</Button> : null}
-  </CardContent></Card>;
-}
+export type { VoucherFormProps } from "./voucherFormTypes";
+export { SupplierAdvanceRefundFields };
 
 export default function VoucherFormShared(props: VoucherFormProps) {
   const model = useVoucherForm(props);
   const {
+    embedded,
+    initialCurrentBalance,
+    initialPendingReserved,
     isReceipt,
     direction,
     canCreate,
@@ -64,6 +39,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
     businessDay,
     amount,
     setAmount,
+    amountDec,
     method,
     setMethod,
     partyType,
@@ -72,6 +48,10 @@ export default function VoucherFormShared(props: VoucherFormProps) {
     setCustomerId,
     supplierId,
     setSupplierId,
+    supplierReceiptPurpose,
+    setSupplierReceiptPurpose,
+    allowSupplierOverpay,
+    setAllowSupplierOverpay,
     deliveryPartyId,
     setDeliveryPartyId,
     description,
@@ -94,6 +74,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
     invoiceId,
     setInvoiceId,
     err,
+    setErr,
     categories,
     categoryOptions,
     selectedCategory,
@@ -125,28 +106,31 @@ export default function VoucherFormShared(props: VoucherFormProps) {
     requestCancel,
     ledgerPreview,
   } = model;
+
+  const currentCustomerBalance =
+    customerData.data?.currentBalance ??
+    (partyType === "CUSTOMER" ? initialCurrentBalance : undefined);
+  const currentSupplierBalance =
+    supplierData.data?.currentBalance ??
+    (partyType === "SUPPLIER" ? initialCurrentBalance : undefined);
+  const currentSupplierBalanceUsd = supplierData.data?.currentBalanceUsd;
+
   return (
     <div className="space-y-2.5">
-      <PageHeader
-        title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
-        description={
-          isReceipt
-            ? "تحصيلات العملاء تسدد فواتيرهم تلقائياً من الأقدم، أو إيرادات متفرقة واسترداد من مورد."
-            : "طلب صرف مستقلّ بلا أثر مالي عند الإرسال؛ ينفّذه مالك آخر لاحقاً عبر «اعتماد وصرف» بعد التحقق من الرصيد."
-        }
-        actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void requestCancel()}
-          >
-            → القائمة
-          </Button>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
+          description={
+            isReceipt
+              ? "تحصيلات العملاء أو قبض الموردين والإيرادات المتنوعة."
+              : "طلب صرف مستقل يعتمد ويصرف من الخزينة أو الحساب البنكي."
+          }
+          backHref="/vouchers"
+          backLabel="السندات"
+        />
+      )}
 
       <div className="grid gap-3 lg:grid-cols-2 items-start">
-        {/* البَيانات الرئيسية */}
         <VoucherPaymentFields
           {...{
             isReceipt,
@@ -178,12 +162,12 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             canRestoreCategories,
             setShowCategoryDialog,
             restoreDefaults,
+            treasuryNotice,
             awaitsOwnerDisbursement,
             create,
           }}
         />
 
-        {/* الطرف المُقابل */}
         <VoucherPartyAllocationFields
           {...{
             isReceipt,
@@ -196,6 +180,9 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             setCustomerId,
             supplierId,
             setSupplierId,
+            supplierReceiptPurpose,
+            allowSupplierOverpay,
+            setAllowSupplierOverpay,
             deliveryPartyId,
             setDeliveryPartyId,
             counterpartyName,
@@ -203,6 +190,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             invoiceId,
             setInvoiceId,
             customerData,
+            supplierData,
             invoiceQ,
             setInvoiceQ,
             outstandingInvoiceOptions,
@@ -215,47 +203,46 @@ export default function VoucherFormShared(props: VoucherFormProps) {
           }}
         />
 
-        <SupplierAdvanceRefundFields model={model} />
+        <SupplierReceiptModeFields model={model} />
 
-        {/* الوَصف + مَعاينة القَيد + المرفقات في بطاقة مدمجة واحدة */}
         <Card className="lg:col-span-2">
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5">
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3.5">
             <div className="space-y-1">
-              <Label>وَصف السند *</Label>
+              <Label>وصف السند *</Label>
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder={
                   isReceipt
-                    ? "مثال: تحصيل مبلغ من تاجر بدون فاتورة محدّدة"
-                    : "مثال: راتب الموظف أحمد لشهر يونيو"
+                    ? "مثال: تحصيل مبلغ أو إشعار قبض"
+                    : "مثال: سداد مستحق أو مصروف تشغيلي"
                 }
                 rows={2}
               />
               <Label className="pt-1 block text-xs">
-                مُلاحظة داخلية (لا تُطبع)
+                ملاحظة داخلية (لا تطبع)
               </Label>
               <Input
                 value={internalNote}
                 onChange={(e) => setInternalNote(e.target.value)}
-                placeholder="مَثلاً: الإيصال الأصلي بحوزة المُحاسب"
+                placeholder="مثال: رقم المستند الورقي أو الإيصال"
               />
             </div>
             <div className="space-y-1">
-              <Label>مُرفَق السند (اختياري)</Label>
+              <Label>مرفق السند (اختياري)</Label>
               <ImageUploader
                 value={attachmentImages}
                 onChange={setAttachmentImages}
                 maxItems={1}
                 maxSizeMB={2}
                 singlePrimary={false}
-                hint="صورة الإيصال الأصلي / كَشف البنك."
+                hint="صورة الإيصال الأصلي / كشف البنك."
               />
             </div>
             {ledgerPreview && (
-              <div className="space-y-1">
-                <Label>مَعاينة قَيد الدفتر</Label>
-                <div className="rounded-md border bg-muted/20 overflow-hidden text-xs">
+              <div className="space-y-1 md:col-span-2">
+                <Label>معاينة قيد الدفتر</Label>
+                <div className="rounded-md border bg-muted/20 text-xs">
                   <DataTable<LedgerPreviewRow>
                     embedded
                     searchable={false}
@@ -263,7 +250,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
                     pageSize={Infinity}
                     columns={ledgerPreviewColumns}
                     data={ledgerPreview}
-                    emptyText="لا قَيد للمعاينة."
+                    emptyText="لا قيد للمعاينة."
                   />
                 </div>
               </div>
@@ -272,57 +259,68 @@ export default function VoucherFormShared(props: VoucherFormProps) {
         </Card>
       </div>
 
-      {/* تَنبيهات النَظام */}
-      <FormError message={err} />
-      {err && !isReceipt && partyType === "SUPPLIER" && supplierId != null && (
-        <Link className="inline-block text-sm text-primary underline" href={`/suppliers?tab=statement&id=${supplierId}`}>
-          فتح كشف حساب المورد لمراجعة الدفعات والمرتجعات
-        </Link>
-      )}
+      <VoucherErrorRecoveryBanner
+        err={err}
+        direction={direction}
+        partyType={partyType}
+        customerId={customerId}
+        supplierId={supplierId}
+        invoiceId={invoiceId}
+        method={method}
+        amountDec={amountDec}
+        supplierBalance={currentSupplierBalance}
+        supplierReceiptPurpose={supplierReceiptPurpose}
+        allowSupplierOverpay={allowSupplierOverpay}
+        onEnableSupplierOverpay={() => {
+          setAllowSupplierOverpay(true);
+          setErr("");
+        }}
+        onApplySuggestedAmount={(suggested) => {
+          setAmount(suggested);
+          setErr("");
+        }}
+        onClearInvoice={() => {
+          setInvoiceId(null);
+          setSelectedInvoiceLabel("");
+          setErr("");
+        }}
+        onSwitchMethod={(next) => {
+          setMethod(next);
+          setErr("");
+        }}
+        onSwitchSupplierCreditMode={() => {
+          setSupplierReceiptPurpose("CREDIT_OBLIGATION");
+          setErr("");
+        }}
+      />
+
       {hardBlock && (
         <div className="rounded-md border badge-stock-low text-sm p-3 flex items-start gap-2">
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>
-            لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية للكاشير تَمسّ
-            صندوق الوردية —{" "}
-            <Link href="/shifts" className="underline">
+            لا توجد وردية مفتوحة في هذا الفرع للسند النقدي —{" "}
+            <Link href="/shifts" className="underline font-medium">
               افتح وردية
             </Link>{" "}
-            أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.
-          </span>
-        </div>
-      )}
-      {treasuryNotice && (
-        <div className="rounded-md border badge-status-pending text-sm p-3 flex items-start gap-2">
-          <Building2 aria-hidden className="size-4 shrink-0 mt-0.5" />
-          <span>
-            {isReceipt ? (
-              <>
-                يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) —
-                يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج
-                الكاشير.
-              </>
-            ) : (
-              <>
-                المصدر المتوقع للطلب هو <strong>الخزينة الإدارية</strong>. لن
-                يتغير رصيدها عند الإرسال؛ يتحقق الخادم منه عند «اعتماد وصرف».
-              </>
-            )}
-          </span>
-        </div>
-      )}
-      {awaitsOwnerDisbursement && (
-        <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-sm p-3 flex items-start gap-2">
-          <ShieldCheck aria-hidden className="size-4 shrink-0 mt-0.5" />
-          <span>
-            سيُرسل <strong>طلب صرف</strong> بحالة «بانتظار الاعتماد والصرف» بلا
-            إيصال أو قيد أو تغيير ذمة. ينفّذه حساب مالك نشط غير مُنشئ الطلب،
-            ويعيد الخادم التحقق من الرصيد والصلاحية عند التنفيذ.
+            أو اختر طريقة غير نقدية.
           </span>
         </div>
       )}
 
-      {/* الأزرار */}
+      <VoucherBalanceImpactCard
+        direction={direction}
+        partyType={partyType}
+        amountDec={amountDec}
+        method={method}
+        cardLastFour={cardLastFour}
+        treasuryNotice={treasuryNotice}
+        awaitsOwnerDisbursement={awaitsOwnerDisbursement}
+        customerBalance={currentCustomerBalance}
+        supplierBalance={currentSupplierBalance}
+        supplierBalanceUsd={currentSupplierBalanceUsd}
+        pendingReserved={initialPendingReserved}
+      />
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           onClick={() => submit(null)}
@@ -337,7 +335,12 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("thermal")}
-              disabled={!canCreate || create.isPending || hardBlock || supplierAdvanceRefundBlocked}
+              disabled={
+                !canCreate ||
+                create.isPending ||
+                hardBlock ||
+                supplierAdvanceRefundBlocked
+              }
               title="Ctrl+Enter"
             >
               <Printer aria-hidden className="size-4 ms-1" />
@@ -346,7 +349,12 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("a4")}
-              disabled={!canCreate || create.isPending || hardBlock || supplierAdvanceRefundBlocked}
+              disabled={
+                !canCreate ||
+                create.isPending ||
+                hardBlock ||
+                supplierAdvanceRefundBlocked
+              }
             >
               <Printer aria-hidden className="size-4 ms-1" />
               حفظ + طباعة A4
@@ -360,29 +368,8 @@ export default function VoucherFormShared(props: VoucherFormProps) {
         >
           إلغاء (Esc)
         </Button>
-        {customerData.data && partyType === "CUSTOMER" && (
-          <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
-            رصيد العميل قبل السند:
-            <BalanceBadge
-              amount={customerData.data.currentBalance}
-              entityType="customer"
-              showZero
-            />
-          </span>
-        )}
-        {supplierData.data && partyType === "SUPPLIER" && (
-          <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
-            رصيد المورّد قبل السند:
-            <BalanceBadge
-              amount={supplierData.data.currentBalance}
-              entityType="supplier"
-              showZero
-            />
-          </span>
-        )}
       </div>
 
-      {/* إنشاء الفئة الإلزامية دون مغادرة السند نصف المُدخَل — تُنتقى فور حفظها. */}
       {canManageCategories && (
         <VoucherCategoryQuickCreate
           direction={direction}

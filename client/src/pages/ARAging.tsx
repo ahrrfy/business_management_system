@@ -14,6 +14,7 @@ import { exportRows } from "@/lib/export";
 import { AR_AGING_LEGACY_BASIS, buildAgingOutput, AGING_OUTPUT_BUCKETS as BUCKETS } from "@/lib/agingOutput";
 import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
+import { splitBidiTokens } from "@/lib/statementPeriodLedger";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { confirm } from "@/lib/confirm";
@@ -88,7 +89,7 @@ export default function ARAging() {
 
   // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ + فئة العميل، ثم الفرز.
   const filtered = useMemo(() => {
-    const q = f.q.trim();
+    const q = f.q;
     const out = (aging.data ?? []).filter((r) => {
       if (q && !(r.customerName.includes(q) || (r.phone ?? "").includes(q))) return false;
       if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
@@ -136,7 +137,7 @@ export default function ARAging() {
     query: f.q, bucket: f.bucket, customerType: f.ctype,
   }), [filtered, branches.data, f.branch, f.q, f.bucket, f.ctype, canCrossBranches]);
 
-  const activeCount = [f.q.trim(), f.bucket, f.ctype].filter(Boolean).length;
+  const activeCount = [f.q, f.bucket, f.ctype].filter(Boolean).length;
 
   // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
   const selectedRows = useMemo(
@@ -349,13 +350,13 @@ export default function ARAging() {
               onClick={async () => {
                 const ok = await confirm({
                   title: "تسوية ومطابقة الذمم الشاملة",
-                  description: "هل أنت متأكد من تشغيل المطابقة الشاملة لكافة فواتير العملاء المسددة بنظام FIFO؟ سيتم تسوية الفواتير المفتوحة تلقائياً.",
+                  description: "هل أنت متأكد من تشغيل المطابقة الشاملة لكافة فواتير العملاء المسددة بنظام الأقدم فالأقدم؟ سيتم تسوية الفواتير المفتوحة تلقائياً.",
                   confirmText: "بدء التسوية والمطابقة",
                   variant: "warning",
                 });
                 if (ok) autoSettleAllM.mutate();
               }}
-              title="تسوية ومطابقة شاملة لكافة فواتير العملاء المسددة بنظام FIFO"
+              title="تسوية ومطابقة شاملة لكافة فواتير العملاء المسددة"
               className="gap-1.5"
             >
               <RefreshCw className={`size-3.5 ${autoSettleAllM.isPending ? "animate-spin" : ""}`} />
@@ -471,10 +472,14 @@ export default function ARAging() {
 function Bucket({ label, value, color, emphasis }: { label: string; value: string; color: string; emphasis?: boolean }) {
   return (
     <div className={`rounded-md p-3 ${color}`}>
-      {/* bidi: "0–30 يوم" بلا dir="ltr" يُعاد ترتيبه بصرياً "30-0" داخل حاويةٍ RTL — أثبتَتْه
-          جولةٌ بصرية فعلية بقياس مواضع الأحرف (٣/٩). ليس تجميلاً. */}
-      <div className="text-xs opacity-80" dir="ltr">{label}</div>
-      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">{fmt(value)}</div>
+      <div className="text-xs opacity-80">
+        {splitBidiTokens(label).map((tok, i) =>
+          tok.ltr ? <bdi key={i} dir="ltr">{tok.text}</bdi> : <span key={i}>{tok.text}</span>
+        )}
+      </div>
+      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">
+        <bdi dir="ltr">{fmt(value)}</bdi>
+      </div>
     </div>
   );
 }

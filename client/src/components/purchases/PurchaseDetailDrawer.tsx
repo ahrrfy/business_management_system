@@ -1,9 +1,17 @@
 import { PurchasePaymentEvidence } from "./PurchasePaymentEvidence";
+import {
+  PurchaseRateAnomalyBanner,
+  PurchaseRateAnomalyOverrideFields,
+} from "./PurchaseRateAnomalyBanner";
 import { poItemColumns, type PoItemRow } from "./purchaseDetailColumns";
 import { useEffect, useMemo, useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "./purchaseGovernanceUiPolicy";
 import { PurchaseShippingRefund } from "./PurchaseShippingRefund";
-import { getPurchaseSettlement } from "@shared/purchaseSettlement";
+import { PaymentMethodChip } from "@/components/common/MovementBadges";
+import {
+  getPurchaseSettlement,
+  getPurchaseSettlementIntentLabel,
+} from "@shared/purchaseSettlement";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
@@ -237,6 +246,9 @@ export function PurchaseDetailDrawer({
     onSuccess: async () => {
       notify.ok("تم إرسال أمر الشراء للاعتماد");
       setIsApprovalOpen(false);
+      setPaperInvoiceTotal("");
+      setConfirmAnomalousRate(false);
+      setRateDeviationReason("");
       await Promise.all([
         utils.purchases.get.invalidate({
           purchaseOrderId: purchaseOrderId ?? 0,
@@ -285,6 +297,15 @@ export function PurchaseDetailDrawer({
 
   const currentUserId = me.data?.id;
   const isOwner = me.data?.isOwner === true;
+  const isManagerOrOwner =
+    isOwner || me.data?.role === "admin" || me.data?.role === "manager";
+  const [paperInvoiceTotal, setPaperInvoiceTotal] = useState("");
+  const [confirmAnomalousRate, setConfirmAnomalousRate] = useState(false);
+  const [rateDeviationReason, setRateDeviationReason] = useState("");
+  const isAnomalousDraft =
+    d?.status === "DRAFT" &&
+    !costHidden &&
+    d?.rateSanity?.status === "ANOMALOUS";
   const isCashIqdApproval =
     d?.status === "SENT" &&
     d.settlementType === "CASH" &&
@@ -338,6 +359,18 @@ export function PurchaseDetailDrawer({
         expectedVersion: d.version,
         reason: approvalReason.trim() || "إرسال أمر الشراء للاعتماد والاستلام",
         clientRequestId: `confirm-drawer-${d.id}-${crypto.randomUUID()}`,
+        ...(!costHidden
+          ? {
+              supplierInvoiceTotal: paperInvoiceTotal.trim(),
+              requireInvoiceMatch: true,
+            }
+          : {}),
+        ...(isAnomalousDraft && confirmAnomalousRate
+          ? {
+              confirmAnomalousRate: true,
+              rateDeviationReason: rateDeviationReason.trim(),
+            }
+          : {}),
       });
     }
   }
@@ -386,45 +419,90 @@ export function PurchaseDetailDrawer({
               </TabsList>
 
               <TabsContent value="details" className="space-y-4 pt-2">
+                <PurchaseRateAnomalyBanner
+                  purchaseOrderId={d.id}
+                  status={d.status}
+                  agreedCurrency={d.agreedCurrency}
+                  agreedRate={d.agreedRate}
+                  rateSanity={d.rateSanity}
+                  unitCostWarnings={d.unitCostWarnings}
+                  canEdit={canEdit && openForEditing}
+                />
                 {/* بطاقة الرأس والملخص */}
                 <Card>
-                  <CardContent className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                    <div>
-                      <div className="text-xs text-muted-foreground">المورّد</div>
-                      <div className="font-semibold truncate">
-                        {d.supplierId ? (
-                          <Link
-                            href={`/suppliers-statement?id=${d.supplierId}`}
-                            className="text-primary hover:underline"
-                            title="كشف الحساب"
-                          >
-                            {d.supplierName ?? `#${d.supplierId}`}
-                          </Link>
-                        ) : (
-                          (d.supplierName ?? "—")
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">التاريخ</div>
-                      <div className="tabular-nums">{fmtDate(d.orderDate)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">
-                        العملة
+                  <CardContent className="p-3 space-y-2.5 text-sm">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div>
+                        <div className="text-xs text-muted-foreground">المورّد</div>
+                        <div className="font-semibold truncate">
+                          {d.supplierId ? (
+                            <Link
+                              href={`/suppliers-statement?id=${d.supplierId}`}
+                              className="text-primary hover:underline"
+                              title="كشف الحساب"
+                            >
+                              {d.supplierName ?? `#${d.supplierId}`}
+                            </Link>
+                          ) : (
+                            (d.supplierName ?? "—")
+                          )}
+                        </div>
                       </div>
                       <div>
-                        {d.agreedCurrency ?? "IQD"}{" "}
-                        {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}
+                        <div className="text-xs text-muted-foreground">التاريخ</div>
+                        <div className="tabular-nums">{fmtDate(d.orderDate)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          العملة وسعر الصرف
+                        </div>
+                        <div>
+                          {isUsd
+                            ? `دولار ($)${!costHidden && d.agreedRate ? ` · ${fmt(d.agreedRate)} د.ع/$` : ""}`
+                            : "دينار عراقي (د.ع)"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">آلية التسوية</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>{getPurchaseSettlementIntentLabel(d.settlementType)}</span>
+                          {d.settlementType === "CASH" && (d.tender || d.legacyCashSource) ? (
+                            <PaymentMethodChip
+                              method={
+                                d.tender?.mode === "CARD"
+                                  ? "CARD"
+                                  : d.tender?.mode === "TREASURY" ||
+                                      d.legacyCashSource?.mode === "TREASURY"
+                                    ? "TREASURY"
+                                    : "CASH"
+                              }
+                            />
+                          ) : null}
+                        </div>
+                        {!costHidden ? (
+                          <div className="text-xs">{settlement.statusLabel}</div>
+                        ) : null}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">طريقة السداد</div>
-                      <div>{settlement.intentLabel}</div>
-                      {!costHidden ? (
-                        <div className="text-xs">{settlement.statusLabel}</div>
-                      ) : null}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 border-t pt-2 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">أنشأه: </span>
+                        <span className="font-semibold text-foreground">
+                          {d.createdByName ?? (d.createdBy ? `مستخدم #${d.createdBy}` : "—")}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">اعتمده: </span>
+                        <span className="font-semibold text-foreground">
+                          {d.approvedByName ?? "لم يُعتمد بعد"}
+                        </span>
+                      </div>
                     </div>
+                    {isUsd && !costHidden && d.usdTotal != null && d.agreedRate != null ? (
+                      <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+                        فاتورة المورد (<bdi dir="ltr" className="font-semibold text-foreground">{fmt(d.usdTotal)} $</bdi>) × سعر الصرف المثبت (<bdi dir="ltr" className="font-semibold text-foreground">{fmt(d.agreedRate)} د.ع/$</bdi>) = الإجمالي المعادل (<bdi dir="ltr" className="font-semibold text-foreground">{fmt(d.total)} د.ع</bdi>)
+                      </div>
+                    ) : null}
                   </CardContent>
                 </Card>
 
@@ -533,7 +611,11 @@ export function PurchaseDetailDrawer({
                   {canApproveDirectly ? (
                     <Button
                       size="sm"
-                      onClick={() => setIsApprovalOpen(true)}
+                      onClick={() => {
+                        setConfirmAnomalousRate(false);
+                        setRateDeviationReason("");
+                        setIsApprovalOpen(true);
+                      }}
                       className="bg-primary text-primary-foreground font-semibold"
                     >
                       <CheckCircle2 aria-hidden className="size-4" />
@@ -772,7 +854,12 @@ export function PurchaseDetailDrawer({
               open={isApprovalOpen}
               onOpenChange={(open) => {
                 setIsApprovalOpen(open);
-                if (!open) cashSourceState.reset();
+                if (!open) {
+                  cashSourceState.reset();
+                  setPaperInvoiceTotal("");
+                  setConfirmAnomalousRate(false);
+                  setRateDeviationReason("");
+                }
               }}
             >
               <DialogContent className="sm:max-w-md" dir="rtl">
@@ -792,6 +879,30 @@ export function PurchaseDetailDrawer({
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-1">
+                  {d.status === "DRAFT" && !costHidden ? (
+                    <div className="space-y-1">
+                      <Label htmlFor="drawer-paper-invoice-total" className="text-xs">
+                        إجمالي الفاتورة الورقية ({isUsd ? "$" : "د.ع"}) — مطلوب للمطابقة
+                      </Label>
+                      <MoneyInput
+                        id="drawer-paper-invoice-total"
+                        value={paperInvoiceTotal}
+                        onChange={setPaperInvoiceTotal}
+                        className="text-xs"
+                        placeholder={isUsd ? String(d.usdTotal ?? "") : String(d.total ?? "")}
+                      />
+                    </div>
+                  ) : null}
+                  {isAnomalousDraft && d.rateSanity?.message ? (
+                    <PurchaseRateAnomalyOverrideFields
+                      message={d.rateSanity.message}
+                      isManagerOrOwner={isManagerOrOwner}
+                      confirmAnomalousRate={confirmAnomalousRate}
+                      onConfirmAnomalousChange={setConfirmAnomalousRate}
+                      rateDeviationReason={rateDeviationReason}
+                      onRateDeviationReasonChange={setRateDeviationReason}
+                    />
+                  ) : null}
                   <div className="space-y-1">
                     <Label htmlFor="approve-reason" className="text-xs">
                       {d.status === "DRAFT" ? "سبب الإرسال / ملاحظات" : "بيان الاعتماد / السبب"}
@@ -840,6 +951,9 @@ export function PurchaseDetailDrawer({
                     onClick={() => {
                       setIsApprovalOpen(false);
                       cashSourceState.reset();
+                      setPaperInvoiceTotal("");
+                      setConfirmAnomalousRate(false);
+                      setRateDeviationReason("");
                     }}
                     disabled={isApproving}
                   >
@@ -851,6 +965,11 @@ export function PurchaseDetailDrawer({
                     onClick={handleApproveAndReceive}
                     disabled={
                       approvalReason.trim().length < 3 ||
+                      (d.status === "DRAFT" && !costHidden && !paperInvoiceTotal.trim()) ||
+                      (isAnomalousDraft &&
+                        (!isManagerOrOwner ||
+                          !confirmAnomalousRate ||
+                          rateDeviationReason.trim().length < 5)) ||
                       (d.status === "SENT" &&
                         d.settlementType === "CASH" &&
                         !isUsd &&

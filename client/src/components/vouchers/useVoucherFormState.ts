@@ -13,10 +13,21 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import type { SupplierReceiptPurpose } from "@shared/balanceTrail";
 import { VoucherFormProps, MethodValue } from "./voucherFormTypes";
 
 export function useVoucherFormState(props: VoucherFormProps) {
-  const { voucherType } = props;
+  const {
+    voucherType,
+    embedded = false,
+    initialPartyType,
+    initialPartyId,
+    initialAmount,
+    initialCurrentBalance,
+    initialPendingReserved,
+    onSubmitted,
+    onCancel,
+  } = props;
 
   const [, navigate] = useLocation();
 
@@ -44,7 +55,7 @@ export function useVoucherFormState(props: VoucherFormProps) {
 
   const businessDay = session.context?.businessDay ?? null;
 
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(initialAmount ?? "");
 
   const [method, setMethod] = useState<MethodValue>("CASH");
 
@@ -58,44 +69,100 @@ export function useVoucherFormState(props: VoucherFormProps) {
   }, [method]);
 
   const queryParams = new URLSearchParams(search);
-  const seededCustomerId = isReceipt
-    ? Number(queryParams.get("customerId")) || null
-    : null;
+  const queryPartyId = Number(queryParams.get("partyId")) || null;
+  const seededCustomerId =
+    initialPartyType === "CUSTOMER"
+      ? (initialPartyId ?? null)
+      : queryParams.get("customerId")
+        ? Number(queryParams.get("customerId")) || null
+        : queryParams.get("partyType") === "CUSTOMER"
+          ? queryPartyId
+          : null;
   const seededSupplierId =
-    !isReceipt &&
-    (queryParams.get("partyType") === "SUPPLIER" ||
-      queryParams.has("supplierId"))
-      ? Number(queryParams.get("partyId") || queryParams.get("supplierId")) ||
-        null
-      : null;
+    initialPartyType === "SUPPLIER"
+      ? (initialPartyId ?? null)
+      : queryParams.get("supplierId")
+        ? Number(queryParams.get("supplierId")) || null
+        : queryParams.get("partyType") === "SUPPLIER"
+          ? queryPartyId
+          : null;
+  const seededDeliveryPartyId =
+    initialPartyType === "DELIVERY_PARTY"
+      ? (initialPartyId ?? null)
+      : queryParams.get("partyType") === "DELIVERY_PARTY"
+        ? queryPartyId
+        : null;
+  const seededPartyType: "CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER" =
+    initialPartyType ??
+    (seededCustomerId
+      ? "CUSTOMER"
+      : seededSupplierId || queryParams.get("partyType") === "SUPPLIER"
+        ? "SUPPLIER"
+        : seededDeliveryPartyId || queryParams.get("partyType") === "DELIVERY_PARTY"
+          ? "DELIVERY_PARTY"
+          : "OTHER");
 
   const [partyType, setPartyType] = useState<
     "CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER"
-  >(
-    seededCustomerId
-      ? "CUSTOMER"
-      : seededSupplierId ||
-          (!isReceipt && queryParams.get("partyType") === "SUPPLIER")
-        ? "SUPPLIER"
-        : "OTHER",
-  );
+  >(seededPartyType);
 
   const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
 
   const [supplierId, setSupplierId] = useState<number | null>(seededSupplierId);
 
   const advanceRefundScope = `${voucherType}:${branchId ?? ""}:${partyType}:${supplierId ?? ""}`;
-  const [advanceRefundSelection, setAdvanceRefundSelection] = useState<{ scope: string; receiptId: number } | null>(null);
-  const supplierAdvanceRefundReceiptId = advanceRefundSelection?.scope === advanceRefundScope
-    ? advanceRefundSelection.receiptId : null;
+  const [advanceRefundSelection, setAdvanceRefundSelection] = useState<{
+    scope: string;
+    receiptId: number;
+  } | null>(null);
+  const [receiptPurposeSelection, setReceiptPurposeSelection] = useState<{
+    scope: string;
+    purpose: SupplierReceiptPurpose;
+  } | null>(null);
+  const [allowOverpaySelection, setAllowOverpaySelection] = useState<string | null>(null);
+  const allowSupplierOverpay = allowOverpaySelection === advanceRefundScope;
+  function setAllowSupplierOverpay(next: boolean) {
+    setAllowOverpaySelection(next ? advanceRefundScope : null);
+  }
+  const supplierAdvanceRefundReceiptId =
+    advanceRefundSelection?.scope === advanceRefundScope
+      ? advanceRefundSelection.receiptId
+      : null;
+  const supplierReceiptPurpose: SupplierReceiptPurpose =
+    receiptPurposeSelection?.scope === advanceRefundScope
+      ? receiptPurposeSelection.purpose
+      : supplierAdvanceRefundReceiptId != null
+        ? "ADVANCE_REFUND"
+        : "CREDIT_OBLIGATION";
   function setSupplierAdvanceRefundReceiptId(receiptId: number | null) {
-    setAdvanceRefundSelection(receiptId == null ? null : { scope: advanceRefundScope, receiptId });
+    setAdvanceRefundSelection(
+      receiptId == null ? null : { scope: advanceRefundScope, receiptId },
+    );
+    if (receiptId != null) {
+      setReceiptPurposeSelection({
+        scope: advanceRefundScope,
+        purpose: "ADVANCE_REFUND",
+      });
+    }
+  }
+  function setSupplierReceiptPurpose(purpose: SupplierReceiptPurpose) {
+    setReceiptPurposeSelection({ scope: advanceRefundScope, purpose });
+    if (purpose === "CREDIT_OBLIGATION") {
+      setAdvanceRefundSelection(null);
+    }
   }
   useEffect(() => {
-    setAdvanceRefundSelection((current) => current?.scope === advanceRefundScope ? current : null);
+    setAdvanceRefundSelection((current) =>
+      current?.scope === advanceRefundScope ? current : null,
+    );
+    setReceiptPurposeSelection((current) =>
+      current?.scope === advanceRefundScope ? current : null,
+    );
   }, [advanceRefundScope]);
 
-  const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(null);
+  const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(
+    seededDeliveryPartyId,
+  );
 
   const [description, setDescription] = useState("");
 
@@ -210,6 +277,16 @@ export function useVoucherFormState(props: VoucherFormProps) {
   });
   return {
     voucherType,
+    embedded,
+    initialCurrentBalance,
+    initialPendingReserved,
+    onSubmitted,
+    onCancel,
+    seededPartyType,
+    seededCustomerId,
+    seededSupplierId,
+    seededDeliveryPartyId,
+    initialAmount,
     navigate,
     search,
     utils,
@@ -227,7 +304,6 @@ export function useVoucherFormState(props: VoucherFormProps) {
     setAmount,
     method,
     setMethod,
-    seededCustomerId,
     partyType,
     setPartyType,
     customerId,
@@ -236,6 +312,10 @@ export function useVoucherFormState(props: VoucherFormProps) {
     setSupplierId,
     supplierAdvanceRefundReceiptId,
     setSupplierAdvanceRefundReceiptId,
+    supplierReceiptPurpose,
+    setSupplierReceiptPurpose,
+    allowSupplierOverpay,
+    setAllowSupplierOverpay,
     deliveryPartyId,
     setDeliveryPartyId,
     description,

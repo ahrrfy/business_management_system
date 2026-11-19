@@ -1269,6 +1269,8 @@ const WORDS = {
   resolve: "حل",
   repair: "إصلاح",
   remediation: "تصحيح",
+  align: "مواءمة",
+  cross: "متقاطع",
   legacy: "التاريخي",
   baseline: "خط الأساس",
   diagnostics: "التشخيص",

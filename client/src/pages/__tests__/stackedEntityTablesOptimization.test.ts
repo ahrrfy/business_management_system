@@ -340,7 +340,9 @@ describe("تعميم نمط الخلايا المكدسة StackedEntityCell وت
       // WorkOrderProfitability
       expect(woProfitSrc).toContain("sortingFn: (a, b) => D(a.original.profit || 0).cmp(D(b.original.profit || 0))");
       // Vouchers
-      expect(vouchersSrc).toContain("sortingFn: (a, b) => Number(a.original.voucherNumber || 0) - Number(b.original.voucherNumber || 0)");
+      expect(vouchersSrc).toContain(
+        'sortingFn: (a, b) => String(a.original.voucherNumber ?? "").localeCompare(String(b.original.voucherNumber ?? ""), "en", { numeric: true })',
+      );
       // ArApAgingDetail
       expect(arApDetailSrc).toContain("sortingFn: (a, b) => a.original.date.localeCompare(b.original.date)");
     });

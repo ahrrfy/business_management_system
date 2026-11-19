@@ -6,11 +6,13 @@ import {
   validateSupplierVoucherAllocations,
   type SupplierVoucherAllocation,
 } from "@shared/supplierVoucherSettlement";
-import { and, asc, eq, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   receipts,
   accountingEntries,
   auditLogs,
+  journalEntries,
+  journalLines,
   supplierBookSettlementSources,
   purchaseReturns,
   supplierInvoices,
@@ -64,7 +66,12 @@ export async function withSupplierBookVoucherTx<T>(needsGovernance: (tx: Tx) => 
   }
 }
 
-export async function supplierScopeNeedsBookGateTx(tx: Tx, supplierId: number): Promise<boolean> {
+export async function supplierScopeNeedsBookGateTx(
+  tx: Tx,
+  supplierId: number,
+  options?: { allowOverpay?: boolean },
+): Promise<boolean> {
+  if (options?.allowOverpay) return true;
   const [legacy] = await tx.select({ id: supplierInvoices.id }).from(supplierInvoices)
     .where(and(eq(supplierInvoices.supplierId, supplierId), eq(supplierInvoices.origin, "LEGACY"), eq(supplierInvoices.status, "POSTED"))).limit(1);
   if (legacy) return true;
@@ -72,14 +79,40 @@ export async function supplierScopeNeedsBookGateTx(tx: Tx, supplierId: number): 
     .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING"))).limit(1);
   if (opening) return true;
   const [poCredit] = await tx.select({ id: purchaseReturns.id }).from(purchaseReturns).where(and(eq(purchaseReturns.supplierId, supplierId), sql`${purchaseReturns.supplierInvoiceId} IS NULL`, sql`${purchaseReturns.creditOffsetAmount} > 0`)).limit(1);
-  return !!poCredit;
+  if (poCredit) return true;
+  const [bookSource] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources).where(eq(supplierBookSettlementSources.supplierId, supplierId)).limit(1);
+  if (bookSource) return true;
+  const [accountObligation] = await tx.select({ id: accountingEntries.id }).from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.supplierId, supplierId),
+        eq(accountingEntries.entryType, "PAYMENT_IN"),
+        sql`(${accountingEntries.dedupeKey} IS NULL OR ${accountingEntries.dedupeKey} NOT LIKE 'PURCHASE_CHARGE_REVERSAL:%')`,
+      ),
+    )
+    .limit(1);
+  if (accountObligation) return true;
+  const [manualLine] = await tx
+    .select({ id: journalLines.id })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.supplierId, supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    )
+    .limit(1);
+  return !!manualLine;
 }
 
 export async function loadSupplierBookVoucherMarkerTx(tx: DB | Tx, receiptId: number) {
   const rows = await tx.select({ newValue: auditLogs.newValue }).from(auditLogs)
     .where(and(eq(auditLogs.action, SUPPLIER_BOOK_VOUCHER_REQUEST_ACTION), eq(auditLogs.entityType, "receipt"), eq(auditLogs.entityId, String(receiptId)))).limit(2);
   if (!rows.length) return null;
-  const marker = rows[0].newValue as (LiveSupplierBookVoucherPlan & { version: number; inputHash: string; allocations?: SupplierVoucherAllocation[]; cashSource?: VoucherInput["supplierCashSource"] | null }) | null;
+  const marker = rows[0].newValue as (LiveSupplierBookVoucherPlan & { version: number; inputHash: string; allocations?: SupplierVoucherAllocation[]; cashSource?: VoucherInput["supplierCashSource"] | null; allowSupplierOverpay?: boolean }) | null;
   if (rows.length !== 1 || marker?.version !== 1 || marker.mode !== "BOOK" || !/^[a-f0-9]{64}$/.test(marker.inputHash) || !/^[a-f0-9]{64}$/.test(marker.evidenceHash))
     throw supplierVoucherConflict("دليل نمط تسوية السند الدفترية غير صالح");
   const [receipt] = await tx.select({ amount: receipts.amount, branchId: receipts.branchId, partyId: receipts.partyId, partyType: receipts.partyType, direction: receipts.direction }).from(receipts).where(eq(receipts.id, receiptId)).limit(1);
@@ -90,8 +123,9 @@ export async function loadSupplierBookVoucherMarkerTx(tx: DB | Tx, receiptId: nu
 
 export async function recordSupplierBookVoucherMarkerTx(tx: Tx, receiptId: number, input: VoucherInput, plan: LiveSupplierBookVoucherPlan, actor: Actor) {
   if (await loadSupplierBookVoucherMarkerTx(tx, receiptId)) throw supplierVoucherConflict("دليل التسوية الدفترية محفوظ بالفعل");
-  const marker = {
+  const marker: Record<string, unknown> = {
     version: 1, mode: "BOOK", supplierId: plan.supplierId, branchId: plan.branchId, amount: plan.amount, evidenceHash: plan.evidenceHash, inputHash: settlementInputHash(input), allocations: input.supplierAllocations, cashSource: input.supplierCashSource ?? null,
+    ...(input.allowSupplierOverpay ? { allowSupplierOverpay: true } : {}),
   };
   if (Buffer.byteLength(JSON.stringify(marker), "utf8") > 7500)
     throw supplierVoucherConflict("دليل التوزيع اليدوي أكبر من الحد الآمن؛ استخدم التوزيع التلقائي أو قلل عدد الفواتير في السند");
@@ -113,7 +147,8 @@ export async function receiptNeedsSupplierBookGateTx(tx: Tx, receiptId: number):
       .where(eq(supplierBookSettlementSources.sourceReceiptId, Number(cancellation[1]))).for("share").limit(1);
     return !!source;
   }
-  if (await loadSupplierBookVoucherMarkerTx(tx, receiptId)) return true;
+  const marker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+  if (marker) return true;
   return receipt.direction === "OUT" && receipt.partyType === "SUPPLIER" && !!receipt.partyId && await supplierScopeNeedsBookGateTx(tx, Number(receipt.partyId));
 }
 function settlementInputHash(input: VoucherInput) {
@@ -136,6 +171,7 @@ function settlementInputHash(input: VoucherInput) {
             mode: input.supplierCashSource?.mode ?? "TREASURY",
             shiftId: input.supplierCashSource?.shiftId ?? null,
           },
+    ...(input.allowSupplierOverpay ? { allowSupplierOverpay: true } : {}),
   });
 }
 

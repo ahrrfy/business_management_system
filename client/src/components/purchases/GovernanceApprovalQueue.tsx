@@ -31,6 +31,7 @@ import { GovernanceRequestNotice } from "./GovernanceRequestNotice";
 export type GovernanceQueueRow = {
   id: number;
   requestedBy: number | string;
+  requestedByName?: string | null;
   requestedAt: Date | string;
   title: string;
   reference: string;
@@ -178,7 +179,10 @@ export function GovernanceApprovalQueue({
                             <dt className="text-xs text-muted-foreground">
                               طالب الإجراء
                             </dt>
-                            <dd>مستخدم #{Number(row.requestedBy)}</dd>
+                            <dd>
+                              {row.requestedByName?.trim() ||
+                                `مستخدم #${Number(row.requestedBy)}`}
+                            </dd>
                           </div>
                           <div>
                             <dt className="text-xs text-muted-foreground">

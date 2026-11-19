@@ -147,15 +147,19 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     revision: d.correctionAudit ? {
       originalReceiptNumber: d.correctionAudit.originalInvoiceNumber,
       revisedAt: d.correctionAudit.requestedAt ? fmtDateTime(d.correctionAudit.requestedAt) : "غير موثّق",
-      revisedByName: d.correctionAudit.requestedBy != null
-        ? `المستخدم #${d.correctionAudit.requestedBy}${d.correctionAudit.requestedByName ? ` (الاسم الحالي: ${d.correctionAudit.requestedByName})` : ""}`
-        : "حساب غير موثّق",
-      approvedByName: d.correctionAudit.reviewedByName || d.correctionAudit.reviewedBy != null
-        ? `المستخدم #${d.correctionAudit.reviewedBy ?? "غير موثّق"}${d.correctionAudit.reviewedByName ? ` (الاسم الحالي: ${d.correctionAudit.reviewedByName})` : ""}`
-        : null,
+      revisedByName: d.correctionAudit.requestedByName?.trim()
+        ? d.correctionAudit.requestedByName.trim()
+        : d.correctionAudit.requestedBy != null
+          ? `موظف #${d.correctionAudit.requestedBy}`
+          : "حساب غير موثّق",
+      approvedByName: d.correctionAudit.reviewedByName?.trim()
+        ? d.correctionAudit.reviewedByName.trim()
+        : d.correctionAudit.reviewedBy != null
+          ? `موظف #${d.correctionAudit.reviewedBy}`
+          : null,
       approvedAt: d.correctionAudit.reviewedAt ? fmtDateTime(d.correctionAudit.reviewedAt) : null,
     } : null,
-    delivery: d.courierName && Number(d.courierFee ?? 0) > 0 && d.consignmentStatus !== "CANCELLED"
+    delivery: d.courierName && D(d.courierFee ?? 0).gt(0) && d.consignmentStatus !== "CANCELLED"
       ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
       : null,
     promoSummary: deriveInvoicePromoSummary(d),

@@ -64,21 +64,35 @@ const COMPANY_SETTINGS = {
  * أخرى تماماً (سند صرف مستقل، استرداد من المورّد، مرتجع) تُنتج تصنيفاً متناقضاً كـ«فاتورة — استرداد».
  * الترتيب أهمّ: أخصّ الكلمات المفتاحية أولاً (مرتجع/استرداد قبل فاتورة/سند العامّين).
  */
-function inferStatementTypeLabel(description: string, debit: string | number | null | undefined): { label: string; color: string } {
+function inferStatementTypeLabel(
+  description: string,
+  debit: string | number | null | undefined,
+  partyKind?: 'customer' | 'supplier',
+  credit?: string | number | null | undefined,
+): { label: string; color: string } {
   const s = description ?? '';
+  if (s.includes('رصيد افتتاحي') || s.includes('تصحيح رصيد افتتاحي')) return { label: 'رصيد افتتاحي', color: B.textFaint };
+  if (s.includes('قيد يدوي')) return { label: 'قيد يدوي', color: B.textFaint };
+  if (s.includes('تكلفة تنفيذ') || s.includes('أجور تنفيذ') || s.includes('أجر إضافي')) return { label: 'أجور تنفيذ', color: B.orange };
   if (s.includes('مرتجع')) return { label: 'مرتجع', color: B.orange };
   if (s.includes('استرداد')) return { label: 'استرداد', color: B.orange };
-  if (s.includes('تسوية')) return { label: 'تسوية', color: B.green };
-  if (s.includes('سند قبض')) return { label: 'سند قبض', color: B.green };
-  if (s.includes('سند صرف') || s.includes('سند دفع')) return { label: 'سند دفع', color: B.green };
+  if (s.includes('تسوية') || s.includes('عكس فاتورة')) return { label: 'تسوية', color: B.green };
+  if (s.includes('سند قبض')) return { label: 'سند قبض', color: partyKind === 'supplier' ? B.orange : B.green };
+  if (s.includes('سند صرف') || s.includes('سند دفع')) return { label: 'سند دفع', color: partyKind === 'customer' ? '#8A1F11' : B.green };
   if (s.includes('فاتورة مبيعات')) return { label: 'فاتورة مبيعات', color: '#8A1F11' };
   if (s.includes('فاتورة مشتريات')) return { label: 'فاتورة مشتريات', color: '#8A1F11' };
   if (s.includes('فاتورة')) return { label: 'فاتورة', color: '#8A1F11' };
   if (s.includes('أمر شراء')) return { label: 'أمر شراء', color: '#8A1F11' };
   if (s.includes('شراء')) return { label: 'شراء', color: '#8A1F11' };
   if (s.includes('دفعة')) return { label: 'دفعة', color: B.green };
-  // fallback: السلوك القديم لبيانات لا تحمل كلمات مفتاحية معروفة.
-  return moneyInput(debit).gt(0) ? { label: 'فاتورة', color: '#8A1F11' } : { label: 'سند', color: B.green };
+  if (partyKind === 'supplier') {
+    return moneyInput(credit).gt(0)
+      ? { label: 'فاتورة شراء', color: '#8A1F11' }
+      : moneyInput(debit).gt(0)
+        ? { label: 'سند دفع', color: B.green }
+        : { label: 'حركة', color: B.textFaint };
+  }
+  return moneyInput(debit).gt(0) ? { label: 'فاتورة مبيعات', color: '#8A1F11' } : { label: 'سند قبض', color: B.green };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -478,14 +492,23 @@ export interface CustomerStmtPrintData {
   toDate?: string | null;
   printedByName?: string | null;
   printRequestedAt?: string | null;
+  heldDepositsTotal?: string | number | null;
   transactions: {
     date: string;
     ref: string;
     description: string;
     debit?: string | number | null;
     credit?: string | number | null;
+    balanceBefore?: string | number | null;
     balance: string | number;
     actor?: string | null;
+    items?: {
+      productName: string;
+      unitName?: string | null;
+      quantity: string | number;
+      unitPrice: string | number;
+      total: string | number;
+    }[];
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -495,8 +518,6 @@ export interface CustomerStmtPrintData {
 }
 
 export function printCustomerStmt(d: CustomerStmtPrintData): boolean {
-  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (كشف مفصّل). صف تفاصيل تحت كل حركة يشرح
-  // محتوى الفاتورة/السند. النوع = "customer".
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
   return printStatementV2({
     partyKind: 'customer',
@@ -507,22 +528,25 @@ export function printCustomerStmt(d: CustomerStmtPrintData): boolean {
     periodLabel,
     printedByName: d.printedByName,
     printRequestedAt: d.printRequestedAt,
+    heldDepositsTotal: d.heldDepositsTotal ?? null,
     openingBalance: d.openingBalance ?? 0,
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
     transactions: d.transactions.map((t) => {
-      const { label, color } = inferStatementTypeLabel(t.description, t.debit);
+      const { label, color } = inferStatementTypeLabel(t.description, t.debit, 'customer', t.credit);
       return {
         date: t.date,
         ref: t.ref,
         description: t.description,
         debit: t.debit ?? null,
         credit: t.credit ?? null,
+        balanceBefore: t.balanceBefore ?? null,
         balance: t.balance,
         typeLabel: label,
         typeColor: color,
         details: t.description,
         actor: t.actor,
+        items: t.items,
       };
     }),
     totalDebit: d.totalDebit,
@@ -605,12 +629,14 @@ export interface SupplierStmtPrintData {
   toDate?: string | null;
   printedByName?: string | null;
   printRequestedAt?: string | null;
+  usdReference?: string | number | null;
   transactions: {
     date: string;
     ref: string;
     description: string;
     debit?: string | number | null;
     credit?: string | number | null;
+    balanceBefore?: string | number | null;
     balance: string | number;
     actor?: string | null;
     paymentStatusLabel?: string;
@@ -618,6 +644,13 @@ export interface SupplierStmtPrintData {
     paidAmount?: string;
     returnedAmount?: string;
     remainingAmount?: string;
+    items?: {
+      productName: string;
+      unitName?: string | null;
+      quantity: string | number;
+      unitPrice: string | number;
+      total: string | number;
+    }[];
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -627,12 +660,6 @@ export interface SupplierStmtPrintData {
 }
 
 export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
-  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier").
-  // الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
-  // suppliers.currentBalance (موجب="علينا له")، مطابقاً لبناء ledger في SupplierStatement.tsx
-  // (bal = bal.plus(credit).minus(debit)). لا نُطبِّق Math.abs هنا — printStatementV2 يحسب
-  // الاتجاه (لنا/علينا) من الإشارة نفسها ويَعرض القيمة المطلقة بجانبه، فتُحفَظ دلالة رصيد
-  // دائن/تسديد زائد للمورّد (سالب ⇒ «لنا») بدل ابتلاعها بقيمة مطلقة صامتة.
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
   return printStatementV2({
     partyKind: 'supplier',
@@ -641,20 +668,20 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
     periodLabel,
     printedByName: d.printedByName,
     printRequestedAt: d.printRequestedAt,
-    openingBalance: round2(moneyInput(d.openingBalance)).toNumber(),
+    usdReference: d.usdReference ?? null,
+    openingBalance: round2(moneyInput(d.openingBalance)).toFixed(2),
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
     transactions: d.transactions.map((t) => {
-      // ملاحظة: للمورّد الدائن هو ما يزيد الذمة (اتجاه معاكس للعميل) — نمرّر debit كإشارة fallback
-      // متّسقة (نفس القيمة المطلقة المستعملة في fallback الدالة، فقط نعكس أيّهما "الزيادة").
-      const { label, color } = inferStatementTypeLabel(t.description, t.credit);
+      const { label, color } = inferStatementTypeLabel(t.description, t.debit, 'supplier', t.credit);
       return {
         date: t.date,
         ref: t.ref,
         description: t.description,
         debit: t.debit ?? null,
         credit: t.credit ?? null,
-        balance: round2(moneyInput(t.balance)).toNumber(),
+        balanceBefore: t.balanceBefore ?? null,
+        balance: round2(moneyInput(t.balance)).toFixed(2),
         typeLabel: label,
         typeColor: color,
         details: [
@@ -666,11 +693,12 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
           t.paymentReview ? "يحتاج مراجعة دليل السداد" : null,
         ].filter(Boolean).join(" · "),
         actor: t.actor,
+        items: t.items,
       };
     }),
     totalDebit: d.totalDebit,
     totalCredit: d.totalCredit,
-    closingBalance: round2(moneyInput(d.closingBalance)).toNumber(),
+    closingBalance: round2(moneyInput(d.closingBalance)).toFixed(2),
     settings: COMPANY_SETTINGS,
   });
 }

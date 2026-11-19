@@ -1,7 +1,7 @@
 import { useVoucherPrintAfterCreate } from "./useVoucherPrintAfterCreate";
 import { useVoucherFormShortcuts } from "./useVoucherFormShortcuts";
 import { confirm } from "@/lib/confirm";
-import { fmt } from "@/lib/money";
+import { fmt, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 
 import {
@@ -22,6 +22,10 @@ export function useVoucherFormSubmission(
     ReturnType<typeof useVoucherFormState> &
       ReturnType<typeof useVoucherFormQueries> &
       VoucherFormProps,
+    | "embedded"
+    | "onSubmitted"
+    | "onCancel"
+    | "initialAmount"
     | "navigate"
     | "utils"
     | "branches"
@@ -33,10 +37,14 @@ export function useVoucherFormSubmission(
     | "amount"
     | "method"
     | "seededCustomerId"
+    | "seededSupplierId"
+    | "seededDeliveryPartyId"
     | "partyType"
     | "customerId"
     | "supplierId"
     | "supplierAdvanceRefundReceiptId"
+    | "supplierReceiptPurpose"
+    | "allowSupplierOverpay"
     | "supplierAdvanceRefundValidationError"
     | "selectedSupplierAdvanceRefund"
     | "supplierAdvanceRefundWarning"
@@ -60,6 +68,10 @@ export function useVoucherFormSubmission(
   >,
 ) {
   const {
+    embedded = false,
+    onSubmitted,
+    onCancel,
+    initialAmount = "",
     navigate,
     utils,
     isReceipt,
@@ -69,10 +81,14 @@ export function useVoucherFormSubmission(
     amount,
     method,
     seededCustomerId,
+    seededSupplierId,
+    seededDeliveryPartyId,
     partyType,
     customerId,
     supplierId,
     supplierAdvanceRefundReceiptId,
+    supplierReceiptPurpose,
+    allowSupplierOverpay,
     supplierAdvanceRefundValidationError,
     selectedSupplierAdvanceRefund,
     supplierAdvanceRefundWarning,
@@ -112,13 +128,19 @@ export function useVoucherFormSubmission(
       await Promise.all([
         utils.vouchers.list.invalidate(),
         utils.vouchers.aggregate.invalidate(),
-        ...(partyType === "SUPPLIER" && (direction === "OUT" || supplierAdvanceRefundReceiptId != null)
+        ...(partyType === "SUPPLIER"
           ? [
               utils.suppliers.invalidate(),
               utils.purchases.invalidate(),
               utils.supplierPayments.invalidate(),
               utils.reports.supplierStatement.invalidate(),
               utils.vouchers.supplierAdvanceRefundSources.invalidate(),
+            ]
+          : []),
+        ...(partyType === "CUSTOMER"
+          ? [
+              utils.customers.invalidate(),
+              utils.reports.customerStatement.invalidate(),
             ]
           : []),
       ]);
@@ -128,11 +150,15 @@ export function useVoucherFormSubmission(
       } else if (pendingPrintRef && res.approvalStatus !== "APPROVED") {
         if (pendingPrintRef === "a4") releaseReservedPrintWindow();
         notify.err(
-          "حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
+          "حفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
         );
       }
       bypassUnsavedGuard();
-      navigate("/vouchers");
+      if (embedded) {
+        onSubmitted?.();
+      } else {
+        navigate("/vouchers");
+      }
     },
     onError: (e) => {
       if (pendingPrintRef === "a4") releaseReservedPrintWindow();
@@ -149,12 +175,12 @@ export function useVoucherFormSubmission(
 
   function validate(): string {
     if (branchId == null)
-      return "الفرع غير محدَّد — اختر الفرع من القائمة قبل الحفظ (لا فرعَ افتراضيّ).";
+      return "الفرع غير محدد — اختر الفرع من القائمة قبل الحفظ (لا فرع افتراضي).";
     if (!voucherDate) return "تاريخ السند مطلوب.";
     if (
       !amount.trim() ||
       !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ||
-      Number(amount) <= 0
+      moneyInput(amount).lte(0)
     ) {
       return "المبلغ مطلوب (موجب، منزلتان عشريتان).";
     }
@@ -162,7 +188,7 @@ export function useVoucherFormSubmission(
     if (partyType === "CUSTOMER" && !customerId)
       return "اختر العميل المرتبط بالسند.";
     if (partyType === "SUPPLIER" && !supplierId)
-      return "اختر المورّد المرتبط بالسند.";
+      return "اختر المورد المرتبط بالسند.";
     if (supplierAdvanceRefundValidationError)
       return supplierAdvanceRefundValidationError;
     if (partyType === "DELIVERY_PARTY" && !deliveryPartyId)
@@ -171,7 +197,7 @@ export function useVoucherFormSubmission(
       return "فئة محاسبية معيّنة إلزامية لسندات «أخرى».";
     }
     if (partyType === "OTHER" && !selectedCategoryReady) {
-      return "الفئة المختارة بلا حساب مقابل صالح؛ عيّن الحساب من إدارة الفئات أولاً.";
+      return "الفئة المختارة بلا حساب مقابل صالح؛ عين الحساب من إدارة الفئات أولاً.";
     }
     if (method === "TRANSFER" && !referenceNumber.trim()) {
       return "الرقم المرجعي إلزامي لطريقة الدفع «تحويل».";
@@ -191,16 +217,25 @@ export function useVoucherFormSubmission(
           : partyType === "DELIVERY_PARTY"
             ? deliveryPartyId
             : null;
+    const isSupplierReceipt = isReceipt && partyType === "SUPPLIER";
+    const includeAdvanceSource =
+      isSupplierReceipt &&
+      supplierReceiptPurpose === "ADVANCE_REFUND" &&
+      supplierAdvanceRefundReceiptId != null;
     return {
       voucherType,
-      // `validate()` يرفض الحفظَ بلا فرع؛ الشاشةُ تُرسل ما عرضته حرفياً — لا انزلاق بين المعروض والمُرسَل.
       branchId: branchId ?? undefined,
       amount: amount.trim(),
       paymentMethod: method,
       partyType,
       partyId,
-      ...(isReceipt && partyType === "SUPPLIER" && supplierAdvanceRefundReceiptId != null
-        ? { supplierAdvanceRefundReceiptId } : {}),
+      ...(includeAdvanceSource
+        ? { supplierAdvanceRefundReceiptId }
+        : {}),
+      ...(isSupplierReceipt ? { supplierReceiptPurpose } : {}),
+      ...(!isReceipt && partyType === "SUPPLIER" && allowSupplierOverpay
+        ? { allowSupplierOverpay: true }
+        : {}),
       description: description.trim(),
       referenceNumber: referenceNumber.trim() || null,
       // لا صكوك في الإنشاء (قرار المالك) — الحقل يبقى بالعقد للسجلات التاريخية فقط.
@@ -268,22 +303,22 @@ export function useVoucherFormSubmission(
 
     // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.
     setPendingPrintRef(isReceipt ? printAfter : null);
-    create.mutate(buildPayload());
+    create.mutate(buildPayload() as Parameters<typeof create.mutate>[0]);
   }
 
-  // حارس فقدان البيانات (نمط ExpenseNew): dirty عند إدخال فعليّ فقط — العميل المُمرَّر من URL
-  // (seededCustomerId) لا يُحسب إدخالاً كي لا يظهر تحذير كاذب فور فتح الشاشة.
+  // حارس فقدان البيانات (نمط ExpenseNew): dirty عند إدخال فعليّ فقط.
   const isDirty =
-    amount.trim() !== "" ||
+    amount.trim() !== (initialAmount ?? "").trim() ||
     description.trim() !== "" ||
     counterpartyName.trim() !== "" ||
     internalNote.trim() !== "" ||
     referenceNumber.trim() !== "" ||
     attachmentImages.length > 0 ||
-    supplierId != null ||
+    (supplierId != null && supplierId !== seededSupplierId) ||
+    (deliveryPartyId != null && deliveryPartyId !== seededDeliveryPartyId) ||
     (customerId != null && customerId !== seededCustomerId);
 
-  useUnsavedGuard(isDirty);
+  useUnsavedGuard(!embedded && isDirty);
 
   // Esc/زر الإلغاء: تأكيد قبل مغادرة نموذج غير محفوظ (كان Esc يُغادر فوراً فيمسح المُدخلات).
   const leaveBusyRef = useRef(false);
@@ -291,7 +326,8 @@ export function useVoucherFormSubmission(
   async function requestCancel() {
     if (create.isPending) return;
     if (!isDirty) {
-      navigate("/vouchers");
+      if (embedded) onCancel?.();
+      else navigate("/vouchers");
       return;
     }
     // Esc داخل حوار التأكيد نفسه يصل لهذا المعالج أيضاً — الحارس يمنع فتح حوارٍ ثانٍ.
@@ -308,7 +344,8 @@ export function useVoucherFormSubmission(
       });
       if (ok) {
         bypassUnsavedGuard();
-        navigate("/vouchers");
+        if (embedded) onCancel?.();
+        else navigate("/vouchers");
       }
     } finally {
       leaveBusyRef.current = false;

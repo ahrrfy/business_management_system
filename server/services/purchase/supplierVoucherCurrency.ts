@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -5,6 +6,21 @@ import { money, round2, toDbMoney } from "../money";
 import { usdReturnAmountWithFinalResidual } from "./returnGovernance";
 
 export const INVOICE_CURRENCY_SETTLEMENT = "INVOICE_CURRENCY_V1";
+
+/**
+ * تقييد خصم عدّاد الدولار أثناء السداد الديناري المثبّت بحيث لا ينزل عن الصفر
+ * ولا يسبّب فشلاً عند وجود انحراف تاريخي مسبق في `suppliers.currentBalanceUsd`.
+ */
+export function boundedSupplierUsdDelta(
+  currentBalanceUsd: string | number | null | undefined,
+  requestedDeltaUsd: string | number | null | undefined,
+): string {
+  const delta = money(requestedDeltaUsd ?? "0");
+  if (!delta.gt(0)) return "0.00";
+  const current = money(currentBalanceUsd ?? "0");
+  if (!current.gt(0)) return "0.00";
+  return toDbMoney(Decimal.min(current, delta));
+}
 
 export function usesInvoiceCurrencySettlement(source: {
   payloadCanonical: string;

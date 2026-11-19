@@ -2,7 +2,7 @@ import {
   voucherInvoiceEligible,
   voucherInvoiceRemaining as invoiceRemaining,
 } from "./voucherInvoiceAllocation";
-import { fmt, moneyInput } from "@/lib/money";
+import { D, fmt, moneyInput } from "@/lib/money";
 import { skipToken } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -22,6 +22,7 @@ export function useVoucherFormQueries(
     | "customerId"
     | "supplierId"
     | "supplierAdvanceRefundReceiptId"
+    | "supplierReceiptPurpose"
     | "deliveryPartyId"
     | "counterpartyName"
     | "invoiceId"
@@ -38,6 +39,7 @@ export function useVoucherFormQueries(
     customerId,
     supplierId,
     supplierAdvanceRefundReceiptId,
+    supplierReceiptPurpose,
     deliveryPartyId,
     counterpartyName,
     invoiceId,
@@ -51,8 +53,9 @@ export function useVoucherFormQueries(
   const advanceRefundSources = supplierAdvanceRefundSources.data ?? [];
   const selectedSupplierAdvanceRefund = supplierAdvanceRefundActive
     ? advanceRefundSources.find((row) => row.id === supplierAdvanceRefundReceiptId) : undefined;
+  const isRefundMode = supplierAdvanceRefundActive && supplierReceiptPurpose === "ADVANCE_REFUND";
   let supplierAdvanceRefundValidationError = "";
-  if (supplierAdvanceRefundActive) {
+  if (isRefundMode) {
     if (supplierAdvanceRefundSources.isError) {
       supplierAdvanceRefundValidationError = supplierAdvanceRefundSources.error?.message || "تعذر التحقق من الدفعات السابقة القابلة للاسترداد؛ أعد المحاولة قبل الحفظ.";
     } else if (supplierAdvanceRefundSources.isLoading || supplierAdvanceRefundSources.isFetching || !supplierAdvanceRefundSources.data) {
@@ -61,11 +64,13 @@ export function useVoucherFormQueries(
       supplierAdvanceRefundValidationError = "الدفعة السابقة المحددة لم تعد قابلة للاسترداد؛ حدّث المصادر واختر سنداً متاحاً.";
     } else if (advanceRefundSources.length > 0 && !selectedSupplierAdvanceRefund) {
       supplierAdvanceRefundValidationError = "اختر الدفعة السابقة المستردة لربط سند القبض بأصل الأموال.";
+    } else if (advanceRefundSources.length === 0) {
+      supplierAdvanceRefundValidationError = "لا توجد دفعة سابقة مفتوحة للاسترداد؛ اختر «مبلغ مستلم / إشعار دائن يرفع حساب المورد».";
     } else if (selectedSupplierAdvanceRefund && moneyInput(amount).gt(selectedSupplierAdvanceRefund.remainingAmount)) {
       supplierAdvanceRefundValidationError = "مبلغ الاسترداد يتجاوز المتبقي القابل للاسترداد من السند المحدد؛ خفّض المبلغ أو اختر سنداً آخر.";
     }
   }
-  const supplierAdvanceRefundWarning = selectedSupplierAdvanceRefund && moneyInput(amount).gt(selectedSupplierAdvanceRefund.unusedAmount)
+  const supplierAdvanceRefundWarning = isRefundMode && selectedSupplierAdvanceRefund && moneyInput(amount).gt(selectedSupplierAdvanceRefund.unusedAmount)
     ? "مبلغ الاسترداد يتجاوز الجزء غير المستخدم من الدفعة؛ قد يعيد فتح ذمة الفواتير المرتبطة بها بمقدار الجزء المسترد من تخصيصاتها." : "";
   const supplierAdvanceRefundBlocked = supplierAdvanceRefundValidationError !== "";
 
@@ -136,12 +141,9 @@ export function useVoucherFormQueries(
   });
 
   // كل OUT طلبٌ بلا أثر حتى ينفّذ مالكٌ آخر «اعتماد وصرف» خادمياً؛ IN يبقى فورياً.
-  const amountNum = useMemo(() => {
-    const v = Number(amount);
-    return Number.isFinite(v) ? v : 0;
-  }, [amount]);
+  const amountDec = useMemo(() => moneyInput(amount), [amount]);
 
-  const awaitsOwnerDisbursement = direction === "OUT" && amountNum > 0;
+  const awaitsOwnerDisbursement = direction === "OUT" && amountDec.gt(0);
 
   // لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧، قرار المالك).
 
@@ -169,25 +171,23 @@ export function useVoucherFormQueries(
     { enabled: !!partyKeyForRecent, staleTime: 30_000 },
   );
 
-  // تَحذير «المبلغ يَتجاوز الرصيد» (P1-7). الاتجاهات وفق BalanceBadge:
-  //   عميل: موجب = «لنا عليه» (AR)، سالب = «له علينا» (دفع/دُفع له زيادة).
-  //   مورّد: موجب = «له علينا» (AP)، سالب = «لنا عليه» (دفعنا له زيادة).
+  // تحذير الرصيد واتجاهه بـ Decimal فقط.
   const balanceWarn = useMemo(() => {
-    if (amountNum <= 0) return null;
+    if (amountDec.lte(0)) return null;
     if (partyType === "CUSTOMER" && customerData.data) {
-      const b = Number(customerData.data.currentBalance ?? 0);
-      if (direction === "IN" && amountNum > b) {
-        return `يَتجاوز رصيد العميل المُتبقّي (${fmt(b)}) — سيُصبح للعميل رصيدٌ دائن (له علينا).`;
+      const b = D(customerData.data.currentBalance ?? 0);
+      if (direction === "IN" && amountDec.gt(b)) {
+        return `يتجاوز رصيد العميل المتبقي (${fmt(b.toFixed(2))} د.ع) — سيصبح للعميل رصيد دائن (له علينا).`;
       }
     }
     if (partyType === "SUPPLIER" && supplierData.data) {
-      const b = Number(supplierData.data.currentBalance ?? 0);
-      if (direction === "OUT" && amountNum > b) {
-        return `يَتجاوز رَصيد المورّد المُستحق (له علينا ${fmt(b)}) — سيُصبح المورّد مديناً (لنا عليه: دفعنا زيادة).`;
+      const b = D(supplierData.data.currentBalance ?? 0);
+      if (direction === "OUT" && amountDec.gt(b)) {
+        return `يتجاوز رصيد المورد المستحق (له علينا ${fmt(b.toFixed(2))} د.ع) — سيصبح المورد مدينا لنا (لنا عليه: سلفة على الحساب).`;
       }
     }
     return null;
-  }, [amountNum, partyType, customerData.data, supplierData.data, direction]);
+  }, [amountDec, partyType, customerData.data, supplierData.data, direction]);
   return {
     supplierAdvanceRefundActive,
     supplierAdvanceRefundSources,
@@ -209,7 +209,7 @@ export function useVoucherFormQueries(
     openShift,
     hardBlock,
     treasuryNotice,
-    amountNum,
+    amountDec,
     awaitsOwnerDisbursement,
     partyKeyForRecent,
     recent,

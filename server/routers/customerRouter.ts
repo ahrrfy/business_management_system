@@ -32,7 +32,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive, isElevated } from "../lib/redact";
-import { resolveActorBranchId } from "../lib/branchAuthority";
+import { canCrossBranches, resolveActorBranchId } from "../lib/branchAuthority";
 import { positiveMoneyString } from "../lib/schemas";
 import {
   customersCashierProcedure,
@@ -49,6 +49,11 @@ import {
   autoSettleAllAccountsTx,
   autoSettleCustomerAccountTx,
 } from "../services/reconciliation/autoSettlementService";
+import {
+  filterAnomaliesForRole,
+  reconcileCustomerCrossBranch,
+  scanAccountAnomalies,
+} from "../services/accounting/accountAnomalyService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -732,5 +737,83 @@ export const customerRouter = router({
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
       return markGoogleReviewInviteSent(input, actor);
+    }),
+
+  /** مسح الحالات المحاسبية الشاذة للعملاء (مقاصة الفروع وانحرافات الدفتر) مقيداً بصلاحية الفرع والبيانات المالية. */
+  anomalies: customersReadProcedure
+    .input(
+      z
+        .object({
+          customerId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const elevated = isElevated(ctx.user.role);
+      if (!elevated && input?.customerId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "المسح الشامل للشذوذ المالي مقتصر على الإدارة",
+            why: "عرض نتائج الفحص المحاسبي العام يتضمن أرصدة العملاء وتنبيهات مالية حساسة",
+            doThis: "حدّد عميلاً بعينه أو اطلب المراجعة من مدير النظام",
+          }),
+        });
+      }
+      const branchId = canCrossBranches(ctx.user)
+        ? input?.branchId
+        : resolveActorBranchId(ctx, input?.branchId);
+      const res = await scanAccountAnomalies({
+        partyType: "CUSTOMER",
+        customerId: input?.customerId,
+        branchId,
+      });
+      return filterAnomaliesForRole(res, ctx.user.role);
+    }),
+
+  /** مقاصة رصيد دائن للعميل من فرع مصدر لسداد فواتير مفتوحة في فرع مستهدف بدون حركة نقدية. */
+  reconcileCrossBranch: customersManagerProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        sourceBranchId: z.number().int().positive(),
+        targetBranchId: z.number().int().positive(),
+        invoiceId: z.number().int().positive().optional(),
+        amount: positiveMoneyString.optional(),
+        note: z.string().trim().max(500).optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (!canCrossBranches(ctx.user)) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذر تنفيذ المقاصة بين الفروع",
+              why: "حسابك غير مرتبط بفرع مسند",
+              doThis: "اطلب من الإدارة إسناد فرع لحسابك أو تنفيذ المقاصة بصلاحية الإدارة",
+            }),
+          });
+        }
+        if (Number(ctx.user.branchId) !== input.targetBranchId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا تملك صلاحية تسوية فواتير فرع آخر",
+              why: "مقاصة فرع آخر تتطلب صلاحية الفرع المستهدف أو صلاحية الإدارة العامة",
+              doThis: "اختر فرعك كفرع مستهدف أو اطلب تنفيذ المقاصة من المدير العام",
+            }),
+          });
+        }
+      }
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? input.targetBranchId,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return reconcileCustomerCrossBranch(input, actor);
     }),
 });

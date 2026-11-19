@@ -56,4 +56,35 @@ describe("statement period closing", () => {
     expect(result).toMatchObject({ closingBalance: "130.00", totDebit: "180.00", totCredit: "100.00" });
     expect(result.txs[1].description).toBe("تسوية ذمة الفاتورة دون حركة نقدية");
   });
+
+  it("tracks balanceBefore per row, classifies RETURN/COD/CHARGE_ADJUSTMENT, and carries invoice items", () => {
+    const result = customerStatementLedger({
+      summary: { openingBalance: "1000.00" },
+      invoices: [
+        {
+          id: 42,
+          invoiceDate: "2026-11-01",
+          invoiceNumber: "INV-42",
+          status: "PENDING",
+          total: "500.00",
+          items: [{ productName: "قلم", quantity: 2, unitPrice: "250.00", total: "500.00" }],
+        },
+      ],
+      payments: [
+        { id: 1, createdAt: "2026-11-02", direction: "IN", amount: "100.00", paymentMethod: "RETURN" },
+        { id: 2, createdAt: "2026-11-03", direction: "IN", amount: "200.00", paymentMethod: "COD", invoiceId: 42, invoiceNumber: "INV-42" },
+        { id: -5, createdAt: "2026-11-04", direction: "OUT", amount: "50.00", paymentMethod: "CHARGE_ADJUSTMENT", description: "أجر توصيل مسترجع" },
+      ],
+    });
+    expect(result.txs.map((r) => [r.balanceBefore, r.balance])).toEqual([
+      ["1000.00", "1500.00"],
+      ["1500.00", "1400.00"],
+      ["1400.00", "1200.00"],
+      ["1200.00", "1250.00"],
+    ]);
+    expect(result.txs.map((r) => r.kind)).toEqual(["SALE", "RETURN", "COD", "FULFILLMENT_CHARGE"]);
+    expect(result.txs[0].items).toHaveLength(1);
+    expect(result.txs[0].openHref).toBe("/invoices/42");
+    expect(result.txs[3].openHref).toBe("/delivery?tab=fulfillment&kind=charges");
+  });
 });

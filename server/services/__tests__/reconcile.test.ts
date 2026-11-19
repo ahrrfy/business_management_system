@@ -3,11 +3,17 @@ import {
   reconcileCustomerBalances,
   reconcileInventory,
   reconcileLedgerProfit,
+  reconcileSupplierBalances,
 } from "../reconcileService";
 
 describe("تدقيق التوافق المالي (reconcileService)", () => {
   it("تُعيد reconcileCustomerBalances مصفوفة", async () => {
     const result = await reconcileCustomerBalances();
+    expect(Array.isArray(result)).toBe(true);
+  });
+
+  it("تُعيد reconcileSupplierBalances مصفوفة", async () => {
+    const result = await reconcileSupplierBalances();
     expect(Array.isArray(result)).toBe(true);
   });
 
@@ -28,6 +34,11 @@ describe("تدقيق التوافق المالي (reconcileService)", () => {
 
   it("لا انجراف في مخزون الفروع على بيانات البذر", async () => {
     const issues = await reconcileInventory();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("لا انجراف في ذمم الموردين على بيانات البذر", async () => {
+    const issues = await reconcileSupplierBalances();
     expect(issues).toHaveLength(0);
   });
 });

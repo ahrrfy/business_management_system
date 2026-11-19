@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { maskBankFields, maskSupplierSensitive } from "../lib/redact";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { isElevated, maskBankFields, maskSupplierSensitive } from "../lib/redact";
+import { canCrossBranches, resolveActorBranchId } from "../lib/branchAuthority";
 import { logAudit } from "../services/auditService";
 import {
   activateSupplier,
@@ -18,6 +21,12 @@ import {
   autoSettleAllSuppliersTx,
   autoSettleSupplierAccountTx,
 } from "../services/reconciliation/autoSettlementService";
+import {
+  alignSupplierUsdBalance,
+  filterAnomaliesForRole,
+  reclassifySupplierReceipt,
+  scanAccountAnomalies,
+} from "../services/accounting/accountAnomalyService";
 
 /**
  * الموردون — شريحة كاملة.
@@ -243,5 +252,77 @@ export const supplierRouter = router({
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
       return withTx((tx) => autoSettleAllSuppliersTx(tx, actor, input?.limit ?? 100));
+    }),
+
+  /** مسح الحالات المحاسبية الشاذة على حسابات الموردين وأوامر الشراء وسندات القبض (مقيد بصلاحية الطرف والبيانات المالية). */
+  anomalies: suppliersReadProcedure
+    .input(
+      z
+        .object({
+          supplierId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const elevated = isElevated(ctx.user.role);
+      if (!elevated && input?.supplierId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "المسح الشامل للشذوذ المالي مقتصر على الإدارة",
+            why: "عرض نتائج الفحص المحاسبي العام يتضمن أرصدة وتنبيهات مالية حساسة",
+            doThis: "حدّد مورداً بعينه أو اطلب المراجعة من مدير النظام",
+          }),
+        });
+      }
+      const branchId = canCrossBranches(ctx.user)
+        ? input?.branchId
+        : resolveActorBranchId(ctx, input?.branchId);
+      const res = await scanAccountAnomalies({
+        partyType: "SUPPLIER",
+        supplierId: input?.supplierId,
+        branchId,
+      });
+      return filterAnomaliesForRole(res, ctx.user.role);
+    }),
+
+  /** مواءمة عداد الدولار للمورد ليطابق مجموع التزامات الدولار المفتوحة فعلاً (تنفذ بسلطة المالك الموثق). */
+  alignUsdBalance: suppliersManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+        note: z.string().trim().max(500).optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return alignSupplierUsdBalance(input, actor);
+    }),
+
+  /** إعادة تصنيف سند قبض مورد غير مصنف (اعتماد التزام دائن أو عكسه بسند مقابل). */
+  reclassifyReceipt: suppliersManagerProcedure
+    .input(
+      z.object({
+        receiptId: z.number().int().positive(),
+        action: z.enum(["CONFIRM_CREDIT_OBLIGATION", "REVERSE_RECEIPT"]),
+        reason: z.string().trim().max(500).optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return reclassifySupplierReceipt(input, actor);
     }),
 });

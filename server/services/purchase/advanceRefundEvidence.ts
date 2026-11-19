@@ -322,6 +322,54 @@ export async function assertSupplierAdvanceInboundHistory(
     .limit(501);
   if (incoming.length > 500)
     advanceRefundError("تجاوز سجل قبض المورد حد المراجعة الآمنة");
+  const incomingIds = incoming.map((r) => String(r.id));
+  const purposeLogs = incomingIds.length
+    ? await db
+        .select({
+          entityId: auditLogs.entityId,
+          action: auditLogs.action,
+          newValue: auditLogs.newValue,
+        })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.entityType, "receipt"),
+            inArray(auditLogs.entityId, incomingIds),
+            inArray(auditLogs.action, [
+              "voucher.supplierReceiptPurpose",
+              ADVANCE_REFUND_ACTION,
+            ]),
+          ),
+        )
+    : [];
+  const receiptById = new Map(incoming.map((r) => [r.id, r]));
+  const creditObligationIds = new Set<number>();
+  const refundTaggedIds = new Set<number>();
+  for (const log of purposeLogs) {
+    const receiptId = Number(log.entityId);
+    const receipt = receiptById.get(receiptId);
+    if (!receipt) continue;
+    if (log.action === ADVANCE_REFUND_ACTION) {
+      refundTaggedIds.add(receiptId);
+      continue;
+    }
+    const val = log.newValue as {
+      purpose?: unknown;
+      supplierId?: unknown;
+      branchId?: unknown;
+    } | null;
+    if (val?.purpose === "ADVANCE_REFUND") {
+      refundTaggedIds.add(receiptId);
+      continue;
+    }
+    if (
+      val?.purpose === "CREDIT_OBLIGATION" &&
+      (val.supplierId == null || Number(val.supplierId) === supplierId) &&
+      (val.branchId == null || Number(val.branchId) === receipt.branchId)
+    ) {
+      creditObligationIds.add(receiptId);
+    }
+  }
   for (const receipt of incoming) {
     const bound = await readAdvanceRefundEvidence(db, receipt.id);
     if (
@@ -332,6 +380,9 @@ export async function assertSupplierAdvanceInboundHistory(
     )
       continue;
     if (await isOwnedSupplierIncoming(db, receipt)) continue;
+    if (creditObligationIds.has(receipt.id) && !refundTaggedIds.has(receipt.id)) {
+      continue;
+    }
     const cancellationId = /^CANCEL-VCH-(\d+)$/.exec(
       receipt.referenceNumber ?? "",
     )?.[1];

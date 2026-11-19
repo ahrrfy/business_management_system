@@ -10,6 +10,12 @@ import {
   listManualJournals,
 } from "../accounting/manualJournalService";
 import { stableJson } from "../accounting/postingEngine";
+import {
+  reconcileCustomerBalances,
+  reconcileSupplierBalances,
+} from "../reconcileService";
+import { getCustomerStatement } from "../reports/arAging";
+import { getSupplierStatement } from "../reports/apAging";
 
 function db() {
   const d = getDb();
@@ -552,5 +558,50 @@ describe("manualJournalService — القيود اليومية اليدوية ا
         ),
       ),
     ).rejects.toThrow("القيد المحاسبي غير متوازن");
+  });
+
+  it("يدمج القيود اليدوية على AR/AP في reconcile وكشوف الحسابات بلا انحراف وهمي", async () => {
+    const [custRes] = await db().insert(s.customers).values({
+      name: "عميل مطابقة قيد يدوي",
+      phone: "07700000101",
+      currentBalance: "0.00",
+    });
+    const customerId = custRes.insertId;
+    const [suppRes] = await db().insert(s.suppliers).values({
+      name: "مورد مطابقة قيد يدوي",
+      phone: "07700000102",
+      currentBalance: "0.00",
+    });
+    const supplierId = suppRes.insertId;
+
+    await withTx((tx) =>
+      createManualJournal(
+        tx,
+        {
+          entryDate: "2026-10-05",
+          notes: "قيد يدوي لترسيخ ذمة عميل ومورد",
+          branchId: 1,
+          lines: [
+            { accountId: 20, debit: "75000.00", credit: "0.00", customerId },
+            { accountId: 30, debit: "0.00", credit: "75000.00", supplierId },
+          ],
+        },
+        mockActor,
+        mockAuditContext as any,
+      ),
+    );
+
+    const custIssues = await reconcileCustomerBalances();
+    expect(custIssues.filter((i) => i.id === customerId)).toEqual([]);
+    const suppIssues = await reconcileSupplierBalances();
+    expect(suppIssues.filter((i) => i.id === supplierId)).toEqual([]);
+
+    const custStmt = await getCustomerStatement(customerId, { from: "2026-10-01", to: "2026-10-31" });
+    expect(custStmt?.ledger.closingBalance).toBe("75000.00");
+    expect(custStmt?.ledger.totalDebit).toBe("75000.00");
+
+    const suppStmt = await getSupplierStatement(supplierId, { from: "2026-10-01", to: "2026-10-31" });
+    expect(suppStmt?.ledger.closingBalance).toBe("75000.00");
+    expect(suppStmt?.ledger.totalCredit).toBe("75000.00");
   });
 });

@@ -40,7 +40,7 @@ export interface PurchaseSettlementInput {
 }
 
 export function getPurchaseSettlementIntentLabel(type?: string | null): string {
-  return type === "CASH" ? "نقدي (طريقة السداد)" : "آجل (طريقة السداد)";
+  return type === "CASH" ? "نقدي — دفع فوري" : "آجل — ذمة مورد";
 }
 
 export function getPurchaseSettlement(input: PurchaseSettlementInput) {

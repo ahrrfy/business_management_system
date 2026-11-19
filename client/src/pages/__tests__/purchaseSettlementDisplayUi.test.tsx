@@ -161,6 +161,7 @@ vi.mock("@/components/ui/sheet", () => {
   return {
     Sheet: Pass,
     SheetContent: Pass,
+    SheetDescription: Pass,
     SheetHeader: Pass,
     SheetTitle: Pass,
   };
@@ -345,7 +346,7 @@ describe("عرض سداد الشراء المثبت", () => {
   it("يعرض شراء نقدياً غير مسدد دون تحويل طريقة السداد إلى إثبات دفع", () => {
     state.order.settlement = evidence("0.00", "0.00", "240000.00", "UNPAID");
     const html = render();
-    expect(html).toContain("نقدي (طريقة السداد)");
+    expect(html).toContain("نقدي — دفع فوري");
     expect(html).toContain("غير مسددة");
     expect(html).toContain("240,000");
     expect(html).not.toContain("مسددة بالكامل");
@@ -410,7 +411,7 @@ describe("عرض سداد الشراء المثبت", () => {
       closingBalance: "180000.00",
     });
     const html = state.print.mock.calls[0]?.[0];
-    expect(html).toContain("نقدي (طريقة السداد)");
+    expect(html).toContain("نقدي — دفع فوري");
     expect(html).toContain("حالة السداد: مسددة جزئياً");
     expect(html).toContain("المدفوع: 60,000 د.ع");
     expect(html).toContain("المتبقي: 180,000 د.ع");
@@ -419,7 +420,7 @@ describe("عرض سداد الشراء المثبت", () => {
   it("يشرح تخفيض ذمة الشراء في النسخة المطبوعة دون إثبات صرف", () => {
     const html = buildPurchaseInvoiceV2Html({
       invoiceNumber: "PO262",
-      statusLabel: "نقدي (طريقة السداد) · مقفلة بتخفيض الذمة",
+      statusLabel: "نقدي — دفع فوري · مقفلة بتخفيض الذمة",
       items: [],
       subtotal: "240000.00",
       total: "240000.00",
@@ -627,7 +628,7 @@ describe("عرض سداد الشراء المثبت", () => {
     );
     expect(html).toContain('data-selected-value="SUPPLIER"');
     expect(html).toContain('data-supplier-picker="15"');
-    expect(html).toContain("يوزّع النظام الدفعة بالدينار على أقدم مستحقات المورد");
+    expect(html).toContain("سداد من حساب الشركة للمورد");
     expect(html).toContain('href="/exchange?tab=settle&amp;supplierId=15"');
   });
 
@@ -1166,4 +1167,193 @@ describe("عرض سداد الشراء المثبت", () => {
       Object.assign(globalThis, prevGlobals);
     }
   }, 20_000);
+
+  it("يعرض منشئ الأمر والمعتمد وتحذير شذوذ سعر الصرف وزر التصحيح اليدوي ومعادلة الدولار في الشاشة", async () => {
+    const { default: PurchaseOrderDetail } =
+      await import("@/pages/PurchaseOrderDetail");
+    const { PurchaseRateGuardBox } =
+      await import("@/components/purchases/PurchaseRateAnomalyBanner");
+
+    state.order = {
+      ...state.order,
+      id: 390,
+      poNumber: "PO-USD-169",
+      status: "SENT",
+      branchId: 1,
+      supplierId: 19,
+      supplierName: "مورد دولار",
+      settlementType: "CREDIT",
+      agreedCurrency: "USD",
+      agreedRate: "169.0000",
+      usdTotal: "2611.00",
+      total: "441259.00",
+      subtotal: "441259.00",
+      taxAmount: "0.00",
+      invoiceDiscount: "0.00",
+      usdInvoiceDiscount: "0.00",
+      createdBy: 5,
+      createdByName: "أحمد المنشئ",
+      approvedBy: 6,
+      approvedByName: "سارة المعتمدة",
+      rateSanity: {
+        status: "ANOMALOUS",
+        suggestedRate: "1690",
+        referenceRate: "1690.0000",
+        message: "سعر الصرف المدخل (169) منخفض جداً؛ هل تقصد 1,690؟",
+      },
+      unitCostWarnings: [
+        {
+          variantId: 1,
+          itemLabel: "ورق A4",
+          newUnitCostIqd: "50.00",
+          currentCostIqd: "500.00",
+          kind: "SHARP_DROP",
+          ratio: "0.10",
+          message: "تكلفة الصنف ورق A4 انخفضت بنسبة حادة",
+        },
+      ],
+      settlement: evidence("0.00", "0.00", "2611.00", "UNPAID"),
+    };
+    state.pendingControlRows = [
+      {
+        id: 88,
+        documentType: "PURCHASE_ORDER",
+        purchaseOrderId: 390,
+        kind: "APPROVE_REVISION",
+        requestedBy: 5,
+      },
+    ];
+
+    const detailHtml = renderToStaticMarkup(
+      React.createElement(PurchaseOrderDetail),
+    );
+    expect(detailHtml).toContain("أحمد المنشئ");
+    expect(detailHtml).toContain("سارة المعتمدة");
+    expect(detailHtml).toContain("آجل — ذمة مورد");
+    expect(detailHtml).toContain("تحذير شذوذ سعر صرف الدولار");
+    expect(detailHtml).toContain("تكلفة الصنف ورق A4 انخفضت بنسبة حادة");
+    expect(detailHtml).toContain("اعتماد واستلام");
+    expect(detailHtml).toContain("رفض");
+
+    const applied: string[] = [];
+    const { act } = React;
+    // @ts-expect-error jsdom lacks bundled TypeScript declarations in test tsconfig
+    const { JSDOM } = await import("jsdom");
+    const dom = new JSDOM("<!doctype html><html><body></body></html>");
+    const prevGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as Record<string, unknown>)
+        .IS_REACT_ACT_ENVIRONMENT,
+    };
+    Object.assign(globalThis, {
+      window: dom.window,
+      document: dom.window.document,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+    const host = dom.window.document.createElement("div");
+    dom.window.document.body.appendChild(host);
+    const { createRoot } = await import("react-dom/client");
+    const root = createRoot(host);
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(PurchaseRateGuardBox, {
+            currency: "USD",
+            agreedRate: "169",
+            referenceRate: "1690.0000",
+            canOverrideAnomaly: false,
+            confirmAnomalousRate: false,
+            rateDeviationReason: "",
+            onApplySuggestedRate: (val) => applied.push(val),
+            onToggleConfirm: () => undefined,
+            onReasonChange: () => undefined,
+          }),
+        );
+      });
+      // لا يطبّق التصحيح تلقائياً أبداً
+      expect(applied).toEqual([]);
+      const fixBtn = Array.from(
+        host.querySelectorAll("button") as Iterable<HTMLButtonElement>,
+      ).find((b) => b.textContent?.includes("تصحيح إلى"));
+      expect(fixBtn).toBeDefined();
+      await act(async () => {
+        fixBtn!.click();
+      });
+      expect(applied).toEqual(["1690"]);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      Object.assign(globalThis, prevGlobals);
+    }
+  });
+
+  it("يوجّه المستخدم في SENT عند شذوذ الصرف ويمنع تمرير الفاتورة عند إخفاء التكلفة في الدرج", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { PurchaseRateAnomalyBanner } = await import(
+      "@/components/purchases/PurchaseRateAnomalyBanner"
+    );
+    const sentBannerHtml = renderToStaticMarkup(
+      React.createElement(PurchaseRateAnomalyBanner, {
+        purchaseOrderId: 15,
+        status: "SENT",
+        agreedCurrency: "USD",
+        agreedRate: "169",
+        rateSanity: {
+          status: "ANOMALOUS",
+          referenceRate: "1500.00",
+          suggestedRate: "1500.00",
+          message: "سعر الصرف بعيد جداً عن المرجع",
+        },
+        unitCostWarnings: [],
+        canEdit: true,
+      }),
+    );
+    expect(sentBannerHtml).toContain(
+      "بانتظار الاعتماد — يمكنك رفض الطلب لإعادة تعديل سعر الصرف",
+    );
+
+    const drawerSrc = readFileSync(
+      new URL("../../components/purchases/PurchaseDetailDrawer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(drawerSrc).toContain("...(!costHidden");
+    expect(drawerSrc).toContain("requireInvoiceMatch: true");
+    expect(drawerSrc).toContain("confirmAnomalousRate: true");
+    expect(drawerSrc).toContain("PurchaseRateAnomalyOverrideFields");
+
+    const detailSrc = readFileSync(
+      new URL("../PurchaseOrderDetail.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(detailSrc).toContain('setSubmitInvoiceTotal("")');
+    expect(detailSrc).toContain("submitInvoicePlaceholder={");
+
+    const invoiceDrawerSrc = readFileSync(
+      new URL(
+        "../../components/purchases/SupplierInvoiceDetailDrawer.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(invoiceDrawerSrc).toContain("D(inv.discountAmount).gt(0)");
+    expect(invoiceDrawerSrc).toContain("D(inv.taxAmount).gt(0)");
+    expect(invoiceDrawerSrc).not.toContain("bg-emerald-100");
+    expect(invoiceDrawerSrc).not.toContain("text-amber-600");
+
+    const decisionTypesSrc = readFileSync(
+      new URL("../../../../server/services/decisions/types.ts", import.meta.url),
+      "utf8",
+    );
+    const decisionPurchaseSrc = readFileSync(
+      new URL(
+        "../../../../server/services/decisions/sources/purchasing.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(decisionTypesSrc).toContain("cashSource?:");
+    expect(decisionPurchaseSrc).toContain("cashSource: input.cashSource");
+  });
 });

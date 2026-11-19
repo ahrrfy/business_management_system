@@ -13,7 +13,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -21,7 +21,7 @@ type Side = "AR" | "AP";
 type Row = RouterOutputs["reports"]["arApAgingDetail"]["rows"][number];
 
 
-const SIDE_LABEL: Record<Side, string> = { AR: "ذمم مدينة (لنا)", AP: "ذمم دائنة (علينا)" };
+const SIDE_LABEL: Record<Side, string> = { AR: "ذمم مدينة (لنا عليهم)", AP: "ذمم دائنة (لهم علينا)" };
 
 const BUCKET_CLS: Record<string, string> = {
   "0-30": "badge-status-active",
@@ -51,7 +51,7 @@ export default function ArApAgingDetail() {
   const isAR = side === "AR";
 
   const rows = useMemo(() => {
-    const qq = query.trim().toLowerCase();
+    const qq = query.toLowerCase();
     return allRows.filter((r) => {
       if (bucket && r.bucket !== bucket) return false;
       if (qq && !r.partyName.toLowerCase().includes(qq) && !r.number.toLowerCase().includes(qq)) return false;
@@ -59,19 +59,19 @@ export default function ArApAgingDetail() {
     });
   }, [allRows, bucket, query]);
 
-  const clientFiltersActive = bucket !== "" || query.trim() !== "";
+  const clientFiltersActive = bucket !== "" || query !== "";
 
   const displayTotals = useMemo(() => {
     if (!totals) return undefined;
     if (!clientFiltersActive) return totals;
-    let d0_30 = 0, d31_60 = 0, d61_90 = 0, d91p = 0, unpaid = 0;
+    let d0_30 = D(0), d31_60 = D(0), d61_90 = D(0), d91p = D(0), unpaid = D(0);
     for (const r of rows) {
-      const u = Number(r.unpaid || 0);
-      unpaid += u;
-      if (r.bucket === "0-30") d0_30 += u;
-      else if (r.bucket === "31-60") d31_60 += u;
-      else if (r.bucket === "61-90") d61_90 += u;
-      else d91p += u;
+      const u = D(r.unpaid || 0);
+      unpaid = unpaid.plus(u);
+      if (r.bucket === "0-30") d0_30 = d0_30.plus(u);
+      else if (r.bucket === "31-60") d31_60 = d31_60.plus(u);
+      else if (r.bucket === "61-90") d61_90 = d61_90.plus(u);
+      else d91p = d91p.plus(u);
     }
     return {
       count: rows.length,
@@ -91,7 +91,7 @@ export default function ArApAgingDetail() {
         { label: "61–90 يوم", value: fmtAr(displayTotals.d61_90), tone: "warning" },
         { label: "أكثر من 90", value: fmtAr(displayTotals.d91p), tone: "negative" },
         { label: `الصافي المعروض (${displayTotals.count})`, value: fmtAr(displayTotals.unpaid), tone: "info" },
-        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(displayTotals.unallocatedCredit), tone: "info" },
+        { label: "دفعات غير مخصصة (رصيد دائن)", value: fmtAr(displayTotals.unallocatedCredit), tone: "info" },
       ]
     : [];
 
@@ -133,11 +133,11 @@ export default function ArApAgingDetail() {
         sortingFn: (a, b) => a.original.date.localeCompare(b.original.date),
         cell: ({ row }) => (
           <div className="flex flex-col items-start gap-0.5 text-xs">
-            <span className="font-mono tabular-nums">{row.original.date}</span>
+            <span className="font-mono tabular-nums"><bdi dir="ltr">{row.original.date}</bdi></span>
             <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
               {row.original.dueDate && (
                 <span title="تاريخ الاستحقاق">
-                  استحقاق: <span className="font-mono tabular-nums">{row.original.dueDate}</span>
+                  استحقاق: <span className="font-mono tabular-nums"><bdi dir="ltr">{row.original.dueDate}</bdi></span>
                 </span>
               )}
               {row.original.daysOverdue > 0 && (
@@ -176,8 +176,8 @@ export default function ArApAgingDetail() {
       filename: `تفصيل-أعمار-${isAR ? "الذمم-المدينة" : "الذمم-الدائنة"}`,
       meta: [
         ...(isAR ? [{ label: "أساس الرصيد القديم", value: AR_AGING_LEGACY_BASIS }] : []),
-        { label: "أساس العرض", value: "صافي الأعمار بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة عرضيًا وفق FIFO؛ لا تعديل على المستندات" },
-        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals?.unallocatedCredit ?? "0") },
+        { label: "أساس العرض", value: "صافي الأعمار بعد التخصيصات المعتمدة وخصم الدفعات غير المخصصة من الأقدم عرضياً دون تعديل المستندات" },
+        { label: "دفعات غير مخصصة (رصيد دائن)", value: fmtAr(totals?.unallocatedCredit ?? "0") },
       ],
       columns: [
         { key: "number", header: isAR ? "رقم الفاتورة" : "رقم أمر الشراء" },
@@ -186,7 +186,7 @@ export default function ArApAgingDetail() {
         ...(isAR ? [{ key: "dueDate", header: "الاستحقاق", map: (r: Row) => r.dueDate ?? "" }] : []),
         { key: "daysOverdue", header: "أيام التأخّر", map: (r) => r.daysOverdue },
         { key: "bucket", header: "الشريحة" },
-        { key: "unpaid", header: "المتبقّي", map: (r) => Number(r.unpaid) },
+        { key: "unpaid", header: "المتبقي", map: (r) => D(r.unpaid).toNumber() },
       ],
     });
   }
@@ -194,7 +194,7 @@ export default function ArApAgingDetail() {
   function onPrint() {
     printReportDoc({
       title: isAR ? "تفصيل أعمار الذمم المدينة" : "تفصيل أعمار الذمم الدائنة",
-      note: `الصافي بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة من الأقدم عرضيًا وفق منهج الملخص. لا ينشئ هذا الكشف تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`,
+      note: `الصافي بعد التخصيصات المعتمدة وخصم الدفعات غير المخصصة من الأقدم عرضياً دون إنشاء تخصيص أو سند جديد. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`,
       headerExtra: [
         { label: "النوع", value: SIDE_LABEL[side] },
         { label: "الفرع", value: branchLabel },
@@ -203,9 +203,9 @@ export default function ArApAgingDetail() {
         { key: "number", label: isAR ? "رقم الفاتورة" : "رقم الأمر" },
         { key: "party", label: isAR ? "العميل" : "المورد" },
         { key: "date", label: "التاريخ" },
-        { key: "days", label: "أيام التأخّر", align: "left" },
+        { key: "days", label: "أيام التأخر", align: "left" },
         { key: "bucket", label: "الشريحة" },
-        { key: "unpaid", label: "المتبقّي", align: "left" },
+        { key: "unpaid", label: "المتبقي", align: "left" },
       ],
       rows: rows.map((r) => ({
         number: r.number,
@@ -221,8 +221,8 @@ export default function ArApAgingDetail() {
             { label: "31–60", value: fmtAr(displayTotals.d31_60) },
             { label: "61–90", value: fmtAr(displayTotals.d61_90) },
             { label: "+90", value: fmtAr(displayTotals.d91p) },
-            { label: "إجمالي المتبقّي", value: fmtAr(displayTotals.unpaid), large: true, bold: true },
-            { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(displayTotals.unallocatedCredit) },
+            { label: "إجمالي المتبقي", value: fmtAr(displayTotals.unpaid), large: true, bold: true },
+            { label: "دفعات غير مخصصة (رصيد دائن)", value: fmtAr(displayTotals.unallocatedCredit) },
           ]
         : undefined,
     });
@@ -231,8 +231,8 @@ export default function ArApAgingDetail() {
   return (
     <ReportShell
       title="تفصيل أعمار الذمم"
-      description="كل مستندٍ مستحقّ منفرداً (فاتورة/أمر شراء) بعدد أيّام تأخّره وشريحته العمرية ومتبقّيه."
-      note={`التخصيصات المعتمدة محفوظة. الأرصدة غير المخصصة تُخصم عرضيًا من الأقدم وفق منهج الملخص، وتظهر منفصلة؛ لا يغيّر عرض التقرير رصيد فاتورة أو ينشئ تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`}
+      description="كل مستند مستحق منفرداً (فاتورة/أمر شراء) بعدد أيام تأخره وشريحته العمرية ومتبقيه."
+      note={`التخصيصات المعتمدة محفوظة، وتُخصم الدفعات غير المخصصة من الأقدم عرضياً وتظهر منفصلة دون تغيير رصيد أي مستند. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
@@ -247,7 +247,7 @@ export default function ArApAgingDetail() {
               value={side}
               onValueChange={(value) => setSide(value as Side)}
             >
-              <option value="AR">مدينة — لنا على العملاء</option>
+              <option value="AR">مدينة — لنا عليهم</option>
               <option value="AP">دائنة — لهم علينا</option>
             </AppSelect>
           </div>

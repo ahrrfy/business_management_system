@@ -8,8 +8,9 @@ import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import { assertSupplierVoucherReplayTx, createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, supplierScopeNeedsBookGateTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
 import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx } from "../customerReceiptSettlement";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
+  auditLogs,
   customers,
   deliveryParties,
   invoices,
@@ -660,12 +661,39 @@ export async function createVoucherTx(
         }
         await assertSupplierVoucherReplayTx(tx, input, existingRefId);
         await assertSupplierAdvanceRefundReplayTx(tx, input, existingRefId);
+        const snapRows = await tx
+          .select({ action: auditLogs.action, newValue: auditLogs.newValue })
+          .from(auditLogs)
+          .where(
+            and(
+              eq(auditLogs.entityType, "receipt"),
+              eq(auditLogs.entityId, String(existingRefId)),
+              inArray(auditLogs.action, [
+                "voucher.balanceSnapshot",
+                "voucher.supplierReceiptPurpose",
+                "voucher.supplierOverpay",
+              ]),
+            ),
+          );
+        const snap = snapRows.find((row) => row.action === "voucher.balanceSnapshot")
+          ?.newValue as
+          | {
+              balanceBefore?: string;
+              balanceAfter?: string;
+              excessUnallocatedAmount?: string;
+            }
+          | undefined;
         return {
           receiptId: existingRefId,
           voucherNumber: r.voucherNumber ?? "",
           direction: (r.direction as "IN" | "OUT") ?? "IN",
           approvalStatus:
             (r.approvalStatus as VoucherResult["approvalStatus"]) ?? "APPROVED",
+          ...(snap?.balanceBefore != null ? { balanceBefore: snap.balanceBefore } : {}),
+          ...(snap?.balanceAfter != null ? { balanceAfter: snap.balanceAfter } : {}),
+          ...(snap?.excessUnallocatedAmount != null
+            ? { excessUnallocatedAmount: snap.excessUnallocatedAmount }
+            : {}),
         };
       }
     }
@@ -675,10 +703,19 @@ export async function createVoucherTx(
   if (options?.systemRequest?.kind === "VOUCHER_CANCELLATION" && options.systemRequest.originalDirection === "OUT")
     await assertAdvanceOriginalCancellationTx(tx, options.systemRequest.originalReceiptId);
   const supplierBookPlan = !options?.systemRequest && input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && input.partyId && ["CASH", "CARD", "TRANSFER", "WALLET"].includes(input.paymentMethod)
-    ? await prepareSupplierBookVoucherTx(tx, { supplierId: input.partyId, branchId: input.branchId, amount: input.amount, voucherDate: input.voucherDate ?? baghdadToday(), allocations: input.supplierAllocations }, actor) : null;
+    ? await prepareSupplierBookVoucherTx(tx, { supplierId: input.partyId, branchId: input.branchId, amount: input.amount, voucherDate: input.voucherDate ?? baghdadToday(), allocations: input.supplierAllocations, allowSupplierOverpay: input.allowSupplierOverpay }, actor) : null;
 
-  if (supplierBookPlan && input.supplierCashSource && (input.paymentMethod !== "CASH" || input.supplierCashSource.mode !== "TREASURY" || input.supplierCashSource.shiftId != null))
-    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر اختيار مصدر نقد السند", why: "تسوية الذمة الدفترية تدعم الخزينة الإدارية فقط بلا وردية، والطريقة غير النقدية لا تقبل مصدراً نقدياً", doThis: "استخدم مصدر الخزينة للسند النقدي واحذف مصدر النقد عند التحويل" }) });
+  if (
+    (supplierBookPlan ||
+      (input.voucherType === "PAYMENT" &&
+        input.partyType === "SUPPLIER" &&
+        input.allowSupplierOverpay === true)) &&
+    input.supplierCashSource &&
+    (input.paymentMethod !== "CASH" ||
+      input.supplierCashSource.mode !== "TREASURY" ||
+      input.supplierCashSource.shiftId != null)
+  )
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر اختيار مصدر نقد السند", why: "تسوية الذمة الدفترية أو الدفع الزائد للمورد تدعم الخزينة الإدارية فقط بلا وردية، والطريقة غير النقدية لا تقبل مصدراً نقدياً", doThis: "استخدم مصدر الخزينة للسند النقدي واحذف مصدر النقد عند التحويل" }) });
   const supplierSettlement = !options?.systemRequest && !supplierBookPlan
     ? await prepareSupplierVoucherSettlementTx(tx, input, actor)
     : null;
@@ -897,6 +934,16 @@ export async function createVoucherTx(
     // (قرار المالك ٣ — يغلق التفاف «سند حرّ تحت العتبة بفاعل واحد»). + سقف ≤ المستحق (currentBalance)
     // يُعاد فحصه عند الاعتماد تحت القفل. §٥ حاصرة ٢.
     if (direction === "OUT" && sup.supplierKind === "CONSIGNOR") {
+      if (input.allowSupplierOverpay) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر السماح بالدفع الزائد لمودِع الأمانة",
+            why: "حسابات مودِعي الأمانة مقيدة بالمستحق الفعلي المبيع فقط",
+            doThis: "أزل خيار الدفع الزائد أو ادفع ضمن حدود الرصيد المستحق للمودِع",
+          }),
+        });
+      }
       forcePendingApproval = true;
       if (money(sup.currentBalance ?? "0").lt(amount)) {
         throw new TRPCError({
@@ -1097,10 +1144,52 @@ export async function createVoucherTx(
   });
   const receiptId = extractInsertId(rRes);
   if (supplierBookPlan) await recordSupplierBookVoucherMarkerTx(tx, receiptId, input, supplierBookPlan, actor);
+  if (
+    input.partyType === "SUPPLIER" &&
+    input.voucherType === "RECEIPT" &&
+    (input.supplierReceiptPurpose != null ||
+      input.supplierAdvanceRefundReceiptId != null)
+  ) {
+    await logAuditTx(tx, actor, {
+      action: "voucher.supplierReceiptPurpose",
+      entityType: "receipt",
+      entityId: String(receiptId),
+      branchId: input.branchId,
+      newValue: {
+        version: 1,
+        purpose: input.supplierReceiptPurpose ?? "ADVANCE_REFUND",
+        supplierId: input.partyId,
+        branchId: input.branchId,
+      },
+    });
+  }
+  if (
+    input.partyType === "SUPPLIER" &&
+    input.voucherType === "PAYMENT" &&
+    input.allowSupplierOverpay === true
+  ) {
+    await logAuditTx(tx, actor, {
+      action: "voucher.supplierOverpay",
+      entityType: "receipt",
+      entityId: String(receiptId),
+      branchId: input.branchId,
+      newValue: {
+        version: 1,
+        allowSupplierOverpay: true,
+        supplierId: input.partyId,
+        branchId: input.branchId,
+        amount: toDbMoney(amount),
+      },
+    });
+  }
   if (supplierSettlement) {
     const [supplierReceipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId));
     await createSupplierVoucherSettlementTx(tx, supplierReceipt!, input, supplierSettlement, actor);
   }
+
+  let resultBalanceBefore: string | undefined;
+  let resultBalanceAfter: string | undefined;
+  let resultExcessUnallocated: string | undefined;
 
   // الأثر المالي يُطبَّق فقط عند الاعتماد (PENDING_APPROVAL ⇒ صفّ معلَّق بلا أثَر).
   if (!needsApproval) {
@@ -1168,21 +1257,52 @@ export async function createVoucherTx(
         if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
         else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
       }
+      const [custBefore] = await tx
+        .select({ currentBalance: customers.currentBalance })
+        .from(customers)
+        .where(eq(customers.id, input.partyId))
+        .for("update");
+      const delta = direction === "IN" ? amount.neg() : amount;
       await adjustCustomerBalance(
         tx,
         input.partyId,
-        direction === "IN" ? amount.neg() : amount,
+        delta,
       );
-
+      if (custBefore) {
+        resultBalanceBefore = toDbMoney(custBefore.currentBalance);
+        resultBalanceAfter = toDbMoney(money(custBefore.currentBalance).plus(delta));
+        resultExcessUnallocated = "0.00";
+      }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
+      const [supBefore] = await tx
+        .select({ currentBalance: suppliers.currentBalance })
+        .from(suppliers)
+        .where(eq(suppliers.id, input.partyId))
+        .for("update");
       await adjustSupplierBalance(tx, input.partyId, amount);
       if (advanceRefundPlan) await applySupplierAdvanceRefundTx(tx, receiptId, advanceRefundPlan, actor);
+      if (supBefore) {
+        resultBalanceBefore = toDbMoney(supBefore.currentBalance);
+        resultBalanceAfter = toDbMoney(money(supBefore.currentBalance).plus(amount));
+        resultExcessUnallocated = "0.00";
+      }
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
+      const [dpBefore] = await tx
+        .select({ currentBalance: deliveryParties.currentBalance })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, input.partyId))
+        .for("update");
+      const delta = direction === "IN" ? amount.neg() : amount;
       await adjustDeliveryBalance(
         tx,
         input.partyId,
-        direction === "IN" ? amount.neg() : amount,
+        delta,
       );
+      if (dpBefore) {
+        resultBalanceBefore = toDbMoney(dpBefore.currentBalance);
+        resultBalanceAfter = toDbMoney(money(dpBefore.currentBalance).plus(delta));
+        resultExcessUnallocated = "0.00";
+      }
       if (direction === "IN") {
         await appendDeliveryLedgerEntry(tx, {
           eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
@@ -1195,6 +1315,23 @@ export async function createVoucherTx(
           occurredAt: new Date(voucherDate),
         });
       }
+    }
+
+    if (resultBalanceBefore != null && resultBalanceAfter != null && input.partyId != null) {
+      await logAuditTx(tx, actor, {
+        action: "voucher.balanceSnapshot",
+        entityType: "receipt",
+        entityId: String(receiptId),
+        branchId: input.branchId,
+        newValue: {
+          version: 1,
+          partyType: input.partyType,
+          partyId: input.partyId,
+          balanceBefore: resultBalanceBefore,
+          balanceAfter: resultBalanceAfter,
+          excessUnallocatedAmount: resultExcessUnallocated ?? "0.00",
+        },
+      });
     }
 
     // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.
@@ -1230,7 +1367,19 @@ export async function createVoucherTx(
     // الاستيراد الديناميكي يمنع دورة create ⇄ approval وقت تهيئة الوحدات؛ الاعتماد نفسه
     // يجري داخل tx الحالية، لذلك لا يمكن أن يبقى طلب المالك معلّقاً إذا فشل الأثر المالي.
     const { approveVoucherTx } = await import("./approval");
-    const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+    const approval = await approveVoucherTx(
+      tx,
+      receiptId,
+      resolvedActor,
+      (supplierBookPlan || input.allowSupplierOverpay) && input.supplierCashSource
+        ? { cashSource: input.supplierCashSource }
+        : undefined,
+    );
+    if (approval.balanceBefore != null) resultBalanceBefore = approval.balanceBefore;
+    if (approval.balanceAfter != null) resultBalanceAfter = approval.balanceAfter;
+    if (approval.excessUnallocatedAmount != null) {
+      resultExcessUnallocated = approval.excessUnallocatedAmount;
+    }
     await logAuditTx(
       tx,
       {
@@ -1260,6 +1409,11 @@ export async function createVoucherTx(
     direction,
     approvalStatus:
       needsApproval && !ownerAutoApproves ? "PENDING_APPROVAL" : "APPROVED",
+    ...(resultBalanceBefore != null ? { balanceBefore: resultBalanceBefore } : {}),
+    ...(resultBalanceAfter != null ? { balanceAfter: resultBalanceAfter } : {}),
+    ...(resultExcessUnallocated != null
+      ? { excessUnallocatedAmount: resultExcessUnallocated }
+      : {}),
   };
 }
 
@@ -1384,7 +1538,18 @@ export async function createVoucher(
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
   return withMysqlDeadlockRetry(() =>
-    withSupplierBookVoucherTx(async tx => input.partyType === "CUSTOMER" || (input.voucherType === "RECEIPT" && input.partyType === "SUPPLIER") || (input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId))), async (tx) => {
+    withSupplierBookVoucherTx(
+      async (tx) =>
+        input.partyType === "CUSTOMER" ||
+        (input.voucherType === "RECEIPT" && input.partyType === "SUPPLIER") ||
+        (input.voucherType === "PAYMENT" &&
+          input.partyType === "SUPPLIER" &&
+          !!input.partyId &&
+          !isSystemPaymentReference(input.referenceNumber) &&
+          (await supplierScopeNeedsBookGateTx(tx, Number(input.partyId), {
+            allowOverpay: Boolean(input.allowSupplierOverpay),
+          }))),
+      async (tx) => {
       const result = await createVoucherTx(tx, input, actor);
       // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
       // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.

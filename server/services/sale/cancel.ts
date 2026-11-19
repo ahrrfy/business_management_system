@@ -62,6 +62,7 @@ import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
 import { cancelInvoiceDeliveryTx, invoiceDeliveryAmendmentTx } from "../delivery/invoiceAmendment";
 import { adjustCustomerBalance } from "../ledgerService";
+import { releaseHistoricalCreditOnInvoiceCancelTx } from "../customerReceiptSettlement";
 import {
   evaluateRefundOperationalDecision,
   OperationalApprovalRequiredError,
@@ -818,6 +819,16 @@ export async function cancelSaleInTx(
     const refundAmount = summary.refundAmount;
     const pendingRefundAmount = summary.pendingRefundAmount;
     const pendingRefundVoucherNumber = summary.pendingRefundVoucherNumber;
+
+    if (inv.customerId != null) {
+      await releaseHistoricalCreditOnInvoiceCancelTx(tx, {
+        invoiceId: input.invoiceId,
+        customerId: Number(inv.customerId),
+        branchId: Number(inv.branchId),
+        actor,
+        requestKey: input.clientRequestId ?? `cancel-${input.invoiceId}`,
+      });
+    }
 
     // Codex P2 (١٢/٨) — مزامنة الطلب الإلكتروني: فاتورة ONLINE مرتبطة بطلب في `onlineOrders`؛ الإلغاء
     // بلا مزامنة يترك الطلب SHIPPED/DELIVERED بينما المخزون رجع والقيد عُكس ⇒ طوابير المندوبين وتحليلات

@@ -11,6 +11,7 @@ import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
 import { FileSpreadsheet, Info, Printer } from "lucide-react";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { splitBidiTokens } from "@/lib/statementPeriodLedger";
 
 /** نبرة مؤشّر — مُعاد تصديرها من `@/lib/tone` (مصدرٌ واحد مشترك مع StatCard). */
 export type KpiTone = Tone;
@@ -142,10 +143,11 @@ export function ReportShell({
             return (
               <div key={i} className="min-w-32 flex-1 border-e border-border/70 px-2.5 py-0.5 text-center last:border-e-0">
                 <div className="flex items-center justify-center gap-1 text-2xs text-muted-foreground">
-                  {/* bidi: تسمياتٌ كثيرةٌ عبر مركز التقارير تحمل مدىً رقمياً بشرطة («0–30 يوم») —
-                      بلا dir="ltr" يُعاد ترتيبها بصرياً «30-0» داخل حاويةٍ RTL (أثبتَتْه جولةٌ
-                      بصرية بقياس مواضع الأحرف، ٣/٩). لا أثر على تسميةٍ عربيةٍ بحتة. */}
-                  <span className="truncate" dir="ltr">{k.label}</span>
+                  <span className="truncate">
+                    {splitBidiTokens(k.label).map((tok, idx) =>
+                      tok.ltr ? <bdi key={idx} dir="ltr">{tok.text}</bdi> : <span key={idx}>{tok.text}</span>
+                    )}
+                  </span>
                   {hint && (
                     <Popover>
                       <PopoverTrigger asChild>

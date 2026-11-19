@@ -1,6 +1,7 @@
 import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, lt } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, lt } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   branches,
   purchaseOrderControlRequests,
@@ -8,9 +9,16 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   shifts,
+  suppliers,
   users,
 } from "../../../drizzle/schema";
 import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
+import { appErrorMessage } from "@shared/errors";
+import {
+  assertSupplierInvoiceMatch,
+  assertUsdRateSanityTx,
+  computePurchaseUnitCostWarningsTx,
+} from "./order";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
@@ -398,6 +406,7 @@ export async function requestPurchaseOrderControlTx(
   tx: Tx,
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
+  options: { skipEvent?: boolean } = {},
 ) {
   const reason = validateReason(input.reason, "سبب طلب التحكم");
   const requestKey = validateKey(input.requestKey, "مفتاح طلب التحكم");
@@ -512,17 +521,19 @@ export async function requestPurchaseOrderControlTx(
     requestedBy: actor.userId,
   });
   const requestId = extractInsertId(result);
-  await appendPurchaseOrderEventTx(tx, {
-    eventKey: `PO-CONTROL-REQUEST:${requestKey}`,
-    purchaseOrderId: input.purchaseOrderId,
-    revisionId: Number(revisionId),
-    requestId,
-    branchId: Number(po.branchId),
-    eventType: `${input.kind}_REQUESTED`,
-    reason,
-    actorUserId: actor.userId,
-    payload: { baseOrderVersion: input.expectedVersion, payloadHash },
-  });
+  if (!options.skipEvent) {
+    await appendPurchaseOrderEventTx(tx, {
+      eventKey: `PO-CONTROL-REQUEST:${requestKey}`,
+      purchaseOrderId: input.purchaseOrderId,
+      revisionId: Number(revisionId),
+      requestId,
+      branchId: Number(po.branchId),
+      eventType: `${input.kind}_REQUESTED`,
+      reason,
+      actorUserId: actor.userId,
+      payload: { baseOrderVersion: input.expectedVersion, payloadHash },
+    });
+  }
   return { requestId, status: "PENDING" as const, idempotent: false as const };
 }
 
@@ -552,6 +563,10 @@ export async function submitPurchaseOrderForApproval(
     expectedVersion: number;
     reason: string;
     requestKey: string;
+    supplierInvoiceTotal?: string | null;
+    requireInvoiceMatch?: boolean;
+    confirmAnomalousRate?: boolean;
+    rateDeviationReason?: string | null;
   },
   actor: Actor,
 ) {
@@ -561,6 +576,12 @@ export async function submitPurchaseOrderForApproval(
     purchaseOrderId: input.purchaseOrderId,
     expectedVersion: input.expectedVersion,
     reason,
+    ...(input.supplierInvoiceTotal !== undefined
+      ? { supplierInvoiceTotal: input.supplierInvoiceTotal ?? null }
+      : {}),
+    ...(input.requireInvoiceMatch ? { requireInvoiceMatch: true } : {}),
+    ...(input.confirmAnomalousRate ? { confirmAnomalousRate: true } : {}),
+    ...(input.rateDeviationReason ? { rateDeviationReason: input.rateDeviationReason } : {}),
   });
   const result = await withTx(async (tx) => {
     const [po] = await tx
@@ -598,12 +619,25 @@ export async function submitPurchaseOrderForApproval(
         });
       }
       const replayShortage = await computeCashPurchaseShortageSummaryTx(tx, po);
+      const replayItems = await tx
+        .select({
+          variantId: purchaseOrderItems.variantId,
+          baseQuantity: purchaseOrderItems.baseQuantity,
+          total: purchaseOrderItems.total,
+        })
+        .from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+      const replayCostWarnings = await computePurchaseUnitCostWarningsTx(
+        tx,
+        replayItems,
+      );
       return {
         purchaseOrderId: input.purchaseOrderId,
         requestId: replay,
         status: request.status,
         shortageWarning: replayShortage?.hasShortage ? replayShortage : null,
         goodsPaymentSummary: replayShortage,
+        unitCostWarnings: replayCostWarnings,
         idempotent: true as const,
       };
     }
@@ -625,6 +659,86 @@ export async function submitPurchaseOrderForApproval(
         message: "أمر الشراء بلا مراجعة ثابتة حالية",
       });
     }
+    if (
+      input.requireInvoiceMatch &&
+      (input.supplierInvoiceTotal == null ||
+        String(input.supplierInvoiceTotal).trim() === "")
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "إدخال إجمالي الفاتورة الورقية مطلوب قبل الإرسال للاعتماد",
+          why: "التطابق المسبق مع الفاتورة الورقية يمنع ترحيل مبالغ أو أسعار صرف خاطئة",
+          doThis: "أدخل المبلغ الإجمالي المثبت في فاتورة المورد ثم أعد الإرسال",
+        }),
+      });
+    }
+    if (
+      input.supplierInvoiceTotal != null &&
+      String(input.supplierInvoiceTotal).trim() !== ""
+    ) {
+      assertSupplierInvoiceMatch(
+        String(input.supplierInvoiceTotal),
+        po.agreedCurrency === "USD" ? money(po.usdTotal ?? "0") : money(po.total),
+        po.agreedCurrency === "USD" ? "USD" : "IQD",
+      );
+    }
+    let anomalousRateConfirmed = false;
+    if (po.agreedCurrency === "USD") {
+      let alreadyConfirmedOnRevision = false;
+      if (!input.confirmAnomalousRate) {
+        const [revEvent] = await tx
+          .select({ payloadCanonical: purchaseOrderEvents.payloadCanonical })
+          .from(purchaseOrderEvents)
+          .where(
+            and(
+              eq(purchaseOrderEvents.purchaseOrderId, input.purchaseOrderId),
+              eq(purchaseOrderEvents.revisionId, Number(po.currentRevisionId)),
+              inArray(purchaseOrderEvents.eventType, [
+                "ORDER_CREATED",
+                "REVISION_CREATED",
+              ]),
+            ),
+          )
+          .orderBy(desc(purchaseOrderEvents.id))
+          .limit(1);
+        if (revEvent?.payloadCanonical) {
+          try {
+            const parsed = JSON.parse(revEvent.payloadCanonical) as {
+              payload?: { anomalousRateConfirmed?: unknown };
+            };
+            alreadyConfirmedOnRevision =
+              parsed.payload?.anomalousRateConfirmed === true;
+          } catch {
+            alreadyConfirmedOnRevision = false;
+          }
+        }
+      }
+      if (!alreadyConfirmedOnRevision) {
+        const sanityRes = await assertUsdRateSanityTx(tx, {
+          branchId: Number(po.branchId),
+          agreedCurrency: "USD",
+          agreedRate: po.agreedRate,
+          confirmAnomalousRate: input.confirmAnomalousRate,
+          rateDeviationReason: input.rateDeviationReason,
+          actor,
+          excludePurchaseOrderId: Number(po.id),
+        });
+        anomalousRateConfirmed = sanityRes.anomalousConfirmed;
+      }
+    }
+    const poItems = await tx
+      .select({
+        variantId: purchaseOrderItems.variantId,
+        baseQuantity: purchaseOrderItems.baseQuantity,
+        total: purchaseOrderItems.total,
+      })
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    const unitCostWarnings = await computePurchaseUnitCostWarningsTx(
+      tx,
+      poItems,
+    );
     // يفشل الإرسال كله إن كانت سياسة الفرع تتطلب استثناءً طارئاً لم يُعتمد بعد.
     await assertRequisitionOrEmergencyTx(tx, {
       purchaseOrderId: input.purchaseOrderId,
@@ -655,6 +769,7 @@ export async function submitPurchaseOrderForApproval(
         reason,
       },
       actor,
+      { skipEvent: true },
     );
     await appendPurchaseOrderEventTx(tx, {
       eventKey: `PO-SUBMITTED:${requestKey}`,
@@ -668,6 +783,16 @@ export async function submitPurchaseOrderForApproval(
       payload: {
         previousVersion: input.expectedVersion,
         version: Number(updated.version),
+        ...(input.supplierInvoiceTotal
+          ? { supplierInvoiceTotal: input.supplierInvoiceTotal }
+          : {}),
+        ...(anomalousRateConfirmed
+          ? {
+              anomalousRateConfirmed: true,
+              rateDeviationReason: input.rateDeviationReason ?? null,
+            }
+          : {}),
+        ...(unitCostWarnings.length > 0 ? { unitCostWarnings } : {}),
       },
     });
     await recordIdempotencyKey(
@@ -685,6 +810,7 @@ export async function submitPurchaseOrderForApproval(
       version: Number(updated.version),
       shortageWarning: shortageSummary?.hasShortage ? shortageSummary : null,
       goodsPaymentSummary: shortageSummary,
+      unitCostWarnings,
       idempotent: false as const,
     };
   });
@@ -1217,6 +1343,8 @@ export async function listPendingPurchaseOrderControls(
   page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ) {
   const db = requireDb();
+  const requesterUser = alias(users, "po_control_requester");
+  const creatorUser = alias(users, "po_control_creator");
   const branchCondition =
     actor.role === "admin"
       ? undefined
@@ -1227,6 +1355,13 @@ export async function listPendingPurchaseOrderControls(
       requestKey: purchaseOrderControlRequests.requestKey,
       purchaseOrderId: purchaseOrderControlRequests.purchaseOrderId,
       poNumber: purchaseOrders.poNumber,
+      supplierId: purchaseOrders.supplierId,
+      supplierName: suppliers.name,
+      total: purchaseOrders.total,
+      agreedCurrency: purchaseOrders.agreedCurrency,
+      agreedRate: purchaseOrders.agreedRate,
+      usdTotal: purchaseOrders.usdTotal,
+      settlementType: purchaseOrders.settlementType,
       revisionId: purchaseOrderControlRequests.revisionId,
       branchId: purchaseOrderControlRequests.branchId,
       kind: purchaseOrderControlRequests.kind,
@@ -1234,9 +1369,10 @@ export async function listPendingPurchaseOrderControls(
       reason: purchaseOrderControlRequests.reason,
       baseOrderVersion: purchaseOrderControlRequests.baseOrderVersion,
       requestedBy: purchaseOrderControlRequests.requestedBy,
-      requestedByName: users.name,
+      requestedByName: requesterUser.name,
       requestedAt: purchaseOrderControlRequests.requestedAt,
       creatorId: purchaseOrders.createdBy,
+      creatorName: creatorUser.name,
       lastEditedBy: purchaseOrders.lastEditedBy,
       orderVersion: purchaseOrders.version,
       orderStatus: purchaseOrders.status,
@@ -1250,7 +1386,9 @@ export async function listPendingPurchaseOrderControls(
       purchaseOrders,
       eq(purchaseOrderControlRequests.purchaseOrderId, purchaseOrders.id),
     )
-    .leftJoin(users, eq(purchaseOrderControlRequests.requestedBy, users.id))
+    .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+    .leftJoin(requesterUser, eq(purchaseOrderControlRequests.requestedBy, requesterUser.id))
+    .leftJoin(creatorUser, eq(purchaseOrders.createdBy, creatorUser.id))
     .where(
       and(
         eq(purchaseOrderControlRequests.status, "PENDING"),
@@ -1297,9 +1435,26 @@ export async function listPurchaseOrderEvents(
   if (!po)
     throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
   assertPurchaseBranch(po, actor);
-  return requireDb()
-    .select()
+  const rows = await requireDb()
+    .select({
+      ...getTableColumns(purchaseOrderEvents),
+      actorName: users.name,
+    })
     .from(purchaseOrderEvents)
+    .leftJoin(users, eq(purchaseOrderEvents.actorUserId, users.id))
     .where(eq(purchaseOrderEvents.purchaseOrderId, purchaseOrderId))
     .orderBy(desc(purchaseOrderEvents.id));
+  const submittedKeys = new Set(
+    rows
+      .filter((r) => r.eventType === "ORDER_SUBMITTED" && r.requestId != null)
+      .map((r) => `${Number(r.requestId)}:${r.reason ?? ""}`),
+  );
+  return rows.filter(
+    (r) =>
+      !(
+        r.eventType === "APPROVE_REVISION_REQUESTED" &&
+        r.requestId != null &&
+        submittedKeys.has(`${Number(r.requestId)}:${r.reason ?? ""}`)
+      ),
+  );
 }

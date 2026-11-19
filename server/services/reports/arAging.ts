@@ -5,9 +5,12 @@ import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
 import { isDeadInvoiceStatus, isVoidedInvoiceStatus } from "@shared/invoiceStatus";
 import {
   accountingEntries,
+  customerReceiptSettlements,
   customers,
   invoiceItems,
   invoices,
+  journalEntries,
+  journalLines,
   orderPayments,
   productVariants,
   products,
@@ -29,7 +32,7 @@ import type {
 import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 
 /** Signed AR effects without a receipt; other ADJUST/DELIVERY_REMIT entries stay excluded. */
-function invoiceCorrectionArMovement(
+export function invoiceCorrectionArMovement(
   entryType: SQLWrapper = accountingEntries.entryType,
   dedupeKey: SQLWrapper = accountingEntries.dedupeKey,
 ) {
@@ -115,22 +118,40 @@ export async function getARAging(opts: { branchId?: number; limit?: number | nul
   // الدفتري الموجب للشركة؛ لا نعيد ديناً سُدد ولم تُحدّث تخصيصاته القديمة بعد.
   const branchBalanceJoin = opts.branchId
     ? sql`LEFT JOIN (
-        SELECT ae.customerId,
-          SUM(CASE
-            WHEN ae.entryType IN ('SALE','RETURN','OPENING') THEN ae.amount
-            WHEN ae.entryType = 'PAYMENT_IN' AND ae.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%' THEN 0
-            WHEN ae.entryType = 'PAYMENT_IN' THEN -CASE WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COLLECTION:%'
-              THEN COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp WHERE fcp.receiptId=ae.receiptId AND fcp.kind='COLLECTION'),0) ELSE ae.amount END
-            WHEN ae.entryType = 'PAYMENT_OUT' AND ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%' THEN 0
-            WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount
-            WHEN ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)} THEN ae.amount
-            ELSE 0 END) AS balance
-        FROM accountingEntries ae
-        WHERE ae.customerId IS NOT NULL
-          AND ae.branchId = ${opts.branchId}
-          AND (ae.entryType IN ('SALE','RETURN','OPENING','PAYMENT_IN','PAYMENT_OUT')
-            OR ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)})
-        GROUP BY ae.customerId
+        SELECT custId AS customerId, SUM(bal) AS balance
+        FROM (
+          SELECT ae.customerId AS custId,
+            SUM(CASE
+              WHEN ae.entryType IN ('SALE','RETURN','OPENING') THEN ae.amount
+              WHEN ae.entryType = 'PAYMENT_IN' AND ae.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%' THEN 0
+              WHEN ae.entryType = 'PAYMENT_IN' THEN -CASE WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COLLECTION:%'
+                THEN COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp WHERE fcp.receiptId=ae.receiptId AND fcp.kind='COLLECTION'),0) ELSE ae.amount END
+              WHEN ae.entryType = 'PAYMENT_OUT' AND ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%' THEN 0
+              WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount
+              WHEN ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)} THEN ae.amount
+              WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'CUSTOMER_INTERBRANCH_OUT:%' THEN ae.amount
+              WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'CUSTOMER_INTERBRANCH_IN:%' THEN -ae.amount
+              ELSE 0 END) AS bal
+          FROM accountingEntries ae
+          WHERE ae.customerId IS NOT NULL
+            AND ae.branchId = ${opts.branchId}
+            AND (ae.entryType IN ('SALE','RETURN','OPENING','PAYMENT_IN','PAYMENT_OUT')
+              OR ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)}
+              OR (ae.entryType = 'ADJUST' AND (ae.dedupeKey LIKE 'CUSTOMER_INTERBRANCH_OUT:%' OR ae.dedupeKey LIKE 'CUSTOMER_INTERBRANCH_IN:%')))
+          GROUP BY ae.customerId
+          UNION ALL
+          SELECT jl.customerId AS custId,
+            SUM(CAST(jl.debit AS DECIMAL(15,2)) - CAST(jl.credit AS DECIMAL(15,2))) AS bal
+          FROM journalLines jl
+          INNER JOIN journalEntries je ON je.id = jl.journalId
+          WHERE jl.customerId IS NOT NULL
+            AND jl.role IN ('AR', 'ACCOUNTS_RECEIVABLE')
+            AND je.status = 'POSTED'
+            AND je.postingProfile = 'MANUAL_JOURNAL'
+            AND COALESCE(jl.branchId, je.branchId) = ${opts.branchId}
+          GROUP BY jl.customerId
+        ) t
+        GROUP BY custId
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
@@ -272,6 +293,18 @@ export async function getARAging(opts: { branchId?: number; limit?: number | nul
     });
 }
 
+export interface StatementLineItem {
+  id: number;
+  productId: number | null;
+  variantId: number | null;
+  productName: string;
+  sku: string | null;
+  quantity: string;
+  unitPrice: string;
+  discount: string;
+  total: string;
+}
+
 export interface CustomerStatementInvoice {
   id: number;
   invoiceNumber: string;
@@ -291,6 +324,7 @@ export interface CustomerStatementInvoice {
   sourceType: string;
   createdBy: number | null;
   createdByName: string | null;
+  items?: StatementLineItem[];
   provenance?: FinancialCellProvenancePayload;
 }
 
@@ -309,15 +343,36 @@ export interface CustomerStatementPayment {
   description: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  balanceBefore?: string;
+  balanceAfter?: string;
   provenance?: FinancialCellProvenancePayload;
 }
 
 export interface CustomerStatementResult {
   customer: Pick<typeof customers.$inferSelect, "id" | "name" | "phone" | "customerType" | "creditLimit" | "defaultPriceTier" | "currentBalance">;
   invoices: CustomerStatementInvoice[];
+  openInvoices: Array<{
+    id: number;
+    invoiceNumber: string;
+    invoiceDate: Date;
+    dueDate: Date | null;
+    branchId: number | null;
+    total: string;
+    paidAmount: string;
+    returnedTotal: string;
+    remainingAmount: string;
+    status: string;
+    sourceType: string;
+  }>;
   payments: CustomerStatementPayment[];
   fulfillmentCharges: Array<{id:number;description:string;category:string;amount:string;paidAmount:string;refundedAmount:string;remainingAmount:string;createdAt:Date}>;
   fulfillmentHeldExcess: string;
+  ledger: {
+    openingBeforeFrom: string;
+    totalDebit: string;
+    totalCredit: string;
+    closingBalance: string;
+  };
   summary: {
     totalSales: string;
     totalPaid: string;
@@ -327,6 +382,8 @@ export interface CustomerStatementResult {
     scopedBranchId: number | null;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) كل النشاط السابق للفترة. */
     openingBalance: string;
+    openingBeforeFrom: string;
+    unallocatedCredit: string;
     /** ش٤ (I11): صافي عرابين المسوّدات المحتجزة (غير المطبَّقة على فاتورة) — سطر إفصاح. */
     heldDepositsTotal: string;
   };
@@ -373,7 +430,7 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
   // اليوم لا يجوز أن يدخل رصيد كشفٍ بدأ الشهر الماضي — وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره.
   const fromTs = from ? `${from} 00:00:00` : null;
   // مع to وحده تُحمَل قيود الافتتاح حتى نهايته فقط، لا التصحيحات اللاحقة للفترة.
-  const openingBeforeTs = fromTs ?? (to ? `${nextDayStr(to)} 00:00:00` : null);
+  const openingBeforeDate = from ?? (to ? nextDayStr(to) : null);
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
@@ -382,7 +439,7 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
         eq(accountingEntries.entryType, "OPENING"),
         eq(accountingEntries.customerId, customerId),
         branchId ? eq(accountingEntries.branchId, branchId) : undefined,
-        openingBeforeTs ? sql`${accountingEntries.entryDate} < ${openingBeforeTs}` : undefined,
+        openingBeforeDate ? sql`${accountingEntries.entryDate} < ${openingBeforeDate}` : undefined,
       ),
     );
   let opening = money(openRow[0]?.v ?? 0);
@@ -452,20 +509,45 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
         branchId ? eq(accountingEntries.branchId, branchId) : undefined,
         sql`(${accountingEntries.invoiceId} IS NOT NULL OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CUSTODY:%')`,
         sql`${codReceipts.invoiceId} IS NULL`,
-        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined
+        from ? sql`${accountingEntries.entryDate} < ${from}` : undefined
       )
     );
-  const correctionRow = await db.select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
+  const correctionRow = await db.select({
+    v: sql<string>`COALESCE(SUM(CASE
+      WHEN ${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_IN:%' THEN -${accountingEntries.amount}
+      ELSE ${accountingEntries.amount}
+    END), 0)`,
+  })
     .from(accountingEntries).where(and(
-      eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement(),
+      eq(accountingEntries.customerId, customerId),
+      sql`(${invoiceCorrectionArMovement()} OR (${accountingEntries.entryType} = 'ADJUST' AND (${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_IN:%')))`,
       branchId ? eq(accountingEntries.branchId, branchId) : undefined,
-      fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
+      from ? sql`${accountingEntries.entryDate} < ${from}` : undefined,
     ));
+  const manualArRow = await db
+    .select({
+      v: sql<string>`COALESCE(SUM(CAST(${journalLines.debit} AS DECIMAL(15,2)) - CAST(${journalLines.credit} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.customerId, customerId),
+        inArray(journalLines.role, ["AR", "ACCOUNTS_RECEIVABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+        branchId
+          ? sql`COALESCE(${journalLines.branchId}, ${journalEntries.branchId}) = ${branchId}`
+          : undefined,
+        from ? sql`${journalEntries.entryDate} < ${from}` : undefined,
+      ),
+    );
   return opening
     .plus(money(invRow[0]?.v ?? 0))
     .minus(money(payRow[0]?.v ?? 0))
     .minus(money(codPayRow[0]?.v ?? 0))
     .plus(money(correctionRow[0]?.v ?? 0))
+    .plus(money(manualArRow[0]?.v ?? 0))
     .plus(money(retRow[0]?.v ?? 0));
 }
 
@@ -474,7 +556,7 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
  *  والملخّص يعكس مستندات الفترة المعروضة. بلا فترة = السلوك القديم نفسه. */
 export async function getCustomerStatement(
   customerId: number,
-  period: StatementPeriod = {}
+  period: StatementPeriod & { includeItems?: boolean } = {}
 ): Promise<CustomerStatementResult | null> {
   const db = getDb();
   if (!db) return null;
@@ -606,7 +688,10 @@ export async function getCustomerStatement(
     .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...returnConds));
 
-  const correctionConds = [eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement()];
+  const correctionConds = [
+    eq(accountingEntries.customerId, customerId),
+    sql`(${invoiceCorrectionArMovement()} OR (${accountingEntries.entryType} = 'ADJUST' AND (${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_IN:%')))`,
+  ];
   if (from) correctionConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) correctionConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   if (branchId) correctionConds.push(eq(accountingEntries.branchId, branchId));
@@ -616,7 +701,10 @@ export async function getCustomerStatement(
       dedupeKey: accountingEntries.dedupeKey,
       invoiceId: accountingEntries.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
-      amount: accountingEntries.amount,
+      amount: sql<string>`CASE
+        WHEN ${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_IN:%' THEN -${accountingEntries.amount}
+        ELSE ${accountingEntries.amount}
+      END`,
       createdAt: accountingEntries.entryDate,
       notes: accountingEntries.notes,
       createdBy: accountingEntries.createdBy,
@@ -626,6 +714,33 @@ export async function getCustomerStatement(
     .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...correctionConds));
 
+  const manualArMovements = await db
+    .select({
+      id: journalLines.id,
+      entryDate: journalEntries.entryDate,
+      debit: journalLines.debit,
+      credit: journalLines.credit,
+      notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: accountingEntries.createdByNameSnapshot,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .leftJoin(accountingEntries, eq(accountingEntries.id, journalEntries.entryId))
+    .where(
+      and(
+        eq(journalLines.customerId, customerId),
+        inArray(journalLines.role, ["AR", "ACCOUNTS_RECEIVABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+        branchId
+          ? sql`COALESCE(${journalLines.branchId}, ${journalEntries.branchId}) = ${branchId}`
+          : undefined,
+        from ? sql`${journalEntries.entryDate} >= ${from}` : undefined,
+        to ? sql`${journalEntries.entryDate} <= ${to}` : undefined,
+      ),
+    );
+
   // ب-١ (١٦/٨): قيود تصحيح الرصيد الافتتاحيّ **الواقعة داخل الفترة** حركةٌ في الكشف لا رصيدٌ
   // مُرحَّل (المُرحَّل صار مقصوراً على ما قبل `from`). بدون هذا السطر يفقد الكشف اتزانه:
   // المُرحَّل يستبعدها والحركة لا تعرضها ⇒ الختاميّ ≠ الرصيد الجاري بمقدار التصحيح.
@@ -634,8 +749,8 @@ export async function getCustomerStatement(
     eq(accountingEntries.customerId, customerId),
   ];
   if (branchId) openingMoveConds.push(eq(accountingEntries.branchId, branchId));
-  if (from) openingMoveConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
-  if (to) openingMoveConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  if (from) openingMoveConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
+  if (to) openingMoveConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
   // بلا فترة: المُرحَّل يشمل كلّ القيود أصلاً ⇒ لا نُكرّرها حركةً.
   const openingAdjustments = from
     ? await db
@@ -715,14 +830,20 @@ export async function getCustomerStatement(
 
   const invoiceIds = invs.map((i) => Number(i.id)).filter((id) => id > 0);
   const invoiceItemMap = new Map<number, ProvenanceSubItem[]>();
+  const detailedItemsMap = new Map<number, StatementLineItem[]>();
+  const includeItems = period.includeItems !== false;
   if (invoiceIds.length > 0) {
     const itemRows = await db
       .select({
         invoiceId: invoiceItems.invoiceId,
         id: invoiceItems.id,
+        productId: productVariants.productId,
+        variantId: invoiceItems.variantId,
         name: sql<string>`COALESCE(${invoiceItems.itemNameSnapshot}, ${products.name})`,
+        sku: productVariants.sku,
         quantity: invoiceItems.quantity,
         unitPrice: invoiceItems.unitPrice,
+        discountAmount: invoiceItems.discountAmount,
         total: invoiceItems.total,
       })
       .from(invoiceItems)
@@ -742,8 +863,65 @@ export async function getCustomerStatement(
         type: "item",
       });
       invoiceItemMap.set(invId, list);
+      if (includeItems) {
+        const dList = detailedItemsMap.get(invId) ?? [];
+        dList.push({
+          id: Number(it.id),
+          productId: it.productId != null ? Number(it.productId) : null,
+          variantId: it.variantId != null ? Number(it.variantId) : null,
+          productName: it.name || "بند فاتورة",
+          sku: it.sku ?? null,
+          quantity: String(it.quantity ?? "0"),
+          unitPrice: toDbMoney(money(it.unitPrice ?? 0)),
+          discount: toDbMoney(money(it.discountAmount ?? 0)),
+          total: toDbMoney(money(it.total ?? 0)),
+        });
+        detailedItemsMap.set(invId, dList);
+      }
     }
   }
+
+  const openInvoicesRows = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceDate: invoices.invoiceDate,
+      dueDate: invoices.dueDate,
+      branchId: invoices.branchId,
+      total: invoices.total,
+      paidAmount: invoices.paidAmount,
+      returnedTotal: invoices.returnedTotal,
+      status: invoices.status,
+      sourceType: invoices.sourceType,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.customerId, customerId),
+        inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
+        branchId ? eq(invoices.branchId, branchId) : undefined,
+      ),
+    )
+    .orderBy(asc(invoices.invoiceDate), asc(invoices.id));
+
+  const unallocRows = await db
+    .select({
+      amount: sql<string>`COALESCE(SUM(${customerReceiptSettlements.unallocatedAmount}), 0)`,
+    })
+    .from(customerReceiptSettlements)
+    .where(
+      and(
+        eq(customerReceiptSettlements.customerId, customerId),
+        isNull(customerReceiptSettlements.reversalReceiptId),
+        branchId ? eq(customerReceiptSettlements.branchId, branchId) : undefined,
+      ),
+    );
+  const trackedUnallocCredit = money(unallocRows[0]?.amount ?? 0);
+  const unallocatedCredit = trackedUnallocCredit.gt(0)
+    ? trackedUnallocCredit
+    : currentBalance.lt(0)
+      ? currentBalance.abs()
+      : money(0);
 
   const buildPaymentProvenance = (p: {
     id: number;
@@ -948,9 +1126,23 @@ export async function getCustomerStatement(
         sourceType: i.sourceType,
         createdBy: i.createdBy ? Number(i.createdBy) : null,
         createdByName: i.createdByName,
+        ...(includeItems ? { items: detailedItemsMap.get(Number(i.id)) ?? [] } : {}),
         provenance: invoiceProvenance,
       };
     }),
+    openInvoices: openInvoicesRows.map((o) => ({
+      id: Number(o.id),
+      invoiceNumber: o.invoiceNumber,
+      invoiceDate: o.invoiceDate,
+      dueDate: o.dueDate,
+      branchId: o.branchId != null ? Number(o.branchId) : null,
+      total: toDbMoney(money(o.total)),
+      paidAmount: toDbMoney(money(o.paidAmount)),
+      returnedTotal: toDbMoney(money(o.returnedTotal ?? 0)),
+      remainingAmount: toDbMoney(openBalanceOf(o, "COLLECTIBLE")),
+      status: o.status,
+      sourceType: o.sourceType,
+    })),
     payments: [
       ...correctionMovements.map((e) => {
         const item = {
@@ -1054,7 +1246,78 @@ export async function getCustomerStatement(
           provenance: buildPaymentProvenance(item),
         };
       }),
+      ...manualArMovements.flatMap((m): CustomerStatementPayment[] => {
+        const debit = money(m.debit);
+        const credit = money(m.credit);
+        const out: CustomerStatementPayment[] = [];
+        if (debit.gt(0)) {
+          const item = {
+            id: -4_000_000_000 - Number(m.id),
+            invoiceId: null as number | null,
+            invoiceNumber: null as string | null,
+            direction: "OUT" as const,
+            amount: debit.toFixed(2),
+            paymentMethod: "MANUAL_JOURNAL",
+            status: "COMPLETED",
+            createdAt: new Date(m.entryDate),
+            isStandalone: true,
+            voucherNumber: null,
+            description: m.notes ? String(m.notes) : "قيد يدوي على ذمة العميل",
+            createdBy: m.createdBy ? Number(m.createdBy) : null,
+            createdByName: m.createdByName ?? null,
+          };
+          out.push({ ...item, provenance: buildPaymentProvenance(item) });
+        }
+        if (credit.gt(0)) {
+          const item = {
+            id: -4_500_000_000 - Number(m.id),
+            invoiceId: null as number | null,
+            invoiceNumber: null as string | null,
+            direction: "IN" as const,
+            amount: credit.toFixed(2),
+            paymentMethod: "MANUAL_JOURNAL",
+            status: "COMPLETED",
+            createdAt: new Date(m.entryDate),
+            isStandalone: true,
+            voucherNumber: null,
+            description: m.notes ? String(m.notes) : "قيد يدوي على ذمة العميل",
+            createdBy: m.createdBy ? Number(m.createdBy) : null,
+            createdByName: m.createdByName ?? null,
+          };
+          out.push({ ...item, provenance: buildPaymentProvenance(item) });
+        }
+        return out;
+      }),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    ...(() => {
+      const invDebit = invs.reduce((acc, i) => acc.plus(money(i.ledgerTotal ?? 0)), money(0));
+      const allPayments = [
+        ...correctionMovements.map((e) => ({ dir: money(e.amount).isNegative() ? "IN" : "OUT", amt: money(e.amount).abs() })),
+        ...payments.map((p) => ({ dir: p.direction, amt: money(p.amount) })),
+        ...codPayments.map((e) => ({ dir: "IN", amt: money(e.amount) })),
+        ...returnPayments.map((e) => ({ dir: "IN", amt: money(e.amount).abs() })),
+        ...openingAdjustments.map((e) => ({ dir: money(e.amount).isNegative() ? "IN" : "OUT", amt: money(e.amount).abs() })),
+        ...manualArMovements.flatMap((m) => [
+          ...(money(m.debit).gt(0) ? [{ dir: "OUT" as const, amt: money(m.debit) }] : []),
+          ...(money(m.credit).gt(0) ? [{ dir: "IN" as const, amt: money(m.credit) }] : []),
+        ]),
+      ];
+      let ledgerDebit = invDebit;
+      let ledgerCredit = money(0);
+      for (const mv of allPayments) {
+        if (mv.dir === "OUT") ledgerDebit = ledgerDebit.plus(mv.amt);
+        else ledgerCredit = ledgerCredit.plus(mv.amt);
+      }
+      const closingBalance = openingBalance.plus(ledgerDebit).minus(ledgerCredit);
+      return {
+        ledger: {
+          openingBeforeFrom: toDbMoney(openingBalance),
+          totalDebit: toDbMoney(ledgerDebit),
+          totalCredit: toDbMoney(ledgerCredit),
+          closingBalance: toDbMoney(closingBalance),
+        },
+      };
+    })(),
     summary: {
       totalSales: toDbMoney(totalSales),
       totalPaid: toDbMoney(totalPaid),
@@ -1063,6 +1326,8 @@ export async function getCustomerStatement(
       companyCurrentBalance: String(c.currentBalance ?? "0"),
       scopedBranchId: branchId ?? null,
       openingBalance: toDbMoney(openingBalance),
+      openingBeforeFrom: toDbMoney(openingBalance),
+      unallocatedCredit: toDbMoney(unallocatedCredit),
       heldDepositsTotal: toDbMoney(heldDeposits),
     },
   };

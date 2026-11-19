@@ -1,10 +1,16 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
+import { assessUsdRateSanity } from "@shared/balanceTrail";
 import { purchaseTenderSchema } from "@shared/purchaseTender";
 import { loadPurchasePaymentEvidence } from "../services/purchase/paymentEvidence";
 import { readDeclaredPurchaseCashSourceTx } from "../services/purchase/supplierPayments";
+import {
+  computePurchaseUnitCostWarningsTx,
+  readReferenceUsdRateTx,
+} from "../services/purchase/order";
 import {
   listPurchaseTenderSources,
   readPurchaseTenderTx,
@@ -341,6 +347,8 @@ export const purchaseRouter = router({
             )
             .max(500)
             .optional(),
+          confirmAnomalousRate: z.boolean().optional(),
+          rateDeviationReason: z.string().trim().max(500).optional(),
         })
         .strict(),
     )
@@ -364,6 +372,7 @@ export const purchaseRouter = router({
           userId: ctx.user.id,
           branchId: effectiveBranchId,
           role: ctx.user.role,
+          isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
         },
       );
       await logAudit(ctx, {
@@ -430,6 +439,8 @@ export const purchaseRouter = router({
           )
           .max(500)
           .optional(),
+        confirmAnomalousRate: z.boolean().optional(),
+        rateDeviationReason: z.string().trim().max(500).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -443,6 +454,7 @@ export const purchaseRouter = router({
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
       });
       // لقطة تدقيق بمبلغٍ وعددٍ لا بـ«عُدِّل» فقط — تعديلُ سعرٍ أو مورّدٍ قبل الاستلام يغيّر AP
       // التي ستُرحَّل لاحقاً، فيلزم أثرٌ رقميّ يُراجَع (نفس درس المسار د-١ على تعديل الأسعار).
@@ -472,6 +484,10 @@ export const purchaseRouter = router({
         expectedVersion: z.number().int().positive(),
         reason: z.string().trim().min(3).max(500),
         clientRequestId: z.string().trim().min(1).max(80),
+        supplierInvoiceTotal: nonNegMoneyString.optional(),
+        requireInvoiceMatch: z.boolean().optional(),
+        confirmAnomalousRate: z.boolean().optional(),
+        rateDeviationReason: z.string().trim().max(500).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -487,11 +503,16 @@ export const purchaseRouter = router({
           expectedVersion: input.expectedVersion,
           reason: input.reason,
           requestKey: input.clientRequestId,
+          supplierInvoiceTotal: input.supplierInvoiceTotal,
+          requireInvoiceMatch: input.requireInvoiceMatch,
+          confirmAnomalousRate: input.confirmAnomalousRate,
+          rateDeviationReason: input.rateDeviationReason,
         },
         {
           userId: ctx.user.id,
           branchId: Number(ctx.user.branchId),
           role: ctx.user.role,
+          isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
         },
       );
       await logAudit(ctx, {
@@ -708,6 +729,7 @@ export const purchaseRouter = router({
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
       }),
     ),
 
@@ -1075,6 +1097,8 @@ export const purchaseRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
+      const creatorUser = alias(users, "po_list_creator");
+      const approverUser = alias(users, "po_list_approver");
       const conds = buildPurchasesListConds(input, ctx.scopedBranchId);
       // /simplify ٣٠/٦: paginateKeyset يُدير cursor/limit/offset/hasMore بدل التَكرار اليَدوي.
       const { rows } = await paginateKeyset({
@@ -1109,14 +1133,17 @@ export const purchaseRouter = router({
               currentRevisionId: purchaseOrders.currentRevisionId,
               approvedRevisionId: purchaseOrders.approvedRevisionId,
               createdBy: purchaseOrders.createdBy,
-              createdByName: users.name,
+              createdByName: creatorUser.name,
+              approvedBy: purchaseOrders.approvedBy,
+              approvedByName: approverUser.name,
               lastEditedBy: purchaseOrders.lastEditedBy,
               submittedBy: purchaseOrders.submittedBy,
               supplierName: suppliers.name,
             })
             .from(purchaseOrders)
             .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
-            .leftJoin(users, eq(purchaseOrders.createdBy, users.id))
+            .leftJoin(creatorUser, eq(purchaseOrders.createdBy, creatorUser.id))
+            .leftJoin(approverUser, eq(purchaseOrders.approvedBy, approverUser.id))
             .where(where)
             .orderBy(desc(purchaseOrders.id))
             .limit(lim)
@@ -1198,6 +1225,8 @@ export const purchaseRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return null;
+      const creatorUser = alias(users, "po_get_creator");
+      const approverUser = alias(users, "po_get_approver");
       const po = (
         await db
           .select({
@@ -1227,10 +1256,12 @@ export const purchaseRouter = router({
             currentRevisionId: purchaseOrders.currentRevisionId,
             approvedRevisionId: purchaseOrders.approvedRevisionId,
             createdBy: purchaseOrders.createdBy,
+            createdByName: creatorUser.name,
             lastEditedBy: purchaseOrders.lastEditedBy,
             submittedBy: purchaseOrders.submittedBy,
             submittedAt: purchaseOrders.submittedAt,
             approvedBy: purchaseOrders.approvedBy,
+            approvedByName: approverUser.name,
             approvedAt: purchaseOrders.approvedAt,
             notes: purchaseOrders.notes,
             // usd-po-reconcile: للمقارنة البصرية لاحقاً بسعر التسديد الفعلي عبر الصيرفة.
@@ -1244,6 +1275,8 @@ export const purchaseRouter = router({
           })
           .from(purchaseOrders)
           .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+          .leftJoin(creatorUser, eq(purchaseOrders.createdBy, creatorUser.id))
+          .leftJoin(approverUser, eq(purchaseOrders.approvedBy, approverUser.id))
           .where(eq(purchaseOrders.id, input.purchaseOrderId))
           .limit(1)
       )[0];
@@ -1269,6 +1302,7 @@ export const purchaseRouter = router({
           // السعر **قبل الخصم** — المحرّر يُعيد تحميله كي يُعاد توزيع الخصم من أصله لا من الصافي.
           listUnitPrice: purchaseOrderItems.listUnitPrice,
           usdListUnitPrice: purchaseOrderItems.usdListUnitPrice,
+          costPrice: productVariants.costPrice,
           productName: products.name,
           sku: productVariants.sku,
           variantName: productVariants.variantName,
@@ -1595,6 +1629,7 @@ export const purchaseRouter = router({
               total: null,
               listUnitPrice: null,
               usdListUnitPrice: null,
+              costPrice: null,
             }) as unknown as typeof row,
         );
         return {
@@ -1603,6 +1638,8 @@ export const purchaseRouter = router({
           legacyCashSource: null,
           goodsPaymentSummary: null,
           paymentReceipts: [],
+          rateSanity: null,
+          unitCostWarnings: [],
           items: itemsMasked,
           nextAction,
           nextActionReason,
@@ -1622,12 +1659,33 @@ export const purchaseRouter = router({
               { gate: "NONE" },
             )
           : null;
+      const referenceUsdRate =
+        po.agreedCurrency === "USD" && po.branchId != null
+          ? await readReferenceUsdRateTx(db, Number(po.branchId), Number(po.id))
+          : null;
+      const rateSanity =
+        po.agreedCurrency === "USD"
+          ? {
+              ...assessUsdRateSanity(po.agreedRate, referenceUsdRate),
+              referenceUsdRate,
+            }
+          : null;
+      const unitCostWarnings = await computePurchaseUnitCostWarningsTx(
+        db,
+        items.map((item) => ({
+          variantId: Number(item.variantId),
+          baseQuantity: Number(item.baseQuantity ?? 0),
+          total: String(item.total ?? "0"),
+        })),
+      );
       return {
         ...po,
         tender,
         legacyCashSource,
         goodsPaymentSummary,
         paymentReceipts,
+        rateSanity,
+        unitCostWarnings,
         paidAmount: settlement.paidAmountIqd,
         paidUsd:
           po.agreedCurrency === "USD"

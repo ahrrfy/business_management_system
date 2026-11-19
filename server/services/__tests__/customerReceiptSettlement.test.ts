@@ -12,7 +12,9 @@ import {
 import { loadCustomerReceiptInvoicePayments } from "../customerReceiptProjection";
 import { getCustomerStatement } from "../reports/arAging";
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
-import { withGovernanceTx } from "../tx";
+import { clearCustomerCreditInterbranchTx } from "../customerReceiptSettlement";
+import { reconcileCustomerBalances } from "../reconcileService";
+import { withGovernanceTx, withTx } from "../tx";
 import { createVoucherTx } from "../voucher/create";
 import {
   approveVoucher,
@@ -1223,5 +1225,37 @@ describe("generic customer receipts allocate FIFO atomically", () => {
     expect((await invoice(partial)).status).toBe("PAID");
     expect(await balance()).toBe("0.00");
     expect(await cashNet()).toBe("2000.00");
+    expect(await reconcileCustomerBalances()).toEqual([]);
+  });
+
+  it("يغلق فاتورة في فرع مستهدف من رصيد دائن للعميل في فرع آخر عبر clearCustomerCreditInterbranchTx بلا حركة نقدية أو انحراف", async () => {
+    // سند قبض عام 1000 في الفرع 1 يصبح رصيداً دائناً للعميل
+    await receive("1000.00", "interbranch-source-rv");
+    expect(await balance()).toBe("-1000.00");
+
+    // فاتورة مفتوحة بمبلغ 1000 في الفرع 2 لنفس العميل
+    const targetInvId = await sale(1, 2, 1);
+    expect((await invoice(targetInvId)).status).toBe("PENDING");
+    expect(await balance()).toBe("0.00");
+
+    const res = await withTx((tx) =>
+      clearCustomerCreditInterbranchTx(
+        tx,
+        {
+          customerId: 1,
+          sourceBranchId: 1,
+          targetBranchId: 2,
+          invoiceId: targetInvId,
+          requestKey: "ibc-test-1",
+          note: "مقاصة تسوية فرعية",
+        },
+        admin,
+      ),
+    );
+    expect(res.settledAmount).toBe("1000.00");
+    expect(res.invoiceId).toBe(targetInvId);
+    expect((await invoice(targetInvId)).status).toBe("PAID");
+    expect(await balance()).toBe("0.00");
+    expect(await reconcileCustomerBalances()).toEqual([]);
   });
 });

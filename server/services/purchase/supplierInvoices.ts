@@ -50,6 +50,9 @@ import { appErrorMessage } from "@shared/errors";
 const supplierInvoiceCreator = alias(users, "supplierInvoiceCreator");
 const supplierInvoicePoster = alias(users, "supplierInvoicePoster");
 const supplierInvoicePo = alias(purchaseOrders, "supplierInvoicePo");
+const supplierInvoicePoCreator = alias(users, "supplierInvoicePoCreator");
+const supplierInvoicePoApprover = alias(users, "supplierInvoicePoApprover");
+const supplierInvoiceReqUser = alias(users, "supplierInvoiceReqUser");
 
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
@@ -406,6 +409,8 @@ export async function createSupplierInvoiceInTx(
      * the header discount a second time or re-deriving cents from unit prices.
      */
     approvedRevisionExactAmounts?: ApprovedRevisionExactAmount[];
+    /** Optional creator attribution when the PO approver auto-posts the invoice on behalf of the PO creator. */
+    attributedCreatedById?: number | null;
   } = {},
 ) {
   const clientRequestId = required(input.clientRequestId, "مفتاح الطلب", 120);
@@ -641,7 +646,10 @@ export async function createSupplierInvoiceInTx(
       payloadHash,
       evidenceType: input.evidenceType,
       evidenceReference,
-      createdBy: actor.userId,
+      createdBy:
+        options.attributedCreatedById != null
+          ? options.attributedCreatedById
+          : actor.userId,
     });
     const supplierInvoiceId = extractInsertId(inserted);
     await tx.insert(supplierInvoiceLines).values(
@@ -1374,12 +1382,18 @@ export async function getSupplierInvoice(
           updatedAt: supplierInvoices.updatedAt,
           legacyPoNumber: supplierInvoicePo.poNumber,
           legacySettlementType: supplierInvoicePo.settlementType,
+          legacyPoCreatedBy: supplierInvoicePo.createdBy,
+          legacyPoCreatedByName: supplierInvoicePoCreator.name,
+          legacyPoApprovedBy: supplierInvoicePo.approvedBy,
+          legacyPoApprovedByName: supplierInvoicePoApprover.name,
         })
         .from(supplierInvoices)
         .leftJoin(suppliers, eq(supplierInvoices.supplierId, suppliers.id))
         .leftJoin(supplierInvoiceCreator, eq(supplierInvoices.createdBy, supplierInvoiceCreator.id))
         .leftJoin(supplierInvoicePoster, eq(supplierInvoices.postedBy, supplierInvoicePoster.id))
         .leftJoin(supplierInvoicePo, eq(supplierInvoices.legacyPurchaseOrderId, supplierInvoicePo.id))
+        .leftJoin(supplierInvoicePoCreator, eq(supplierInvoicePo.createdBy, supplierInvoicePoCreator.id))
+        .leftJoin(supplierInvoicePoApprover, eq(supplierInvoicePo.approvedBy, supplierInvoicePoApprover.id))
         .where(eq(supplierInvoices.id, supplierInvoiceId))
         .limit(1);
 
@@ -1394,6 +1408,10 @@ export async function getSupplierInvoice(
       let purchaseOrderId = invoice.legacyPurchaseOrderId ?? null;
       let purchaseOrderNumber = invoice.legacyPoNumber ?? null;
       let settlementType = invoice.legacySettlementType ?? null;
+      let poCreatedBy = invoice.legacyPoCreatedBy != null ? Number(invoice.legacyPoCreatedBy) : null;
+      let poCreatedByName = invoice.legacyPoCreatedByName ?? null;
+      let poApprovedBy = invoice.legacyPoApprovedBy != null ? Number(invoice.legacyPoApprovedBy) : null;
+      let poApprovedByName = invoice.legacyPoApprovedByName ?? null;
 
       if (!purchaseOrderNumber) {
         const lineOrder = (
@@ -1402,6 +1420,10 @@ export async function getSupplierInvoice(
               poId: purchaseOrders.id,
               poNumber: purchaseOrders.poNumber,
               settlementType: purchaseOrders.settlementType,
+              poCreatedBy: purchaseOrders.createdBy,
+              poCreatedByName: supplierInvoicePoCreator.name,
+              poApprovedBy: purchaseOrders.approvedBy,
+              poApprovedByName: supplierInvoicePoApprover.name,
             })
             .from(supplierInvoiceLines)
             .innerJoin(
@@ -1416,6 +1438,8 @@ export async function getSupplierInvoice(
               purchaseOrders,
               eq(purchaseOrderRevisions.purchaseOrderId, purchaseOrders.id),
             )
+            .leftJoin(supplierInvoicePoCreator, eq(purchaseOrders.createdBy, supplierInvoicePoCreator.id))
+            .leftJoin(supplierInvoicePoApprover, eq(purchaseOrders.approvedBy, supplierInvoicePoApprover.id))
             .where(eq(supplierInvoiceLines.supplierInvoiceId, supplierInvoiceId))
             .limit(1)
         )[0];
@@ -1424,6 +1448,10 @@ export async function getSupplierInvoice(
           purchaseOrderId = Number(lineOrder.poId);
           purchaseOrderNumber = lineOrder.poNumber;
           settlementType = lineOrder.settlementType;
+          poCreatedBy = lineOrder.poCreatedBy != null ? Number(lineOrder.poCreatedBy) : null;
+          poCreatedByName = lineOrder.poCreatedByName ?? null;
+          poApprovedBy = lineOrder.poApprovedBy != null ? Number(lineOrder.poApprovedBy) : null;
+          poApprovedByName = lineOrder.poApprovedByName ?? null;
         }
       }
 
@@ -1468,9 +1496,27 @@ export async function getSupplierInvoice(
         )
         .orderBy(desc(supplierInvoiceApprovalRequests.requestedAt));
 
+      const isAutoPostedPo = Boolean(invoice.evidenceReference?.startsWith("AUTO-PO-APPROVAL:"));
+      const recoverLegacyAutoCreator =
+        isAutoPostedPo &&
+        invoice.createdBy != null &&
+        invoice.postedBy != null &&
+        Number(invoice.createdBy) === Number(invoice.postedBy) &&
+        poCreatedBy != null &&
+        poCreatedBy !== Number(invoice.createdBy);
+
       return {
         invoice: {
           ...invoice,
+          createdBy: recoverLegacyAutoCreator ? poCreatedBy : invoice.createdBy,
+          createdByName: recoverLegacyAutoCreator
+            ? (poCreatedByName ?? invoice.createdByName)
+            : invoice.createdByName,
+          approvedBy: poApprovedBy ?? (isAutoPostedPo && invoice.postedBy != null ? Number(invoice.postedBy) : null),
+          approvedByName:
+            poApprovedByName ??
+            (isAutoPostedPo ? (invoice.postedByName ?? null) : null),
+          isAutoPostedFromPo: isAutoPostedPo,
           purchaseOrderId,
           purchaseOrderNumber,
           settlementType,
@@ -1556,12 +1602,18 @@ export async function listSupplierInvoices(
           updatedAt: supplierInvoices.updatedAt,
           legacyPoNumber: supplierInvoicePo.poNumber,
           legacySettlementType: supplierInvoicePo.settlementType,
+          legacyPoCreatedBy: supplierInvoicePo.createdBy,
+          legacyPoCreatedByName: supplierInvoicePoCreator.name,
+          legacyPoApprovedBy: supplierInvoicePo.approvedBy,
+          legacyPoApprovedByName: supplierInvoicePoApprover.name,
         })
         .from(supplierInvoices)
         .leftJoin(suppliers, eq(supplierInvoices.supplierId, suppliers.id))
         .leftJoin(supplierInvoiceCreator, eq(supplierInvoices.createdBy, supplierInvoiceCreator.id))
         .leftJoin(supplierInvoicePoster, eq(supplierInvoices.postedBy, supplierInvoicePoster.id))
         .leftJoin(supplierInvoicePo, eq(supplierInvoices.legacyPurchaseOrderId, supplierInvoicePo.id))
+        .leftJoin(supplierInvoicePoCreator, eq(supplierInvoicePo.createdBy, supplierInvoicePoCreator.id))
+        .leftJoin(supplierInvoicePoApprover, eq(supplierInvoicePo.approvedBy, supplierInvoicePoApprover.id))
         .where(
           and(
             eq(supplierInvoices.branchId, input.branchId),
@@ -1581,7 +1633,18 @@ export async function listSupplierInvoices(
         .filter((r) => !r.legacyPoNumber)
         .map((r) => Number(r.id));
 
-      const poResolutionMap = new Map<number, { poId: number; poNumber: string; settlementType: "CASH" | "CREDIT" }>();
+      const poResolutionMap = new Map<
+        number,
+        {
+          poId: number;
+          poNumber: string;
+          settlementType: "CASH" | "CREDIT";
+          poCreatedBy: number | null;
+          poCreatedByName: string | null;
+          poApprovedBy: number | null;
+          poApprovedByName: string | null;
+        }
+      >();
 
       if (missingPoInvoiceIds.length > 0) {
         const lineOrders = await tx
@@ -1590,6 +1653,10 @@ export async function listSupplierInvoices(
             poId: purchaseOrders.id,
             poNumber: purchaseOrders.poNumber,
             settlementType: purchaseOrders.settlementType,
+            poCreatedBy: purchaseOrders.createdBy,
+            poCreatedByName: supplierInvoicePoCreator.name,
+            poApprovedBy: purchaseOrders.approvedBy,
+            poApprovedByName: supplierInvoicePoApprover.name,
           })
           .from(supplierInvoiceLines)
           .innerJoin(
@@ -1604,6 +1671,8 @@ export async function listSupplierInvoices(
             purchaseOrders,
             eq(purchaseOrderRevisions.purchaseOrderId, purchaseOrders.id),
           )
+          .leftJoin(supplierInvoicePoCreator, eq(purchaseOrders.createdBy, supplierInvoicePoCreator.id))
+          .leftJoin(supplierInvoicePoApprover, eq(purchaseOrders.approvedBy, supplierInvoicePoApprover.id))
           .where(inArray(supplierInvoiceLines.supplierInvoiceId, missingPoInvoiceIds));
 
         for (const lo of lineOrders) {
@@ -1612,6 +1681,10 @@ export async function listSupplierInvoices(
               poId: Number(lo.poId),
               poNumber: lo.poNumber,
               settlementType: lo.settlementType,
+              poCreatedBy: lo.poCreatedBy != null ? Number(lo.poCreatedBy) : null,
+              poCreatedByName: lo.poCreatedByName ?? null,
+              poApprovedBy: lo.poApprovedBy != null ? Number(lo.poApprovedBy) : null,
+              poApprovedByName: lo.poApprovedByName ?? null,
             });
           }
         }
@@ -1623,8 +1696,35 @@ export async function listSupplierInvoices(
           const purchaseOrderId = row.legacyPurchaseOrderId ?? resolved?.poId ?? null;
           const purchaseOrderNumber = row.legacyPoNumber ?? resolved?.poNumber ?? null;
           const settlementType = row.legacySettlementType ?? resolved?.settlementType ?? null;
+          const poCreatedBy =
+            row.legacyPoCreatedBy != null
+              ? Number(row.legacyPoCreatedBy)
+              : (resolved?.poCreatedBy ?? null);
+          const poCreatedByName = row.legacyPoCreatedByName ?? resolved?.poCreatedByName ?? null;
+          const poApprovedBy =
+            row.legacyPoApprovedBy != null
+              ? Number(row.legacyPoApprovedBy)
+              : (resolved?.poApprovedBy ?? null);
+          const poApprovedByName = row.legacyPoApprovedByName ?? resolved?.poApprovedByName ?? null;
+          const isAutoPostedPo = Boolean(row.evidenceReference?.startsWith("AUTO-PO-APPROVAL:"));
+          const recoverLegacyAutoCreator =
+            isAutoPostedPo &&
+            row.createdBy != null &&
+            row.postedBy != null &&
+            Number(row.createdBy) === Number(row.postedBy) &&
+            poCreatedBy != null &&
+            poCreatedBy !== Number(row.createdBy);
           return {
             ...row,
+            createdBy: recoverLegacyAutoCreator ? poCreatedBy : row.createdBy,
+            createdByName: recoverLegacyAutoCreator
+              ? (poCreatedByName ?? row.createdByName)
+              : row.createdByName,
+            approvedBy: poApprovedBy ?? (isAutoPostedPo && row.postedBy != null ? Number(row.postedBy) : null),
+            approvedByName:
+              poApprovedByName ??
+              (isAutoPostedPo ? (row.postedByName ?? null) : null),
+            isAutoPostedFromPo: isAutoPostedPo,
             purchaseOrderId,
             purchaseOrderNumber,
             settlementType,
@@ -1651,17 +1751,26 @@ export async function listPendingSupplierInvoiceApprovals(
   // ⭐ لا فلترةَ بـ`requestedBy` هنا (خلافاً لنسخةٍ سابقة كانت تستعمل `ne(...)`) — راجع
   // التعليق الموازي على `listPendingGoodsReceiptReversals` في goodsReceipts.ts.
   return withTx(
-    (tx) =>
-      tx
-        .select()
+    async (tx) => {
+      const { getTableColumns } = await import("drizzle-orm");
+      return tx
+        .select({
+          ...getTableColumns(supplierInvoiceApprovalRequests),
+          requestedByName: supplierInvoiceReqUser.name,
+        })
         .from(supplierInvoiceApprovalRequests)
+        .leftJoin(
+          supplierInvoiceReqUser,
+          eq(supplierInvoiceApprovalRequests.requestedBy, supplierInvoiceReqUser.id),
+        )
         .where(
           and(
             eq(supplierInvoiceApprovalRequests.branchId, branchId),
             eq(supplierInvoiceApprovalRequests.status, "PENDING"),
           ),
         )
-        .orderBy(asc(supplierInvoiceApprovalRequests.requestedAt)),
+        .orderBy(asc(supplierInvoiceApprovalRequests.requestedAt));
+    },
     { gate: "NONE" },
   );
 }

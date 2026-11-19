@@ -161,8 +161,8 @@ describe("طباعة الفاتورة المعدلة", () => {
     });
     expect(receipt.revision).toMatchObject({
       originalReceiptNumber: "1001",
-      revisedByName: "المستخدم #7 (الاسم الحالي: أحمد)",
-      approvedByName: "المستخدم #8 (الاسم الحالي: علي)",
+      revisedByName: "أحمد",
+      approvedByName: "علي",
     });
   });
 });

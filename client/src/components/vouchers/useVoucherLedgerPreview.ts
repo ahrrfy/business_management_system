@@ -11,11 +11,12 @@ export function useVoucherLedgerPreview(
     | "branchId"
     | "method"
     | "partyType"
+    | "supplierReceiptPurpose"
     | "branches"
     | "selectedCategory"
     | "selectedCategoryReady"
     | "treasuryNotice"
-    | "amountNum"
+    | "amountDec"
   >,
 ) {
   const {
@@ -23,17 +24,18 @@ export function useVoucherLedgerPreview(
     branchId,
     method,
     partyType,
+    supplierReceiptPurpose,
     branches,
     selectedCategory,
     selectedCategoryReady,
     treasuryNotice,
-    amountNum,
+    amountDec,
   } = ctx;
 
-  // مَعاينة قَيد الدفتر (P1-10) — صفّان بسيطان مَدين/دائن.
+  // معاينة قيد الدفتر (P1-10) — صفان بسيطان مدين/دائن.
   const ledgerPreview = useMemo(() => {
-    if (amountNum <= 0) return null;
-    const a = fmt(amountNum);
+    if (amountDec.lte(0)) return null;
+    const a = fmt(amountDec.toFixed(2));
     const branchName =
       (branches.data ?? []).find((b) => Number(b.id) === Number(branchId))
         ?.name ?? "—";
@@ -46,17 +48,19 @@ export function useVoucherLedgerPreview(
     if (direction === "IN") {
       const credit =
         partyType === "CUSTOMER"
-          ? "ذمة عميل (تَنقص)"
+          ? "ذمة عميل (تنقص)"
           : partyType === "SUPPLIER"
-            ? "ذمة مورّد (تَزيد)"
+            ? supplierReceiptPurpose === "ADVANCE_REFUND"
+              ? "ذمة مورد (عكس استرداد دفعة)"
+              : "ذمة مورد (تزيد — له علينا)"
             : partyType === "DELIVERY_PARTY"
-              ? "عهدة جهة توصيل (تَنقص)"
+              ? "عهدة جهة توصيل (تنقص)"
               : selectedCategoryReady
                 ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
                 : "اختر فئة محاسبية مهيأة";
       return [
         {
-          side: "مَدين",
+          side: "مدين",
           account: `صندوق ${branchName} — ${cashBucketLabel}`,
           amount: a,
         },
@@ -65,16 +69,16 @@ export function useVoucherLedgerPreview(
     }
     const debit =
       partyType === "CUSTOMER"
-        ? "ذمة عميل (تَزيد)"
+        ? "ذمة عميل (تزيد)"
         : partyType === "SUPPLIER"
-          ? "ذمة مورّد (تَنقص)"
+          ? "ذمة مورد (تنقص)"
           : partyType === "DELIVERY_PARTY"
-            ? "مستحق جهة توصيل (تَنقص)"
+            ? "مستحق جهة توصيل (ينقص)"
             : selectedCategoryReady
               ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
               : "اختر فئة محاسبية مهيأة";
     return [
-      { side: "مَدين", account: debit, amount: a },
+      { side: "مدين", account: debit, amount: a },
       {
         side: "دائن",
         account: `صندوق ${branchName} — ${cashBucketLabel}`,
@@ -82,13 +86,14 @@ export function useVoucherLedgerPreview(
       },
     ];
   }, [
-    amountNum,
+    amountDec,
     branches.data,
     branchId,
     method,
     treasuryNotice,
     direction,
     partyType,
+    supplierReceiptPurpose,
     selectedCategory,
     selectedCategoryReady,
   ]);

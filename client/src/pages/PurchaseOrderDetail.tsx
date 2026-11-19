@@ -16,9 +16,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmtAr, formatQuantity } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { hasModuleAccess } from "@shared/permissions";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
@@ -38,12 +38,20 @@ import {
   Truck,
 } from "lucide-react";
 import { Link, useParams } from "wouter";
-import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
+import { variantDisplayName } from "@shared/variantDisplay";
+import { poItemColumns, type PoItemRow } from "@/components/purchases/purchaseDetailColumns";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
-import { printReportDoc } from "@/lib/printing/reportDoc";
+import {
+  PurchaseOrderActionDialogs,
+  PurchaseRateAnomalyBanner,
+} from "@/components/purchases/PurchaseRateAnomalyBanner";
+import { PurchaseQuickApproveDialog } from "@/components/purchases/PurchaseQuickApproveDialog";
+import { PaymentMethodChip } from "@/components/common/MovementBadges";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
+import { purchaseTenderLabel } from "@shared/purchaseTender";
+import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplates";
 import { splitDocumentNotes } from "@/components/invoice";
 import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import {
   Dialog,
@@ -54,123 +62,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** بندُ أمر الشراء — مشتقٌّ من عقد `purchases.get` فلا ينجرف عن الخادم. */
-type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
-
-/**
- * أعمدة البنود. تُبنى بدالّة لأنّ رؤوسها وقيمها تتبع عملة الأمر: أمرُ الدولار
- * يعرض `usdUnitPrice`/`usdTotal` ورأسَه بعلامة `($)`.
- */
-function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
-  return [
-    {
-      id: "product",
-      header: "الصنف",
-      accessorFn: (it) =>
-        variantDisplayName({
-          productName: it.productName ?? "—",
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          sku: it.sku,
-        }),
-      meta: { width: "wide" },
-      cell: ({ row }) => {
-        const it = row.original;
-        const desc = variantDescriptor({
-          productName: it.productName ?? "—",
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          sku: it.sku,
-        });
-        return (
-          <div className="flex flex-col gap-0.5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-semibold text-foreground">{it.productName ?? "—"}</span>
-              {desc ? (
-                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground font-normal">
-                  {it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? (
-                    <span
-                      aria-hidden="true"
-                      className="inline-block size-2.5 shrink-0 rounded-full border border-border/60"
-                      style={{ backgroundColor: it.colorHex }}
-                    />
-                  ) : null}
-                  <span>{desc}</span>
-                </span>
-              ) : null}
-            </div>
-            {it.sku ? (
-              <span className="text-[11px] text-muted-foreground font-mono" dir="ltr">
-                {it.sku}
-              </span>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => row.original.unitName ?? "—" },
-    { id: "quantity", header: "الكمية", accessorFn: (it) => formatQuantity(it.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
-    {
-      // الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
-      // فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢.
-      id: "received",
-      header: "المستلَم / المطلوب (أساس)",
-      accessorFn: (it) => formatQuantity(it.receivedBaseQuantity) + " / " + formatQuantity(it.baseQuantity),
-      meta: { kind: "number" },
-      cell: ({ row }) => formatQuantity(row.original.receivedBaseQuantity) + " / " + formatQuantity(row.original.baseQuantity),
-    },
-    {
-      id: "unitPrice",
-      header: isUsd ? "سعر الوحدة ($)" : "سعر الوحدة",
-      accessorFn: (it) =>
-        isUsd
-          ? formatQuantity(it.usdUnitPrice, { maximumFractionDigits: 4 })
-          : fmtAr(it.unitPrice),
-      meta: { kind: "money" },
-      cell: ({ row }) =>
-        isUsd
-          ? formatQuantity(row.original.usdUnitPrice, { maximumFractionDigits: 4 })
-          : fmtAr(row.original.unitPrice),
-    },
-    {
-      id: "total",
-      header: isUsd ? "الإجمالي ($)" : "الإجمالي",
-      accessorFn: (it) => fmtAr(isUsd ? it.usdTotal : it.total),
-      meta: { kind: "money" },
-      cell: ({ row }) => fmtAr(isUsd ? row.original.usdTotal : row.original.total),
-    },
-  ];
-}
-
-const PO_STATUS: Record<string, string> = {
-  DRAFT: "مسوّدة",
-  SENT: "مُرسَل",
-  CONFIRMED: "مؤكّد",
-  RECEIVED: "مُستلَم",
-  CANCELLED: "ملغى",
-};
+const PO_STATUS: Record<string, string> = { DRAFT: "مسوّدة", SENT: "مُرسَل", CONFIRMED: "مؤكّد", RECEIVED: "مُستلَم", CANCELLED: "ملغى" };
 
 /** نبرة الحالة عبر variants الشارة (توكنز، لا ألوان خام — حارس check:colors). */
-function statusVariant(
-  status: string,
-): "default" | "secondary" | "destructive" | "outline" {
+function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "RECEIVED") return "default";
   if (status === "CANCELLED") return "destructive";
   if (status === "DRAFT") return "outline";
   return "secondary";
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -214,6 +116,8 @@ export default function PurchaseOrderDetail() {
     "FULL",
   );
   const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
+  const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
+  const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
   const canAutoSettle = canLifecycleOperation(me.data, "purchases.reconcileSettlement", legacyEdit);
@@ -230,8 +134,72 @@ export default function PurchaseOrderDetail() {
   const [reviseRequestId, setReviseRequestId] = useState(() =>
     crypto.randomUUID(),
   );
+  const [isSubmitOpen, setIsSubmitOpen] = useState(false);
+  const [submitReason, setSubmitReason] = useState("إرسال أمر الشراء للاعتماد");
+  const [submitInvoiceTotal, setSubmitInvoiceTotal] = useState("");
+  const [confirmAnomalousRate, setConfirmAnomalousRate] = useState(false);
+  const [rateDeviationReason, setRateDeviationReason] = useState("");
+  const [approveTarget, setApproveTarget] = useState<{
+    id: number;
+    poNumber: string;
+    controlRequestId: number;
+    creatorId: number | null;
+    version: number;
+    settlementType: "CASH" | "CREDIT";
+    branchId: number;
+    agreedCurrency: string | null;
+    total: string | null;
+  } | null>(null);
+  const [isRejectOpen, setIsRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const utils = trpc.useUtils();
+  const invalidateDetail = () =>
+    Promise.all([
+      utils.purchases.get.invalidate({ purchaseOrderId }),
+      utils.purchases.list.invalidate(),
+      utils.purchases.events.invalidate({ purchaseOrderId }),
+      utils.purchases.pendingControls.invalidate(),
+    ]);
   const poData = po.data;
+  const pendingControls = trpc.purchases.pendingControls.useInfiniteQuery(
+    { limit: 200 },
+    {
+      enabled: canDecide && poData?.status === "SENT",
+      getNextPageParam: (page) =>
+        page.hasMore ? (page.nextCursor ?? undefined) : undefined,
+    },
+  );
+  const activeControlRequest = (
+    pendingControls.data?.pages.flatMap((p) => p.rows) ?? []
+  ).find(
+    (row): row is Extract<typeof row, { documentType: "PURCHASE_ORDER" }> =>
+      row.documentType === "PURCHASE_ORDER" &&
+      Number(row.purchaseOrderId) === Number(poData?.id ?? purchaseOrderId) &&
+      row.kind === "APPROVE_REVISION",
+  );
+  const confirmOrderMut = trpc.purchases.confirmOrder.useMutation({
+    onSuccess: async (res) => {
+      setIsSubmitOpen(false);
+      setSubmitInvoiceTotal("");
+      setConfirmAnomalousRate(false);
+      setRateDeviationReason("");
+      notify.ok("تم إرسال أمر الشراء للاعتماد");
+      if (res.unitCostWarnings?.length) {
+        notify.warn(res.unitCostWarnings.map((w) => w.message).join(" • "));
+      }
+      await invalidateDetail();
+    },
+    onError: (err) => notify.err(err),
+  });
+  const rejectControlMut = trpc.purchases.decideControl.useMutation({
+    onSuccess: async () => {
+      setIsRejectOpen(false);
+      setRejectReason("");
+      notify.ok("تم رفض طلب اعتماد أمر الشراء وإعادته مسودة");
+      await invalidateDetail();
+    },
+    onError: (err) => notify.err(err),
+  });
   const reviseGoodsTotal =
     poData && poData.subtotal != null
       ? D(poData.subtotal).plus(D(poData.taxAmount ?? 0)).toFixed(2)
@@ -350,9 +318,23 @@ export default function PurchaseOrderDetail() {
   }
 
   const d = po.data;
-
   const costHidden = d.total === null;
   const isUsd = d.agreedCurrency === "USD";
+  const currentUserId = me.data?.id;
+  const isOwner = me.data?.isOwner === true;
+  const isManagerOrOwner =
+    isOwner || me.data?.role === "admin" || me.data?.role === "manager";
+  const violatesSod =
+    !isOwner &&
+    (currentUserId == null ||
+      (activeControlRequest != null &&
+        [
+          activeControlRequest.requestedBy,
+          activeControlRequest.creatorId,
+          activeControlRequest.lastEditedBy,
+          d.lastEditedBy,
+          d.submittedBy,
+        ].some((id) => id != null && Number(id) === Number(currentUserId))));
   // المتبقّي للمورّد بعملة الاتفاق: أمر الدولار تُتابَع ذمّته بـusdTotal−paidUsd−returnedUsd
   // (نفس حساب PurchaseReceive وخدمة التسوية) — عرض متبقّي الدينار وحده يُظهر رقماً مختلفاً مادّياً.
   const settlement = getPurchaseSettlement(d);
@@ -366,13 +348,19 @@ export default function PurchaseOrderDetail() {
     !D(d.paidAmount ?? 0).gt(0) &&
     !D(d.paidUsd ?? 0).gt(0);
   const parsedNotes = splitDocumentNotes(d.notes);
+  const cashSourceLabel = d.tender
+    ? purchaseTenderLabel(d.tender)
+    : d.legacyCashSource?.mode === "DRAWER"
+      ? `نقد من الوردية${d.legacyCashSource.shiftId ? ` #${d.legacyCashSource.shiftId}` : ""}`
+      : d.legacyCashSource?.mode === "TREASURY"
+        ? "نقد من خزنة الفرع"
+        : null;
 
   function printOrder() {
     const useUsdLines =
       isUsd &&
       (d.items.length === 0 ||
         d.items.every((it) => it.usdUnitPrice != null && it.usdTotal != null));
-    const priceSym = useUsdLines ? "$" : "د.ع";
     const usdSubtotal = useUsdLines
       ? d.items
           .reduce((acc, it) => acc.plus(D(it.usdTotal ?? 0)), D(0))
@@ -382,45 +370,21 @@ export default function PurchaseOrderDetail() {
       useUsdLines && d.usdTotal != null
         ? D(d.usdTotal).minus(usdSubtotal).toDecimalPlaces(2)
         : D(0);
-    printReportDoc({
-      title: "أمر شراء",
-      docNum: d.poNumber ?? `#${d.id}`,
-      docDate: fmtDate(d.orderDate),
-      meta: [
-        ...(!costHidden ? purchasePaymentEvidencePrintMeta(d) : []),
-        {
-          title: "معلومات المورّد",
-          fields: [{ label: "الاسم", value: d.supplierName ?? "—" }],
-        },
-        {
-          title: "تفاصيل الأمر",
-          fields: [
-            { label: "رقم الأمر", value: d.poNumber ?? `#${d.id}` },
-            { label: "الحالة", value: PO_STATUS[d.status] ?? d.status },
-            { label: "العملة", value: isUsd ? "دولار أمريكي" : "دينار عراقي" },
-            ...(isUsd && D(d.agreedRate ?? 0).gt(0)
-              ? [{ label: "سعر الصرف المثبت", value: `${fmtAr(d.agreedRate)} د.ع/$` }]
-              : []),
-            ...(d.expectedDeliveryDate
-              ? [{ label: "التسليم المتوقّع", value: fmtDate(d.expectedDeliveryDate) }]
-              : []),
-            ...(parsedNotes.poReference ? [{ label: "مرجع أمر الشراء", value: parsedNotes.poReference }] : []),
-            ...(parsedNotes.notes ? [{ label: "ملاحظات", value: parsedNotes.notes }] : []),
-            ...(parsedNotes.terms ? [{ label: "الشروط والأحكام", value: parsedNotes.terms }] : []),
-          ],
-        },
-      ],
-      columns: [
-        { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
-        { key: "name", label: "المنتج" },
-        { key: "unit", label: "الوحدة", width: "18mm", align: "center" },
-        { key: "price", label: `السعر (${priceSym})`, width: "22mm", align: "left" },
-        { key: "qty", label: "الكمية", width: "16mm", align: "center" },
-        { key: "total", label: `الإجمالي (${priceSym})`, width: "24mm", align: "left" },
-      ],
-      rows: d.items.map((it) => ({
-        barcode: it.barcode ?? "—",
-        name: variantDisplayName({
+    printPurchaseInvoiceV2({
+      invoiceNumber: d.poNumber ?? `#${d.id}`,
+      invoiceDate: d.orderDate,
+      statusLabel: PO_STATUS[d.status] ?? d.status,
+      supplierName: d.supplierName ?? "—",
+      paymentMethod: getPurchaseSettlementIntentLabel(d.settlementType),
+      cashSourceLabel: costHidden ? null : cashSourceLabel,
+      createdByName:
+        d.createdByName ?? (d.createdBy ? `مستخدم #${d.createdBy}` : null),
+      approvedByName: d.approvedByName ?? null,
+      agreedCurrency: d.agreedCurrency ?? "IQD",
+      agreedRate: costHidden ? null : (d.agreedRate ?? null),
+      usdTotal: costHidden ? null : (d.usdTotal ?? null),
+      items: d.items.map((it) => ({
+        productName: variantDisplayName({
           productName: it.productName ?? "",
           variantName: it.variantName,
           color: it.color,
@@ -428,46 +392,47 @@ export default function PurchaseOrderDetail() {
           variantKind: it.variantKind,
           sku: it.sku,
         }),
-        unit: it.unitName ?? "قطعة",
-        price: costHidden
+        unitName: it.unitName ?? "قطعة",
+        quantity: it.quantity,
+        unitPrice: costHidden
           ? "—"
           : useUsdLines
-            ? formatQuantity(it.usdUnitPrice ?? "0", { maximumFractionDigits: 4 })
-            : fmtAr(it.unitPrice ?? "0"),
-        qty: formatQuantity(it.quantity),
-        total: costHidden ? "—" : fmtAr((useUsdLines ? it.usdTotal : it.total) ?? "0"),
+            ? (it.usdUnitPrice ?? "0")
+            : (it.unitPrice ?? "0"),
+        total: costHidden
+          ? "—"
+          : ((useUsdLines ? it.usdTotal : it.total) ?? "0"),
+        barcode: it.barcode ?? null,
       })),
-      summary: costHidden
-        ? []
-        : [
-            ...(useUsdLines
-              ? [{ label: "المجموع قبل الضريبة ($)", value: `${fmtAr(usdSubtotal.toFixed(2))} $` }]
-              : []),
-            { label: "المجموع قبل الضريبة (د.ع)", value: fmtAr(d.subtotal) },
-            ...(D(d.invoiceDiscount ?? 0).gt(0)
-              ? [
-                  {
-                    label: "خصم فاتورة المورّد (مطبَّق)",
-                    value: `− ${fmtAr(d.invoiceDiscount)} د.ع${
-                      isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
-                        ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
-                        : ""
-                    }`,
-                  },
-                ]
-              : []),
-            ...(useUsdLines && (D(d.taxAmount ?? 0).gt(0) || usdTax.gt(0))
-              ? [{ label: "الضريبة ($)", value: `${fmtAr(usdTax.toFixed(2))} $` }]
-              : []),
-            ...(D(d.taxAmount ?? 0).gt(0)
-              ? [{ label: "الضريبة (د.ع)", value: fmtAr(d.taxAmount) }]
-              : []),
-            ...(isUsd && d.usdTotal
-              ? [{ label: "الإجمالي ($)", value: `${fmtAr(d.usdTotal)} $`, bold: true }]
-              : []),
-            { label: "إجمالي أمر الشراء (د.ع)", value: fmtAr(d.total), bold: true, large: true },
-          ],
-      showIndex: true,
+      subtotal: costHidden
+        ? "—"
+        : useUsdLines
+          ? usdSubtotal.toFixed(2)
+          : (d.subtotal ?? "0"),
+      discountAmount: costHidden
+        ? null
+        : useUsdLines
+          ? (d.usdInvoiceDiscount ?? "0")
+          : (d.invoiceDiscount ?? "0"),
+      taxAmount: costHidden
+        ? null
+        : useUsdLines
+          ? usdTax.toFixed(2)
+          : (d.taxAmount ?? "0"),
+      taxRate: d.taxRatePercent != null ? Number(d.taxRatePercent) : null,
+      total: costHidden
+        ? "—"
+        : useUsdLines
+          ? (d.usdTotal ?? d.total ?? "0")
+          : (d.total ?? "0"),
+      paidAmount: costHidden
+        ? null
+        : useUsdLines
+          ? settlement.paidAmount
+          : d.settlementType === "CASH"
+            ? d.linkedCashPaidAmount
+            : d.paidAmount,
+      remainingAmount: remaining ? remaining.toFixed(2) : null,
     });
   }
 
@@ -476,7 +441,66 @@ export default function PurchaseOrderDetail() {
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {d.status === "DRAFT" && canConfirm ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  setSubmitInvoiceTotal("");
+                  setSubmitReason("إرسال أمر الشراء للاعتماد");
+                  setConfirmAnomalousRate(false);
+                  setRateDeviationReason("");
+                  setIsSubmitOpen(true);
+                }}
+              >
+                <CheckCircle2 aria-hidden className="size-4" />
+                إرسال للاعتماد
+              </Button>
+            ) : null}
+            {d.status === "SENT" && canDecide && activeControlRequest ? (
+              violatesSod ? (
+                <Badge variant="outline" className="text-xs">
+                  بانتظار مراجع مستقل (فصل المهام)
+                </Badge>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() =>
+                      setApproveTarget({
+                        id: Number(d.id),
+                        poNumber: d.poNumber ?? `#${d.id}`,
+                        controlRequestId: Number(activeControlRequest.id),
+                        creatorId: d.createdBy != null ? Number(d.createdBy) : null,
+                        version: Number(d.version),
+                        settlementType: d.settlementType === "CASH" ? "CASH" : "CREDIT",
+                        branchId: Number(d.branchId),
+                        agreedCurrency: d.agreedCurrency ?? "IQD",
+                        total: d.total != null ? String(d.total) : null,
+                      })
+                    }
+                  >
+                    <CheckCircle2 aria-hidden className="size-4" />
+                    {d.settlementType === "CASH" && !isUsd
+                      ? "اعتماد واستلام وسداد نقدي"
+                      : "اعتماد واستلام"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => {
+                      setRejectReason("");
+                      setIsRejectOpen(true);
+                    }}
+                  >
+                    رفض
+                  </Button>
+                </>
+              )
+            ) : null}
             <Button type="button" size="sm" variant="outline" onClick={printOrder}>
               <Printer aria-hidden className="size-4" />
               طباعة
@@ -506,6 +530,18 @@ export default function PurchaseOrderDetail() {
         nextAction={d.nextAction ?? null}
         terminalReason={d.nextActionReason ?? null}
       />
+
+      {!costHidden ? (
+        <PurchaseRateAnomalyBanner
+          purchaseOrderId={d.id}
+          status={d.status}
+          agreedCurrency={d.agreedCurrency}
+          agreedRate={d.agreedRate}
+          rateSanity={d.rateSanity}
+          unitCostWarnings={d.unitCostWarnings}
+          canEdit={canEdit && openForEditing}
+        />
+      ) : null}
 
       {d.status === "RECEIVED" && canReverseReceipt && (
         <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
@@ -544,7 +580,35 @@ export default function PurchaseOrderDetail() {
               {PO_STATUS[d.status] ?? d.status}
             </Badge>
           </Field>
-          <Field label="العملة المتّفقة">{d.agreedCurrency ?? "IQD"}</Field>
+          <Field label="العملة المتّفقة">
+            {isUsd ? "دولار أمريكي ($)" : "دينار عراقي (د.ع)"}
+          </Field>
+          <Field label="آلية التسوية">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span>{getPurchaseSettlementIntentLabel(d.settlementType)}</span>
+              {d.settlementType === "CASH" && !costHidden && (d.tender || d.legacyCashSource) ? (
+                <PaymentMethodChip
+                  method={
+                    d.tender?.mode === "CARD"
+                      ? "CARD"
+                      : d.tender?.mode === "TREASURY" ||
+                          d.legacyCashSource?.mode === "TREASURY"
+                        ? "TREASURY"
+                        : "CASH"
+                  }
+                />
+              ) : null}
+            </div>
+          </Field>
+          {isUsd && !costHidden && d.agreedRate != null ? (
+            <Field label="سعر الصرف المثبت">{fmtAr(d.agreedRate)} د.ع/$</Field>
+          ) : null}
+          <Field label="أنشأه">
+            {d.createdByName ?? (d.createdBy ? `مستخدم #${d.createdBy}` : "—")}
+          </Field>
+          <Field label="اعتمده">
+            {d.approvedByName ?? "لم يُعتمد بعد"}
+          </Field>
           {parsedNotes.poReference ? (
             <Field label="مرجع أمر الشراء">{parsedNotes.poReference}</Field>
           ) : null}
@@ -788,52 +852,63 @@ export default function PurchaseOrderDetail() {
                   (قرار المالك ٥/٨/٢٦: order.ts `total = subtotal + tax`). كانا سابقاً يُعرَضان
                   كسطرَين مجاورَين لهذه المجموعة فيبدوان مطروحَين منها رغم أنهما لم يدخلاها قطّ —
                   فُصلا بصرياً أدناه ليزول هذا الالتباس. */}
+              {isUsd && d.usdTotal != null && d.agreedRate != null ? (
+                <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  فاتورة المورد (<bdi dir="ltr" className="font-semibold text-foreground">{fmtAr(d.usdTotal)} $</bdi>) × سعر الصرف المثبت (<bdi dir="ltr" className="font-semibold text-foreground">{fmtAr(d.agreedRate)} د.ع/$</bdi>) = الإجمالي المعادل (<bdi dir="ltr" className="font-semibold text-foreground">{fmtAr(d.total)} د.ع</bdi>)
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
+                <Field label="المجموع قبل الضريبة (د.ع)">{fmtAr(d.subtotal)} د.ع</Field>
                 {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
                     والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
                 {D(d.invoiceDiscount ?? 0).gt(0) && (
                   <Field label="خصم فاتورة المورّد (مطبَّق)">
-                    −{fmtAr(d.invoiceDiscount)}
+                    −{fmtAr(d.invoiceDiscount)} د.ع
                     {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
                       ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
                       : ""}
                   </Field>
                 )}
-                <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
-                <Field label="إجمالي أمر الشراء">
-                  <span className="font-bold">{fmtAr(d.total)}</span>
+                <Field label="الضريبة (د.ع)">{fmtAr(d.taxAmount)} د.ع</Field>
+                <Field label={isUsd ? "المعادل المحاسبي (د.ع)" : "إجمالي أمر الشراء (د.ع)"}>
+                  <span className="font-bold">{fmtAr(d.total)} د.ع</span>
                 </Field>
-                {!D(settlementIqd.invoiceTotalAmount).eq(D(d.total ?? 0)) ? <Field label="المفوتر بذمة المورد (د.ع)">{fmtAr(settlementIqd.invoiceTotalAmount)}</Field> : null}
-                <Field label="طريقة السداد">{settlement.intentLabel}</Field>
+                {!D(settlementIqd.invoiceTotalAmount).eq(D(d.total ?? 0)) ? (
+                  <Field label="المفوتر بذمة المورد (د.ع)">{fmtAr(settlementIqd.invoiceTotalAmount)} د.ع</Field>
+                ) : null}
+                <Field label="آلية التسوية">{getPurchaseSettlementIntentLabel(d.settlementType)}</Field>
                 <Field label="حالة السداد">{settlement.statusLabel}</Field>
-                <Field label="المدفوع (د.ع)">{fmtAr(settlementIqd.paidAmount)}</Field>
-                {D(settlementIqd.returnedAmount).gt(0) ? <Field label="تخفيض الذمة (د.ع)">{fmtAr(settlementIqd.returnedAmount)}</Field> : null}
                 {isUsd ? (
                   <>
-                    {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
-                        قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
-                    <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
-                    <Field label="المدفوع ($)">{fmtAr(settlement.paidAmount)}</Field>
-                    <Field label="تخفيض الذمة ($)">{fmtAr(settlement.returnedAmount)}</Field>
+                    <Field label="فاتورة المورد ($)">{fmtAr(d.usdTotal)} $</Field>
+                    <Field label="المدفوع للمورد ($)">{fmtAr(settlement.paidAmount)} $</Field>
+                    {D(settlement.returnedAmount).gt(0) ? (
+                      <Field label="تخفيض الذمة ($)">{fmtAr(settlement.returnedAmount)} $</Field>
+                    ) : null}
                     <Field label="المتبقّي للمورّد ($)">
                       <span
                         className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
                       >
-                        {fmtAr(remaining?.toString())}
+                        {fmtAr(remaining?.toString())} $
                         {remaining && remaining.lte(0) ? ` (${settlement.statusLabel})` : ""}
                       </span>
                     </Field>
                   </>
                 ) : (
-                  <Field label="المتبقّي">
-                    <span
-                      className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
-                    >
-                      {fmtAr(remaining?.toString())}
-                      {remaining && remaining.lte(0) ? ` (${settlement.statusLabel})` : ""}
-                    </span>
-                  </Field>
+                  <>
+                    <Field label="المدفوع (د.ع)">{fmtAr(settlementIqd.paidAmount)} د.ع</Field>
+                    {D(settlementIqd.returnedAmount).gt(0) ? (
+                      <Field label="تخفيض الذمة (د.ع)">{fmtAr(settlementIqd.returnedAmount)} د.ع</Field>
+                    ) : null}
+                    <Field label="المتبقّي (د.ع)">
+                      <span
+                        className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
+                      >
+                        {fmtAr(remaining?.toString())} د.ع
+                        {remaining && remaining.lte(0) ? ` (${settlement.statusLabel})` : ""}
+                      </span>
+                    </Field>
+                  </>
                 )}
               </div>
 
@@ -1054,6 +1129,59 @@ export default function PurchaseOrderDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <PurchaseQuickApproveDialog
+        target={approveTarget}
+        currentUserId={me.data?.id}
+        onClose={() => setApproveTarget(null)}
+        onApproved={async () => {
+          setApproveTarget(null);
+          await invalidateDetail();
+        }}
+      />
+      <PurchaseOrderActionDialogs
+        poNumber={d.poNumber ?? `#${d.id}`}
+        isUsd={isUsd}
+        costHidden={costHidden}
+        isManagerOrOwner={isManagerOrOwner}
+        rateSanity={d.rateSanity}
+        submitOpen={isSubmitOpen}
+        onSubmitOpenChange={setIsSubmitOpen}
+        submitPending={confirmOrderMut.isPending}
+        submitInvoiceTotal={submitInvoiceTotal}
+        submitInvoicePlaceholder={!costHidden ? String(isUsd ? (d.usdTotal ?? "") : (d.total ?? "")) : undefined}
+        onSubmitInvoiceTotalChange={setSubmitInvoiceTotal}
+        submitReason={submitReason}
+        onSubmitReasonChange={setSubmitReason}
+        confirmAnomalousRate={confirmAnomalousRate}
+        onConfirmAnomalousChange={setConfirmAnomalousRate}
+        rateDeviationReason={rateDeviationReason}
+        onRateDeviationReasonChange={setRateDeviationReason}
+        onConfirmSubmit={() =>
+          confirmOrderMut.mutate({
+            purchaseOrderId: d.id,
+            expectedVersion: Number(d.version),
+            reason: submitReason.trim(),
+            clientRequestId: `po-submit-${d.id}-${crypto.randomUUID()}`,
+            ...(!costHidden ? { supplierInvoiceTotal: submitInvoiceTotal.trim(), requireInvoiceMatch: true } : {}),
+            ...(confirmAnomalousRate ? { confirmAnomalousRate: true, rateDeviationReason: rateDeviationReason.trim() } : {}),
+          })
+        }
+        rejectOpen={isRejectOpen}
+        onRejectOpenChange={setIsRejectOpen}
+        rejectPending={rejectControlMut.isPending}
+        rejectReason={rejectReason}
+        onRejectReasonChange={setRejectReason}
+        onConfirmReject={() => {
+          if (!activeControlRequest) return;
+          rejectControlMut.mutate({
+            requestId: Number(activeControlRequest.id),
+            decisionKey: `po-reject-${activeControlRequest.id}-${crypto.randomUUID()}`,
+            approve: false,
+            reason: rejectReason.trim(),
+          });
+        }}
+      />
     </div>
   );
 }

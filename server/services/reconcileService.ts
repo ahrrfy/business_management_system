@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
-import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 import {
   accountingEntries,
   accounts,
   branchStock,
+  customerReceiptAllocations,
+  customerReceiptSettlements,
   customers,
   deliveryConsignments,
   deliveryParties,
@@ -36,6 +38,7 @@ import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { supplierApEffectSql } from "./ledger/supplierApEffect";
+import { invoiceCorrectionArMovement } from "./reports/arAging";
 
 export interface ReconcileResult {
   entity: string;
@@ -582,17 +585,59 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     .groupBy(accountingEntries.customerId);
   const openingMap = new Map(openingSum.map((r) => [Number(r.customerId), String(r.opening ?? "0")]));
 
-  // Independent charge claims and their credits affect AR without creating sale invoices.
+  // Independent charge claims, invoice correction/custody movements, and historical/credit apply debit offsets.
   const chargeSum = await db.select({
     customerId: accountingEntries.customerId,
-    net: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)`,
+    net: sql<string>`COALESCE(SUM(CASE
+      WHEN ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%'
+        OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST_REV:%' THEN -${accountingEntries.amount}
+      ELSE ${accountingEntries.amount}
+    END), 0)`,
   }).from(accountingEntries).where(and(
     sql`${accountingEntries.customerId} IS NOT NULL`,
-    eq(accountingEntries.entryType, "ADJUST"),
-    sql`(${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%'
-      OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CREDIT:%')`,
+    sql`(${invoiceCorrectionArMovement()} OR (${accountingEntries.entryType} = 'ADJUST' AND (${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:HIST_REV:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST:%' OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_CREDIT_APPLY:HIST_REV:%')))`,
   )).groupBy(accountingEntries.customerId);
   const chargeMap = new Map(chargeSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
+
+  // التخصيصات الفعلية من سندات القبض العامة المطبّقة على الفواتير (زادت inv.paidAmount بدون تغيير invoiceId في القيد).
+  const allocSum = await db
+    .select({
+      customerId: customerReceiptSettlements.customerId,
+      net: sql<string>`COALESCE(SUM(CAST(${customerReceiptAllocations.amount} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(customerReceiptAllocations)
+    .innerJoin(
+      customerReceiptSettlements,
+      eq(customerReceiptSettlements.id, customerReceiptAllocations.settlementId),
+    )
+    .innerJoin(invoices, eq(invoices.id, customerReceiptAllocations.invoiceId))
+    .where(
+      and(
+        isNull(customerReceiptSettlements.reversalReceiptId),
+        sql`${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')`,
+      ),
+    )
+    .groupBy(customerReceiptSettlements.customerId);
+  const allocMap = new Map(allocSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
+
+  // أثر القيود اليدوية المُرحّلة على ذمم العملاء AR مباشرة من سطور اليومية المزدوجة
+  const manualArSum = await db
+    .select({
+      customerId: journalLines.customerId,
+      net: sql<string>`COALESCE(SUM(CAST(${journalLines.debit} AS DECIMAL(15,2)) - CAST(${journalLines.credit} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        sql`${journalLines.customerId} IS NOT NULL`,
+        inArray(journalLines.role, ["AR", "ACCOUNTS_RECEIVABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    )
+    .groupBy(journalLines.customerId);
+  const manualArMap = new Map(manualArSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
 
   // سندات العميل المستقلّة (B1): PAYMENT_IN/PAYMENT_OUT مع customerId وبلا invoiceId.
   // - voucher RECEIPT (PAYMENT_IN) ⇒ adjustCustomerBalance(-amount) ⇒ AR ينقص ⇒ نطرحها من المُتوقَّع.
@@ -669,12 +714,14 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   const actualMap = new Map(actuals.map((c) => [Number(c.id), String(c.balance ?? "0")]));
   const invMap = new Map(invSum.map((r) => [Number(r.customerId), String(r.arGross ?? "0")]));
 
-  // كل عميل له فاتورة أو قيد افتتاحي أو سند مستقلّ أو رصيد غير صفري.
+  // كل عميل له فاتورة أو قيد افتتاحي أو سند مستقلّ أو قيد يدوي أو رصيد غير صفري.
   const seen = new Set<number>();
   for (const row of invSum) seen.add(Number(row.customerId));
   for (const row of openingSum) seen.add(Number(row.customerId));
   for (const row of voucherSum) seen.add(Number(row.customerId));
   for (const row of chargeSum) seen.add(Number(row.customerId));
+  for (const row of allocSum) seen.add(Number(row.customerId));
+  for (const row of manualArSum) seen.add(Number(row.customerId));
   for (const c of actuals) if (money(c.balance ?? "0").abs().gt(0)) seen.add(Number(c.id));
 
   const issues: ReconcileResult[] = [];
@@ -682,6 +729,8 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     const expected = money(invMap.get(customerId) ?? "0")
       .plus(money(openingMap.get(customerId) ?? "0"))
       .plus(money(chargeMap.get(customerId) ?? "0"))
+      .plus(money(allocMap.get(customerId) ?? "0"))
+      .plus(money(manualArMap.get(customerId) ?? "0"))
       .plus(money(voucherMap.get(customerId) ?? "0"));
     const actual = money(actualMap.get(customerId) ?? "0");
     const drift = expected.minus(actual).abs();
@@ -727,17 +776,38 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
     .where(sql`${accountingEntries.supplierId} IS NOT NULL`)
     .groupBy(accountingEntries.supplierId);
 
+  const manualApSum = await db
+    .select({
+      supplierId: journalLines.supplierId,
+      net: sql<string>`COALESCE(SUM(CAST(${journalLines.credit} AS DECIMAL(15,2)) - CAST(${journalLines.debit} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        sql`${journalLines.supplierId} IS NOT NULL`,
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+      ),
+    )
+    .groupBy(journalLines.supplierId);
+
   const actuals = await db.select({ id: suppliers.id, balance: suppliers.currentBalance }).from(suppliers);
   const apMap = new Map(entrySum.map((r) => [Number(r.supplierId), String(r.ap ?? "0")]));
+  const manualApMap = new Map(manualApSum.map((r) => [Number(r.supplierId), String(r.net ?? "0")]));
   const actualMap = new Map(actuals.map((s) => [Number(s.id), String(s.balance ?? "0")]));
 
   const seen = new Set<number>();
   for (const r of entrySum) seen.add(Number(r.supplierId));
+  for (const r of manualApSum) seen.add(Number(r.supplierId));
   for (const s of actuals) if (money(s.balance ?? "0").abs().gt(0)) seen.add(Number(s.id));
 
   const issues: ReconcileResult[] = [];
   for (const supplierId of Array.from(seen)) {
-    const expected = money(apMap.get(supplierId) ?? "0");
+    const expected = money(apMap.get(supplierId) ?? "0").plus(
+      money(manualApMap.get(supplierId) ?? "0"),
+    );
     const actual = money(actualMap.get(supplierId) ?? "0");
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {

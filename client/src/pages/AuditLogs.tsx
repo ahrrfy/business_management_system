@@ -402,12 +402,13 @@ const ACTION_AR: Record<string, string> = {
 };
 
 const ENTITY_AR: Record<string, string> = {
-  accounting: "المحاسبة", announcements: "الإعلانات", auth: "الهوية والجلسات", branch: "فرع", branches: "الفروع",
-  cardAccount: "حساب البطاقة", catalog: "المنتجات", customer: "عميل", customers: "العملاء", delivery: "التوصيل",
-  expense: "مصروف", expenses: "المصاريف", exchange: "الصيرفة", inventory: "المخزون", invoice: "فاتورة",
-  invoices: "الفواتير", payroll: "الرواتب", product: "منتج", purchase: "مشتريات", purchases: "المشتريات",
-  reports: "التقارير", return: "مرتجع", role: "دور وصلاحيات", sale: "مبيعات", shifts: "الورديات",
-  stocktake: "الجرد", supplier: "مورّد", system: "النظام", task: "مهمّة", tasks: "المهام", treasury: "الخزينة",
+  accounting: "المحاسبة", accountingEntry: "قيد محاسبي", announcements: "الإعلانات", approval: "اعتماد", auth: "الهوية والجلسات", branch: "فرع", branches: "الفروع",
+  cardAccount: "حساب البطاقة", catalog: "المنتجات", commission: "عمولة", custody: "عهدة", customer: "عميل", customers: "العملاء", delivery: "التوصيل",
+  expense: "مصروف", expenses: "المصاريف", exchange: "الصيرفة", goodsReceipt: "إيصال استلام", inventory: "المخزون", invoice: "فاتورة",
+  invoices: "الفواتير", journalEntry: "قيد يومية", lead: "عميل محتمل", opportunity: "فرصة بيع", payroll: "الرواتب", product: "منتج", productVariant: "صنف منتج",
+  purchase: "مشتريات", purchaseOrder: "أمر شراء", purchaseRequisition: "طلب شراء داخلي", purchaseReturn: "مرتجع شراء", purchases: "المشتريات",
+  reports: "التقارير", return: "مرتجع", role: "دور وصلاحيات", sale: "مبيعات", saleReturn: "مرتجع بيع", shift: "وردية", shifts: "الورديات",
+  stocktake: "الجرد", supplier: "مورّد", supplierInvoice: "فاتورة مورّد", supplierPayment: "سداد مورّد", system: "النظام", task: "مهمّة", tasks: "المهام", treasury: "الخزينة",
   user: "مستخدم", users: "المستخدمون", voucher: "سند", workOrder: "طلب خدمة", workOrders: "طلبات الخدمة",
 };
 const RPC_VERB_AR: Record<string, string> = {
@@ -436,11 +437,11 @@ function actionLabel(a: string): string {
 function exportColumns() {
   return [
     { key: "createdAt", header: "التاريخ والوقت", map: (r: AuditRow) => dt(r.createdAt as unknown as string) },
-    { key: "userName", header: "المستخدم", map: (r: AuditRow) => r.userName ?? (r.userId ? `#${r.userId}` : "") },
+    { key: "userName", header: "المستخدم", map: (r: AuditRow) => r.userName ?? (r.userId ? `مستخدم #${r.userId}` : "") },
     { key: "action", header: "الفعل", map: (r: AuditRow) => actionLabel(r.action) },
     { key: "entityType", header: "الكيان", map: (r: AuditRow) => entityLabel(r.entityType) },
     { key: "entityId", header: "المعرّف", map: (r: AuditRow) => r.entityId ?? "" },
-    { key: "branchName", header: "الفرع", map: (r: AuditRow) => r.branchName ?? (r.branchId ? `#${r.branchId}` : "") },
+    { key: "branchName", header: "الفرع", map: (r: AuditRow) => r.branchName ?? (r.branchId ? `فرع #${r.branchId}` : "") },
     { key: "outcome", header: "النتيجة", map: (r: AuditRow) => {
       const outcome = auditOperationMeta(r).outcome;
       return outcome === "FAILURE" ? "فشلت" : outcome === "SUCCESS" ? "نجحت" : "غير موثّقة";
@@ -466,13 +467,34 @@ function jsonStr(v: unknown): string {
   }
 }
 
-// عرض مختصر لقيمة JSON — يستخرج أبرز ٤ مفاتيح لتبقى الخلية قصيرة.
+function auditFieldLabel(key: string): string {
+  switch (key) {
+    case "supplierId": return "المورّد";
+    case "purchaseOrderId": return "أمر الشراء";
+    case "poNumber": return "رقم أمر الشراء";
+    case "items": return "الأصناف";
+    case "total": return "الإجمالي";
+    case "usdTotal": return "الإجمالي ($)";
+    case "agreedCurrency": return "العملة";
+    case "agreedRate": return "سعر الصرف";
+    case "shippingCost": return "الشحن";
+    case "customsCost": return "الكمرك";
+    case "status": return "الحالة";
+    case "requestStatus": return "حالة الطلب";
+    case "reason": return "السبب";
+    case "amount": return "المبلغ";
+    case "settlementType": return "التسوية";
+    default: return key;
+  }
+}
+
+// عرض مختصر لقيمة JSON — يستخرج أبرز ٤ مفاتيح بمسميات عربية لتبقى الخلية مقروءة.
 function shortValue(v: unknown): string {
   if (v == null) return "";
   if (typeof v !== "object") return String(v);
   try {
     const entries = Object.entries(v as Record<string, unknown>).filter(([key]) => !key.startsWith("_")).slice(0, 4);
-    return entries.map(([k, val]) => `${k}: ${jsonStr(val)}`).join(" · ");
+    return entries.map(([k, val]) => `${auditFieldLabel(k)}: ${jsonStr(val)}`).join(" · ");
   } catch {
     return jsonStr(v);
   }
@@ -680,7 +702,7 @@ export default function AuditLogs() {
                   >
                     <option value="ALL">كل الكيانات</option>
                     {(facets.data?.entityTypes ?? []).map((t) => (
-                      <option key={t} value={t}>{t}</option>
+                      <option key={t} value={t}>{entityLabel(t)}</option>
                     ))}
                   </AppSelect>
                 </FilterField>

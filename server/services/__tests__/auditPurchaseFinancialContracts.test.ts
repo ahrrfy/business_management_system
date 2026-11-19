@@ -97,13 +97,27 @@ async function postedPurchase({
   usdTotal = "100",
   currency = "USD" as "IQD" | "USD",
 } = {}) {
+  const numRate = Number(rate);
+  const needsRateOverride =
+    currency === "USD" && (numRate < 1000 || numRate > 2500);
   const created = await createPurchaseOrder(
     {
       supplierId: 1,
       branchId,
       settlementType: "CREDIT",
       agreedCurrency: currency,
-      ...(currency === "USD" ? { agreedRate: rate, usdTotal } : {}),
+      ...(currency === "USD"
+        ? {
+            agreedRate: rate,
+            usdTotal,
+            ...(needsRateOverride
+              ? {
+                  confirmAnomalousRate: true,
+                  rateDeviationReason: "Synthetic unit test exchange rate",
+                }
+              : {}),
+          }
+        : {}),
       clientRequestId: randomUUID(),
       items: [{ variantId: 1, productUnitId: 1, quantity, unitPrice: price }],
     },
@@ -115,6 +129,12 @@ async function postedPurchase({
       expectedVersion: created.version,
       reason: "Audit full receipt request",
       clientRequestId: randomUUID(),
+      ...(needsRateOverride
+        ? {
+            confirmAnomalousRate: true,
+            rateDeviationReason: "Synthetic unit test exchange rate",
+          }
+        : {}),
     },
     maker,
   );

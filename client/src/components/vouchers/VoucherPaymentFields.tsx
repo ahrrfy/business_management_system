@@ -1,4 +1,5 @@
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +9,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { InferredBranchField } from "@/components/form/InferredField";
 import { cn } from "@/lib/utils";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
-import { AlertTriangle, Info, Plus, ShieldQuestion } from "lucide-react";
+import { AlertTriangle, Info, Plus } from "lucide-react";
 import { Link } from "wouter";
 import {
   isVoucherCategoryRoleCompatible,
@@ -50,6 +51,7 @@ type Props = Pick<
   | "canRestoreCategories"
   | "setShowCategoryDialog"
   | "restoreDefaults"
+  | "treasuryNotice"
   | "awaitsOwnerDisbursement"
   | "create"
 >;
@@ -83,6 +85,7 @@ export function VoucherPaymentFields({
   canRestoreCategories,
   setShowCategoryDialog,
   restoreDefaults,
+  treasuryNotice,
   awaitsOwnerDisbursement,
   create,
 }: Props) {
@@ -105,12 +108,11 @@ export function VoucherPaymentFields({
             onChange={setAmount}
             placeholder="50000"
             ariaLabel="مبلغ السند بالدينار"
-            className="text-right"
+            className="text-end"
           />
           {awaitsOwnerDisbursement && (
-            <p className="text-[11px] text-[var(--sem-warn)] flex items-center gap-1 mt-0.5">
-              <ShieldQuestion aria-hidden className="size-3" />
-              سيبقى طلباً بلا أثر حتى يعتمد ويصرفه حساب مالك آخر.
+            <p className="text-[11px] text-[var(--sem-warn)] mt-0.5">
+              طلب معلق حتى اعتماد المالك وصرفه.
             </p>
           )}
         </div>
@@ -118,7 +120,7 @@ export function VoucherPaymentFields({
         <div className="space-y-1">
           <Label
             className="flex items-center gap-1"
-            title={`${businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}). ` : ""}التاريخ الفعلي للمُعاملة (قد يَختلف عن تاريخ الإدخال).`}
+            title={`${businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}). ` : ""}التاريخ الفعلي للمعاملة (قد يختلف عن تاريخ الإدخال).`}
           >
             تاريخ السند *
             <Info aria-hidden className="size-3 text-muted-foreground" />
@@ -134,10 +136,19 @@ export function VoucherPaymentFields({
           />
         </div>
         <div className="space-y-1">
-          <Label className="inline-flex items-center gap-1.5">
-            <span>طريقة الدفع *</span>
-            {method === "CARD" && <CardBrandLogos size="xs" />}
-          </Label>
+          <div className="flex flex-wrap items-center justify-between gap-1">
+            <Label className="inline-flex items-center gap-1.5">
+              <span>طريقة الدفع *</span>
+              {method === "CARD" && <CardBrandLogos size="xs" />}
+            </Label>
+            {method === "CASH" ? (
+              <Badge variant={direction === "OUT" || treasuryNotice ? "secondary" : "outline"}>
+                {direction === "OUT" || treasuryNotice
+                  ? "الخزينة الإدارية — يعتمدها المالك"
+                  : "درج الكاشير"}
+              </Badge>
+            ) : null}
+          </div>
           <AppSelect
             className="h-9"
             value={method}

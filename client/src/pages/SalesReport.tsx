@@ -5,7 +5,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
-import { DEFAULT_PERIOD, PeriodFilter, type PeriodValue, type PresetKey } from "@/components/reports/PeriodFilter";
+import { DEFAULT_PERIOD } from "@/components/reports/PeriodFilter";
+import { StatementPeriodDetailBar, type StatementDetailLevel } from "@/components/statements/PartyCommandBar";
+import type { StatementLineItem } from "@/lib/statementPeriodLedger";
+import { fmtQty } from "@shared/quantityFormat";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
@@ -210,13 +213,14 @@ export default function SalesReport() {
     from: initialPeriod.from,
     to: initialPeriod.to,
     preset: initialPeriod.preset as string,
+    detail: "normal",
     branch: "",
     source: "",
     status: "",
     method: "",
     seller: "",
   });
-  const period: PeriodValue = { from: f.from, to: f.to, preset: (f.preset || "custom") as PresetKey };
+  const detailLevel = (f.detail === "detailed" ? "detailed" : "normal") as StatementDetailLevel;
   const [topBy, setTopBy] = useState<"revenue" | "qty">("revenue");
   const [sinceDays, setSinceDays] = useState(90);
 
@@ -234,6 +238,7 @@ export default function SalesReport() {
     statuses: f.status ? [f.status as (typeof STATUS_OPTIONS)[number]] : undefined,
     paymentMethods: f.method ? [f.method as InvoiceFilterMethod | "NONE"] : undefined,
     salespersonId: f.seller ? Number(f.seller) : undefined,
+    includeItems: detailLevel === "detailed",
   };
   const invoiceQ = trpc.reports.salesReport.useQuery(invoiceFilters, { enabled: tab === "invoices" });
   const topQ = trpc.reports.topProducts.useQuery(
@@ -304,9 +309,12 @@ export default function SalesReport() {
       <Card>
         <CardContent className="p-2.5 space-y-2">
           {tab !== "slow" && (
-            <PeriodFilter
-              value={period}
-              onChange={(v) => setF({ from: v.from, to: v.to, preset: v.preset })}
+            <StatementPeriodDetailBar
+              from={f.from}
+              to={f.to}
+              onRangeChange={({ from, to }) => setF({ from, to, preset: "custom" })}
+              detailLevel={detailLevel}
+              onDetailLevelChange={(v) => setF({ detail: v })}
             />
           )}
           <div className="flex flex-wrap gap-3 items-end">
@@ -401,6 +409,7 @@ export default function SalesReport() {
           filters={invoiceFilters}
           truncated={invoiceQ.data?.nextCursor != null}
           showCost={showCost}
+          detailLevel={detailLevel}
         />
       )}
       {tab === "top" && (
@@ -445,6 +454,7 @@ function InvoicesTab({
   filters,
   truncated,
   showCost,
+  detailLevel,
 }: {
   rows: ReportRow[];
   totals: RouterOutputs["reports"]["salesReport"]["totals"] | undefined;
@@ -460,16 +470,44 @@ function InvoicesTab({
     statuses?: InvoiceStatus[];
     paymentMethods?: (InvoiceFilterMethod | "NONE")[];
     salespersonId?: number;
+    includeItems?: boolean;
   };
   truncated: boolean;
   showCost: boolean;
+  detailLevel: StatementDetailLevel;
 }) {
   const utils = trpc.useUtils();
   const [exporting, setExporting] = useState(false);
-  const visibleInvoiceColumns = useMemo(
-    () => showCost ? invoiceColumns : invoiceColumns.filter((c) => !INVOICE_COST_COLUMNS.has(c.id ?? ("accessorKey" in c ? String(c.accessorKey) : ""))),
-    [showCost],
-  );
+  const visibleInvoiceColumns = useMemo(() => {
+    const base = showCost
+      ? invoiceColumns
+      : invoiceColumns.filter((c) => !INVOICE_COST_COLUMNS.has(c.id ?? ("accessorKey" in c ? String(c.accessorKey) : "")));
+    if (detailLevel !== "detailed") return base;
+    const itemsCol: ColumnDef<ReportRow, unknown> = {
+      id: "itemsDetail",
+      header: "تفاصيل البنود",
+      meta: { width: "wide", wrap: true },
+      cell: (c) => {
+        const items = (c.row.original as ReportRow & { items?: StatementLineItem[] }).items;
+        if (!items?.length) return <span className="text-xs text-muted-foreground">—</span>;
+        return (
+          <div className="space-y-0.5 text-[11px]">
+            {items.map((it, idx) => (
+              <div key={idx} className="flex items-center justify-between gap-2">
+                <span>{it.productName}{it.unitName ? ` (${it.unitName})` : ""}</span>
+                <span className="tabular-nums text-muted-foreground" dir="ltr">
+                  {fmtQty(it.quantity)} × {fmt(it.unitPrice)} = {fmt(it.total)}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      },
+    };
+    const next = [...base];
+    next.splice(Math.min(3, next.length), 0, itemsCol);
+    return next;
+  }, [showCost, detailLevel]);
 
   // التصدير/الطباعة الكاملان: حين تتجاوز النتائج حدّ الصفحة (truncated) نجمع كل الصفحات عبر cursor
   // بدل تصدير أوّل ١٠٠٠ صفٍّ صامتاً (تدقيق ١٧/٧). سقف ٢٠٠ صفحة × ٥٠٠٠ = مليون صفّ حارس ضدّ حلقة لا تنتهي.
@@ -539,7 +577,7 @@ function InvoicesTab({
                 // القالب عالي الدقّة V2 (gap-audit ٥/٧: printSalesReportV2 كان مكتوباً في PR #140
                 // بلا مستهلِك — رُبط هنا بدل الطباعة العامّة السابقة، بمرآة بقيّة قوالب الفواتير).
                 printSalesReportV2({
-                  periodLabel: `${from} — ${to}`,
+                  periodLabel: `${from || "البداية"} — ${to || "الآن"}`,
                   branchLabel,
                   invoiceCount: totals?.count ?? rows.length,
                   totalSum: totals?.total ?? "0",
@@ -575,6 +613,7 @@ function InvoicesTab({
                         : r.status === "PARTIALLY_PAID"
                           ? "#92400E"
                           : "#4E5148",
+                    items: detailLevel === "detailed" ? (r as ReportRow & { items?: StatementLineItem[] }).items : undefined,
                   })),
                 });
               }}
@@ -591,7 +630,7 @@ function InvoicesTab({
                 try {
                   const allRows = await fetchAllRows();
                   exportRows(allRows, {
-                    filename: `تقرير-المبيعات-${from}-${to}`,
+                    filename: `تقرير-المبيعات-${from || "البداية"}-${to || "الآن"}`,
                     columns: [
                       { key: "invoiceNumber", header: "رقم الفاتورة" },
                       {
@@ -606,12 +645,12 @@ function InvoicesTab({
                       { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
                       { key: "posDeviceId", header: "محطة البيع", map: (r) => r.posDeviceId ?? "" },
                       { key: "paymentMethod", header: "طريقة الدفع", map: (r) => payMethodOf(r.paymentMethod) },
-                      { key: "subtotal", header: "قبل الخصم", map: (r) => Number(r.subtotal) },
-                      { key: "discountAmount", header: "الخصم", map: (r) => Number(r.discountAmount) },
-                      { key: "taxAmount", header: "الضريبة", map: (r) => Number(r.taxAmount) },
-                      { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-                      { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-                      { key: "returnedTotal", header: "المرتجع", map: (r) => Number(r.returnedTotal) },
+                      { key: "subtotal", header: "قبل الخصم", map: (r) => D(r.subtotal).toNumber() },
+                      { key: "discountAmount", header: "الخصم", map: (r) => D(r.discountAmount).toNumber() },
+                      { key: "taxAmount", header: "الضريبة", map: (r) => D(r.taxAmount).toNumber() },
+                      { key: "total", header: "الإجمالي", map: (r) => D(r.total).toNumber() },
+                      { key: "paidAmount", header: "المدفوع", map: (r) => D(r.paidAmount).toNumber() },
+                      { key: "returnedTotal", header: "المرتجع", map: (r) => D(r.returnedTotal).toNumber() },
                       { key: "remaining" as const, header: "المتبقي", map: (r: ReportRow) => invoiceRemaining(r).toNumber() },
                       { key: "netRevenue", header: "صافي الإيراد", money: true, moneyPrecision: 2, map: (r: ReportRow) => D(r.netRevenue).toNumber() },
                       ...(showCost ? [{
@@ -632,6 +671,16 @@ function InvoicesTab({
                         money: true,
                         moneyPrecision: 2 as const,
                         map: (r: ReportRow) => r.profit == null ? null : D(r.profit).toNumber(),
+                      }] : []),
+                      ...(detailLevel === "detailed" ? [{
+                        key: "items" as const,
+                        header: "بنود الفاتورة",
+                        map: (r: ReportRow) => {
+                          const items = (r as ReportRow & { items?: StatementLineItem[] }).items;
+                          return items?.length
+                            ? items.map((it) => `${it.productName} × ${fmtQty(it.quantity)} = ${fmt(it.total)}`).join(" | ")
+                            : "";
+                        },
                       }] : []),
                       { key: "status", header: "الحالة", map: (r) => invoiceStatusLabel(r.status) },
                     ],
@@ -675,7 +724,7 @@ const topColumns: ColumnDef<TopRow, unknown>[] = [
     header: "الربح",
     cell: (c) => {
       const v = c.getValue() as string;
-      const cls = Number(v) >= 0 ? "text-money-positive" : "text-money-negative";
+      const cls = D(v).gte(0) ? "text-money-positive" : "text-money-negative";
       return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
     },
   },
@@ -730,12 +779,12 @@ function TopProductsTab({
               columns: [
                 { key: "productName", header: "المنتج" },
                 { key: "categoryName", header: "الفئة", map: (r) => r.categoryName ?? "" },
-                { key: "qtySold", header: "الكمية المباعة", map: (r) => Number(r.qtySold) },
-                { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
+                { key: "qtySold", header: "الكمية المباعة", map: (r) => D(r.qtySold).toNumber() },
+                { key: "revenue", header: "الإيراد", map: (r) => D(r.revenue).toNumber() },
                 ...(showCost ? [
-                  { key: "cost" as const, header: "التكلفة", map: (r: TopRow) => Number(r.cost) },
-                  { key: "profit" as const, header: "الربح", map: (r: TopRow) => Number(r.profit) },
-                  { key: "marginPct" as const, header: "هامش %", map: (r: TopRow) => Number(r.marginPct) },
+                  { key: "cost" as const, header: "التكلفة", map: (r: TopRow) => D(r.cost).toNumber() },
+                  { key: "profit" as const, header: "الربح", map: (r: TopRow) => D(r.profit).toNumber() },
+                  { key: "marginPct" as const, header: "هامش %", map: (r: TopRow) => D(r.marginPct).toNumber() },
                 ] : []),
                 { key: "invoicesCount", header: "عدد الفواتير" },
               ],
@@ -806,7 +855,7 @@ function SlowMoversTab({
               columns: [
                 { key: "productName", header: "المنتج" },
                 { key: "categoryName", header: "الفئة", map: (r) => r.categoryName ?? "" },
-                { key: "qtyInStock", header: "المخزون الحالي", map: (r) => Number(r.qtyInStock) },
+                { key: "qtyInStock", header: "المخزون الحالي", map: (r) => D(r.qtyInStock).toNumber() },
                 {
                   key: "lastSaleDate",
                   header: "آخر بيع",
@@ -843,7 +892,7 @@ const catColumns: ColumnDef<CatRow, unknown>[] = [
     header: "الربح",
     cell: (c) => {
       const v = c.getValue() as string;
-      const cls = Number(v) >= 0 ? "text-money-positive" : "text-money-negative";
+      const cls = D(v).gte(0) ? "text-money-positive" : "text-money-negative";
       return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
     },
   },
@@ -895,11 +944,11 @@ function CategoryProfitTab({
               filename: `ربح-حسب-الفئة-${from}-${to}`,
               columns: [
                 { key: "categoryName", header: "الفئة" },
-                { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
+                { key: "revenue", header: "الإيراد", map: (r) => D(r.revenue).toNumber() },
                 ...(showCost ? [
-                  { key: "cost" as const, header: "التكلفة", map: (r: CatRow) => Number(r.cost) },
-                  { key: "profit" as const, header: "الربح", map: (r: CatRow) => Number(r.profit) },
-                  { key: "marginPct" as const, header: "هامش %", map: (r: CatRow) => Number(r.marginPct) },
+                  { key: "cost" as const, header: "التكلفة", map: (r: CatRow) => D(r.cost).toNumber() },
+                  { key: "profit" as const, header: "الربح", map: (r: CatRow) => D(r.profit).toNumber() },
+                  { key: "marginPct" as const, header: "هامش %", map: (r: CatRow) => D(r.marginPct).toNumber() },
                 ] : []),
                 { key: "itemsCount", header: "عدد البنود" },
               ],

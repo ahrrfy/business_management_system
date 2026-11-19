@@ -28,6 +28,10 @@ import {
   type PurchaseTenderDraft,
 } from "@/components/purchases/PurchaseTenderField";
 import {
+  PurchaseRateGuardBox,
+  usePurchaseRateGuard,
+} from "@/components/purchases/PurchaseRateAnomalyBanner";
+import {
   isWithinPriceDecimals,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
@@ -251,6 +255,17 @@ export default function PurchaseEdit() {
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
   const [baseline, setBaseline] = useState<string | null>(null);
   const [baselineOrder, setBaselineOrder] = useState<PurchaseOrderData | null>(null);
+  const rateGuard = usePurchaseRateGuard({
+    currency: state.currency,
+    agreedRate: state.agreedRate,
+    branchId: baselineOrder?.branchId ? Number(baselineOrder.branchId) : null,
+    excludePurchaseOrderId: Number.isFinite(purchaseOrderId) ? purchaseOrderId : undefined,
+    explicitReferenceRate: baselineOrder?.rateSanity?.referenceRate ?? null,
+    items: state.items,
+    getItemCostBase: (variantId) =>
+      baselineOrder?.items.find((o) => Number(o.variantId) === variantId)?.costPrice ?? null,
+    meData: me.data,
+  });
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
@@ -541,7 +556,7 @@ export default function PurchaseEdit() {
     if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH") {
       return invoiceMatch.message;
     }
-    return null;
+    return rateGuard.validateRateGuard();
   }
 
   async function handleSubmit() {
@@ -590,6 +605,7 @@ export default function PurchaseEdit() {
         state.currency === "USD"
           ? safeMoney(state.agreedRate).toFixed(4)
           : undefined,
+      ...rateGuard.overridePayload,
       // خصم فاتورة المورّد (0204): يُرسَل بعملة الأمر ويُوزّعه الخادم بنسبة القيمة.
       invoiceDiscount: invoiceDiscountAmount.gt(0)
         ? invoiceDiscountAmount.toFixed(2)
@@ -911,6 +927,20 @@ export default function PurchaseEdit() {
                 ? docTotals.total
                 : landed.grand.toFixed(2)
             }
+          />
+          <PurchaseRateGuardBox
+            currency={state.currency}
+            agreedRate={state.agreedRate}
+            referenceRate={rateGuard.referenceRate}
+            canOverrideAnomaly={rateGuard.canOverrideRateAnomaly}
+            confirmAnomalousRate={rateGuard.confirmAnomalousRate}
+            rateDeviationReason={rateGuard.rateDeviationReason}
+            onApplySuggestedRate={(suggested) =>
+              dispatch({ type: "SET_FIELD", field: "agreedRate", value: suggested })
+            }
+            onToggleConfirm={rateGuard.setConfirmAnomalousRate}
+            onReasonChange={rateGuard.setRateDeviationReason}
+            unitCostWarnings={rateGuard.unitCostWarnings}
           />
           <SupplierInvoiceMatch
             derivedTotal={

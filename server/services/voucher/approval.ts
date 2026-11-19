@@ -18,11 +18,15 @@ import {
   autoSettleCustomerAccountTx,
   autoSettleSupplierAccountTx,
 } from "../reconciliation/autoSettlementService";
+import Decimal from "decimal.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
+  auditLogs,
+  customers,
+  deliveryParties,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -498,6 +502,9 @@ export interface ApproveVoucherResult {
   approvalStatus: "APPROVED";
   signatureHash: string;
   replayed: boolean;
+  balanceBefore?: string;
+  balanceAfter?: string;
+  excessUnallocatedAmount?: string;
 }
 
 /** اعتماد سند مُعلَّق (Maker-Checker): يُسجّل الأثر المالي ويُختم بـsignatureHash.
@@ -571,11 +578,29 @@ export async function approveVoucherTx(
     isOwner: true,
   };
   let supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+  const [overpayAuditRow] =
+    preview.direction === "OUT" && preview.partyType === "SUPPLIER"
+      ? await tx
+          .select({ id: auditLogs.id })
+          .from(auditLogs)
+          .where(
+            and(
+              eq(auditLogs.action, "voucher.supplierOverpay"),
+              eq(auditLogs.entityType, "receipt"),
+              eq(auditLogs.entityId, String(receiptId)),
+            ),
+          )
+          .limit(1)
+      : [];
+  const hasSupplierOverpayAudit = Boolean(overpayAuditRow);
+  const effectiveAllowSupplierOverpay = Boolean(
+    supplierBookMarker?.allowSupplierOverpay || hasSupplierOverpayAudit,
+  );
   if (supplierBookMarker?.cashSource) {
     if (options?.cashSource && (options.cashSource.mode !== supplierBookMarker.cashSource.mode || (options.cashSource.shiftId ?? null) !== (supplierBookMarker.cashSource.shiftId ?? null))) throw supplierVoucherConflict("مصدر نقد السند الدفتري لا يطابق المصدر المحفوظ");
     options = { ...options, cashSource: supplierBookMarker.cashSource };
   }
-  if (supplierBookMarker && options?.cashSource && (preview.paymentMethod !== "CASH" || options.cashSource.mode !== "TREASURY" || options.cashSource.shiftId != null))
+  if ((supplierBookMarker || hasSupplierOverpayAudit) && options?.cashSource && (preview.paymentMethod !== "CASH" || options.cashSource.mode !== "TREASURY" || options.cashSource.shiftId != null))
     throw supplierVoucherConflict("تسوية السند الدفترية تدعم الخزينة الإدارية فقط ولا تقبل وردية أو مصدراً نقدياً لطريقة غير نقدية");
   let supplierBookPlan: LiveSupplierBookVoucherPlan | null = null;
   let supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
@@ -588,8 +613,21 @@ export async function approveVoucherTx(
     const originalActor: Actor = { userId: creator.id, branchId: Number(creator.branchId ?? preview.branchId), role: creator.role };
     const originalInput = { voucherType: "PAYMENT" as const, branchId: Number(preview.branchId), amount: preview.amount,
       paymentMethod: preview.paymentMethod as PaymentMethod, partyType: "SUPPLIER" as const, partyId: preview.partyId,
-      description: preview.description ?? "سداد المورد", referenceNumber: preview.referenceNumber, clientRequestId: `VOUCHER-UPGRADE:${receiptId}` };
-    supplierBookPlan = await prepareSupplierBookVoucherTx(tx, { supplierId: Number(preview.partyId), branchId: Number(preview.branchId), amount: preview.amount, receiptId, voucherDate: toDateStr(preview.voucherDate ?? preview.createdAt), allocations: supplierBookMarker?.allocations }, previewApproverActor);
+      description: preview.description ?? "سداد المورد", referenceNumber: preview.referenceNumber, clientRequestId: `VOUCHER-UPGRADE:${receiptId}`,
+      ...(effectiveAllowSupplierOverpay ? { allowSupplierOverpay: true } : {}) };
+    supplierBookPlan = await prepareSupplierBookVoucherTx(
+      tx,
+      {
+        supplierId: Number(preview.partyId),
+        branchId: Number(preview.branchId),
+        amount: preview.amount,
+        receiptId,
+        voucherDate: toDateStr(preview.voucherDate ?? preview.createdAt),
+        allocations: supplierBookMarker?.allocations,
+        allowSupplierOverpay: effectiveAllowSupplierOverpay,
+      },
+      previewApproverActor,
+    );
     if (supplierBookPlan && !supplierBookMarker) {
       await recordSupplierBookVoucherMarkerTx(tx, receiptId, originalInput, supplierBookPlan, originalActor);
       supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
@@ -606,11 +644,49 @@ export async function approveVoucherTx(
     if (preview.status === "COMPLETED" && preview.approvalStatus === "APPROVED" && supplierRequest.status === "APPROVED" && preview.signatureHash) {
       return { receiptId, voucherNumber: preview.voucherNumber, approvalStatus: "APPROVED", signatureHash: preview.signatureHash, replayed: true };
     }
+    const [supBefore] = await tx
+      .select({ currentBalance: suppliers.currentBalance })
+      .from(suppliers)
+      .where(eq(suppliers.id, Number(preview.partyId)))
+      .for("share")
+      .limit(1);
     const result = await decideSupplierPaymentInTx(tx, { requestId: supplierRequest.id, decisionKey: `VOUCHER-APPROVE:${receiptId}`, action: "APPROVE", reviewReason: `اعتماد وصرف سند ${preview.voucherNumber}` }, previewApproverActor, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY);
     if (result.status !== "APPROVED") throw supplierVoucherConflict("لم يكتمل اعتماد طلب السداد المرتبط");
     const [completed] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("share").limit(1);
     if (!completed?.signatureHash) throw supplierVoucherConflict("لم يكتمل ختم سند الصرف المرتبط");
-    return { receiptId, voucherNumber: preview.voucherNumber, approvalStatus: "APPROVED", signatureHash: completed.signatureHash, replayed: result.idempotent };
+    const [supAfter] = await tx
+      .select({ currentBalance: suppliers.currentBalance })
+      .from(suppliers)
+      .where(eq(suppliers.id, Number(preview.partyId)))
+      .limit(1);
+    const balanceBefore = supBefore ? toDbMoney(supBefore.currentBalance) : undefined;
+    const balanceAfter = supAfter ? toDbMoney(supAfter.currentBalance) : undefined;
+    if (balanceBefore != null && balanceAfter != null && preview.partyId != null) {
+      await logAuditTx(tx, previewApproverActor, {
+        action: "voucher.balanceSnapshot",
+        entityType: "receipt",
+        entityId: String(receiptId),
+        branchId: Number(preview.branchId),
+        newValue: {
+          version: 1,
+          partyType: "SUPPLIER",
+          partyId: Number(preview.partyId),
+          balanceBefore,
+          balanceAfter,
+          excessUnallocatedAmount: "0.00",
+        },
+      });
+    }
+    return {
+      receiptId,
+      voucherNumber: preview.voucherNumber,
+      approvalStatus: "APPROVED",
+      signatureHash: completed.signatureHash,
+      replayed: result.idempotent,
+      ...(balanceBefore != null ? { balanceBefore } : {}),
+      ...(balanceAfter != null ? { balanceAfter } : {}),
+      excessUnallocatedAmount: "0.00",
+    };
   }
   const cashOutPreview =
     preview.direction === "OUT" && preview.paymentMethod === "CASH";
@@ -1934,12 +2010,32 @@ export async function approveVoucherTx(
       });
     }
     if (money(sup.bal ?? "0").lt(amount)) {
-      const label =
-        sup.kind === "CONSIGNOR" ? "مستحقّ المودِع" : "الرصيد المستحق للمورد";
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `${label} (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعد الطلب بعد مراجعة الكشف`,
-      });
+      const overpayAudit =
+        sup.kind !== "CONSIGNOR" &&
+        (Boolean(supplierBookMarker?.allowSupplierOverpay) ||
+          Boolean(
+            (
+              await tx
+                .select({ id: auditLogs.id })
+                .from(auditLogs)
+                .where(
+                  and(
+                    eq(auditLogs.action, "voucher.supplierOverpay"),
+                    eq(auditLogs.entityType, "receipt"),
+                    eq(auditLogs.entityId, String(receiptId)),
+                  ),
+                )
+                .limit(1)
+            )[0],
+          ));
+      if (!overpayAudit) {
+        const label =
+          sup.kind === "CONSIGNOR" ? "مستحقّ المودِع" : "الرصيد المستحق للمورد";
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `${label} (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعد الطلب بعد مراجعة الكشف`,
+        });
+      }
     }
   }
 
@@ -2350,6 +2446,10 @@ export async function approveVoucherTx(
         .where(eq(expenses.id, Number(systemAccrualObligation.expenseId)));
     }
   }
+  let approvalBalanceBefore: string | undefined;
+  let approvalBalanceAfter: string | undefined;
+  let approvalExcessUnallocated: string | undefined;
+
   // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
   // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
   // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
@@ -2438,11 +2538,22 @@ export async function approveVoucherTx(
         else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
       }
     }
+    const [custBefore] = await tx
+      .select({ currentBalance: customers.currentBalance })
+      .from(customers)
+      .where(eq(customers.id, partyId))
+      .for("update");
+    const custDelta = direction === "IN" ? amount.neg() : amount;
     await adjustCustomerBalance(
       tx,
       partyId,
-      direction === "IN" ? amount.neg() : amount,
+      custDelta,
     );
+    if (custBefore) {
+      approvalBalanceBefore = toDbMoney(custBefore.currentBalance);
+      approvalBalanceAfter = toDbMoney(money(custBefore.currentBalance).plus(custDelta));
+      approvalExcessUnallocated = "0.00";
+    }
     if (direction === "IN" && cancellationOriginal?.direction === "OUT") {
       // Restore the original source first, then use its proven credit FIFO. The
       // counter receipt itself is never treated as a second source of collection.
@@ -2476,11 +2587,28 @@ export async function approveVoucherTx(
     cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
     !purchaseCashClearing
   ) {
+    const [supBefore] = await tx
+      .select({ currentBalance: suppliers.currentBalance })
+      .from(suppliers)
+      .where(eq(suppliers.id, partyId))
+      .for("update");
+    const supDelta = direction === "OUT" ? amount.neg() : amount;
     await adjustSupplierBalance(
       tx,
       partyId,
-      direction === "OUT" ? amount.neg() : amount,
+      supDelta,
     );
+    if (supBefore) {
+      approvalBalanceBefore = toDbMoney(supBefore.currentBalance);
+      approvalBalanceAfter = toDbMoney(money(supBefore.currentBalance).plus(supDelta));
+      if (direction === "OUT") {
+        approvalExcessUnallocated =
+          supplierBookPlan?.excessUnallocatedAmount ??
+          toDbMoney(Decimal.max(0, amount.minus(Decimal.max(0, money(supBefore.currentBalance)))));
+      } else {
+        approvalExcessUnallocated = "0.00";
+      }
+    }
     if (direction === "OUT" && !supplierBookPlan && !advanceRefundCancellation) {
       const [sRec] = await tx
         .select({ currentBalance: suppliers.currentBalance })
@@ -2491,11 +2619,22 @@ export async function approveVoucherTx(
       }
     }
   } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
+    const [dpBefore] = await tx
+      .select({ currentBalance: deliveryParties.currentBalance })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, partyId))
+      .for("update");
+    const dpDelta = direction === "IN" ? amount.neg() : amount;
     await adjustDeliveryBalance(
       tx,
       partyId,
-      direction === "IN" ? amount.neg() : amount,
+      dpDelta,
     );
+    if (dpBefore) {
+      approvalBalanceBefore = toDbMoney(dpBefore.currentBalance);
+      approvalBalanceAfter = toDbMoney(money(dpBefore.currentBalance).plus(dpDelta));
+      approvalExcessUnallocated = "0.00";
+    }
     if (direction === "IN") {
       await appendDeliveryLedgerEntry(tx, {
         eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
@@ -2556,6 +2695,23 @@ export async function approveVoucherTx(
     await applySupplierBookVoucherTx(tx, { receiptId, accountingEntryId: Number(entries[0].id), plan: supplierBookPlan }, previewApproverActor);
   }
 
+  if (approvalBalanceBefore != null && approvalBalanceAfter != null && partyId != null && effectivePartyType) {
+    await logAuditTx(tx, actor, {
+      action: "voucher.balanceSnapshot",
+      entityType: "receipt",
+      entityId: String(receiptId),
+      branchId,
+      newValue: {
+        version: 1,
+        partyType: effectivePartyType,
+        partyId,
+        balanceBefore: approvalBalanceBefore,
+        balanceAfter: approvalBalanceAfter,
+        excessUnallocatedAmount: approvalExcessUnallocated ?? "0.00",
+      },
+    });
+  }
+
   // البَصمة بعد إكمال كل التَغييرات.
   const hash = computeSignature({
     id: receiptId,
@@ -2580,6 +2736,11 @@ export async function approveVoucherTx(
     approvalStatus: "APPROVED" as const,
     signatureHash: hash,
     replayed: false,
+    ...(approvalBalanceBefore != null ? { balanceBefore: approvalBalanceBefore } : {}),
+    ...(approvalBalanceAfter != null ? { balanceAfter: approvalBalanceAfter } : {}),
+    ...(approvalExcessUnallocated != null
+      ? { excessUnallocatedAmount: approvalExcessUnallocated }
+      : {}),
   };
 }
 

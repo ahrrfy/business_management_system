@@ -7,6 +7,8 @@ import { getDb } from "../../db";
 import {
   approveVoucher,
   createVoucher as createVoucherRaw,
+  getVoucher,
+  listVouchers,
   rejectVoucher,
   recentVouchersForParty,
 } from "../voucherService";
@@ -490,5 +492,50 @@ describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
     const rc1 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r1.receiptId)))[0];
     const rc2 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r2.receiptId)))[0];
     expect(rc1.signatureHash).not.toBe(rc2.signatureHash);
+  });
+
+  it("يحفظ لقطة الرصيد (قبل/بعد) وتصنيف سند المورد ويعيدها في getVoucher وlistVouchers", async () => {
+    await db().update(s.customers).set({ currentBalance: "500.00" }).where(eq(s.customers.id, 1));
+    const custVoucher = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "120.00",
+        paymentMethod: "TRANSFER",
+        referenceNumber: "SNAP-CUST-1",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "قبض عميل مع لقطة رصيد",
+      },
+      adminActor,
+    );
+    expect(custVoucher.balanceBefore).toBe("500.00");
+    expect(custVoucher.balanceAfter).toBe("380.00");
+
+    const loaded = await getVoucher(custVoucher.receiptId);
+    expect(loaded?.partyBalanceBefore).toBe("500.00");
+    expect(loaded?.partyBalanceAfter).toBe("380.00");
+
+    const listed = await listVouchers({ partyType: "CUSTOMER", partyId: 1 });
+    expect(listed.find((row) => row.id === custVoucher.receiptId)?.partyBalanceAfter).toBe("380.00");
+
+    const supRv = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "200.00",
+        paymentMethod: "TRANSFER",
+        referenceNumber: "SNAP-SUP-RV",
+        partyType: "SUPPLIER",
+        partyId: 1,
+        description: "التزام دائن للمورد",
+        supplierReceiptPurpose: "CREDIT_OBLIGATION",
+      },
+      adminActor,
+    );
+    const loadedSupRv = await getVoucher(supRv.receiptId);
+    expect(loadedSupRv?.supplierReceiptPurpose).toBe("CREDIT_OBLIGATION");
+    expect(loadedSupRv?.partyBalanceBefore).toBe("0.00");
+    expect(loadedSupRv?.partyBalanceAfter).toBe("200.00");
   });
 });

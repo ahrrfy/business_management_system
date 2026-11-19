@@ -13,6 +13,10 @@
 import { reportScan, scanPosition } from "../scan";
 import { eq, inArray } from "drizzle-orm";
 import { money, round2 } from "../../money";
+import { assessUnitCostAnomaly, assessUsdRateSanity } from "@shared/balanceTrail";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
+import { purchaseTenderLabel, type PurchaseTenderInput } from "@shared/purchaseTender";
+import { readReferenceUsdRateTx } from "../../purchase/order";
 import {
   goodsReceiptReversalTrigger,
   purchaseChargeControlTrigger,
@@ -31,6 +35,7 @@ import {
   goodsReceiptReversalRequestItems,
   goodsReceiptReversalRequests,
   goodsReceipts,
+  productVariants,
   purchaseChargeControlRequests,
   purchaseCharges,
   purchaseIntegrityCases,
@@ -160,15 +165,41 @@ export const purchaseOrderControlSource: DecisionSource = {
     ]);
     const orderById = new Map(orders.map((o) => [Number(o.id), o]));
     const revisionById = new Map(revisions.map((r) => [Number(r.id), r]));
-    const [look, variants, units] = await Promise.all([
+    const allVariantIds = ids([
+      ...orderItems.map((i) => i.variantId),
+      ...revisionItems.map((i) => i.variantId),
+    ]);
+    const usdBranchIds = Array.from(
+      new Set(
+        orders
+          .filter((o) => o.agreedCurrency === "USD")
+          .map((o) => Number(o.branchId)),
+      ),
+    );
+    const [look, variants, units, variantCostRows, refRatePairs] = await Promise.all([
       lookups(db, {
         suppliers: orders.map((o) => o.supplierId),
         users: [...rows.map((r) => r.requestedBy), ...orders.map((o) => o.createdBy)],
         branches: rows.map((r) => r.branchId),
       }),
-      variantLabels(db, ids([...orderItems.map((i) => i.variantId), ...revisionItems.map((i) => i.variantId)])),
+      variantLabels(db, allVariantIds),
       unitNames(db, ids(orderItems.map((i) => i.productUnitId))),
+      allVariantIds.length
+        ? db
+            .select({ id: productVariants.id, costPrice: productVariants.costPrice })
+            .from(productVariants)
+            .where(inArray(productVariants.id, allVariantIds))
+        : Promise.resolve([]),
+      usdBranchIds.length
+        ? Promise.all(
+            usdBranchIds.map(async (b) => [b, await readReferenceUsdRateTx(db, b)] as const),
+          )
+        : Promise.resolve([]),
     ]);
+    const costByVariantId = new Map(
+      variantCostRows.map((v) => [Number(v.id), v.costPrice]),
+    );
+    const refRateByBranch = new Map<number, string | null>(refRatePairs);
     return rows
       .filter((r) => {
         const po = orderById.get(Number(r.purchaseOrderId));
@@ -183,39 +214,41 @@ export const purchaseOrderControlSource: DecisionSource = {
         const revision = r.revisionId != null ? revisionById.get(Number(r.revisionId)) : undefined;
         const currency = (revision?.agreedCurrency ?? po?.agreedCurrency ?? "IQD") as "IQD" | "USD";
         const usd = currency === "USD";
+        const matchingRevItems = revision
+          ? revisionItems.filter((i) => Number(i.revisionId) === Number(revision.id))
+          : [];
+        const matchingOrderItems = revision
+          ? []
+          : orderItems.filter((i) => Number(i.purchaseOrderId) === Number(r.purchaseOrderId));
         const summaryItems: DecisionSummaryItem[] = revision
-          ? revisionItems
-              .filter((i) => Number(i.revisionId) === Number(revision.id))
-              .map((i) => {
-                const v = variants.get(Number(i.variantId));
-                const variantText = i.variantNameSnapshot?.trim() || v?.descriptor || v?.variantName || null;
-                return {
-                  label: itemLabel([i.productNameSnapshot || v?.productName, variantText]),
-                  variant: variantText,
-                  colorHex: v?.colorHex ?? null,
-                  sku: i.skuSnapshot?.trim() || v?.sku || null,
-                  qty: i.quantity,
-                  unit: i.unitNameSnapshot,
-                  unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
-                  lineTotal: usd ? i.usdLineTotal : i.lineTotal,
-                };
-              })
-          : orderItems
-              .filter((i) => Number(i.purchaseOrderId) === Number(r.purchaseOrderId))
-              .map((i) => {
-                const v = variants.get(Number(i.variantId));
-                const variantText = v?.descriptor || v?.variantName || null;
-                return {
-                  label: itemLabel([v?.productName, variantText]),
-                  variant: variantText,
-                  colorHex: v?.colorHex ?? null,
-                  sku: v?.sku ?? null,
-                  qty: i.quantity,
-                  unit: i.productUnitId == null ? null : (units.get(Number(i.productUnitId)) ?? null),
-                  unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
-                  lineTotal: usd ? i.usdTotal : i.total,
-                };
-              });
+          ? matchingRevItems.map((i) => {
+              const v = variants.get(Number(i.variantId));
+              const variantText = i.variantNameSnapshot?.trim() || v?.descriptor || v?.variantName || null;
+              return {
+                label: itemLabel([i.productNameSnapshot || v?.productName, variantText]),
+                variant: variantText,
+                colorHex: v?.colorHex ?? null,
+                sku: i.skuSnapshot?.trim() || v?.sku || null,
+                qty: i.quantity,
+                unit: i.unitNameSnapshot,
+                unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
+                lineTotal: usd ? i.usdLineTotal : i.lineTotal,
+              };
+            })
+          : matchingOrderItems.map((i) => {
+              const v = variants.get(Number(i.variantId));
+              const variantText = v?.descriptor || v?.variantName || null;
+              return {
+                label: itemLabel([v?.productName, variantText]),
+                variant: variantText,
+                colorHex: v?.colorHex ?? null,
+                sku: v?.sku ?? null,
+                qty: i.quantity,
+                unit: i.productUnitId == null ? null : (units.get(Number(i.productUnitId)) ?? null),
+                unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
+                lineTotal: usd ? i.usdTotal : i.total,
+              };
+            });
         const amount = usd ? (revision?.usdTotal ?? po?.usdTotal ?? null) : (revision?.total ?? po?.total ?? null);
         const settlementType = (revision?.settlementType ?? po?.settlementType ?? "CREDIT") as "CASH" | "CREDIT";
         if (r.kind === "APPROVE_REVISION") {
@@ -228,9 +261,75 @@ export const purchaseOrderControlSource: DecisionSource = {
         }
         const shipping = revision ?? po;
         const shippingAmount = round2(money(shipping?.shippingCost ?? "0").plus(money(shipping?.customsCost ?? "0")));
-        const creatorName = po?.createdBy != null ? (look.user(po.createdBy) ?? `#${po.createdBy}`) : "غير معروف";
+        const creatorName = r.creatorName ?? (po?.createdBy != null ? (look.user(po.createdBy) ?? `#${po.createdBy}`) : "غير معروف");
+        const settlementLabel = getPurchaseSettlementIntentLabel(settlementType);
         const totalIqd = round2(money(shipping?.total ?? "0")).toFixed(2);
         const totalWithShippingIqd = round2(money(shipping?.total ?? "0").plus(shippingAmount)).toFixed(2);
+        let parsedTender: PurchaseTenderInput | null = null;
+        let parsedCashSource: { mode?: "DRAWER" | "TREASURY"; shiftId?: number | null } | null = null;
+        if (revision?.payloadCanonical) {
+          try {
+            const parsed = JSON.parse(revision.payloadCanonical) as {
+              tender?: PurchaseTenderInput | null;
+              cashSource?: { mode?: "DRAWER" | "TREASURY"; shiftId?: number | null } | null;
+            };
+            parsedTender = parsed.tender ?? null;
+            parsedCashSource = parsed.cashSource ?? null;
+          } catch {
+            // ignore unparseable historical revision payload
+          }
+        }
+        const cashSourceLabel =
+          settlementType !== "CASH"
+            ? null
+            : parsedTender
+              ? purchaseTenderLabel(parsedTender)
+              : parsedCashSource?.mode === "DRAWER"
+                ? `نقد من الوردية${parsedCashSource.shiftId ? ` #${parsedCashSource.shiftId}` : ""}`
+                : parsedCashSource?.mode === "TREASURY"
+                  ? "نقد من خزنة الفرع"
+                  : "مصدر السداد النقدي يُحدَّد عند الاعتماد";
+        const cashSourceFunding =
+          settlementType !== "CASH"
+            ? null
+            : parsedTender
+              ? parsedTender.mode === "CARD"
+                ? { mode: "BANK" as const, label: cashSourceLabel!, shiftId: null }
+                : parsedTender.mode === "TREASURY"
+                  ? { mode: "TREASURY" as const, label: cashSourceLabel!, shiftId: null }
+                  : { mode: "DRAWER" as const, label: cashSourceLabel!, shiftId: parsedTender.shiftId ?? null }
+              : parsedCashSource?.mode === "DRAWER" || parsedCashSource?.mode === "TREASURY"
+                ? { mode: parsedCashSource.mode, label: cashSourceLabel!, shiftId: parsedCashSource.shiftId ?? null }
+                : null;
+        const agreedRate = shipping?.agreedRate ?? po?.agreedRate ?? null;
+        const rateSanity = usd
+          ? assessUsdRateSanity(agreedRate, refRateByBranch.get(Number(r.branchId)) ?? null)
+          : null;
+        const costAnomalyMessages: string[] = [];
+        if (r.kind === "APPROVE_REVISION") {
+          const checkLines = revision
+            ? matchingRevItems.map((i) => ({
+                variantId: Number(i.variantId),
+                baseQty: Number(i.baseQuantity),
+                totalIqd: i.lineTotal,
+                name: i.productNameSnapshot || variants.get(Number(i.variantId))?.productName || `#${i.variantId}`,
+              }))
+            : matchingOrderItems.map((i) => ({
+                variantId: Number(i.variantId),
+                baseQty: Number(i.baseQuantity),
+                totalIqd: i.total,
+                name: variants.get(Number(i.variantId))?.productName || `#${i.variantId}`,
+              }));
+          for (const line of checkLines) {
+            const curCost = costByVariantId.get(line.variantId);
+            if (!curCost || money(curCost).lte(0) || !Number.isFinite(line.baseQty) || line.baseQty <= 0) continue;
+            const newUnitCost = money(line.totalIqd).dividedBy(line.baseQty);
+            const anomaly = assessUnitCostAnomaly(newUnitCost, curCost, line.name);
+            if (anomaly.isAnomalous && anomaly.message) {
+              costAnomalyMessages.push(anomaly.message);
+            }
+          }
+        }
         const shippingItems = shippingAmount.gt(0)
           ? [
               {
@@ -241,37 +340,89 @@ export const purchaseOrderControlSource: DecisionSource = {
               },
             ]
           : [];
-        const operationalContext = shippingAmount.gt(0)
-          ? {
-              badgeLabel: "تفصيل الفاتورة والشحن",
-              fundingSource:
-                shipping?.shippingFundingSource === "DRAWER"
-                  ? {
-                      mode: "DRAWER" as const,
-                      label: `درج وردية منشئ الأمر (${creatorName})`,
-                      shiftId: shipping.shippingFundingShiftId != null ? Number(shipping.shippingFundingShiftId) : null,
-                    }
-                  : {
-                      mode: "CREDIT" as const,
-                      label: `شحن مستحق غير مدفوع نقداً — منشئ الأمر: ${creatorName} (لا خصم من درج أو خزينة)`,
-                    },
-              facts: [
+        const baseFacts: Array<{ label: string; value: string; tone?: "default" | "info" | "warn" | "success" | "danger" }> = [
+          { label: "منشئ الأمر", value: creatorName },
+          {
+            label: "آلية التسوية",
+            value: settlementLabel,
+            tone: settlementType === "CASH" ? "info" : "default",
+          },
+          ...(cashSourceLabel
+            ? [{ label: "مصدر السداد النقدي", value: cashSourceLabel, tone: "info" as const }]
+            : []),
+          ...(usd && agreedRate
+            ? [
+                {
+                  label: "سعر الصرف المثبت",
+                  value: `${money(agreedRate).toFixed(2)} د.ع/$ — المعادل ${totalIqd} د.ع`,
+                  tone:
+                    rateSanity?.status === "ANOMALOUS"
+                      ? ("danger" as const)
+                      : rateSanity?.status === "WARN"
+                        ? ("warn" as const)
+                        : ("info" as const),
+                },
+              ]
+            : []),
+          ...(shippingAmount.gt(0)
+            ? [
                 { label: "قيمة البضاعة", value: `${totalIqd} د.ع` },
                 { label: "أجور الشحن والكمرك", value: `${shippingAmount.toFixed(2)} د.ع`, tone: "warn" as const },
                 { label: "الإجمالي مع الشحن", value: `${totalWithShippingIqd} د.ع`, tone: "info" as const },
-              ],
-              smartNotice:
-                shipping?.shippingFundingSource === "DRAWER"
-                  ? {
-                      tone: (r.kind === "CANCEL_ORDER" ? "warn" : "info") as "warn" | "info",
-                      text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) دفعها منشئ الأمر (${creatorName}) من ورديته رقم #${shipping.shippingFundingShiftId}؛ وليست من درج المعتمد. هذا القرار ينشئ طلب صرف معلقاً فقط، ويوثق الدفع عند اعتماد سند الشحن مستقلاً.${r.kind === "CANCEL_ORDER" ? " تنبيه: إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`,
-                    }
-                  : {
-                      tone: "info" as const,
-                      text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) غير مدفوعة نقداً؛ لا يترتب عليها خصم من درج أو خزينة عند الاعتماد.`,
-                    },
-            }
+              ]
+            : []),
+          ...(rateSanity?.status === "ANOMALOUS" && rateSanity.message
+            ? [{ label: "شذوذ سعر الصرف", value: rateSanity.message, tone: "danger" as const }]
+            : []),
+          ...(costAnomalyMessages.length > 0
+            ? [
+                {
+                  label: "انحراف تكلفة الوحدة",
+                  value: costAnomalyMessages[0] + (costAnomalyMessages.length > 1 ? ` (و${costAnomalyMessages.length - 1} أصناف أخرى)` : ""),
+                  tone: "warn" as const,
+                },
+              ]
+            : []),
+        ];
+        const shippingNotice = shippingAmount.gt(0)
+          ? shipping?.shippingFundingSource === "DRAWER"
+            ? {
+                tone: (r.kind === "CANCEL_ORDER" ? "warn" : "info") as "warn" | "info",
+                text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) دفعها منشئ الأمر (${creatorName}) من ورديته رقم #${shipping.shippingFundingShiftId}؛ وليست من درج المعتمد. هذا القرار ينشئ طلب صرف معلقاً فقط، ويوثق الدفع عند اعتماد سند الشحن مستقلاً.${r.kind === "CANCEL_ORDER" ? " تنبيه: إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`,
+              }
+            : {
+                tone: "info" as const,
+                text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) غير مدفوعة نقداً؛ لا يترتب عليها خصم من درج أو خزينة عند الاعتماد.`,
+              }
           : null;
+        const anomalyTexts = [
+          ...(rateSanity && rateSanity.status !== "OK" && rateSanity.message ? [rateSanity.message] : []),
+          ...costAnomalyMessages,
+        ];
+        const smartNotice =
+          anomalyTexts.length > 0
+            ? {
+                tone: "warn" as const,
+                text: anomalyTexts.join(" • ") + (shippingNotice ? ` — ${shippingNotice.text}` : ""),
+              }
+            : shippingNotice;
+        const operationalContext = {
+          badgeLabel: shippingAmount.gt(0) ? "تفصيل الفاتورة والشحن" : "تفصيل الفاتورة والاعتماد",
+          fundingSource: shippingAmount.gt(0)
+            ? shipping?.shippingFundingSource === "DRAWER"
+              ? {
+                  mode: "DRAWER" as const,
+                  label: `درج وردية منشئ الأمر (${creatorName})`,
+                  shiftId: shipping.shippingFundingShiftId != null ? Number(shipping.shippingFundingShiftId) : null,
+                }
+              : {
+                  mode: "CREDIT" as const,
+                  label: `شحن مستحق غير مدفوع نقداً — منشئ الأمر: ${creatorName} (لا خصم من درج أو خزينة)`,
+                }
+            : cashSourceFunding,
+          facts: baseFacts,
+          smartNotice,
+        };
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -323,6 +474,7 @@ export const purchaseOrderControlSource: DecisionSource = {
         approve: input.action === "APPROVE",
         reason: input.reason ?? "",
         confirmedFullReceipt: input.confirmations?.confirmedFullReceipt === true,
+        ...(input.cashSource !== undefined ? { cashSource: input.cashSource } : {}),
       },
       serviceActor(actor),
     );

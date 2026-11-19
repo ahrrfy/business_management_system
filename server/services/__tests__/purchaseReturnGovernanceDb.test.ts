@@ -169,6 +169,12 @@ async function makeOrder(options: SourceOptions = {}) {
       agreedCurrency: options.usd ? "USD" : "IQD",
       agreedRate: options.usd ? "100.00" : undefined,
       usdTotal: options.usd ? "0.01" : undefined,
+      ...(options.usd
+        ? {
+            confirmAnomalousRate: true,
+            rateDeviationReason: "اختبار هامش تقريب الدولار المعتمد",
+          }
+        : {}),
       taxRatePercent: options.tax
         ? new Decimal(options.tax)
             .times(100)
@@ -194,7 +200,7 @@ async function makeOrder(options: SourceOptions = {}) {
         },
       ],
     },
-    PURCHASING,
+    options.usd ? { ...OWNER, isOwner: true } : PURCHASING,
   );
   const [item] = await db()
     .select()

@@ -706,4 +706,29 @@ describe("حواجز الإلغاء", () => {
       .where(isNull(s.receipts.referenceNumber));
     expect(comps).toHaveLength(1); // الإيصال نفسه فقط — لا تعويضي.
   });
+
+  it("يسمح بإلغاء السند غير النقدي (TRANSFER) حتى بعد إغلاق الوردية بينما يرفض النقدي", async () => {
+    const shiftId = await openShift();
+    const trf = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "250.00",
+        paymentMethod: "TRANSFER",
+        referenceNumber: "TRF-CLOSED-OK",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "تحويل مصرفي أثناء الوردية",
+      },
+      actor,
+    );
+    await closeShift({ shiftId, countedCash: "0.00" }, actor);
+
+    const cancelRes = await cancelVoucher(trf.receiptId, actor);
+    expect(cancelRes.status).toBe("PENDING_APPROVAL");
+    await approveVoucher(Number(cancelRes.approvalReceiptId), ownerApprover);
+
+    const [cust] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true);
+  });
 });

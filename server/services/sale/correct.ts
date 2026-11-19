@@ -1,5 +1,10 @@
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
-import { customerReceiptAllocatedAmountTx, transferCustomerReceiptAllocationsTx } from "../customerReceiptSettlement";
+import {
+  customerReceiptAllocatedAmountTx,
+  loadHistoricalCreditAllocatedForInvoiceTx,
+  transferCustomerReceiptAllocationsTx,
+  transferHistoricalCreditAllocationOnCorrectionTx,
+} from "../customerReceiptSettlement";
 import { loadCustomerReceiptInvoicePayments, loadCustomerReceiptAllocationSources } from "../customerReceiptProjection";
 import { withSupplierBookVoucherTx } from "../voucher/supplierSettlement";
 // تصحيح فاتورة بيع مُثبَّتة (0168) — «عكسٌ كامل + إعادة إصدار» ذرّياً.
@@ -569,7 +574,8 @@ export async function correctSaleInTx(
     // Historical IN/OUT keep their amounts, shifts and actors. Only their net
     // paid pool is carried; a previous actual refund must never be paid twice.
     const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), money(0)).minus(priorRefundAmount));
-    if (!detachedSum.plus(deliveryPaid).equals(originalPaid)) {
+    const histCreditPaid = await loadHistoricalCreditAllocatedForInvoiceTx(tx, input.originalInvoiceId);
+    if (!detachedSum.plus(deliveryPaid).plus(histCreditPaid).equals(originalPaid)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `تعذّر التصحيح: المدفوع المسجَّل (${originalPaid.toFixed(2)}) لا يطابق إيصالات القبض القابلة للنقل (${detachedSum.toFixed(2)}) — قد يكون بعضه من عربونٍ مرتبطٍ بغير هذه الفاتورة. عالِجها بإلغاءٍ كامل ثمّ إعادة بيع.`,
@@ -618,7 +624,7 @@ export async function correctSaleInTx(
       customerChanged
       || receivedPrior.minus(deliveryPaid).lt(detachedSum)
     );
-    if (allocatedAmount.gt(0) && needsSettlement) {
+    if ((allocatedAmount.gt(0) && needsSettlement) || (customerChanged && histCreditPaid.gt(0))) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر نقل مقبوض الفاتورة إلى حساب آخر", why: "سند القبض موزع على عدة فواتير للعميل الأصلي", doThis: "اعكس سند القبض الأصلي أولاً ثم أعد تخصيص المقبوض لصاحب الحساب الصحيح" }) });
     }
     // A physical OUT cannot be split or reassigned as two invented receipts.
@@ -719,7 +725,7 @@ export async function correctSaleInTx(
     //    بالمبلغ نفسه (المال «يُعاد» للأصل دفترياً ثم يُقيَّد المستلَم فعلاً على الطرف الجديد).
     let settlement: SettlementResult | null = null;
     let carriedIds: number[] = [...detachedIds, ...priorRefunds.map(row => Number(row.id))];
-    let carriedSum = detachedSum.plus(deliveryPaid);
+    let carriedSum = detachedSum.plus(deliveryPaid).plus(histCreditPaid);
     if (needsSettlement) {
       settlement = await settlePriorPaymentsTx(tx, {
         invoiceId: input.originalInvoiceId,
@@ -734,7 +740,7 @@ export async function correctSaleInTx(
         lockedShiftIds: lockedPriorShiftIds,
       }, actor);
       carriedIds = settlement.reRecorded.map((r) => r.receiptId);
-      carriedSum = settlement.carriedAmount.plus(deliveryPaid);
+      carriedSum = settlement.carriedAmount.plus(deliveryPaid).plus(histCreditPaid);
     } else if (carriedIds.length) {
       await tx.update(receipts).set({ invoiceId: null }).where(inArray(receipts.id, carriedIds));
     }
@@ -834,7 +840,11 @@ export async function correctSaleInTx(
       // Retain gross portions behind actual refunds. A credited price difference
       // becomes tracked advance; an actual cash refund stays in the invoice pool.
       const capacity = cashRefund ? allocatedAmount : Decimal.max(0, newTotal.minus(deliveryPaid).minus(nativeGross).plus(priorRefundAmount));
-      await transferCustomerReceiptAllocationsTx(tx, input.originalInvoiceId, newId, capacity);
+      await transferCustomerReceiptAllocationsTx(tx, input.originalInvoiceId, newId, capacity, {
+        actor,
+        requestKey: input.clientRequestId ?? `correct-${input.originalInvoiceId}`,
+        unwindInterbranchReleased: !cashRefund,
+      });
     }
     if (deliveryAmendment) {
       const reversedExcess = await reverseInvoiceDeliveryExcessTx(tx, deliveryAmendment,
@@ -1107,6 +1117,22 @@ export async function correctSaleInTx(
         // لا `adjustCustomerBalance` هنا: المال خرج فعلاً فلا يبقى له رصيدٌ دائن (وإلّا استفاد مرّتين).
         overpayHandled = "CASH_REFUND";
       }
+    }
+
+    if (histCreditPaid.gt(0)) {
+      const histOverpay = round2(Decimal.min(histCreditPaid, overpay));
+      const histCarried = round2(Decimal.max(0, histCreditPaid.minus(histOverpay)));
+      const histReleasedToCredit = overpayHandled === "CREDIT" ? histOverpay : money(0);
+      await transferHistoricalCreditAllocationOnCorrectionTx(tx, {
+        fromInvoiceId: input.originalInvoiceId,
+        toInvoiceId: newId,
+        customerId: originalCustomerId,
+        branchId: Number(inv.branchId),
+        carriedAmount: histCarried,
+        releasedToCreditAmount: histReleasedToCredit,
+        actor,
+        requestKey: input.clientRequestId ?? `correct-${input.originalInvoiceId}`,
+      });
     }
 
     if (deliveryAmendment) {

@@ -7,6 +7,8 @@ import {
   exchangeHouses,
   exchangeTransactions,
   goodsReceipts,
+  journalEntries,
+  journalLines,
   productVariants,
   products,
   purchaseOrderItems,
@@ -89,11 +91,26 @@ export async function getAPAging(
     : sql`MAX(s.currentBalance)`;
   const branchBalanceJoin = opts.branchId
     ? sql`LEFT JOIN (
-        SELECT ae.supplierId,
-          COALESCE(SUM(${supplierApEffectSql(AE)}), 0) AS balance
-        FROM accountingEntries ae
-        WHERE ae.supplierId IS NOT NULL AND ae.branchId = ${opts.branchId}
-        GROUP BY ae.supplierId
+        SELECT supId AS supplierId, SUM(bal) AS balance
+        FROM (
+          SELECT ae.supplierId AS supId,
+            COALESCE(SUM(${supplierApEffectSql(AE)}), 0) AS bal
+          FROM accountingEntries ae
+          WHERE ae.supplierId IS NOT NULL AND ae.branchId = ${opts.branchId}
+          GROUP BY ae.supplierId
+          UNION ALL
+          SELECT jl.supplierId AS supId,
+            COALESCE(SUM(CAST(jl.credit AS DECIMAL(15,2)) - CAST(jl.debit AS DECIMAL(15,2))), 0) AS bal
+          FROM journalLines jl
+          INNER JOIN journalEntries je ON je.id = jl.journalId
+          WHERE jl.supplierId IS NOT NULL
+            AND jl.role IN ('AP', 'ACCOUNTS_PAYABLE')
+            AND je.status = 'POSTED'
+            AND je.postingProfile = 'MANUAL_JOURNAL'
+            AND COALESCE(jl.branchId, je.branchId) = ${opts.branchId}
+          GROUP BY jl.supplierId
+        ) t
+        GROUP BY supId
       ) sb ON sb.supplierId = s.id`
     : sql``;
   // G13: نفس حارس LIMIT في AR aging — يمنع OOM عند نمو الموردين.
@@ -280,12 +297,25 @@ export async function getAPAging(
     });
 }
 
+export interface SupplierStatementLineItem {
+  id: number;
+  productId: number | null;
+  variantId: number | null;
+  productName: string;
+  sku: string | null;
+  quantity: string;
+  unitPrice: string;
+  discount: string;
+  total: string;
+}
+
 export interface SupplierStatementPO {
   id: number;
   poNumber: string;
   orderDate: Date;
   expectedDeliveryDate: Date | null;
   total: string;
+  periodTotal?: string;
   paidAmount: string;
   status: string;
   settlementType?: "CASH" | "CREDIT";
@@ -294,13 +324,16 @@ export interface SupplierStatementPO {
   settlement: PurchaseSettlementProjection;
   createdBy: number | null;
   createdByName: string | null;
+  balanceBefore?: string;
+  balanceAfter?: string;
+  items?: SupplierStatementLineItem[];
   provenance?: FinancialCellProvenancePayload;
 }
 
 export interface SupplierStatementPayment {
   id: number;
   /** نوع القيد: PAYMENT_OUT دفعة مورد، PAYMENT_IN استرداد، RETURN مرتجع شراء (إشارة سالبة)، PURCHASE شراء أصل،
-   *  وADJUST لقيد فاتورة مورّد GRNI عديمِ الـPO (فاتورةٌ مجمّعة أو عكسُ فاتورة — يُميَّز بـdedupeKey). */
+   *  MANUAL_JOURNAL قيد يدوي، أو ADJUST لأجور التنفيذ وفاتورة المورد GRNI. */
   entryType: string;
   /** لازمٌ لتمييز قيد GRNI (فاتورة مجمّعة +AP / عكسها −AP) عبر classifyGrniApEntry. */
   dedupeKey: string | null;
@@ -316,6 +349,8 @@ export interface SupplierStatementPayment {
   exchangeHouseName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  balanceBefore?: string;
+  balanceAfter?: string;
   provenance?: FinancialCellProvenancePayload;
 }
 
@@ -344,6 +379,12 @@ export interface SupplierStatementResult {
   payments: SupplierStatementPayment[];
   /** أذونات استلام مخزني أُثبتت في المخزون مقابل GRNI لكن لم تُفوتر بعد إلى ذمة المورد AP. */
   unbilledReceipts?: SupplierStatementUnbilledReceipt[];
+  ledger: {
+    openingBeforeFrom: string;
+    totalCredit: string;
+    totalDebit: string;
+    closingBalance: string;
+  };
   summary: {
     totalPurchases: string;
     totalPaid: string;
@@ -351,9 +392,11 @@ export interface SupplierStatementResult {
     currentBalance: string;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) مشتريات ملتزمة − دفعات قبل from. */
     openingBalance: string;
+    openingBeforeFrom: string;
     /** دفعاتٌ للمورد غير مربوطةٍ بأمر شراءٍ بعينه — السبب الأشيَع لتباعد مجموع «المتبقّي» لكل
      *  الأوامر عن `unpaid`/`currentBalance` الحقيقيَّين. */
     unallocatedPayments: string;
+    unallocatedCredit: string;
     /** أعمار الذمم لكل أمرٍ (منهجية getAPAging). `unbucketed` يُغلق الفرق مع currentBalance
      *  (رصيدٌ افتتاديّ مستورد/شراء أصلٍ يتيم) — الثابت: مجموع الدلاء + unbucketed === currentBalance. */
     aging: {
@@ -428,7 +471,25 @@ async function supplierOpeningBalance(
         sql`${accountingEntries.entryDate} < ${from}`,
       ),
     );
-  return opening.plus(money(entriesRow[0]?.v ?? 0));
+  const manualApRow = await db
+    .select({
+      v: sql<string>`COALESCE(SUM(CAST(${journalLines.credit} AS DECIMAL(15,2)) - CAST(${journalLines.debit} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.supplierId, supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+        branchId
+          ? sql`COALESCE(${journalLines.branchId}, ${journalEntries.branchId}) = ${branchId}`
+          : undefined,
+        sql`${journalEntries.entryDate} < ${from}`,
+      ),
+    );
+  return opening.plus(money(entriesRow[0]?.v ?? 0)).plus(money(manualApRow[0]?.v ?? 0));
 }
 
 /** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص.
@@ -436,7 +497,7 @@ async function supplierOpeningBalance(
  *  (عمود date ⇒ ‎≤ to يكافئ < to+يوم). بلا فترة = السلوك القديم نفسه. */
 export async function getSupplierStatement(
   supplierId: number,
-  period: StatementPeriod = {},
+  period: StatementPeriod & { includeItems?: boolean } = {},
 ): Promise<SupplierStatementResult | null> {
   const db = getDb();
   if (!db) return null;
@@ -586,8 +647,9 @@ export async function getSupplierStatement(
   // هنا حركةً كي تَظهر ويتّزن الرصيد (أمسكه Codex على PR #1079: بدونها الأمرُ المجمَّع يختفي وعكسُ
   // الفاتورة لا يخفض الرصيد ⇒ unpaid يبقى 60 والرصيد صفر). PO-linked GRNI يبقى في صفّ الأمر (لا ازدواج).
   const grniOrphanMove = sql`(${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.purchaseOrderId} IS NULL AND (${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP} OR ${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP}))`;
+  const fulfillmentCostMove = sql`(${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_COST:%')`;
   const payConds = [
-    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL) OR ${grniOrphanMove}${openingMoveSql})`,
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL) OR ${grniOrphanMove} OR ${fulfillmentCostMove}${openingMoveSql})`,
     isSupplierApLedgerEntrySql(ACCT),
     eq(accountingEntries.supplierId, supplierId),
   ];
@@ -637,6 +699,64 @@ export async function getSupplierStatement(
     .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
+  const manualApPeriodRows = await db
+    .select({
+      id: journalLines.id,
+      entryDate: journalEntries.entryDate,
+      debit: journalLines.debit,
+      credit: journalLines.credit,
+      notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: accountingEntries.createdByNameSnapshot,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .leftJoin(accountingEntries, eq(accountingEntries.id, journalEntries.entryId))
+    .where(
+      and(
+        eq(journalLines.supplierId, supplierId),
+        inArray(journalLines.role, ["AP", "ACCOUNTS_PAYABLE"]),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.postingProfile, "MANUAL_JOURNAL"),
+        branchId
+          ? sql`COALESCE(${journalLines.branchId}, ${journalEntries.branchId}) = ${branchId}`
+          : undefined,
+        from ? sql`${journalEntries.entryDate} >= ${from}` : undefined,
+        to ? sql`${journalEntries.entryDate} <= ${to}` : undefined,
+      ),
+    )
+    .orderBy(asc(journalEntries.entryDate), asc(journalLines.id));
+
+  const manualApPayments = manualApPeriodRows.flatMap((m) => {
+    const net = money(m.credit).minus(money(m.debit));
+    if (net.isZero()) return [];
+    return [
+      {
+        id: -4_000_000_000 - Number(m.id),
+        entryType: "MANUAL_JOURNAL",
+        dedupeKey: null as string | null,
+        purchaseOrderId: null as number | null,
+        receiptId: null as number | null,
+        amount: toDbMoney(net),
+        entryDate: new Date(m.entryDate),
+        notes: m.notes ? String(m.notes) : "قيد يدوي على حساب المورد",
+        voucherNumber: null as string | null,
+        paymentMethod: "MANUAL_JOURNAL" as string | null,
+        referenceNumber: null as string | null,
+        exchangeHouseId: null as number | null,
+        exchangeHouseName: null as string | null,
+        createdBy: m.createdBy != null ? Number(m.createdBy) : null,
+        createdByName: m.createdByName ?? null,
+      },
+    ];
+  });
+
+  const combinedPayments = [...payments, ...manualApPayments].sort(
+    (a, b) =>
+      new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime() ||
+      a.id - b.id,
+  );
+
   const openingBalance = await supplierOpeningBalance(
     supplierId,
     from,
@@ -646,30 +766,36 @@ export async function getSupplierStatement(
 
   // أموال بدقّة decimal.js (§٥).
   const totalPurchases = sumMoney(posWithTotals.map((p) => p.periodTotal ?? 0));
-  // مراجعة Codex #966: كان totalPaid = Σ(paidAmount لكل أمرٍ معروض)، وpaidAmount = total − gl.balance
-  // بلا أيّ قيدٍ زمنيّ على gl (استعلام purchaseTotals لا يُصفّي entryDate) ⇒ رصيدٌ **كلّيّ** لا رصيد
-  // الفترة. فترةٌ تاريخية (شهرٌ ماضٍ مثلاً) كانت تُظهر «مسدَّد» يشمل دفعاتٍ وقعت لاحقاً فعلياً.
-  // البديل الصحيح: مجموع حركات الدفع الفعلية ضمن `payments` (مُصفّاةٌ بالفعل بـfrom/to أعلاه) —
-  // PAYMENT_OUT وEXCHANGE_SETTLE فقط، مطابقةً لـreducesAP في periodEntryEffect أدناه وpayTxs بالواجهة.
-  const totalPaid = payments.reduce(
+  const totalPaid = combinedPayments.reduce(
     (acc, p) =>
       p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE"
         ? acc.plus(money(p.amount))
         : acc,
     money(0),
   );
-  const periodEntryEffect = payments.reduce((acc, p) => {
+  const signedEntryDelta = (p: (typeof combinedPayments)[number]) => {
     const amount = money(p.amount);
-    // عكسُ فاتورة المورّد GRNI يَدين AP (−)، وفاتورةُ GRNI المجمّعة تدائنها (+) — كلاهما amount موجب.
     const grni = classifyGrniApEntry(p.entryType, p.dedupeKey);
     if (
       p.entryType === "PAYMENT_OUT" ||
       p.entryType === "EXCHANGE_SETTLE" ||
       grni === "REVERSAL"
-    )
-      return acc.minus(amount);
-    return acc.plus(amount); // RETURN مخزَّن سالباً؛ PAYMENT_IN/PURCHASE/فاتورة GRNI المجمّعة موجبة.
-  }, money(0));
+    ) {
+      return amount.negated();
+    }
+    return amount;
+  };
+  const periodEntryEffect = combinedPayments.reduce(
+    (acc, p) => acc.plus(signedEntryDelta(p)),
+    money(0),
+  );
+  let ledgerCredit = totalPurchases;
+  let ledgerDebit = money(0);
+  for (const p of combinedPayments) {
+    const delta = signedEntryDelta(p);
+    if (delta.isNegative()) ledgerDebit = ledgerDebit.plus(delta.abs());
+    else ledgerCredit = ledgerCredit.plus(delta);
+  }
   const closingBalance = openingBalance
     .plus(totalPurchases)
     .plus(periodEntryEffect);
@@ -722,8 +848,11 @@ export async function getSupplierStatement(
   // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
   // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه،
   // مع استبعاد ما تم تسويته فعلياً على الأوامر (كالتسوية التلقائية FIFO).
-  const bookSourceClaims = await loadSupplierBookSourceClaims(db, payments.map(row => Number(row.id)));
-  const rawUnallocatedPayments = payments.reduce(
+  const bookSourceClaims = await loadSupplierBookSourceClaims(
+    db,
+    combinedPayments.filter((row) => row.id > 0).map((row) => Number(row.id)),
+  );
+  const rawUnallocatedPayments = combinedPayments.reduce(
     (acc, p) =>
       p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null && !bookSourceClaims.has(Number(p.id))
         ? acc.plus(money(p.amount))
@@ -772,15 +901,21 @@ export async function getSupplierStatement(
     );
 
   const poIds = posWithTotals.map((p) => Number(p.id)).filter((id) => id > 0);
+  const includeItems = period.includeItems !== false;
   const poItemMap = new Map<number, ProvenanceSubItem[]>();
+  const poDetailedItemsMap = new Map<number, SupplierStatementLineItem[]>();
   if (poIds.length > 0) {
     const poItemRows = await db
       .select({
         purchaseOrderId: purchaseOrderItems.purchaseOrderId,
         id: purchaseOrderItems.id,
+        productId: productVariants.productId,
+        variantId: purchaseOrderItems.variantId,
         name: products.name,
+        sku: productVariants.sku,
         quantity: purchaseOrderItems.quantity,
         unitPrice: purchaseOrderItems.unitPrice,
+        listUnitPrice: purchaseOrderItems.listUnitPrice,
         total: purchaseOrderItems.total,
         usdTotal: purchaseOrderItems.usdTotal,
       })
@@ -801,7 +936,58 @@ export async function getSupplierStatement(
         type: "item",
       });
       poItemMap.set(poId, list);
+      if (includeItems) {
+        const dList = poDetailedItemsMap.get(poId) ?? [];
+        const unit = money(it.unitPrice ?? 0);
+        const listUnit = it.listUnitPrice != null ? money(it.listUnitPrice) : unit;
+        const qty = money(it.quantity ?? 0);
+        const disc = listUnit.gt(unit) ? listUnit.minus(unit).mul(qty) : money(0);
+        dList.push({
+          id: Number(it.id),
+          productId: it.productId != null ? Number(it.productId) : null,
+          variantId: it.variantId != null ? Number(it.variantId) : null,
+          productName: it.name || "صنف أمر شراء",
+          sku: it.sku ?? null,
+          quantity: String(it.quantity ?? "0"),
+          unitPrice: toDbMoney(unit),
+          discount: toDbMoney(disc),
+          total: toDbMoney(money(it.total ?? 0)),
+        });
+        poDetailedItemsMap.set(poId, dList);
+      }
     }
+  }
+
+  // حساب لقطات الرصيد قبل/بعد لكل حركة وأمر شراء بترتيب زمني موحد
+  const runningEvents: Array<{
+    kind: "PO" | "PAY";
+    id: number;
+    ts: number;
+    delta: Decimal;
+  }> = [
+    ...posWithTotals.map((p) => ({
+      kind: "PO" as const,
+      id: Number(p.id),
+      ts: new Date(p._recognitionDate ?? p.orderDate).getTime(),
+      delta: money(p.periodTotal ?? 0),
+    })),
+    ...combinedPayments.map((p) => ({
+      kind: "PAY" as const,
+      id: Number(p.id),
+      ts: new Date(p.entryDate).getTime(),
+      delta: signedEntryDelta(p),
+    })),
+  ].sort((a, b) => a.ts - b.ts || (a.kind === b.kind ? a.id - b.id : a.kind === "PO" ? -1 : 1));
+
+  const poSnapMap = new Map<number, { before: string; after: string }>();
+  const paySnapMap = new Map<number, { before: string; after: string }>();
+  let runningBal = openingBalance;
+  for (const ev of runningEvents) {
+    const before = toDbMoney(runningBal);
+    runningBal = runningBal.plus(ev.delta);
+    const after = toDbMoney(runningBal);
+    if (ev.kind === "PO") poSnapMap.set(ev.id, { before, after });
+    else paySnapMap.set(ev.id, { before, after });
   }
 
   return {
@@ -870,6 +1056,7 @@ export async function getSupplierStatement(
           reconciliation,
         };
 
+        const snap = poSnapMap.get(Number(p.id));
         return {
           id: Number(p.id),
           poNumber: p.poNumber,
@@ -885,17 +1072,19 @@ export async function getSupplierStatement(
           status: p.status,
           createdBy: p.createdBy ? Number(p.createdBy) : null,
           createdByName: p.createdByName,
+          ...(snap ? { balanceBefore: snap.before, balanceAfter: snap.after } : {}),
+          ...(includeItems ? { items: poDetailedItemsMap.get(Number(p.id)) ?? [] } : {}),
           provenance: poProvenance,
         };
       }),
-      payments: payments.map((p) => {
+      payments: combinedPayments.map((p) => {
         const pAmount = toDbMoney(money(p.amount ?? 0));
         let movementType: ProvenanceMovementType = "delivery";
         if (p.entryType === "PAYMENT_IN") {
           movementType = "collection";
         } else if (p.entryType === "RETURN") {
           movementType = "difference";
-        } else if (p.entryType === "PURCHASE" || p.entryType === "ADJUST") {
+        } else if (p.entryType === "PURCHASE" || p.entryType === "ADJUST" || p.entryType === "MANUAL_JOURNAL") {
           movementType = "expense";
         }
 
@@ -924,18 +1113,25 @@ export async function getSupplierStatement(
           });
         }
 
+        const isFulfillmentCost =
+          p.entryType === "ADJUST" &&
+          typeof p.dedupeKey === "string" &&
+          p.dedupeKey.startsWith("FULFILLMENT_CHARGE_COST:");
+        const defaultLabel = isFulfillmentCost
+          ? "أجور تنفيذ / شحن"
+          : p.entryType === "MANUAL_JOURNAL"
+            ? "قيد يدوي على حساب المورد"
+            : p.entryType === "PAYMENT_OUT"
+              ? "دفعة سداد مورد"
+              : p.entryType === "PAYMENT_IN"
+                ? "استرداد / إشعار دائن من مورد"
+                : p.entryType === "RETURN"
+                  ? "مرتجع مشتريات"
+                  : "تسوية حساب مورد";
         const subItems: ProvenanceSubItem[] = [
           {
             id: `pay-${p.id}`,
-            label:
-              p.notes ||
-              (p.entryType === "PAYMENT_OUT"
-                ? "دفعة سداد مورد"
-                : p.entryType === "PAYMENT_IN"
-                  ? "استرداد دفعة من مورد"
-                  : p.entryType === "RETURN"
-                    ? "مرتجع مشتريات"
-                    : "تسوية حساب مورد"),
+            label: p.notes || defaultLabel,
             amount: pAmount,
           },
         ];
@@ -944,9 +1140,13 @@ export async function getSupplierStatement(
           movementType,
           title:
             p.notes ||
-            (p.entryType === "PAYMENT_OUT"
-              ? "سند صرف مورد"
-              : "حركة حساب مورد"),
+            (isFulfillmentCost
+              ? "أجور تنفيذ / شحن"
+              : p.entryType === "MANUAL_JOURNAL"
+                ? "قيد يدوي"
+                : p.entryType === "PAYMENT_OUT"
+                  ? "سند صرف مورد"
+                  : "حركة حساب مورد"),
           totalAmount: pAmount,
           party: {
             name: s.name,
@@ -965,6 +1165,7 @@ export async function getSupplierStatement(
           subItems,
           reconciliation: computeProvenanceReconciliation(pAmount, subItems),
         };
+        const snap = paySnapMap.get(Number(p.id));
 
         return {
           id: Number(p.id),
@@ -974,7 +1175,7 @@ export async function getSupplierStatement(
           receiptId: p.receiptId ? Number(p.receiptId) : null,
           amount: String(p.amount),
           entryDate: p.entryDate as Date,
-          notes: p.notes,
+          notes: p.notes ?? (isFulfillmentCost ? "أجور تنفيذ / شحن" : p.notes),
           voucherNumber: p.voucherNumber,
           paymentMethod: p.paymentMethod,
           referenceNumber: p.referenceNumber,
@@ -982,16 +1183,31 @@ export async function getSupplierStatement(
           exchangeHouseName: p.exchangeHouseName,
           createdBy: p.createdBy ? Number(p.createdBy) : null,
           createdByName: p.createdByName,
+          ...(snap ? { balanceBefore: snap.before, balanceAfter: snap.after } : {}),
           provenance: paymentProvenance,
         };
       }),
+    ledger: {
+      openingBeforeFrom: toDbMoney(openingBalance),
+      totalCredit: toDbMoney(ledgerCredit),
+      totalDebit: toDbMoney(ledgerDebit),
+      closingBalance: toDbMoney(closingBalance),
+    },
     summary: {
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
       currentBalance: toDbMoney(currentBalance),
       openingBalance: toDbMoney(openingBalance),
+      openingBeforeFrom: toDbMoney(openingBalance),
       unallocatedPayments: toDbMoney(unallocatedPayments),
+      unallocatedCredit: toDbMoney(
+        unallocatedPayments.gt(0)
+          ? unallocatedPayments
+          : currentBalance.lt(0)
+            ? currentBalance.abs()
+            : money(0),
+      ),
       aging: {
         d0_30: toDbMoney(agingBuckets.d0_30),
         d31_60: toDbMoney(agingBuckets.d31_60),
