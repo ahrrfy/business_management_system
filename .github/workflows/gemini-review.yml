@@ -1,0 +1,108 @@
+name: Gemini PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: string
+      model:
+        description: "Primary Gemini model"
+        required: false
+        default: "gemini-4-carbon"
+        type: choice
+        options:
+          - gemini-4-carbon
+          - gemini-4-argon
+          - gemini-4-hydrogen
+          - gemini-3.8-flash
+
+permissions: {}
+
+concurrency:
+  group: gemini-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gemini-review:
+    name: gemini-review
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.draft == false) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       (startsWith(github.event.comment.body, '/gemini-review') ||
+        startsWith(github.event.comment.body, '@gemini review')) &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Resolve target pull request metadata
+        id: pr
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNum = Number(
+              context.payload.pull_request?.number ||
+              context.payload.issue?.number ||
+              context.payload.inputs?.pr_number
+            );
+            if (!Number.isSafeInteger(prNum) || prNum <= 0) {
+              core.setFailed("Invalid pull request number.");
+              return;
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNum,
+            });
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (pr.head?.repo?.full_name !== expectedRepo) {
+              core.setFailed("Gemini review only runs for same-repository pull requests.");
+              return;
+            }
+            core.setOutput("number", String(pr.number));
+            core.setOutput("title", String(pr.title ?? "").slice(0, 200));
+            core.setOutput("base_sha", String(pr.base.sha));
+            core.setOutput("head_sha", String(pr.head.sha));
+            core.setOutput(
+              "trigger_mode",
+              context.eventName === "pull_request" ? "auto" : "manual"
+            );
+
+      - name: Checkout PR commits (read-only diff inspection)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch PR base SHA
+        run: git fetch origin "${{ steps.pr.outputs.base_sha }}"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Run Gemini 4 PR code review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          GEMINI_TRIGGER_MODE: ${{ steps.pr.outputs.trigger_mode }}
+          GEMINI_REVIEW_MODEL: ${{ github.event.inputs.model || vars.GEMINI_REVIEW_MODEL || 'gemini-4-carbon' }}
+        run: node scripts/gemini-pr-review.mjs

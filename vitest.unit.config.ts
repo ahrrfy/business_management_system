@@ -583,6 +583,7 @@ export const UNIT_TEST_FILES: string[] = [
       "scripts/provision-worker-runtime-policy.test.ts",
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
       "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
+      "scripts/__tests__/geminiPrReview.test.ts",
       "scripts/__tests__/dependencySecurityWorkflow.test.ts",
       "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
       "scripts/__tests__/rawSelectGuard.test.ts",

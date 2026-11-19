@@ -30,6 +30,8 @@ const IGNORED_DIAGNOSTIC_CHECKS = new Set([
 ]);
 const CODEX_STATE_MARKER = "codex-review-state:v1";
 const CODEX_STATE_RE = /<!--\s*codex-review-state:v1\s*(\{[\s\S]*?\})\s*-->/;
+const GEMINI_STATE_MARKER = "gemini-review-state:v1";
+const GEMINI_STATE_RE = /<!--\s*gemini-review-state:v1\s*(\{[\s\S]*?\})\s*-->/;
 
 function parseIsoTimestampMs(raw) {
   const str = String(raw ?? "").trim();
@@ -398,15 +400,15 @@ const TRUSTED_CODEX_BOT_LOGINS = new Set([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
+const TRUSTED_GEMINI_BOT_LOGINS = new Set(["github-actions[bot]"]);
 
-function isTrustedCodexComment(comment) {
-  const login = String(comment?.author?.login ?? comment?.user?.login ?? "")
-    .trim()
-    .toLowerCase();
-  return TRUSTED_CODEX_BOT_LOGINS.has(login);
-}
-
-export function parseCodexReviewState(prComments = []) {
+function parseBotReviewStateMarker({
+  prComments = [],
+  trustedLogins,
+  marker,
+  regex,
+  mapParsed = (parsed) => parsed,
+}) {
   if (hasIncompleteIssueCommentsPagination(prComments)) {
     return { state: "invalid", paginationIncomplete: true };
   }
@@ -416,10 +418,13 @@ export function parseCodexReviewState(prComments = []) {
   }
   let latest = null;
   for (const comment of flatComments) {
-    if (!isTrustedCodexComment(comment)) continue;
+    const login = String(comment?.author?.login ?? comment?.user?.login ?? "")
+      .trim()
+      .toLowerCase();
+    if (!trustedLogins.has(login)) continue;
     const body = String(comment?.body ?? "");
-    if (!body.includes(CODEX_STATE_MARKER)) continue;
-    const match = body.match(CODEX_STATE_RE);
+    if (!body.includes(marker)) continue;
+    const match = body.match(regex);
     if (!match) {
       latest = { state: "invalid", raw: body.slice(0, 160) };
       continue;
@@ -427,13 +432,7 @@ export function parseCodexReviewState(prComments = []) {
     try {
       const parsed = JSON.parse(match[1]);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const selected = selectPrimaryCodexEntry(parsed);
-        latest = {
-          ...parsed,
-          ...(selected.state !== null ? { state: selected.state } : {}),
-          ...(selected.sha !== null ? { sha: selected.sha } : {}),
-          has_unresolved_findings: selected.hasUnresolvedFindings,
-        };
+        latest = mapParsed(parsed);
       } else {
         latest = { state: "invalid", raw: body.slice(0, 160) };
       }
@@ -442,6 +441,41 @@ export function parseCodexReviewState(prComments = []) {
     }
   }
   return latest;
+}
+
+export function parseCodexReviewState(prComments = []) {
+  return parseBotReviewStateMarker({
+    prComments,
+    trustedLogins: TRUSTED_CODEX_BOT_LOGINS,
+    marker: CODEX_STATE_MARKER,
+    regex: CODEX_STATE_RE,
+    mapParsed: (parsed) => {
+      const selected = selectPrimaryCodexEntry(parsed);
+      return {
+        ...parsed,
+        ...(selected.state !== null ? { state: selected.state } : {}),
+        ...(selected.sha !== null ? { sha: selected.sha } : {}),
+        has_unresolved_findings: selected.hasUnresolvedFindings,
+      };
+    },
+  });
+}
+
+export function parseGeminiReviewState(prComments = []) {
+  return parseBotReviewStateMarker({
+    prComments,
+    trustedLogins: TRUSTED_GEMINI_BOT_LOGINS,
+    marker: GEMINI_STATE_MARKER,
+    regex: GEMINI_STATE_RE,
+    mapParsed: (parsed) => ({
+      ...parsed,
+      state: String(parsed.status ?? parsed.state ?? "").trim().toLowerCase() || "invalid",
+      sha: parsed.commit_sha ?? parsed.sha ?? null,
+      has_unresolved_findings:
+        parsed.has_unresolved_findings === true ||
+        parsed.hasUnresolvedFindings === true,
+    }),
+  });
 }
 
 function normalizeReviewThreadEntry(entry) {
@@ -678,77 +712,154 @@ export function evaluatePrMergeReadiness({
   }
 
   const codexState = parseCodexReviewState(commentsPayload);
+  const geminiState = parseGeminiReviewState(commentsPayload);
+  const geminiStatus = String(geminiState?.state ?? "").trim().toLowerCase();
+  const geminiSha = String(geminiState?.sha ?? "").trim();
+  const geminiFresh = doesCodexShaMatchHead(geminiSha, headRefOid);
+  const isGeminiRunning = CODEX_RUNNING_STATUSES.has(geminiStatus);
+  const isGeminiCompleted = CODEX_COMPLETED_STATUSES.has(geminiStatus);
+  const geminiReady =
+    isGeminiCompleted &&
+    geminiFresh &&
+    geminiState?.has_unresolved_findings !== true;
+  const geminiBlockedFindings =
+    isGeminiCompleted &&
+    geminiFresh &&
+    geminiState?.has_unresolved_findings === true;
+
+  let reviewProvider = "codex";
   if (codexState === null) {
-    if (unresolved.length > 0) {
+    if (geminiReady) {
+      reviewProvider = "gemini";
+    } else if (geminiBlockedFindings) {
       return {
         ready: false,
         code: "PR_UNADDRESSED_REVIEW_COMMENTS",
-        reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
+        reason: `مراجعة Gemini الآلية على الالتزام (${geminiSha.slice(0, 9)}) ما زالت تبلّغ عن ملاحظات غير محلولة (has_unresolved_findings: true).`,
+        unaddressedComments: unresolved,
+      };
+    } else if (isGeminiRunning) {
+      return {
+        ready: false,
+        code: "PR_GEMINI_REVIEW_RUNNING",
+        reason: `مراجعة Gemini الآلية لا تزال قيد التشغيل على طلب #${prView.number}.`,
+        ...unaddressedExtras,
+      };
+    } else {
+      if (unresolved.length > 0) {
+        return {
+          ready: false,
+          code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+          reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
+          unaddressedComments: unresolved,
+        };
+      }
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_MISSING",
+        reason: `لم تُسجَّل حالة مراجعة Codex الآلية الموثوقة (chatgpt-codex-connector) على طلب #${prView.number} للالتزام (${headRefOid.slice(0, 9)}) بعد؛ انتظر بدء المراجعة واكتمالها قبل الدمج.`,
+      };
+    }
+  } else {
+    const selectedCodex = selectPrimaryCodexEntry(codexState);
+    const codexSha = String(selectedCodex.sha ?? "").trim();
+    const codexDisplaySha = codexSha
+      ? codexSha.slice(0, 9)
+      : headRefOid.slice(0, 9);
+    const codexCompletedFreshWithFindings =
+      selectedCodex.entries.length > 0 &&
+      selectedCodex.entries.every((e) => CODEX_COMPLETED_STATUSES.has(e.status)) &&
+      !selectedCodex.entries.some((e) => !doesCodexShaMatchHead(e.sha, headRefOid)) &&
+      selectedCodex.hasUnresolvedFindings;
+
+    const codexBlockedReason = (() => {
+      if (
+        selectedCodex.entries.length === 0 ||
+        selectedCodex.statuses.includes("invalid")
+      ) {
+        return {
+          ready: false,
+          code: "PR_CODEX_REVIEW_STATE_INVALID",
+          reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
+          ...unaddressedExtras,
+        };
+      }
+      if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
+        return {
+          ready: false,
+          code: "PR_CODEX_REVIEW_RUNNING",
+          reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
+          ...unaddressedExtras,
+        };
+      }
+      if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
+        return {
+          ready: false,
+          code: "PR_CODEX_REVIEW_FAILED",
+          reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
+          ...unaddressedExtras,
+        };
+      }
+      if (
+        selectedCodex.entries.some((e) => !CODEX_COMPLETED_STATUSES.has(e.status))
+      ) {
+        return {
+          ready: false,
+          code: "PR_CODEX_REVIEW_STATE_INVALID",
+          reason: `حالة مراجعة Codex الآلية غير معروفة على طلب #${prView.number}.`,
+          ...unaddressedExtras,
+        };
+      }
+      const staleCodexEntry = selectedCodex.entries.find(
+        (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
+      );
+      if (staleCodexEntry) {
+        const staleShaLabel = staleCodexEntry.sha
+          ? staleCodexEntry.sha.slice(0, 9)
+          : "غير محدد";
+        return {
+          ready: false,
+          code: "PR_CODEX_REVIEW_STALE",
+          reason: `مراجعة Codex الآلية المكتملة مرتبطة بالالتزام (${staleShaLabel}) ولا تطابق رأس الفرع الحالي (${headRefOid.slice(0, 9)})؛ يجب انتظار أو تشغيل مراجعة Codex على الالتزام الحالي قبل الدمج.`,
+          ...unaddressedExtras,
+        };
+      }
+      return null;
+    })();
+
+    if (codexBlockedReason) {
+      if (
+        codexBlockedReason.code !== "PR_CODEX_REVIEW_RUNNING" &&
+        !codexCompletedFreshWithFindings &&
+        geminiReady
+      ) {
+        reviewProvider = "gemini";
+      } else if (geminiBlockedFindings) {
+        return {
+          ready: false,
+          code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+          reason: `مراجعة Gemini الآلية على الالتزام (${geminiSha.slice(0, 9)}) ما زالت تبلّغ عن ملاحظات غير محلولة (has_unresolved_findings: true).`,
+          unaddressedComments: unresolved,
+        };
+      } else {
+        return codexBlockedReason;
+      }
+    } else if (codexCompletedFreshWithFindings) {
+      if (unresolved.length > 0) {
+        return {
+          ready: false,
+          code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+          reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
+          unaddressedComments: unresolved,
+        };
+      }
+      return {
+        ready: false,
+        code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+        reason: `مراجعة Codex الآلية المكتملة على الالتزام (${codexDisplaySha}) لا تزال تبلّغ عن ملاحظات غير محلولة (has_unresolved_findings: true)؛ عالج الملاحظات بالتزام ذرّي جديد وأعد فحص المراجعة قبل الدمج.`,
         unaddressedComments: unresolved,
       };
     }
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_MISSING",
-      reason: `لم تُسجَّل حالة مراجعة Codex الآلية الموثوقة (chatgpt-codex-connector) على طلب #${prView.number} للالتزام (${headRefOid.slice(0, 9)}) بعد؛ انتظر بدء المراجعة واكتمالها قبل الدمج.`,
-    };
-  }
-
-  const selectedCodex = selectPrimaryCodexEntry(codexState);
-  const codexSha = String(selectedCodex.sha ?? "").trim();
-  const codexDisplaySha = codexSha
-    ? codexSha.slice(0, 9)
-    : headRefOid.slice(0, 9);
-  if (
-    selectedCodex.entries.length === 0 ||
-    selectedCodex.statuses.includes("invalid")
-  ) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_STATE_INVALID",
-      reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
-      ...unaddressedExtras,
-    };
-  }
-  if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_RUNNING",
-      reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
-      ...unaddressedExtras,
-    };
-  }
-  if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_FAILED",
-      reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
-      ...unaddressedExtras,
-    };
-  }
-  if (
-    selectedCodex.entries.some((e) => !CODEX_COMPLETED_STATUSES.has(e.status))
-  ) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_STATE_INVALID",
-      reason: `حالة مراجعة Codex الآلية غير معروفة على طلب #${prView.number}.`,
-      ...unaddressedExtras,
-    };
-  }
-  const staleCodexEntry = selectedCodex.entries.find(
-    (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
-  );
-  if (staleCodexEntry) {
-    const staleShaLabel = staleCodexEntry.sha
-      ? staleCodexEntry.sha.slice(0, 9)
-      : "غير محدد";
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_STALE",
-      reason: `مراجعة Codex الآلية المكتملة مرتبطة بالالتزام (${staleShaLabel}) ولا تطابق رأس الفرع الحالي (${headRefOid.slice(0, 9)})؛ يجب انتظار أو تشغيل مراجعة Codex على الالتزام الحالي قبل الدمج.`,
-      ...unaddressedExtras,
-    };
   }
 
   if (unresolved.length > 0) {
@@ -756,15 +867,6 @@ export function evaluatePrMergeReadiness({
       ready: false,
       code: "PR_UNADDRESSED_REVIEW_COMMENTS",
       reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
-      unaddressedComments: unresolved,
-    };
-  }
-
-  if (selectedCodex.entries.some((e) => e.hasUnresolvedFindings === true)) {
-    return {
-      ready: false,
-      code: "PR_UNADDRESSED_REVIEW_COMMENTS",
-      reason: `مراجعة Codex الآلية المكتملة على الالتزام (${codexDisplaySha}) لا تزال تبلّغ عن ملاحظات غير محلولة (has_unresolved_findings: true)؛ عالج الملاحظات بالتزام ذرّي جديد وأعد فحص المراجعة قبل الدمج.`,
       unaddressedComments: unresolved,
     };
   }
@@ -2557,6 +2659,55 @@ export function runSafeMergeSelftest() {
   });
   assert.equal(multiPageCompletedRes.ready, true);
   assert.equal(multiPageCompletedRes.code, "OK");
+
+  const makeTrustedGeminiComments = (sha, overrides = {}) => [
+    {
+      author: { login: "github-actions[bot]" },
+      body: `<!-- gemini-review-state:v1 ${JSON.stringify({ commit_sha: sha, model: "gemini-4-carbon", has_any_findings: false, has_unresolved_findings: false, status: "completed", ...overrides })} -->`,
+    },
+  ];
+  const makeFailedCodexComments = (sha) => [
+    {
+      author: { login: "chatgpt-codex-connector" },
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({ sha, state: "failed" })} -->`,
+    },
+  ];
+  const geminiFailoverRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 128,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-gem-1",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        ...makeFailedCodexComments("sha-gem-1"),
+        ...makeTrustedGeminiComments("sha-gem-1"),
+      ],
+    },
+  });
+  assert.equal(geminiFailoverRes.ready, true);
+  assert.equal(geminiFailoverRes.code, "OK");
+
+  const spoofedGeminiRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 129,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-gem-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        ...makeFailedCodexComments("sha-gem-2"),
+        {
+          author: { login: "someone-else" },
+          body: '<!-- gemini-review-state:v1 {"commit_sha":"sha-gem-2","has_unresolved_findings":false,"status":"completed"} -->',
+        },
+      ],
+    },
+  });
+  assert.equal(spoofedGeminiRes.ready, false);
+  assert.equal(spoofedGeminiRes.code, "PR_CODEX_REVIEW_FAILED");
 
   console.log("safe-merge selftest: OK");
 }
