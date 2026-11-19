@@ -7,6 +7,8 @@ export const GEMINI_REVIEW_MODELS = [
   "gemini-4-argon",
   "gemini-4-hydrogen",
   "gemini-3.8-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 export const GEMINI_STATE_MARKER = "gemini-review-state:v1";

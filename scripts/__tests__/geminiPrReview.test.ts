@@ -49,6 +49,8 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
       "gemini-4-carbon",
       "gemini-4-hydrogen",
       "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash-lite",
     ]);
 
     const seenUrls: string[] = [];
