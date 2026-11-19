@@ -470,7 +470,11 @@ export function parseCodexReviewState(prComments = []) {
   });
 }
 
-export function parseGeminiReviewState(prComments = [], prReviews = []) {
+export function parseGeminiReviewState(
+  prComments = [],
+  prReviews = [],
+  headRefOid = "",
+) {
   const workflowMarkerState = parseBotReviewStateMarker({
     prComments,
     trustedLogins: TRUSTED_GEMINI_BOT_LOGINS,
@@ -478,6 +482,7 @@ export function parseGeminiReviewState(prComments = [], prReviews = []) {
     regex: GEMINI_STATE_RE,
     mapParsed: (parsed) => ({
       ...parsed,
+      provider: "gemini-workflow",
       state: String(parsed.status ?? parsed.state ?? "").trim().toLowerCase() || "invalid",
       sha: parsed.commit_sha ?? parsed.sha ?? null,
       has_unresolved_findings:
@@ -485,7 +490,6 @@ export function parseGeminiReviewState(prComments = [], prReviews = []) {
         parsed.hasUnresolvedFindings === true,
     }),
   });
-  if (workflowMarkerState) return workflowMarkerState;
 
   const flatReviews = Array.isArray(prReviews)
     ? prReviews
@@ -502,7 +506,13 @@ export function parseGeminiReviewState(prComments = [], prReviews = []) {
     const state = String(rev.state ?? "").trim().toUpperCase();
     if (state === "PENDING" || state === "DISMISSED") continue;
     const sha = String(rev?.commit?.oid ?? rev?.commit_id ?? "").trim() || null;
-    const body = String(rev.body ?? "");
+    const body = String(rev.body ?? "").trim();
+    const samePreviousSha =
+      latestCodeAssist &&
+      sha &&
+      latestCodeAssist.sha &&
+      doesCodexShaMatchHead(latestCodeAssist.sha, sha);
+
     if (GEMINI_CODE_ASSIST_FAILURE_RE.test(body)) {
       latestCodeAssist = {
         provider: "gemini-code-assist",
@@ -512,14 +522,61 @@ export function parseGeminiReviewState(prComments = [], prReviews = []) {
       };
       continue;
     }
+
+    const hadUnresolvedOnSameSha = Boolean(
+      samePreviousSha && latestCodeAssist.has_unresolved_findings === true,
+    );
+    const hasUnresolved =
+      state === "CHANGES_REQUESTED"
+        ? true
+        : state === "APPROVED"
+          ? false
+          : hadUnresolvedOnSameSha;
     latestCodeAssist = {
       provider: "gemini-code-assist",
-      state: "completed",
+      state:
+        samePreviousSha && latestCodeAssist.state === "failed" && state === "COMMENTED" && !body
+          ? "failed"
+          : "completed",
       sha,
-      has_unresolved_findings: state === "CHANGES_REQUESTED",
+      has_unresolved_findings: hasUnresolved,
     };
   }
-  return latestCodeAssist;
+
+  const wfMatchesHead = Boolean(
+    headRefOid &&
+      workflowMarkerState &&
+      doesCodexShaMatchHead(workflowMarkerState.sha, headRefOid),
+  );
+  const caMatchesHead = Boolean(
+    headRefOid &&
+      latestCodeAssist &&
+      doesCodexShaMatchHead(latestCodeAssist.sha, headRefOid),
+  );
+
+  if (wfMatchesHead && caMatchesHead) {
+    const wfState = String(workflowMarkerState.state ?? "").toLowerCase();
+    const caState = String(latestCodeAssist.state ?? "").toLowerCase();
+    const combinedState =
+      wfState === "invalid" || caState === "invalid"
+        ? "invalid"
+        : wfState === "failed" || caState === "failed"
+          ? "failed"
+          : CODEX_RUNNING_STATUSES.has(wfState) || CODEX_RUNNING_STATUSES.has(caState)
+            ? "running"
+            : "completed";
+    return {
+      provider: "gemini-combined",
+      state: combinedState,
+      sha: headRefOid,
+      has_unresolved_findings:
+        workflowMarkerState.has_unresolved_findings === true ||
+        latestCodeAssist.has_unresolved_findings === true,
+    };
+  }
+  if (caMatchesHead) return latestCodeAssist;
+  if (wfMatchesHead) return workflowMarkerState;
+  return latestCodeAssist ?? workflowMarkerState;
 }
 
 function normalizeReviewThreadEntry(entry) {
@@ -756,7 +813,11 @@ export function evaluatePrMergeReadiness({
   }
 
   const codexState = parseCodexReviewState(commentsPayload);
-  const geminiState = parseGeminiReviewState(commentsPayload, prView.reviews);
+  const geminiState = parseGeminiReviewState(
+    commentsPayload,
+    prView.reviews,
+    headRefOid,
+  );
   const geminiStatus = String(geminiState?.state ?? "").trim().toLowerCase();
   const geminiSha = String(geminiState?.sha ?? "").trim();
   const geminiFresh = doesCodexShaMatchHead(geminiSha, headRefOid);

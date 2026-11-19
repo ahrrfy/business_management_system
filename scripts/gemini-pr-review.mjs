@@ -137,6 +137,17 @@ export function parseGeminiReviewResponse(rawText) {
   return { verdict, summary, findings };
 }
 
+export function buildReviewOutcomeState(review) {
+  const hasFindings = Array.isArray(review?.findings) && review.findings.length > 0;
+  const hasBlockingReview = hasFindings || review?.verdict === "request_changes";
+  return {
+    hasFindings,
+    hasBlockingReview,
+    hasAnyFindings: hasBlockingReview,
+    hasUnresolvedFindings: hasBlockingReview,
+  };
+}
+
 export function formatStickyStateComment({
   commitSha,
   model,
@@ -344,9 +355,9 @@ async function main() {
   });
 
   const review = await callGeminiWithFallback({ apiKey, models, prompt });
-  const hasFindings = review.findings.length > 0;
+  const outcome = buildReviewOutcomeState(review);
 
-  if (hasFindings) {
+  if (outcome.hasBlockingReview) {
     const changedSet = new Set(changedFiles);
     const inlineComments = [];
     const fallbackNotes = [];
@@ -404,8 +415,8 @@ async function main() {
   const stickyBody = formatStickyStateComment({
     commitSha: headSha,
     model: review.model,
-    hasAnyFindings: hasFindings,
-    hasUnresolvedFindings: hasFindings,
+    hasAnyFindings: outcome.hasAnyFindings,
+    hasUnresolvedFindings: outcome.hasUnresolvedFindings,
     status: "completed",
     summary: review.summary,
     findings: review.findings,

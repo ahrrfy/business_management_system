@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildReviewOutcomeState,
   buildReviewPrompt,
   callGeminiWithFallback,
   formatStickyStateComment,
@@ -112,6 +113,17 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
     );
     expect(parsed.verdict).toBe("request_changes");
     expect(parsed.findings).toHaveLength(1);
+    expect(
+      buildReviewOutcomeState({
+        verdict: "request_changes",
+        summary: "ملخص",
+        findings: [],
+      }),
+    ).toMatchObject({
+      hasBlockingReview: true,
+      hasAnyFindings: true,
+      hasUnresolvedFindings: true,
+    });
 
     const sticky = formatStickyStateComment({
       commitSha: "abcdef1234567890",
@@ -272,6 +284,51 @@ describe("Gemini 4 PR review workflow and safe-merge failover", () => {
       },
     });
     expect(geminiCodeAssistChangesRequested).toMatchObject({
+      ready: false,
+      code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+    });
+
+    const staleWorkflowCannotShadowHeadCodeAssist = evaluatePrMergeReadiness({
+      prView: {
+        number: 505,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "headsha12345",
+        statusCheckRollup: greenRollup,
+        comments: [
+          {
+            author: { login: "chatgpt-codex-connector" },
+            body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"headsha12345","status":"failed"}} -->',
+          },
+          {
+            author: { login: "github-actions" },
+            body: formatStickyStateComment({
+              commitSha: "oldersha9999",
+              model: "gemini-4-hydrogen",
+              hasAnyFindings: false,
+              hasUnresolvedFindings: false,
+              status: "completed",
+            }),
+          },
+        ],
+        reviews: [
+          {
+            author: { login: "gemini-code-assist" },
+            state: "CHANGES_REQUESTED",
+            commit: { oid: "headsha12345" },
+            body: "Issue found on HEAD.",
+          },
+          {
+            author: { login: "gemini-code-assist" },
+            state: "COMMENTED",
+            commit: { oid: "headsha12345" },
+            body: "",
+          },
+        ],
+      },
+    });
+    expect(staleWorkflowCannotShadowHeadCodeAssist).toMatchObject({
       ready: false,
       code: "PR_UNADDRESSED_REVIEW_COMMENTS",
     });
