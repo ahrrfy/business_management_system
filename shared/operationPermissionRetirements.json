@@ -12,5 +12,21 @@
   "operation.superApp.mobileRevokeExpoPush",
   "operation.superApp.mobileStartFocusedTask",
   "operation.superApp.mobileToday",
-  "operation.superApp.mobileWithdrawLatestLeave"
+  "operation.superApp.mobileWithdrawLatestLeave",
+  "operation.nativePush.register",
+  "operation.nativePush.revokeDevice",
+  "operation.nativePush.status",
+  "operation.superApp.approvalDetail",
+  "operation.superApp.approvalInbox",
+  "operation.superApp.bootstrap",
+  "operation.superApp.markAllNotificationsRead",
+  "operation.superApp.markNotificationRead",
+  "operation.superApp.modulePulse",
+  "operation.superApp.notificationPreferences",
+  "operation.superApp.notifications",
+  "operation.superApp.payrollHistory",
+  "operation.superApp.payslipDetail",
+  "operation.superApp.requestLeave",
+  "operation.superApp.updateNotificationPreferences",
+  "operation.superApp.withdrawLeave"
 ]

@@ -93,13 +93,6 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
-  nativeBootstrapProcedure: {
-    authority: "device-bootstrap",
-    module: null,
-    level: null,
-    roles: ["current-native-client"],
-    branch: "device",
-  },
   selfServiceProcedure: {
     authority: "self-assignment",
     module: null,
@@ -112,13 +105,6 @@ const PROCEDURES = {
     module: null,
     level: "RESOLVED",
     roles: ["authenticated-user"],
-    branch: "scoped",
-  },
-  expoSuperAppProcedure: {
-    authority: "module-map",
-    module: null,
-    level: "RESOLVED",
-    roles: ["authenticated-user", "verified-superapp-expo-device"],
     branch: "scoped",
   },
   // تكليف جرد ذاتي: ليست صلاحية مخزون عامة؛ handler يربط كل استعلام بالمستخدم المكلّف.

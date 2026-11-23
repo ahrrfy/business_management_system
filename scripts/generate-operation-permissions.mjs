@@ -176,7 +176,7 @@ function isRetiredWrite(ep) {
 const ROOT_LABELS = {
   system: "إعدادات النظام",
   auth: "الحساب والجلسة",
-  superApp: "تطبيق الموظفين",
+  notifications: "الإشعارات",
   executive: "الإدارة التنفيذية",
   cashRemediation: "تصحيح النقد التاريخي",
   statutoryAccounting: "المحاسبة النظامية",
@@ -214,7 +214,6 @@ const ROOT_LABELS = {
   arReminders: "متابعة ذمم العملاء",
   apReminders: "متابعة ذمم الموردين",
   push: "الإشعارات",
-  nativePush: "إشعارات التطبيقات",
   expenses: "المصروفات",
   reports: "التقارير",
   quotations: "عروض الأسعار",

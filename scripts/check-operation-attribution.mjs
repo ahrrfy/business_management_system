@@ -145,8 +145,6 @@ const CENTRALIZED_JOB_FILES = {
   delivery_outbox: "server/services/delivery/outboxWorker.ts",
   delivery_stale_sweep: "server/services/delivery/staleSweep.ts",
   morning_push: "server/services/morningPushScheduler.ts",
-  native_push_outbox: "server/services/nativePushOutboxWorker.ts",
-  superapp_expo_push_outbox: "server/services/superAppPushWorker.ts",
   web_push_outbox: "server/services/webPushOutboxWorker.ts",
   online_order_reservation_expiry: "server/services/onlineOrderExpirySweeper.ts",
   product_studio_staging: "server/services/productStudioStagingWorker.ts",

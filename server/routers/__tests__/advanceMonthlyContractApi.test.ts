@@ -5,10 +5,6 @@ import { getDb } from "../../db";
 import type { TrpcContext } from "../../context";
 import { appRouter } from "../../routers";
 import { truncateTables } from "../../services/__tests__/__testUtils__";
-import {
-  getMobilePayslip,
-  getMobileToday,
-} from "../../services/mobileTodayService";
 
 const USER_ID = 700;
 const EMPLOYEE_ID = 701;
@@ -355,76 +351,11 @@ describe("دليل دفع قسيمة الموظف", () => {
     expect(asMillis(active.item.paidAt)).not.toBe(globalPaidAt.getTime());
     expect(reversed.item.paidAt).toBeNull();
 
-    const history = await api.superApp.payrollHistory({ limit: 12 });
-    expect(
-      history.find((row) => row.runId === 800)?.paidAt,
-    ).not.toBeNull();
-    expect(history.find((row) => row.runId === 800)?.status).toBe("paid");
-    expect(history.find((row) => row.runId === 801)?.paidAt).toBeNull();
-    expect(history.find((row) => row.runId === 801)?.status).toBe("approved");
-
-    const activeDetail = await api.superApp.payslipDetail({ payrollItemId: 810 });
-    const reversedDetail = await api.superApp.payslipDetail({ payrollItemId: 811 });
-    expect(asMillis(activeDetail.paidAt)).toBe(activePaidAt.getTime());
-    expect(activeDetail.status).toBe("paid");
-    expect(reversedDetail.paidAt).toBeNull();
-    expect(reversedDetail.status).toBe("approved");
-
-    const mobileActor = {
-      userId: USER_ID,
-      role: "admin",
-      isOwner: true,
-      branchId: 1,
-    };
-    const reversedToday = await getMobileToday({
-      actor: mobileActor,
-      date: "2026-11-01",
-      db: db(),
-    });
-    const reversedMobileSlip = await getMobilePayslip({
-      actor: mobileActor,
-      db: db(),
-    });
-    expect(reversedToday.personal.payroll?.status).toBe("approved");
-    expect(reversedMobileSlip.personal.payslip).toMatchObject({
-      period: "2026-10",
-      status: "approved",
-      paidAt: null,
-    });
-
-    await db()
-      .update(s.payrollRuns)
-      .set({ status: "cancelled" })
-      .where(eq(s.payrollRuns.id, 801));
-    const activeToday = await getMobileToday({
-      actor: mobileActor,
-      date: "2026-11-01",
-      db: db(),
-    });
-    const activeMobileSlip = await getMobilePayslip({
-      actor: mobileActor,
-      db: db(),
-    });
-    expect(activeToday.personal.payroll?.status).toBe("paid");
-    expect(activeMobileSlip.personal.payslip?.status).toBe("paid");
-    expect(asMillis(activeMobileSlip.personal.payslip?.paidAt ?? null)).toBe(
-      activePaidAt.getTime(),
-    );
-
     await db()
       .update(s.payrollAccountingEvents)
       .set({ receiptId: null, settlementEvidence: {} })
       .where(eq(s.payrollAccountingEvents.id, 850));
     const malformedEvidence = await api.payroll.myPayslip({ runId: 800 });
-    const malformedMobileSlip = await getMobilePayslip({
-      actor: mobileActor,
-      db: db(),
-    });
     expect(malformedEvidence.item.paidAt).toBeNull();
-    expect(malformedMobileSlip.personal.payslip).toMatchObject({
-      period: "2026-09",
-      status: "approved",
-      paidAt: null,
-    });
   });
 });

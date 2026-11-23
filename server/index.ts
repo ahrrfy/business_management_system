@@ -93,7 +93,6 @@ import { jobApplicantCvRouter } from "./routes/jobApplicantCv";
 import { studioExportRouter } from "./routes/studioExportRouter";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
-import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 import { selfHealDivergedProductChannelLabels } from "./services/catalog/productChannelSyncSelfHeal";
@@ -171,10 +170,6 @@ async function startServer() {
       return { database: row.databaseName, serverUuid: row.serverUuid };
     },
   });
-
-  // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
-  // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
-  assertMobileProductionReadiness();
 
   const app = express();
   // يجب ضبطه قبل أول app.use: Express ينشئ الراوتر الداخلي عند أول middleware

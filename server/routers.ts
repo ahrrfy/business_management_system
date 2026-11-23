@@ -25,8 +25,7 @@ import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
 import { apRemindersRouter } from "./routers/apRemindersRouter";
 import { pushRouter } from "./routers/pushRouter";
-import { nativePushRouter } from "./routers/nativePushRouter";
-import { superAppRouter } from "./routers/superAppRouter";
+import { notificationsRouter } from "./routers/notificationsRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -104,7 +103,7 @@ import { decisionsRouter } from "./routers/decisionsRouter";
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
-  superApp: superAppRouter,
+  notifications: notificationsRouter,
   executive: executiveRouter,
   cashRemediation: cashRemediationRouter,
   statutoryAccounting: statutoryAccountingRouter,
@@ -147,7 +146,6 @@ export const appRouter = router({
   arReminders: arRemindersRouter,
   apReminders: apRemindersRouter,
   push: pushRouter,
-  nativePush: nativePushRouter,
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,

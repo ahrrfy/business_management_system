@@ -171,16 +171,12 @@ vi.mock("@/lib/trpc", () => {
             query("decisions", options),
         },
       },
-      superApp: {
-        notifications: {
+      notifications: {
+        list: {
           useQuery: (_input: unknown, options?: { enabled?: boolean }) =>
             query("notifications", options),
         },
-        myWorkspace: {
-          useQuery: (_input: unknown, options?: { enabled?: boolean }) =>
-            query("workspace", options),
-        },
-        markNotificationRead: { useMutation: mutation },
+        markRead: { useMutation: mutation },
       },
       announcements: {
         mine: {

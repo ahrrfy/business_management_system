@@ -67,7 +67,7 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
-  const notifications = trpc.superApp.notifications.useQuery(
+  const notifications = trpc.notifications.list.useQuery(
     { limit: 12 },
     {
       enabled,
@@ -75,7 +75,7 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
       staleTime: 10_000,
     },
   );
-  const refresh = () => utils.superApp.notifications.invalidate();
+  const refresh = () => utils.notifications.list.invalidate();
 
   // الاستماع اللحظي لإدراج الإشعارات والاعتمادات لتحديث الشارة وإطلاق نغمة التنبيه فوراً
   useRealtimeEvent(
@@ -98,8 +98,8 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
     },
   );
 
-  const markRead = trpc.superApp.markNotificationRead.useMutation({ onSuccess: refresh });
-  const markAllRead = trpc.superApp.markAllNotificationsRead.useMutation({ onSuccess: refresh });
+  const markRead = trpc.notifications.markRead.useMutation({ onSuccess: refresh });
+  const markAllRead = trpc.notifications.markAllRead.useMutation({ onSuccess: refresh });
   const rows = notifications.data?.rows ?? [];
   const unreadCount = notifications.data?.unreadCount ?? 0;
 

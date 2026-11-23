@@ -55,8 +55,6 @@ import {
   consumePasswordResetToken,
   PASSWORD_RESET_GENERIC_ERROR,
 } from "../services/passwordResetService";
-import { revokeAllNativePushDevicesForUser } from "../services/nativePushService";
-import { revokeAllSuperAppExpoPushDevicesForUser } from "../services/superAppPushService";
 import {
   adminProcedure,
   protectedProcedure,
@@ -924,12 +922,6 @@ export const authRouter = router({
             ),
           );
       }
-      // The session is no longer usable after logout, so its Expo device must
-      // not continue receiving even generic lock-screen prompts.
-      await Promise.allSettled([
-        revokeAllNativePushDevicesForUser(ctx.user.id),
-        revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
-      ]);
       await logAudit(ctx, {
         action: "auth.logout",
         entityType: "user",
@@ -1057,10 +1049,6 @@ export const authRouter = router({
           ),
         );
     });
-    await Promise.allSettled([
-      revokeAllNativePushDevicesForUser(ctx.user.id),
-      revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
-    ]);
     await logAudit(ctx, {
       action: "auth.revokeSessions",
       entityType: "user",

@@ -1,25 +1,12 @@
-import crypto from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import {
   appNotificationPreferences,
   appNotifications,
-  nativePushOutbox,
-  superAppExpoPushOutbox,
   webPushOutbox,
 } from "../../drizzle/schema";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { normalizeLegacyDeliveryNotificationText } from "@shared/deliveryNotificationLabels";
 import { type AppPushPayload } from "./pushService";
-import {
-  NATIVE_PUSH_ENVIRONMENTS,
-  normalizeNativePushPayload,
-  type NativePushEnvironment,
-  type NormalizedNativePushPayload,
-} from "./nativePushService";
-import {
-  buildSuperAppExpoPushPayload,
-  superAppExpoPushEnvironment,
-} from "./superAppPushService";
 import { publishRealtimeEvent } from "../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { requireDb } from "./tx";
@@ -259,88 +246,6 @@ export function quietHoursReleaseAt(
   return new Date(now.getTime() + Math.max(waitMinutes, 1) * 60_000);
 }
 
-function nativeEnvironment(): NativePushEnvironment {
-  const value = process.env.NATIVE_PUSH_ENVIRONMENT?.trim();
-  if (
-    value &&
-    NATIVE_PUSH_ENVIRONMENTS.includes(value as NativePushEnvironment)
-  ) {
-    return value as NativePushEnvironment;
-  }
-  return process.env.NODE_ENV === "production" ? "prod" : "dev";
-}
-
-function nativeDestinationFor(
-  input: CreateAppNotificationInput,
-): string | null {
-  const entity = input.entityId != null ? String(input.entityId) : null;
-  if (input.kind === "TASK_ASSIGNED") {
-    // إشعاراتُ حملات الاستوديو تُشارك kind=TASK_ASSIGNED مع مهام الاستوديو الفردية لأنّ
-    // كليهما «عملٌ يخصّ المصوّر»، لكنّ الوجهة العميقة تختلف: entityId هنا معرّف حملةٍ لا
-    // مهمة، فتوجيهها إلى `/module/tasks/view/N` يفتح مهمّةً غير موجودة (مراجعة Codex P2
-    // على PR #862). التمييز بـ`entityType` فقط — إبقاء kind واحداً يحفظ تفضيلاتِ الإشعار
-    // (المصوّر الذي يقبل مهام يقبل الاثنين). وحتى تدعم المحطة العميقة صراحةً استوديو
-    // الحملات على أندرويد، نُوجّه إلى دليل الوحدات المعتمد على العميل والخادم — لا إلى
-    // شاشةَ مهمّةٍ خاطئة ولا إلى وحدةٍ أصليةٍ غير مسجّلة فتفشل كتابةُ الإشعار كلّها.
-    if (input.entityType === "productStudioCampaign") {
-      return "alrueya://app/modules";
-    }
-    return entity
-      ? `alrueya://app/module/tasks/view/${entity}`
-      : "alrueya://app/tasks";
-  }
-  if (input.kind === "APPROVAL_REQUIRED") return "alrueya://app/approvals";
-  if (input.kind === "ATTENDANCE") return "alrueya://app/module/hr/browse";
-  if (input.kind === "PAYROLL_READY" || input.kind === "LEAVE_STATUS") {
-    return entity
-      ? `alrueya://app/module/hr/view/${entity}`
-      : "alrueya://app/profile";
-  }
-  if (input.kind === "ANNOUNCEMENT") {
-    // إعلانٌ بعينه ⇒ تغذية «إعلاناتي» على تفصيله (القصر العميل يوجّهه للتغذية قبل بوّابة الصلاحية).
-    return entity ? `alrueya://app/module/announcements/view/${entity}` : null;
-  }
-  if (input.kind === "SESSION_EVENT") {
-    // جذر التنبيهات هو الشكل المسموح في عقد Android؛ تفاصيل الحدث تُقرأ من الصندوق المصادَق.
-    return "alrueya://app/alerts";
-  }
-  if (input.kind === "SYSTEM") return "alrueya://app/alerts";
-  return null;
-}
-
-function nativePayloadFor(
-  input: CreateAppNotificationInput,
-): NormalizedNativePushPayload | null {
-  const destination = nativeDestinationFor(input);
-  if (!destination) return null;
-  const notificationId = `np_${crypto.createHash("sha256").update(input.eventKey, "utf8").digest("base64url")}`;
-  const sensitive =
-    input.kind === "PAYROLL_READY" ||
-    // إشعار الإجازة يحمل نوعها ونطاق تواريخها (بيانات شخصية) ⇒ يُنقَّح على شاشة القفل دائماً كالراتب.
-    input.kind === "LEAVE_STATUS" ||
-    // الإعلان قد يحمل معلوماتٍ داخليّةً حسّاسة وجمهورُه واسع ⇒ يُنقَّح على شاشة القفل افتراضاً
-    // (العميل يستبدل العنوان/النص بنصٍّ آمن حتى فتح التطبيق).
-    input.kind === "ANNOUNCEMENT" ||
-    // الاعتماد يحمل رقم السند والمبلغ وسبب الرفض ⇒ يُنقَّح على شاشة القفل (بيانات ماليّة).
-    // Codex P1 ٢٨/٨: كان lockScreenSafe:false في المستدعي بلا أثر لأنّ الفحص أدناه
-    // خصّ ATTENDANCE وحده — الاعتماد كان يخرج sensitive=false ⇒ VISIBILITY_PUBLIC على أندرويد.
-    input.kind === "APPROVAL_REQUIRED" ||
-    // إشعار الجلسة يحمل عنوان IP والموقع الجغرافي ⇒ حسّاس كذلك.
-    input.kind === "SESSION_EVENT" ||
-    (input.kind === "SYSTEM" && input.lockScreenSafe !== true) ||
-    (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
-  return normalizeNativePushPayload({
-    notificationId,
-    kind: input.kind,
-    title: input.title.trim().slice(0, 80),
-    body: input.body.trim().slice(0, 180),
-    destination,
-    urgency: input.requiresAction ? "action" : "information",
-    sensitive,
-    family: input.family ?? defaultNotificationFamily(input.kind),
-  });
-}
-
 export async function getNotificationPreferences(
   userId: number,
 ): Promise<NotificationPreferencesInput> {
@@ -384,10 +289,6 @@ export async function createAppNotification(
   const family = input.family ?? defaultNotificationFamily(input.kind);
   const normalizedInput = { ...input, eventKey, family };
   const webPayload = buildAppWebPushPayload(normalizedInput);
-  const nativePayload = nativePayloadFor(normalizedInput);
-  // A separate Expo worker serves only Super Arabia. Its locked-screen copy
-  // and route are deliberately not inherited from the web/legacy payload.
-  const superAppExpoPayload = buildSuperAppExpoPushPayload({ kind: input.kind });
   try {
     await db.transaction(async (tx) => {
       await tx.insert(appNotifications).values({
@@ -403,7 +304,7 @@ export async function createAppNotification(
         requiresAction: input.requiresAction ?? false,
       });
 
-      if (input.push === false || (!webPayload && !nativePayload && !superAppExpoPayload)) return;
+      if (input.push === false || !webPayload) return;
       const [preferenceRow] = await tx
         .select()
         .from(appNotificationPreferences)
@@ -416,28 +317,10 @@ export async function createAppNotification(
         preferences.quietHoursStart,
         preferences.quietHoursEnd,
       );
-      if (nativePayload) {
-        await tx.insert(nativePushOutbox).values({
-          userId: input.userId,
-          eventKey,
-          payload: nativePayload,
-          environment: nativeEnvironment(),
-          availableAt: quietRelease ?? new Date(),
-        });
-      }
-      if (webPayload) {
-        await tx.insert(webPushOutbox).values({
-          userId: input.userId,
-          eventKey,
-          payload: webPayload,
-          availableAt: quietRelease ?? new Date(),
-        });
-      }
-      await tx.insert(superAppExpoPushOutbox).values({
+      await tx.insert(webPushOutbox).values({
         userId: input.userId,
         eventKey,
-        payload: superAppExpoPayload,
-        environment: superAppExpoPushEnvironment(),
+        payload: webPayload,
         availableAt: quietRelease ?? new Date(),
       });
     });
