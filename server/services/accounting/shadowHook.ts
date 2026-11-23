@@ -18,32 +18,6 @@ import { postingLinesFor } from "./postingEngine";
 import type { Tx } from "../../db";
 
 /**
- * طريقة الدفع (enum `receipts.paymentMethod`) ← دلو النقد المحاسبيّ.
- *
- * `null` تعني **«لا أعرف، ولن أخمّن»**: `WALLET`/`EXCHANGE`/`TELECOM` ليست نقداً ولا بنكاً — هي
- * أصولٌ مستقلّة (محفظة رقمية، محفظة صيرفة، رصيد اتصالات)، والكود نفسه يقرّ بذلك: الصيرفة «لا تمسّ
- * الخزينة»، ورصيد زين «لا يلمس الدرج أبداً» (schema.ts). حشرُها في CASH يضع رصيد كروت الشحن في درج
- * الكاشير، وفي CARD_BANK يضعه في البنك — كلاهما إفسادٌ صامتٌ لميزان المراجعة. تصير فجوةً حتى
- * تُخصَّص لها أدوارُها في الدفعة ٢أ.
- */
-export function cashRoleFor(
-  method: string | null | undefined,
-): "CASH" | "CARD_BANK" | null {
-  switch (method) {
-    case "CASH":
-      return "CASH";
-    // تحويل/بطاقة/صكّ ⇒ أصلٌ بنكيّ. (الصكوك غير مستعملة في هذا النشاط بقرار المالك، وتُترك
-    // مُخطَّطةً لأنّ الأداة بنكيّةٌ بطبيعتها فلا التباس فيها.)
-    case "CARD":
-    case "TRANSFER":
-    case "CHECK":
-      return "CARD_BANK";
-    default:
-      return null;
-  }
-}
-
-/**
  * يكتب القيد المزدوج ظلّاً لحدثٍ ماليٍّ أُدرِج للتوّ. آمنٌ للاستدعاء من أيّ مسار كتابةٍ ماليّ.
  *
  * @param entryId معرّف الصفّ في `accountingEntries` (الرابط الفريد — س٥).

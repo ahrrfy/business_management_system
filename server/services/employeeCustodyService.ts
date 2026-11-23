@@ -162,13 +162,16 @@ export async function returnEmployeeCustody(
           : new Date();
 
         const postingSourceComponents = {
-          roleDebits: { LOSSES: lossAmount },
-          roleCredits: { INVENTORY: lossAmount },
+          roleDebits: { EMPLOYEE_ADVANCES: lossAmount },
+          roleCredits: { OTHER_REVENUE: lossAmount },
         };
         const postingIntent = createPostingIntent(
-          "ADJUST_INVENTORY_LOSS",
+          "ADJUST_CUSTODY_RECOVERY",
           "ADJUST",
-          [debitLine("LOSSES", lossAmount), creditLine("INVENTORY", lossAmount)],
+          [
+            debitLine("EMPLOYEE_ADVANCES", lossAmount),
+            creditLine("OTHER_REVENUE", lossAmount),
+          ],
           postingSourceComponents,
         );
 

@@ -161,6 +161,7 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_CUSTODY_RECOVERY"
   | "ADJUST_DAMAGED_RETURN_RECLASS"
   | "ADJUST_INVENTORY_REVALUATION_GAIN"
   | "ADJUST_INVENTORY_REVALUATION_LOSS"
@@ -355,6 +356,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_CUSTODY_RECOVERY",
     "ADJUST_DAMAGED_RETURN_RECLASS",
     "ADJUST_INVENTORY_REVALUATION_GAIN",
     "ADJUST_INVENTORY_REVALUATION_LOSS",
@@ -1858,6 +1860,20 @@ export const PROFILE_POLICIES = Object.freeze({
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
   }),
+  // تعويض عهدة موظف تالفة أو مفقودة محمّلة للاستقطاع من راتبه: يُثبت ذمّةً على الموظف
+  // (EMPLOYEE_ADVANCES) مقابل إيراد/استرداد تعويض (OTHER_REVENUE) دون مساسٍ بالمخزون،
+  // فتعود ذمة EMPLOYEE_ADVANCES صفراً عند الاستقطاع في مسير الرواتب وتتطابق مع reconcileEmployeeAdvances.
+  ADJUST_CUSTODY_RECOVERY: profilePolicy(
+    "ADJUST",
+    ["EMPLOYEE_ADVANCES"],
+    ["OTHER_REVENUE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["EMPLOYEE_ADVANCES"]),
+      ],
+      requireRoleComponents: ["EMPLOYEE_ADVANCES", "OTHER_REVENUE"],
+    },
+  ),
   ADJUST_DAMAGED_RETURN_RECLASS: profilePolicy("ADJUST", ["LOSSES"], ["COGS"], {
     reversible: false,
     sourceAssertions: [
