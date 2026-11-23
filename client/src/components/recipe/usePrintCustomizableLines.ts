@@ -15,7 +15,7 @@ import {
   readCachedCustomizableLineOptions,
 } from "@/lib/offline/printServicesCache";
 import type { CartItem, PosRow } from "@/components/pos/posShared";
-import { lineIdOf } from "@/components/pos/posShared";
+import { lineIdOf, nextCartLineId } from "@/components/pos/posShared";
 import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";
 import {
   serializeRecipeSelectionsKey,
@@ -292,7 +292,7 @@ export function useRetailPosCustomizableLines({
         return next;
       }
       const nextCustomId = recipeSelections?.length
-        ? Math.min(0, ...prev.map((c) => c.customLineId ?? c.digital?.lineId ?? 0)) - 1
+        ? nextCartLineId(prev)
         : undefined;
       if (nextCustomId != null) resolvedSelId = nextCustomId;
       return [

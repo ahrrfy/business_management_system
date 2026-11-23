@@ -38,6 +38,8 @@ export function digitalOfferingDescription(input: {
   return parts.join(" · ");
 }
 
+import type { RecipeLineSelection } from "./recipeVariantSelection";
+
 /** Public ordinary-product fields only: no cost overrides or internal sale capabilities. */
 export interface DigitalCheckoutRegularLineInput {
   lineKey: string;
@@ -49,6 +51,7 @@ export interface DigitalCheckoutRegularLineInput {
   discountPercent?: string | null;
   promotionId?: number | null;
   isGift?: boolean;
+  recipeSelections?: RecipeLineSelection[];
 }
 
 export interface DigitalCheckoutRegularLineSnapshot {
@@ -61,6 +64,7 @@ export interface DigitalCheckoutRegularLineSnapshot {
   total: string;
   promotionId: number | null;
   isGift: boolean;
+  recipeSelections?: RecipeLineSelection[];
 }
 
 /** ملخص خادمي لبَوّابات السعر؛ لا يقبل أي قيمة من العميل. */

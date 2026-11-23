@@ -25,7 +25,8 @@ import {
   normalizeSaleSemanticContract,
 } from "@shared/offlineCaptureProof";
 import { pruneRecipeSelections } from "../../../client/src/components/recipe/RecipeVariantSelectorList";
-import { buildSaleLine, type CartItem } from "../../../client/src/components/pos/posShared";
+import { buildSaleLine, lineIdOf, nextCartLineId, type CartItem } from "../../../client/src/components/pos/posShared";
+import { checkoutSnapshotToSaleLines } from "../digitalCards/mixedCartService";
 
 function mockTxWithVariants(
   rows: Array<{ id: number; productId: number; variantActive: boolean; productActive: boolean }>,
@@ -282,5 +283,37 @@ describe("recipe variant selection helpers & server validator", () => {
     };
     const built = buildSaleLine(cartItem);
     expect(built.recipeSelections).toEqual([{ recipeLineId: 11, variantId: 201 }]);
+
+    // Disjoint negative IDs even when digital and custom service items are mixed
+    const customId = nextCartLineId([]);
+    expect(customId).toBe(-1);
+    const firstCustom = { ...cartItem, customLineId: customId };
+    const nextDigitalId = nextCartLineId([firstCustom]);
+    expect(nextDigitalId).toBe(-2);
+    expect(lineIdOf(firstCustom)).not.toBe(nextDigitalId);
+
+    // Mixed checkout snapshot carries recipeSelections into checkoutSnapshotToSaleLines
+    const snapshotLines = checkoutSnapshotToSaleLines({
+      version: 1,
+      requestFingerprint: "fp",
+      customerId: null,
+      priceTier: "RETAIL",
+      expectedSubtotal: "5000.00",
+      regularLines: [
+        {
+          lineKey: "regular--1",
+          variantId: 500,
+          productUnitId: 5000,
+          quantity: "2.000",
+          unitPrice: "2500.00",
+          discountAmount: "0.00",
+          total: "5000.00",
+          promotionId: null,
+          isGift: false,
+          recipeSelections: [{ recipeLineId: 11, variantId: 201 }],
+        },
+      ],
+    });
+    expect(snapshotLines[0]?.recipeSelections).toEqual([{ recipeLineId: 11, variantId: 201 }]);
   });
 });

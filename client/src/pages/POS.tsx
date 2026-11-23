@@ -60,8 +60,9 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, buildSaleLine, createTab, buildPosReceiptPromoSummary,
+  lineIdOf, nextCartLineId, POS_COLORS, fmt, money, buildSaleLine, createTab, buildPosReceiptPromoSummary,
 } from "@/components/pos/posShared";
+import { serializeRecipeSelectionsKey } from "@shared/recipeVariantSelection";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
 import { CartPanel } from "@/components/pos/CartPanel";
@@ -375,27 +376,38 @@ export default function POS() {
     searchRef.current?.focus();
   }
 
-  function changeItemUnit(oldUnitId: number, newRow: PosRow) {
+  function changeItemUnit(oldLineId: number, newRow: PosRow) {
     if (receipt) setReceipt(null);
     if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
+    let nextSelId = currentRow.productUnitId;
     setCart((raw) => {
       const prev = resetCouponItems(raw);
-      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === oldUnitId);
+      const i = prev.findIndex((c) => !c.digital && lineIdOf(c) === oldLineId);
       if (i < 0) return prev;
       const target = prev[i];
-      const dupIdx = prev.findIndex((c, idx) => idx !== i && !c.digital && c.row.productUnitId === currentRow.productUnitId);
+      const targetKey = serializeRecipeSelectionsKey(target.recipeSelections);
+      const dupIdx = prev.findIndex(
+        (c, idx) =>
+          idx !== i &&
+          !c.digital &&
+          c.row.productUnitId === currentRow.productUnitId &&
+          serializeRecipeSelectionsKey(c.recipeSelections) === targetKey,
+      );
       if (dupIdx >= 0) {
         const merged = { ...prev[dupIdx], qty: prev[dupIdx].qty + target.qty, row: currentRow };
+        nextSelId = lineIdOf(merged);
         const next = prev.filter((_, idx) => idx !== i && idx !== dupIdx);
         next.unshift(merged);
         return next;
       }
       const next = [...prev];
-      next[i] = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
+      const updated = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
+      nextSelId = lineIdOf(updated);
+      next[i] = updated;
       return next;
     });
-    setSelId(currentRow.productUnitId);
+    setSelId(nextSelId);
   }
 
   function changeQty(id: number, qty: number) {
@@ -537,7 +549,7 @@ export default function POS() {
     patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null, invoiceDiscountPct: "" });
     // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
     // (تبديل مسار/تبويب) بينما الـref يعود للصفر ⇒ تصادم مفاتيح React. أقلّ معرّف ناقص واحد.
-    const firstLineId = Math.min(0, ...cart.map((c) => c.digital?.lineId ?? 0)) - 1;
+    const firstLineId = nextCartLineId(cart);
     const added: CartItem[] = basket.lines.map(({ card, student }, index) => {
     const lineId = firstLineId - index;
     const row: PosRow = {

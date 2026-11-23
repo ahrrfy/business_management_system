@@ -1039,7 +1039,7 @@ export function CartPanel({
                         tier={effectiveTier}
                         C={C}
                         onUnitChange={(newRow) =>
-                          onUnitChange?.(c.row.productUnitId, newRow)
+                          onUnitChange?.(lineIdOf(c), newRow)
                         }
                       />
                     )}

@@ -87,6 +87,11 @@ export function lineIdOf(c: CartItem): number {
   return c.digital?.lineId ?? c.customLineId ?? c.row.productUnitId;
 }
 
+/** يخصّص أقل معرّف سالب تالٍ من فضاءٍ مشتركٍ يضمّ البطاقات الرقمية والسطور المخصّصة معاً لمنع التصادم. */
+export function nextCartLineId(cart: ReadonlyArray<CartItem>): number {
+  return Math.min(0, ...cart.map((c) => Math.min(c.digital?.lineId ?? 0, c.customLineId ?? 0))) - 1;
+}
+
 export type POSTab = {
   extraCharges?: import("@shared/checkoutCharges").CheckoutChargesInput;
   lastCheckout?: {

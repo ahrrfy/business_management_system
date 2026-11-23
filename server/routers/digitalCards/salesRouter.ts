@@ -17,6 +17,7 @@ import {
 import { actorOf, digitalRefundActionFields, digitalRefundControl, digitalRefundTender, requireDb, scopedBranchOf } from "./shared";
 import { verifyManagerApproval } from "../saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
+import { recipeSelectionsSchema } from "@shared/recipeVariantSelection";
 
 const studentSnapshotSchema = z.object({
   studentName: z.string().min(1).max(200),
@@ -60,6 +61,7 @@ export const salesRouter = router({
           promotionDiscount: nonNegMoneyString.nullish(),
           cashierDiscountAmount: nonNegMoneyString.nullish(),
           isGift: z.boolean().optional(),
+          recipeSelections: recipeSelectionsSchema.optional(),
         }).strict()).max(100).optional(),
         lines: z
           .array(
