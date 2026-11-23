@@ -24,6 +24,8 @@ import {
   normalizeSalePayloadForCaptureProof,
   normalizeSaleSemanticContract,
 } from "@shared/offlineCaptureProof";
+import { pruneRecipeSelections } from "../../../client/src/components/recipe/RecipeVariantSelectorList";
+import { buildSaleLine, type CartItem } from "../../../client/src/components/pos/posShared";
 
 function mockTxWithVariants(
   rows: Array<{ id: number; productId: number; variantActive: boolean; productActive: boolean }>,
@@ -240,5 +242,45 @@ describe("recipe variant selection helpers & server validator", () => {
       { recipeLineId: 11, variantId: 202, color: "أسود" },
       { recipeLineId: 12, variantId: 201, color: "أبيض" },
     ]);
+  });
+
+  it("pruneRecipeSelections drops obsolete recipeLineIds after recipe edit and buildSaleLine preserves stripped recipeSelections", () => {
+    const cleaned = pruneRecipeSelections(
+      [
+        { recipeLineId: 11, variantId: 201, materialName: "ورق", label: "أبيض" },
+        { recipeLineId: 99, variantId: 202, materialName: "قديم", label: "أسود" },
+      ],
+      [
+        {
+          recipeLineId: 11,
+          options: [{ variantId: 201, label: "أبيض", color: "أبيض", colorHex: "#ffffff", availableBase: 5 }],
+        },
+        {
+          recipeLineId: 12,
+          options: [{ variantId: 202, label: "أسود", color: "أسود", colorHex: "#000000", availableBase: 5 }],
+        },
+      ],
+    );
+    expect(cleaned).toEqual([
+      { recipeLineId: 11, variantId: 201, materialName: "ورق", label: "أبيض" },
+    ]);
+
+    const cartItem: CartItem = {
+      row: {
+        variantId: 500,
+        productUnitId: 5000,
+        productName: "خدمة طباعة",
+        unitName: "قطعة",
+        price: "2500",
+        isService: true,
+      } as CartItem["row"],
+      qty: 2,
+      customLineId: -1,
+      recipeSelections: [
+        { recipeLineId: 11, variantId: 201, materialName: "ورق", label: "أبيض", colorHex: "#ffffff" },
+      ],
+    };
+    const built = buildSaleLine(cartItem);
+    expect(built.recipeSelections).toEqual([{ recipeLineId: 11, variantId: 201 }]);
   });
 });

@@ -13,6 +13,10 @@ import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
 import type { RouterOutputs } from "@/lib/trpc";
 import type { DeliveryFeeCollection } from "@shared/deliveryFeeCollection";
 import type { DeliveryDraft } from "./deliveryMode";
+import {
+  stripRecipeSelectionMeta,
+  type RecipeLineSelectionWithMeta,
+} from "@shared/recipeVariantSelection";
 
 export type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -72,11 +76,15 @@ export type CartItem = {
   disc?: number; // خصم % (0–100)
   origPrice?: number; // السعر الأصلي قبل الخصم
   digital?: DigitalLineMeta;
+  /** اختيارات ألوان/متغيّرات مواد الوصفة لسطور الخدمات القابلة للتخصيص. */
+  recipeSelections?: RecipeLineSelectionWithMeta[];
+  /** هوية سطر مخصّص محلية (سالبة) لتمييز تعدد الألوان لنفس الصنف في السلة. */
+  customLineId?: number;
 };
 
-/** هوية السطر داخل السلة: البطاقة الرقمية بمعرّفها المستقلّ، وغيرها بـproductUnitId (السلوك القديم). */
+/** هوية السطر داخل السلة: البطاقة الرقمية أو السطر المخصّص بمعرّفه المستقلّ، وغيرها بـproductUnitId (السلوك القديم). */
 export function lineIdOf(c: CartItem): number {
-  return c.digital?.lineId ?? c.row.productUnitId;
+  return c.digital?.lineId ?? c.customLineId ?? c.row.productUnitId;
 }
 
 export type POSTab = {
@@ -270,6 +278,7 @@ export const itemTotal = (item: CartItem): number => {
 // POS-ROUND (تدقيق ٢/٧): يبني سطر البيع للخادم بسعر وحدةٍ صحيح (دينار) مطابق تماماً لِما يعرضه
 // ويحصّله الكاشير، مع تمرير الخصم كمبلغٍ صريح.
 export const buildSaleLine = (c: CartItem) => {
+  const recipeSelections = stripRecipeSelectionMeta(c.recipeSelections);
   const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4 /* HALF_UP */);
   const listGross = listWhole.times(c.qty);
   if (c.cartPromo !== undefined) {
@@ -289,6 +298,7 @@ export const buildSaleLine = (c: CartItem) => {
       ...(promotionId != null && promoDiscount.gt(0) ? { promotionId } : {}),
       ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
       ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+      ...(recipeSelections?.length ? { recipeSelections } : {}),
     };
   }
   const promoPrice = (c.row as any).promotionEffectivePrice != null
@@ -314,6 +324,7 @@ export const buildSaleLine = (c: CartItem) => {
     ...(promotionId != null ? { promotionId } : {}),
     ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
     ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+    ...(recipeSelections?.length ? { recipeSelections } : {}),
   };
 };
 

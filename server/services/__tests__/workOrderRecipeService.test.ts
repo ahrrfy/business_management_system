@@ -652,10 +652,15 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
     expect(Number(blueAfterStart?.q)).toBe(34);
     expect(Number(defaultAfterStart?.q)).toBe(100);
 
+    const [startedWo] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, woRes.workOrderId));
     await cancelWorkOrder(woRes.workOrderId, MGR, {
+      expectedVersion: Number(startedWo?.version),
       reason: "إلغاء تجريبي",
       confirmAllMaterialsReturnedUsable: true,
-    });
+    }, { approvedControlRequestId: 1000 });
     const [blueAfterCancel] = await db()
       .select({ q: s.branchStock.quantity })
       .from(s.branchStock)

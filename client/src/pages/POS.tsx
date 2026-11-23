@@ -43,6 +43,8 @@ import {
 } from "@/components/pos/usePOSOfflineCapture";
 import { usePOSExternalPayment } from "@/components/pos/usePOSExternalPayment";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
+import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
+import { useRetailPosCustomizableLines } from "@/components/recipe/usePrintCustomizableLines";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
 import { trpc } from "@/lib/trpc";
@@ -358,6 +360,9 @@ export default function POS() {
   cartHasDigitalRef.current = cartHasDigital;
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
+  const retailCustom = useRetailPosCustomizableLines({
+    branchId, offline, resetCouponItems, setCart, setSelId, onAdded: () => setAddTick((t) => t + 1),
+  });
   function addRow(row: PosRow) {
     if (row.price == null) {
       notify.err(`لا سعر لـ ${row.productName} (${row.unitName}) في فئة ${priceTierLabel(effectiveTier)}`);
@@ -365,23 +370,7 @@ export default function POS() {
     }
     if (receipt) setReceipt(null);
     if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
-    // صفوف الكتالوج الأوفلايني القديمة لا تحمل branchId؛ نربط الصف المضاف بالفرع الحالي صراحةً.
-    const currentRow = { ...row, branchId: row.branchId ?? branchId };
-    setCart((raw) => {
-      const prev = resetCouponItems(raw);
-      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === currentRow.productUnitId);
-      if (i >= 0) {
-        const next = [...prev];
-        const updated = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
-        next.splice(i, 1);
-        next.unshift(updated);
-        return next;
-      }
-      return [{ row: currentRow, qty: 1 }, ...prev];
-    });
-    setSelId(currentRow.productUnitId);
-    // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
-    setAddTick((t) => t + 1);
+    retailCustom.addOrPromptRow(row);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
   }
@@ -526,7 +515,7 @@ export default function POS() {
       cartFingerprint: digitalCartFingerprint(),
       customerId: activeTab.customerId,
       priceTier: effectiveTier,
-      regularLines: cart.filter((c) => !c.digital).map((c) => ({ lineKey: `regular-${c.row.productUnitId}`, ...buildSaleLine(c) })),
+      regularLines: cart.filter((c) => !c.digital).map((c) => ({ lineKey: `regular-${lineIdOf(c)}`, ...buildSaleLine(c) })),
       lines: digitalLines.map((c) => ({
         lineKey: c.digital!.lineKey,
         offeringId: c.digital!.offeringId,
@@ -1234,6 +1223,8 @@ export default function POS() {
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
           onUnitChange={changeItemUnit}
+          customizableVariantIds={retailCustom.customizableVariantIds}
+          onEditRecipeSelections={retailCustom.openForCartItem}
           numMode={activeTab.numMode} setNumMode={setNumMode}
           customerId={activeTab.customerId}
           selectedCustomer={selectedCustomer}
@@ -1300,6 +1291,18 @@ export default function POS() {
         onApproveCredit={(appr) => submitSale(appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))}
         onCancelCredit={() => setCreditPrompt(null)}
       />
+      {retailCustom.picker && (
+        <RecipeVariantPickerDialog
+          open
+          title={`تخصيص مواد الخدمة: ${retailCustom.picker.row.productName}`}
+          lines={retailCustom.picker.lines}
+          initialSelections={retailCustom.picker.initialSelections}
+          quantity={retailCustom.picker.quantity}
+          confirmLabel={retailCustom.picker.editingLineId != null ? "تحديث الاختيار" : "إضافة للسلة"}
+          onCancel={retailCustom.closePicker}
+          onConfirm={retailCustom.confirmPicker}
+        />
+      )}
     </div>
   );
 }

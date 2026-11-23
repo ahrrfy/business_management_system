@@ -16,8 +16,10 @@ import {
   UserCheck,
   Search,
   Check,
+  Palette,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { formatRecipeSelectionSummary } from "@shared/recipeVariantSelection";
 import {
   digitalOfferingDescription,
   digitalOfferingTypeLabel,
@@ -275,6 +277,8 @@ export interface CartPanelProps {
   customerBalance: string | null;
   salesRepId?: number | null;
   onSalesRepChange?: (repId: number | null) => void;
+  customizableVariantIds?: ReadonlySet<number>;
+  onEditRecipeSelections?: (item: CartItem) => void;
 }
 
 export function CartPanel({
@@ -311,6 +315,8 @@ export function CartPanel({
   customerBalance,
   salesRepId,
   onSalesRepChange,
+  customizableVariantIds,
+  onEditRecipeSelections,
 }: CartPanelProps) {
   const [internalSalesRepId, setInternalSalesRepId] = useState<number | null>(
     null,
@@ -817,6 +823,38 @@ export function CartPanel({
                         {digitalOfferingTypeLabel(c.digital.offeringType)}
                       </span>
                     )}
+                    {!c.digital &&
+                      (Boolean(c.recipeSelections?.length) ||
+                        customizableVariantIds?.has(Number(c.row.variantId))) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditRecipeSelections?.(c);
+                          }}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            borderRadius: 6,
+                            padding: "2px 8px",
+                            marginRight: 6,
+                            border: `1px solid ${C.border}`,
+                            background: C.muted,
+                            color: C.fg,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <Palette aria-hidden size={12} />
+                          <span>
+                            {c.recipeSelections?.length
+                              ? formatRecipeSelectionSummary(c.recipeSelections)
+                              : "تحديد اللون/المتغير"}
+                          </span>
+                        </button>
+                      )}
                     {!c.digital && !c.row.isService && isKnown && (
                       <div
                         style={{

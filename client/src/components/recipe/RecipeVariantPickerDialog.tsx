@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 import {
   areAllCustomizableLinesSelected,
+  pruneRecipeSelections,
   RecipeVariantSelectorList,
   type CustomizableLineOption,
 } from "./RecipeVariantSelectorList";
@@ -35,18 +36,19 @@ export function RecipeVariantPickerDialog({
   onConfirm,
 }: RecipeVariantPickerDialogProps) {
   const [selections, setSelections] = useState<RecipeLineSelectionWithMeta[]>(() =>
-    initialSelections ? [...initialSelections] : [],
+    pruneRecipeSelections(initialSelections, lines),
   );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setSelections(initialSelections ? [...initialSelections] : []);
+      setSelections(pruneRecipeSelections(initialSelections, lines));
       setError(null);
     }
-  }, [open, initialSelections]);
+  }, [open, initialSelections, lines]);
 
-  const complete = areAllCustomizableLinesSelected(lines, selections);
+  const validSelections = pruneRecipeSelections(selections, lines);
+  const complete = areAllCustomizableLinesSelected(lines, validSelections);
 
   function handleConfirm() {
     if (!complete) {
@@ -54,7 +56,7 @@ export function RecipeVariantPickerDialog({
       return;
     }
     setError(null);
-    onConfirm(selections);
+    onConfirm(validSelections);
   }
 
   return (

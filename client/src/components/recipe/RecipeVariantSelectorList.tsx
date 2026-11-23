@@ -36,10 +36,31 @@ export function areAllCustomizableLinesSelected(
   });
 }
 
+export function pruneRecipeSelections(
+  selections: readonly RecipeLineSelectionWithMeta[] | undefined,
+  lines: readonly Pick<CustomizableLineOption, "recipeLineId" | "options">[],
+): RecipeLineSelectionWithMeta[] {
+  if (!selections?.length || !lines.length) return [];
+  const lineMap = new Map(lines.map((l) => [Number(l.recipeLineId), l]));
+  const seen = new Set<number>();
+  const valid: RecipeLineSelectionWithMeta[] = [];
+  for (const sel of selections) {
+    const lid = Number(sel.recipeLineId);
+    if (seen.has(lid)) continue;
+    const line = lineMap.get(lid);
+    if (!line) continue;
+    if (!line.options.some((opt) => Number(opt.variantId) === Number(sel.variantId))) continue;
+    seen.add(lid);
+    valid.push(sel);
+  }
+  return valid.sort((a, b) => a.recipeLineId - b.recipeLineId);
+}
+
 export function upsertRecipeLineSelection(
   current: readonly RecipeLineSelectionWithMeta[] | undefined,
   line: CustomizableLineOption,
   option: CustomizableVariantOption,
+  validLines?: readonly Pick<CustomizableLineOption, "recipeLineId" | "options">[],
 ): RecipeLineSelectionWithMeta[] {
   const nextEntry: RecipeLineSelectionWithMeta = {
     recipeLineId: Number(line.recipeLineId),
@@ -50,7 +71,8 @@ export function upsertRecipeLineSelection(
     colorHex: option.colorHex,
   };
   const base = (current ?? []).filter((s) => Number(s.recipeLineId) !== Number(line.recipeLineId));
-  return [...base, nextEntry].sort((a, b) => a.recipeLineId - b.recipeLineId);
+  const merged = [...base, nextEntry].sort((a, b) => a.recipeLineId - b.recipeLineId);
+  return validLines ? pruneRecipeSelections(merged, validLines) : merged;
 }
 
 interface RecipeVariantSelectorListProps {
@@ -120,7 +142,7 @@ export function RecipeVariantSelectorList({
                       <button
                         key={opt.variantId}
                         type="button"
-                        onClick={() => onChange(upsertRecipeLineSelection(selections, line, opt))}
+                        onClick={() => onChange(upsertRecipeLineSelection(selections, line, opt, lines))}
                         className={cn(
                           "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
                           isPicked

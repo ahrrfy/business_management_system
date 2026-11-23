@@ -18,6 +18,7 @@ import {
 } from "@shared/recipeVariantSelection";
 import {
   areAllCustomizableLinesSelected,
+  pruneRecipeSelections,
   RecipeVariantSelectorList,
 } from "@/components/recipe/RecipeVariantSelectorList";
 
@@ -187,6 +188,16 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, pr
     }
   }, [open, productName, initial]);
 
+  useEffect(() => {
+    if (!open || !customizableQ.isSuccess) return;
+    setData((d) => {
+      if (!d.recipeSelections?.length) return d;
+      const pruned = pruneRecipeSelections(d.recipeSelections, customizableLines);
+      if (pruned.length === d.recipeSelections.length) return d;
+      return { ...d, recipeSelections: pruned.length > 0 ? pruned : undefined };
+    });
+  }, [open, customizableQ.isSuccess, customizableLines]);
+
   // حارس فقد البيانات: عند محاولة إغلاق نافذة أمر شغل طويلة وفيها تعديلات، أكّد قبل التجاهل.
   async function requestClose() {
     if (JSON.stringify(data) !== baselineRef.current) {
@@ -259,7 +270,8 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, pr
 
   function handleSave() {
     setSaveError(null);
-    if (customizableLines.length > 0 && !areAllCustomizableLinesSelected(customizableLines, data.recipeSelections)) {
+    const cleanedSelections = pruneRecipeSelections(data.recipeSelections, customizableLines);
+    if (customizableLines.length > 0 && !areAllCustomizableLinesSelected(customizableLines, cleanedSelections)) {
       setSaveError("اختر اللون/المتغير المطلوب لكل مادة قبل الحفظ");
       return;
     }

@@ -14,8 +14,11 @@ import {
   cacheCustomizableLineOptions,
   readCachedCustomizableLineOptions,
 } from "@/lib/offline/printServicesCache";
+import type { CartItem, PosRow } from "@/components/pos/posShared";
+import { lineIdOf } from "@/components/pos/posShared";
 import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";
 import {
+  serializeRecipeSelectionsKey,
   stripRecipeSelectionMeta,
   type RecipeLineSelectionWithMeta,
 } from "@shared/recipeVariantSelection";
@@ -232,5 +235,122 @@ export function usePrintCustomizableLines<TSvc extends { variantId: number }>({
     variantPicker,
     setVariantPicker,
     openForCartLine,
+  };
+}
+
+export function useRetailPosCustomizableLines({
+  branchId,
+  offline,
+  resetCouponItems,
+  setCart,
+  setSelId,
+  onAdded,
+}: {
+  branchId: number;
+  offline: boolean;
+  resetCouponItems: (items: CartItem[]) => CartItem[];
+  setCart: (updater: CartItem[] | ((c: CartItem[]) => CartItem[])) => void;
+  setSelId: (id: number | null) => void;
+  onAdded: () => void;
+}) {
+  const { customizableLinesByVariantId, customizableVariantIds } = usePrintCustomizableLines<{
+    variantId: number;
+  }>({ branchId, offline });
+
+  const [picker, setPicker] = useState<{
+    row: PosRow;
+    lines: CustomizableLineOption[];
+    editingLineId?: number;
+    initialSelections?: RecipeLineSelectionWithMeta[];
+    quantity?: number;
+  } | null>(null);
+
+  function commitCartRow(row: PosRow, recipeSelections?: RecipeLineSelectionWithMeta[]) {
+    const currentRow = { ...row, branchId: row.branchId ?? branchId };
+    const selKey = recipeSelections?.length ? serializeRecipeSelectionsKey(recipeSelections) : "";
+    let resolvedSelId = currentRow.productUnitId;
+    setCart((raw) => {
+      const prev = resetCouponItems(raw);
+      const i = prev.findIndex(
+        (c) =>
+          !c.digital &&
+          c.row.productUnitId === currentRow.productUnitId &&
+          serializeRecipeSelectionsKey(c.recipeSelections) === selKey,
+      );
+      if (i >= 0) {
+        const next = [...prev];
+        const existing = next[i];
+        resolvedSelId = lineIdOf(existing);
+        const updated: CartItem = {
+          ...existing,
+          row: currentRow,
+          qty: existing.qty + 1,
+          ...(recipeSelections?.length ? { recipeSelections } : {}),
+        };
+        next.splice(i, 1);
+        next.unshift(updated);
+        return next;
+      }
+      const nextCustomId = recipeSelections?.length
+        ? Math.min(0, ...prev.map((c) => c.customLineId ?? c.digital?.lineId ?? 0)) - 1
+        : undefined;
+      if (nextCustomId != null) resolvedSelId = nextCustomId;
+      return [
+        {
+          row: currentRow,
+          qty: 1,
+          ...(recipeSelections?.length ? { recipeSelections, customLineId: nextCustomId } : {}),
+        },
+        ...prev,
+      ];
+    });
+    setSelId(resolvedSelId);
+    onAdded();
+  }
+
+  function addOrPromptRow(row: PosRow) {
+    const customLines = customizableLinesByVariantId.get(Number(row.variantId));
+    if (row.isService && customLines?.length) {
+      setPicker({ row: { ...row, branchId: row.branchId ?? branchId }, lines: customLines, quantity: 1 });
+      return;
+    }
+    commitCartRow(row);
+  }
+
+  function openForCartItem(item: CartItem) {
+    if (item.digital) return;
+    const customLines = customizableLinesByVariantId.get(Number(item.row.variantId));
+    if (!customLines?.length) return;
+    setPicker({
+      row: item.row,
+      lines: customLines,
+      editingLineId: lineIdOf(item),
+      initialSelections: item.recipeSelections,
+      quantity: item.qty,
+    });
+  }
+
+  function confirmPicker(selections: RecipeLineSelectionWithMeta[]) {
+    if (!picker) return;
+    if (picker.editingLineId != null) {
+      const editingId = picker.editingLineId;
+      setCart((raw) =>
+        resetCouponItems(raw).map((c) =>
+          lineIdOf(c) === editingId ? { ...c, recipeSelections: selections } : c,
+        ),
+      );
+    } else {
+      commitCartRow(picker.row, selections);
+    }
+    setPicker(null);
+  }
+
+  return {
+    customizableVariantIds,
+    picker,
+    closePicker: () => setPicker(null),
+    addOrPromptRow,
+    openForCartItem,
+    confirmPicker,
   };
 }
