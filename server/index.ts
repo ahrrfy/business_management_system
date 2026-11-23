@@ -907,8 +907,6 @@ async function startServer() {
   // الإرسال (واتساب/دفع) والمعالجة. أمّا جسر الحضور فله عملية PM2 مستقلة، لذا تُشغَّل هذه
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
-  let stopNativePushOutboxWorker: (() => void) | null = null;
-  let stopSuperAppExpoPushWorker: (() => void) | null = null;
   let stopAppNotificationOutboxWorker: (() => Promise<void>) | null = null;
   let stopWebPushOutboxWorker: (() => void) | null = null;
   let stopStorefrontPushCampaignWorker: (() => Promise<void>) | null = null;
@@ -945,18 +943,8 @@ async function startServer() {
       await import("./services/whatsapp/outboxSweeper");
     startWaOutboxSweeper();
 
-    // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
-    const nativePush = await import("./services/nativePushOutboxWorker");
-    nativePush.startNativePushOutboxWorker();
-    stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
-
-    // Super Arabia's Expo tokens are intentionally isolated from both the
-    // legacy Android FCM path and the customer-store campaign worker.
-    const superAppExpoPush = await import("./services/superAppPushWorker");
-    superAppExpoPush.startSuperAppExpoPushWorker();
-    stopSuperAppExpoPushWorker = superAppExpoPush.stopSuperAppExpoPushWorker;
-
     // Web Push يمر بالطابور الدائم نفسه دلالياً: لا تضيع الرسالة عند عطل مؤقت في المزود.
+    // (أُوقِف عاملا nativePushOutboxWorker وsuperAppPushWorker بعد إزالة تطبيقات Expo وAndroid الأصلية)
     const webPush = await import("./services/webPushOutboxWorker");
     webPush.startWebPushOutboxWorker();
     stopWebPushOutboxWorker = webPush.stopWebPushOutboxWorker;
@@ -1082,8 +1070,6 @@ async function startServer() {
     try {
       const cron = (await import("node-cron")).default;
       for (const task of Array.from(cron.getTasks().values())) await task.stop();
-      stopNativePushOutboxWorker?.();
-      stopSuperAppExpoPushWorker?.();
       const appNotificationsStopped = stopAppNotificationOutboxWorker?.();
       stopWebPushOutboxWorker?.();
       const campaignsStopped = stopStorefrontPushCampaignWorker?.();

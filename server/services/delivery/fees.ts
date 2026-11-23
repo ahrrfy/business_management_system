@@ -18,6 +18,7 @@ import { withTx } from "../tx";
 import { appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
 import { commissionPreviewerFromRows, createCommissionPreviewer } from "./commissionRules";
+import { isWithholdableShopFeeSource } from "./feeWithholdingPolicy";
 import type { DeliveryTxActor } from "./types";
 import { effectiveDeliveryLedgerEntrySql, verifiedConsignmentLedgerRows } from "./legacyLedger";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
@@ -409,7 +410,7 @@ export async function payPartyDeliveryFees(
       if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? due.gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) continue;
       const invoice = await lockFeeSourceTx(tx, cn);
       if (due.lte(0)) continue;
-      if (feePolicy.hasOrderBasedCommission && cn.sourceType === "ONLINE_ORDER" && cn.feeCollection === "SHOP" &&
+      if (feePolicy.hasOrderBasedCommission && isWithholdableShopFeeSource(cn.sourceType) && cn.feeCollection === "SHOP" &&
           (await loadShipmentMembersTx(tx, Number(cn.id), { currentRead: true })).length > 1) {
         const shortfall = await shortfallAssignedForConsignmentTx(tx, Number(cn.id), {
           partyId: Number(cn.partyId), branchId: Number(cn.branchId),

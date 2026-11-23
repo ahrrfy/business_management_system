@@ -1,1 +1,16 @@
-["operation.payroll.advanceThresholds", "operation.shifts.eligibleVarianceApprovers"]
+[
+  "operation.payroll.advanceThresholds",
+  "operation.shifts.eligibleVarianceApprovers",
+  "operation.auth.nativeDeviceChallenge",
+  "operation.superApp.mobileAttendanceHistory",
+  "operation.superApp.mobileCommandCenter",
+  "operation.superApp.mobileExpoPushStatus",
+  "operation.superApp.mobilePayslipReveal",
+  "operation.superApp.mobileRegisterExpoPush",
+  "operation.superApp.mobileRequestLeave",
+  "operation.superApp.mobileResolveFocusedTask",
+  "operation.superApp.mobileRevokeExpoPush",
+  "operation.superApp.mobileStartFocusedTask",
+  "operation.superApp.mobileToday",
+  "operation.superApp.mobileWithdrawLatestLeave"
+]

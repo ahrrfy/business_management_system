@@ -119,7 +119,9 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   if (d.categoryName) meta.push(`الفئة: ${d.categoryName}`);
   meta.push(`الطرف: ${d.partyTypeLabel} — ${d.partyName}`);
   if (d.partyBalanceBefore != null) meta.push(`الرصيد قبل السند: ${String(d.partyBalanceBefore)}`);
-  if (d.partyBalance) meta.push(`رصيد الطرف: ${d.partyBalance}`);
+  if (d.partyBalance && d.partyBalanceBefore == null && d.partyBalanceAfter == null) {
+    meta.push(`رصيد الطرف: ${d.partyBalance}`);
+  }
   if (d.partyBalanceAfter != null) meta.push(`الرصيد بعد السند: ${String(d.partyBalanceAfter)}`);
   if (d.relatedInvoiceNumber) meta.push(`الفاتورة المرتبطة: ${d.relatedInvoiceNumber}`);
   if (d.counterpartyName && d.counterpartyName !== d.partyName) {
@@ -131,9 +133,6 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   }
   if (d.createdByName) meta.push(`المنشئ: ${d.createdByName}`);
   if (d.approvedByName) meta.push(`المعتمد: ${d.approvedByName}`);
-  if (d.printedByName) meta.push(`الطابع: ${d.printedByName}`);
-  const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
-  if (printRequestedAt) meta.push(`وقت طلب الطباعة: ${printRequestedAt}`);
   meta.push(`الحالة: ${STATUS_LABEL[d.approvalStatus]}`);
 
   const totals: { label: string; value: string }[] = [

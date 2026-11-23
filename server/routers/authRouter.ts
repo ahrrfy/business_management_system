@@ -14,7 +14,6 @@ import { employees, userSessions, users } from "../../drizzle/schema";
 import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import {
   createNativeSessionMarker,
-  issueNativeDeviceChallenge,
   nativeClientIdFromRequest,
   nativeSessionDisplayName,
   parseNativeSessionMarker,
@@ -60,7 +59,6 @@ import { revokeAllNativePushDevicesForUser } from "../services/nativePushService
 import { revokeAllSuperAppExpoPushDevicesForUser } from "../services/superAppPushService";
 import {
   adminProcedure,
-  nativeBootstrapProcedure,
   protectedProcedure,
   publicProcedure,
   passwordResetTokenProcedure,
@@ -164,11 +162,6 @@ function clearIpFailures(key: string): void {
 }
 
 export const authRouter = router({
-  /** Short-lived signed bootstrap challenge; it grants neither identity nor a session. */
-  nativeDeviceChallenge: nativeBootstrapProcedure.query(() =>
-    issueNativeDeviceChallenge(),
-  ),
-
   me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر + pinHash (لا شأن للعميل بها).

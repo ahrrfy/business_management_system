@@ -732,7 +732,7 @@ it("adopts an owner-confirmed historical fee, preserves closed drawers and repla
   // Reproduce the old implementation: the store fee accrued, but gross COD was recorded as cash.
   await db()
     .update(s.deliveryConsignments)
-    .set({ sourceType: "INVOICE" })
+    .set({ feeCollection: "COURIER" })
     .where(eq(s.deliveryConsignments.id, d.consignmentId));
   await recordCompanyStatement(
     {
@@ -747,7 +747,7 @@ it("adopts an owner-confirmed historical fee, preserves closed drawers and repla
   );
   await db()
     .update(s.deliveryConsignments)
-    .set({ sourceType: "ONLINE_ORDER" })
+    .set({ feeCollection: "SHOP" })
     .where(eq(s.deliveryConsignments.id, d.consignmentId));
   const rm = (await db().select().from(s.deliveryRemittances))[0];
   await db()

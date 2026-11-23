@@ -5,8 +5,6 @@ import path from "node:path";
 const minimum = [4, 6, 6];
 const locks = [
   "pnpm-lock.yaml",
-  "expo/customer-store-mobile/pnpm-lock.yaml",
-  "expo/superapp-mobile/pnpm-lock.yaml",
 ];
 const fail = (message) => {
   throw new Error(`Zod security boundary: ${message}`);
@@ -44,7 +42,7 @@ function files(directory) {
 function check() {
   for (const file of locks)
     validateLock(fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n"));
-  for (const directory of [".", "expo/customer-store-mobile"]) {
+  for (const directory of ["."]) {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(directory, "package.json"), "utf8"),
     );
@@ -63,8 +61,6 @@ function check() {
     "client/src",
     "server",
     "shared",
-    "expo/customer-store-mobile",
-    "expo/superapp-mobile",
   ].flatMap(files)) {
     if (
       /(?:from\s*|(?:import|require)\s*\(\s*)["']zod\/v3(?:\/[^"']*)?["']/.test(

@@ -34,7 +34,7 @@ import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { STUDIO_ACCESS_ROLES } from "@shared/permissions";
 import { AUDIT_LOGS_GATE, BARCODE_WORKFLOW_STATION_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
-import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
+import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/thermal";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
 const Login = lazy(() => import("@/pages/Login"));

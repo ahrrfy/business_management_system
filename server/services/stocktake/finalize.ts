@@ -12,6 +12,7 @@ import {
   stocktakeDecisions,
   stocktakeItems,
   stocktakeSessions,
+  suppliers,
 } from "../../../drizzle/schema";
 import { hashPassword, verifyPassword } from "../../auth/password";
 import { setStock } from "../inventoryService";
@@ -536,10 +537,19 @@ export async function approveStocktake(
 
     // بضاعة الأمانة (ش٤ تحسين): استحقاق عجز الأمانة لكل مودِع — قيد PURCHASE يتيم (بلا invoiceId ⇒ خارج
     // فلتر العمولة) بقيمة العجز من **نفس لقطة قيد SHORT** (r.value = unitCost لحظة الإنشاء) + رفع رصيده.
-    // بترتيب supplierId (منع deadlock). dedupeKey يمنع الازدواج على إعادة الاعتماد.
-    for (const cId of Array.from(consignShortByConsignor.keys()).sort(
+    // نقفل المودِعين تصاعدياً بـFOR UPDATE قبل تعديل الأرصدة (نظير transferService) لمنع deadlock.
+    const consignorIds = Array.from(consignShortByConsignor.keys()).sort(
       (a, b) => a - b,
-    )) {
+    );
+    if (consignorIds.length) {
+      await tx
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(inArray(suppliers.id, consignorIds))
+        .orderBy(asc(suppliers.id))
+        .for("update");
+    }
+    for (const cId of consignorIds) {
       const amount = consignShortByConsignor.get(cId)!;
       if (amount.lte(0)) continue;
       const postingSourceComponents = {

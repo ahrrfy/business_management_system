@@ -116,8 +116,6 @@ const BACKGROUND_POLICIES = {
   startHybridImageOutboxWorker: "durable hybrid media outbox + R2 sync summary",
   startLagMonitor: "read-only runtime telemetry",
   startMorningPushCron: "durable pushDailyClaim/pushNotificationLog + system summary",
-  startNativePushOutboxWorker: "durable nativePushOutbox + system summary",
-  startSuperAppExpoPushWorker: "durable superAppExpoPushOutbox + system summary",
   startOnlineOrderExpirySweeper: "durable onlineOrders state + system summary",
   startProductStudioNotificationWorker: "SYSTEM_ACTOR + appNotifications/auditLogs",
   startProductStudioStagingWorker: "durable staging rows + system summary",

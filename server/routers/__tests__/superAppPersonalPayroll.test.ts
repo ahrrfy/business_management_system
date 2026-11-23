@@ -226,20 +226,6 @@ describe("superApp personal payroll isolation", () => {
     });
   });
 
-  it("exposes the mobile home only to the verified Expo client identity", async () => {
-    await expect(caller(2).superApp.mobileToday()).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
-
-    const today = await caller(2, "superapp-expo").superApp.mobileToday();
-    expect(today.personal).toMatchObject({
-      state: "READY",
-      employee: { displayName: "A Employee" },
-    });
-    expect(JSON.stringify(today)).not.toContain('"gross"');
-    expect(JSON.stringify(today)).not.toContain('"net"');
-  });
-
   it("returns only the signed-in employee's bounded attendance history", async () => {
     await db().insert(s.attendance).values([
       {
@@ -282,46 +268,6 @@ describe("superApp personal payroll isolation", () => {
     expect(serialized).not.toContain("hourlyRate");
     expect(serialized).not.toContain("80000");
     expect(serialized).not.toContain("private manager note");
-
-    await expect(caller(2).superApp.mobileAttendanceHistory()).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
-    await expect(caller(2, "superapp-expo").superApp.mobileAttendanceHistory()).resolves.toMatchObject({
-      personal: { state: "READY" },
-    });
-  });
-
-  it("reveals only the latest own payslip after a fresh Expo-only second factor", async () => {
-    const secret = base32Encode(Buffer.alloc(20, 7));
-    const step = Math.floor(Date.now() / 30_000);
-    const code = hotp(base32Decode(secret), step);
-    await db()
-      .update(s.users)
-      .set({
-        totpEnabledAt: new Date(),
-        totpSecretEncrypted: encryptSecret(secret),
-        // The current code is allowed once; the service advances this value atomically.
-        totpLastUsedStep: step - 1,
-      })
-      .where(eq(s.users.id, 2));
-
-    await expect(
-      caller(2).superApp.mobilePayslipReveal({ code }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-
-    const revealed = await caller(2, "superapp-expo").superApp.mobilePayslipReveal({
-      code,
-    });
-    expect(revealed.personal).toEqual(expect.objectContaining({
-      state: "READY",
-      payslip: expect.objectContaining({ period: "2026-07", net: "1000.00", penaltyDeduction: null }),
-    }));
-    expect(JSON.stringify(revealed)).not.toMatch(/itemId|runId|employeeId|branchId|note|Employer/);
-
-    // A consumed TOTP cannot be replayed to reveal the same sensitive data again.
-    await expect(
-      caller(2, "superapp-expo").superApp.mobilePayslipReveal({ code }),
-    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
   it("returns no payroll figures when a session has no linked employee", async () => {
@@ -330,96 +276,6 @@ describe("superApp personal payroll isolation", () => {
       db: db(),
     });
     expect(result).toEqual({ personal: { state: "NOT_LINKED", payslip: null } });
-  });
-
-  it("creates and withdraws only the signed-in employee's latest pending leave through an idempotent Expo command", async () => {
-    const createKey = "2f42ba6f-6f4e-4f49-b0d9-b003e17e4e70";
-    await expect(
-      caller(2).superApp.mobileRequestLeave({
-        leaveType: "سنوية",
-        fromDate: "2026-09-14",
-        toDate: "2026-09-15",
-        clientRequestId: createKey,
-      }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-
-    const created = await caller(2, "superapp-expo").superApp.mobileRequestLeave({
-      leaveType: "سنوية",
-      fromDate: "2026-09-14",
-      toDate: "2026-09-15",
-      reason: "personal",
-      clientRequestId: createKey,
-    });
-    expect(created).toEqual({
-      leave: { status: "pending", fromDate: "2026-09-14", toDate: "2026-09-15" },
-      idempotent: false,
-    });
-    expect(JSON.stringify(created)).not.toMatch(/employeeId|branchId|leaveRequestId/);
-
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileRequestLeave({
-        leaveType: "سنوية",
-        fromDate: "2026-09-14",
-        toDate: "2026-09-15",
-        reason: "changed payload",
-        clientRequestId: createKey,
-      }),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileRequestLeave({
-        leaveType: "سنوية",
-        fromDate: "2026-09-14",
-        toDate: "2026-09-15",
-        reason: "personal",
-        clientRequestId: createKey,
-      }),
-    ).resolves.toEqual({
-      leave: { status: "pending", fromDate: "2026-09-14", toDate: "2026-09-15" },
-      idempotent: true,
-    });
-
-    const withdrawn = await caller(2, "superapp-expo").superApp.mobileWithdrawLatestLeave({
-      clientRequestId: "0fb5a1ed-0b68-4261-9b73-3f7d6d0c0ff0",
-    });
-    expect(withdrawn).toEqual({
-      leave: { status: "rejected", fromDate: "2026-09-14", toDate: "2026-09-15" },
-      idempotent: false,
-    });
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileWithdrawLatestLeave({
-        clientRequestId: "0fb5a1ed-0b68-4261-9b73-3f7d6d0c0ff0",
-      }),
-    ).resolves.toEqual({
-      leave: { status: "rejected", fromDate: "2026-09-14", toDate: "2026-09-15" },
-      idempotent: true,
-    });
-  });
-
-  it("starts and completes focused task endpoint with native mobile gate idempotency", async () => {
-    await expect(
-      caller(2).superApp.mobileStartFocusedTask({
-        clientRequestId: "194d2ba9-f6ae-4c7f-8993-83664d4d92b1",
-      }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileStartFocusedTask({
-        clientRequestId: "194d2ba9-f6ae-4c7f-8993-83664d4d92b1",
-      }),
-    ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
-
-    const completeKey = "8af0f9d3-f5ad-4be2-a890-9fb4319dbf6c";
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileResolveFocusedTask({
-        clientRequestId: completeKey,
-        resolutionNote: "done",
-      }),
-    ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
-    await expect(
-      caller(2, "superapp-expo").superApp.mobileResolveFocusedTask({
-        clientRequestId: completeKey,
-        resolutionNote: "done",
-      }),
-    ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
   });
 
   it("returns structured own payslip detail but rejects another employee item", async () => {

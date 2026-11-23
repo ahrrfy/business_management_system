@@ -151,14 +151,31 @@ export function buildDeliveryDispatchSlipDoc(
             },
           ]
         : []),
-      {
-        label: `أجرة التوصيل — ${feeExplanation}`,
-        value: hasFee
-          ? feeNum > 0
-            ? `${fmt(feeNum)} د.ع`
-            : "مجاناً"
-          : "غير متاحة تاريخياً",
-      },
+      ...(d.feeCollection === "SHOP"
+        ? [
+            {
+              label: "أجرة التوصيل على العميل",
+              value: "مجاناً (على المكتبة)",
+            },
+            ...(hasFee && feeNum > 0
+              ? [
+                  {
+                    label: "أجرة جهة التوصيل (تسوية المكتبة)",
+                    value: `${fmt(feeNum)} د.ع`,
+                  },
+                ]
+              : []),
+          ]
+        : [
+            {
+              label: `أجرة التوصيل — ${feeExplanation}`,
+              value: hasFee
+                ? feeNum > 0
+                  ? `${fmt(feeNum)} د.ع`
+                  : "مجاناً"
+                : "غير متاحة تاريخياً",
+            },
+          ]),
       {
         label:
           isFullyPrepaid && courierFee

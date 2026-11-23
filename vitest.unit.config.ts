@@ -718,6 +718,7 @@ export const UNIT_TEST_FILES: string[] = [
       "tests/e2e/products-studio/tier2_boundaries.test.ts",
       "tests/e2e/products-studio/tier3_combinations.test.ts",
       "tests/e2e/products-studio/tier4_scenarios.test.ts",
+      "server/services/delivery/feeWithholdingPolicy.test.ts",
 ];
 
 export default defineConfig({

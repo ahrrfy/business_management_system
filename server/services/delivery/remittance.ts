@@ -58,7 +58,10 @@ import {
   verifiedLedgerFeeDue,
   postFeePayment,
 } from "./fees";
-import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
+import {
+  assertFeeWithholdingCapacity,
+  isWithholdableShopFeeSource,
+} from "./feeWithholdingPolicy";
 import { nextRemittanceNumber } from "./numbering";
 import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
@@ -800,7 +803,7 @@ export async function recordDeliveryRemittanceInTx(
   const siblingAllocations = new Map<number, Decimal>();
   for (const w of work) {
     if (
-      w.cn.sourceType !== "ONLINE_ORDER" ||
+      !isWithholdableShopFeeSource(w.cn.sourceType) ||
       w.cn.feeCollection !== "SHOP" ||
       w.cn.parcelStatus !== "DELIVERED"
     )
@@ -868,7 +871,7 @@ export async function recordDeliveryRemittanceInTx(
       const memberIds = new Set(members.map((member) => Number(member.id)));
       const shipmentWork = work.filter((item) => memberIds.has(item.id));
       for (const source of members) {
-        if (work.some((item) => item.id === Number(source.id)) || source.sourceType !== "ONLINE_ORDER" ||
+        if (work.some((item) => item.id === Number(source.id)) || !isWithholdableShopFeeSource(source.sourceType) ||
           source.feeCollection !== "SHOP") continue;
         const sourceRemaining = round2(money(source.codAmount).minus(money(source.collectedAmount))
           .minus(money(source.counterSettledAmount ?? "0"))

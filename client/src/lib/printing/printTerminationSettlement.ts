@@ -79,7 +79,7 @@ export function terminationSettlementHtml(
 <h1>بيان تفكيك تسوية نهاية الخدمة</h1>${documentState}
 <div class="meta"><div><b>رقم الإجراء:</b> ${input.id}</div><div><b>الموظف:</b> ${esc(input.employeeName)}</div><div><b>نوع الإنهاء:</b> ${esc(input.terminationType)}</div><div><b>آخر يوم عمل:</b> ${esc(input.lastDay)}</div><div><b>طريقة الدفع المتوقعة:</b> ${esc(input.paymentMethod)}</div><div><b>الحالة:</b> ${esc(input.status)}</div></div>
 <table><thead><tr><th>${draft ? "التصنيف المُدخل بانتظار الاعتماد" : "التصنيف المعتمد يدوياً"}</th><th>المبلغ</th></tr></thead><tbody>${rows}<tr class="total"><td>إجمالي التسوية المشتق</td><td class="num">${esc(amount(input.total))}</td></tr></tbody></table>
-<div class="disclosure">هذه الوثيقة تفصيل إجمالي إلى صافي بإدخال واعتماد بشري. لا يطبّق النظام تلقائياً أي نسبة قانونية أو ضريبية، والقيم الصفرية مُقرّة صراحةً. رصيد السلفة الظاهر لقطة ثابتة لحظة إثبات التسوية ومغطّى ببصمتها؛ لا يتغيّر بسدادٍ لاحق. يُثبت الاستحقاق أولاً ثم يكون الصرف الفعلي باعتماد مالك مستقل.</div>
+<div class="disclosure">بيان تسوية مُعتمد بإدخال ومراجعة بشرية؛ رصيد السلفة الظاهر لقطة ثابتة وقت الاعتماد لا يتغيّر بسدادٍ لاحق، ويُصرف المبلغ باعتماد مستقل.</div>
 <div class="note"><b>مرجع المراجعة ومصدر القيم:</b> ${esc(input.evidenceNote)}</div>
 <div class="note"><b>السبب / الملاحظات:</b> ${esc(input.reason?.trim() || "—")}</div>${fingerprint}
 <div class="sign"><div>معدّ البيان</div><div>${draft ? "مساحة اعتماد المراجع" : "المراجع / المعتمد"}</div></div><div class="footer">${esc(CO.footerLine)}</div>
