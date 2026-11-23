@@ -328,6 +328,9 @@ export function useRetailPosCustomizableLines({
     if (picker.editingLineId != null) {
       const editingId = picker.editingLineId;
       patchActive((tab) => ({
+        ...(tab.couponCode
+          ? { couponCode: null, couponLabel: null, couponFreeShippingPromo: null }
+          : {}),
         cart: resetCouponItems(tab.cart).map((c) =>
           lineIdOf(c) === editingId ? { ...c, recipeSelections: selections } : c,
         ),

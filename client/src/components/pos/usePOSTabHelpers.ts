@@ -67,6 +67,9 @@ export function usePOSTabHelpers({
       prev.map((t) => {
         if (t.id !== id) return t;
         const resolved = typeof patch === "function" ? patch(t) : patch;
+        if ("selId" in resolved) {
+          qtyEntryRef.current = { tabId: id, lineId: resolved.selId ?? null, replaceNextDigit: true };
+        }
         return { ...t, ...resolved };
       }),
     );
