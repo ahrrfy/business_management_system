@@ -698,6 +698,8 @@ export const offlineRouter = router({
           if (input.mode === "OBSERVE") {
             const [rec] = await tx
               .select({
+                branchId: offlineRecoveryItems.branchId,
+                channel: offlineRecoveryItems.channel,
                 recoveryStatus: offlineRecoveryItems.recoveryStatus,
                 invoiceId: offlineRecoveryItems.invoiceId,
                 discardReason: offlineRecoveryItems.discardReason,
@@ -711,13 +713,21 @@ export const offlineRouter = router({
               )
               .limit(1);
             if (rec) {
+              if (Number(rec.branchId) !== effectiveBranchId) {
+                throwForeignBranchIdempotencyError();
+              }
               recoveryRow = {
                 recoveryStatus: rec.recoveryStatus,
                 invoiceId: rec.invoiceId != null ? Number(rec.invoiceId) : null,
                 discardReason: rec.discardReason ?? null,
               };
             }
-            if (!existing && recoveryRow?.recoveryStatus === "POSTED" && recoveryRow.invoiceId != null) {
+            if (
+              !existing &&
+              rec?.channel === "RETAIL" &&
+              recoveryRow?.recoveryStatus === "POSTED" &&
+              recoveryRow.invoiceId != null
+            ) {
               const [invByRec] = await tx
                 .select({
                   id: invoices.id,
@@ -1143,6 +1153,8 @@ export const offlineRouter = router({
       const [existingRec] = await db
         .select({
           id: offlineRecoveryItems.id,
+          branchId: offlineRecoveryItems.branchId,
+          channel: offlineRecoveryItems.channel,
           recoveryStatus: offlineRecoveryItems.recoveryStatus,
           invoiceId: offlineRecoveryItems.invoiceId,
           discardReason: offlineRecoveryItems.discardReason,
@@ -1150,19 +1162,35 @@ export const offlineRouter = router({
         .from(offlineRecoveryItems)
         .where(inArray(offlineRecoveryItems.clientRequestId, [input.clientRequestId, replacementId]))
         .limit(1);
-      if (existingRec?.recoveryStatus === "POSTED" && existingRec.invoiceId != null) {
-        const [recInv] = await db
-          .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
-          .from(invoices)
-          .where(eq(invoices.id, Number(existingRec.invoiceId)))
-          .limit(1);
-        if (recInv) {
-          return {
-            status: "ALREADY_COMMITTED" as const,
-            invoiceId: Number(recInv.id),
-            invoiceNumber: recInv.invoiceNumber,
-            message: `الفاتورة ${recInv.invoiceNumber} مرحَّلة مسبقاً عبر طابور الاسترداد`,
-          };
+      if (existingRec) {
+        if (Number(existingRec.branchId) !== effectiveBranchId) {
+          throwForeignBranchIdempotencyError();
+        }
+        if (
+          existingRec.channel === "RETAIL" &&
+          existingRec.recoveryStatus === "POSTED" &&
+          existingRec.invoiceId != null
+        ) {
+          const [recInv] = await db
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              branchId: invoices.branchId,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, Number(existingRec.invoiceId)))
+            .limit(1);
+          if (recInv) {
+            if (Number(recInv.branchId) !== effectiveBranchId) {
+              throwForeignBranchIdempotencyError();
+            }
+            return {
+              status: "ALREADY_COMMITTED" as const,
+              invoiceId: Number(recInv.id),
+              invoiceNumber: recInv.invoiceNumber,
+              message: `الفاتورة ${recInv.invoiceNumber} مرحَّلة مسبقاً عبر طابور الاسترداد`,
+            };
+          }
         }
       }
       if (existingRec?.recoveryStatus === "DISCARDED") {
@@ -1206,10 +1234,25 @@ export const offlineRouter = router({
         });
       } catch (prepErr) {
         if (prepErr instanceof TRPCError && prepErr.code === "PRECONDITION_FAILED") {
+          const [durableRec] = await db
+            .select({
+              id: offlineRecoveryItems.id,
+              recoveryStatus: offlineRecoveryItems.recoveryStatus,
+            })
+            .from(offlineRecoveryItems)
+            .where(eq(offlineRecoveryItems.clientRequestId, replayTargetRequestId))
+            .limit(1);
+          if (!durableRec || durableRec.recoveryStatus !== "PENDING") {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message:
+                "تعذّر حفظ العملية في طابور الاسترداد الخادمي — تم الإبقاء عليها محلياً لضمان عدم ضياع البيع",
+            });
+          }
           await logAudit(ctx, {
             action: "offline.fencedOutbox.capturedToRecovery",
             entityType: "offlineRecoveryItem",
-            entityId: 0,
+            entityId: Number(durableRec.id),
             branchId: effectiveBranchId,
             newValue: {
               originalClientRequestId: input.clientRequestId,
@@ -1283,17 +1326,34 @@ export const offlineRouter = router({
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) {
             if (e.code === "PRECONDITION_FAILED") {
-              await captureRejectedReplay(
+              const captured = await captureRejectedReplay(
                 effectiveReplayInput,
                 e.code,
                 e.message,
                 verifiedQuarantineOwnerId,
                 "RETAIL",
               );
+              const [durableRec] = captured
+                ? await db
+                    .select({
+                      id: offlineRecoveryItems.id,
+                      recoveryStatus: offlineRecoveryItems.recoveryStatus,
+                    })
+                    .from(offlineRecoveryItems)
+                    .where(eq(offlineRecoveryItems.clientRequestId, replayTargetRequestId))
+                    .limit(1)
+                : [];
+              if (!captured || !durableRec || durableRec.recoveryStatus !== "PENDING") {
+                throw new TRPCError({
+                  code: "INTERNAL_SERVER_ERROR",
+                  message:
+                    "تعذّر حفظ العملية في طابور الاسترداد الخادمي — تم الإبقاء عليها محلياً لضمان عدم ضياع البيع",
+                });
+              }
               await logAudit(ctx, {
                 action: "offline.fencedOutbox.capturedToRecovery",
                 entityType: "offlineRecoveryItem",
-                entityId: 0,
+                entityId: Number(durableRec.id),
                 branchId: effectiveBranchId,
                 newValue: {
                   originalClientRequestId: input.clientRequestId,
@@ -1598,7 +1658,7 @@ export const offlineRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        clientRequestId: z.string().min(4).max(120),
+        clientRequestId: z.string().min(4).max(64),
         kind: z.enum(["SALE", "PRINT_SALE", "RECEPTION", "RETURN"]).default("SALE"),
         offlineReceiptNumber: z.string().trim().min(1).max(60),
         total: z.string().max(40).optional(),
@@ -1672,6 +1732,7 @@ export const offlineRouter = router({
             invoiceId: offlineRecoveryItems.invoiceId,
             discardReason: offlineRecoveryItems.discardReason,
             branchId: offlineRecoveryItems.branchId,
+            channel: offlineRecoveryItems.channel,
           })
           .from(offlineRecoveryItems)
           .where(
@@ -1683,16 +1744,27 @@ export const offlineRouter = router({
           .for("update")
           .limit(1);
         if (rec) {
-          if (!crossBranch && Number(rec.branchId) !== effectiveBranchId) {
+          if (Number(rec.branchId) !== effectiveBranchId) {
             throwForeignBranchIdempotencyError();
           }
-          if (rec.recoveryStatus === "POSTED" && rec.invoiceId != null) {
+          if (
+            rec.channel === "RETAIL" &&
+            rec.recoveryStatus === "POSTED" &&
+            rec.invoiceId != null
+          ) {
             const [recInv] = await tx
-              .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+              .select({
+                id: invoices.id,
+                invoiceNumber: invoices.invoiceNumber,
+                branchId: invoices.branchId,
+              })
               .from(invoices)
               .where(eq(invoices.id, Number(rec.invoiceId)))
               .limit(1);
             if (recInv) {
+              if (Number(recInv.branchId) !== effectiveBranchId) {
+                throwForeignBranchIdempotencyError();
+              }
               return {
                 status: "ALREADY_COMMITTED" as const,
                 invoiceId: Number(recInv.id),
@@ -1771,6 +1843,7 @@ export const offlineRouter = router({
           });
         }
 
+        let recoveryEntityId = rec ? Number(rec.id) : 0;
         if (rec && rec.recoveryStatus === "PENDING") {
           await tx
             .update(offlineRecoveryItems)
@@ -1781,6 +1854,36 @@ export const offlineRouter = router({
               reviewedAt: new Date(),
             })
             .where(eq(offlineRecoveryItems.id, rec.id));
+        } else if (!rec) {
+          const channel =
+            input.kind === "PRINT_SALE"
+              ? "PRINT"
+              : input.kind === "RECEPTION"
+                ? "RECEPTION"
+                : input.kind === "RETURN"
+                  ? "RETURN"
+                  : "RETAIL";
+          const [inserted] = await tx.insert(offlineRecoveryItems).values({
+            branchId: effectiveBranchId,
+            deviceId: null,
+            clientRequestId: input.clientRequestId,
+            offlineReceiptNumber: input.offlineReceiptNumber,
+            capturedAt: new Date(),
+            payload: JSON.stringify({
+              dismissedOutboxItem: true,
+              kind: input.kind,
+              total: input.total ?? null,
+            }),
+            rejectCode: "DISMISSED",
+            rejectReason: input.lastError ?? trimmedReason,
+            submittedByUserId: preverifiedApproverId,
+            channel,
+            recoveryStatus: "DISCARDED",
+            discardReason: trimmedReason,
+            reviewedBy: preverifiedApproverId,
+            reviewedAt: new Date(),
+          });
+          recoveryEntityId = Number((inserted as { insertId?: number })?.insertId ?? 0);
         }
 
         if (input.kind === "SALE" && !saleKey) {
@@ -1800,7 +1903,7 @@ export const offlineRouter = router({
         await logAuditTx(tx, ctx, {
           action: "offline.outbox.dismissParked",
           entityType: "offlineOutbox",
-          entityId: rec ? Number(rec.id) : 0,
+          entityId: recoveryEntityId,
           newValue: {
             clientRequestId: input.clientRequestId,
             offlineReceiptNumber: input.offlineReceiptNumber,

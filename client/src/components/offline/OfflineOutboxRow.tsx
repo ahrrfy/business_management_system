@@ -59,7 +59,8 @@ export function OfflineOutboxRow({
 
   const handleRetryOrProbe = async () => {
     onStatusNotice?.(null);
-    if (resolutionActions?.probeStatus && !offline) {
+    const isRetailSale = (item.kind ?? "SALE") === "SALE";
+    if (isRetailSale && resolutionActions?.probeStatus && !offline) {
       const probe = await resolutionActions.probeStatus(item);
       if (probe.outcome === "COMMITTED") {
         await markOutboxItemSent(item.clientRequestId, probe.invoiceNumber);

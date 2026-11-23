@@ -14020,7 +14020,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1575"
+      "loc": "server/routers/offlineRouter.ts:1635"
     },
     {
       "surface": "trpc",
@@ -14039,7 +14039,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1597"
+      "loc": "server/routers/offlineRouter.ts:1657"
     },
     {
       "surface": "trpc",
@@ -14077,7 +14077,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1558"
+      "loc": "server/routers/offlineRouter.ts:1618"
     },
     {
       "surface": "trpc",
@@ -14096,7 +14096,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1548"
+      "loc": "server/routers/offlineRouter.ts:1608"
     },
     {
       "surface": "trpc",
@@ -14115,7 +14115,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1076"
+      "loc": "server/routers/offlineRouter.ts:1086"
     },
     {
       "surface": "trpc",
@@ -14134,7 +14134,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: print",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/offlineRouter.ts:1333"
+      "loc": "server/routers/offlineRouter.ts:1393"
     },
     {
       "surface": "trpc",
@@ -14153,7 +14153,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1398"
+      "loc": "server/routers/offlineRouter.ts:1458"
     },
     {
       "surface": "trpc",
@@ -14172,7 +14172,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1488"
+      "loc": "server/routers/offlineRouter.ts:1548"
     },
     {
       "surface": "trpc",
@@ -14191,7 +14191,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:981"
+      "loc": "server/routers/offlineRouter.ts:991"
     },
     {
       "surface": "trpc",
@@ -14210,7 +14210,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:950"
+      "loc": "server/routers/offlineRouter.ts:960"
     },
     {
       "surface": "trpc",

@@ -43,6 +43,7 @@ import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
 import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
+import { assertOfflineReplayNotDiscardedTx } from "./offline/replayStatus";
 import type { ReceptionPaymentLeg } from "@shared/receptionPayments";
 import { normalizeReceptionPayments, lockReceptionSplitProofs, finishReceptionSplit } from "./reception/splitPayments";
 import {composeCheckoutChargesInTx,hasCheckoutCharges,checkoutAllocationReferences,type CheckoutAllocationProof,type CheckoutCompositionInput} from "./checkoutCharges";
@@ -310,6 +311,9 @@ async function checkoutReceptionCoreInTx(
       checkoutReplayRefId == null && (await isCompleteReplay(tx, input));
     const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
     if(allocationProof&&completeReplay)throw fulfillmentError("مصدر الاستقبال مثبت سابقاً بلا تخصيص الأجور الحالي؛ افتح الإيصال الأصلي ولا تضف قبضاً جديداً على مفتاحه","CONFLICT");
+    if (!completeReplay && input.clientRequestId) {
+      await assertOfflineReplayNotDiscardedTx(tx, input.clientRequestId);
+    }
     if (splitPlan) {
       await lockReceptionSplitProofs(tx, input, splitPlan, actor, completeReplay,allocationProof);
       input = { ...input, paidAmount: splitPlan.summary.appliedAmount,

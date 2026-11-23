@@ -564,3 +564,13 @@ it("requires manager credentials when a non-elevated cashier dismisses a parked 
   await click(button("تأكيد الإسقاط والإنهاء"));
   expect(state.dismiss).toHaveBeenCalledTimes(1);
 });
+
+it("retries non-retail (RECEPTION / PRINT_SALE) items directly without invoking retail-sales probe", async () => {
+  state.item.kind = "RECEPTION";
+  state.item.lastError = null;
+  await render("reception_clerk");
+  await open();
+  await click(button("إعادة المحاولة"));
+  expect(state.routes.PROBE).not.toHaveBeenCalled();
+  expect(state.requeue).toHaveBeenCalledWith("request-48");
+});
