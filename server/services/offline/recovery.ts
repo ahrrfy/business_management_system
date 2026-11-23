@@ -51,7 +51,7 @@ export async function captureRejectedReplay(
   rejectReason: string,
   submittedByUserId: number,
   channel: "RETAIL" | "PRINT" | "RECEPTION" | "RETURN" = "RETAIL",
-): Promise<void> {
+): Promise<boolean> {
   try {
     const db = requireDb();
     await db
@@ -71,6 +71,7 @@ export async function captureRejectedReplay(
       .onDuplicateKeyUpdate({
         set: { rejectCode, rejectReason, submittedByUserId },
       });
+    return true;
   } catch (e) {
     // فشل الالتقاط لا يُغيّر نتيجة الترحيل ولا يجوز أن يحجب رسالة الرفض عن المستخدم —
     // **لكنّه لا يُبتلَع صامتاً**: صمتٌ هنا يعني بيعاً مدفوعاً يضيع بلا أثر، وهو العطل نفسه
@@ -83,6 +84,7 @@ export async function captureRejectedReplay(
       },
       "offline.recovery: تعذّر التقاط بيعٍ أوفلاينيّ مرفوض — خطر ضياع نقد",
     );
+    return false;
   }
 }
 

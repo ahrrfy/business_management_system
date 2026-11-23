@@ -1394,6 +1394,16 @@ async function discoverAllPreflightClientRequestIds(): Promise<string[]> {
   return Array.from(ids);
 }
 
+export async function isPreflightIntentCleared(clientRequestId: string): Promise<boolean> {
+  if (!clientRequestId) return false;
+  try {
+    const rec = await readMergedSinglePreflightIntent(clientRequestId);
+    return rec?.status === "CLEARED";
+  } catch {
+    return false;
+  }
+}
+
 export async function listRecoverablePreflightSaleIntents(opts?: {
   branchId?: number | null;
   viewerUserId?: number | null;
@@ -1410,6 +1420,15 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
     const rec = await readMergedSinglePreflightIntent(id);
     if (!rec || rec.status === "CLEARED") {
       continue;
+    }
+    try {
+      const existingOutbox = await offlineDb.outbox?.get?.(id);
+      if (existingOutbox) {
+        // Offline outbox owns this clientRequestId now — never expose preflight fencing for it.
+        continue;
+      }
+    } catch {
+      /* ignore outbox read failures during preflight listing */
     }
     if (opts?.branchId != null && Number(rec.branchId) !== Number(opts.branchId)) {
       continue;
@@ -2021,6 +2040,9 @@ export async function enqueueOfflineItem(args: {
       return true;
     });
     if (!saved) return false;
+    // Clear any matching preflight intent immediately once the outbox owns this clientRequestId
+    // so slow receipt printing or another tab cannot accidentally fence it on the server.
+    void clearPreflightSaleIntent(item.clientRequestId);
     notifyOutboxChanged();
     return true;
   } catch {
@@ -2587,5 +2609,197 @@ export async function replayParkedWithApproval(
     return { ok: false, error: cls.message };
   } finally {
     clearInterval(heartbeat);
+  }
+}
+
+export function isFencedParkedError(errorText: string | null | undefined): boolean {
+  if (!errorText) return false;
+  return (
+    errorText.includes("إلغاء وتسييح") ||
+    errorText.includes("إلغاء وتسييج") ||
+    errorText.includes("إبطال صريح") ||
+    errorText.includes("FENCED_NOT_COMMITTED")
+  );
+}
+
+export async function markOutboxItemSent(
+  clientRequestId: string,
+  invoiceNumber?: string | null,
+): Promise<void> {
+  await offlineDb.transaction("rw", offlineDb.outbox, async () => {
+    const current = await offlineDb.outbox.get(clientRequestId);
+    if (!current) return;
+    await offlineDb.outbox.update(clientRequestId, {
+      status: "SENT",
+      lastError: null,
+      sendingToken: null,
+      sendingLeaseUntil: null,
+      ...(invoiceNumber ? { resultInvoiceNumber: invoiceNumber } : {}),
+    });
+  });
+  notifyOutboxChanged();
+}
+
+export async function removeResolvedOutboxItem(clientRequestId: string): Promise<void> {
+  await offlineDb.transaction("rw", offlineDb.outbox, async () => {
+    if (typeof offlineDb.outbox.delete === "function") {
+      await offlineDb.outbox.delete(clientRequestId);
+    } else if (typeof offlineDb.outbox.bulkDelete === "function") {
+      await offlineDb.outbox.bulkDelete([clientRequestId]);
+    }
+  });
+  notifyOutboxChanged();
+}
+
+export type ReissueFencedSaleResult =
+  | { status: "POSTED" | "ALREADY_COMMITTED"; invoiceId: number; invoiceNumber: string; message?: string }
+  | { status: "CAPTURED_IN_RECOVERY"; message: string };
+
+export async function reissueParkedSaleItem(
+  clientRequestId: string,
+  reissueApi: (args: ReplayArgs) => Promise<ReissueFencedSaleResult>,
+): Promise<{
+  ok: boolean;
+  outcome?: "POSTED" | "ALREADY_COMMITTED" | "CAPTURED_IN_RECOVERY";
+  invoiceNumber?: string;
+  message?: string;
+  error?: string;
+}> {
+  const parked = await offlineDb.outbox.get(clientRequestId);
+  if (!parked || parked.status !== "PARKED") {
+    return { ok: false, error: "العنصر لم يعد معلَّقاً" };
+  }
+  if ((parked.kind ?? "SALE") !== "SALE") {
+    return { ok: false, error: "إعادة الترحيل بمعرّف بديل متاحة لمبيعات التجزئة فقط" };
+  }
+  const item = await claimReplay(parked, true);
+  if (!item) {
+    return { ok: false, error: "العنصر قيد المعالجة في نافذة أخرى" };
+  }
+  notifyOutboxChanged();
+  const heartbeat = setInterval(() => {
+    void updateClaimed(item, {
+      sendingLeaseUntil: Date.now() + SENDING_LEASE_MS,
+    }).catch(() => {});
+  }, SENDING_LEASE_MS / 3);
+  try {
+    const deviceId = await getDeviceCode();
+    const res = await reissueApi({
+      payload: await readItemPayload(item),
+      capturedAt: item.capturedAt,
+      offlineReceiptNumber: item.offlineReceiptNumber,
+      deviceId,
+      ...(item.capturedByUserId != null ? { capturedByUserId: item.capturedByUserId } : {}),
+      ...(item.capturedShiftId != null ? { capturedShiftId: item.capturedShiftId } : {}),
+      ...(item.captureProof != null ? { captureProof: item.captureProof } : {}),
+      ...(item.keyId != null ? { keyId: item.keyId } : {}),
+      ...(item.grantId != null ? { grantId: item.grantId } : {}),
+      ...(item.grantIssuedAtMs != null ? { grantIssuedAtMs: item.grantIssuedAtMs } : {}),
+      ...(item.grantExpiresAtMs != null ? { grantExpiresAtMs: item.grantExpiresAtMs } : {}),
+      ...(item.grantToken != null ? { grantToken: item.grantToken } : {}),
+    });
+    if (res.status === "CAPTURED_IN_RECOVERY") {
+      await updateClaimed(item, { status: "SENT", lastError: null });
+      await removeResolvedOutboxItem(item.clientRequestId);
+      return {
+        ok: true,
+        outcome: "CAPTURED_IN_RECOVERY",
+        message: res.message,
+      };
+    }
+    await updateClaimed(item, {
+      status: "SENT",
+      lastError: null,
+      ...(res.invoiceNumber ? { resultInvoiceNumber: res.invoiceNumber } : {}),
+    });
+    notifyOutboxChanged();
+    return {
+      ok: true,
+      outcome: res.status,
+      invoiceNumber: res.invoiceNumber,
+      message: res.message,
+    };
+  } catch (err) {
+    const cls = classifyTrpcError(err);
+    await updateClaimed(item, {
+      status: "PARKED",
+      attempts: item.attempts + 1,
+      lastError: item.lastError ?? cls.message,
+    });
+    notifyOutboxChanged();
+    return { ok: false, error: cls.message };
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+export type DismissParkedResult =
+  | { status: "ALREADY_COMMITTED"; invoiceId: number; invoiceNumber: string; message?: string }
+  | { status: "SERVER_DISCARDED" | "DISMISSED"; message?: string };
+
+export async function dismissParkedOutboxItemClient(
+  clientRequestId: string,
+  dismissApi: (args: {
+    branchId: number;
+    clientRequestId: string;
+    kind: OfflineOutboxKind;
+    offlineReceiptNumber: string;
+    total: string;
+    lastError?: string;
+  }) => Promise<DismissParkedResult>,
+): Promise<{
+  ok: boolean;
+  outcome?: "ALREADY_COMMITTED" | "SERVER_DISCARDED" | "DISMISSED";
+  invoiceNumber?: string;
+  message?: string;
+  error?: string;
+}> {
+  const parked = await offlineDb.outbox.get(clientRequestId);
+  if (!parked || parked.status !== "PARKED") {
+    return { ok: false, error: "العنصر لم يعد معلَّقاً" };
+  }
+  const item = await claimReplay(parked, true);
+  if (!item) {
+    return { ok: false, error: "العنصر قيد المعالجة في نافذة أخرى" };
+  }
+  notifyOutboxChanged();
+  try {
+    const res = await dismissApi({
+      branchId: item.branchId,
+      clientRequestId: item.clientRequestId,
+      kind: item.kind ?? "SALE",
+      offlineReceiptNumber: item.offlineReceiptNumber,
+      total: item.total,
+      ...(item.lastError ? { lastError: item.lastError } : {}),
+    });
+    if (res.status === "ALREADY_COMMITTED") {
+      await updateClaimed(item, {
+        status: "SENT",
+        lastError: null,
+        ...(res.invoiceNumber ? { resultInvoiceNumber: res.invoiceNumber } : {}),
+      });
+      notifyOutboxChanged();
+      return {
+        ok: true,
+        outcome: "ALREADY_COMMITTED",
+        invoiceNumber: res.invoiceNumber,
+        message: res.message,
+      };
+    }
+    await updateClaimed(item, { status: "SENT", lastError: null });
+    await removeResolvedOutboxItem(item.clientRequestId);
+    return {
+      ok: true,
+      outcome: res.status,
+      message: res.message,
+    };
+  } catch (err) {
+    const cls = classifyTrpcError(err);
+    await updateClaimed(item, {
+      status: "PARKED",
+      lastError: item.lastError,
+    });
+    notifyOutboxChanged();
+    return { ok: false, error: cls.message };
   }
 }

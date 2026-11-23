@@ -43,6 +43,7 @@ import {
   lineDiscountExceedsThreshold,
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { assertOfflineReplayNotDiscardedTx } from "./offline/replayStatus";
 import { addQuantities } from "@shared/quantity";
 import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
@@ -392,6 +393,7 @@ export async function createPrintSaleInTx(
           idempotentReplay: true,
         };
       }
+      await assertOfflineReplayNotDiscardedTx(tx, input.clientRequestId);
     }
 
     if (!input.lines.length) {

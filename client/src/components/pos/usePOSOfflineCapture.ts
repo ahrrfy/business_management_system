@@ -23,6 +23,7 @@ import {
   assertCanCapture,
   enqueueOfflineSale,
   isOfflineSaleEnabled,
+  isPreflightIntentCleared,
 } from "@/lib/offline/outbox";
 
 export interface POSSaleReceiptContext {
@@ -299,6 +300,13 @@ export function usePOSOfflineCapture(options: UsePOSOfflineCaptureOptions) {
         return false;
       }
       const ctx = captureSaleCtx();
+      const staleOrClearedKey = await isPreflightIntentCleared(activeTab.clientRequestId);
+      const captureClientRequestId = staleOrClearedKey
+        ? newClientRequestId()
+        : activeTab.clientRequestId;
+      if (staleOrClearedKey) {
+        patchTab(activeTab.id, { clientRequestId: captureClientRequestId });
+      }
       const receiptNumber = await allocateOfflineReceiptNumber(branchId);
       const ok = await enqueueOfflineSale({
         payload: {
@@ -309,7 +317,7 @@ export function usePOSOfflineCapture(options: UsePOSOfflineCaptureOptions) {
           lines: cart.map(buildSaleLine),
           ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
           payment: { amount: money(cashRoundedTotal), method: "CASH" },
-          clientRequestId: activeTab.clientRequestId,
+          clientRequestId: captureClientRequestId,
           cashRoundIQD: true,
           ...(activeTab.salesRepId
             ? {

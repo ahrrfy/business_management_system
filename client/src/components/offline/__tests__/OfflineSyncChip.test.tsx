@@ -63,7 +63,7 @@ const state = vi.hoisted(() => ({
     branchId: 2,
     status: "PARKED",
     attempts: 1,
-    lastError: null,
+    lastError: null as string | null,
     total: "1250.25",
   },
   profile: {
@@ -75,6 +75,10 @@ const state = vi.hoisted(() => ({
   } as any,
   replay: vi.fn(),
   requeue: vi.fn(),
+  reissue: vi.fn(),
+  dismiss: vi.fn(),
+  markSent: vi.fn(),
+  removeResolved: vi.fn(),
   setPin: vi.fn(),
   flush: vi.fn(),
   setEnabled: vi.fn(),
@@ -84,6 +88,9 @@ const state = vi.hoisted(() => ({
     PRINT_SALE: vi.fn(),
     RECEPTION: vi.fn(),
     RETURN: vi.fn(),
+    PROBE: vi.fn(),
+    REISSUE: vi.fn(),
+    DISMISS: vi.fn(),
   },
   invalidate: vi.fn(),
   utils: null as any,
@@ -92,6 +99,14 @@ vi.mock("@/lib/trpc", () => ({
   trpc: {
     useUtils: () => state.utils,
     auth: { me: { useQuery: () => ({ data: { id: state.userId } }) } },
+    offline: {
+      reissueOutboxSale: {
+        useMutation: () => ({ mutateAsync: state.routes.REISSUE }),
+      },
+      dismissOutboxItem: {
+        useMutation: () => ({ mutateAsync: state.routes.DISMISS }),
+      },
+    },
   },
 }));
 vi.mock("@/lib/offline/connectivity", () => ({
@@ -108,6 +123,12 @@ vi.mock("@/lib/offline/outbox", () => ({
   setOfflineSaleEnabled: (...args: any[]) => state.setEnabled(...args),
   replayParkedWithApproval: (...args: any[]) => state.replay(...args),
   requeueParkedItem: (...args: any[]) => state.requeue(...args),
+  isFencedParkedError: (msg?: string | null) =>
+    Boolean(msg && (msg.includes("إلغاء وتسييح") || msg.includes("إبطال صريح") || msg.includes("FENCED_NOT_COMMITTED"))),
+  markOutboxItemSent: (...args: any[]) => state.markSent(...args),
+  removeResolvedOutboxItem: (...args: any[]) => state.removeResolved(...args),
+  reissueParkedSaleItem: (...args: any[]) => state.reissue(...args),
+  dismissParkedOutboxItemClient: (...args: any[]) => state.dismiss(...args),
 }));
 vi.mock("@/lib/offline/db", () => ({
   getMeta: async () => "0",
@@ -132,6 +153,7 @@ beforeEach(() => {
   state.conn = "online";
   state.userId = 7;
   state.item.kind = "RECEPTION";
+  state.item.lastError = null;
   state.profile = {
     userId: 7,
     name: "موظف الاستقبال",
@@ -142,6 +164,10 @@ beforeEach(() => {
   for (const fn of [
     state.replay,
     state.requeue,
+    state.reissue,
+    state.dismiss,
+    state.markSent,
+    state.removeResolved,
     state.setPin,
     state.flush,
     state.setEnabled,
@@ -152,12 +178,19 @@ beforeEach(() => {
     fn.mockReset();
   state.replay.mockResolvedValue({ ok: true });
   state.requeue.mockResolvedValue(undefined);
+  state.reissue.mockResolvedValue({ ok: true, outcome: "POSTED", invoiceNumber: "INV-48-RI" });
+  state.dismiss.mockResolvedValue({ ok: true, outcome: "DISMISSED" });
+  state.markSent.mockResolvedValue(undefined);
+  state.removeResolved.mockResolvedValue(undefined);
   state.setPin.mockResolvedValue({ ok: true });
   state.flush.mockResolvedValue(undefined);
   state.setEnabled.mockResolvedValue(undefined);
   state.persist.mockResolvedValue(true);
   for (const route of Object.values(state.routes))
     route.mockResolvedValue({ invoiceId: 48, invoiceNumber: "INV48" });
+  state.routes.PROBE.mockResolvedValue({ outcome: "UNKNOWN", recoveryStatus: null, discardReason: null });
+  state.routes.REISSUE.mockResolvedValue({ status: "POSTED", invoiceId: 49, invoiceNumber: "INV49" });
+  state.routes.DISMISS.mockResolvedValue({ status: "DISMISSED" });
   state.utils = {
     client: {
       offline: {
@@ -165,6 +198,9 @@ beforeEach(() => {
         replayPrintSale: { mutate: state.routes.PRINT_SALE },
         replayReception: { mutate: state.routes.RECEPTION },
         replayReturn: { mutate: state.routes.RETURN },
+        lookupPreflightSaleOutcome: { query: state.routes.PROBE },
+        reissueOutboxSale: { mutate: state.routes.REISSUE },
+        dismissOutboxItem: { mutate: state.routes.DISMISS },
       },
     },
     catalog: { posList: { invalidate: state.invalidate } },
@@ -178,8 +214,8 @@ afterEach(async () => {
   host.remove();
   vi.unstubAllGlobals();
 });
-async function render() {
-  await act(async () => root.render(<OfflineSyncChip userRole="admin" />));
+async function render(userRole = "admin") {
+  await act(async () => root.render(<OfflineSyncChip userRole={userRole} />));
 }
 function button(text: string) {
   const el = Array.from(
@@ -483,3 +519,58 @@ it.each([
     expect(state.flush).not.toHaveBeenCalled();
   },
 );
+
+it("auto-reconciles a parked item when server probe confirms it already committed", async () => {
+  state.item.kind = "SALE";
+  state.item.lastError = "تم إلغاء وتسييح الطلب المعلّق خادمياً — حمل هذا المعرّف قيد إبطال صريح";
+  state.routes.PROBE.mockResolvedValue({
+    outcome: "COMMITTED",
+    invoiceId: 88,
+    invoiceNumber: "INV-88",
+  });
+  await render();
+  await open();
+  await click(button("إعادة المحاولة"));
+  expect(state.markSent).toHaveBeenCalledWith("request-48", "INV-88");
+  expect(state.requeue).not.toHaveBeenCalled();
+});
+
+it("offers fenced reissue and audited dismissal exits instead of looping on dead keys", async () => {
+  state.item.kind = "SALE";
+  state.item.lastError = "تم إلغاء وتسييح الطلب المعلّق خادمياً — حمل هذا المعرّف قيد إبطال صريح";
+  await render();
+  await open();
+  expect(document.body.textContent).toContain("ترحيل بمعرف بديل");
+  await click(button("ترحيل بمعرف بديل"));
+  expect(state.reissue).toHaveBeenCalledTimes(1);
+
+  await click(button("إسقاط وإنهاء"));
+  await fill("سبب الإنهاء أو الإسقاط (٥ أحرف على الأقل)", "تجربة اختبارية ملغاة");
+  await click(button("تأكيد الإسقاط والإنهاء"));
+  expect(state.dismiss).toHaveBeenCalledTimes(1);
+});
+
+it("requires manager credentials when a non-elevated cashier dismisses a parked item", async () => {
+  state.item.kind = "SALE";
+  state.item.lastError = "تم إلغاء وتسييح الطلب المعلّق خادمياً";
+  await render("cashier");
+  await open();
+  await click(button("إسقاط وإنهاء"));
+  await fill("سبب الإنهاء أو الإسقاط (٥ أحرف على الأقل)", "تمت التسوية يدوياً");
+  expect(button("تأكيد الإسقاط والإنهاء").disabled).toBe(true);
+  await fill("بريد أو اسم مستخدم المدير", "mgr@example.test");
+  await fill("كلمة المرور", "mgr-pass");
+  expect(button("تأكيد الإسقاط والإنهاء").disabled).toBe(false);
+  await click(button("تأكيد الإسقاط والإنهاء"));
+  expect(state.dismiss).toHaveBeenCalledTimes(1);
+});
+
+it("retries non-retail (RECEPTION / PRINT_SALE) items directly without invoking retail-sales probe", async () => {
+  state.item.kind = "RECEPTION";
+  state.item.lastError = null;
+  await render("reception_clerk");
+  await open();
+  await click(button("إعادة المحاولة"));
+  expect(state.routes.PROBE).not.toHaveBeenCalled();
+  expect(state.requeue).toHaveBeenCalledWith("request-48");
+});

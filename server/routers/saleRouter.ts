@@ -326,14 +326,14 @@ export async function verifyManagerApproval(
         }),
       });
     }
-    ok = Boolean(
-      u && u.isActive !== false && (u.role === "manager" || u.role === "admin"),
-    );
+    const isManagerOrOwner =
+      u?.isOwner === true || u?.role === "manager" || u?.role === "admin";
+    ok = Boolean(u && u.isActive !== false && isManagerOrOwner);
     if (!u) {
       failureReason = "invalid_or_expired_barcode";
     } else if (u.isActive === false) {
       failureReason = "inactive";
-    } else if (u.role !== "manager" && u.role !== "admin") {
+    } else if (!isManagerOrOwner) {
       failureReason = "not_manager";
     }
   }
@@ -416,17 +416,19 @@ export async function verifyManagerApproval(
     const pinMatch = u?.pinHash
       ? await verifyPassword(pinVal, u.pinHash)
       : false;
+    const isManagerOrOwner =
+      u?.isOwner === true || u?.role === "manager" || u?.role === "admin";
     ok = Boolean(
       u &&
       u.isActive !== false &&
       pinMatch &&
-      (u.role === "manager" || u.role === "admin"),
+      isManagerOrOwner,
     );
     if (!u) {
       failureReason = "no_user";
     } else if (u.isActive === false) {
       failureReason = "inactive";
-    } else if (u.role !== "manager" && u.role !== "admin") {
+    } else if (!isManagerOrOwner) {
       failureReason = "not_manager";
     } else if (!u.pinHash) {
       failureReason = "no_pin_configured";
@@ -502,17 +504,19 @@ export async function verifyManagerApproval(
     }
 
     const pwdMatch = u ? await verifyPassword(pwd, u.passwordHash) : false;
+    const isManagerOrOwner =
+      u?.isOwner === true || u?.role === "manager" || u?.role === "admin";
     ok = Boolean(
       u &&
       u.isActive !== false &&
       pwdMatch &&
-      (u.role === "manager" || u.role === "admin"),
+      isManagerOrOwner,
     );
     if (!u) {
       failureReason = "no_user";
     } else if (u.isActive === false) {
       failureReason = "inactive";
-    } else if (!pwdMatch || (u.role !== "manager" && u.role !== "admin")) {
+    } else if (!pwdMatch || !isManagerOrOwner) {
       failureReason = "wrong_password_or_role";
     }
   } else {
