@@ -34,7 +34,7 @@ import { CustomizationDialog, emptyCustomization } from "@/components/Customizat
 import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
 import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";
 import { cacheCustomizableLineOptions, readCachedCustomizableLineOptions } from "@/lib/offline/printServicesCache";
-import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
+import { stripRecipeSelectionMeta, type RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { receptionOperationAllowed, receptionCheckoutPaths, receptionDeliveryAuthorityRequired } from "@/lib/receptionOperationAccess";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -847,6 +847,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
             const promotionId = promoInfo?.promotionId;
             const promoDiscount = promoInfo ? (promoInfo.promoDiscountD.gt(discAmt) ? discAmt : promoInfo.promoDiscountD) : D(0);
             const cashierDiscount = discAmt.gt(promoDiscount) ? round2(discAmt.minus(promoDiscount)) : D(0);
+            const recipeSelections = stripRecipeSelectionMeta(line.recipeSelections);
             return {
               lineKey: `regular:${index}:${line.row.productUnitId}`,
               variantId: line.row.variantId,
@@ -857,6 +858,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
               ...(promotionId != null ? { promotionId } : {}),
               ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
               ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+              ...(recipeSelections?.length ? { recipeSelections } : {}),
             };
           }),
           lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
