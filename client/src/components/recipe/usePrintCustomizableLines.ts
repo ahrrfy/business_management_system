@@ -14,7 +14,7 @@ import {
   cacheCustomizableLineOptions,
   readCachedCustomizableLineOptions,
 } from "@/lib/offline/printServicesCache";
-import type { CartItem, PosRow } from "@/components/pos/posShared";
+import type { CartItem, PosRow, POSTab } from "@/components/pos/posShared";
 import { lineIdOf, nextCartLineId } from "@/components/pos/posShared";
 import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";
 import {
@@ -242,15 +242,13 @@ export function useRetailPosCustomizableLines({
   branchId,
   offline,
   resetCouponItems,
-  setCart,
-  setSelId,
+  patchActive,
   onAdded,
 }: {
   branchId: number;
   offline: boolean;
   resetCouponItems: (items: CartItem[]) => CartItem[];
-  setCart: (updater: CartItem[] | ((c: CartItem[]) => CartItem[])) => void;
-  setSelId: (id: number | null) => void;
+  patchActive: (patch: Partial<POSTab> | ((tab: POSTab) => Partial<POSTab>)) => void;
   onAdded: () => void;
 }) {
   const { customizableLinesByVariantId, customizableVariantIds } = usePrintCustomizableLines<{
@@ -268,9 +266,11 @@ export function useRetailPosCustomizableLines({
   function commitCartRow(row: PosRow, recipeSelections?: RecipeLineSelectionWithMeta[]) {
     const currentRow = { ...row, branchId: row.branchId ?? branchId };
     const selKey = recipeSelections?.length ? serializeRecipeSelectionsKey(recipeSelections) : "";
-    let resolvedSelId = currentRow.productUnitId;
-    setCart((raw) => {
-      const prev = resetCouponItems(raw);
+    patchActive((tab) => {
+      const prev = resetCouponItems(tab.cart);
+      const couponReset = tab.couponCode
+        ? { couponCode: null, couponLabel: null, couponFreeShippingPromo: null }
+        : {};
       const i = prev.findIndex(
         (c) =>
           !c.digital &&
@@ -280,7 +280,6 @@ export function useRetailPosCustomizableLines({
       if (i >= 0) {
         const next = [...prev];
         const existing = next[i];
-        resolvedSelId = lineIdOf(existing);
         const updated: CartItem = {
           ...existing,
           row: currentRow,
@@ -289,22 +288,16 @@ export function useRetailPosCustomizableLines({
         };
         next.splice(i, 1);
         next.unshift(updated);
-        return next;
+        return { ...couponReset, cart: next, selId: lineIdOf(existing) };
       }
-      const nextCustomId = recipeSelections?.length
-        ? nextCartLineId(prev)
-        : undefined;
-      if (nextCustomId != null) resolvedSelId = nextCustomId;
-      return [
-        {
-          row: currentRow,
-          qty: 1,
-          ...(recipeSelections?.length ? { recipeSelections, customLineId: nextCustomId } : {}),
-        },
-        ...prev,
-      ];
+      const nextCustomId = recipeSelections?.length ? nextCartLineId(prev) : undefined;
+      const inserted: CartItem = {
+        row: currentRow,
+        qty: 1,
+        ...(recipeSelections?.length ? { recipeSelections, customLineId: nextCustomId } : {}),
+      };
+      return { ...couponReset, cart: [inserted, ...prev], selId: lineIdOf(inserted) };
     });
-    setSelId(resolvedSelId);
     onAdded();
   }
 
@@ -334,11 +327,11 @@ export function useRetailPosCustomizableLines({
     if (!picker) return;
     if (picker.editingLineId != null) {
       const editingId = picker.editingLineId;
-      setCart((raw) =>
-        resetCouponItems(raw).map((c) =>
+      patchActive((tab) => ({
+        cart: resetCouponItems(tab.cart).map((c) =>
           lineIdOf(c) === editingId ? { ...c, recipeSelections: selections } : c,
         ),
-      );
+      }));
     } else {
       commitCartRow(picker.row, selections);
     }

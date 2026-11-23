@@ -362,7 +362,7 @@ export default function POS() {
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
   const retailCustom = useRetailPosCustomizableLines({
-    branchId, offline, resetCouponItems, setCart, setSelId, onAdded: () => setAddTick((t) => t + 1),
+    branchId, offline, resetCouponItems, patchActive, onAdded: () => setAddTick((t) => t + 1),
   });
   function addRow(row: PosRow) {
     if (row.price == null) {
@@ -370,7 +370,6 @@ export default function POS() {
       return;
     }
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     retailCustom.addOrPromptRow(row);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
@@ -378,13 +377,14 @@ export default function POS() {
 
   function changeItemUnit(oldLineId: number, newRow: PosRow) {
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
-    let nextSelId = currentRow.productUnitId;
-    setCart((raw) => {
-      const prev = resetCouponItems(raw);
+    patchActive((tab) => {
+      const prev = resetCouponItems(tab.cart);
+      const couponReset = tab.couponCode
+        ? { couponCode: null, couponLabel: null, couponFreeShippingPromo: null }
+        : {};
       const i = prev.findIndex((c) => !c.digital && lineIdOf(c) === oldLineId);
-      if (i < 0) return prev;
+      if (i < 0) return couponReset;
       const target = prev[i];
       const targetKey = serializeRecipeSelectionsKey(target.recipeSelections);
       const dupIdx = prev.findIndex(
@@ -396,18 +396,15 @@ export default function POS() {
       );
       if (dupIdx >= 0) {
         const merged = { ...prev[dupIdx], qty: prev[dupIdx].qty + target.qty, row: currentRow };
-        nextSelId = lineIdOf(merged);
         const next = prev.filter((_, idx) => idx !== i && idx !== dupIdx);
         next.unshift(merged);
-        return next;
+        return { ...couponReset, cart: next, selId: lineIdOf(merged) };
       }
       const next = [...prev];
       const updated = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
-      nextSelId = lineIdOf(updated);
       next[i] = updated;
-      return next;
+      return { ...couponReset, cart: next, selId: lineIdOf(updated) };
     });
-    setSelId(nextSelId);
   }
 
   function changeQty(id: number, qty: number) {

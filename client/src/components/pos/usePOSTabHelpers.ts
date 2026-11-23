@@ -51,10 +51,11 @@ export function usePOSTabHelpers({
   setShowDrop,
   searchRef,
 }: UsePOSTabHelpersParams) {
-  function patchTab(id: number, patch: Partial<POSTab>) {
+  function patchTab(id: number, patch: Partial<POSTab> | ((tab: POSTab) => Partial<POSTab>)) {
     if (
       cartRevisionRef &&
-      ("cart" in patch ||
+      (typeof patch === "function" ||
+        "cart" in patch ||
         "customerId" in patch ||
         "tierOverride" in patch ||
         "couponInput" in patch ||
@@ -62,10 +63,16 @@ export function usePOSTabHelpers({
     ) {
       cartRevisionRef.current += 1;
     }
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        const resolved = typeof patch === "function" ? patch(t) : patch;
+        return { ...t, ...resolved };
+      }),
+    );
   }
 
-  function patchActive(patch: Partial<POSTab>) {
+  function patchActive(patch: Partial<POSTab> | ((tab: POSTab) => Partial<POSTab>)) {
     patchTab(activeIdRef.current, patch);
   }
 
