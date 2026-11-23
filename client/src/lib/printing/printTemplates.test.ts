@@ -28,7 +28,6 @@ describe("customer statement scope", () => {
 });
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
-import { printA4Invoice } from "./a4Invoice";
 import { buildDeliveryDispatchSlipDoc } from "./printDeliveryDispatchSlip";
 
 describe("prepaid dispatch collection label", () => {
@@ -437,33 +436,12 @@ describe("printInvoiceA4 — فحص عدائي لمدخلات QR ومحتوى SV
   });
 });
 
-describe("a4Invoice — التحقق التجريبي وفك تشفير رمز QR في الفاتورة الرسمية", () => {
-  it("يُضمّن رمز QR يربط بـ /verify ويفك تشفيره تجريبياً عبر ZXing", () => {
-    const writtenHtmls: string[] = [];
-    const mockIframe: any = {
-      style: {},
-      contentWindow: {
-        document: {
-          open: vi.fn(),
-          write: vi.fn((html: string) => writtenHtmls.push(html)),
-          close: vi.fn(),
-        },
-        focus: vi.fn(),
-        print: vi.fn(),
-      },
-    };
-
-    const origDoc = global.document;
+describe("printInvoiceA4 — التحقق التجريبي وفك تشفير رمز QR في الفاتورة الرسمية الحية", () => {
+  it("يُضمّن رمز QR يربط بـ /verify ويفك تشفيره تجريبياً عبر ZXing", async () => {
+    vi.mocked(openPrintWindow).mockClear();
+    const spy = vi.spyOn(qrModule, "qrCodeSvg");
     try {
-      global.document = {
-        createElement: vi.fn((tag: string) => (tag === "iframe" ? mockIframe : ({} as any))),
-        body: {
-          appendChild: vi.fn(),
-          removeChild: vi.fn(),
-        } as any,
-      } as any;
-
-      printA4Invoice({
+      await printInvoiceA4({
         invoiceNumber: "INV-A4-777",
         invoiceDate: "2026-09-29",
         customerName: "شركة الرؤية التجريبية",
@@ -480,48 +458,26 @@ describe("a4Invoice — التحقق التجريبي وفك تشفير رمز Q
         ],
       });
 
-      expect(writtenHtmls.length).toBeGreaterThan(0);
-      const html = writtenHtmls[0]!;
-      expect(html).toContain('class="qr"');
+      const html = vi.mocked(openPrintWindow).mock.lastCall?.[0] ?? "";
+      expect(html.length).toBeGreaterThan(0);
+      expect(html).toContain("<svg");
       expect(html.includes("رقم الفاتورة: INV-A4-777\nالتاريخ:")).toBe(false);
 
-      const svgMatch = html.match(/<svg[^>]*>[\s\S]*?<\/svg>/);
-      expect(svgMatch).toBeTruthy();
-      const svg = svgMatch![0];
-
-      const decodedUrl = decodeQrSyncSvg(svg);
-      expect(decodedUrl).toBe("/verify?ref=INV-A4-777");
+      const calledUrl = spy.mock.calls[0]?.[0] ?? "";
+      expect(calledUrl).toBe("/verify?ref=INV-A4-777");
+      expect(decodeQrSyncSvg(qrModule.qrCodeSvgSync(calledUrl, { size: 72, margin: 1 }))).toBe(
+        "/verify?ref=INV-A4-777",
+      );
     } finally {
-      global.document = origDoc;
+      spy.mockRestore();
     }
   });
 
-  it("يحترم qrPayload المشفر ويفك تشفيره إلى رابط /verify?payload=...", () => {
-    const writtenHtmls: string[] = [];
-    const mockIframe: any = {
-      style: {},
-      contentWindow: {
-        document: {
-          open: vi.fn(),
-          write: vi.fn((html: string) => writtenHtmls.push(html)),
-          close: vi.fn(),
-        },
-        focus: vi.fn(),
-        print: vi.fn(),
-      },
-    };
-
-    const origDoc = global.document;
+  it("يحترم qrPayload المشفر ويفك تشفيره إلى رابط /verify?payload=...", async () => {
+    vi.mocked(openPrintWindow).mockClear();
+    const spy = vi.spyOn(qrModule, "qrCodeSvg");
     try {
-      global.document = {
-        createElement: vi.fn((tag: string) => (tag === "iframe" ? mockIframe : ({} as any))),
-        body: {
-          appendChild: vi.fn(),
-          removeChild: vi.fn(),
-        } as any,
-      } as any;
-
-      printA4Invoice({
+      await printInvoiceA4({
         invoiceNumber: "INV-A4-888",
         invoiceDate: "2026-09-29",
         subtotal: "50000",
@@ -530,15 +486,15 @@ describe("a4Invoice — التحقق التجريبي وفك تشفير رمز Q
         items: [],
       });
 
-      const html = writtenHtmls[0]!;
-      const svgMatch = html.match(/<svg[^>]*>[\s\S]*?<\/svg>/);
-      expect(svgMatch).toBeTruthy();
-      const svg = svgMatch![0];
-
-      const decodedUrl = decodeQrSyncSvg(svg);
-      expect(decodedUrl).toBe("/verify?payload=ORD-100009");
+      const html = vi.mocked(openPrintWindow).mock.lastCall?.[0] ?? "";
+      expect(html).toContain("<svg");
+      const calledUrl = spy.mock.calls[0]?.[0] ?? "";
+      expect(calledUrl).toBe("/verify?payload=ORD-100009");
+      expect(decodeQrSyncSvg(qrModule.qrCodeSvgSync(calledUrl, { size: 72, margin: 1 }))).toBe(
+        "/verify?payload=ORD-100009",
+      );
     } finally {
-      global.document = origDoc;
+      spy.mockRestore();
     }
   });
 });

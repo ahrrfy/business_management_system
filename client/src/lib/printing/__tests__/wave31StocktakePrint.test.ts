@@ -99,4 +99,30 @@ describe("stocktake print posting truthfulness", () => {
       else expect(printed).toContain("مسوّدة معاينة قبل الاعتماد النهائي");
     }
   });
+
+  it("highlights negative settlements clearly without cluttering positive stocktakes", () => {
+    printStocktakeReport(report("APPROVED", "NORMAL"));
+    const normalHtml = vi.mocked(openPrintWindow).mock.lastCall?.[0] ?? "";
+    expect(normalHtml).not.toContain("تنبيه تسوية رصيد سالب");
+    expect(normalHtml).not.toContain("(رصيد سالب)");
+
+    const negReport: StocktakeReportPrintData = {
+      ...report("APPROVED", "NORMAL"),
+      adjusted: [
+        {
+          productName: "ورق A4",
+          bookQty: 5,
+          adjustedQty: -2,
+          diff: -7,
+          value: "-70.00",
+          reasonLabel: "فقدان / سرقة",
+          decisionLabel: "تسوية بقرار: مدير",
+        },
+      ],
+    };
+    printStocktakeReport(negReport);
+    const negHtml = vi.mocked(openPrintWindow).mock.lastCall?.[0] ?? "";
+    expect(negHtml).toContain("تنبيه تسوية رصيد سالب");
+    expect(negHtml).toContain("(رصيد سالب)");
+  });
 });

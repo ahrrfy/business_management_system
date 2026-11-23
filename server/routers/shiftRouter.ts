@@ -391,14 +391,14 @@ export const shiftRouter = router({
       }
 
       let verifiedManagerId: number | null = null;
-      if (ctx.user.role === "admin" || ctx.user.role === "manager") {
-        verifiedManagerId = ctx.user.id;
-      } else if (input.managerApproval) {
+      if (input.managerApproval) {
         verifiedManagerId = await verifyManagerApproval(
           input.managerApproval,
           ctx,
           ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined,
         );
+      } else if (ctx.user.role === "admin" || ctx.user.role === "manager") {
+        verifiedManagerId = ctx.user.id;
       } else if (input.managerApprovedByUserId) {
         throw new TRPCError({
           code: "FORBIDDEN",

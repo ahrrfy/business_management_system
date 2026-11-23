@@ -255,10 +255,16 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     { key: "reason", label: "السبب", width: "20mm" },
     { key: "decision", label: "القرار", width: "34mm" },
   ];
+  const negativeCount = d.adjusted.filter((r) => Number(r.adjustedQty) < 0).length;
+  const negativeSettlementNotice = negativeCount > 0
+    ? `<div style="border:1.5px solid #DC2626;background:#FEF2F2;color:#991B1B;border-radius:4px;padding:2.5mm 3mm;margin-bottom:3mm;font-size:9px;font-weight:700;break-inside:avoid;">
+        تنبيه تسوية رصيد سالب: ${esc(fmt(negativeCount))} صنف انتقل رصيده النهائي إلى السالب بعد احتساب الحركات اللاحقة للعدّ — يلزم مراجعة حركات البيع/الاستلام المتزامنة.
+      </div>`
+    : "";
   const adjRows = d.adjusted.map((r) => ({
     name: `${variantDisplayName(r)}${r.baseUnit ? ` (${r.baseUnit})` : ""}${r.sku ? ` · ${r.sku}` : ""}`,
     book: fmtQty(r.bookQty),
-    counted: fmtQty(r.adjustedQty),
+    counted: Number(r.adjustedQty) < 0 ? `${fmtQty(r.adjustedQty)} (رصيد سالب)` : fmtQty(r.adjustedQty),
     diff: signedInt(r.diff),
     value: signedMoney(r.value),
     reason: r.reasonLabel,
@@ -273,7 +279,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
       </div>`
     : "";
   const adjustedSection = d.adjusted.length
-    ? docTable(adjCols, adjRows) + adjTotalsStrip
+    ? negativeSettlementNotice + docTable(adjCols, adjRows) + adjTotalsStrip
     : `<p style="background:${B.bg};border:1px dashed ${B.border};border-radius:4px;padding:3mm;
         margin-bottom:4mm;font-size:9.5px;color:${B.textMuted};text-align:center;">${isOpening ? "لا تغييرات افتتاحية — الرصيد السابق مطابق." : "لا تسويات — الجرد مطابق."}</p>`;
 
