@@ -2521,6 +2521,7 @@ export async function getCustomizableRecipeLineOptions(args: {
         and(
           eq(productionRecipes.isActive, true),
           eq(products.isActive, true),
+          eq(products.isService, true),
           targetVariantIds ? inArray(productionRecipes.outputVariantId, targetVariantIds) : sql`1=1`,
         ),
       )

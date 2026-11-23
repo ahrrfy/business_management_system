@@ -551,15 +551,18 @@ describe("Track 2: atomic replacement, R2 GC reclaim, multi-variant deduplicatio
     expect(parentImgs[0].sortOrder).toBe(2);
   });
 
-  it("cleanupStudioStaging reclaims R2 keys of APPROVED jobs once their productImages row is deleted, while preserving active jobs", async () => {
+  it("cleanupStudioStaging reclaims R2 keys of APPROVED jobs once their productImages row is deleted, while preserving active jobs and currently published rollback snapshots", async () => {
     const old = new Date(Date.now() - 100 * 24 * 60 * 60_000);
     const deletedImgKey = "single/studio/candidate/deleted-approved.png";
     const activeJobKey = "single/studio/candidate/still-pending-review.png";
+    const publishedRollbackOrigKey = "single/studio/original/published-prev-processed.png";
 
     storedObjects.set(deletedImgKey, { bytes: Buffer.from("a"), mime: "image/png" });
     storedObjects.set(activeJobKey, { bytes: Buffer.from("b"), mime: "image/png" });
+    storedObjects.set(publishedRollbackOrigKey, { bytes: Buffer.from("c"), mime: "image/png" });
 
-    // Terminal APPROVED job whose productImages row was already deleted/replaced
+    // Terminal APPROVED job whose productImages row was already deleted/replaced,
+    // plus an active job and a currently published APPROVED job whose rollback snapshot differs from productImages.originalKey.
     state.productImageJobs.push(
       {
         id: 801,
@@ -575,10 +578,30 @@ describe("Track 2: atomic replacement, R2 GC reclaim, multi-variant deduplicatio
         processedObjectKey: activeJobKey,
         originalObjectKey: null,
       },
+      {
+        id: 803,
+        productId: 100,
+        status: "APPROVED",
+        processedObjectKey: "single/studio/candidate/current-published.png",
+        originalObjectKey: publishedRollbackOrigKey,
+      },
     );
+    state.productImages.push({
+      id: 88,
+      productId: 100,
+      variantId: null,
+      url: "/api/img/product/88",
+      objectKey: "single/studio/candidate/current-published.png",
+      originalKey: "single/studio/original/older-first-orig.png",
+      publishedStudioJobId: 803,
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+      sortOrder: 0,
+    });
     state.productImageObjectStaging.push(
       { objectKey: deletedImgKey, state: "PENDING", referencedAt: old, touchedAt: old },
       { objectKey: activeJobKey, state: "PENDING", referencedAt: old, touchedAt: old },
+      { objectKey: publishedRollbackOrigKey, state: "REFERENCED", referencedAt: old, touchedAt: old },
     );
 
     process.env.R2_GC_MODE = "delete";
@@ -592,6 +615,51 @@ describe("Track 2: atomic replacement, R2 GC reclaim, multi-variant deduplicatio
     expect(deletedStoreKeys).toEqual([deletedImgKey]);
     expect(storedObjects.has(deletedImgKey)).toBe(false);
     expect(storedObjects.has(activeJobKey)).toBe(true);
+    expect(storedObjects.has(publishedRollbackOrigKey)).toBe(true);
+  });
+
+  it("quickSaveBarcodeProductImage with replaceImageId for non-manager keeps originalObjectKey matching sourceContentHash so revertStudioTask never mismatches", async () => {
+    const oldBytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
+    const oldHash = createHash("sha256").update(oldBytes).digest("hex");
+    const oldKey = `single/studio/candidate/${oldHash}.png`;
+    storedObjects.set(oldKey, { bytes: oldBytes, mime: "image/png" });
+
+    state.productImages.push({
+      id: 55,
+      productId: 100,
+      variantId: null,
+      url: `/api/img/product/55?v=${oldHash.slice(0, 16)}`,
+      objectKey: oldKey,
+      originalKey: null,
+      contentHash: oldHash,
+      mime: "image/png",
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+      sortOrder: 0,
+    });
+
+    const photographer: ProductStudioActor = { userId: 2, branchId: 1, role: "cashier", name: "مصور" };
+    const submitted = await quickSaveBarcodeProductImage(photographer, {
+      productId: 100,
+      variantId: null,
+      originalDataUrl: PNG_1X1_ALT,
+      processedDataUrl: PNG_1X1_ALT,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+      replaceImageId: 55,
+      clientRequestId: "photog-replace-55",
+    });
+
+    expect(submitted.autoApproved).toBe(false);
+    const createdJob = state.productImageJobs.find((j) => Number(j.id) === submitted.jobId);
+    expect(createdJob).toBeDefined();
+    expect(createdJob.sourceImageId).toBe(55);
+    expect(createdJob.sourceContentHash).toBe(oldHash);
+    expect(createdJob.originalObjectKey).toBe(oldKey);
+    expect(createdJob.originalMime).toBe("image/png");
+    const storedOriginal = storedObjects.get(createdJob.originalObjectKey);
+    expect(storedOriginal).toBeDefined();
+    expect(createHash("sha256").update(storedOriginal!.bytes).digest("hex")).toBe(createdJob.sourceContentHash);
   });
 
   it("getOnlineOrderDetail never duplicates items across 3 variants with primary images and uses /api/img/inventory-product", async () => {

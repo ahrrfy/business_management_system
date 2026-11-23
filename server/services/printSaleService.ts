@@ -726,6 +726,7 @@ export async function createPrintSaleInTx(
       lineCost: string; // الكلفة الدقيقة الكاملة؛ لا يُعاد اشتقاقها من unitCost المدوّر
       isService: boolean;
       serviceMaterials: ServiceMaterialSnapshot[];
+      recipeSelections: Array<{ recipeLineId: number; variantId: number }> | null;
       invoiceName: string;
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
@@ -823,6 +824,12 @@ export async function createPrintSaleInTx(
         lineCost: lineCost.toFixed(2),
         isService: !isStocked,
         serviceMaterials,
+        recipeSelections: l.recipeSelections?.length
+          ? l.recipeSelections.map((s) => ({
+              recipeLineId: Number(s.recipeLineId),
+              variantId: Number(s.variantId),
+            }))
+          : null,
         invoiceName: titleForChannel({ name: variant.productName, invoiceLabel: variant.invoiceLabel, shortTitle: variant.shortTitle }, "invoice"),
       });
     }
@@ -1118,6 +1125,7 @@ export async function createPrintSaleInTx(
         serviceMaterialsSnapshotted: c.isService,
         total: c.total,
         itemNameSnapshot: c.invoiceName,
+        recipeSelections: c.recipeSelections,
       });
       const invoiceItemId = extractInsertId(itemInsRes);
       for (const material of c.serviceMaterials) {

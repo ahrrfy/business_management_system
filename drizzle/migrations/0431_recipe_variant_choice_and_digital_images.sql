@@ -42,3 +42,17 @@ SET @ddl_0431_offering_image = IF(
 PREPARE stmt_0431_offering_image FROM @ddl_0431_offering_image;
 EXECUTE stmt_0431_offering_image;
 DEALLOCATE PREPARE stmt_0431_offering_image;
+--> statement-breakpoint
+SET @ddl_0431_item_selections = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'invoiceItems'
+      AND COLUMN_NAME = 'recipeSelections'
+  ),
+  'SELECT 1',
+  'ALTER TABLE `invoiceItems` ADD COLUMN `recipeSelections` json NULL'
+);
+PREPARE stmt_0431_item_selections FROM @ddl_0431_item_selections;
+EXECUTE stmt_0431_item_selections;
+DEALLOCATE PREPARE stmt_0431_item_selections;

@@ -3899,25 +3899,35 @@ async function stageStudioObject(objectKey: string): Promise<void> {
 const TERMINAL_JOB_STATUSES: StudioStatus[] = ["APPROVED", "REJECTED", "CANCELLED", "REVERTED", "FAILED"];
 
 async function isStagingObjectReferencedTx(tx: StudioTx, objectKey: string): Promise<boolean> {
-  // المهام المنتهية (APPROVED/REJECTED/CANCELLED/REVERTED/FAILED) لا تُبقي مفاتيح R2 معلّقةً
-  // إلى الأبد بعد حذف/استبدال صفّها من productImages؛ ما يزال حيّاً تضمنه productImages نفسها.
-  const jobRef = await tx
-    .select({ id: productImageJobs.id })
-    .from(productImageJobs)
-    .where(
-      and(
-        or(eq(productImageJobs.originalObjectKey, objectKey), eq(productImageJobs.processedObjectKey, objectKey)),
-        notInArray(productImageJobs.status, TERMINAL_JOB_STATUSES),
-      ),
-    )
-    .limit(1);
-  if (jobRef.length > 0) return true;
   const imageRef = await tx
     .select({ id: productImages.id })
     .from(productImages)
     .where(or(eq(productImages.objectKey, objectKey), eq(productImages.originalKey, objectKey)))
     .limit(1);
-  return imageRef.length > 0;
+  if (imageRef.length > 0) return true;
+
+  // نفحص مهام الاستوديو الحاملة لهذا المفتاح:
+  // 1) أي مهمة غير منتهية ما زالت بحاجة إلى أصولها.
+  // 2) أي مهمة APPROVED ما زالت منشورة حالياً على صف في productImages (publishedStudioJobId = job.id)
+  //    تُبقي لقطة أصلها ومخرجها محميّةً لمسار الاسترجاع revertStudioTask.
+  const matchingJobs = await tx
+    .select({ id: productImageJobs.id, status: productImageJobs.status })
+    .from(productImageJobs)
+    .where(or(eq(productImageJobs.originalObjectKey, objectKey), eq(productImageJobs.processedObjectKey, objectKey)));
+  if (matchingJobs.length === 0) return false;
+  if (matchingJobs.some((job) => !TERMINAL_JOB_STATUSES.includes(job.status))) {
+    return true;
+  }
+  const approvedIds = matchingJobs
+    .filter((job) => job.status === "APPROVED")
+    .map((job) => Number(job.id));
+  if (approvedIds.length === 0) return false;
+  const publishedRef = await tx
+    .select({ id: productImages.id })
+    .from(productImages)
+    .where(inArray(productImages.publishedStudioJobId, approvedIds))
+    .limit(1);
+  return publishedRef.length > 0;
 }
 
 /**
@@ -5799,6 +5809,7 @@ async function resolveReplaceTargetTx(
       sortOrder: productImages.sortOrder,
       objectKey: productImages.objectKey,
       originalKey: productImages.originalKey,
+      mime: productImages.mime,
       url: productImages.url,
       contentHash: productImages.contentHash,
       reviewStatus: productImages.reviewStatus,
@@ -7401,19 +7412,96 @@ export async function quickSaveBarcodeProductImage(
       })
     : null;
 
+  const managerActor = await withTx((tx) => canAutoApproveStudioTx(tx, actor), { gate: "NONE" });
+
   const store = getImageStore();
-  const originalKey = original ? objectKeyFor(original.hash, original.mime, studioObjectPrefix("original")) : null;
+  // عند الاستبدال بصورة قديمة في الكتالوج، نُبقي لقطة الأصل من الصورة القديمة نفسها ليطابق contentHash مسار revertStudioTask.
+  const uploadOriginalCapture = input.replaceImageId == null && original != null;
+  const originalKey = uploadOriginalCapture ? objectKeyFor(original!.hash, original!.mime, studioObjectPrefix("original")) : null;
   const processedKey = objectKeyFor(processed.hash, processed.mime, studioObjectPrefix("candidate"));
   const stagedObjectKeys = originalKey ? [originalKey, processedKey] : [processedKey];
 
-  if (original && originalKey) {
+  if (uploadOriginalCapture && original && originalKey) {
     await stageStudioObject(originalKey);
     await store.put(originalKey, original.bytes, original.mime);
   }
   await stageStudioObject(processedKey);
   await store.put(processedKey, processed.bytes, processed.mime);
 
-  const managerActor = await withTx((tx) => canAutoApproveStudioTx(tx, actor), { gate: "NONE" });
+  async function resolveReplaceOriginalSnapshotTx(
+    tx: StudioTx,
+    replaceTarget: Awaited<ReturnType<typeof resolveReplaceTargetTx>>,
+  ): Promise<{ objectKey: string | null; mime: string | null; contentHash: string } | null> {
+    const inferredMime =
+      replaceTarget.mime ??
+      (replaceTarget.objectKey?.endsWith(".webp")
+        ? "image/webp"
+        : replaceTarget.objectKey?.endsWith(".jpg") || replaceTarget.objectKey?.endsWith(".jpeg")
+          ? "image/jpeg"
+          : replaceTarget.objectKey?.endsWith(".png")
+            ? "image/png"
+            : null);
+    if (replaceTarget.objectKey) {
+      const head = await store.head(replaceTarget.objectKey);
+      if (head.exists) {
+        await tx
+          .insert(productImageObjectStaging)
+          .values({ objectKey: replaceTarget.objectKey, state: "REFERENCED", referencedAt: new Date() })
+          .onDuplicateKeyUpdate({ set: { state: "REFERENCED", referencedAt: new Date(), touchedAt: new Date() } });
+        if (replaceTarget.contentHash && inferredMime) {
+          return {
+            objectKey: replaceTarget.objectKey,
+            mime: inferredMime,
+            contentHash: replaceTarget.contentHash,
+          };
+        }
+        const stream = await store.getStream(replaceTarget.objectKey);
+        if (stream) {
+          const chunks: Buffer[] = [];
+          for await (const chunk of stream) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          const bytes = Buffer.concat(chunks);
+          const sniffedMime =
+            bytes[0] === 0x89 && bytes[1] === 0x50
+              ? "image/png"
+              : bytes[0] === 0xff && bytes[1] === 0xd8
+                ? "image/jpeg"
+                : bytes[0] === 0x52 && bytes[1] === 0x49
+                  ? "image/webp"
+                  : null;
+          const resolvedMime = inferredMime ?? sniffedMime ?? "image/webp";
+          return {
+            objectKey: replaceTarget.objectKey,
+            mime: resolvedMime,
+            contentHash: replaceTarget.contentHash ?? contentHash(bytes),
+          };
+        }
+      }
+    }
+    if (replaceTarget.url?.startsWith("data:image/")) {
+      const decoded = decodeStudioImage(replaceTarget.url);
+      const key = objectKeyFor(decoded.hash, decoded.mime, studioObjectPrefix("original"));
+      await tx
+        .insert(productImageObjectStaging)
+        .values({ objectKey: key, state: "REFERENCED", referencedAt: new Date() })
+        .onDuplicateKeyUpdate({ set: { state: "REFERENCED", referencedAt: new Date(), touchedAt: new Date() } });
+      await store.put(key, decoded.bytes, decoded.mime);
+      return {
+        objectKey: key,
+        mime: decoded.mime,
+        contentHash: decoded.hash,
+      };
+    }
+    if (replaceTarget.contentHash) {
+      return {
+        objectKey: null,
+        mime: null,
+        contentHash: replaceTarget.contentHash,
+      };
+    }
+    return null;
+  }
 
   if (managerActor) {
     // -------------------------------------------------------------
@@ -7468,6 +7556,9 @@ export async function quickSaveBarcodeProductImage(
               variantId: input.variantId ?? null,
             })
           : null;
+      const replaceOriginalSnap = replaceTarget
+        ? await resolveReplaceOriginalSnapshotTx(tx, replaceTarget)
+        : null;
       const existingImages = await tx
         .select({
           id: productImages.id,
@@ -7531,10 +7622,10 @@ export async function quickSaveBarcodeProductImage(
           variantId: input.variantId ?? null,
           campaignId: null,
           branchId: actor.branchId ?? null,
-          sourceContentHash: original?.hash ?? processed.hash,
-          originalObjectKey: originalKey ?? processedKey,
+          sourceContentHash: replaceOriginalSnap?.contentHash ?? original?.hash ?? processed.hash,
+          originalObjectKey: replaceTarget ? (replaceOriginalSnap?.objectKey ?? null) : (originalKey ?? processedKey),
           processedObjectKey: processedKey,
-          originalMime: original?.mime ?? processed.mime,
+          originalMime: replaceTarget ? (replaceOriginalSnap?.mime ?? null) : (original?.mime ?? processed.mime),
           processedMime: processed.mime,
           processedContentHash: processed.hash,
           processedBytes: processed.bytes.length,
@@ -7566,7 +7657,7 @@ export async function quickSaveBarcodeProductImage(
           isPrimary,
           sortOrder: nextSortOrder,
           objectKey: processedKey,
-          originalKey: originalKey ?? null,
+          originalKey: replaceTarget?.originalKey ?? replaceOriginalSnap?.objectKey ?? originalKey ?? null,
           contentHash: processed.hash,
           thumbDataUrl: thumbnail.dataUrl,
           mime: processed.mime,
@@ -7691,7 +7782,7 @@ export async function quickSaveBarcodeProductImage(
       await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
 
       let replaceSourceImageId: number | null = null;
-      let replaceSourceContentHash: string | null = null;
+      let replaceOriginalSnap: { objectKey: string | null; mime: string | null; contentHash: string } | null = null;
       if (input.replaceImageId != null) {
         const replaceTarget = await resolveReplaceTargetTx(tx, {
           replaceImageId: Number(input.replaceImageId),
@@ -7708,15 +7799,12 @@ export async function quickSaveBarcodeProductImage(
             }),
           });
         }
-        let targetHash = replaceTarget.contentHash ?? null;
-        if (!targetHash) {
-          try {
-            targetHash = decodeStudioImage(replaceTarget.url).hash;
-          } catch {
-            targetHash = null;
-          }
+        try {
+          replaceOriginalSnap = await resolveReplaceOriginalSnapshotTx(tx, replaceTarget);
+        } catch {
+          replaceOriginalSnap = null;
         }
-        if (!targetHash) {
+        if (!replaceOriginalSnap?.contentHash) {
           throw new TRPCError({
             code: "CONFLICT",
             message: appErrorMessage({
@@ -7727,7 +7815,6 @@ export async function quickSaveBarcodeProductImage(
           });
         }
         replaceSourceImageId = Number(replaceTarget.id);
-        replaceSourceContentHash = targetHash;
       }
 
       // فحص الفتحات النشطة الحالية لنفس (المنتج، المتغيّر) لتفادي تصادم المفتاح الفريد uq_pijob_product_variant_active
@@ -7789,10 +7876,10 @@ export async function quickSaveBarcodeProductImage(
           campaignId: null,
           branchId: actor.branchId ?? null,
           sourceImageId: replaceSourceImageId,
-          sourceContentHash: replaceSourceContentHash ?? original?.hash ?? processed.hash,
-          originalObjectKey: originalKey ?? processedKey,
+          sourceContentHash: replaceOriginalSnap?.contentHash ?? original?.hash ?? processed.hash,
+          originalObjectKey: replaceSourceImageId != null ? (replaceOriginalSnap?.objectKey ?? null) : (originalKey ?? processedKey),
           processedObjectKey: processedKey,
-          originalMime: original?.mime ?? processed.mime,
+          originalMime: replaceSourceImageId != null ? (replaceOriginalSnap?.mime ?? null) : (original?.mime ?? processed.mime),
           processedMime: processed.mime,
           processedContentHash: processed.hash,
           processedBytes: processed.bytes.length,

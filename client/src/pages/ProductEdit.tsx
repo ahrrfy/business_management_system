@@ -61,11 +61,15 @@ export default function ProductEdit() {
   const [savedSignature, setSavedSignature] = useState<string>("");
   const productIsDirty = savedSignature ? productFormSignature(model) !== savedSignature : false;
   const [hydrated, setHydrated] = useState(false);
+  const lastServerImagesSigRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!product.data) return;
     if (!hydrated) {
       const initial = productFormModelFromDocument(product.data);
+      lastServerImagesSigRef.current = initial.images
+        .map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`)
+        .join("|");
       setModel(initial);
       setSavedSignature(productFormSignature(initial));
 
@@ -80,11 +84,11 @@ export default function ProductEdit() {
       setHydrated(true);
       return;
     }
-    // مزامنة صور المعرض الحيّة بعد إجراءات الاستوديو دون المساس بحالة الحقول المعدَّلة
+    // مزامنة صور المعرض الحيّة بعد تغيّر بيانات الخادم وحدها دون استرجاع تعديلات المستخدم المحليّة
     const nextImages = hydrateProductImages(product.data.images);
     const nextSig = nextImages.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
-    const curSig = modelRef.current.images.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
-    if (nextSig !== curSig) {
+    if (nextSig !== lastServerImagesSigRef.current) {
+      lastServerImagesSigRef.current = nextSig;
       setModel((m) => ({ ...m, images: nextImages }));
       setSavedSignature((prev) => {
         if (!prev) return prev;

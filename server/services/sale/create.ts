@@ -1908,6 +1908,12 @@ async function createSaleInTxInner(
       unitCost,
       lineCost,
       serviceMaterials: serviceCost?.materials ?? [],
+      recipeSelections: l.recipeSelections?.length
+        ? l.recipeSelections.map((s) => ({
+            recipeLineId: Number(s.recipeLineId),
+            variantId: Number(s.variantId),
+          }))
+        : null,
       quantity: lineRes.quantity,
       discountAmount: lineRes.discountAmount,
       total: lineRes.total,
@@ -2561,6 +2567,7 @@ async function createSaleInTxInner(
       // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
       isGift: c.isGift,
       itemNameSnapshot: c.invoiceName,
+      recipeSelections: c.recipeSelections,
     });
     const insertedInvoiceItemId = extractInsertId(itemInsRes);
     if (c.internalLineToken) {

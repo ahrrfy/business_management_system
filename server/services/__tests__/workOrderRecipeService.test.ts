@@ -633,10 +633,14 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
       .from(s.workOrderMaterials)
       .where(eq(s.workOrderMaterials.workOrderId, woRes.workOrderId));
     expect(woMats.find((m) => m.variantId === 201)?.baseQuantity).toBe(6);
-    expect(woMats.find((m) => m.variantId === 201)?.unitCost).toBe("3500.00");
     expect(woMats.find((m) => m.variantId === 200)).toBeUndefined();
 
     await startWorkOrder(woRes.workOrderId, MGR);
+    const woMatsAfterStart = await db()
+      .select()
+      .from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, woRes.workOrderId));
+    expect(woMatsAfterStart.find((m) => m.variantId === 201)?.unitCost).toBe("3500.00");
     const [blueAfterStart] = await db()
       .select({ q: s.branchStock.quantity })
       .from(s.branchStock)

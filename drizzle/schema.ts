@@ -2465,6 +2465,8 @@ export const invoiceItems = mysqlTable(
     isGift: boolean("isGift").default(false).notNull(),
     // product-content-governance (0251): الاسم الذي طُبع/اعتمد لحظة البيع، لا يتغير مع تحديث الكتالوج.
     itemNameSnapshot: varchar("itemNameSnapshot", { length: 512 }),
+    // اختيارات متغيّرات/ألوان سطور الوصفة الصريحة لحظة البيع (لفتح/تعديل الفواتير المحجوزة بلا استنتاج).
+    recipeSelections: json("recipeSelections").$type<Array<{ recipeLineId: number; variantId: number }>>(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

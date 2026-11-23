@@ -11,6 +11,7 @@ vi.mock("../inventory/materialEligibility", () => ({
 
 import {
   assertNoUnexpectedRecipeSelections,
+  loadLineRecipeSelections,
   resolveRecipeLineSelections,
   type ServiceRecipeLine,
 } from "../serviceRecipeConsumption";
@@ -176,5 +177,68 @@ describe("recipe variant selection helpers & server validator", () => {
     expect(() =>
       assertNoUnexpectedRecipeSelections([{ recipeLineId: 1, variantId: 2 }], "الاختبار"),
     ).toThrow(TRPCError);
+  });
+
+  it("loadLineRecipeSelections preserves exact per-line variant assignments even when two customizable lines share one material product", async () => {
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: async () => [
+              {
+                variantId: 201,
+                materialName: "ورق كانسون",
+                variantName: "أبيض",
+                color: "أبيض",
+                colorHex: "#ffffff",
+                size: null,
+                variantKind: null,
+                sku: "CAN-WHT",
+              },
+              {
+                variantId: 202,
+                materialName: "ورق كانسون",
+                variantName: "أسود",
+                color: "أسود",
+                colorHex: "#000000",
+                size: null,
+                variantKind: null,
+                sku: "CAN-BLK",
+              },
+            ],
+          }),
+        }),
+      }),
+    };
+
+    const map = await loadLineRecipeSelections(mockDb as never, [
+      // Both lines pick the SAME variant (201) -> previously collapsed to 1 row in invoiceItemServiceMaterials
+      {
+        id: 1,
+        variantId: 90,
+        recipeSelections: [
+          { recipeLineId: 11, variantId: 201 },
+          { recipeLineId: 12, variantId: 201 },
+        ],
+      },
+      // Two lines pick DIFFERENT variants in reverse order -> previously could swap on reopen
+      {
+        id: 2,
+        variantId: 90,
+        recipeSelections: [
+          { recipeLineId: 11, variantId: 202 },
+          { recipeLineId: 12, variantId: 201 },
+        ],
+      },
+    ]);
+
+    expect(map.get(1)?.map((s) => ({ recipeLineId: s.recipeLineId, variantId: s.variantId }))).toEqual([
+      { recipeLineId: 11, variantId: 201 },
+      { recipeLineId: 12, variantId: 201 },
+    ]);
+    expect(map.get(2)?.map((s) => ({ recipeLineId: s.recipeLineId, variantId: s.variantId, color: s.color }))).toEqual([
+      { recipeLineId: 11, variantId: 202, color: "أسود" },
+      { recipeLineId: 12, variantId: 201, color: "أبيض" },
+    ]);
   });
 });

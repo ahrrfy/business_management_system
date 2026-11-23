@@ -172,6 +172,7 @@ export default function SimpleProductEditForm({
   // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
+  const lastServerImagesSigRef = useRef<string | null>(null);
   const currentStock = product.data?.variants[0]?.stockByBranch ?? {};
   const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) !== 0), [currentStock]);
   const isCostLocked = hasStock && !consignment.isConsignment;
@@ -219,15 +220,19 @@ export default function SimpleProductEditForm({
       );
       unitSeq.current = tmpl.length + 1;
       setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
-      setImages(hydrateProductImages(d.images));
+      const initialImages = hydrateProductImages(d.images);
+      lastServerImagesSigRef.current = initialImages
+        .map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`)
+        .join("|");
+      setImages(initialImages);
       setConsignment({ isConsignment: !!d.isConsignment, consignorId: d.consignorId ? Number(d.consignorId) : null, consignorName: d.consignorName });
       setHydrated(true);
       return;
     }
     const nextImages = hydrateProductImages(product.data.images);
     const nextSig = nextImages.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
-    const curSig = images.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
-    if (nextSig !== curSig) {
+    if (nextSig !== lastServerImagesSigRef.current) {
+      lastServerImagesSigRef.current = nextSig;
       setImages(nextImages);
       if (baseline.current) {
         try {
@@ -239,7 +244,7 @@ export default function SimpleProductEditForm({
         }
       }
     }
-  }, [product.data, hydrated, images]);
+  }, [product.data, hydrated]);
 
   const composedName = useMemo(
     () => [productType, brand, modelName].map((s) => s.trim()).filter(Boolean).join(" "),

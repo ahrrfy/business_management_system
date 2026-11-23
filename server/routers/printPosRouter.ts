@@ -12,17 +12,12 @@ import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   customers,
-  invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
-  productionRecipeLines,
-  productionRecipes,
-  products,
-  productVariants,
   shifts,
 } from "../../drizzle/schema";
 import { recipeSelectionsSchema, type RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
-import { variantDescriptor } from "@shared/variantDisplay";
+import { loadLineRecipeSelections } from "../services/serviceRecipeConsumption";
 import { collectOnReceptionInvoice } from "../services/reception/collect";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
@@ -55,105 +50,6 @@ const lineSchema = z.object({
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
   recipeSelections: recipeSelectionsSchema.optional(),
 });
-
-async function reconstructLineRecipeSelections(
-  db: NonNullable<ReturnType<typeof getDb>>,
-  items: ReadonlyArray<{ id: number; variantId: number }>,
-): Promise<Map<number, RecipeLineSelectionWithMeta[]>> {
-  const byItem = new Map<number, RecipeLineSelectionWithMeta[]>();
-  if (items.length === 0) return byItem;
-
-  const itemIds = items.map((i) => Number(i.id));
-  const serviceVariantIds = Array.from(new Set(items.map((i) => Number(i.variantId))));
-
-  const usedMaterials = await db
-    .select({
-      invoiceItemId: invoiceItemServiceMaterials.invoiceItemId,
-      materialVariantId: invoiceItemServiceMaterials.materialVariantId,
-      materialProductId: productVariants.productId,
-      materialName: products.name,
-      variantName: productVariants.variantName,
-      color: productVariants.color,
-      colorHex: productVariants.colorHex,
-      size: productVariants.size,
-      variantKind: productVariants.variantKind,
-      sku: productVariants.sku,
-    })
-    .from(invoiceItemServiceMaterials)
-    .innerJoin(productVariants, eq(invoiceItemServiceMaterials.materialVariantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(invoiceItemServiceMaterials.invoiceItemId, itemIds));
-
-  if (usedMaterials.length === 0) return byItem;
-
-  const customizableLines = await db
-    .select({
-      outputVariantId: productionRecipes.outputVariantId,
-      recipeLineId: productionRecipeLines.id,
-      inputProductId: productVariants.productId,
-    })
-    .from(productionRecipes)
-    .innerJoin(productionRecipeLines, eq(productionRecipeLines.recipeId, productionRecipes.id))
-    .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
-    .where(
-      and(
-        inArray(productionRecipes.outputVariantId, serviceVariantIds),
-        eq(productionRecipes.isActive, true),
-        eq(productionRecipeLines.allowVariantChoice, true),
-      ),
-    );
-
-  if (customizableLines.length === 0) return byItem;
-
-  const customLinesByService = new Map<number, typeof customizableLines>();
-  for (const line of customizableLines) {
-    const ov = Number(line.outputVariantId);
-    const list = customLinesByService.get(ov) ?? [];
-    list.push(line);
-    customLinesByService.set(ov, list);
-  }
-
-  const matsByItem = new Map<number, typeof usedMaterials>();
-  for (const m of usedMaterials) {
-    const ii = Number(m.invoiceItemId);
-    const list = matsByItem.get(ii) ?? [];
-    list.push(m);
-    matsByItem.set(ii, list);
-  }
-
-  for (const item of items) {
-    const customLines = customLinesByService.get(Number(item.variantId));
-    const itemMats = matsByItem.get(Number(item.id));
-    if (!customLines?.length || !itemMats?.length) continue;
-
-    const remainingMats = [...itemMats];
-    const selections: RecipeLineSelectionWithMeta[] = [];
-    for (const cl of customLines) {
-      const idx = remainingMats.findIndex((m) => Number(m.materialProductId) === Number(cl.inputProductId));
-      if (idx < 0) continue;
-      const [chosen] = remainingMats.splice(idx, 1);
-      const label = variantDescriptor({
-        variantName: chosen.variantName,
-        color: chosen.color,
-        size: chosen.size,
-        variantKind: chosen.variantKind,
-        sku: chosen.sku,
-      });
-      selections.push({
-        recipeLineId: Number(cl.recipeLineId),
-        variantId: Number(chosen.materialVariantId),
-        materialName: chosen.materialName,
-        label: label || `#${chosen.materialVariantId}`,
-        color: chosen.color,
-        colorHex: chosen.colorHex,
-      });
-    }
-    if (selections.length > 0) {
-      byItem.set(Number(item.id), selections);
-    }
-  }
-  return byItem;
-}
 
 export const printPosRouter = router({
   checkoutChargeOptions: posCashierProcedure
@@ -443,17 +339,21 @@ export const printPosRouter = router({
           unitPrice: invoiceItems.unitPrice,
           total: invoiceItems.total,
           itemNameSnapshot: invoiceItems.itemNameSnapshot,
+          recipeSelections: invoiceItems.recipeSelections,
         })
         .from(invoiceItems)
         .where(inArray(invoiceItems.invoiceId, invIds));
 
-      const selectionsByItem = await reconstructLineRecipeSelections(db, items);
-      const itemsByInv = new Map<number, Array<(typeof items)[number] & { recipeSelections?: RecipeLineSelectionWithMeta[] }>>();
-      for (const it of items) {
-        const arr = itemsByInv.get(it.invoiceId) ?? [];
-        const selections = selectionsByItem.get(Number(it.id));
-        arr.push(selections?.length ? { ...it, recipeSelections: selections } : it);
-        itemsByInv.set(it.invoiceId, arr);
+      const selectionsByItem = await loadLineRecipeSelections(db, items);
+      const itemsByInv = new Map<
+        number,
+        Array<Omit<(typeof items)[number], "recipeSelections"> & { recipeSelections?: RecipeLineSelectionWithMeta[] }>
+      >();
+      for (const { recipeSelections: _rawSelections, ...baseItem } of items) {
+        const arr = itemsByInv.get(baseItem.invoiceId) ?? [];
+        const selections = selectionsByItem.get(Number(baseItem.id));
+        arr.push(selections?.length ? { ...baseItem, recipeSelections: selections } : baseItem);
+        itemsByInv.set(baseItem.invoiceId, arr);
       }
 
       return rows.map((r) => {
@@ -525,14 +425,15 @@ export const printPosRouter = router({
           unitPrice: invoiceItems.unitPrice,
           total: invoiceItems.total,
           itemNameSnapshot: invoiceItems.itemNameSnapshot,
+          recipeSelections: invoiceItems.recipeSelections,
         })
         .from(invoiceItems)
         .where(eq(invoiceItems.invoiceId, inv.id));
 
-      const selectionsByItem = await reconstructLineRecipeSelections(db, rawLines);
-      const lines = rawLines.map((l) => {
-        const selections = selectionsByItem.get(Number(l.id));
-        return selections?.length ? { ...l, recipeSelections: selections } : l;
+      const selectionsByItem = await loadLineRecipeSelections(db, rawLines);
+      const lines = rawLines.map(({ recipeSelections: _rawSelections, ...baseLine }) => {
+        const selections = selectionsByItem.get(Number(baseLine.id));
+        return selections?.length ? { ...baseLine, recipeSelections: selections } : baseLine;
       });
 
       const remainingD = round2(money(inv.total).minus(money(inv.paidAmount)));

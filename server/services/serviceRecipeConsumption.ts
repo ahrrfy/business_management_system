@@ -1,16 +1,18 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { quantityNumber } from "@shared/quantity";
-import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
-import { eq, inArray } from "drizzle-orm";
+import type { RecipeLineSelection, RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
+import { variantDescriptor } from "@shared/variantDisplay";
+import { and, eq, inArray } from "drizzle-orm";
 
 import {
+  invoiceItemServiceMaterials,
   productionRecipeLines,
   productionRecipes,
   productVariants,
   products,
 } from "../../drizzle/schema";
-import type { Tx } from "../db";
+import type { getDb, Tx } from "../db";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { money } from "./money";
 
@@ -384,4 +386,167 @@ export function exactRecipeMaterialQuantity(
     });
   }
   return quantityNumber(quantity);
+}
+
+/**
+ * تحميل اختيارات سطور الوصفة الصريحة لسطور فواتير POS مع توافق رجعي للطلبات التاريخية.
+ */
+export async function loadLineRecipeSelections(
+  db: Pick<NonNullable<ReturnType<typeof getDb>>, "select">,
+  items: ReadonlyArray<{
+    id: number;
+    variantId: number;
+    recipeSelections?: RecipeLineSelection[] | null;
+  }>,
+): Promise<Map<number, RecipeLineSelectionWithMeta[]>> {
+  const byItem = new Map<number, RecipeLineSelectionWithMeta[]>();
+  if (items.length === 0) return byItem;
+
+  const explicitVariantIds = new Set<number>();
+  const legacyItems: Array<{ id: number; variantId: number }> = [];
+  for (const item of items) {
+    if (Array.isArray(item.recipeSelections) && item.recipeSelections.length > 0) {
+      for (const sel of item.recipeSelections) {
+        explicitVariantIds.add(Number(sel.variantId));
+      }
+    } else {
+      legacyItems.push({ id: Number(item.id), variantId: Number(item.variantId) });
+    }
+  }
+
+  if (explicitVariantIds.size > 0) {
+    const variantMetaRows = await db
+      .select({
+        variantId: productVariants.id,
+        materialName: products.name,
+        variantName: productVariants.variantName,
+        color: productVariants.color,
+        colorHex: productVariants.colorHex,
+        size: productVariants.size,
+        variantKind: productVariants.variantKind,
+        sku: productVariants.sku,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, Array.from(explicitVariantIds)));
+    const metaByVariantId = new Map(variantMetaRows.map((row) => [Number(row.variantId), row]));
+    for (const item of items) {
+      if (!Array.isArray(item.recipeSelections) || item.recipeSelections.length === 0) continue;
+      const hydrated: RecipeLineSelectionWithMeta[] = item.recipeSelections.map((sel) => {
+        const vid = Number(sel.variantId);
+        const meta = metaByVariantId.get(vid);
+        const label = meta
+          ? variantDescriptor({
+              variantName: meta.variantName,
+              color: meta.color,
+              size: meta.size,
+              variantKind: meta.variantKind,
+              sku: meta.sku,
+            })
+          : "";
+        return {
+          recipeLineId: Number(sel.recipeLineId),
+          variantId: vid,
+          materialName: meta?.materialName,
+          label: label || `#${vid}`,
+          color: meta?.color ?? null,
+          colorHex: meta?.colorHex ?? null,
+        };
+      });
+      byItem.set(Number(item.id), hydrated);
+    }
+  }
+
+  if (legacyItems.length === 0) return byItem;
+
+  const itemIds = legacyItems.map((i) => i.id);
+  const serviceVariantIds = Array.from(new Set(legacyItems.map((i) => i.variantId)));
+
+  const usedMaterials = await db
+    .select({
+      invoiceItemId: invoiceItemServiceMaterials.invoiceItemId,
+      materialVariantId: invoiceItemServiceMaterials.materialVariantId,
+      materialProductId: productVariants.productId,
+      materialName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
+      sku: productVariants.sku,
+    })
+    .from(invoiceItemServiceMaterials)
+    .innerJoin(productVariants, eq(invoiceItemServiceMaterials.materialVariantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(invoiceItemServiceMaterials.invoiceItemId, itemIds));
+
+  if (usedMaterials.length === 0) return byItem;
+
+  const customizableLines = await db
+    .select({
+      outputVariantId: productionRecipes.outputVariantId,
+      recipeLineId: productionRecipeLines.id,
+      inputProductId: productVariants.productId,
+    })
+    .from(productionRecipes)
+    .innerJoin(productionRecipeLines, eq(productionRecipeLines.recipeId, productionRecipes.id))
+    .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
+    .where(
+      and(
+        inArray(productionRecipes.outputVariantId, serviceVariantIds),
+        eq(productionRecipes.isActive, true),
+        eq(productionRecipeLines.allowVariantChoice, true),
+      ),
+    );
+
+  if (customizableLines.length === 0) return byItem;
+
+  const customLinesByService = new Map<number, typeof customizableLines>();
+  for (const line of customizableLines) {
+    const ov = Number(line.outputVariantId);
+    const list = customLinesByService.get(ov) ?? [];
+    list.push(line);
+    customLinesByService.set(ov, list);
+  }
+
+  const matsByItem = new Map<number, typeof usedMaterials>();
+  for (const m of usedMaterials) {
+    const ii = Number(m.invoiceItemId);
+    const list = matsByItem.get(ii) ?? [];
+    list.push(m);
+    matsByItem.set(ii, list);
+  }
+
+  for (const item of legacyItems) {
+    const customLines = customLinesByService.get(item.variantId);
+    const itemMats = matsByItem.get(item.id);
+    if (!customLines?.length || !itemMats?.length) continue;
+
+    const remainingMats = [...itemMats];
+    const selections: RecipeLineSelectionWithMeta[] = [];
+    for (const cl of customLines) {
+      const idx = remainingMats.findIndex((m) => Number(m.materialProductId) === Number(cl.inputProductId));
+      if (idx < 0) continue;
+      const [chosen] = remainingMats.splice(idx, 1);
+      const label = variantDescriptor({
+        variantName: chosen.variantName,
+        color: chosen.color,
+        size: chosen.size,
+        variantKind: chosen.variantKind,
+        sku: chosen.sku,
+      });
+      selections.push({
+        recipeLineId: Number(cl.recipeLineId),
+        variantId: Number(chosen.materialVariantId),
+        materialName: chosen.materialName,
+        label: label || `#${chosen.materialVariantId}`,
+        color: chosen.color,
+        colorHex: chosen.colorHex,
+      });
+    }
+    if (selections.length > 0) {
+      byItem.set(item.id, selections);
+    }
+  }
+  return byItem;
 }
