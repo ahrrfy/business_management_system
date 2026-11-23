@@ -9,6 +9,7 @@
 //  I22 — التدقيق يحمل قبل/بعد ولا يحمل designImages/printSpec أبداً.
 //  ق٤  — الفارغة تنقضي بعد ٢٤ ساعة (تتجدّد بكل نشاط)؛ المموّلة لا تُطوى أبداً.
 import type { WorkOrderChannel } from "@shared/receptionChannel";
+import { stripRecipeSelectionMeta, type RecipeLineSelection } from "@shared/recipeVariantSelection";
 import type {CheckoutChargesInput} from "../../../shared/checkoutCharges";
 import {normalizeCheckoutChargesIntent} from "../checkoutCharges";
 import { appErrorMessage } from "@shared/errors";
@@ -51,6 +52,7 @@ export interface DraftLineInput {
   customizationText?: string | null;
   designImages?: string | null; // JSON [{url,caption,sortOrder}] — لا يُنتقى في القوائم (I22)
   printSpec?: string | null; // JSON بنية CustomizationData عدا الصور
+  recipeSelections?: RecipeLineSelection[] | null;
   dueDate?: string | null;
   assignedTo?: number | null;
   priceOverride?: boolean;
@@ -132,7 +134,11 @@ function lineRowValues(draftId: number, line: DraftLineInput, index: number) {
     title: line.title?.trim() || null,
     customizationText: line.customizationText ?? null,
     designImages: line.designImages ?? null,
-    printSpec: line.printSpec ?? null,
+    printSpec:
+      line.printSpec ??
+      (line.recipeSelections?.length
+        ? JSON.stringify({ recipeSelections: stripRecipeSelectionMeta(line.recipeSelections) })
+        : null),
     dueDate: line.dueDate ? new Date(line.dueDate) : null,
     assignedTo: line.assignedTo ?? null,
     priceOverride: !!line.priceOverride,

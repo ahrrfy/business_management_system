@@ -672,9 +672,13 @@ export async function correctSaleInTx(
     const serviceIds = replacementKinds.filter(row => !row.isBundle && row.isService).map(row => row.id);
     const discoveredBundles = await getBundleDefinitions(tx, bundleIds);
     const discoveredServices = await discoverServiceRecipeDefinitions(tx, serviceIds);
+    const selectedReplacementMaterialIds = input.lines
+      .flatMap((line) => (line.recipeSelections ?? []).map((sel) => Number(sel.variantId)))
+      .filter((id) => Number.isInteger(id) && id > 0);
     const scope = await lockEconomicInventoryScope(tx, [
       ...items.map(item => Number(item.variantId)), ...savedComponents.map(row => row.id),
       ...savedMaterials.map(row => row.id), ...replacementIds,
+      ...selectedReplacementMaterialIds,
       ...Array.from(discoveredBundles.values()).flatMap(rows => rows.map(row => row.componentVariantId)),
       ...Array.from(discoveredServices.values()).flatMap(definition => definition.lines.map(line => line.inputVariantId)),
     ], { productLock: "update" });

@@ -9,7 +9,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createRecipe, getRecipeForProduct } from "../recipeService";
+import { createRecipe, getCustomizableRecipeLineOptions, getRecipeForProduct } from "../recipeService";
 import { createWorkOrder } from "../workOrder/create";
 import { startWorkOrder } from "../workOrder/lifecycle";
 import { cancelWorkOrder } from "../workOrder/cancel";
@@ -552,6 +552,120 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
     expect(currentMaterials[0].variantId).toBe(200);
     expect(currentMaterials[0].baseQuantity).toBe(3);
     expect(currentMaterials[0].isBaseMaterial).toBe(false);
+  });
+
+  it("يدعم اختيار متغيّر/لون مادة الوصفة عند الإنشاء ويرفض الناقص أو المزوّر ويخصم/يسترد عند البدء والإلغاء", async () => {
+    await db().insert(s.productVariants).values({
+      id: 201,
+      productId: 20,
+      sku: "FABRIC-BLUE",
+      variantName: "أزرق",
+      color: "أزرق",
+      colorHex: "#2563eb",
+      costPrice: "3500.00",
+      isActive: true,
+    });
+    await db().insert(s.branchStock).values({ variantId: 201, branchId: 1, quantity: 40 });
+
+    const created = await createRecipe({
+      name: "وصفة علم باختيار لون القماش",
+      outputVariantId: 100,
+      outputProductUnitId: 1000,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      lines: [
+        { inputVariantId: 200, qtyPerOutputBase: "2.0000", allowVariantChoice: true },
+        { inputVariantId: 300, qtyPerOutputBase: "1.0000", allowVariantChoice: false },
+      ],
+    }, MGR);
+    const [choiceLine] = await db()
+      .select()
+      .from(s.productionRecipeLines)
+      .where(and(eq(s.productionRecipeLines.recipeId, created.recipeId), eq(s.productionRecipeLines.allowVariantChoice, true)));
+    expect(choiceLine).toBeTruthy();
+
+    const customOpts = await getCustomizableRecipeLineOptions({ branchId: 1, variantId: 100 });
+    expect(customOpts.lines).toHaveLength(1);
+    expect(customOpts.lines[0]?.options.map((o) => o.variantId).sort((a, b) => a - b)).toEqual([200, 201]);
+    expect(JSON.stringify(customOpts)).not.toContain("costPrice");
+
+    await expect(
+      createWorkOrder({
+        branchId: 1,
+        customerId: 1,
+        baseVariantId: 100,
+        baseProductUnitId: 1000,
+        title: "علم بدون اختيار لون",
+        quantity: 2,
+        salePrice: "20000.00",
+        clientRequestId: randomUUID(),
+      }, MGR),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      createWorkOrder({
+        branchId: 1,
+        customerId: 1,
+        baseVariantId: 100,
+        baseProductUnitId: 1000,
+        title: "علم بمتغير مزور",
+        quantity: 2,
+        salePrice: "20000.00",
+        recipeSelections: [{ recipeLineId: choiceLine!.id, variantId: 300 }],
+        clientRequestId: randomUUID(),
+      }, MGR),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const woRes = await createWorkOrder({
+      branchId: 1,
+      customerId: 1,
+      baseVariantId: 100,
+      baseProductUnitId: 1000,
+      title: "علم أزرق",
+      quantity: 3,
+      salePrice: "45000.00",
+      recipeSelections: [{ recipeLineId: choiceLine!.id, variantId: 201 }],
+      clientRequestId: randomUUID(),
+    }, MGR);
+
+    const woMats = await db()
+      .select()
+      .from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, woRes.workOrderId));
+    expect(woMats.find((m) => m.variantId === 201)?.baseQuantity).toBe(6);
+    expect(woMats.find((m) => m.variantId === 200)).toBeUndefined();
+
+    await startWorkOrder(woRes.workOrderId, MGR);
+    const woMatsAfterStart = await db()
+      .select()
+      .from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, woRes.workOrderId));
+    expect(woMatsAfterStart.find((m) => m.variantId === 201)?.unitCost).toBe("3500.00");
+    const [blueAfterStart] = await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 201)));
+    const [defaultAfterStart] = await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 200)));
+    expect(Number(blueAfterStart?.q)).toBe(34);
+    expect(Number(defaultAfterStart?.q)).toBe(100);
+
+    const [startedWo] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, woRes.workOrderId));
+    await cancelWorkOrder(woRes.workOrderId, MGR, {
+      expectedVersion: Number(startedWo?.version),
+      reason: "إلغاء تجريبي",
+      confirmAllMaterialsReturnedUsable: true,
+    }, { approvedControlRequestId: 1000 });
+    const [blueAfterCancel] = await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 201)));
+    expect(Number(blueAfterCancel?.q)).toBe(40);
   });
 });
 

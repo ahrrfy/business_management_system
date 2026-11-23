@@ -504,9 +504,18 @@ export default function WorkOrderDetail() {
           sku: m.sku,
         });
         return (
-          <span>
-            {m.productName ?? "—"}
-            {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+          <span className="inline-flex items-center gap-1.5">
+            {m.colorHex ? (
+              <span
+                aria-hidden
+                className="size-3 rounded-full border border-black/20 shrink-0"
+                style={{ backgroundColor: m.colorHex }}
+              />
+            ) : null}
+            <span>
+              {m.productName ?? "—"}
+              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+            </span>
           </span>
         );
       },

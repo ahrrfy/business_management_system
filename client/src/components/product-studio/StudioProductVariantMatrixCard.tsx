@@ -38,6 +38,7 @@ export function StudioProductVariantMatrixCard({
   disabled,
 }: Props) {
   const [expanded, setExpanded] = useState(true);
+  const [failedThumbIds, setFailedThumbIds] = useState<Set<number>>(() => new Set());
 
   const matrixQuery = trpc.productStudio.variantMatrix.useQuery(
     { productId },
@@ -243,11 +244,19 @@ export function StudioProductVariantMatrixCard({
 
                   {/* تذييل البطاقة وإجراء الانتقال */}
                   <div className="mt-2.5 flex items-center justify-between gap-1 border-t border-border/40 pt-2">
-                    {item.primaryImageThumb ? (
+                    {item.primaryImageThumb && !failedThumbIds.has(item.variantId) ? (
                       <div className="flex items-center gap-1.5">
                         <img
                           src={item.primaryImageThumb}
                           alt={item.variantName}
+                          onError={() =>
+                            setFailedThumbIds((prev) => {
+                              if (prev.has(item.variantId)) return prev;
+                              const next = new Set(prev);
+                              next.add(item.variantId);
+                              return next;
+                            })
+                          }
                           className="size-7 rounded border object-contain bg-white p-0.5"
                         />
                         <span className="text-[10px] text-muted-foreground">صورة البديل</span>

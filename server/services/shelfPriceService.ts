@@ -14,7 +14,7 @@
  *    عبر resolvePromotionForLine (نقطة العرض = نقطة الفرض).
  */
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import {
   branchStock,
@@ -41,16 +41,32 @@ export function todayYmdBaghdad(): string {
   return baghdad.toISOString().slice(0, 10);
 }
 
-/** تحويل آمن لصورة المنتج مع احترام عهد immutable وروابط السيرفر */
+/** تحويل آمن لصورة المنتج مع احترام عهد immutable وروابط السيرفر (ومراعاة showInStore=0 دون 404). */
 function toShelfImage(
-  imageId: number | null | undefined,
-  value: string | null,
+  image: {
+    id: number;
+    url: string;
+    thumbDataUrl: string | null;
+    objectKey: string | null;
+    origin: string | null;
+  } | null,
+  showInStore: boolean,
   preferredWidth: PublicProductImageWidth = 320,
 ): string | null {
-  if (!value) return null;
-  if (!/^data:/i.test(value.trim())) return withPublicProductImageWidth(value, preferredWidth);
-  if (imageId == null) return null;
-  return decodeDataUrl(value) ? productImageUrl(Number(imageId), value, preferredWidth) : null;
+  if (!image) return null;
+  const value = image.url?.trim() ?? "";
+  if (!showInStore) {
+    if (!(image.origin === "ORIGINAL" && image.objectKey != null) && image.thumbDataUrl) {
+      return image.thumbDataUrl;
+    }
+    if (image.thumbDataUrl) return image.thumbDataUrl;
+    return value && !/^data:/i.test(value) && !/^\/api\/img\/(?:company\/[^/]+\/)?product\//i.test(value)
+      ? value
+      : null;
+  }
+  if (!value) return image.thumbDataUrl ?? null;
+  if (!/^data:/i.test(value)) return withPublicProductImageWidth(value, preferredWidth);
+  return decodeDataUrl(value) ? productImageUrl(Number(image.id), value, preferredWidth) : (image.thumbDataUrl ?? null);
 }
 
 export interface ShelfUnitOption {
@@ -148,6 +164,7 @@ export async function lookupShelfPrice(
       productName: products.name,
       brand: products.brand,
       category: categories.name,
+      showInStore: products.showInStore,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
       unitName: productUnits.unitName,
@@ -156,8 +173,6 @@ export async function lookupShelfPrice(
       conversionFactor: productUnits.conversionFactor,
       price: productPrices.price,
       barcode: productUnits.barcode,
-      imageId: productImages.id,
-      imageUrl: productImages.url,
       stockQuantity: branchStock.quantity,
       isService: products.isService,
       isBundle: products.isBundle,
@@ -180,14 +195,6 @@ export async function lookupShelfPrice(
         branchId != null ? eq(branchStock.branchId, branchId) : sql`1=0`,
       ),
     )
-    .leftJoin(
-      productImages,
-      and(
-        eq(productImages.productId, products.id),
-        eq(productImages.isPrimary, true),
-        eq(productImages.reviewStatus, "APPROVED"),
-      ),
-    )
     .where(
       and(
         eq(productUnits.id, owner.productUnitId),
@@ -203,6 +210,23 @@ export async function lookupShelfPrice(
   }
 
   const row = rows[0];
+  const approvedImgs = await db
+    .select({
+      id: productImages.id,
+      variantId: productImages.variantId,
+      url: productImages.url,
+      thumbDataUrl: productImages.thumbDataUrl,
+      objectKey: productImages.objectKey,
+      origin: productImages.origin,
+    })
+    .from(productImages)
+    .where(and(eq(productImages.productId, Number(row.productId)), eq(productImages.reviewStatus, "APPROVED")))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id));
+  const matchedImg =
+    approvedImgs.find((im) => im.variantId != null && Number(im.variantId) === Number(row.variantId)) ??
+    approvedImgs.find((im) => im.variantId == null) ??
+    approvedImgs[0] ??
+    null;
 
   // ٤. حساب التوفر (inStock: نعم/لا) دون كشف أرقام المخزون الدقيقة
   const stockQty = row.stockQuantity != null ? Number(row.stockQuantity) : 0;
@@ -313,7 +337,18 @@ export async function lookupShelfPrice(
     discountPercent,
     promotionName,
     inStock,
-    imageUrl: toShelfImage(row.imageId, row.imageUrl ?? null),
+    imageUrl: toShelfImage(
+      matchedImg
+        ? {
+            id: Number(matchedImg.id),
+            url: matchedImg.url,
+            thumbDataUrl: matchedImg.thumbDataUrl,
+            objectKey: matchedImg.objectKey,
+            origin: matchedImg.origin,
+          }
+        : null,
+      row.showInStore !== false,
+    ),
     availableUnits,
     relatedProducts,
   };

@@ -10,6 +10,7 @@ import {
 } from "@/components/CustomizationDialog";
 import Decimal from "decimal.js";
 import { D, round2 } from "@/lib/money";
+import { stripRecipeSelectionMeta } from "@shared/recipeVariantSelection";
 import {
   effectivePrice,
   lineTotal,
@@ -170,6 +171,7 @@ export function buildReceptionCheckoutPayload({
       const baseQty = Math.max(1, Math.round(c.qty * factor));
       materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
     }
+    const strippedSelections = stripRecipeSelectionMeta(custom.recipeSelections);
     return {
       baseVariantId: c.manualService ? null : c.row.variantId,
       baseProductUnitId: c.manualService ? null : c.row.productUnitId,
@@ -177,6 +179,7 @@ export function buildReceptionCheckoutPayload({
       customizationText: finalText || null,
       quantity: c.qty,
       materials,
+      ...(strippedSelections?.length ? { recipeSelections: strippedSelections } : {}),
       laborCost: D(custom.laborCost || 0).toFixed(2),
       // ٥/٨ — salePrice = بضاعة/خدمة فقط؛ أجرة التوصيل في عمودها المستقلّ (تمريرٌ لا إيراد).
       salePrice: x.salePriceStr,
@@ -300,6 +303,7 @@ export function buildReceptionCheckoutPayload({
                 : D(0);
               const cashierDiscount = Decimal.max(0, round2(discAmt.minus(promoDiscount)));
 
+              const strippedLineSelections = stripRecipeSelectionMeta(c.recipeSelections);
               return {
                 variantId: c.row.variantId,
                 productUnitId: c.row.productUnitId,
@@ -309,6 +313,7 @@ export function buildReceptionCheckoutPayload({
                 ...(promotionId != null ? { promotionId } : {}),
                 ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
                 ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+                ...(strippedLineSelections?.length ? { recipeSelections: strippedLineSelections } : {}),
               };
             }),
           }
@@ -320,12 +325,16 @@ export function buildReceptionCheckoutPayload({
             ...(effectivePrintDiscD.gt(0)
               ? { invoiceDiscount: effectivePrintDiscD.toFixed(2) }
               : {}),
-            lines: printLines.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-            })),
+            lines: printLines.map((c) => {
+              const strippedPrintSelections = stripRecipeSelectionMeta(c.recipeSelections);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+                ...(strippedPrintSelections?.length ? { recipeSelections: strippedPrintSelections } : {}),
+              };
+            }),
           }
         : null,
     workOrders: workOrderPayloads,

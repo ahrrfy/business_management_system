@@ -1,10 +1,17 @@
 import { useEffect, useRef } from "react";
-import { Pencil, Receipt as ReceiptIcon, X } from "lucide-react";
+import { Palette, Pencil, Receipt as ReceiptIcon, X } from "lucide-react";
 import { isCustomPriceSku, serviceIcon } from "@/lib/printServices";
 import type { RouterOutputs } from "@/lib/trpc";
+import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 
 type Svc = RouterOutputs["printPos"]["services"][number];
-export type PrintCartLine = { uid: number; svc: Svc; qty: number; price: number };
+export type PrintCartLine = {
+  uid: number;
+  svc: Svc;
+  qty: number;
+  price: number;
+  recipeSelections?: RecipeLineSelectionWithMeta[];
+};
 
 export interface PrintCartListProps {
   C: {
@@ -31,6 +38,8 @@ export interface PrintCartListProps {
   customerId: number | null;
   setCustomerId: (id: number | null) => void;
   addTick: number;
+  customizableVariantIds?: ReadonlySet<number>;
+  onChangeRecipeSelections?: (line: PrintCartLine) => void;
 }
 
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
@@ -49,6 +58,8 @@ export function PrintCartList({
   customerId,
   setCustomerId,
   addTick,
+  customizableVariantIds,
+  onChangeRecipeSelections,
 }: PrintCartListProps) {
   const items = cart.reduce((s, c) => s + c.qty, 0);
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
@@ -125,6 +136,68 @@ export function PrintCartList({
                       <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 32, height: 32, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}><X aria-hidden size={15} /></button>
                     </div>
                   </div>
+                  {(c.recipeSelections?.length || (onChangeRecipeSelections && customizableVariantIds?.has(c.svc.variantId))) && (
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                      {(c.recipeSelections ?? []).map((sel) => (
+                        <span
+                          key={`${sel.recipeLineId}-${sel.variantId}`}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "1px 6px",
+                            borderRadius: 5,
+                            border: `1px solid ${C.border}`,
+                            background: C.muted,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: C.fg,
+                          }}
+                        >
+                          {sel.colorHex ? (
+                            <span
+                              aria-hidden
+                              style={{
+                                width: 9,
+                                height: 9,
+                                borderRadius: "50%",
+                                border: "1px solid rgba(0,0,0,0.2)",
+                                backgroundColor: sel.colorHex,
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : null}
+                          <span>{sel.materialName ? `${sel.materialName}: ` : ""}{sel.label || sel.color || `#${sel.variantId}`}</span>
+                        </span>
+                      ))}
+                      {onChangeRecipeSelections && customizableVariantIds?.has(c.svc.variantId) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onChangeRecipeSelections(c);
+                          }}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 3,
+                            padding: "1px 6px",
+                            borderRadius: 5,
+                            border: `1px dashed ${C.primary}`,
+                            background: "transparent",
+                            color: C.primary,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          <Palette aria-hidden size={11} />
+                          <span>تغيير اللون</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div onClick={(e) => { e.stopPropagation(); setSelUid(c.uid); setEditPriceUid(c.uid); }} style={{ minWidth: 70 }}>
                       {editing ? (

@@ -10,7 +10,14 @@ import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { customers, invoiceItems, invoices, shifts } from "../../drizzle/schema";
+import {
+  customers,
+  invoiceItems,
+  invoices,
+  shifts,
+} from "../../drizzle/schema";
+import { recipeSelectionsSchema, type RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
+import { loadLineRecipeSelections } from "../services/serviceRecipeConsumption";
 import { collectOnReceptionInvoice } from "../services/reception/collect";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
@@ -41,6 +48,7 @@ const lineSchema = z.object({
   // السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير) — nonNegMoneyString المركزية.
   unitPriceOverride: nonNegMoneyString.optional(),
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+  recipeSelections: recipeSelectionsSchema.optional(),
 });
 
 export const printPosRouter = router({
@@ -331,15 +339,21 @@ export const printPosRouter = router({
           unitPrice: invoiceItems.unitPrice,
           total: invoiceItems.total,
           itemNameSnapshot: invoiceItems.itemNameSnapshot,
+          recipeSelections: invoiceItems.recipeSelections,
         })
         .from(invoiceItems)
         .where(inArray(invoiceItems.invoiceId, invIds));
 
-      const itemsByInv = new Map<number, typeof items>();
-      for (const it of items) {
-        const arr = itemsByInv.get(it.invoiceId) ?? [];
-        arr.push(it);
-        itemsByInv.set(it.invoiceId, arr);
+      const selectionsByItem = await loadLineRecipeSelections(db, items);
+      const itemsByInv = new Map<
+        number,
+        Array<Omit<(typeof items)[number], "recipeSelections"> & { recipeSelections?: RecipeLineSelectionWithMeta[] }>
+      >();
+      for (const { recipeSelections: _rawSelections, ...baseItem } of items) {
+        const arr = itemsByInv.get(baseItem.invoiceId) ?? [];
+        const selections = selectionsByItem.get(Number(baseItem.id));
+        arr.push(selections?.length ? { ...baseItem, recipeSelections: selections } : baseItem);
+        itemsByInv.set(baseItem.invoiceId, arr);
       }
 
       return rows.map((r) => {
@@ -402,7 +416,7 @@ export const printPosRouter = router({
 
       if (!inv) return null;
 
-      const lines = await db
+      const rawLines = await db
         .select({
           id: invoiceItems.id,
           variantId: invoiceItems.variantId,
@@ -411,9 +425,16 @@ export const printPosRouter = router({
           unitPrice: invoiceItems.unitPrice,
           total: invoiceItems.total,
           itemNameSnapshot: invoiceItems.itemNameSnapshot,
+          recipeSelections: invoiceItems.recipeSelections,
         })
         .from(invoiceItems)
         .where(eq(invoiceItems.invoiceId, inv.id));
+
+      const selectionsByItem = await loadLineRecipeSelections(db, rawLines);
+      const lines = rawLines.map(({ recipeSelections: _rawSelections, ...baseLine }) => {
+        const selections = selectionsByItem.get(Number(baseLine.id));
+        return selections?.length ? { ...baseLine, recipeSelections: selections } : baseLine;
+      });
 
       const remainingD = round2(money(inv.total).minus(money(inv.paidAmount)));
 
@@ -627,6 +648,7 @@ export const printPosRouter = router({
           productUnitId: l.productUnitId,
           quantity: l.quantity,
           unitPriceOverride: l.unitPriceOverride,
+          ...(l.recipeSelections?.length ? { recipeSelections: l.recipeSelections } : {}),
         })),
         invoiceDiscount: input.invoiceDiscount ?? undefined,
         notes: [input.reason ? `[سبب التعديل: ${input.reason}]` : null, input.notes?.trim() ?? inv.notes ?? null].filter(Boolean).join(" - ") || undefined,

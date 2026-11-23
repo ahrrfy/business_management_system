@@ -13,7 +13,7 @@
  *  ٩. مسح وتصفير سجلات الاستعلامات والبيانات التجريبية والبدء من الصفر.
  */
 import { createHash } from "node:crypto";
-import { and, count, countDistinct, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, count, countDistinct, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
   branches,
   categories,
@@ -26,6 +26,7 @@ import {
   type ShelfLookupLog,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { inventoryProductImageUrl } from "../imageRoute";
 import { logger } from "../logger";
 import { baghdadTodayUtcRange } from "./businessDay";
 
@@ -300,79 +301,109 @@ export async function getShelfBeneficiariesStats(options?: {
     beneficiaryCount: Number(r.beneficiaryCount ?? 0),
   }));
 
-  // ٥. أكثر الأصناف استعلاماً وبحثاً من الزبائن
+  // ٥. أكثر الأصناف استعلاماً وبحثاً من الزبائن (مجمّعة على productId دون تضاعف بدائل/صور)
   const topProductsRows = await db
     .select({
       productId: shelfLookupLogs.productId,
-      logProductName: shelfLookupLogs.productName,
-      dbProductName: products.name,
-      brand: products.brand,
-      category: categories.name,
-      barcode: shelfLookupLogs.barcode,
+      logProductName: sql<string | null>`MAX(${shelfLookupLogs.productName})`,
+      dbProductName: sql<string | null>`MAX(${products.name})`,
+      brand: sql<string | null>`MAX(${products.brand})`,
+      category: sql<string | null>`MAX(${categories.name})`,
+      barcode: sql<string>`MAX(${shelfLookupLogs.barcode})`,
       scanCount: count(shelfLookupLogs.id),
-      price: productPrices.price,
-      imageUrl: productImages.url,
     })
     .from(shelfLookupLogs)
     .leftJoin(products, eq(shelfLookupLogs.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
-    .leftJoin(
-      productVariants,
-      and(
-        eq(productVariants.productId, products.id),
-        eq(productVariants.isActive, true),
-      ),
-    )
-    .leftJoin(
-      productUnits,
-      and(
-        eq(productUnits.variantId, productVariants.id),
-        eq(productUnits.isBaseUnit, true),
-      ),
-    )
-    .leftJoin(
-      productPrices,
-      and(
-        eq(productPrices.productUnitId, productUnits.id),
-        eq(productPrices.priceTier, RETAIL),
-      ),
-    )
-    .leftJoin(
-      productImages,
-      and(
-        eq(productImages.productId, products.id),
-        eq(productImages.isPrimary, true),
-        eq(productImages.reviewStatus, "APPROVED"),
-      ),
-    )
     .where(
       mainFilter
         ? and(mainFilter, sql`${shelfLookupLogs.productId} IS NOT NULL`)
         : sql`${shelfLookupLogs.productId} IS NOT NULL`,
     )
-    .groupBy(
-      shelfLookupLogs.productId,
-      shelfLookupLogs.productName,
-      products.name,
-      products.brand,
-      categories.name,
-      shelfLookupLogs.barcode,
-      productPrices.price,
-      productImages.url,
-    )
+    .groupBy(shelfLookupLogs.productId)
     .orderBy(desc(count(shelfLookupLogs.id)))
     .limit(10);
 
-  const topProducts = topProductsRows.map((r) => ({
-    productId: Number(r.productId),
-    productName: r.dbProductName || r.logProductName || "منتج غير محدد",
-    brand: r.brand || null,
-    category: r.category || null,
-    barcode: r.barcode,
-    scanCount: Number(r.scanCount ?? 0),
-    price: r.price ? String(r.price) : null,
-    imageUrl: r.imageUrl || null,
-  }));
+  const topProductIds = Array.from(
+    new Set(topProductsRows.map((r) => Number(r.productId)).filter((id) => Number.isFinite(id) && id > 0)),
+  );
+  const priceByProduct = new Map<number, string>();
+  const imageByProduct = new Map<number, string>();
+  if (topProductIds.length > 0) {
+    const [priceRows, imgRows] = await Promise.all([
+      db
+        .select({
+          productId: productVariants.productId,
+          price: productPrices.price,
+        })
+        .from(productVariants)
+        .innerJoin(
+          productUnits,
+          and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)),
+        )
+        .innerJoin(
+          productPrices,
+          and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)),
+        )
+        .where(and(inArray(productVariants.productId, topProductIds), eq(productVariants.isActive, true)))
+        .orderBy(asc(productVariants.id)),
+      db
+        .select({
+          id: productImages.id,
+          productId: productImages.productId,
+          variantId: productImages.variantId,
+          url: productImages.url,
+          objectKey: productImages.objectKey,
+          contentHash: productImages.contentHash,
+          thumbDataUrl: productImages.thumbDataUrl,
+          isPrimary: productImages.isPrimary,
+        })
+        .from(productImages)
+        .where(and(inArray(productImages.productId, topProductIds), eq(productImages.reviewStatus, "APPROVED")))
+        .orderBy(
+          desc(productImages.isPrimary),
+          sql`CASE WHEN ${productImages.variantId} IS NULL THEN 0 ELSE 1 END`,
+          asc(productImages.sortOrder),
+          asc(productImages.id),
+        ),
+    ]);
+    for (const pr of priceRows) {
+      const pid = Number(pr.productId);
+      if (!priceByProduct.has(pid) && pr.price != null) {
+        priceByProduct.set(pid, String(pr.price));
+      }
+    }
+    for (const img of imgRows) {
+      const pid = Number(img.productId);
+      if (imageByProduct.has(pid)) continue;
+      const safeUrl =
+        inventoryProductImageUrl(Number(img.id), {
+          url: img.url,
+          objectKey: img.objectKey,
+          contentHash: img.contentHash,
+        }) ??
+        img.thumbDataUrl ??
+        (!/^\/api\/img\/(?:company\/[^/]+\/)?product\//i.test(img.url) ? img.url : null);
+      if (safeUrl) imageByProduct.set(pid, safeUrl);
+    }
+  }
+
+  const seenTopProductIds = new Set<number>();
+  const topProducts = topProductsRows.flatMap((r) => {
+    const pid = Number(r.productId);
+    if (seenTopProductIds.has(pid)) return [];
+    seenTopProductIds.add(pid);
+    return [{
+      productId: pid,
+      productName: r.dbProductName || r.logProductName || "منتج غير محدد",
+      brand: r.brand || null,
+      category: r.category || null,
+      barcode: r.barcode,
+      scanCount: Number(r.scanCount ?? 0),
+      price: priceByProduct.get(pid) ?? null,
+      imageUrl: imageByProduct.get(pid) ?? null,
+    }];
+  });
 
   // ٦. المنحنى الزمني وساعات الذروة
   let activityTimeline: Array<{ label: string; date: string; scans: number; beneficiaries: number }> = [];

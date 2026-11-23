@@ -1,4 +1,5 @@
 import type { DeliveryFeeTender } from "../delivery/feeHeld";
+import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
 // عقد أوامر الشغل (طلب خدمة المطبعة).
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -25,6 +26,7 @@ export interface CreateWorkOrderInput {
   customizationText?: string | null;
   quantity?: number; // default 1
   materials?: WorkOrderMaterialInput[]; // additional consumables
+  recipeSelections?: RecipeLineSelection[] | null;
   laborCost?: string; // default 0
   salePrice: string;
   dueDate?: string | null; // YYYY-MM-DD

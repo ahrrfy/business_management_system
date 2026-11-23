@@ -281,6 +281,8 @@ export function useProductRecipe({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.units?.find((u) => u.isBaseUnit)?.unitName || "وحدة",
+          allowVariantChoice: Boolean(l.allowVariantChoice),
+          activeVariantCount: l.activeVariantCount != null ? Number(l.activeVariantCount) : undefined,
         })),
       );
     } else {
@@ -314,6 +316,8 @@ export function useProductRecipe({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.units?.find((u) => u.isBaseUnit)?.unitName || "وحدة",
+          allowVariantChoice: Boolean(l.allowVariantChoice),
+          activeVariantCount: l.activeVariantCount != null ? Number(l.activeVariantCount) : undefined,
         })),
       );
     } else {
@@ -332,6 +336,7 @@ export function useProductRecipe({
     sku: string;
     unitName: string;
     costPrice: string;
+    activeVariantCount?: number;
   }) {
     const targetOutputVariantId =
       currentRecipe?.outputVariantId ?? data?.primaryVariantId;
@@ -356,6 +361,8 @@ export function useProductRecipe({
         qtyPerOutputBase: "1",
         unitName: mat.unitName,
         notes: null,
+        allowVariantChoice: false,
+        activeVariantCount: mat.activeVariantCount != null ? Number(mat.activeVariantCount) : undefined,
       },
     ]);
     setSearchQuery("");
@@ -369,6 +376,12 @@ export function useProductRecipe({
   function handleLineQtyChange(index: number, val: string) {
     setFormLines((prev) =>
       prev.map((l, i) => (i === index ? { ...l, qtyPerOutputBase: val } : l)),
+    );
+  }
+
+  function handleToggleVariantChoice(index: number, next: boolean) {
+    setFormLines((prev) =>
+      prev.map((l, i) => (i === index ? { ...l, allowVariantChoice: next } : l)),
     );
   }
 
@@ -459,6 +472,7 @@ export function useProductRecipe({
     handleAddMaterial,
     handleRemoveLine,
     handleLineQtyChange,
+    handleToggleVariantChoice,
   };
 }
 export type RecipeController = ReturnType<typeof useProductRecipe>;

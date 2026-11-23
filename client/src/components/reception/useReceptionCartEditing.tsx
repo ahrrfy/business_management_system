@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { type CustomizationData } from "@/components/CustomizationDialog";
+import { serializeRecipeSelectionsKey, type RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 import { receptionCheckoutPaths } from "@/lib/receptionOperationAccess";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -44,6 +45,7 @@ export interface useReceptionCartEditingInput {
   } | null;
   cartSectionRef: React.RefObject<HTMLDivElement | null>;
   selKey: string | null;
+  onPickRecipeVariants?: (row: PosRow) => boolean;
 }
 export function useReceptionCartEditing({
   clearCouponIfApplied,
@@ -64,17 +66,20 @@ export function useReceptionCartEditing({
   showCustomization,
   cartSectionRef,
   selKey,
+  onPickRecipeVariants,
 }: useReceptionCartEditingInput) {
   const addDirectLine = useCallback(
-    (row: PosRow) => {
+    (row: PosRow, recipeSelections?: RecipeLineSelectionWithMeta[]) => {
       clearCouponIfApplied();
+      const selKeyStr = serializeRecipeSelectionsKey(recipeSelections);
       setCart((prev) => {
-        // دمج كميّات الصنف الجاهز المُكرَّر وتصعيده لقمة السلة ليبقى في متناول يد ونظر الكاشير
+        // دمج كميّات الصنف الجاهز المُكرَّر (مع تطابق اختيارات الألوان/المواد) وتصعيده لقمة السلة
         const i = prev.findIndex(
           (c) =>
             !c.digital &&
             !isCustomKind(c) &&
-            c.row.productUnitId === row.productUnitId,
+            c.row.productUnitId === row.productUnitId &&
+            serializeRecipeSelectionsKey(c.recipeSelections) === selKeyStr,
         );
         if (i >= 0) {
           const next = [...prev];
@@ -86,7 +91,15 @@ export function useReceptionCartEditing({
         }
         const key = `d-${row.productUnitId}-${Date.now()}`;
         setSelKey(key);
-        return [{ key, row, qty: 1 }, ...prev];
+        return [
+          {
+            key,
+            row,
+            qty: 1,
+            ...(recipeSelections?.length ? { recipeSelections } : {}),
+          },
+          ...prev,
+        ];
       });
       // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
       setAddTick((t) => t + 1);
@@ -137,12 +150,17 @@ export function useReceptionCartEditing({
         setShowDrop(false);
         return;
       }
+      if (onPickRecipeVariants?.(row)) {
+        setSearch("");
+        setShowDrop(false);
+        return;
+      }
       addDirectLine(row);
       setSearch("");
       setShowDrop(false);
       searchRef.current?.focus();
     },
-    [addDirectLine, effectiveTier],
+    [addDirectLine, effectiveTier, onPickRecipeVariants],
   );
 
   /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
@@ -235,6 +253,21 @@ export function useReceptionCartEditing({
     setSelKey(plainKey);
     setAddTick((tick) => tick + 1);
   }
+  function changeLineRecipeSelections(lineKey: string, nextSelections: RecipeLineSelectionWithMeta[]) {
+    clearCouponIfApplied();
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.key !== lineKey) return c;
+        if (c.custom) {
+          return updateRestoredReceptionCustomization(c, {
+            ...c.custom,
+            recipeSelections: nextSelections,
+          });
+        }
+        return { ...c, recipeSelections: nextSelections };
+      }),
+    );
+  }
   function removeRow(key: string) {
     clearCouponIfApplied();
     setCart((prev) => prev.filter((c) => c.key !== key));
@@ -248,6 +281,7 @@ export function useReceptionCartEditing({
     removeRow,
     addPlainFromCustomization,
     changeLineUnit,
+    changeLineRecipeSelections,
     addDirectLine,
     saveCustomization,
     addDigitalBasket,

@@ -59,6 +59,7 @@ export const offeringsRouter = router({
         roundingStep: nonNegMoneyString.optional(),
         priceValidityHours: z.number().int().positive().max(8760).nullish(),
         cardColorToken: z.string().max(30).nullish(),
+        imageUrl: z.string().max(3_000_000).nullish(),
         categoryId: z.number().int().positive().nullish(),
         productId: z.number().int().positive().nullish(),
         branches: z.array(offeringBranchSchema).min(1),
@@ -85,6 +86,7 @@ export const offeringsRouter = router({
         roundingStep: nonNegMoneyString.optional(),
         priceValidityHours: z.number().int().positive().max(8760).nullish(),
         cardColorToken: z.string().max(30).nullish(),
+        imageUrl: z.string().max(3_000_000).nullish(),
         branches: z.array(offeringBranchSchema).optional(),
       }),
     )

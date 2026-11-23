@@ -64,6 +64,7 @@ export function useRecipeTransfer({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.unitName,
+          allowVariantChoice: Boolean(l.allowVariantChoice),
         }))
       : (currentRecipe?.lines || []).map((l) => ({
           inputVariantId: l.inputVariantId,
@@ -74,6 +75,7 @@ export function useRecipeTransfer({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.units?.find((u) => u.isBaseUnit)?.unitName || "وحدة",
+          allowVariantChoice: Boolean(l.allowVariantChoice),
         }));
 
     if (linesToCopy.length === 0) {
@@ -170,6 +172,7 @@ export function useRecipeTransfer({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.unitName || "وحدة",
+          allowVariantChoice: Boolean(l.allowVariantChoice),
         });
       }
     }
@@ -266,6 +269,7 @@ export function useRecipeTransfer({
           qtyPerOutputBase: l.qtyPerOutputBase,
           notes: l.notes,
           unitName: l.unitName || "وحدة",
+          allowVariantChoice: Boolean((l as { allowVariantChoice?: boolean }).allowVariantChoice),
         });
       }
     }

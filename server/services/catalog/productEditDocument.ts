@@ -11,6 +11,7 @@
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../../db";
+import { inventoryProductImageUrl } from "../../imageRoute";
 import type { StockUsage } from "@shared/stockUsage";
 import type { VariantKind } from "../../../shared/variantDisplay";
 import type { PriceTier } from "../pricing";
@@ -54,15 +55,19 @@ export interface VariantEditRow {
   units: VariantEditUnit[];
   /** رصيد الفرع الحالي لكل فرع (قراءة فقط في التعديل). */
   stockByBranch: Record<number, number>;
-  /** صورة هذا اللون (data URL) أو null. */
+  /** صورة هذا اللون (data URL أو رابط) أو null. */
   image: string | null;
+  /** رابط عرضٍ آمن (thumbDataUrl أو /api/img/inventory-product/:id?v=...) يعمل حتى مع showInStore = 0. */
+  imageDisplayUrl: string | null;
 }
 
 /** صورة على مستوى المنتج (variantId=NULL) — مشتركة لكل المتغيّرات، تُحرَّر في شاشة التعديل. */
 export interface ProductImageRow {
   id: number;
-  /** data URL مضغوط (نفس ما يُخدَم عبر /api/img/product) — يُعرَض مباشرةً في رافع الصور. */
+  /** القيمة المخزّنة في العمود (لا تُعدَّل حفاظاً على فحص rejectLegacyCatalogMediaWrite). */
   url: string;
+  /** رابط عرضٍ آمن للمتصفّح (thumbDataUrl أو /api/img/inventory-product/:id?v=...). */
+  displayUrl: string;
   isPrimary: boolean;
   sortOrder: number;
 }
@@ -123,6 +128,27 @@ function normalizeFactor(f: string): string {
   return trimmed || "0";
 }
 
+function buildSafeInventoryDisplayUrl(row: {
+  id: number | string;
+  url: string;
+  thumbDataUrl: string | null;
+  objectKey: string | null;
+  contentHash: string | null;
+  origin: string | null;
+}): string {
+  const usableThumb =
+    !(row.origin === "ORIGINAL" && row.objectKey != null) && row.thumbDataUrl
+      ? row.thumbDataUrl
+      : null;
+  if (usableThumb) return usableThumb;
+  const invUrl = inventoryProductImageUrl(Number(row.id), {
+    url: row.url,
+    objectKey: row.objectKey,
+    contentHash: row.contentHash,
+  });
+  return invUrl ?? row.thumbDataUrl ?? row.url;
+}
+
 /** يقرأ منتجاً بكامل متغيّراته/وحداته/أسعاره/أرصدته لتعبئة شاشة التعديل. */
 export async function getProductForVariantEdit(productId: number, exec?: ReadDb): Promise<ProductForVariantEdit | null> {
   const db = exec ?? getDb();
@@ -145,13 +171,23 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
   // صور المنتج العامّة (variantId=NULL) — مشتركة لكل المتغيّرات؛ منفصلة عن صور الألوان (variantId مضبوط).
   // تُقرأ هنا لكلا مسارَي الإرجاع (بمتغيّرات أو بلا) بترتيب العرض (الرئيسية أولاً).
   const productImageRows = await db
-    .select({ id: productImages.id, url: productImages.url, isPrimary: productImages.isPrimary, sortOrder: productImages.sortOrder })
+    .select({
+      id: productImages.id,
+      url: productImages.url,
+      thumbDataUrl: productImages.thumbDataUrl,
+      objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
+      origin: productImages.origin,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+    })
     .from(productImages)
     .where(and(eq(productImages.productId, productId), isNull(productImages.variantId)))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
   const images: ProductImageRow[] = productImageRows.map((r) => ({
     id: Number(r.id),
     url: r.url,
+    displayUrl: buildSafeInventoryDisplayUrl(r),
     isPrimary: !!r.isPrimary,
     sortOrder: r.sortOrder ?? 0,
   }));
@@ -199,7 +235,11 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
   const prices = unitIds.length ? await db.select().from(productPrices).where(inArray(productPrices.productUnitId, unitIds)) : [];
   const stocks = await db.select().from(branchStock).where(inArray(branchStock.variantId, variantIds));
   // product-variants: صور المتغيّرات (variantId مضبوط) — صور المنتج العامّة (variantId=NULL) تُستثنى.
-  const vImages = await db.select().from(productImages).where(inArray(productImages.variantId, variantIds));
+  const vImages = await db
+    .select()
+    .from(productImages)
+    .where(inArray(productImages.variantId, variantIds))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
 
   const priceOf = (unitId: number, tier: PriceTier) =>
     prices.find((pr) => Number(pr.productUnitId) === unitId && pr.priceTier === tier)?.price ?? "";
@@ -224,7 +264,9 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
       }));
     const stockByBranch: Record<number, number> = {};
     for (const s of stocks.filter((s) => Number(s.variantId) === Number(v.id))) stockByBranch[Number(s.branchId)] = s.quantity;
-    const image = vImages.find((im) => Number(im.variantId) === Number(v.id))?.url ?? null;
+    const vImage = vImages.find((im) => Number(im.variantId) === Number(v.id)) ?? null;
+    const image = vImage?.url ?? null;
+    const imageDisplayUrl = vImage ? buildSafeInventoryDisplayUrl(vImage) : null;
     return {
       id: Number(v.id),
       sku: v.sku,
@@ -242,6 +284,7 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
       units: ownUnits,
       stockByBranch,
       image,
+      imageDisplayUrl,
     };
   });
 

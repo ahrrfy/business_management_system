@@ -462,12 +462,28 @@ function isDesignImage(value: unknown): boolean {
     && (value.sizeKB === undefined || (typeof value.sizeKB === "number" && Number.isFinite(value.sizeKB) && value.sizeKB >= 0));
 }
 
+function isRecipeSelectionsArray(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 100) return false;
+  return value.every(
+    (entry) =>
+      isRecord(entry) &&
+      hasOnlyKeys(entry, ["recipeLineId", "variantId", "materialName", "label", "color", "colorHex"]) &&
+      positiveInt(entry.recipeLineId) &&
+      positiveInt(entry.variantId) &&
+      (entry.materialName === undefined || boundedString(entry.materialName, 300)) &&
+      (entry.label === undefined || boundedString(entry.label, 300)) &&
+      (entry.color === undefined || entry.color === null || boundedString(entry.color, 120)) &&
+      (entry.colorHex === undefined || entry.colorHex === null || boundedString(entry.colorHex, 32)),
+  );
+}
+
 function isCustomization(value: Record<string, unknown>): boolean {
   if (!hasOnlyKeys(value, [
     "title", "unitPrice", "laborCost", "assignedTo", "size", "material", "customizationText",
     "priority", "dueDate", "hasDelivery", "deliveryAddress", "deliveryPhone", "deliveryCost",
-    "deliveryFeeCollection", "designImages", "paymentReceiptImages", "deposit",
+    "deliveryFeeCollection", "designImages", "paymentReceiptImages", "deposit", "recipeSelections",
   ])) return false;
+  if (value.recipeSelections !== undefined && !isRecipeSelectionsArray(value.recipeSelections)) return false;
   return boundedString(value.title, 500)
     && optionalDecimalText(value.unitPrice)
     && optionalDecimalText(value.laborCost)
@@ -545,9 +561,10 @@ function isCart(value: unknown): value is CartLine[] {
   if (!Array.isArray(value) || value.length > 500 || containsSensitiveKey(value)) return false;
   return value.every((line) => {
     if (!isRecord(line)
-      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponLineDiscount", "couponBasePromotion", "draftLineDiscount", "draftPromo", "disc", "custom", "manualService", "digital"])
+      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponLineDiscount", "couponBasePromotion", "draftLineDiscount", "draftPromo", "disc", "custom", "recipeSelections", "manualService", "digital"])
       || !boundedString(line.key, 200)
       || line.key.length === 0) return false;
+    if (line.recipeSelections !== undefined && !isRecipeSelectionsArray(line.recipeSelections)) return false;
     if (typeof line.qty !== "number" || !Number.isSafeInteger(line.qty) || line.qty <= 0 || line.qty > MAX_LINE_QUANTITY) return false;
     if (!isRecord(line.row)) return false;
     const manualService = line.manualService === true;
@@ -1280,6 +1297,16 @@ export function prepareReceptionDraftCart(
     const row = byUnit.get(Number(line.productUnitId));
     if (!row) { missingCount += 1; continue; }
     const restored: CartLine = { key: `r-${line.id}`, row, qty: quantity };
+    if (line.printSpec) {
+      try {
+        const parsedSpec: unknown = JSON.parse(line.printSpec);
+        if (isRecord(parsedSpec) && parsedSpec.recipeSelections !== undefined && isRecipeSelectionsArray(parsedSpec.recipeSelections) && (parsedSpec.recipeSelections as unknown[]).length > 0) {
+          restored.recipeSelections = parsedSpec.recipeSelections as CartLine["recipeSelections"];
+        }
+      } catch {
+        // تجاهل مواصفة غير صالحة في أسطر الطباعة/البضائع القديمة
+      }
+    }
     const storedPrice = Number(line.unitPrice);
     if (!Number.isFinite(storedPrice) || storedPrice < 0 || storedPrice > MAX_MONEY) { missingCount += 1; continue; }
     const rawStoredDisc = line.discountAmount != null ? Number(line.discountAmount) : 0;

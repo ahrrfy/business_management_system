@@ -23,6 +23,8 @@ import { publicResourceHandler, withStorefrontContextWork } from "./middleware/s
 import { createHash } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
+  digitalOfferings,
+  digitalProviders,
   productImages,
   products,
   productVariants,
@@ -320,13 +322,18 @@ export async function readPublicStoredBodyWithRetry(
  * سقوط عرضي عام فقط عند تعثّر R2. لا ETag ولا immutable: لا يجوز تثبيت المصغّرة سنةً مكان
  * المشتق المعتمد. المصدر الوحيد هو thumbDataUrl المنشور في نفس صف الصورة المعتمدة، لا url ولا الأصل.
  */
-function sendPublicThumbnailFallback(res: Response, dataUrl: string | null | undefined): Response | null {
+function sendPublicThumbnailFallback(
+  res: Response,
+  dataUrl: string | null | undefined,
+  varyCookie = false,
+): Response | null {
   const img = decodeDataUrl(dataUrl);
   if (!img || img.bytes.length > MAX_FALLBACK_THUMB_BYTES) return null;
   res.removeHeader("ETag");
   res.removeHeader("Content-Length");
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", varyCookie ? "private, no-store" : "no-store");
   res.setHeader("Pragma", "no-cache");
+  if (varyCookie) res.setHeader("Vary", "Cookie");
   res.setHeader("Content-Type", img.mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
@@ -530,6 +537,8 @@ async function sendStoredProductImage(
       return res;
     }
     if (!stream) {
+      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl, true);
+      if (fallback) return fallback;
       preventCachingStoredImageFailure(res);
       return res.status(404).end();
     }
@@ -550,6 +559,8 @@ async function sendStoredProductImage(
       preventCachingStoredImageFailure(res);
       throw error;
     }
+    const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl, true);
+    if (fallback) return fallback;
     preventCachingStoredImageFailure(res);
     return res.status(503).end();
   } finally {
@@ -856,6 +867,7 @@ export function imageRouter(): Router {
             contentHash: productImages.contentHash,
             mime: productImages.mime,
             bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
           })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
@@ -992,6 +1004,61 @@ export function imageRouter(): Router {
     } finally {
       req.off("aborted", abortRead);
       res.off("close", abortOnEarlyClose);
+    }
+  });
+
+  /**
+   * شعار المزوّد/المنصة التعليمية — محمي بجلسة موظف (private + Vary: Cookie + immutable بتجدد ?v=hash).
+   */
+  r.get("/digital-provider/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const db = getDb();
+    if (!db) return res.status(503).end();
+    try {
+      const { user } = await getSessionContext(req);
+      if (!user) return res.status(401).end();
+      const row = (
+        await db
+          .select({ logoUrl: digitalProviders.logoUrl })
+          .from(digitalProviders)
+          .where(eq(digitalProviders.id, id))
+          .limit(1)
+      )[0];
+      return sendImage(req, res, row?.logoUrl?.trim() || null, "private");
+    } catch (e) {
+      logger.error({ err: e, digitalProviderId: id }, "img: digital provider image fetch failed");
+      return res.status(500).end();
+    }
+  });
+
+  /**
+   * صورة الكارت الرقمي الفعلية: صورة الكارت المخصّصة إن وُجدت، وإلا وراثة شعار المزوّد حيّاً.
+   */
+  r.get("/digital-offering/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const db = getDb();
+    if (!db) return res.status(503).end();
+    try {
+      const { user } = await getSessionContext(req);
+      if (!user) return res.status(401).end();
+      const row = (
+        await db
+          .select({
+            imageUrl: digitalOfferings.imageUrl,
+            providerLogoUrl: digitalProviders.logoUrl,
+          })
+          .from(digitalOfferings)
+          .innerJoin(digitalProviders, eq(digitalProviders.id, digitalOfferings.providerId))
+          .where(eq(digitalOfferings.id, id))
+          .limit(1)
+      )[0];
+      const effective = row?.imageUrl?.trim() || row?.providerLogoUrl?.trim() || null;
+      return sendImage(req, res, effective, "private");
+    } catch (e) {
+      logger.error({ err: e, digitalOfferingId: id }, "img: digital offering image fetch failed");
+      return res.status(500).end();
     }
   });
 

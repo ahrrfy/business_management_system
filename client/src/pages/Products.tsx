@@ -181,6 +181,7 @@ export default function Products() {
   // التصوير والرفع السريع بالذكاء لصفّ محدّد أو عبر كاميرا الهاتف.
   const [studioTarget, setStudioTarget] = useState<QuickStudioTarget | null>(null);
   const [studioScannerOpen, setStudioScannerOpen] = useState(false);
+  const [failedThumbKeys, setFailedThumbKeys] = useState<Set<string>>(() => new Set());
   const importMut = trpc.imports.products.useMutation();
   const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   const dq = useDebouncedValue(q, 200);
@@ -631,8 +632,11 @@ export default function Products() {
                   const r = row.original;
                   const hasOwnOrShared = Boolean(r.hasVariantImage);
                   const hasOtherVariantOnly = Boolean(r.hasImage && !r.hasVariantImage);
+                  const hasPendingReview = Boolean(r.hasPendingReview);
                   const hasDedicatedVariantImg = Number(r.variantImageCount ?? 0) > 0;
                   const rowStudioAllowed = canRowOpenQuickStudio(r);
+                  const thumbKey = `${r.productId}-${r.variantId ?? 0}:${r.primaryImageThumb ?? ""}`;
+                  const showThumbImg = Boolean(r.primaryImageThumb) && !failedThumbKeys.has(thumbKey);
                   return (
                     <div
                       className="flex items-center gap-2 py-0.5"
@@ -645,27 +649,37 @@ export default function Products() {
                         data-testid={`product-row-image-btn-${r.productId}-${r.variantId ?? 0}`}
                         title={
                           hasOwnOrShared
-                            ? `${hasDedicatedVariantImg ? "يحتوي هذا الصف على صورة خاصة" : "يعتمد على الصورة المشتركة للمنتج الأب"} (${r.imageCount ?? 1} صورة معتمدة) — اضغط للعرض أو التقاط/رفع صورة جديدة بالذكاء`
+                            ? `${hasDedicatedVariantImg ? "يحتوي هذا الصف على صورة خاصة" : "يعتمد على الصورة المشتركة للمنتج الأب"} (${r.imageCount ?? 1} صورة معتمدة) — اضغط لفتح معرض الاستوديو`
+                            : hasPendingReview
+                            ? `توجد صورة قيد المراجعة (${r.pendingReviewCount ?? 1}) — اضغط لفتح الاستوديو ومتابعة الاعتماد`
                             : hasOtherVariantOnly
-                            ? "المنتج الأب يحتوي على صور لمتغيرات أخرى لكن هذا الصف بلا صورة — اضغط لرفع أو تصوير صورة لهذا الصف"
+                            ? `المنتج يحتوي على صور لمتغيرات أخرى (${r.siblingVariantImageCount ?? 1}) لكن هذا الصف بلا صورة — اضغط لفتح معرض الاستوديو`
                             : "هذا المنتج لا يحتوي على صورة بعد — اضغط لالتقاط صورة بالكاميرا أو رفعها ومعالجتها بالذكاء"
                         }
                         className={`group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border transition-all ${
                           hasOwnOrShared
                             ? "border-primary/40 bg-primary/5 hover:ring-2 hover:ring-primary/40"
-                            : hasOtherVariantOnly
-                            ? "border-dashed border-primary/40 bg-muted/30 hover:bg-muted/50"
+                            : hasOtherVariantOnly || hasPendingReview
+                            ? "border-dashed border-muted-foreground/50 bg-muted/40 hover:bg-muted/60"
                             : "border-dashed border-muted-foreground/35 bg-muted/20 hover:border-primary/60 hover:bg-primary/5"
                         }`}
                       >
-                        {r.primaryImageThumb ? (
+                        {showThumbImg ? (
                           <img
-                            src={r.primaryImageThumb}
+                            src={r.primaryImageThumb!}
                             alt={r.productName}
                             loading="lazy"
+                            onError={() =>
+                              setFailedThumbKeys((prev) => {
+                                if (prev.has(thumbKey)) return prev;
+                                const next = new Set(prev);
+                                next.add(thumbKey);
+                                return next;
+                              })
+                            }
                             className="h-full w-full object-cover"
                           />
-                        ) : hasOwnOrShared ? (
+                        ) : hasOwnOrShared || hasOtherVariantOnly || hasPendingReview ? (
                           <ImageIcon className="h-4 w-4 text-primary" />
                         ) : (
                           <ImageOff className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
@@ -690,6 +704,14 @@ export default function Products() {
                           >
                             <CheckCircle2 className="h-2.5 w-2.5 shrink-0" />
                             {hasDedicatedVariantImg ? "تحتوي صورة" : "صورة الأب"}
+                          </span>
+                        ) : hasPendingReview ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low"
+                            title="توجد صورة مرفوعة بانتظار اعتماد المدير في الاستوديو"
+                          >
+                            <ImageIcon className="h-2.5 w-2.5 shrink-0" />
+                            قيد المراجعة
                           </span>
                         ) : hasOtherVariantOnly ? (
                           <span
@@ -717,8 +739,8 @@ export default function Products() {
                             <span>
                               {!canQuickSaveStudio
                                 ? "معاينة الصور"
-                                : hasOwnOrShared
-                                ? "تحديث/ذكاء"
+                                : hasOwnOrShared || hasOtherVariantOnly
+                                ? "معرض الاستوديو"
                                 : "رفع / تصوير"}
                             </span>
                           </button>

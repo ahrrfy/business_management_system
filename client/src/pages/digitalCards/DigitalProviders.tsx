@@ -18,13 +18,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import {
+  DigitalCardThumbnail,
+  resolveImageFormSubmission,
+  toExistingImageItems,
+} from "@/components/digitalCards/DigitalCardImage";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtAr } from "@/lib/money";
-import { Plus } from "lucide-react";
+import { Layers, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type ProviderRow = RouterOutputs["digitalCards"]["providers"]["list"][number];
@@ -61,9 +67,14 @@ export default function DigitalProviders() {
   const [fCycle, setFCycle] = useState("ON_DEMAND");
   const [fThreshold, setFThreshold] = useState("0");
   const [fNotes, setFNotes] = useState("");
+  const [fLogoImages, setFLogoImages] = useState<ImageItem[]>([]);
 
   function invalidate() {
     void utils.digitalCards.providers.list.invalidate();
+    void utils.digitalCards.offerings.list.invalidate();
+    void utils.digitalCards.offerings.get.invalidate();
+    void utils.digitalCards.pos.listCards.invalidate();
+    void utils.digitalCards.pos.confirmCard.invalidate();
     void utils.digitalCards.wallets.list.invalidate();
   }
 
@@ -79,11 +90,24 @@ export default function DigitalProviders() {
     onSuccess: () => invalidate(),
     onError: (e) => notify.err(e),
   });
+  const applyLogoMut = trpc.digitalCards.providers.applyLogoToOfferings.useMutation({
+    onSuccess: (res) => {
+      invalidate();
+      notify.ok(
+        "تم تعميم الشعار على كروت المزوّد",
+        res.updatedCount > 0
+          ? `أُعيد ضبط ${res.updatedCount} كرتاً لوراثة شعار المزوّد.`
+          : "جميع كروت المزوّد ترث الشعار بالفعل.",
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
 
   function openAdd() {
     setEditId(null);
     setFSupplierId(""); setFType("TELECOM"); setFMode("PREPAID");
     setFCycle("ON_DEMAND"); setFThreshold("0"); setFNotes("");
+    setFLogoImages([]);
     setFormOpen(true);
   }
 
@@ -93,18 +117,21 @@ export default function DigitalProviders() {
     setFType(p.providerType); setFMode(p.settlementMode);
     setFCycle(p.settlementCycle);
     setFThreshold(p.lowBalanceThreshold); setFNotes(p.notes ?? "");
+    setFLogoImages(toExistingImageItems(p.logoUrl));
     setFormOpen(true);
   }
 
   function submitForm() {
     if (!digitalAccess.can(`digitalCards.providers.${editId != null ? "update" : "create"}`)) return;
     const notes = fNotes.trim() || null;
+    const logoUrl = resolveImageFormSubmission(fLogoImages);
     if (editId != null) {
       updateMut.mutate({
         id: editId,
         providerType: fType as ProviderRow["providerType"],
         settlementCycle: fCycle as ProviderRow["settlementCycle"],
         lowBalanceThreshold: fThreshold || "0",
+        ...(logoUrl !== undefined ? { logoUrl } : {}),
         notes,
       });
       return;
@@ -119,8 +146,29 @@ export default function DigitalProviders() {
       referencePolicy: "REQUIRED",
       settlementCycle: fCycle as ProviderRow["settlementCycle"],
       lowBalanceThreshold: fThreshold || "0",
+      ...(logoUrl ? { logoUrl } : {}),
       notes,
     });
+  }
+
+  async function handleApplyLogoToOfferings(opts: {
+    providerId: number;
+    supplierName: string;
+    pendingDataUrl?: string;
+  }) {
+    if (!digitalAccess.can("digitalCards.providers.applyLogoToOfferings")) return;
+    const confirmed = await confirm({
+      variant: "danger",
+      title: "تعميم الشعار على كل كروت المزوّد",
+      description: `سيتم إلغاء أيّ صورٍ مخصّصة لجميع كروت «${opts.supplierName}» وإعادتها لوراثة شعار المزوّد تلقائياً. متابعة؟`,
+      confirmText: "تعميم الشعار",
+    });
+    if (!confirmed) return;
+    applyLogoMut.mutate(
+      opts.pendingDataUrl
+        ? { providerId: opts.providerId, logoUrl: opts.pendingDataUrl }
+        : { providerId: opts.providerId },
+    );
   }
 
   async function toggle(p: ProviderRow) {
@@ -133,8 +181,9 @@ export default function DigitalProviders() {
     toggleMut.mutate({ id: p.id, isActive: !p.isActive });
   }
 
-  const saving = createMut.isPending || updateMut.isPending;
+  const saving = createMut.isPending || updateMut.isPending || applyLogoMut.isPending;
   const editing = editId != null;
+  const editingProvider = editing ? rows.find((p) => p.id === editId) : undefined;
 
   /*
    * أعمدة القائمة — داخل المكوّن لأنّها تستدعي `openEdit`/`toggle` وتقرأ حالة الطفرة.
@@ -148,7 +197,17 @@ export default function DigitalProviders() {
         header: "المورّد",
         accessorFn: (p) => p.supplierName,
         meta: { width: "wide" },
-        cell: ({ row }) => <span className="font-medium">{row.original.supplierName}</span>,
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2.5">
+            <DigitalCardThumbnail
+              src={row.original.logoUrl}
+              alt={row.original.supplierName}
+              fallback="provider"
+              className="size-9 shrink-0"
+            />
+            <span className="font-medium">{row.original.supplierName}</span>
+          </div>
+        ),
       },
       {
         id: "providerType",
@@ -207,6 +266,22 @@ export default function DigitalProviders() {
                   gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                 },
                 {
+                  key: "applyLogo",
+                  kind: "approve",
+                  label: "تعميم الشعار على كل كروت المزوّد",
+                  disabled: !p.hasLogo || applyLogoMut.isPending,
+                  disabledReason: !p.hasLogo
+                    ? "ارفع شعاراً للمزوّد أوّلاً"
+                    : "توجد عملية تحديث قيد التنفيذ",
+                  onSelect: () =>
+                    void handleApplyLogoToOfferings({
+                      providerId: p.id,
+                      supplierName: p.supplierName,
+                    }),
+                  hidden: !digitalAccess.can("digitalCards.providers.applyLogoToOfferings"),
+                  gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                },
+                {
                   key: "toggle",
                   kind: "approve",
                   label: p.isActive ? "تعطيل" : "تفعيل",
@@ -224,7 +299,7 @@ export default function DigitalProviders() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toggleMut.isPending, digitalAccess],
+    [toggleMut.isPending, applyLogoMut.isPending, digitalAccess],
   );
 
   return (
@@ -253,7 +328,7 @@ export default function DigitalProviders() {
       </Card>
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? "تعديل مزوّد" : "إضافة مزوّد"}</DialogTitle>
             <DialogDescription>
@@ -305,6 +380,38 @@ export default function DigitalProviders() {
               <label className="text-sm font-medium">حدّ التنبيه للرصيد المنخفض</label>
               <MoneyInput value={fThreshold} onChange={setFThreshold} ariaLabel="حدّ التنبيه للرصيد المنخفض" />
               <p className="text-xs text-muted-foreground">يُنبّه حين ينزل رصيد محفظة هذا المزوّد تحت هذا المبلغ. صفر = بلا تنبيه.</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-sm font-medium">شعار المزوّد (اختياري)</label>
+                {editing && digitalAccess.can("digitalCards.providers.applyLogoToOfferings") && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={fLogoImages.length === 0 || saving}
+                    onClick={() => {
+                      if (editId == null) return;
+                      void handleApplyLogoToOfferings({
+                        providerId: editId,
+                        supplierName: editingProvider?.supplierName ?? "المزوّد",
+                        pendingDataUrl: fLogoImages[0]?.dataUrl || undefined,
+                      });
+                    }}
+                  >
+                    <Layers aria-hidden className="size-3.5" />
+                    تعميم الشعار على كل كروت المزوّد
+                  </Button>
+                )}
+              </div>
+              <ImageUploader
+                value={fLogoImages}
+                onChange={setFLogoImages}
+                maxItems={1}
+                singlePrimary={false}
+                hint="PNG · JPG · WEBP — ترث الكروت هذا الشعار تلقائياً ما لم تُخصَّص لها صورة"
+              />
             </div>
 
             <div className="space-y-1">

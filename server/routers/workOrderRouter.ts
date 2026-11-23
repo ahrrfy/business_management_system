@@ -1,4 +1,5 @@
 import { receptionComposedPaymentsSchema } from "../services/reception/splitPayments";
+import { recipeSelectionsSchema } from "@shared/recipeVariantSelection";
 import {checkoutChargesFields,hasCheckoutCharges} from "../services/checkoutCharges";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -167,6 +168,7 @@ const receptionWorkOrderSchema = z.object({
   customizationText: z.string().nullish(),
   quantity: z.number().int().positive().default(1),
   materials: z.array(z.object({ variantId: z.number().int().positive(), baseQuantity: positiveMaterialQuantity })).default([]),
+  recipeSelections: recipeSelectionsSchema.optional(),
   laborCost: nonNegMoneyString.default("0"),
   salePrice: positiveMoneyString,
   dueDate: z.string().nullish(),
@@ -274,6 +276,7 @@ const receptionCheckoutSchema = z.object({
       promotionId: z.number().int().positive().nullish(),
       promotionDiscount: nonNegMoneyString.optional(),
       cashierDiscountAmount: nonNegMoneyString.optional(),
+      recipeSelections: recipeSelectionsSchema.optional(),
     })).min(1),
     amount: positiveMoneyString,
     // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (سلطةُ كاشيرٍ إلى ١٥٪، فوقه اعتمادُ مدير):
@@ -289,6 +292,7 @@ const receptionCheckoutSchema = z.object({
       quantity: quantityString,
       unitPriceOverride: nonNegMoneyString.optional(),
       discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+      recipeSelections: recipeSelectionsSchema.optional(),
     })).min(1),
     amount: positiveMoneyString,
     invoiceDiscount: nonNegMoneyString.optional(),
@@ -1960,6 +1964,7 @@ export const workOrderRouter = router({
         materials: z
           .array(z.object({ variantId: z.number().int().positive(), baseQuantity: positiveMaterialQuantity }))
           .default([]),
+        recipeSelections: recipeSelectionsSchema.optional(),
         // تدقيق ١٧/٧: تحقّق مالي خادميّ — كانت سلاسل حرّة تقبل السالب (عربون/عمالة سالبان يشوّهان الذمم/الربح).
         laborCost: nonNegMoneyString.default("0"),
         salePrice: positiveMoneyString,

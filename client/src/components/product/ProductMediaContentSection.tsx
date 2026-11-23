@@ -4,11 +4,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { Images, Trash2 } from "lucide-react";
-import { useRef } from "react";
+import { lazy, Suspense, useRef } from "react";
 import { Link } from "wouter";
 
+const LazyProductImageGallery = lazy(() =>
+  import("@/components/product-studio/ProductImageGallery").then((m) => ({
+    default: m.ProductImageGallery,
+  })),
+);
+
 interface Props {
+  productId?: number;
   description: string;
   onDescriptionChange: (value: string) => void;
   images?: ImageItem[];
@@ -33,6 +41,7 @@ interface Props {
 
 /** القسم الموحّد للصور والمحتوى في الإنشاء والتعديل ومركز الاستوديو. */
 export function ProductMediaContentSection({
+  productId,
   description,
   onDescriptionChange,
   images = [],
@@ -52,6 +61,8 @@ export function ProductMediaContentSection({
   productExists = false,
   captureOnly = false,
 }: Props) {
+  const canStudioManager = useOperationPermission("productStudio.managerImages").allowed;
+  const useLiveGallery = studioTaskId == null && productId != null && canStudioManager && !offline;
   const capturedIds = useRef(new Set<string>());
   function handleImages(next: ImageItem[]) {
     // أي تعديل/رفع يدوي يبطل receipt سابقاً؛ اعتماد معاينة الذكاء يعيده فوراً من المكوّن بعد onChange.
@@ -74,7 +85,9 @@ export function ProductMediaContentSection({
         <p className="text-xs text-muted-foreground">
           {studioTaskId != null
             ? "هذه مهمة استوديو محكومة؛ المرشّح لا يظهر في المتجر قبل الاعتماد."
-            : "هذه الشاشة لا تنشر بايتات الصور؛ تعرض الصور الحالية وتسمح بإزالتها فقط."}
+            : useLiveGallery
+              ? "إدارة صور المنتج ومتغيّراته مباشرةً عبر معرض استوديو الصور."
+              : "هذه الشاشة لا تنشر بايتات الصور؛ تعرض الصور الحالية وتسمح بإزالتها فقط."}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -124,7 +137,7 @@ export function ProductMediaContentSection({
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {productExists
-                    ? "افتح الاستوديو وأنشئ مهمة مراجعة لهذا المنتج."
+                    ? "أدر الصور من المعرض أدناه أو افتح الاستوديو الكامل لإسناد مهامّ."
                     : "احفظ المنتج أولاً، ثم افتح الاستوديو وأنشئ مهمة مراجعة له."}
                 </p>
               </div>
@@ -139,42 +152,48 @@ export function ProductMediaContentSection({
                 </Link>
               </Button>
             </div>
-            {images.length > 0 && (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-5">
-                {images.map((image, index) => (
-                  <div
-                    key={image.id}
-                    className="overflow-hidden rounded-md border bg-card"
-                  >
-                    <div className="relative aspect-square bg-muted/30">
-                      <img
-                        src={image.dataUrl || image.url}
-                        alt={`صورة المنتج ${index + 1}`}
-                        className="size-full object-cover"
-                      />
-                      {image.isPrimary && (
-                        <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">
-                          رئيسية
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="flex min-h-9 w-full items-center justify-center gap-1 border-t px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                      onClick={() =>
-                        onImagesChange?.(
-                          images.filter((item) => item.id !== image.id),
-                        )
-                      }
-                      disabled={!onImagesChange}
-                      aria-label={`إزالة صورة المنتج ${index + 1} عند الحفظ`}
+            {useLiveGallery ? (
+              <Suspense fallback={null}>
+                <LazyProductImageGallery productId={productId} />
+              </Suspense>
+            ) : (
+              images.length > 0 && (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-5">
+                  {images.map((image, index) => (
+                    <div
+                      key={image.id}
+                      className="overflow-hidden rounded-md border bg-card"
                     >
-                      <Trash2 aria-hidden className="size-3.5" /> إزالة عند
-                      الحفظ
-                    </button>
-                  </div>
-                ))}
-              </div>
+                      <div className="relative aspect-square bg-muted/30">
+                        <img
+                          src={image.displayUrl || image.dataUrl || image.url}
+                          alt={`صورة المنتج ${index + 1}`}
+                          className="size-full object-cover"
+                        />
+                        {image.isPrimary && (
+                          <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">
+                            رئيسية
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="flex min-h-9 w-full items-center justify-center gap-1 border-t px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                        onClick={() =>
+                          onImagesChange?.(
+                            images.filter((item) => item.id !== image.id),
+                          )
+                        }
+                        disabled={!onImagesChange}
+                        aria-label={`إزالة صورة المنتج ${index + 1} عند الحفظ`}
+                      >
+                        <Trash2 aria-hidden className="size-3.5" /> إزالة عند
+                        الحفظ
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </div>
         )}

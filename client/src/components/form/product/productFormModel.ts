@@ -156,6 +156,7 @@ export function productFormModelFromDocument(d: ProductEditDocument): ProductFor
       retail: override ? v.baseRetail : "",
       isActive: v.isActive,
       image: v.image,
+      imageDisplayUrl: v.imageDisplayUrl ?? v.image,
     };
   });
   return {

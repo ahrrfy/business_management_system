@@ -13,10 +13,13 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { resolveStudioImageSrc } from "@/lib/productImages";
 
 export interface StudioProductImage {
   id: number;
   url: string;
+  displayUrl?: string | null;
+  contentHash?: string | null;
   thumbDataUrl?: string | null;
   isPrimary?: boolean;
   sortOrder?: number;
@@ -339,17 +342,25 @@ export function StudioProductCardStatus({
               data-testid="previous-photos-strip"
               className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin"
             >
-              {images.map((img, idx) => (
+              {images.map((img, idx) => {
+                const src = resolveStudioImageSrc(img);
+                return (
                 <div
                   key={img.id || idx}
                   className="relative shrink-0 rounded-lg border border-border bg-muted/40 p-0.5 group overflow-hidden"
                 >
-                  <img
-                    src={img.thumbDataUrl || img.url}
-                    alt={product.name}
-                    className="w-14 h-14 sm:w-16 sm:h-16 object-cover rounded-md"
-                    loading="lazy"
-                  />
+                  {src ? (
+                    <img
+                      src={src}
+                      alt={product.name}
+                      className="w-14 h-14 sm:w-16 sm:h-16 object-cover rounded-md"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="flex w-14 h-14 sm:w-16 sm:h-16 items-center justify-center rounded-md text-muted-foreground">
+                      <ImageIcon aria-hidden className="size-4" />
+                    </div>
+                  )}
                   {/* مؤشر صورة الغلاف الرئيسية */}
                   {img.isPrimary && (
                     <div
@@ -361,7 +372,8 @@ export function StudioProductCardStatus({
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

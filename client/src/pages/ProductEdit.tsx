@@ -15,6 +15,7 @@ import {
   validateProductForm,
   type ProductFormModel,
 } from "@/components/form/product/productFormModel";
+import { hydrateProductImages } from "@/lib/productImages";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import { BarcodeAliasDialog } from "@/components/product/BarcodeAliasDialog";
 import { ProductRecipeSaveContext, useProductRecipeFormSave } from "@/components/product/productRecipeDraft";
@@ -60,22 +61,46 @@ export default function ProductEdit() {
   const [savedSignature, setSavedSignature] = useState<string>("");
   const productIsDirty = savedSignature ? productFormSignature(model) !== savedSignature : false;
   const [hydrated, setHydrated] = useState(false);
+  const lastServerImagesSigRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!product.data || hydrated) return;
-    const initial = productFormModelFromDocument(product.data);
-    setModel(initial);
-    setSavedSignature(productFormSignature(initial));
+    if (!product.data) return;
+    if (!hydrated) {
+      const initial = productFormModelFromDocument(product.data);
+      lastServerImagesSigRef.current = initial.images
+        .map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`)
+        .join("|");
+      setModel(initial);
+      setSavedSignature(productFormSignature(initial));
 
-    const initialCodes = new Map<string, string | null>();
-    for (const v of product.data.variants) {
-      for (const u of initial.units) {
-        initialCodes.set(`${v.id}:${u.id}`, v.unitBarcodes[u.name] || null);
-        initialCodes.set(`db:${v.id}:${u.id}`, v.unitBarcodes[u.name] || null);
+      const initialCodes = new Map<string, string | null>();
+      for (const v of product.data.variants) {
+        for (const u of initial.units) {
+          initialCodes.set(`${v.id}:${u.id}`, v.unitBarcodes[u.name] || null);
+          initialCodes.set(`db:${v.id}:${u.id}`, v.unitBarcodes[u.name] || null);
+        }
       }
+      originalBarcodeCodes.current = initialCodes;
+      setHydrated(true);
+      return;
     }
-    originalBarcodeCodes.current = initialCodes;
-    setHydrated(true);
+    // مزامنة صور المعرض الحيّة بعد تغيّر بيانات الخادم وحدها دون استرجاع تعديلات المستخدم المحليّة
+    const nextImages = hydrateProductImages(product.data.images);
+    const nextSig = nextImages.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
+    if (nextSig !== lastServerImagesSigRef.current) {
+      lastServerImagesSigRef.current = nextSig;
+      setModel((m) => ({ ...m, images: nextImages }));
+      setSavedSignature((prev) => {
+        if (!prev) return prev;
+        try {
+          const parsed = JSON.parse(prev) as Record<string, unknown>;
+          parsed.images = nextImages.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`);
+          return JSON.stringify(parsed);
+        } catch {
+          return prev;
+        }
+      });
+    }
   }, [product.data, hydrated]);
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);

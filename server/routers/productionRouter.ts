@@ -37,6 +37,7 @@ import {
   checkRecipeMaterialsAvailability,
   createRecipe,
   deleteRecipe,
+  getCustomizableRecipeLineOptions,
   getRecipe,
   getRecipeForProduct,
   listRecipes,
@@ -48,6 +49,7 @@ import {
   suggestSimilarRecipes,
   updateRecipe,
 } from "../services/recipeService";
+import { canCrossBranches } from "../lib/branchAuthority";
 import {
   materialSubstitutionItemSchema,
   substituteRecipeMaterialInputSchema,
@@ -545,6 +547,28 @@ export const productionRouter = router({
     forProduct: productsReadProcedure
       .input(z.object({ productId: z.number().int().positive() }))
       .query(({ input }) => getRecipeForProduct(input.productId)),
+
+    /** خيارات المتغيّرات/الألوان القابلة للاختيار عند الطلب لأسطر الوصفات الفعّالة (تخفي الكلفة). */
+    customizableLineOptions: productsReadProcedure
+      .input(
+        z
+          .object({
+            branchId: z.number().int().positive().nullish(),
+            productId: z.number().int().positive().nullish(),
+            variantId: z.number().int().positive().nullish(),
+          })
+          .optional(),
+      )
+      .query(({ input, ctx }) => {
+        const scopedBranch = canCrossBranches(ctx.user)
+          ? (input?.branchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null))
+          : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+        return getCustomizableRecipeLineOptions({
+          branchId: scopedBranch,
+          productId: input?.productId ?? null,
+          variantId: input?.variantId ?? null,
+        });
+      }),
 
     /** اقتراحات تنبؤية للوصفات المشابهة بناءً على الصنف والاسم وتطابق الكلمات الدلالية */
     suggestSimilar: productsReadProcedure

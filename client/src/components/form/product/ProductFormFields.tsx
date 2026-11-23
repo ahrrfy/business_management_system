@@ -11,6 +11,7 @@
  * الحالةُ يملكها النموذج (`ProductFormModel`) عبر `onChange(patch)` — لا `useState` للحقول هنا.
  * الأرقامُ لاتينية (لا تحويلَ إلى الهندية) — قرار المالك.
  */
+import { lazy, Suspense } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,9 +26,14 @@ import BundleRecipeCard from "@/components/product/BundleRecipeCard";
 import ProductRecipeSection from "@/components/product/ProductRecipeSection";
 import { ConsignmentField } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
-import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { ProductRelatedProductsEditor } from "@/components/product/ProductRelatedProductsEditor";
+
+const ProductCustomizationTemplateEditor = lazy(() =>
+  import("@/components/product/ProductCustomizationTemplateEditor").then((m) => ({
+    default: m.ProductCustomizationTemplateEditor,
+  })),
+);
 import { ColorDot, Field } from "@/components/product/variantBits";
 import { categoryOptionElements, type CategoryLite } from "@/lib/categoryTree";
 import { trpc } from "@/lib/trpc";
@@ -226,7 +232,7 @@ export function ProductFormFields({
             <div className="overflow-hidden rounded-lg border bg-muted/30">
               {primaryImage ? (
                 <div className="aspect-[4/3] bg-card">
-                  <img src={primaryImage.dataUrl || primaryImage.url} alt={name || "صورة المنتج"} className="h-full w-full object-cover" />
+                  <img src={primaryImage.displayUrl || primaryImage.dataUrl || primaryImage.url} alt={name || "صورة المنتج"} className="h-full w-full object-cover" />
                 </div>
               ) : (
                 <div className="flex aspect-[4/3] items-center justify-center bg-card px-3 text-center font-mono text-[11px] text-muted-foreground">
@@ -405,7 +411,9 @@ export function ProductFormFields({
       {/* مساعداتٌ تحتاج سجلاً محفوظاً — تُعرض بوجود المعرّف لا بالوضع (هذا هو الفرق الوحيد المشروع). */}
       {productId != null && (
         <>
-          <ProductCustomizationTemplateEditor productId={productId} enabled={model.isCustomizable} />
+          <Suspense fallback={null}>
+            <ProductCustomizationTemplateEditor productId={productId} enabled={model.isCustomizable} />
+          </Suspense>
           <ProductRelatedProductsEditor productId={productId} />
         </>
       )}
@@ -423,6 +431,7 @@ export function ProductFormFields({
 
       {/* الصور تُنشر بعد الحفظ عبر الاستوديو (الخادم يرفض بايتاتٍ عند الإنشاء — fail-closed). */}
       <ProductMediaContentSection
+        productId={productId}
         description={model.description}
         onDescriptionChange={(description) => set({ description })}
         images={isEdit ? model.images : undefined}

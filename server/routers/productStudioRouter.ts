@@ -365,7 +365,9 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx, "productStudio.submitCandidate"), { ...input, requireBarcodeVerification: true })),
-  approve: productStudioManagerProcedure.input(z.object({ taskId, adminOverrideReason, expectedRevision })).mutation(({ ctx, input }) => approveStudioTask(actor(ctx, "productStudio.approve"), input.taskId, input.adminOverrideReason, input.expectedRevision)),
+  approve: productStudioManagerProcedure
+    .input(z.object({ taskId, adminOverrideReason, expectedRevision, replaceImageId: z.number().int().positive().optional() }))
+    .mutation(({ ctx, input }) => approveStudioTask(actor(ctx, "productStudio.approve"), input.taskId, input.adminOverrideReason, input.expectedRevision, input.replaceImageId)),
   reject: productStudioManagerProcedure
     .input(
       z.object({
@@ -442,6 +444,7 @@ export const productStudioRouter = router({
         thumbnailDataUrl: z.string().max(180_000),
         mode: z.enum(["FLATTEN", "CUT", "PRO", "AI", "ORIGINAL"]).default("FLATTEN"),
         setAsPrimary: z.boolean().optional(),
+        replaceImageId: z.number().int().positive().optional(),
         adminOverrideReason,
         clientRequestId: z.string().trim().min(8).max(64).optional(),
       }),
@@ -478,13 +481,13 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => bulkRejectStudioTasks(actor(ctx, "productStudio.bulkRejectStudioTasks"), input)),
-  // إدارة وتعيين الصورة الرئيسية للمنتج (صورة رئيسية واحدة لكل منتج/متغير)
-  setProductImagePrimary: productStudioWriteProcedure
+  // إدارة وتعيين الصورة الرئيسية للمنتج (صورة رئيسية واحدة لكل منتج/متغير — للمدير وللصور المعتمدة فقط)
+  setProductImagePrimary: productStudioManagerProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
         imageId: z.number().int().positive(),
-        isPrimary: z.boolean(),
+        isPrimary: z.literal(true),
         variantId: z.number().int().positive().nullable().optional(),
       }),
     )

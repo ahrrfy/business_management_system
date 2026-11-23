@@ -18,6 +18,7 @@ export const productRecipeDefinitionSchema = z.object({
     inputProductUnitId: z.number().int().positive().nullish(),
     qtyPerOutputBase: z.string(),
     notes: z.string().nullish(),
+    allowVariantChoice: z.boolean().optional(),
   })).min(1),
 });
 

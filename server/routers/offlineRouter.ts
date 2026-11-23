@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { recipeSelectionsSchema } from "@shared/recipeVariantSelection";
 import { appErrorMessage } from "@shared/errors";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { z } from "zod";
@@ -225,6 +226,7 @@ const replaySaleInputSchema = z.object({
         promotionId: z.number().int().positive().nullish(),
         promotionDiscount: nonNegMoneyString.optional(),
         cashierDiscountAmount: nonNegMoneyString.optional(),
+        recipeSelections: recipeSelectionsSchema.optional(),
       }),
     )
     .min(1),
@@ -1406,6 +1408,7 @@ export const offlineRouter = router({
               productUnitId: z.number().int().positive(),
               quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
               unitPriceOverride: nonNegMoneyString,
+              recipeSelections: recipeSelectionsSchema.optional(),
             }),
           )
           .min(1),
@@ -1480,6 +1483,7 @@ export const offlineRouter = router({
                   promotionId: z.number().int().positive().nullish(),
                   promotionDiscount: nonNegMoneyString.optional(),
                   cashierDiscountAmount: nonNegMoneyString.optional(),
+                  recipeSelections: recipeSelectionsSchema.optional(),
                 }),
               )
               .min(1),
@@ -1497,6 +1501,7 @@ export const offlineRouter = router({
                   productUnitId: z.number().int().positive(),
                   quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
                   unitPriceOverride: nonNegMoneyString,
+                  recipeSelections: recipeSelectionsSchema.optional(),
                 }),
               )
               .min(1),

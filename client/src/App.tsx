@@ -34,7 +34,6 @@ import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { STUDIO_ACCESS_ROLES } from "@shared/permissions";
 import { AUDIT_LOGS_GATE, BARCODE_WORKFLOW_STATION_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
-import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
 const Login = lazy(() => import("@/pages/Login"));
@@ -340,15 +339,24 @@ function RootRoute() {
  */
 function GlobalPrinterAutoConnect() {
   useEffect(() => {
-    if (!isWebUsbSupported()) return;
-    void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
-    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    const usb = typeof navigator !== "undefined" ? (navigator as unknown as { usb?: EventTarget }).usb : undefined;
     if (!usb) return;
-    const onConnect = () => {
-      void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+    let disposed = false;
+    const reconnect = () => {
+      void import("@/lib/printing/print")
+        .then(({ isWebUsbSupported, tryReconnectPrinter }) => {
+          if (!disposed && isWebUsbSupported()) {
+            return tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+          }
+        })
+        .catch(() => { /* صامت */ });
     };
-    usb.addEventListener("connect", onConnect);
-    return () => usb.removeEventListener("connect", onConnect);
+    reconnect();
+    usb.addEventListener("connect", reconnect);
+    return () => {
+      disposed = true;
+      usb.removeEventListener("connect", reconnect);
+    };
   }, []);
   return null;
 }

@@ -1,4 +1,5 @@
 import { receptionComposedPaymentsSchema } from "../services/reception/splitPayments";
+import { recipeSelectionsSchema } from "@shared/recipeVariantSelection";
 import {checkoutChargesFields,checkoutChargesIntentSchema,checkoutChargeOptionsSchema,listCheckoutChargeOptions,chargeOnlyCheckoutSchema,createChargeOnlyCheckout,readCheckoutChargesMetadataTx} from "../services/checkoutCharges";
 import { initiateExternalPaymentAttempt, confirmExternalPaymentAttempt } from "../services/posExternalPayment";
 // راوتر محطة خدمة الزبائن — ش١ من docs/reception-cashier-system-design-2026-08-05.md §٦.
@@ -78,6 +79,7 @@ const draftLineSchema = z.object({
   /** JSON نصّي [{url,caption,sortOrder}] — يُتحقَّق من كل صورة فيه أدناه. */
   designImages: z.string().max(8_000_000).nullish(),
   printSpec: z.string().max(20_000).nullish(),
+  recipeSelections: recipeSelectionsSchema.optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
   assignedTo: z.number().int().positive().nullish(),
   priceOverride: z.boolean().optional(),

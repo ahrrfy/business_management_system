@@ -17,7 +17,6 @@ import {
   digitalPriceVersions,
   digitalProviders,
   digitalSaleIntentItems,
-  productImages,
   products,
   productUnits,
   productVariants,
@@ -25,6 +24,7 @@ import {
 } from "../../../drizzle/schema";
 import { normalizeDigitalSaleReference } from "../../../shared/digitalSale";
 import type { DB } from "../../db";
+import { resolveDigitalOfferingImages } from "./imageHelpers";
 
 export type CardCategory = "FAVORITES" | "TELECOM" | "GLOBAL" | "EDUCATIONAL" | "ALL";
 
@@ -124,7 +124,8 @@ export async function listCards(
       priceVersionId: digitalPriceVersions.id,
       validFrom: digitalPriceVersions.validFrom,
       validUntil: digitalPriceVersions.validUntil,
-      imageUrl: productImages.url,
+      offeringImageUrl: digitalOfferings.imageUrl,
+      providerLogoUrl: digitalProviders.logoUrl,
     })
     .from(digitalOfferings)
     .innerJoin(digitalOfferingBranches, eq(digitalOfferingBranches.offeringId, digitalOfferings.id))
@@ -154,10 +155,6 @@ export async function listCards(
       ),
     )
     .leftJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
-    .leftJoin(
-      productImages,
-      and(eq(productImages.productId, digitalOfferings.productId), eq(productImages.isPrimary, true)),
-    )
     .where(and(...conds))
     .orderBy(digitalOfferingBranches.displayOrder, digitalOfferings.id);
 
@@ -195,7 +192,11 @@ export async function listCards(
       faceValue: r.faceValue,
       sellPrice: r.sellPrice,
       priceVersionId: r.priceVersionId != null ? Number(r.priceVersionId) : null,
-      imageUrl: r.imageUrl,
+      imageUrl: resolveDigitalOfferingImages(
+        Number(r.offeringId),
+        r.offeringImageUrl,
+        r.providerLogoUrl,
+      ).effectiveImageUrl,
       cardColorToken: r.cardColorToken,
       isFavorite: r.isFavorite,
       displayOrder: r.displayOrder,

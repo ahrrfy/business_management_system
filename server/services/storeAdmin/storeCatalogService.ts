@@ -16,6 +16,7 @@ import {
   products,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { inventoryProductImageUrl } from "../../imageRoute";
 import { escLike } from "../../lib/sqlLike";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText, tokenizeSearchQuery } from "../../../shared/searchNormalize";
 import { withTx, type Actor } from "../tx";
@@ -191,39 +192,88 @@ export async function listStoreCatalog(
   if (searchCond) conds.push(searchCond);
   if (input.featuredOnly) conds.push(eq(products.isFeatured, true));
   if (input.hiddenOnly) conds.push(eq(products.showInStore, false));
-  if (input.missingImageOnly) conds.push(isNull(productImages.id));
+  if (input.missingImageOnly) {
+    conds.push(
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${productImages}
+        WHERE ${productImages.productId} = ${products.id}
+          AND ${productImages.reviewStatus} = 'APPROVED'
+      )`,
+    );
+  }
   const whereClause = conds.length ? and(...conds) : undefined;
 
   const base = db
     .select({
       productId: products.id,
       name: products.name,
-      categoryName: sql<string | null>`MAX(${categories.name})`,
+      categoryName: categories.name,
       isActive: products.isActive,
       isFeatured: products.isFeatured,
       showInStore: products.showInStore,
-      imageUrl: sql<string | null>`MAX(${productImages.url})`,
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
-    .leftJoin(productImages, and(
-      eq(productImages.productId, products.id),
-      eq(productImages.isPrimary, true),
-      isNull(productImages.variantId),
-    ))
     .where(whereClause)
-    .groupBy(products.id)
     .orderBy(desc(products.isFeatured), asc(products.name))
     .limit(limit)
     .offset(offset);
 
   const raw = await base;
   const productIds = raw.map((r) => Number(r.productId));
-  const readiness = await loadStorefrontReadiness({ branchId: input.branchId, productIds });
+  const [readiness, approvedImgRows] = await Promise.all([
+    loadStorefrontReadiness({ branchId: input.branchId, productIds }),
+    productIds.length > 0
+      ? db
+          .select({
+            id: productImages.id,
+            productId: productImages.productId,
+            variantId: productImages.variantId,
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            thumbDataUrl: productImages.thumbDataUrl,
+            origin: productImages.origin,
+            isPrimary: productImages.isPrimary,
+            sortOrder: productImages.sortOrder,
+          })
+          .from(productImages)
+          .where(and(inArray(productImages.productId, productIds), eq(productImages.reviewStatus, "APPROVED")))
+          .orderBy(
+            desc(productImages.isPrimary),
+            sql`CASE WHEN ${productImages.variantId} IS NULL THEN 0 ELSE 1 END`,
+            asc(productImages.sortOrder),
+            asc(productImages.id),
+          )
+      : Promise.resolve([]),
+  ]);
+  const primaryImageByProduct = new Map<number, (typeof approvedImgRows)[number]>();
+  for (const img of approvedImgRows) {
+    const pid = Number(img.productId);
+    if (!primaryImageByProduct.has(pid)) {
+      primaryImageByProduct.set(pid, img);
+    }
+  }
   const rows: StoreCatalogRow[] = raw.map((r) => {
     const productId = Number(r.productId);
     const state = readiness.get(productId);
     const onlyVariant = state?.variants.length === 1 ? state.variants[0] : null;
+    const showInStore = r.showInStore == null ? true : !!r.showInStore;
+    const img = primaryImageByProduct.get(productId) ?? null;
+    const invUrl = img
+      ? inventoryProductImageUrl(Number(img.id), {
+          url: img.url,
+          objectKey: img.objectKey,
+          contentHash: img.contentHash,
+        })
+      : null;
+    const usableThumb =
+      img && !(img.origin === "ORIGINAL" && img.objectKey != null) ? img.thumbDataUrl : null;
+    const imageUrl = img
+      ? showInStore
+        ? (invUrl ?? usableThumb ?? img.thumbDataUrl ?? img.url)
+        : (invUrl ?? usableThumb ?? img.thumbDataUrl ?? (!/^data:/i.test(img.url) && !/^\/api\/img\/product\//i.test(img.url) ? img.url : null))
+      : null;
     return {
       productId,
       isService: state?.isService ?? false,
@@ -231,7 +281,7 @@ export async function listStoreCatalog(
       categoryName: r.categoryName ?? null,
       isActive: r.isActive === true,
       isFeatured: !!r.isFeatured,
-      showInStore: r.showInStore == null ? true : !!r.showInStore,
+      showInStore,
       variantId: onlyVariant?.variantId ?? null,
       retailPrice: state?.preferredUnit?.retailPrice ?? null,
       saleUnitName: state?.preferredUnit?.unitName ?? null,
@@ -240,8 +290,8 @@ export async function listStoreCatalog(
       inStock: state?.inStock ?? false,
       readinessReasons: state?.readinessReasons ?? ["NO_ACTIVE_VARIANT"],
       variants: state?.variants ?? [],
-      hasImage: r.imageUrl != null,
-      imageUrl: r.imageUrl ?? null,
+      hasImage: img != null,
+      imageUrl,
     };
   });
 
@@ -251,13 +301,8 @@ export async function listStoreCatalog(
     total = raw.length;
   } else {
     const [cnt] = await db
-      .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
+      .select({ n: sql<number>`COUNT(*)` })
       .from(products)
-      .leftJoin(productImages, and(
-        eq(productImages.productId, products.id),
-        eq(productImages.isPrimary, true),
-        isNull(productImages.variantId),
-      ))
       .where(whereClause);
     total = Number(cnt?.n ?? 0);
   }
@@ -382,7 +427,21 @@ export async function setProductPrimaryImage(input: { productId: number; url: st
       .for("update");
     if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
     await tx.delete(productImages).where(and(eq(productImages.productId, input.productId), isNull(productImages.variantId), eq(productImages.isPrimary, true)));
-    return { productId: input.productId, hasImage: false };
+    const [nextParent] = await tx
+      .select({ id: productImages.id })
+      .from(productImages)
+      .where(and(eq(productImages.productId, input.productId), isNull(productImages.variantId), eq(productImages.reviewStatus, "APPROVED")))
+      .orderBy(asc(productImages.sortOrder), asc(productImages.id))
+      .limit(1);
+    if (nextParent) {
+      await tx.update(productImages).set({ isPrimary: true }).where(eq(productImages.id, nextParent.id));
+    }
+    const [remainingAny] = await tx
+      .select({ id: productImages.id })
+      .from(productImages)
+      .where(and(eq(productImages.productId, input.productId), eq(productImages.reviewStatus, "APPROVED")))
+      .limit(1);
+    return { productId: input.productId, hasImage: remainingAny != null };
   });
 }
 

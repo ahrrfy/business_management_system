@@ -36,6 +36,8 @@ type Comp = {
   productUnitId: number | null;
   conversionFactor: string;
   qty: string;
+  allowVariantChoice: boolean;
+  activeVariantCount?: number;
 };
 type OutPick = { variantId: number; productName: string; sku: string; costPriceBase: string; units: PurchaseRow[]; unitId: number; unitName: string };
 
@@ -108,6 +110,7 @@ export default function ProductionRecipes() {
       key: _k++, inputVariantId: v.variantId, productName: v.productName, sku: v.sku,
       costPriceBase: String(v.costPriceBase ?? "0"), units: us,
       productUnitId: base?.productUnitId ?? v.productUnitId, conversionFactor: base?.conversionFactor ?? "1", qty: "1",
+      allowVariantChoice: false,
     }]);
   }
 
@@ -130,6 +133,8 @@ export default function ProductionRecipes() {
         key: _k++, inputVariantId: l.inputVariantId, productName: l.inputProductName ?? `#${l.inputVariantId}`, sku: l.inputSku ?? "",
         costPriceBase: String(l.inputCostPrice ?? "0"), units: units.length ? units : [chosen],
         productUnitId: chosen.productUnitId, conversionFactor: chosen.conversionFactor || "1", qty: qty.toString(),
+        allowVariantChoice: Boolean(l.allowVariantChoice),
+        activeVariantCount: l.activeVariantCount != null ? Number(l.activeVariantCount) : undefined,
       };
     }));
     setShowForm(true);
@@ -213,7 +218,12 @@ export default function ProductionRecipes() {
       laborPerOutputBase: D(labor).toFixed(2),
       wasteStdPct: D(wastePct).div(100).toFixed(2),
       ...(createAsInactive ? { isActive: false } : {}),
-      lines: comps.map((c) => ({ inputVariantId: c.inputVariantId, inputProductUnitId: c.productUnitId, qtyPerOutputBase: compBaseQty(c).toFixed(4) })),
+      lines: comps.map((c) => ({
+        inputVariantId: c.inputVariantId,
+        inputProductUnitId: c.productUnitId,
+        qtyPerOutputBase: compBaseQty(c).toFixed(4),
+        allowVariantChoice: Boolean(c.allowVariantChoice),
+      })),
     };
     try {
       if (editId) await updateMut.mutateAsync({ id: editId, ...payload });
@@ -344,6 +354,17 @@ export default function ProductionRecipes() {
                     <div className="col-span-12 md:col-span-4">
                       <div className="font-medium text-sm">{c.productName}</div>
                       <div className="text-xs text-muted-foreground font-mono" dir="ltr">{c.sku} · كلفة {fmt(c.costPriceBase)}</div>
+                      {(c.activeVariantCount == null || c.activeVariantCount > 1 || c.allowVariantChoice) && (
+                        <label className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            className="size-3.5 accent-primary rounded"
+                            checked={Boolean(c.allowVariantChoice)}
+                            onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, allowVariantChoice: e.target.checked } : x))}
+                          />
+                          <span>تحديد اللون/المتغير عند الطلب</span>
+                        </label>
+                      )}
                     </div>
                     <div className="col-span-4 md:col-span-2">
                       <Input dir="ltr" value={c.qty} onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, qty: e.target.value } : x))} placeholder="كمية" />
