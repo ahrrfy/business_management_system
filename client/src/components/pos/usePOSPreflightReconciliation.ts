@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { POSTab } from "@/components/pos/posShared";
 import { newClientRequestId } from "@/lib/countQueue";
 import { notify } from "@/lib/notify";
+import { offlineDb } from "@/lib/offline/db";
 import {
   type PreflightSaleIntentV4,
   clearPreflightSaleIntent,
@@ -137,26 +138,30 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
     }) => {
       const { err, reqId, offlineCapturable, captureOfflineSale, clearPendingSaleCtx } = params;
       reconcilingPreflightRef.current = false;
-      unmarkPreflightIntentLiveInMemory(reqId);
       const errData = err.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
       const code = errData?.code;
       if (!code || (errData?.httpStatus != null && errData.httpStatus >= 500)) {
         clearPendingSaleCtx();
         if (offlineCapturable) {
-          void captureOfflineSale().then(async (capturedOk) => {
-            if (capturedOk) {
-              await clearPreflightSaleIntent(reqId);
-            } else {
-              releaseReservedPrintWindow();
-              await markPreflightSaleIntentUnconfirmed(
-                reqId,
-                "انقطع الرد من الخادم وتعذّر الحفظ المحلي دون اتصال",
-              );
-            }
-            await refreshRecoverablePreflightQueue();
-          });
+          void captureOfflineSale()
+            .then(async (capturedOk) => {
+              if (capturedOk) {
+                await clearPreflightSaleIntent(reqId);
+              } else {
+                releaseReservedPrintWindow();
+                await markPreflightSaleIntentUnconfirmed(
+                  reqId,
+                  "انقطع الرد من الخادم وتعذّر الحفظ المحلي دون اتصال",
+                );
+              }
+              await refreshRecoverablePreflightQueue();
+            })
+            .finally(() => {
+              unmarkPreflightIntentLiveInMemory(reqId);
+            });
           return;
         }
+        unmarkPreflightIntentLiveInMemory(reqId);
         releaseReservedPrintWindow();
         void markPreflightSaleIntentUnconfirmed(
           reqId,
@@ -165,6 +170,7 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
         return;
       }
 
+      unmarkPreflightIntentLiveInMemory(reqId);
       releaseReservedPrintWindow();
       const isManagerPromptError = Boolean(
         code === "PRECONDITION_FAILED" ||
@@ -223,6 +229,28 @@ export function usePOSPreflightReconciliation(options: UsePOSPreflightReconcilia
 
   const fenceAndCancelUnconfirmedIntent = useCallback(
     async (intent: PreflightSaleIntentV4) => {
+      try {
+        const existingOutbox = await offlineDb.outbox?.get?.(intent.clientRequestId);
+        if (existingOutbox) {
+          attemptedSameKeyReplayIdsRef.current.delete(intent.clientRequestId);
+          await clearPreflightSaleIntent(intent.clientRequestId);
+          await refreshRecoverablePreflightQueue();
+          if (existingOutbox.status === "SENT") {
+            notify.ok(
+              `العملية مرحّلة مسبقاً — ${existingOutbox.resultInvoiceNumber ?? existingOutbox.offlineReceiptNumber}`,
+              "وُجدت العملية في سجل المزامنة ولا حاجة لتسييجها.",
+            );
+          } else {
+            notify.warn(
+              `العملية محفوظة في طابور الأوفلاين (${existingOutbox.offlineReceiptNumber})`,
+              "لا يجوز تسييج معرّف محفوظ أوفلاينياً؛ ستُزامَن تلقائياً أو تُعالج من درج المزامنة.",
+            );
+          }
+          return;
+        }
+      } catch {
+        /* ignore outbox precheck failures and defer to server lookup */
+      }
       if (offline || !hasAuthenticatedUser) {
         notify.errBig("يتطلب تسييج وإلغاء الطلب غير الملتزم اتصالاً حياً بالخادم.");
         return;

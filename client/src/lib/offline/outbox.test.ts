@@ -64,7 +64,9 @@ vi.mock("./db", () => ({
         const row = storage.rows.get(key);
         if (row) storage.rows.set(key, { ...row, ...patch });
       },
-      bulkDelete: async () => {},
+      bulkDelete: async (keys: string[]) => {
+        for (const k of keys) storage.rows.delete(k);
+      },
       where: (field: keyof OfflineOutboxItem) => {
         const result = (values: unknown[]) => ({
           toArray: async () => {
@@ -496,5 +498,74 @@ describe("offline interrupted sending recovery", () => {
     expect(restored.customerName).toBe("عميل التبويب ٣");
     expect(restored.lines).toHaveLength(1);
     expect(restored.total).toBe(750);
+  });
+
+  it("handles fenced parked reissue, recovery capture, and audited dismissal cleanly", async () => {
+    const mod = await import("./outbox");
+    expect(mod.isFencedParkedError("تم إلغاء وتسييح الطلب المعلّق خادمياً")).toBe(true);
+    expect(mod.isFencedParkedError("رفض آخر")).toBe(false);
+
+    storage.rows.set("fenced-1", {
+      ...pending("fenced-1", 11),
+      status: "PARKED",
+      lastError: "تم إلغاء وتسييح الطلب المعلّق خادمياً",
+    });
+
+    // Failed auth/validation preserves original lastError and PARKED status
+    const failRes = await mod.reissueParkedSaleItem("fenced-1", async () => {
+      throw { data: { code: "FORBIDDEN" }, message: "اعتماد مرفوض" };
+    });
+    expect(failRes.ok).toBe(false);
+    expect(storage.rows.get("fenced-1")?.status).toBe("PARKED");
+    expect(storage.rows.get("fenced-1")?.lastError).toBe("تم إلغاء وتسييح الطلب المعلّق خادمياً");
+
+    // Successful reissue transitions to SENT with official invoiceNumber
+    const okRes = await mod.reissueParkedSaleItem("fenced-1", async () => ({
+      status: "POSTED",
+      invoiceId: 105,
+      invoiceNumber: "INV-105",
+    }));
+    expect(okRes).toMatchObject({ ok: true, outcome: "POSTED", invoiceNumber: "INV-105" });
+    expect(storage.rows.get("fenced-1")?.status).toBe("SENT");
+    expect(storage.rows.get("fenced-1")?.resultInvoiceNumber).toBe("INV-105");
+
+    // Reissue falling into closed-shift recovery cleans local outbox row
+    storage.rows.set("fenced-2", {
+      ...pending("fenced-2", 11),
+      status: "PARKED",
+      lastError: "تم إلغاء وتسييح الطلب المعلّق خادمياً",
+    });
+    const recRes = await mod.reissueParkedSaleItem("fenced-2", async () => ({
+      status: "CAPTURED_IN_RECOVERY",
+      message: "الوردية مغلقة",
+    }));
+    expect(recRes).toMatchObject({ ok: true, outcome: "CAPTURED_IN_RECOVERY" });
+    expect(storage.rows.has("fenced-2")).toBe(false);
+
+    // Dismissing a parked item reconciles if already committed, or deletes on DISMISSED
+    storage.rows.set("fenced-3", {
+      ...pending("fenced-3", 11),
+      status: "PARKED",
+      lastError: "تم إلغاء وتسييح الطلب المعلّق خادمياً",
+    });
+    const dismissCommit = await mod.dismissParkedOutboxItemClient("fenced-3", async () => ({
+      status: "ALREADY_COMMITTED",
+      invoiceId: 200,
+      invoiceNumber: "INV-200",
+    }));
+    expect(dismissCommit).toMatchObject({ ok: true, outcome: "ALREADY_COMMITTED" });
+    expect(storage.rows.get("fenced-3")?.status).toBe("SENT");
+    expect(storage.rows.get("fenced-3")?.resultInvoiceNumber).toBe("INV-200");
+
+    storage.rows.set("fenced-4", {
+      ...pending("fenced-4", 11),
+      status: "PARKED",
+      lastError: "تم إلغاء وتسييح الطلب المعلّق خادمياً",
+    });
+    const dismissClean = await mod.dismissParkedOutboxItemClient("fenced-4", async () => ({
+      status: "DISMISSED",
+    }));
+    expect(dismissClean).toMatchObject({ ok: true, outcome: "DISMISSED" });
+    expect(storage.rows.has("fenced-4")).toBe(false);
   });
 });

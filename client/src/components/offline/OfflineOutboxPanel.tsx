@@ -7,7 +7,10 @@ import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { OfflineDeviceSettings } from "./OfflineDeviceSettings";
 import { OfflineOutboxRow } from "./OfflineOutboxRow";
-import type { OfflineApprovalApiFactory } from "./offlineReplayApi";
+import type {
+  OfflineApprovalApiFactory,
+  OfflineParkedResolutionActions,
+} from "./offlineReplayApi";
 import type { OfflineAction } from "./useOfflineAction";
 
 export function OfflineOutboxPanel({
@@ -23,6 +26,9 @@ export function OfflineOutboxPanel({
   activeRowId,
   runRow,
   approvalApi,
+  resolutionActions,
+  statusNotice,
+  onStatusNotice,
   refresh,
   flushNow,
   onClose,
@@ -39,6 +45,9 @@ export function OfflineOutboxPanel({
   activeRowId: string | null;
   runRow: (id: string, task: () => Promise<void>) => Promise<void>;
   approvalApi: OfflineApprovalApiFactory;
+  resolutionActions?: OfflineParkedResolutionActions;
+  statusNotice?: string | null;
+  onStatusNotice?: (msg: string | null) => void;
   refresh: () => void;
   flushNow: (force?: boolean) => Promise<void>;
   onClose: () => void;
@@ -103,6 +112,14 @@ export function OfflineOutboxPanel({
             {syncError}
           </p>
         ) : null}
+        {statusNotice ? (
+          <p
+            role="status"
+            className="border-b bg-[var(--sem-pos-bg)] p-3 text-xs font-semibold text-[var(--sem-pos)]"
+          >
+            {statusNotice}
+          </p>
+        ) : null}
         {settingsOpen ? (
           <OfflineDeviceSettings elevated={elevated} action={deviceAction} />
         ) : null}
@@ -117,10 +134,13 @@ export function OfflineOutboxPanel({
               key={item.clientRequestId}
               item={item}
               offline={offline}
+              elevated={elevated}
               pending={rowPending}
               error={activeRowId === item.clientRequestId ? rowError : null}
               run={(task) => runRow(item.clientRequestId, task)}
               approvalApi={approvalApi}
+              resolutionActions={resolutionActions}
+              onStatusNotice={onStatusNotice}
               flushNow={flushNow}
               refresh={refresh}
             />

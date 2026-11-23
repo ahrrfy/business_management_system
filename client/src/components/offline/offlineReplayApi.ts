@@ -1,5 +1,7 @@
-import type { OfflineOutboxKind } from "@/lib/offline/db";
+import type { OfflineOutboxItem, OfflineOutboxKind } from "@/lib/offline/db";
 import type {
+  DismissParkedResult,
+  ReissueFencedSaleResult,
   ReplayApiMap,
   ReplayArgs,
   ReplaySaleApi,
@@ -12,12 +14,31 @@ export type OfflineApprovalApiFactory = (
   approval: OfflineManagerApproval,
 ) => ReplayApiMap;
 
-/** Preserve the saved payload and capture identity. A return never gains manager approval. */
-export function createOfflineReplayApi(
-  routes: OfflineReplayRoutes,
-  approval?: OfflineManagerApproval,
-): ReplayApiMap {
-  const input = (args: ReplayArgs) => ({
+export interface OfflineParkedResolutionActions {
+  probeStatus?: (item: OfflineOutboxItem) => Promise<{
+    outcome: "COMMITTED" | "UNKNOWN_IN_FLIGHT" | "FENCED_NOT_COMMITTED" | "UNKNOWN";
+    invoiceNumber?: string;
+    recoveryStatus?: "PENDING" | "POSTED" | "DISCARDED" | null;
+    discardReason?: string | null;
+  }>;
+  reissueFencedSale?: (
+    args: ReplayArgs,
+    approval?: OfflineManagerApproval,
+  ) => Promise<ReissueFencedSaleResult>;
+  dismissParkedItem?: (params: {
+    branchId: number;
+    clientRequestId: string;
+    kind: OfflineOutboxKind;
+    offlineReceiptNumber: string;
+    total: string;
+    lastError?: string;
+    reason: string;
+    managerApproval?: OfflineManagerApproval;
+  }) => Promise<DismissParkedResult>;
+}
+
+export function buildOfflineReplayInput(args: ReplayArgs) {
+  return {
     ...(args.payload as object),
     capturedAt: args.capturedAt,
     offlineReceiptNumber: args.offlineReceiptNumber,
@@ -30,7 +51,15 @@ export function createOfflineReplayApi(
     ...(args.grantIssuedAtMs != null ? { grantIssuedAtMs: args.grantIssuedAtMs } : {}),
     ...(args.grantExpiresAtMs != null ? { grantExpiresAtMs: args.grantExpiresAtMs } : {}),
     ...(args.grantToken != null ? { grantToken: args.grantToken } : {}),
-  });
+  };
+}
+
+/** Preserve the saved payload and capture identity. A return never gains manager approval. */
+export function createOfflineReplayApi(
+  routes: OfflineReplayRoutes,
+  approval?: OfflineManagerApproval,
+): ReplayApiMap {
+  const input = (args: ReplayArgs) => buildOfflineReplayInput(args);
   const approved = (args: ReplayArgs) => ({
     ...input(args),
     ...(approval ? { managerApproval: approval } : {}),

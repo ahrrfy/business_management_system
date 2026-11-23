@@ -15,8 +15,10 @@ import { notify } from "@/lib/notify";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { OfflineOutboxPanel } from "./OfflineOutboxPanel";
 import {
+  buildOfflineReplayInput,
   createOfflineReplayApi,
   type OfflineManagerApproval,
+  type OfflineParkedResolutionActions,
   type OfflineReplayRoutes,
 } from "./offlineReplayApi";
 import { useOfflineAction } from "./useOfflineAction";
@@ -32,6 +34,8 @@ export function OfflineSyncChip({
   const connState = useConnectivity();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
+  const reissueMutation = trpc.offline.reissueOutboxSale.useMutation();
+  const dismissMutation = trpc.offline.dismissOutboxItem.useMutation();
   const currentUserId = Number(me.data?.id ?? 0) || null;
   const [summary, setSummary] = useState<OutboxSummary | null>(null);
   const [open, setOpen] = useState(false);
@@ -63,6 +67,48 @@ export function OfflineSyncChip({
       createOfflineReplayApi(routes, approval),
     [routes],
   );
+  const resolutionActions = useMemo<OfflineParkedResolutionActions | undefined>(() => {
+    const offlineClient = utils.client?.offline;
+    return {
+      ...(offlineClient?.lookupPreflightSaleOutcome
+        ? {
+            probeStatus: async (item) => {
+              const res = await offlineClient.lookupPreflightSaleOutcome.query({
+                branchId: item.branchId,
+                clientRequestId: item.clientRequestId,
+                mode: "OBSERVE",
+                kind: item.kind ?? "SALE",
+                offlineReceiptNumber: item.offlineReceiptNumber,
+              });
+              return {
+                outcome: res.outcome,
+                invoiceNumber:
+                  "invoiceNumber" in res ? res.invoiceNumber : undefined,
+                recoveryStatus:
+                  "recoveryStatus" in res ? res.recoveryStatus : undefined,
+                discardReason:
+                  "discardReason" in res ? res.discardReason : undefined,
+              };
+            },
+          }
+        : {}),
+      reissueFencedSale: async (args, approval) => {
+        const res = await reissueMutation.mutateAsync({
+          ...buildOfflineReplayInput(args),
+          ...(approval ? { managerApproval: approval } : {}),
+        } as never);
+        void Promise.resolve(utils.offline?.recoveryQueue?.invalidate?.()).catch(() => {});
+        return res;
+      },
+      dismissParkedItem: async (params) => {
+        const res = await dismissMutation.mutateAsync(params);
+        void Promise.resolve(utils.offline?.recoveryQueue?.invalidate?.()).catch(() => {});
+        return res;
+      },
+    };
+  }, [dismissMutation, reissueMutation, utils]);
+  const elevated = Boolean(me.data?.isOwner) || userRole === "admin" || userRole === "manager";
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const refresh = useCallback(() => {
     void readOutboxSummary().then(setSummary);
   }, []);
@@ -186,7 +232,7 @@ export function OfflineSyncChip({
         summary={summary}
         items={items}
         offline={offline}
-        elevated={userRole === "admin" || userRole === "manager"}
+        elevated={elevated}
         syncPending={syncPending}
         syncError={syncError}
         deviceAction={deviceAction}
@@ -195,9 +241,18 @@ export function OfflineSyncChip({
         activeRowId={activeRowId}
         runRow={runRow}
         approvalApi={approvalApi}
+        resolutionActions={resolutionActions}
+        statusNotice={statusNotice}
+        onStatusNotice={(msg) => {
+          setStatusNotice(msg);
+          if (msg) notify.ok(msg);
+        }}
         refresh={refresh}
         flushNow={flushNow}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          setStatusNotice(null);
+          setOpen(false);
+        }}
       />
     </Popover>
   );

@@ -6,13 +6,14 @@
 // والعملاء خلف crm READ — نفس ما يصل إليه الكاشير أونلاين، لا أوسع (اللقطة ليست تصديراً
 // أوسع من الشاشة). المخزون مقيَّد بفرع المستخدم غير المرتفع (نفس حارس IDOR في posList).
 
+import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { z } from "zod";
 import { logger } from "../logger";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
-import { logAudit } from "../services/auditService";
+import { logAudit, logAuditTx } from "../services/auditService";
 import {
   buildCatalogSnapshot,
   buildCustomersSnapshot,
@@ -24,12 +25,18 @@ import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
 import { replayOfflineReturn } from "../services/offline/replayReturn";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
-import { and, eq, sql } from "drizzle-orm";
-import { idempotencyKeys, invoices, shifts, users } from "../../drizzle/schema";
-import { requireDb, withTx } from "../services/tx";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import {
+  idempotencyKeys,
+  invoices,
+  offlineRecoveryItems,
+  shifts,
+  users,
+} from "../../drizzle/schema";
+import { requireDb, withGovernanceTx, withTx } from "../services/tx";
 import { getInProcessActiveSaleFlight } from "../services/sale/create";
 import { canUseStation, type PermissionMap } from "@shared/permissions";
-import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "../context";
+import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser, type TrpcContext } from "../context";
 import { assertOperationAuthorized } from "../operationAuthorization";
 import { verifyOfflineCaptureProofServer } from "../lib/offlineCaptureGrant";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
@@ -47,6 +54,7 @@ import {
   posCashierProcedure,
   productsReadProcedure,
   reportViewerProcedure,
+  returnsProcedure,
   router,
   salesCashierProcedure,
   salesManagerProcedure,
@@ -195,6 +203,348 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
   throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
 }
 
+function replacementClientRequestIdFor(originalClientRequestId: string): string {
+  return `RI-${createHash("sha256").update(originalClientRequestId).digest("hex").slice(0, 32)}`;
+}
+
+const replaySaleInputSchema = z.object({
+  branchId: z.number().int().positive(),
+  shiftId: z.number().int().positive().optional(),
+  customerId: z.number().int().positive().optional(),
+  priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
+  lines: z
+    .array(
+      z.object({
+        variantId: z.number().int().positive(),
+        productUnitId: z.number().int().positive(),
+        quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
+        // السعر الملتقَط إلزامي: النقد قُبض بالسعر المطبوع — لا إعادة تسعير صامتة عند الترحيل.
+        unitPriceOverride: nonNegMoneyString,
+        discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
+        discountAmount: nonNegMoneyString.optional(),
+        promotionId: z.number().int().positive().nullish(),
+        promotionDiscount: nonNegMoneyString.optional(),
+        cashierDiscountAmount: nonNegMoneyString.optional(),
+      }),
+    )
+    .min(1),
+  invoiceDiscount: nonNegMoneyString.optional(),
+  payment: z.object({ amount: positiveMoneyString, method: z.literal("CASH") }),
+  clientRequestId: z.string().min(8).max(50),
+  notes: z.string().max(1000).optional(),
+  cashRoundIQD: z.boolean().optional(),
+  capturedAt: z.string().min(10).max(40),
+  offlineReceiptNumber: z.string().min(4).max(40),
+  deviceId: z.string().max(40).optional(),
+  capturedByUserId: z.number().int().positive().optional(),
+  capturedShiftId: z.number().int().positive().optional(),
+  captureProof: z.string().min(32).max(128).optional(),
+  keyId: z.string().min(1).max(24).optional(),
+  grantId: z.string().min(16).max(64).optional(),
+  grantIssuedAtMs: z.number().int().positive().optional(),
+  grantExpiresAtMs: z.number().int().positive().optional(),
+  grantToken: z.string().min(32).max(128).optional(),
+  salesRepId: z.number().int().positive().nullish(),
+  attribution: z
+    .object({
+      repId: z.number().int().positive().nullish(),
+      mode: z.enum(["DIRECT", "SPLIT", "POOL"]).optional(),
+    })
+    .optional(),
+  // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (شارة باركود / PIN / بريد وكلمة مرور).
+  managerApproval: managerApprovalSchema.optional(),
+});
+
+type ReplaySaleSchemaInput = z.infer<typeof replaySaleInputSchema>;
+
+async function verifyAndPrepareReplaySale(
+  input: ReplaySaleSchemaInput,
+  ctx: Parameters<typeof logAudit>[0] & { user: NonNullable<TrpcContext["user"]> },
+  options?: { quarantineClientRequestId?: string },
+) {
+  const crossBranch = canCrossBranches(ctx.user);
+  let effectiveBranchId = input.branchId;
+  if (!crossBranch) {
+    if (ctx.user.branchId == null) {
+      throwNoAssignedBranchError();
+    }
+    effectiveBranchId = Number(ctx.user.branchId);
+  }
+  const actor = {
+    userId: ctx.user.id,
+    branchId: effectiveBranchId,
+    role: ctx.user.role,
+    isOwner: Boolean(ctx.user.isOwner),
+  };
+  const canApprove =
+    Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
+  const {
+    managerApproval,
+    capturedByUserId,
+    capturedShiftId,
+    captureProof,
+    keyId,
+    grantId,
+    grantIssuedAtMs,
+    grantExpiresAtMs,
+    grantToken,
+    ...replayInput
+  } = input;
+  let approvedBy: number | null = null;
+  if (managerApproval) {
+    approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+  }
+
+  const db = requireDb();
+  const [existingCommittedInv] = await db
+    .select({
+      id: invoices.id,
+      createdBy: invoices.createdBy,
+      branchId: invoices.branchId,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.sourceType, "POS"),
+        eq(invoices.sourceId, input.clientRequestId),
+      ),
+    )
+    .limit(1);
+
+  // Preserve verified same-branch original capturer ID in recovery queue WITHOUT fabricating any proof!
+  let verifiedQuarantineOwnerId: number = ctx.user.id;
+  if (capturedByUserId != null) {
+    const [maybeUser] = await db
+      .select({ id: users.id, branchId: users.branchId })
+      .from(users)
+      .where(eq(users.id, Number(capturedByUserId)))
+      .limit(1);
+    if (
+      maybeUser &&
+      (crossBranch || maybeUser.branchId == null || Number(maybeUser.branchId) === effectiveBranchId)
+    ) {
+      verifiedQuarantineOwnerId = Number(maybeUser.id);
+    }
+  }
+
+  const quarantineAndReject = async (
+    reasonMsg: string,
+    usePreconditionFailed = false,
+    quarantineMeta?: Record<string, unknown>,
+  ): Promise<never> => {
+    const errCode = usePreconditionFailed ? "PRECONDITION_FAILED" : "FORBIDDEN";
+    if (!existingCommittedInv) {
+      await captureRejectedReplay(
+        {
+          ...replayInput,
+          clientRequestId: options?.quarantineClientRequestId ?? replayInput.clientRequestId,
+          branchId: effectiveBranchId,
+          priceOverrideApproved: false,
+          unverifiedOriginalCapturedByUserId: capturedByUserId ?? null,
+          submittedByPresenterUserId: ctx.user.id,
+          ...(usePreconditionFailed && !quarantineMeta ? { legacyMissingProof: true } : {}),
+          ...(quarantineMeta ?? {}),
+        },
+        errCode,
+        reasonMsg,
+        verifiedQuarantineOwnerId,
+        "RETAIL",
+      );
+    }
+    throw new TRPCError({ code: errCode, message: reasonMsg });
+  };
+
+  let delegatedSellerUserId: number | null = null;
+  if (existingCommittedInv && captureProof == null) {
+    if (Number(existingCommittedInv.branchId) !== effectiveBranchId) {
+      throwForeignBranchIdempotencyError();
+    }
+    const committedSellerId = Number(existingCommittedInv.createdBy);
+    if (capturedByUserId != null && Number(capturedByUserId) !== committedSellerId) {
+      await quarantineAndReject("تعارض هوية الملتقط مع الفاتورة الملتزمة مسبقاً على الخادم");
+    }
+    if (committedSellerId !== Number(ctx.user.id)) {
+      if (!canApprove && approvedBy == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر مصالحة فاتورة ملتزمة لموظف آخر",
+            why: "الموظف الحالي ليس صاحب الفاتورة الأصلي ولا يحمل اعتماد مدير أو أدمن",
+            doThis: "أرفق اعتماد المدير أو نفّذ المصالحة بحساب الموظف الأصلي",
+          }),
+        });
+      }
+      delegatedSellerUserId = committedSellerId;
+    }
+  } else {
+    if (capturedByUserId == null) {
+      await quarantineAndReject(
+        "هوية الموظف الملتقط الأصلي مفقودة — عُلّقت العملية للمراجعة الإدارية ولا تُرحَّل تلقائياً",
+        true,
+      );
+    }
+
+    const [capturedUserRow] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, Number(capturedByUserId)))
+      .limit(1);
+    if (!capturedUserRow) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تحديد موظف الالتقاط الأصلي",
+          why: "معرّف موظف الالتقاط المرسل غير موجود في جدول المستخدمين",
+          doThis: "راجع طابور الاسترداد الأوفلايني مع مدير النظام لإسناد العملية يدوياً",
+        }),
+      });
+    }
+    if (
+      !crossBranch &&
+      capturedUserRow.branchId != null &&
+      Number(capturedUserRow.branchId) !== effectiveBranchId
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر ترحيل بيع موظف ينتمي لفرع آخر",
+          why: "موظف الالتقاط الأصلي مسجّل على فرع مختلف عن فرع العملية",
+          doThis: "رحّل العملية من الفرع الصحيح أو عبر حساب أدمن مخوّل بعبور الفروع",
+        }),
+      });
+    }
+
+    if (Number(capturedByUserId) !== Number(ctx.user.id)) {
+      if (!canApprove && approvedBy == null) {
+        await quarantineAndReject(
+          "لا يجوز ترحيل بيع التُقط بجلسة موظف آخر دون اعتماد مدير/أدمن",
+        );
+      }
+      delegatedSellerUserId = Number(capturedUserRow.id);
+    }
+
+    if (!existingCommittedInv) {
+      if (capturedUserRow.isActive === false) {
+        await quarantineAndReject(
+          "حساب الموظف الملتقط موقوف حالياً — عُلّقت العملية للمراجعة الإدارية",
+        );
+      }
+      const hydratedCapturer = { ...capturedUserRow } as unknown as AuthUser;
+      await resolveCustomRole(hydratedCapturer);
+      normalizeOwnerAuthority(hydratedCapturer);
+      const stationAllowed = canUseStation(
+        "RETAIL",
+        hydratedCapturer.role,
+        hydratedCapturer.permissionsOverride as PermissionMap | null,
+      );
+      if (!stationAllowed && !hydratedCapturer.isOwner) {
+        await quarantineAndReject(
+          "صلاحية محطة مبيعات التجزئة مسحوبة من الموظف الملتقط — عُلّقت العملية للمراجعة الإدارية",
+        );
+      }
+      try {
+        assertOperationAuthorized(hydratedCapturer, "sales.create");
+      } catch {
+        await quarantineAndReject(
+          "سياسة العمليات تمنع الموظف الملتقط من إنشاء بيع تجزئة — عُلّقت العملية للمراجعة الإدارية",
+        );
+      }
+    }
+
+    const effectiveCapturedShiftId = Number(capturedShiftId ?? input.shiftId ?? 0);
+    let shiftOpenedAtMs: number | null = null;
+    if (!existingCommittedInv) {
+      if (
+        !effectiveCapturedShiftId ||
+        !captureProof ||
+        !keyId ||
+        !grantId ||
+        grantIssuedAtMs == null ||
+        grantExpiresAtMs == null ||
+        !grantToken
+      ) {
+        await quarantineAndReject(
+          "صف قديم غير مرسل يفتقر إلى ختم ومنحة الالتقاط الموقّعة — حُجر في طابور الاسترداد الإداري دون اختلاق إثبات",
+          true,
+        );
+      }
+      const [originShift] = await db
+        .select({
+          id: shifts.id,
+          userId: shifts.userId,
+          branchId: shifts.branchId,
+          openedAt: shifts.openedAt,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, effectiveCapturedShiftId))
+        .limit(1);
+      if (
+        !originShift ||
+        Number(originShift.branchId) !== effectiveBranchId ||
+        Number(originShift.userId) !== Number(capturedByUserId)
+      ) {
+        await quarantineAndReject(
+          "عدم تطابق وردية الالتقاط الأصلية مع هوية الموظف الملتقط",
+        );
+      }
+      shiftOpenedAtMs = originShift.openedAt ? new Date(originShift.openedAt).getTime() : null;
+      if (
+        Number(capturedByUserId) === Number(ctx.user.id) &&
+        input.shiftId != null &&
+        Number(input.shiftId) !== effectiveCapturedShiftId
+      ) {
+        await quarantineAndReject(
+          "لا يجوز للكاشير تغيير وردية الالتقاط الأصلية لعملية غير مرسلة",
+        );
+      }
+    }
+
+    const verifyRes = verifyOfflineCaptureProofServer(
+      captureProof ?? "",
+      {
+        kind: "SALE",
+        keyId: keyId ?? "",
+        grantId: grantId ?? "",
+        grantIssuedAtMs: Number(grantIssuedAtMs ?? 0),
+        grantExpiresAtMs: Number(grantExpiresAtMs ?? 0),
+        grantToken: grantToken ?? "",
+        clientRequestId: input.clientRequestId,
+        offlineReceiptNumber: input.offlineReceiptNumber,
+        capturedAt: input.capturedAt,
+        branchId: effectiveBranchId,
+        capturedShiftId: effectiveCapturedShiftId,
+        capturedByUserId: Number(capturedByUserId),
+        payload: replayInput,
+      },
+      { shiftOpenedAtMs },
+    );
+    if (!verifyRes.ok) {
+      if (verifyRes.code === "LATE_ARRIVAL_BEYOND_OFFLINE_GRACE") {
+        await quarantineAndReject(verifyRes.message, true, {
+          quarantineClassification: "LATE_ARRIVAL_BEYOND_GRACE_CRYPTO_VERIFIED",
+          cryptoProofVerifiedAtQuarantine: true,
+          clientClockUnverifiedByServerWallClock: true,
+          grantId: grantId ?? null,
+          grantIssuedAtMs: grantIssuedAtMs ?? null,
+          grantExpiresAtMs: grantExpiresAtMs ?? null,
+        });
+      }
+      await quarantineAndReject(verifyRes.message);
+    }
+  }
+
+  return {
+    effectiveBranchId,
+    actor,
+    canApprove,
+    approvedBy,
+    replayInput,
+    verifiedQuarantineOwnerId,
+    delegatedSellerUserId,
+    priceOverrideApprovedBy: approvedBy ?? (canApprove ? ctx.user.id : null),
+  };
+}
+
 export const offlineRouter = router({
   /** نسخ رخيصة تُقارَن كل مزامنة — تغيّر نسخة ⇒ جلب اللقطة الموافقة كاملة. */
   versions: productsReadProcedure.query(() => buildOfflineVersions()),
@@ -214,6 +564,8 @@ export const offlineRouter = router({
         clientRequestId: z.string().min(4).max(120),
         expectedSemanticSha256: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
         mode: z.enum(["OBSERVE", "FENCE_IF_UNCOMMITTED"]).default("OBSERVE"),
+        kind: z.enum(["SALE", "PRINT_SALE", "RECEPTION", "RETURN"]).optional(),
+        offlineReceiptNumber: z.string().trim().max(40).optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -319,6 +671,14 @@ export const offlineRouter = router({
             )
             .limit(1);
 
+          type InvSummary = {
+            id: number;
+            invoiceNumber: string;
+            total: string;
+            shiftId: number | null;
+            branchId: number;
+            createdBy: number | null;
+          };
           const rawInvRes = await tx.execute(
             sql`SELECT id, invoiceNumber, total, shiftId, branchId, createdBy FROM invoices WHERE sourceType = 'POS' AND sourceId = ${input.clientRequestId} LIMIT 1 FOR SHARE NOWAIT`,
           );
@@ -326,15 +686,133 @@ export const offlineRouter = router({
             Array.isArray(rawInvRes) && Array.isArray(rawInvRes[0])
               ? rawInvRes[0]
               : rawInvRes
-          ) as Array<{
-            id: number;
-            invoiceNumber: string;
-            total: string;
-            shiftId: number | null;
-            branchId: number;
-            createdBy: number;
-          }>;
-          const existing = invRows[0] ?? null;
+          ) as InvSummary[];
+          let existing: InvSummary | null = invRows[0] ?? null;
+
+          const replacementId = replacementClientRequestIdFor(input.clientRequestId);
+          let recoveryRow: {
+            recoveryStatus: "PENDING" | "POSTED" | "DISCARDED";
+            invoiceId: number | null;
+            discardReason: string | null;
+          } | null = null;
+          if (input.mode === "OBSERVE") {
+            const [rec] = await tx
+              .select({
+                recoveryStatus: offlineRecoveryItems.recoveryStatus,
+                invoiceId: offlineRecoveryItems.invoiceId,
+                discardReason: offlineRecoveryItems.discardReason,
+              })
+              .from(offlineRecoveryItems)
+              .where(
+                inArray(offlineRecoveryItems.clientRequestId, [
+                  input.clientRequestId,
+                  replacementId,
+                ]),
+              )
+              .limit(1);
+            if (rec) {
+              recoveryRow = {
+                recoveryStatus: rec.recoveryStatus,
+                invoiceId: rec.invoiceId != null ? Number(rec.invoiceId) : null,
+                discardReason: rec.discardReason ?? null,
+              };
+            }
+            if (!existing && recoveryRow?.recoveryStatus === "POSTED" && recoveryRow.invoiceId != null) {
+              const [invByRec] = await tx
+                .select({
+                  id: invoices.id,
+                  invoiceNumber: invoices.invoiceNumber,
+                  total: invoices.total,
+                  shiftId: invoices.shiftId,
+                  branchId: invoices.branchId,
+                  createdBy: invoices.createdBy,
+                })
+                .from(invoices)
+                .where(eq(invoices.id, recoveryRow.invoiceId))
+                .limit(1);
+              if (invByRec) existing = { ...invByRec, total: String(invByRec.total) };
+            }
+            if (!existing && input.kind === "RECEPTION") {
+              const [recInv] = await tx
+                .select({
+                  id: invoices.id,
+                  invoiceNumber: invoices.invoiceNumber,
+                  total: invoices.total,
+                  shiftId: invoices.shiftId,
+                  branchId: invoices.branchId,
+                  createdBy: invoices.createdBy,
+                })
+                .from(invoices)
+                .where(
+                  and(
+                    eq(invoices.sourceType, "POS"),
+                    inArray(invoices.sourceId, [
+                      `${input.clientRequestId}-sale`,
+                      `${input.clientRequestId}-print`,
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (recInv) existing = { ...recInv, total: String(recInv.total) };
+            }
+            if (!existing && (input.offlineReceiptNumber || replacementId)) {
+              const receiptMatch = await tx
+                .select({
+                  id: invoices.id,
+                  invoiceNumber: invoices.invoiceNumber,
+                  total: invoices.total,
+                  shiftId: invoices.shiftId,
+                  branchId: invoices.branchId,
+                  createdBy: invoices.createdBy,
+                })
+                .from(invoices)
+                .where(
+                  or(
+                    and(
+                      eq(invoices.sourceType, "POS"),
+                      eq(invoices.sourceId, replacementId),
+                    ),
+                    input.offlineReceiptNumber
+                      ? and(
+                          eq(invoices.branchId, effectiveBranchId),
+                          eq(invoices.offlineReceiptNumber, input.offlineReceiptNumber),
+                        )
+                      : undefined,
+                  ),
+                )
+                .limit(1);
+              if (receiptMatch[0]) {
+                existing = { ...receiptMatch[0], total: String(receiptMatch[0].total) };
+              }
+            }
+            if (!existing && input.kind === "RETURN") {
+              const [retKey] = await tx
+                .select({ refId: idempotencyKeys.refId })
+                .from(idempotencyKeys)
+                .where(
+                  and(
+                    eq(idempotencyKeys.operation, "sale.return"),
+                    eq(idempotencyKeys.clientRequestId, input.clientRequestId),
+                  ),
+                )
+                .limit(1);
+              if (retKey && Number(retKey.refId) > 0) {
+                const [retInv] = await tx
+                  .select({
+                    id: invoices.id,
+                    invoiceNumber: invoices.invoiceNumber,
+                    total: invoices.total,
+                    shiftId: invoices.shiftId,
+                    branchId: invoices.branchId,
+                    createdBy: invoices.createdBy,
+                  })
+                  .from(invoices)
+                  .where(eq(invoices.id, Number(retKey.refId)))
+                  .limit(1);
+                if (retInv) existing = { ...retInv, total: String(retInv.total) };
+              }
+            }
+          }
 
           if (existing) {
             if (Number(existing.branchId) !== effectiveBranchId) {
@@ -378,6 +856,8 @@ export const offlineRouter = router({
               shiftId: existing.shiftId != null ? Number(existing.shiftId) : null,
               createdBy: Number(existing.createdBy),
               semanticPayloadSha256: semHashRow?.payloadHash ?? null,
+              recoveryStatus: recoveryRow?.recoveryStatus ?? null,
+              discardReason: recoveryRow?.discardReason ?? null,
             };
           }
 
@@ -394,13 +874,21 @@ export const offlineRouter = router({
               ) {
                 throwSemanticPayloadConflictError("السجل المسيّج");
               }
-              return { outcome: "FENCED_NOT_COMMITTED" as const };
+              return {
+                outcome: "FENCED_NOT_COMMITTED" as const,
+                recoveryStatus: recoveryRow?.recoveryStatus ?? null,
+                discardReason: recoveryRow?.discardReason ?? null,
+              };
             }
           }
 
           // Mere row absence NEVER claims `NOT_COMMITTED`!
           if (input.mode === "OBSERVE") {
-            return { outcome: "UNKNOWN" as const };
+            return {
+              outcome: "UNKNOWN" as const,
+              recoveryStatus: recoveryRow?.recoveryStatus ?? null,
+              discardReason: recoveryRow?.discardReason ?? null,
+            };
           }
 
           // `mode === "FENCE_IF_UNCOMMITTED"`: atomically insert `refId = -1` under `FOR UPDATE NOWAIT`
@@ -491,324 +979,17 @@ export const offlineRouter = router({
    * لا عروض/كوبونات/آجل هنا عمداً (قرار الخطة: الأوفلاين نقدي مبسَّط).
    */
   replaySale: salesCashierProcedure
-    .input(
-      z.object({
-        branchId: z.number().int().positive(),
-        shiftId: z.number().int().positive().optional(),
-        customerId: z.number().int().positive().optional(),
-        priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
-        lines: z
-          .array(
-            z.object({
-              variantId: z.number().int().positive(),
-              productUnitId: z.number().int().positive(),
-              quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
-              // السعر الملتقَط إلزامي: النقد قُبض بالسعر المطبوع — لا إعادة تسعير صامتة عند الترحيل.
-              unitPriceOverride: nonNegMoneyString,
-              discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
-              discountAmount: nonNegMoneyString.optional(),
-              promotionId: z.number().int().positive().nullish(),
-              promotionDiscount: nonNegMoneyString.optional(),
-              cashierDiscountAmount: nonNegMoneyString.optional(),
-            }),
-          )
-          .min(1),
-        invoiceDiscount: nonNegMoneyString.optional(),
-        payment: z.object({ amount: positiveMoneyString, method: z.literal("CASH") }),
-        clientRequestId: z.string().min(8).max(50),
-        notes: z.string().max(1000).optional(),
-        cashRoundIQD: z.boolean().optional(),
-        capturedAt: z.string().min(10).max(40),
-        offlineReceiptNumber: z.string().min(4).max(40),
-        deviceId: z.string().max(40).optional(),
-        capturedByUserId: z.number().int().positive().optional(),
-        capturedShiftId: z.number().int().positive().optional(),
-        captureProof: z.string().min(32).max(128).optional(),
-        keyId: z.string().min(1).max(24).optional(),
-        grantId: z.string().min(16).max(64).optional(),
-        grantIssuedAtMs: z.number().int().positive().optional(),
-        grantExpiresAtMs: z.number().int().positive().optional(),
-        grantToken: z.string().min(32).max(128).optional(),
-        salesRepId: z.number().int().positive().nullish(),
-        attribution: z
-          .object({
-            repId: z.number().int().positive().nullish(),
-            mode: z.enum(["DIRECT", "SPLIT", "POOL"]).optional(),
-          })
-          .optional(),
-        // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (شارة باركود / PIN / بريد وكلمة مرور).
-        managerApproval: managerApprovalSchema.optional(),
-      }),
-    )
+    .input(replaySaleInputSchema)
     .mutation(async ({ input, ctx }) => {
-      const crossBranch = canCrossBranches(ctx.user);
-      let effectiveBranchId = input.branchId;
-      if (!crossBranch) {
-        if (ctx.user.branchId == null) {
-          throwNoAssignedBranchError();
-        }
-        effectiveBranchId = Number(ctx.user.branchId);
-      }
-      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role, isOwner: Boolean(ctx.user.isOwner) };
-      const canApprove = Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
+      const prepared = await verifyAndPrepareReplaySale(input, ctx);
       const {
-        managerApproval,
-        capturedByUserId,
-        capturedShiftId,
-        captureProof,
-        keyId,
-        grantId,
-        grantIssuedAtMs,
-        grantExpiresAtMs,
-        grantToken,
-        ...replayInput
-      } = input;
-      let approvedBy: number | null = null;
-      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
-
-      const db = requireDb();
-      const [existingCommittedInv] = await db
-        .select({
-          id: invoices.id,
-          createdBy: invoices.createdBy,
-          branchId: invoices.branchId,
-        })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.sourceType, "POS"),
-            eq(invoices.sourceId, input.clientRequestId),
-          ),
-        )
-        .limit(1);
-
-      // Preserve verified same-branch original capturer ID in recovery queue WITHOUT fabricating any proof!
-      let verifiedQuarantineOwnerId: number = ctx.user.id;
-      if (capturedByUserId != null) {
-        const [maybeUser] = await db
-          .select({ id: users.id, branchId: users.branchId })
-          .from(users)
-          .where(eq(users.id, Number(capturedByUserId)))
-          .limit(1);
-        if (
-          maybeUser &&
-          (crossBranch || maybeUser.branchId == null || Number(maybeUser.branchId) === effectiveBranchId)
-        ) {
-          verifiedQuarantineOwnerId = Number(maybeUser.id);
-        }
-      }
-
-      const quarantineAndReject = async (
-        reasonMsg: string,
-        usePreconditionFailed = false,
-        quarantineMeta?: Record<string, unknown>,
-      ): Promise<never> => {
-        const errCode = usePreconditionFailed ? "PRECONDITION_FAILED" : "FORBIDDEN";
-        if (!existingCommittedInv) {
-          await captureRejectedReplay(
-            {
-              ...replayInput,
-              branchId: effectiveBranchId,
-              priceOverrideApproved: false,
-              unverifiedOriginalCapturedByUserId: capturedByUserId ?? null,
-              submittedByPresenterUserId: ctx.user.id,
-              ...(usePreconditionFailed && !quarantineMeta ? { legacyMissingProof: true } : {}),
-              ...(quarantineMeta ?? {}),
-            },
-            errCode,
-            reasonMsg,
-            verifiedQuarantineOwnerId,
-            "RETAIL",
-          );
-        }
-        throw new TRPCError({ code: errCode, message: reasonMsg });
-      };
-
-      // Case A: Legacy row that ALREADY committed on the server before HTTP response dropped (`existingCommittedInv` exists)
-      // and carries no `captureProof`: allow idempotent reconciliation via `replayOfflineSale` (`createSaleInTx` still
-      // enforces exact semantic/legacy payload hash match and throws CONFLICT on any altered payload!).
-      let delegatedSellerUserId: number | null = null;
-      if (existingCommittedInv && captureProof == null) {
-        if (Number(existingCommittedInv.branchId) !== effectiveBranchId) {
-          throwForeignBranchIdempotencyError();
-        }
-        const committedSellerId = Number(existingCommittedInv.createdBy);
-        if (capturedByUserId != null && Number(capturedByUserId) !== committedSellerId) {
-          await quarantineAndReject("تعارض هوية الملتقط مع الفاتورة الملتزمة مسبقاً على الخادم");
-        }
-        if (committedSellerId !== Number(ctx.user.id)) {
-          if (!canApprove && approvedBy == null) {
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message: appErrorMessage({
-                what: "تعذّر مصالحة فاتورة ملتزمة لموظف آخر",
-                why: "الموظف الحالي ليس صاحب الفاتورة الأصلي ولا يحمل اعتماد مدير أو أدمن",
-                doThis: "أرفق اعتماد المدير أو نفّذ المصالحة بحساب الموظف الأصلي",
-              }),
-            });
-          }
-          delegatedSellerUserId = committedSellerId;
-        }
-      } else {
-        // Case B: Uncommitted row OR any row supplying `captureProof` — strict v4 verification!
-        if (capturedByUserId == null) {
-          await quarantineAndReject(
-            "هوية الموظف الملتقط الأصلي مفقودة — عُلّقت العملية للمراجعة الإدارية ولا تُرحَّل تلقائياً",
-            true,
-          );
-        }
-
-        const [capturedUserRow] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, Number(capturedByUserId)))
-          .limit(1);
-        if (!capturedUserRow) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: appErrorMessage({
-              what: "تعذّر تحديد موظف الالتقاط الأصلي",
-              why: "معرّف موظف الالتقاط المرسل غير موجود في جدول المستخدمين",
-              doThis: "راجع طابور الاسترداد الأوفلايني مع مدير النظام لإسناد العملية يدوياً",
-            }),
-          });
-        }
-        if (
-          !crossBranch &&
-          capturedUserRow.branchId != null &&
-          Number(capturedUserRow.branchId) !== effectiveBranchId
-        ) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: appErrorMessage({
-              what: "تعذّر ترحيل بيع موظف ينتمي لفرع آخر",
-              why: "موظف الالتقاط الأصلي مسجّل على فرع مختلف عن فرع العملية",
-              doThis: "رحّل العملية من الفرع الصحيح أو عبر حساب أدمن مخوّل بعبور الفروع",
-            }),
-          });
-        }
-
-        if (Number(capturedByUserId) !== Number(ctx.user.id)) {
-          if (!canApprove && approvedBy == null) {
-            await quarantineAndReject(
-              "لا يجوز ترحيل بيع التُقط بجلسة موظف آخر دون اعتماد مدير/أدمن",
-            );
-          }
-          delegatedSellerUserId = Number(capturedUserRow.id);
-        }
-
-        // Re-verify authoritative server-side retail sale permissions for the original capturer!
-        if (!existingCommittedInv) {
-          if (capturedUserRow.isActive === false) {
-            await quarantineAndReject(
-              "حساب الموظف الملتقط موقوف حالياً — عُلّقت العملية للمراجعة الإدارية",
-            );
-          }
-          const hydratedCapturer = { ...capturedUserRow } as unknown as AuthUser;
-          await resolveCustomRole(hydratedCapturer);
-          normalizeOwnerAuthority(hydratedCapturer);
-          const stationAllowed = canUseStation(
-            "RETAIL",
-            hydratedCapturer.role,
-            hydratedCapturer.permissionsOverride as PermissionMap | null,
-          );
-          if (!stationAllowed && !hydratedCapturer.isOwner) {
-            await quarantineAndReject(
-              "صلاحية محطة مبيعات التجزئة مسحوبة من الموظف الملتقط — عُلّقت العملية للمراجعة الإدارية",
-            );
-          }
-          try {
-            assertOperationAuthorized(hydratedCapturer, "sales.create");
-          } catch {
-            await quarantineAndReject(
-              "سياسة العمليات تمنع الموظف الملتقط من إنشاء بيع تجزئة — عُلّقت العملية للمراجعة الإدارية",
-            );
-          }
-        }
-
-        const effectiveCapturedShiftId = Number(capturedShiftId ?? input.shiftId ?? 0);
-        let shiftOpenedAtMs: number | null = null;
-        if (!existingCommittedInv) {
-          if (
-            !effectiveCapturedShiftId ||
-            !captureProof ||
-            !keyId ||
-            !grantId ||
-            grantIssuedAtMs == null ||
-            grantExpiresAtMs == null ||
-            !grantToken
-          ) {
-            await quarantineAndReject(
-              "صف قديم غير مرسل يفتقر إلى ختم ومنحة الالتقاط الموقّعة — حُجر في طابور الاسترداد الإداري دون اختلاق إثبات",
-              true,
-            );
-          }
-          const [originShift] = await db
-            .select({
-              id: shifts.id,
-              userId: shifts.userId,
-              branchId: shifts.branchId,
-              openedAt: shifts.openedAt,
-            })
-            .from(shifts)
-            .where(eq(shifts.id, effectiveCapturedShiftId))
-            .limit(1);
-          if (
-            !originShift ||
-            Number(originShift.branchId) !== effectiveBranchId ||
-            Number(originShift.userId) !== Number(capturedByUserId)
-          ) {
-            await quarantineAndReject(
-              "عدم تطابق وردية الالتقاط الأصلية مع هوية الموظف الملتقط",
-            );
-          }
-          shiftOpenedAtMs = originShift.openedAt ? new Date(originShift.openedAt).getTime() : null;
-          if (
-            Number(capturedByUserId) === Number(ctx.user.id) &&
-            input.shiftId != null &&
-            Number(input.shiftId) !== effectiveCapturedShiftId
-          ) {
-            await quarantineAndReject(
-              "لا يجوز للكاشير تغيير وردية الالتقاط الأصلية لعملية غير مرسلة",
-            );
-          }
-        }
-
-        const verifyRes = verifyOfflineCaptureProofServer(
-          captureProof ?? "",
-          {
-            kind: "SALE",
-            keyId: keyId ?? "",
-            grantId: grantId ?? "",
-            grantIssuedAtMs: Number(grantIssuedAtMs ?? 0),
-            grantExpiresAtMs: Number(grantExpiresAtMs ?? 0),
-            grantToken: grantToken ?? "",
-            clientRequestId: input.clientRequestId,
-            offlineReceiptNumber: input.offlineReceiptNumber,
-            capturedAt: input.capturedAt,
-            branchId: effectiveBranchId,
-            capturedShiftId: effectiveCapturedShiftId,
-            capturedByUserId: Number(capturedByUserId),
-            payload: replayInput,
-          },
-          { shiftOpenedAtMs },
-        );
-        if (!verifyRes.ok) {
-          if (verifyRes.code === "LATE_ARRIVAL_BEYOND_OFFLINE_GRACE") {
-            await quarantineAndReject(verifyRes.message, true, {
-              quarantineClassification: "LATE_ARRIVAL_BEYOND_GRACE_CRYPTO_VERIFIED",
-              cryptoProofVerifiedAtQuarantine: true,
-              clientClockUnverifiedByServerWallClock: true,
-              grantId: grantId ?? null,
-              grantIssuedAtMs: grantIssuedAtMs ?? null,
-              grantExpiresAtMs: grantExpiresAtMs ?? null,
-            });
-          }
-          await quarantineAndReject(verifyRes.message);
-        }
-      }
-
-      const priceOverrideApprovedBy: number | null = approvedBy ?? (canApprove ? ctx.user.id : null);
+        effectiveBranchId,
+        actor,
+        replayInput,
+        verifiedQuarantineOwnerId,
+        delegatedSellerUserId,
+        priceOverrideApprovedBy,
+      } = prepared;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await replayOfflineSale(
@@ -863,7 +1044,7 @@ export const offlineRouter = router({
                 { ...replayInput, branchId: effectiveBranchId },
                 e.code,
                 e.message,
-                ctx.user.id,
+                verifiedQuarantineOwnerId,
                 "RETAIL",
               );
             }
@@ -880,6 +1061,266 @@ export const offlineRouter = router({
             "offline.replaySale فشل بخطأ غير متوقّع",
           );
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر ترحيل البيع الأوفلايني" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
+    }),
+
+  /**
+   * إعادة معالجة بيع أوفلايني معلّق يحمل معرّف طلب مُسيّج خادمياً (`refId = -1`):
+   * ١) يثبت أولاً عدم التزام فاتورة بالمعرّف الأصلي أو البديل أو رقم الإيصال المؤقت (يمنع التكرار).
+   * ٢) يتطلب صلاحية مدير/أدمن/مالك أو اعتماد مدير حي.
+   * ٣) يتحقق من إثبات الالتقاط الأصلي على المعرّف الأصلي ثم يُعيد الترحيل بمعرّف بديل حتمي،
+   *    وإن كانت الوردية مغلقة أو تجاوز مهلة الالتقاط ينقله بأمان إلى طابور الاسترداد الخادمي.
+   */
+  reissueOutboxSale: salesCashierProcedure
+    .input(
+      replaySaleInputSchema.extend({
+        targetShiftId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { targetShiftId, ...saleReplayRaw } = input;
+      const crossBranch = canCrossBranches(ctx.user);
+      const effectiveBranchId = crossBranch
+        ? input.branchId
+        : ctx.user.branchId == null
+          ? throwNoAssignedBranchError()
+          : Number(ctx.user.branchId);
+      const canApprove =
+        Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
+      const replacementId = replacementClientRequestIdFor(input.clientRequestId);
+
+      // Verify manager authority before touching recovery/ledger paths.
+      let approvedBy: number | null = canApprove ? ctx.user.id : null;
+      if (input.managerApproval) {
+        approvedBy = await verifyManagerApproval(input.managerApproval, ctx, effectiveBranchId);
+      }
+      if (approvedBy == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "يتطلب إعادة ترحيل العملية الأوفلاينية اعتماد مدير",
+            why: "إصدار معرّف بديل لطلب مُسيّج خادمياً قرار إداري لمنع الازدواج",
+            doThis: "أدخل بيانات اعتماد مدير معتمد للفرع أو سجّل الدخول بحساب مدير/أدمن",
+          }),
+        });
+      }
+
+      const db = requireDb();
+      const [existingInv] = await db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .where(
+          or(
+            and(
+              eq(invoices.sourceType, "POS"),
+              inArray(invoices.sourceId, [input.clientRequestId, replacementId]),
+            ),
+            and(
+              eq(invoices.branchId, effectiveBranchId),
+              eq(invoices.offlineReceiptNumber, input.offlineReceiptNumber),
+            ),
+          ),
+        )
+        .limit(1);
+      if (existingInv) {
+        if (Number(existingInv.branchId) !== effectiveBranchId) {
+          throwForeignBranchIdempotencyError();
+        }
+        return {
+          status: "ALREADY_COMMITTED" as const,
+          invoiceId: Number(existingInv.id),
+          invoiceNumber: existingInv.invoiceNumber,
+          message: `الفاتورة ${existingInv.invoiceNumber} مرحَّلة مسبقاً على الخادم`,
+        };
+      }
+
+      const [existingRec] = await db
+        .select({
+          id: offlineRecoveryItems.id,
+          recoveryStatus: offlineRecoveryItems.recoveryStatus,
+          invoiceId: offlineRecoveryItems.invoiceId,
+          discardReason: offlineRecoveryItems.discardReason,
+        })
+        .from(offlineRecoveryItems)
+        .where(inArray(offlineRecoveryItems.clientRequestId, [input.clientRequestId, replacementId]))
+        .limit(1);
+      if (existingRec?.recoveryStatus === "POSTED" && existingRec.invoiceId != null) {
+        const [recInv] = await db
+          .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+          .from(invoices)
+          .where(eq(invoices.id, Number(existingRec.invoiceId)))
+          .limit(1);
+        if (recInv) {
+          return {
+            status: "ALREADY_COMMITTED" as const,
+            invoiceId: Number(recInv.id),
+            invoiceNumber: recInv.invoiceNumber,
+            message: `الفاتورة ${recInv.invoiceNumber} مرحَّلة مسبقاً عبر طابور الاسترداد`,
+          };
+        }
+      }
+      if (existingRec?.recoveryStatus === "DISCARDED") {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة ترحيل العملية الأوفلاينية",
+            why: `أُهمل هذا الإيصال مسبقاً في سجل الاسترداد (${existingRec.discardReason ?? "قرار إداري"})`,
+            doThis: "استخدم خيار «إسقاط وإنهاء» لإغلاق العنصر من الطابور المحلي",
+          }),
+        });
+      }
+
+      const [idempRow] = await db
+        .select({ refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(
+          and(
+            eq(idempotencyKeys.operation, "sale.create"),
+            eq(idempotencyKeys.clientRequestId, input.clientRequestId),
+          ),
+        )
+        .limit(1);
+      if (idempRow && Number(idempRow.refId) === 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "الطلب الأصلي قيد التنفيذ حالياً",
+            why: "توجد معاملة مفتوحة على الخادم لنفس معرّف الطلب",
+            doThis: "انتظر لحظات ثم افحص الحالة قبل أي إجراء جديد",
+          }),
+        });
+      }
+      const replayTargetRequestId =
+        idempRow && Number(idempRow.refId) === -1 ? replacementId : input.clientRequestId;
+
+      let prepared: Awaited<ReturnType<typeof verifyAndPrepareReplaySale>>;
+      try {
+        prepared = await verifyAndPrepareReplaySale(saleReplayRaw, ctx, {
+          quarantineClientRequestId: replayTargetRequestId,
+        });
+      } catch (prepErr) {
+        if (prepErr instanceof TRPCError && prepErr.code === "PRECONDITION_FAILED") {
+          await logAudit(ctx, {
+            action: "offline.fencedOutbox.capturedToRecovery",
+            entityType: "offlineRecoveryItem",
+            entityId: 0,
+            branchId: effectiveBranchId,
+            newValue: {
+              originalClientRequestId: input.clientRequestId,
+              replacementClientRequestId: replayTargetRequestId,
+              offlineReceiptNumber: input.offlineReceiptNumber,
+              approvedByUserId: approvedBy,
+              reason: prepErr.message,
+            },
+          });
+          return {
+            status: "CAPTURED_IN_RECOVERY" as const,
+            message: prepErr.message,
+          };
+        }
+        throw prepErr;
+      }
+
+      const {
+        actor,
+        replayInput,
+        verifiedQuarantineOwnerId,
+        delegatedSellerUserId,
+      } = prepared;
+      const effectiveReplayInput: ReplayOfflineSaleInput = {
+        ...replayInput,
+        clientRequestId: replayTargetRequestId,
+        branchId: effectiveBranchId,
+        ...(targetShiftId != null ? { shiftId: targetShiftId } : {}),
+        priceOverrideApproved: true,
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await replayOfflineSale(
+            effectiveReplayInput,
+            actor,
+            delegatedSellerUserId != null ? { attributeToUserId: delegatedSellerUserId } : undefined,
+          );
+          if (!res.idempotentReplay) {
+            await logAudit(ctx, {
+              action: "offline.fencedOutbox.reissue",
+              entityType: "invoice",
+              entityId: res.invoiceId,
+              newValue: {
+                originalClientRequestId: input.clientRequestId,
+                replacementClientRequestId: replayTargetRequestId,
+                offlineReceiptNumber: input.offlineReceiptNumber,
+                approvedByUserId: approvedBy,
+                capturedAt: input.capturedAt,
+                lines: input.lines.length,
+              },
+            });
+            publishRealtimeEvent(
+              REALTIME_EVENT_TYPES.BATCH_SALES_SYNCED,
+              {
+                branchId: effectiveBranchId,
+                deviceId: input.deviceId ?? undefined,
+                syncedCount: 1,
+                totalAmount: input.payment.amount,
+                timestamp: Date.now(),
+              },
+              { branchId: effectiveBranchId },
+            );
+          }
+          return {
+            status: "POSTED" as const,
+            invoiceId: res.invoiceId,
+            invoiceNumber: res.invoiceNumber,
+            message: `تم ترحيل العملية بفاتورة ${res.invoiceNumber}`,
+          };
+        } catch (e: unknown) {
+          if (isDupEntry(e) && attempt < 2) continue;
+          if (e instanceof TRPCError) {
+            if (e.code === "PRECONDITION_FAILED") {
+              await captureRejectedReplay(
+                effectiveReplayInput,
+                e.code,
+                e.message,
+                verifiedQuarantineOwnerId,
+                "RETAIL",
+              );
+              await logAudit(ctx, {
+                action: "offline.fencedOutbox.capturedToRecovery",
+                entityType: "offlineRecoveryItem",
+                entityId: 0,
+                branchId: effectiveBranchId,
+                newValue: {
+                  originalClientRequestId: input.clientRequestId,
+                  replacementClientRequestId: replayTargetRequestId,
+                  offlineReceiptNumber: input.offlineReceiptNumber,
+                  approvedByUserId: approvedBy,
+                  reason: e.message,
+                },
+              });
+              return {
+                status: "CAPTURED_IN_RECOVERY" as const,
+                message: e.message,
+              };
+            }
+            throw e;
+          }
+          const err = e as { message?: string; code?: string; sqlMessage?: string; sql?: string };
+          logger.error(
+            {
+              err: { message: err?.message, code: err?.code, sqlMessage: err?.sqlMessage, sql: err?.sql },
+              userId: actor.userId,
+              branchId: actor.branchId,
+              offlineReceiptNumber: input.offlineReceiptNumber,
+            },
+            "offline.reissueFencedOutboxSale فشل بخطأ غير متوقّع",
+          );
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إعادة ترحيل العملية الأوفلاينية" });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
@@ -1145,5 +1586,237 @@ export const offlineRouter = router({
         },
         ctx,
       );
+    }),
+
+  /**
+   * إغلاق وإنهاء عنصر أوفلايني معلّق (PARKED) من طابور المتصفح بأمان ودون ثغرات:
+   * - يتحقق أولاً من الخادم: إن كانت الفاتورة ملتزمة فعلياً أو مُهملة في طابور الاسترداد يعيد الحالة الحقيقية دون إتلاف.
+   * - وإلّا يشترط صلاحية مدير/أدمن/مالك (أو اعتماد مدير حي) + سبباً موثقاً (٥ أحرف+)
+   *   ويسيّج المفتاح ويُسقط أي سجل استرداد معلّق ويكتب أثراً تدقيقياً غير قابل للعبث.
+   */
+  dismissOutboxItem: returnsProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        clientRequestId: z.string().min(4).max(120),
+        kind: z.enum(["SALE", "PRINT_SALE", "RECEPTION", "RETURN"]).default("SALE"),
+        offlineReceiptNumber: z.string().trim().min(1).max(60),
+        total: z.string().max(40).optional(),
+        lastError: z.string().max(1000).optional(),
+        reason: z.string().trim().max(500).optional(),
+        managerApproval: managerApprovalSchema.optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const crossBranch = canCrossBranches(ctx.user);
+      const effectiveBranchId = crossBranch
+        ? input.branchId
+        : ctx.user.branchId == null
+          ? throwNoAssignedBranchError()
+          : Number(ctx.user.branchId);
+      const canApprove =
+        Boolean(ctx.user.isOwner) || ctx.user.role === "admin" || ctx.user.role === "manager";
+      // Verify manager credentials BEFORE acquiring exclusive governance lock (fixed timing delay inside verifyManagerApproval).
+      let preverifiedApproverId: number | null = canApprove ? ctx.user.id : null;
+      if (input.managerApproval) {
+        preverifiedApproverId = await verifyManagerApproval(
+          input.managerApproval,
+          ctx,
+          effectiveBranchId,
+        );
+      }
+
+      const replacementId = replacementClientRequestIdFor(input.clientRequestId);
+      return withGovernanceTx(async (tx) => {
+        const [exInv] = await tx
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            branchId: invoices.branchId,
+          })
+          .from(invoices)
+          .where(
+            or(
+              and(
+                eq(invoices.sourceType, "POS"),
+                inArray(invoices.sourceId, [
+                  input.clientRequestId,
+                  replacementId,
+                  `${input.clientRequestId}-sale`,
+                  `${input.clientRequestId}-print`,
+                ]),
+              ),
+              and(
+                eq(invoices.branchId, effectiveBranchId),
+                eq(invoices.offlineReceiptNumber, input.offlineReceiptNumber),
+              ),
+            ),
+          )
+          .limit(1);
+        if (exInv) {
+          if (Number(exInv.branchId) !== effectiveBranchId) {
+            throwForeignBranchIdempotencyError();
+          }
+          return {
+            status: "ALREADY_COMMITTED" as const,
+            invoiceId: Number(exInv.id),
+            invoiceNumber: exInv.invoiceNumber,
+            message: `الفاتورة ${exInv.invoiceNumber} مرحَّلة مسبقاً على الخادم`,
+          };
+        }
+
+        const [rec] = await tx
+          .select({
+            id: offlineRecoveryItems.id,
+            recoveryStatus: offlineRecoveryItems.recoveryStatus,
+            invoiceId: offlineRecoveryItems.invoiceId,
+            discardReason: offlineRecoveryItems.discardReason,
+            branchId: offlineRecoveryItems.branchId,
+          })
+          .from(offlineRecoveryItems)
+          .where(
+            inArray(offlineRecoveryItems.clientRequestId, [
+              input.clientRequestId,
+              replacementId,
+            ]),
+          )
+          .for("update")
+          .limit(1);
+        if (rec) {
+          if (!crossBranch && Number(rec.branchId) !== effectiveBranchId) {
+            throwForeignBranchIdempotencyError();
+          }
+          if (rec.recoveryStatus === "POSTED" && rec.invoiceId != null) {
+            const [recInv] = await tx
+              .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+              .from(invoices)
+              .where(eq(invoices.id, Number(rec.invoiceId)))
+              .limit(1);
+            if (recInv) {
+              return {
+                status: "ALREADY_COMMITTED" as const,
+                invoiceId: Number(recInv.id),
+                invoiceNumber: recInv.invoiceNumber,
+                message: `الفاتورة ${recInv.invoiceNumber} مرحَّلة مسبقاً عبر طابور الاسترداد`,
+              };
+            }
+          }
+          if (rec.recoveryStatus === "DISCARDED") {
+            return {
+              status: "SERVER_DISCARDED" as const,
+              reason: rec.discardReason ?? "أُهمل العنصر مسبقاً في سجل الاسترداد",
+              message: "العنصر مُهمل مسبقاً في طابور الاسترداد الخادمي — تم تنظيف الطابور المحلي",
+            };
+          }
+        }
+
+        if (input.kind === "RETURN") {
+          const [retKey] = await tx
+            .select({ refId: idempotencyKeys.refId })
+            .from(idempotencyKeys)
+            .where(
+              and(
+                eq(idempotencyKeys.operation, "sale.return"),
+                eq(idempotencyKeys.clientRequestId, input.clientRequestId),
+              ),
+            )
+            .limit(1);
+          if (retKey && Number(retKey.refId) > 0) {
+            return {
+              status: "ALREADY_COMMITTED" as const,
+              invoiceId: Number(retKey.refId),
+              invoiceNumber: "",
+              message: "المرتجع مُرحَّل مسبقاً على الخادم",
+            };
+          }
+        }
+
+        const [saleKey] = await tx
+          .select({ refId: idempotencyKeys.refId })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.operation, "sale.create"),
+              eq(idempotencyKeys.clientRequestId, input.clientRequestId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (saleKey && Number(saleKey.refId) === 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "الطلب الأصلي قيد التنفيذ حالياً",
+              why: "توجد معاملة مفتوحة على الخادم لنفس معرّف الطلب",
+              doThis: "انتظر لحظات ثم أعد الفحص قبل إنهاء العنصر",
+            }),
+          });
+        }
+
+        const trimmedReason = (input.reason ?? "").trim();
+        if (trimmedReason.length < 5) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "سبب إنهاء وإسقاط العملية من الطابور إلزامي (٥ أحرف على الأقل)",
+          });
+        }
+        if (preverifiedApproverId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "يتطلب إسقاط العملية المعلّقة اعتماد مدير",
+              why: "إزالة بيع أوفلايني معلّق من الطابور دون ترحيله قرار إداري موثّق",
+              doThis: "أدخل بيانات اعتماد مدير معتمد أو نفّذ الإجراء من حساب مدير/أدمن",
+            }),
+          });
+        }
+
+        if (rec && rec.recoveryStatus === "PENDING") {
+          await tx
+            .update(offlineRecoveryItems)
+            .set({
+              recoveryStatus: "DISCARDED",
+              discardReason: trimmedReason,
+              reviewedBy: preverifiedApproverId,
+              reviewedAt: new Date(),
+            })
+            .where(eq(offlineRecoveryItems.id, rec.id));
+        }
+
+        if (input.kind === "SALE" && !saleKey) {
+          await tx
+            .insert(idempotencyKeys)
+            .values({
+              operation: "sale.create",
+              clientRequestId: input.clientRequestId,
+              refId: -1,
+              payloadHash: null,
+            })
+            .onDuplicateKeyUpdate({
+              set: { refId: sql`refId` },
+            });
+        }
+
+        await logAuditTx(tx, ctx, {
+          action: "offline.outbox.dismissParked",
+          entityType: "offlineOutbox",
+          entityId: rec ? Number(rec.id) : 0,
+          newValue: {
+            clientRequestId: input.clientRequestId,
+            offlineReceiptNumber: input.offlineReceiptNumber,
+            kind: input.kind,
+            total: input.total ?? null,
+            lastError: input.lastError ?? null,
+            reason: trimmedReason,
+            approvedByUserId: preverifiedApproverId,
+            branchId: effectiveBranchId,
+          },
+        });
+
+        return {
+          status: "DISMISSED" as const,
+          message: "تم إنهاء وإسقاط العملية من الطابور وتسجيل القرار خادمياً",
+        };
+      });
     }),
 });
