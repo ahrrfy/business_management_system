@@ -1353,6 +1353,25 @@ export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
   const db = getDb();
   if (!db) return [];
 
+  const [settings] = await db
+    .select({
+      mode: doubleEntrySettings.mode,
+      cycleId: doubleEntrySettings.shadowCycleId,
+    })
+    .from(doubleEntrySettings)
+    .where(eq(doubleEntrySettings.id, 1))
+    .limit(1);
+
+  // خارج وضعي SHADOW/ACTIVE أو قبل تهيئة دورة القطع الحالية لا يوجد دفتر مزدوج نشط للمطابقة.
+  if (
+    !settings ||
+    settings.mode === "OFF" ||
+    !settings.cycleId ||
+    !/^[A-Za-z0-9_-]{1,36}$/.test(settings.cycleId)
+  ) {
+    return [];
+  }
+
   const [operationalRow] = await db
     .select({
       total: sql<string>`COALESCE(SUM(CAST(${employeeAdvances.remaining} AS DECIMAL(15,2))), 0)`,
@@ -1371,10 +1390,11 @@ export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
       and(
         eq(journalLines.role, "EMPLOYEE_ADVANCES"),
         eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.cycleId, settings.cycleId),
       ),
     );
 
-  // لا يوجد ترحيل مزدوج مفعل/مسجل بعد على هذا الحساب ⇒ لا انحراف مزدوج قابل للقياس.
+  // لا يوجد ترحيل مزدوج مسجل في الدورة الحالية على هذا الحساب ⇒ لا انحراف مزدوج قابل للقياس.
   if (Number(ledgerRow?.count ?? 0) === 0) return [];
 
   const expected = round2(money(operationalRow?.total ?? "0"));
@@ -1388,8 +1408,8 @@ export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
       id: 0,
       expected: expected.toFixed(2),
       actual: actual.toFixed(2),
-      drift: drift.toFixed(2),
-      note: "انحراف بين مجموع أرصدة السلف النشطة في الموارد البشرية (employeeAdvances.remaining) وصافي حساب EMPLOYEE_ADVANCES في الدفتر المزدوج",
+      drift: drift.abs().toFixed(2),
+      note: `انحراف بين مجموع أرصدة السلف النشطة في الموارد البشرية (employeeAdvances.remaining) وصافي حساب EMPLOYEE_ADVANCES في الدورة ${settings.cycleId} (الفرق الموقّع: ${drift.toFixed(2)})`,
     },
   ];
 }

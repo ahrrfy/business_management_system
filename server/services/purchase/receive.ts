@@ -1042,80 +1042,80 @@ async function receivePurchaseInTx(
         recognizedAt: new Date(),
         recognitionAccountingEntryId: Number(recognitionEntry.id),
       });
-      // عند اختيار ACCRUAL صراحةً، يثبت الاستحقاق (ACCRUED_UNPAID) دون إنشاء سند صرف معلق؛
-      // أما DRAWER وTREASURY فيُنشئان طلب الصرف ويسوّيانه وفق المسار المعتمد.
-      if (fundingMode !== "ACCRUAL") {
-        const request = await createSystemPaymentRequestTx(
+      // طلب الصرف المعلّق (PENDING_APPROVAL، cashBucket: null) يُنشأ دائماً كمستند clearing تشغيلي
+      // بلا أثر نقدي أو قيد PAYMENT_OUT (نظير automaticInvoicePosting)، فيظلّ الشحن القابل للصرف
+      // من الخزينة أو البطاقة/التحويل قابلاً للاعتماد لاحقاً حتى لو تجاوز سقف نثرية الدرج؛
+      // أما التنفيذ الفوري فيقتصر على DRAWER أو (TREASURY + CASH) ولا يمسّ ACCRUAL إطلاقاً.
+      const request = await createSystemPaymentRequestTx(
+        tx,
+        {
+          branchId: Number(po.branchId),
+          amount: toDbMoney(receivedLanded),
+          paymentMethod: shipMethod,
+          // المصروف المستحق يقابل ACCRUED_EXPENSES لا AP؛ تصنيف المستفيد المورّد محفوظ
+          // في obligation، بينما يبقى السند OTHER حتى لا يحرّك ذمة المورّد مرتين.
+          partyType: "OTHER",
+          partyId: null,
+          counterpartyName: beneficiaryName,
+          description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}${fallbackReason}`,
+          referenceNumber: shippingVoucherReference,
+          checkNumber:
+            shipMethod === "TRANSFER" ? shippingPaymentReference : null,
+          cardLastFour: shipMethod === "CARD" ? shippingCardLastFour : null,
+          clientRequestId: `purchase-shipping-payment-${paymentRequestToken}`,
+        },
+        creatorActor,
+        {
+          kind: "PURCHASE_SHIPPING",
+          purchaseOrderId: input.purchaseOrderId,
+          requestToken: paymentRequestToken,
+          expectedAmount: toDbMoney(receivedLanded),
+          sourceShippingTotal: toDbMoney(totalLanded),
+          paymentReference:
+            shipMethod === "CARD"
+              ? shippingCardLastFour
+              : shipMethod === "TRANSFER"
+                ? shippingPaymentReference
+                : null,
+          obligationId: Number(obligation.id),
+          obligationSourceHash: obligation.sourceHash,
+          fundingSource: fundingMode === "DRAWER" ? "DRAWER" : "TREASURY",
+          shiftId: fundingShiftId,
+          beneficiaryType: obligation.beneficiaryType,
+          beneficiaryId:
+            obligation.beneficiarySupplierId == null
+              ? null
+              : Number(obligation.beneficiarySupplierId),
+          beneficiaryNameSnapshot: beneficiaryName,
+          sourceEvidenceReference: obligation.evidenceReference,
+        },
+      );
+      shippingPaymentRequestReceiptId = request.receiptId;
+      await transitionAccrualObligationTx(tx, {
+        obligationId: Number(obligation.id),
+        expectedStatus: "ACCRUED_UNPAID",
+        nextStatus: "PAYMENT_PENDING",
+        eventType: "PAYMENT_REQUESTED",
+        actorId: creatorActor.userId,
+        receiptId: request.receiptId,
+        evidenceReference: shippingEvidenceReference,
+        dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
+      });
+      if (fundingMode === "DRAWER") {
+        await settlePurchaseShippingFromShiftTx(
           tx,
           {
-            branchId: Number(po.branchId),
-            amount: toDbMoney(receivedLanded),
-            paymentMethod: shipMethod,
-            // المصروف المستحق يقابل ACCRUED_EXPENSES لا AP؛ تصنيف المستفيد المورّد محفوظ
-            // في obligation، بينما يبقى السند OTHER حتى لا يحرّك ذمة المورّد مرتين.
-            partyType: "OTHER",
-            partyId: null,
-            counterpartyName: beneficiaryName,
-            description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}${fallbackReason}`,
-            referenceNumber: shippingVoucherReference,
-            checkNumber:
-              shipMethod === "TRANSFER" ? shippingPaymentReference : null,
-            cardLastFour: shipMethod === "CARD" ? shippingCardLastFour : null,
-            clientRequestId: `purchase-shipping-payment-${paymentRequestToken}`,
-          },
-          creatorActor,
-          {
-            kind: "PURCHASE_SHIPPING",
-            purchaseOrderId: input.purchaseOrderId,
-            requestToken: paymentRequestToken,
-            expectedAmount: toDbMoney(receivedLanded),
-            sourceShippingTotal: toDbMoney(totalLanded),
-            paymentReference:
-              shipMethod === "CARD"
-                ? shippingCardLastFour
-                : shipMethod === "TRANSFER"
-                  ? shippingPaymentReference
-                  : null,
-            obligationId: Number(obligation.id),
-            obligationSourceHash: obligation.sourceHash,
-            fundingSource: fundingMode === "DRAWER" ? "DRAWER" : "TREASURY",
+            purchaseOrderId: Number(po.id),
             shiftId: fundingShiftId,
-            beneficiaryType: obligation.beneficiaryType,
-            beneficiaryId:
-              obligation.beneficiarySupplierId == null
-                ? null
-                : Number(obligation.beneficiarySupplierId),
-            beneficiaryNameSnapshot: beneficiaryName,
-            sourceEvidenceReference: obligation.evidenceReference,
           },
+          actor,
         );
-        shippingPaymentRequestReceiptId = request.receiptId;
-        await transitionAccrualObligationTx(tx, {
-          obligationId: Number(obligation.id),
-          expectedStatus: "ACCRUED_UNPAID",
-          nextStatus: "PAYMENT_PENDING",
-          eventType: "PAYMENT_REQUESTED",
-          actorId: creatorActor.userId,
-          receiptId: request.receiptId,
-          evidenceReference: shippingEvidenceReference,
-          dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
+      } else if (fundingMode === "TREASURY" && shipMethod === "CASH") {
+        await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor, {
+          cashSource: {
+            mode: "TREASURY",
+          },
         });
-        if (fundingMode === "DRAWER") {
-          await settlePurchaseShippingFromShiftTx(
-            tx,
-            {
-              purchaseOrderId: Number(po.id),
-              shiftId: fundingShiftId,
-            },
-            actor,
-          );
-        } else if (fundingMode === "TREASURY" && shipMethod === "CASH") {
-          await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor, {
-            cashSource: {
-              mode: "TREASURY",
-            },
-          });
-        }
       }
     }
   }

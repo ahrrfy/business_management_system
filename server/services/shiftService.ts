@@ -584,12 +584,8 @@ export async function closeShift(
         const [responsibleEmp] = await tx
           .select({ id: employees.id })
           .from(employees)
-          .where(
-            and(
-              eq(employees.userId, Number(sh.userId)),
-              eq(employees.isActive, true),
-            ),
-          )
+          .where(eq(employees.userId, Number(sh.userId)))
+          .orderBy(sql`${employees.isActive} DESC`, desc(employees.id))
           .limit(1);
         if (responsibleEmp) {
           await tx.insert(employeeAdvances).values({

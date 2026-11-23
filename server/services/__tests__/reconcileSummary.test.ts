@@ -96,4 +96,31 @@ describe("financial reconciliation mobile summary", () => {
       "journalOrphans",
     ]);
   });
+
+  it("incorporates employeeAdvances drift into ledger axis without leaking detail rows", () => {
+    const summary = toFinancialReconciliationSummary({
+      customers: [],
+      suppliers: [],
+      delivery: [],
+      inventory: [],
+      ledger: [],
+      onlineOrders: [],
+      journalOrphans: [],
+      unbilledGoodsReceipts: [],
+      employeeAdvances: [{
+        entity: "employeeAdvancesLedger",
+        id: 0,
+        expected: "150000.00",
+        actual: "175000.00",
+        drift: "25000.00",
+        note: "انحراف سلف الموظفين",
+      }],
+      runAt: "2026-11-23T12:00:00.000Z",
+    });
+
+    expect(summary.totalIssueCount).toBe(1);
+    expect(summary.balanced).toBe(false);
+    expect(summary.sections.ledger).toEqual({ issueCount: 1, balanced: false });
+    expect(JSON.stringify(summary)).not.toContain("175000.00");
+  });
 });

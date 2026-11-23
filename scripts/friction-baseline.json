@@ -10,7 +10,6 @@
   "D1::workOrders": 2,
   "D2::server/routers/reportsRouter.ts": 1,
   "D2::server/routers/saleRouter.ts": 5,
-  "D2::server/routers/superAppRouter.ts": 1,
   "D2::server/services/customerOperationsService.ts": 2,
   "D2::server/services/delivery/queries.ts": 1,
   "D2::server/services/reconcileService.ts": 1,

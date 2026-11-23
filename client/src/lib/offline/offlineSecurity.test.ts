@@ -132,8 +132,16 @@ describe("hardening — zero Math.random in offline crypto/lock modules & active
       path.resolve(import.meta.dirname, "../../../../server/routers/offlineRouter.ts"),
       "utf8",
     );
-    const matches = routerText.match(/offline\.preflight\.adminLookup/g) ?? [];
+    const serviceText = fs.readFileSync(
+      path.resolve(
+        import.meta.dirname,
+        "../../../../server/services/offline/preflightReconciliation.ts",
+      ),
+      "utf8",
+    );
+    expect(routerText).toContain("lookupPreflightSaleOutcomeService");
+    const matches = serviceText.match(/offline\.preflight\.adminLookup/g) ?? [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
-    expect(routerText).toContain("inFlight: true");
+    expect(serviceText).toContain("inFlight: true");
   });
 });
