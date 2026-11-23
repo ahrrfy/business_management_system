@@ -9,6 +9,7 @@ import { readReceptionSplitMetadata, splitPaymentError } from "./splitPayments";
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
 import { toWorkOrderChannel } from "@shared/receptionChannel";
+import { recipeSelectionsSchema, stripRecipeSelectionMeta, type RecipeLineSelection } from "@shared/recipeVariantSelection";
 import { formatDocumentNumber } from "@shared/documentNumber";
 import { linkConversationToWorkOrderTx } from "../conversationService";
 import { TRPCError } from "@trpc/server";
@@ -222,15 +223,31 @@ export function materialize(
     }
   }
 
-  const printSaleLine = (l: (typeof lines)[number]) => ({
-    variantId: Number(l.variantId),
-    productUnitId: Number(l.productUnitId),
-    quantity: String(l.quantity),
-    // سعر المسوّدة المخزَّن (الفعّال وقت الحفظ، والخصم اليدويّ مطويٌّ فيه) يُثبَّت صراحةً —
-    // لا إعادة تسعيرٍ صامتة بين الحفظ والتثبيت (نفس عقيدة الالتقاط الأوفلاينيّ).
-    unitPriceOverride: money(l.unitPrice).toFixed(2),
-    ...(money(l.discountAmount).gt(0) ? { discountAmount: money(l.discountAmount).toFixed(2) } : {}),
-  });
+  const parseRecipeSelections = (printSpec: string | null | undefined): RecipeLineSelection[] | undefined => {
+    if (!printSpec) return undefined;
+    try {
+      const parsed = JSON.parse(printSpec) as { recipeSelections?: unknown };
+      const check = recipeSelectionsSchema.safeParse(parsed?.recipeSelections);
+      if (!check.success || check.data.length === 0) return undefined;
+      return stripRecipeSelectionMeta(check.data);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const printSaleLine = (l: (typeof lines)[number]) => {
+    const recipeSelections = parseRecipeSelections(l.printSpec);
+    return {
+      variantId: Number(l.variantId),
+      productUnitId: Number(l.productUnitId),
+      quantity: String(l.quantity),
+      // سعر المسوّدة المخزَّن (الفعّال وقت الحفظ، والخصم اليدويّ مطويٌّ فيه) يُثبَّت صراحةً —
+      // لا إعادة تسعيرٍ صامتة بين الحفظ والتثبيت (نفس عقيدة الالتقاط الأوفلاينيّ).
+      unitPriceOverride: money(l.unitPrice).toFixed(2),
+      ...(money(l.discountAmount).gt(0) ? { discountAmount: money(l.discountAmount).toFixed(2) } : {}),
+      ...(recipeSelections ? { recipeSelections } : {}),
+    };
+  };
 
   const goodsSaleLine = (l: (typeof lines)[number]) => {
     const totalDisc = money(l.discountAmount ?? "0");
@@ -279,6 +296,7 @@ export function materialize(
         ? formatDocumentNumber(draft.draftNumber, 0)
         : formatDocumentNumber(draft.draftNumber, index + 1)
       : undefined;
+    const recipeSelections = parseRecipeSelections(l.printSpec);
     return {
       orderNumber,
       baseVariantId: variantId,
@@ -289,6 +307,7 @@ export function materialize(
       materials: variantId != null && !isServiceVariant
         ? [{ variantId, baseQuantity: Math.max(1, Math.round(qtyInt * factor)) }]
         : [],
+      ...(recipeSelections ? { recipeSelections } : {}),
       laborCost: s.laborCost ? money(s.laborCost).toFixed(2) : "0",
       salePrice: money(l.lineTotal).toFixed(2),
       dueDate: l.dueDate ? new Date(l.dueDate).toISOString().slice(0, 10) : null,

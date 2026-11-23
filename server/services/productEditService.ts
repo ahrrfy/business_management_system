@@ -1038,14 +1038,12 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
           .select({ id: productImages.id, url: productImages.url })
           .from(productImages)
           .where(eq(productImages.variantId, variantId))
-          .orderBy(productImages.id);
+          .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
         if (img) {
           if (existing.length > 0) {
-            // تكرار URL القائم يعني «لا تغيير» ويحافظ توافق النماذج القديمة؛ أيّ قيمة
-            // مختلفة محاولة استبدال مباشر خارج مسار المهمة والمراجعة فتُرفض fail-closed.
-            if (img !== existing[0].url) rejectLegacyCatalogMediaWrite();
-            if (existing.length > 1)
-              await tx.delete(productImages).where(inArray(productImages.id, existing.slice(1).map((r) => r.id)));
+            // تكرار URL القائم يعني «لا تغيير» ويحافظ توافق النماذج القديمة مع إبقاء باقي
+            // صور المتغيّر متعدّد الصور دون اقتطاع؛ أيّ قيمة مختلفة محاولة استبدال خارج الاستوديو.
+            if (!existing.some((r) => r.url === img)) rejectLegacyCatalogMediaWrite();
           } else {
             rejectLegacyCatalogMediaWrite();
           }

@@ -10374,6 +10374,7 @@ export const productionRecipeLines = mysqlTable(
       precision: 15,
       scale: 4,
     }).notNull(),
+    allowVariantChoice: boolean("allowVariantChoice").default(false).notNull(),
     notes: text("notes"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -17110,6 +17111,7 @@ export const digitalProviders = mysqlTable(
       .default("0")
       .notNull(),
     isActive: boolean("isActive").default(true).notNull(),
+    logoUrl: mediumtext("logoUrl"),
     notes: text("notes"),
     createdBy: int("createdBy")
       .notNull()
@@ -17285,6 +17287,7 @@ export const digitalOfferings = mysqlTable(
       .notNull(),
     priceValidityHours: int("priceValidityHours"),
     cardColorToken: varchar("cardColorToken", { length: 30 }),
+    imageUrl: mediumtext("imageUrl"),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

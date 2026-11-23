@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   GENERIC_SERVICE_NAME,
+  composeCustomizationText,
   deriveWorkOrderTitle,
   emptyCustomization,
 } from "./CustomizationDialog";
@@ -100,5 +101,23 @@ describe("عقد نافذة التخصيص", () => {
     expect(source).toContain("setShowExtras(extrasFilled)");
     // وعدّادٌ يمنع إخفاءَ بياناتٍ مكتوبةٍ بلا أثرٍ ظاهر.
     expect(source).toContain("مُعبَّأة");
+  });
+
+  it("يعرض اختيار متغيّر/لون الوصفة فوق طيّ الإضافات ويُلزمه قبل الحفظ", () => {
+    const selectorIdx = source.indexOf("<RecipeVariantSelectorList");
+    const extrasIdx = source.indexOf("تفاصيل إضافية (اختيارية)");
+    expect(selectorIdx).toBeGreaterThan(-1);
+    expect(extrasIdx).toBeGreaterThan(selectorIdx);
+    expect(source).toContain("areAllCustomizableLinesSelected");
+
+    const text = composeCustomizationText({
+      ...emptyCustomization("دفتر"),
+      recipeSelections: [
+        { recipeLineId: 7, variantId: 22, materialName: "غلاف جلد", label: "أحمر", color: "أحمر", colorHex: "#dc2626" },
+      ],
+      customizationText: "شعار ذهبي",
+    });
+    expect(text).toContain("[الألوان/المواد] غلاف جلد: أحمر");
+    expect(text).toContain("شعار ذهبي");
   });
 });

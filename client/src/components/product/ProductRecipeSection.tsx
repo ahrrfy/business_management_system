@@ -1,7 +1,11 @@
+import { lazy, Suspense } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { RecipeImportDialog } from "./RecipeImportDialog";
 import { PredictiveRecipeSuggestions } from "./PredictiveRecipeSuggestions";
+
+const LazyRecipeImportDialog = lazy(() =>
+  import("./RecipeImportDialog").then((m) => ({ default: m.RecipeImportDialog })),
+);
 import {
   useProductRecipe,
   type ProductRecipeSectionProps,
@@ -59,6 +63,7 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
     handleAddMaterial,
     handleRemoveLine,
     handleLineQtyChange,
+    handleToggleVariantChoice,
   } = controller;
   const { handleCopyRecipe, handlePasteRecipe, handleApplyTemplate } = transfer;
   const { calculatedCosts, profitability } = costs;
@@ -185,6 +190,7 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
                 stockCheckQ={stockCheckQ}
                 handleRemoveLine={handleRemoveLine}
                 handleLineQtyChange={handleLineQtyChange}
+                handleToggleVariantChoice={handleToggleVariantChoice}
               />
               {/* ملاحظات الوصفة إن وجدت في وضع العرض */}
               {!isEditing && currentRecipe?.notes && (
@@ -201,12 +207,16 @@ export function ProductRecipeSection(props: ProductRecipeSectionProps) {
       </CardContent>
 
       {/* نافذة استيراد وصفة من منتج آخر */}
-      <RecipeImportDialog
-        open={isImportDialogOpen}
-        onOpenChange={setIsImportDialogOpen}
-        currentProductId={productId}
-        onApplyRecipe={handleApplyTemplate}
-      />
+      {isImportDialogOpen && (
+        <Suspense fallback={null}>
+          <LazyRecipeImportDialog
+            open={isImportDialogOpen}
+            onOpenChange={setIsImportDialogOpen}
+            currentProductId={productId}
+            onApplyRecipe={handleApplyTemplate}
+          />
+        </Suspense>
+      )}
     </Card>
   );
 }

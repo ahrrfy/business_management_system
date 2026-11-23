@@ -18,6 +18,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
+import { resolveStudioImageSrc } from "@/lib/productImages";
+import { ProductImageGallery } from "../ProductImageGallery";
 import { QuickStudioCaptureEditor } from "./QuickStudioCaptureEditor";
 import type { QuickStudioController } from "./useQuickStudioController";
 
@@ -26,6 +29,7 @@ export function QuickStudioProductDialog({
 }: {
   controller: QuickStudioController;
 }) {
+  const canManageGallery = useOperationPermission("productStudio.managerImages").allowed;
   const {
     productModalOpen,
     closeModal,
@@ -35,6 +39,7 @@ export function QuickStudioProductDialog({
     product,
     existingImages,
     setPreviewZoomImage,
+    startReplaceImage,
   } = controller;
   const hasImages = existingImages.length > 0;
   return (
@@ -138,63 +143,81 @@ export function QuickStudioProductDialog({
               </div>
             </div>
 
-            {/* معرض الصور السابقة المعتمدة إن وجدت */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-foreground flex items-center gap-1.5">
-                  <ImageIcon aria-hidden className="size-4 text-primary" />
-                  الصور الحالية في الكتالوج ({existingImages.length})
-                </span>
-                <span className="text-muted-foreground text-[11px]">
-                  انقر على أي صورة لمعاينتها بحجم كامل
-                </span>
-              </div>
+            {/* معرض الصور: تفاعليّ لمدير الاستوديو (رئيسية/استبدال/إزالة/ترتيب) وشريط معاينة للمصوّر */}
+            {canManageGallery ? (
+              <ProductImageGallery
+                productId={product.id}
+                variantId={product.variantId ?? null}
+                onReplaceImage={startReplaceImage}
+              />
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    <ImageIcon aria-hidden className="size-4 text-primary" />
+                    الصور الحالية في الكتالوج ({existingImages.length})
+                  </span>
+                  <span className="text-muted-foreground text-[11px]">
+                    انقر على أي صورة لمعاينتها بحجم كامل
+                  </span>
+                </div>
 
-              {hasImages ? (
-                <div className="flex flex-wrap items-center gap-2.5 overflow-x-auto rounded-lg border bg-card p-2.5">
-                  {existingImages.map((img, idx) => (
-                    <button
-                      key={img.id}
-                      type="button"
-                      onClick={() =>
-                        setPreviewZoomImage(img.url || img.thumbDataUrl)
-                      }
-                      className="group relative size-20 shrink-0 overflow-hidden rounded-md border bg-white shadow-xs transition hover:border-primary hover:ring-2 hover:ring-primary/20"
-                      title={`معاينة الصورة ${idx + 1}`}
-                    >
-                      <img
-                        src={img.thumbDataUrl || img.url}
-                        alt={`صورة ${idx + 1}`}
-                        className="size-full object-contain p-1"
-                        loading="lazy"
-                      />
-                      {img.variantId != null && (
-                        <span className="absolute top-0 start-0 rounded-ee bg-sky-600/90 px-1 py-0.5 text-[8px] font-medium text-white leading-none">
-                          خاص بالصف
-                        </span>
-                      )}
-                      {img.isPrimary && (
-                        <span className="absolute bottom-0 inset-x-0 bg-primary/90 text-[9px] font-medium text-primary-foreground text-center py-0.5 leading-tight">
-                          رئيسية
-                        </span>
-                      )}
-                      <span className="absolute top-1 end-1 rounded bg-black/60 p-0.5 opacity-0 transition group-hover:opacity-100 text-white">
-                        <ZoomIn aria-hidden className="size-3" />
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-4 text-center">
-                  <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                    هذا المنتج لا يمتلك أي صورة معتمدة في الكتالوج حتى الآن.
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    استخدم كاميرا الهاتف بالأسفل لالتقاط الصورة الأولى مباشرة.
-                  </p>
-                </div>
-              )}
-            </div>
+                {hasImages ? (
+                  <div className="flex flex-wrap items-center gap-2.5 overflow-x-auto rounded-lg border bg-card p-2.5">
+                    {existingImages.map((img, idx) => {
+                      const thumbSrc = resolveStudioImageSrc(img);
+                      const fullSrc = resolveStudioImageSrc(img, true);
+                      return (
+                        <button
+                          key={img.id}
+                          type="button"
+                          onClick={() => {
+                            if (fullSrc) setPreviewZoomImage(fullSrc);
+                          }}
+                          className="group relative size-20 shrink-0 overflow-hidden rounded-md border bg-white shadow-xs transition hover:border-primary hover:ring-2 hover:ring-primary/20"
+                          title={`معاينة الصورة ${idx + 1}`}
+                        >
+                          {thumbSrc ? (
+                            <img
+                              src={thumbSrc}
+                              alt={`صورة ${idx + 1}`}
+                              className="size-full object-contain p-1"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="flex size-full items-center justify-center text-muted-foreground">
+                              <ImageIcon aria-hidden className="size-5" />
+                            </div>
+                          )}
+                          {img.variantId != null && (
+                            <span className="absolute top-0 start-0 rounded-ee bg-sky-600/90 px-1 py-0.5 text-[8px] font-medium text-white leading-none">
+                              خاص بالصف
+                            </span>
+                          )}
+                          {img.isPrimary && (
+                            <span className="absolute bottom-0 inset-x-0 bg-primary/90 text-[9px] font-medium text-primary-foreground text-center py-0.5 leading-tight">
+                              رئيسية
+                            </span>
+                          )}
+                          <span className="absolute top-1 end-1 rounded bg-black/60 p-0.5 opacity-0 transition group-hover:opacity-100 text-white">
+                            <ZoomIn aria-hidden className="size-3" />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-4 text-center">
+                    <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                      هذا المنتج لا يمتلك أي صورة معتمدة في الكتالوج حتى الآن.
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      استخدم كاميرا الهاتف بالأسفل لالتقاط الصورة الأولى مباشرة.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <QuickStudioCaptureEditor controller={controller} />
           </div>

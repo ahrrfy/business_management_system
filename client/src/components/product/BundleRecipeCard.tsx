@@ -3,7 +3,7 @@ import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAcc
 // `bundles.setComponents/getComponents/previewImpact/searchComponents` موجودة بلا مستهلك.
 // يعرض المكوّنات الحاليّة + زر حذف + منتقي بحث لإضافة مكوّن + تنبيه أثر التعديل.
 import { AlertTriangle, Boxes, Plus, Save, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,12 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
 import { D, formatIqd, formatQuantity, round2 } from "@/lib/money";
-import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
+
+const LazyBundleKitProductionDialog = lazy(() =>
+  import("@/components/production/bundle-kit/BundleKitProductionDialog").then((m) => ({
+    default: m.BundleKitProductionDialog,
+  })),
+);
 
 type Component = {
   componentVariantId: number;
@@ -235,11 +240,15 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
         )}
       </CardContent>
 
-      <BundleKitProductionDialog
-        open={isKitOpen}
-        onOpenChange={setIsKitOpen}
-        initialBundleVariantId={bundleVariantId}
-      />
+      {isKitOpen && (
+        <Suspense fallback={null}>
+          <LazyBundleKitProductionDialog
+            open={isKitOpen}
+            onOpenChange={setIsKitOpen}
+            initialBundleVariantId={bundleVariantId}
+          />
+        </Suspense>
+      )}
     </Card>
   );
 }

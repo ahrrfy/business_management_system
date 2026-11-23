@@ -1,5 +1,5 @@
 // مواد خام لمنتقي وصفة خدمة الطباعة + قراءة صور منتج.
-import { and, asc, desc, eq, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import { productImages, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
@@ -9,11 +9,13 @@ import { notPrintService } from "./search";
  *  واسم المنتج والكلفة. يَكشف الكلفة ⇒ يُستدعى من managerProcedure فقط. */
 export interface MaterialRow {
   variantId: number;
+  productId: number;
   productName: string;
   variantName: string | null;
   sku: string;
   unitName: string;
   costPrice: string;
+  activeVariantCount: number;
 }
 export async function listMaterialsForRecipe(query?: string, limit = 100): Promise<MaterialRow[]> {
   const db = getDb();
@@ -44,6 +46,7 @@ export async function listMaterialsForRecipe(query?: string, limit = 100): Promi
   const rows = await db
     .select({
       variantId: productVariants.id,
+      productId: productVariants.productId,
       productName: products.name,
       variantName: productVariants.variantName,
       sku: productVariants.sku,
@@ -56,13 +59,28 @@ export async function listMaterialsForRecipe(query?: string, limit = 100): Promi
     .where(and(...conds))
     .orderBy(asc(products.name))
     .limit(limit);
+  const productIds = Array.from(new Set(rows.map((r) => Number(r.productId))));
+  const countMap = new Map<number, number>();
+  if (productIds.length) {
+    const cntRows = await db
+      .select({
+        productId: productVariants.productId,
+        cnt: sql<string>`COUNT(*)`,
+      })
+      .from(productVariants)
+      .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+      .groupBy(productVariants.productId);
+    for (const c of cntRows) countMap.set(Number(c.productId), Number(c.cnt));
+  }
   return rows.map((r) => ({
     variantId: Number(r.variantId),
+    productId: Number(r.productId),
     productName: r.productName,
     variantName: r.variantName,
     sku: r.sku,
     unitName: r.unitName,
     costPrice: r.costPrice,
+    activeVariantCount: countMap.get(Number(r.productId)) ?? 1,
   }));
 }
 

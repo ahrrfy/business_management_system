@@ -36,6 +36,7 @@ export const STUDIO_MANAGER_OPERATIONS = new Set([
   "productStudio.managerImages",
   "productStudio.deleteImage",
   "productStudio.setImagePrimary",
+  "productStudio.setProductImagePrimary",
   "productStudio.reorderImages",
   "productStudio.imageHealthCounts",
   "productStudio.discoverImageGaps",

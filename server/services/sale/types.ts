@@ -1,4 +1,5 @@
 import type { DeliveryFeeTender } from "../delivery/feeHeld";
+import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
 // عقد البيع (POS/عبر القنوات) المشترك.
 import type { PriceTier } from "../pricing";
 import type { VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "./create";
@@ -31,6 +32,7 @@ export interface SaleLineInput {
   unitPriceOverride?: string | null;
   discountPercent?: string | null;
   discountAmount?: string | null;
+  recipeSelections?: RecipeLineSelection[] | null;
   /** promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
    *  أن العرض ما زال ساري ويحسب `expectedDiscount = discountForUnit × qty` ويقارن مع `discountAmount`.
    *  إن طابق ⇒ يُخزَّن `promotionId` + `promotionDiscount` على invoiceItem. إن لم يطابق ⇒ لا نُخزّن

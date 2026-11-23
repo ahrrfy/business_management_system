@@ -23,6 +23,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/workOrders/__tests__/materialFractionInputs.test.tsx",
       "server/services/digitalCards/__tests__/receptionSource.test.ts",
       "server/services/digitalCards/__tests__/settlementMath.test.ts",
+      "server/services/digitalCards/__tests__/digitalImages.test.ts",
       "client/src/components/digitalCards/useReceptionDigitalCheckout.test.tsx",
       "client/src/components/digitalCards/DigitalRefundTenderFields.test.tsx",
       "client/src/components/digitalCards/useDurableDigitalSale.test.tsx",
@@ -712,12 +713,15 @@ export const UNIT_TEST_FILES: string[] = [
       "server/services/__tests__/karwanUnifiedLedgerAndAnomalies.unit.test.ts",
       "server/services/__tests__/productStudioMilestone1.test.ts",
       "server/services/__tests__/productStudioMilestone2.test.ts",
+      "server/services/__tests__/productStudioTrack2Fixes.unit.test.ts",
       "server/services/__tests__/numberingDualActive.unit.test.ts",
       // Products Studio Redesign E2E Track (Opaque-Box In-Memory Suite)
       "tests/e2e/products-studio/tier1_features.test.ts",
       "tests/e2e/products-studio/tier2_boundaries.test.ts",
       "tests/e2e/products-studio/tier3_combinations.test.ts",
       "tests/e2e/products-studio/tier4_scenarios.test.ts",
+      "server/services/__tests__/recipeVariantSelection.unit.test.ts",
+      "client/src/lib/receptionWorkspaceState.test.ts",
 ];
 
 export default defineConfig({

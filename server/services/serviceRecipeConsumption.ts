@@ -1,9 +1,15 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { quantityNumber } from "@shared/quantity";
-import { inArray } from "drizzle-orm";
+import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
+import { eq, inArray } from "drizzle-orm";
 
-import { productionRecipeLines, productionRecipes } from "../../drizzle/schema";
+import {
+  productionRecipeLines,
+  productionRecipes,
+  productVariants,
+  products,
+} from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { money } from "./money";
@@ -11,14 +17,22 @@ import { money } from "./money";
 export const SERVICE_RECIPE_CONSUMPTION_NOTE = "استهلاك مادة خدمة";
 
 export interface ServiceRecipeLine {
+  id: number;
   inputVariantId: number;
   qtyPerOutputBase: string;
+  allowVariantChoice: boolean;
 }
 
 export interface ServiceRecipeDefinition {
   recipeId: number;
   outputVariantId: number;
   lines: ServiceRecipeLine[];
+}
+
+export interface ResolvedServiceRecipeLine {
+  recipeLineId: number;
+  variantId: number;
+  qtyPerOutputBase: string;
 }
 
 /**
@@ -91,9 +105,11 @@ export async function discoverServiceRecipeDefinitions(
   const recipeIds = activeHeads.map((head) => head.id);
   const rowsQuery = tx
     .select({
+      id: productionRecipeLines.id,
       recipeId: productionRecipeLines.recipeId,
       inputVariantId: productionRecipeLines.inputVariantId,
       qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+      allowVariantChoice: productionRecipeLines.allowVariantChoice,
     })
     .from(productionRecipeLines)
     .where(inArray(productionRecipeLines.recipeId, recipeIds))
@@ -105,8 +121,10 @@ export async function discoverServiceRecipeDefinitions(
     const recipeId = Number(row.recipeId);
     const list = linesByRecipe.get(recipeId) ?? [];
     list.push({
+      id: Number(row.id),
       inputVariantId: Number(row.inputVariantId),
       qtyPerOutputBase: String(row.qtyPerOutputBase),
+      allowVariantChoice: row.allowVariantChoice === true,
     });
     linesByRecipe.set(recipeId, list);
   }
@@ -146,12 +164,174 @@ export function serviceRecipeDefinitionsFingerprint(
         [...definition.lines]
           .sort(
             (a, b) =>
+              a.id - b.id ||
               a.inputVariantId - b.inputVariantId ||
               a.qtyPerOutputBase.localeCompare(b.qtyPerOutputBase),
           )
-          .map((line) => [line.inputVariantId, line.qtyPerOutputBase]),
+          .map((line) => [line.id, line.inputVariantId, line.qtyPerOutputBase, line.allowVariantChoice]),
       ]),
   );
+}
+
+export function assertNoUnexpectedRecipeSelections(
+  selections: readonly RecipeLineSelection[] | null | undefined,
+  label = "البند",
+): void {
+  if (!selections?.length) return;
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: appErrorMessage({
+      what: `اختيارات مواد غير صالحة على ${label}`,
+      why: "هذا البند لا يملك وصفة خدمة نشطة تدعم اختيار متغيّر المادة عند الطلب",
+      doThis: "أزل اختيارات المتغيّر من السطر أو راجع تعريف وصفة الخدمة",
+    }),
+  });
+}
+
+/**
+ * يتحقق من اختيارات متغيّرات/ألوان مواد الوصفة ويُبدّل inputVariantId الفعلي لكل سطر وصفة (بمفتاح recipeLineId).
+ * - يرفض غياب الاختيار لأي سطر يحمل allowVariantChoice=true.
+ * - يرفض التكرار، أو سطر وصفة غير تابع للخدمة، أو تبديل سطر ثابت، أو التزوير عبر منتج مختلف.
+ */
+export async function resolveRecipeLineSelections(
+  tx: Tx,
+  recipeLines: readonly ServiceRecipeLine[],
+  selections?: readonly RecipeLineSelection[] | null,
+): Promise<ResolvedServiceRecipeLine[]> {
+  const lineById = new Map<number, ServiceRecipeLine>(
+    recipeLines.map((line) => [Number(line.id), line]),
+  );
+  const selectionByLineId = new Map<number, number>();
+  for (const sel of selections ?? []) {
+    const recipeLineId = Number(sel.recipeLineId);
+    const variantId = Number(sel.variantId);
+    if (!Number.isInteger(recipeLineId) || recipeLineId <= 0 || !Number.isInteger(variantId) || variantId <= 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "اختيار متغيّر مادة الوصفة غير صالح",
+          why: "معرّف سطر الوصفة أو المتغيّر غير صحيح",
+          doThis: "أعد اختيار لون/متغيّر المادة من الشاشة ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (selectionByLineId.has(recipeLineId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعارض في اختيارات مواد الوصفة",
+          why: `تكرر الاختيار لسطر الوصفة #${recipeLineId}`,
+          doThis: "أرسل اختياراً واحداً فقط لكل سطر وصفة قابل للتخصيص",
+        }),
+      });
+    }
+    const matchedLine = lineById.get(recipeLineId);
+    if (!matchedLine) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "اختيار مادة لا يخص وصفة الخدمة",
+          why: `سطر الوصفة #${recipeLineId} غير موجود ضمن الوصفة النشطة لهذه الخدمة`,
+          doThis: "حدّث الشاشة وأعد اختيار متغيّرات الوصفة الحالية",
+        }),
+      });
+    }
+    if (!matchedLine.allowVariantChoice && variantId !== matchedLine.inputVariantId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يُسمح بتغيير مادة ثابتة في الوصفة",
+          why: `سطر الوصفة #${recipeLineId} غير مفعّل لاختيار اللون/المتغيّر عند الطلب`,
+          doThis: "فعّل خيار «تحديد اللون/المتغير عند الطلب» في الوصفة أو التزم بالمادة الأصلية",
+        }),
+      });
+    }
+    selectionByLineId.set(recipeLineId, variantId);
+  }
+
+  const chosenChecks: Array<{ line: ServiceRecipeLine; chosenVariantId: number }> = [];
+  for (const line of recipeLines) {
+    if (!line.allowVariantChoice) continue;
+    const chosenVariantId = selectionByLineId.get(line.id);
+    if (chosenVariantId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "يلزم تحديد اللون/المتغيّر لمادة الوصفة",
+          why: `سطر الوصفة #${line.id} يتطلب اختيار متغيّر/لون عند الطلب`,
+          doThis: "اختر اللون أو المتغيّر المطلوب لكل مادة ثم أعد الإرسال",
+        }),
+      });
+    }
+    chosenChecks.push({ line, chosenVariantId });
+  }
+
+  if (chosenChecks.length > 0) {
+    const variantIdsToVerify = Array.from(
+      new Set([
+        ...chosenChecks.map((c) => c.line.inputVariantId),
+        ...chosenChecks.map((c) => c.chosenVariantId),
+      ]),
+    ).sort((a, b) => a - b);
+    const variantRows = await tx
+      .select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        variantActive: productVariants.isActive,
+        productActive: products.isActive,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, variantIdsToVerify));
+    const variantMap = new Map(variantRows.map((r) => [Number(r.id), r]));
+    for (const { line, chosenVariantId } of chosenChecks) {
+      const defVar = variantMap.get(line.inputVariantId);
+      const chosenVar = variantMap.get(chosenVariantId);
+      if (!defVar || !chosenVar) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "متغيّر المادة المختار غير موجود",
+            why: `تعذّر العثور على المتغيّر #${chosenVariantId} في الكتالوج`,
+            doThis: "حدّث الشاشة واختر متغيّراً نشطاً من القائمة",
+          }),
+        });
+      }
+      if (chosenVar.variantActive !== true || chosenVar.productActive !== true) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "متغيّر المادة المختار معطّل",
+            why: `المتغيّر #${chosenVariantId} أو منتجه غير نشط حالياً`,
+            doThis: "اختر لوناً أو متغيّراً نشطاً آخر",
+          }),
+        });
+      }
+      if (Number(chosenVar.productId) !== Number(defVar.productId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "المتغيّر المختار لا يتبع مادة الوصفة نفسها",
+            why: `المتغيّر #${chosenVariantId} يتبع منتجاً مختلفاً عن مادة سطر الوصفة #${line.id}`,
+            doThis: "اختر متغيّراً أو لوناً من نفس المنتج المحدد في الوصفة",
+          }),
+        });
+      }
+    }
+    await assertStockedOwnedMaterials(
+      tx,
+      Array.from(new Set(chosenChecks.map((c) => c.chosenVariantId))).sort((a, b) => a - b),
+      "متغيّر مادة الوصفة المختار",
+    );
+  }
+
+  return recipeLines.map((line) => ({
+    recipeLineId: line.id,
+    variantId: line.allowVariantChoice
+      ? selectionByLineId.get(line.id)!
+      : line.inputVariantId,
+    qtyPerOutputBase: line.qtyPerOutputBase,
+  }));
 }
 
 /**

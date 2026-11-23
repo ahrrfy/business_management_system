@@ -977,4 +977,56 @@ describe("reception draft transition races", () => {
       expect(lineTotal(restored.cart[0]!)).toBe(2500);
     }
   });
+
+  it("round-trips recipeSelections on CUSTOM and PRINT lines and rejects malformed selections", () => {
+    const input = localInput();
+    const selections = [
+      { recipeLineId: 12, variantId: 305, materialName: "غلاف جلد", label: "أزرق", color: "أزرق", colorHex: "#2563eb" },
+    ];
+    const customLine = {
+      ...input.cart[0]!,
+      customBasePrice: 2000,
+      origPrice: 2500,
+      custom: { ...emptyCustomization("دفتر مخصص"), unitPrice: "500", recipeSelections: selections },
+    };
+    const printLine = {
+      ...input.cart[0]!,
+      key: "print-1",
+      row: { ...input.cart[0]!.row, productUnitId: 23, isService: true, isPrintService: true },
+      recipeSelections: selections,
+    };
+
+    const snapshot = createReceptionLocalSnapshot({ ...input, cart: [customLine, printLine] as never }, Date.now());
+    const parsed = parseReceptionWorkspaceSnapshot(serializeReceptionWorkspaceSnapshot(snapshot), Date.now());
+    expect(parsed?.kind).toBe("LOCAL");
+    if (parsed?.kind === "LOCAL") {
+      expect(parsed.cart[0]?.custom?.recipeSelections).toEqual(selections);
+      expect(parsed.cart[1]?.recipeSelections).toEqual(selections);
+    }
+
+    const tampered = JSON.parse(serializeReceptionWorkspaceSnapshot(snapshot));
+    tampered.cart[1].recipeSelections = [{ recipeLineId: -1, variantId: 5 }];
+    expect(parseReceptionWorkspaceSnapshot(JSON.stringify(tampered), Date.now())).toBeNull();
+
+    const restored = prepareReceptionDraftCart(
+      [
+        {
+          id: 101,
+          lineKind: "PRINT",
+          quantity: "1.000",
+          unitPrice: "2500.00",
+          variantId: 11,
+          productUnitId: 22,
+          title: "طباعة غلاف",
+          printSpec: JSON.stringify({ recipeSelections: [{ recipeLineId: 12, variantId: 305 }] }),
+          designImages: null,
+        },
+      ],
+      input.cart.map((c) => c.row) as never,
+    );
+    expect(restored.ok).toBe(true);
+    if (restored.ok) {
+      expect(restored.cart[0]?.recipeSelections).toEqual([{ recipeLineId: 12, variantId: 305 }]);
+    }
+  });
 });

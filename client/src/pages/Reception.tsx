@@ -31,6 +31,10 @@ import { Button } from "@/components/ui/button";
 import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
 import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { CustomizationDialog, emptyCustomization } from "@/components/CustomizationDialog";
+import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
+import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";
+import { cacheCustomizableLineOptions, readCachedCustomizableLineOptions } from "@/lib/offline/printServicesCache";
+import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { receptionOperationAllowed, receptionCheckoutPaths, receptionDeliveryAuthorityRequired } from "@/lib/receptionOperationAccess";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -209,6 +213,54 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
+  const [variantPicker, setVariantPicker] = useState<{
+    row: PosRow;
+    lines: CustomizableLineOption[];
+    editingLineKey?: string;
+    initialSelections?: RecipeLineSelectionWithMeta[];
+    quantity?: number;
+  } | null>(null);
+  const [cachedCustomOptions, setCachedCustomOptions] = useState<CustomizableLineOption[]>([]);
+  const customizableOptionsQ = trpc.production.recipes.customizableLineOptions.useQuery(
+    { branchId },
+    { enabled: !offline && branchId > 0, staleTime: 60_000 },
+  );
+  useEffect(() => {
+    if (customizableOptionsQ.data?.lines) {
+      setCachedCustomOptions(customizableOptionsQ.data.lines);
+      void cacheCustomizableLineOptions(branchId, customizableOptionsQ.data.lines);
+    }
+  }, [customizableOptionsQ.data, branchId]);
+  useEffect(() => {
+    if (!offline || branchId <= 0) return;
+    void readCachedCustomizableLineOptions<CustomizableLineOption>(branchId).then((cached) => {
+      if (cached) setCachedCustomOptions(cached);
+    });
+  }, [offline, branchId]);
+  const customizableLinesByVariantId = useMemo(() => {
+    const source = customizableOptionsQ.data?.lines ?? cachedCustomOptions;
+    const map = new Map<number, CustomizableLineOption[]>();
+    for (const line of source) {
+      const ov = Number(line.outputVariantId);
+      const list = map.get(ov) ?? [];
+      list.push(line);
+      map.set(ov, list);
+    }
+    return map;
+  }, [customizableOptionsQ.data, cachedCustomOptions]);
+  const customizableVariantIds = useMemo(
+    () => new Set<number>(customizableLinesByVariantId.keys()),
+    [customizableLinesByVariantId],
+  );
+  const onPickRecipeVariants = useCallback(
+    (row: PosRow) => {
+      const lines = customizableLinesByVariantId.get(Number(row.variantId));
+      if (!lines?.length) return false;
+      setVariantPicker({ row, lines });
+      return true;
+    },
+    [customizableLinesByVariantId],
+  );
   const pendingDeferredRestoreRef = useRef(false), suppressHydratedPhoneResetRef = useRef(false);
   const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => {
     if (suppressHydratedPhoneResetRef.current) { suppressHydratedPhoneResetRef.current = false; return; }
@@ -420,7 +472,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   }, []);
 
   /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق ويصعّده لأول السلة ليبقى ظاهراً للكاشير. */
-  const { addRow, addManualService, changeQty, removeRow, addPlainFromCustomization, changeLineUnit, addDirectLine, saveCustomization, addDigitalBasket } = useReceptionCartEditing({ clearCouponIfApplied, setCart, setSelKey, setAddTick, canActionRef, offline, activeDraft, branchId, setInvoiceDiscountPct, setCardsOpen, effectiveTier, setShowCustomization, setSearch, setShowDrop, searchRef, showCustomization, cartSectionRef, selKey });
+  const { addRow, addManualService, changeQty, removeRow, addPlainFromCustomization, changeLineUnit, changeLineRecipeSelections, addDirectLine, saveCustomization, addDigitalBasket } = useReceptionCartEditing({ clearCouponIfApplied, setCart, setSelKey, setAddTick, canActionRef, offline, activeDraft, branchId, setInvoiceDiscountPct, setCardsOpen, effectiveTier, setShowCustomization, setSearch, setShowDrop, searchRef, showCustomization, cartSectionRef, selKey, onPickRecipeVariants });
   async function clearCart() {
     if (draftTransitionPending || draftPromotionFlightRef.current || cart.length === 0) return;
     if (draftPromotionPending) { notify.warn("لا تفرّغ محاولة حفظ غير محسومة", "اضغط حفظ الطلب مرة أخرى للتحقق من نتيجتها أولاً؛ التفريغ الآن قد يتيح إنشاء طلب مكرر."); return; }
@@ -1134,6 +1186,18 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
               addTick={addTick}
               effectiveTier={effectiveTier}
               onUnitChange={changeLineUnit}
+              customizableVariantIds={customizableVariantIds}
+              onChangeRecipeSelections={(line) => {
+                const lines = customizableLinesByVariantId.get(Number(line.row.variantId));
+                if (!lines?.length) return;
+                setVariantPicker({
+                  row: line.row,
+                  lines,
+                  editingLineKey: line.key,
+                  initialSelections: line.recipeSelections,
+                  quantity: line.qty,
+                });
+              }}
             />
         </div>
       </div>
@@ -1215,7 +1279,29 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       {depositOpen && activeDraft && <DepositDialog draftId={activeDraft.id} draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`} contactName={customer.name?.trim() || null} orderTotal={round2(grandTotalD).toFixed(2)} heldTotal={draftHeld} suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)} currentShiftId={shift?.id ?? null} branchName={branchName} cashierName={me.data?.name ?? null} onClose={() => setDepositOpen(false)} onCollected={(total) => { setDraftHeld(total); setPayInput(""); void utils.reception.draftList.invalidate(); }} />}
 
       {/* ─── نافذة التخصيص ─── */}
-      {showCustomization && <CustomizationDialog open productName={showCustomization.row.productName} price={showCustomization.row.price ?? "0"} quantity={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1 : 1} initial={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.custom : emptyCustomization(showCustomization.row.productName)} staff={(staffQ.data ?? []).map((member) => ({ id: Number(member.id), name: member.name ?? null, role: member.role ?? null }))} canEditInternalCost={isElevatedRole} onAddPlain={!showCustomization.editingKey && showCustomization.row.variantId !== 0 ? () => { addDirectLine(showCustomization.row); setShowCustomization(null); searchRef.current?.focus(); } : undefined} onCancel={() => setShowCustomization(null)} onSave={saveCustomization} />}
+      {showCustomization && <CustomizationDialog open productName={showCustomization.row.productName} price={showCustomization.row.price ?? "0"} quantity={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1 : 1} productId={showCustomization.row.productId} variantId={showCustomization.row.variantId || undefined} branchId={branchId} conversionFactor={Number(showCustomization.row.conversionFactor) || 1} initial={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.custom : emptyCustomization(showCustomization.row.productName)} staff={(staffQ.data ?? []).map((member) => ({ id: Number(member.id), name: member.name ?? null, role: member.role ?? null }))} canEditInternalCost={isElevatedRole} onAddPlain={!showCustomization.editingKey && showCustomization.row.variantId !== 0 ? (recipeSelections) => { addDirectLine(showCustomization.row, recipeSelections); setShowCustomization(null); searchRef.current?.focus(); } : undefined} onCancel={() => setShowCustomization(null)} onSave={saveCustomization} />}
+
+      {variantPicker && (
+        <RecipeVariantPickerDialog
+          open
+          title={`اختيار ألوان/متغيرات: ${variantPicker.row.productName}`}
+          lines={variantPicker.lines}
+          initialSelections={variantPicker.initialSelections}
+          quantity={variantPicker.quantity ?? 1}
+          conversionFactor={Number(variantPicker.row.conversionFactor) || 1}
+          confirmLabel={variantPicker.editingLineKey ? "تحديث اللون" : "إضافة للسلة"}
+          onCancel={() => setVariantPicker(null)}
+          onConfirm={(selections) => {
+            if (variantPicker.editingLineKey) {
+              changeLineRecipeSelections(variantPicker.editingLineKey, selections);
+            } else {
+              addDirectLine(variantPicker.row, selections);
+              searchRef.current?.focus();
+            }
+            setVariantPicker(null);
+          }}
+        />
+      )}
 
       {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 

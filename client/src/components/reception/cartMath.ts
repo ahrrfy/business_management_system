@@ -1,4 +1,5 @@
 import { paymentMethodLabels } from "@shared/terms";
+import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 import type { CustomizationData } from "@/components/CustomizationDialog";
 import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
 import type { ReceiptBrowserData, WorkOrderReceiptData } from "@/lib/printing/print";
@@ -53,6 +54,7 @@ export type CartLine = {
   cartPromo?: { promotionId: number; promotionName: string; lineDiscount: string } | null;
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
+  recipeSelections?: RecipeLineSelectionWithMeta[];
   manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
   digital?: DigitalCheckoutLineMeta;
 };

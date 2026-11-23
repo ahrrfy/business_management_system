@@ -39,6 +39,7 @@ import { escLike } from "../lib/sqlLike";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
 import { syncBundlesContainingComponents } from "./bundleService";
 import { logAuditTx } from "./auditService";
+import { variantDescriptor } from "@shared/variantDisplay";
 import type {
   SubstituteRecipeMaterialInput,
   SubstituteRecipeMaterialResult,
@@ -48,6 +49,7 @@ export interface RecipeLineInput {
   inputVariantId: number;
   inputProductUnitId?: number | null;
   qtyPerOutputBase: string;
+  allowVariantChoice?: boolean;
   notes?: string | null;
 }
 
@@ -103,6 +105,7 @@ interface RecipeMutationSnapshot {
     inputVariantId: number;
     inputProductUnitId: number | null;
     qtyPerOutputBase: string;
+    allowVariantChoice: boolean;
     notes: string | null;
   }>;
 }
@@ -448,6 +451,7 @@ async function readRecipeMutationSnapshot(
       inputVariantId: productionRecipeLines.inputVariantId,
       inputProductUnitId: productionRecipeLines.inputProductUnitId,
       qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+      allowVariantChoice: productionRecipeLines.allowVariantChoice,
       notes: productionRecipeLines.notes,
     })
     .from(productionRecipeLines)
@@ -474,6 +478,7 @@ async function readRecipeMutationSnapshot(
           ? null
           : Number(line.inputProductUnitId),
       qtyPerOutputBase: String(line.qtyPerOutputBase),
+      allowVariantChoice: line.allowVariantChoice === true,
       notes: line.notes ?? null,
     })),
   };
@@ -572,6 +577,7 @@ function recipeSnapshotAsInput(
       inputVariantId: line.inputVariantId,
       inputProductUnitId: line.inputProductUnitId,
       qtyPerOutputBase: line.qtyPerOutputBase,
+      allowVariantChoice: line.allowVariantChoice,
       notes: line.notes,
     })),
   };
@@ -790,6 +796,37 @@ export async function listRunnableRecipes() {
   return withTx((tx) => listRecipesInTx(tx, { runnableOnly: true }));
 }
 
+/** عدّ المتغيّرات النشطة لنفس المنتج لكل صنف مكوّن (لإظهار تبديل اللون/المتغير عند الطلب في الواجهة). */
+async function loadActiveSiblingVariantCounts(
+  tx: Tx,
+  variantIds: readonly number[],
+): Promise<Map<number, number>> {
+  const uniqueIds = Array.from(new Set(variantIds.filter((id) => Number.isInteger(id) && id > 0)));
+  const out = new Map<number, number>();
+  if (!uniqueIds.length) return out;
+  const prodRows = await tx
+    .select({ id: productVariants.id, productId: productVariants.productId })
+    .from(productVariants)
+    .where(inArray(productVariants.id, uniqueIds));
+  const productByVariant = new Map(prodRows.map((r) => [Number(r.id), Number(r.productId)]));
+  const productIds = Array.from(new Set(prodRows.map((r) => Number(r.productId))));
+  if (!productIds.length) return out;
+  const countRows = await tx
+    .select({
+      productId: productVariants.productId,
+      cnt: sql<string>`COUNT(*)`,
+    })
+    .from(productVariants)
+    .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+    .groupBy(productVariants.productId);
+  const countByProduct = new Map(countRows.map((r) => [Number(r.productId), Number(r.cnt)]));
+  for (const vid of uniqueIds) {
+    const pid = productByVariant.get(vid);
+    out.set(vid, pid != null ? (countByProduct.get(pid) ?? 1) : 1);
+  }
+  return out;
+}
+
 /** تفاصيل وصفة + مكوّناتها بأسماء الأصناف. */
 export async function getRecipe(id: number) {
   return withTx(async (tx) => {
@@ -841,6 +878,7 @@ export async function getRecipe(id: number) {
         inputSku: productVariants.sku,
         inputCostPrice: productVariants.costPrice,
         qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+        allowVariantChoice: productionRecipeLines.allowVariantChoice,
         notes: productionRecipeLines.notes,
       })
       .from(productionRecipeLines)
@@ -856,6 +894,7 @@ export async function getRecipe(id: number) {
     const varIds = Array.from(
       new Set(lines.map((l: any) => Number(l.inputVariantId))),
     );
+    const siblingCounts = await loadActiveSiblingVariantCounts(tx, varIds);
     const unitsByVariant = new Map<
       number,
       Array<{
@@ -889,6 +928,8 @@ export async function getRecipe(id: number) {
     }
     const linesOut = lines.map((l: any) => ({
       ...l,
+      allowVariantChoice: l.allowVariantChoice === true,
+      activeVariantCount: siblingCounts.get(Number(l.inputVariantId)) ?? 1,
       units: unitsByVariant.get(Number(l.inputVariantId)) ?? [],
     }));
     const executionKind = executionKindFor(head);
@@ -961,6 +1002,7 @@ export async function createRecipeInTx(
           qtyPerOutputBase: money(line.qtyPerOutputBase)
             .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
             .toFixed(4),
+          allowVariantChoice: Boolean(line.allowVariantChoice),
           notes: line.notes?.trim() || null,
         })),
       );
@@ -1054,6 +1096,7 @@ export async function updateRecipeInTx(tx: Tx, id: number, input: CreateRecipeIn
             qtyPerOutputBase: money(line.qtyPerOutputBase)
               .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
               .toFixed(4),
+            allowVariantChoice: Boolean(line.allowVariantChoice),
             notes: line.notes?.trim() || null,
           })),
         );
@@ -1595,6 +1638,8 @@ export interface ProductRecipeDetail extends ProductRecipeSummary {
     inputSku: string;
     inputCostPrice: string;
     qtyPerOutputBase: string;
+    allowVariantChoice: boolean;
+    activeVariantCount: number;
     notes: string | null;
     units: Array<{
       productUnitId: number;
@@ -1757,6 +1802,7 @@ export async function getRecipeForProduct(
           inputSku: productVariants.sku,
           inputCostPrice: productVariants.costPrice,
           qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+          allowVariantChoice: productionRecipeLines.allowVariantChoice,
           notes: productionRecipeLines.notes,
         })
         .from(productionRecipeLines)
@@ -1771,6 +1817,7 @@ export async function getRecipeForProduct(
       const inVarIds = Array.from(
         new Set(lines.map((l) => Number(l.inputVariantId))),
       );
+      const siblingCounts = await loadActiveSiblingVariantCounts(tx, inVarIds);
       const unitsByVariant = new Map<
         number,
         Array<{
@@ -1832,6 +1879,8 @@ export async function getRecipeForProduct(
           inputSku: l.inputSku ?? "",
           inputCostPrice: String(l.inputCostPrice ?? "0"),
           qtyPerOutputBase: String(l.qtyPerOutputBase),
+          allowVariantChoice: l.allowVariantChoice === true,
+          activeVariantCount: siblingCounts.get(Number(l.inputVariantId)) ?? 1,
           notes: l.notes ?? null,
           units: unitsByVariant.get(Number(l.inputVariantId)) ?? [],
         })),
@@ -2411,3 +2460,187 @@ export async function checkRecipeMaterialsAvailability(args: {
 }
 
 
+
+export interface CustomizableLineVariantOption {
+  variantId: number;
+  label: string;
+  color: string | null;
+  colorHex: string | null;
+  availableBase: number;
+}
+
+export interface CustomizableRecipeLineOption {
+  recipeId: number;
+  outputVariantId: number;
+  outputProductId: number;
+  recipeLineId: number;
+  inputProductId: number;
+  defaultInputVariantId: number;
+  materialName: string;
+  qtyPerOutputBase: string;
+  options: CustomizableLineVariantOption[];
+}
+
+export interface CustomizableRecipeLineOptionsResult {
+  lines: CustomizableRecipeLineOption[];
+  byRecipeLineId: Record<string, CustomizableRecipeLineOption>;
+}
+
+/**
+ * خيارات المتغيّرات/الألوان القابلة للاختيار عند الطلب لأسطر الوصفات الفعّالة (allowVariantChoice = true).
+ * تحجب costPrice تماماً لتصلح لسطح الكاشير/الاستقبال (productsReadProcedure).
+ */
+export async function getCustomizableRecipeLineOptions(args: {
+  branchId: number | null;
+  productId?: number | null;
+  variantId?: number | null;
+}): Promise<CustomizableRecipeLineOptionsResult> {
+  return withTx(async (tx) => {
+    let targetVariantIds: number[] | null = null;
+    if (args.variantId != null && args.variantId > 0) {
+      targetVariantIds = [Number(args.variantId)];
+    } else if (args.productId != null && args.productId > 0) {
+      const pVars = await tx
+        .select({ id: productVariants.id })
+        .from(productVariants)
+        .where(eq(productVariants.productId, Number(args.productId)));
+      targetVariantIds = pVars.map((v) => Number(v.id));
+      if (!targetVariantIds.length) return { lines: [], byRecipeLineId: {} };
+    }
+
+    const activeRecipes = await tx
+      .select({
+        recipeId: productionRecipes.id,
+        outputVariantId: productionRecipes.outputVariantId,
+        outputProductId: productVariants.productId,
+      })
+      .from(productionRecipes)
+      .innerJoin(productVariants, eq(productionRecipes.outputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(
+        and(
+          eq(productionRecipes.isActive, true),
+          eq(products.isActive, true),
+          targetVariantIds ? inArray(productionRecipes.outputVariantId, targetVariantIds) : sql`1=1`,
+        ),
+      )
+      .orderBy(asc(productionRecipes.id));
+
+    if (!activeRecipes.length) return { lines: [], byRecipeLineId: {} };
+
+    const recipeIds = activeRecipes.map((r) => Number(r.recipeId));
+    const recipeMetaById = new Map(
+      activeRecipes.map((r) => [
+        Number(r.recipeId),
+        {
+          outputVariantId: Number(r.outputVariantId),
+          outputProductId: Number(r.outputProductId),
+        },
+      ]),
+    );
+
+    const customizableRows = await tx
+      .select({
+        recipeLineId: productionRecipeLines.id,
+        recipeId: productionRecipeLines.recipeId,
+        defaultInputVariantId: productionRecipeLines.inputVariantId,
+        qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+        inputProductId: productVariants.productId,
+        materialName: products.name,
+      })
+      .from(productionRecipeLines)
+      .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(
+        and(
+          inArray(productionRecipeLines.recipeId, recipeIds),
+          eq(productionRecipeLines.allowVariantChoice, true),
+          eq(products.isActive, true),
+          eq(products.isService, false),
+          eq(products.isBundle, false),
+          eq(products.isConsignment, false),
+        ),
+      )
+      .orderBy(asc(productionRecipeLines.recipeId), asc(productionRecipeLines.id));
+
+    if (!customizableRows.length) return { lines: [], byRecipeLineId: {} };
+
+    const inputProductIds = Array.from(
+      new Set(customizableRows.map((row) => Number(row.inputProductId))),
+    );
+    const siblingVariants = await tx
+      .select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        variantName: productVariants.variantName,
+        color: productVariants.color,
+        colorHex: productVariants.colorHex,
+        size: productVariants.size,
+        variantKind: productVariants.variantKind,
+        sku: productVariants.sku,
+      })
+      .from(productVariants)
+      .where(
+        and(
+          inArray(productVariants.productId, inputProductIds),
+          eq(productVariants.isActive, true),
+        ),
+      )
+      .orderBy(asc(productVariants.id));
+
+    const allOptionVariantIds = siblingVariants.map((v) => Number(v.id));
+    const availability =
+      args.branchId != null && args.branchId > 0 && allOptionVariantIds.length > 0
+        ? await loadVariantAvailability(tx, args.branchId, allOptionVariantIds)
+        : new Map();
+
+    const optionsByProductId = new Map<number, CustomizableLineVariantOption[]>();
+    for (const v of siblingVariants) {
+      const pid = Number(v.productId);
+      const vid = Number(v.id);
+      const label =
+        variantDescriptor({
+          variantName: v.variantName,
+          color: v.color,
+          size: v.size,
+          variantKind: v.variantKind,
+          sku: v.sku,
+        }) ||
+        v.variantName ||
+        v.color ||
+        v.sku ||
+        `#${vid}`;
+      const list = optionsByProductId.get(pid) ?? [];
+      list.push({
+        variantId: vid,
+        label,
+        color: v.color ?? null,
+        colorHex: v.colorHex ?? null,
+        availableBase: availability.get(vid)?.availableBase ?? 0,
+      });
+      optionsByProductId.set(pid, list);
+    }
+
+    const lines: CustomizableRecipeLineOption[] = [];
+    const byRecipeLineId: Record<string, CustomizableRecipeLineOption> = {};
+    for (const row of customizableRows) {
+      const recipeMeta = recipeMetaById.get(Number(row.recipeId));
+      if (!recipeMeta) continue;
+      const item: CustomizableRecipeLineOption = {
+        recipeId: Number(row.recipeId),
+        outputVariantId: recipeMeta.outputVariantId,
+        outputProductId: recipeMeta.outputProductId,
+        recipeLineId: Number(row.recipeLineId),
+        inputProductId: Number(row.inputProductId),
+        defaultInputVariantId: Number(row.defaultInputVariantId),
+        materialName: row.materialName,
+        qtyPerOutputBase: String(row.qtyPerOutputBase),
+        options: optionsByProductId.get(Number(row.inputProductId)) ?? [],
+      };
+      lines.push(item);
+      byRecipeLineId[String(item.recipeLineId)] = item;
+    }
+
+    return { lines, byRecipeLineId };
+  });
+}

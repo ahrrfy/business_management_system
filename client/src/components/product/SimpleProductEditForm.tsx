@@ -180,48 +180,66 @@ export default function SimpleProductEditForm({
 
   // ── تعبئة من الـAPI مرّة واحدة ──
   useEffect(() => {
-    if (!product.data || hydrated) return;
-    const d = product.data;
-    const v = d.variants[0];
-    setName(d.name);
-    setProductType(d.productType ?? "");
-    setBrand(d.brand ?? "");
-    setModelName(d.modelName ?? "");
-    setDescription(d.description ?? "");
-    setCategoryId(d.categoryId ?? "");
-    setIsCustomizable(d.isCustomizable);
-    setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
-    setIsActive(d.isActive);
-    setStockUsage(((d as { stockUsage?: StockUsage | null }).stockUsage ?? "SALE_ONLY"));
-    setShowInStore(Boolean((d as { showInStore?: boolean }).showInStore));
-    setAllowBackorder(d.allowBackorder);
-    if (v) {
-      variantId.current = v.id;
-      setSku(v.sku);
-      setCostPrice(v.costPrice);
-      setMinStock(String(v.minStock ?? 0));
-      setReorderPoint(String(v.reorderPoint ?? 0));
+    if (!product.data) return;
+    if (!hydrated) {
+      const d = product.data;
+      const v = d.variants[0];
+      setName(d.name);
+      setProductType(d.productType ?? "");
+      setBrand(d.brand ?? "");
+      setModelName(d.modelName ?? "");
+      setDescription(d.description ?? "");
+      setCategoryId(d.categoryId ?? "");
+      setIsCustomizable(d.isCustomizable);
+      setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
+      setIsActive(d.isActive);
+      setStockUsage(((d as { stockUsage?: StockUsage | null }).stockUsage ?? "SALE_ONLY"));
+      setShowInStore(Boolean((d as { showInStore?: boolean }).showInStore));
+      setAllowBackorder(d.allowBackorder);
+      if (v) {
+        variantId.current = v.id;
+        setSku(v.sku);
+        setCostPrice(v.costPrice);
+        setMinStock(String(v.minStock ?? 0));
+        setReorderPoint(String(v.reorderPoint ?? 0));
+      }
+      const tmpl: EditUnit[] = d.unitTemplate.map((u, i) => ({
+        id: i + 1,
+        name: u.unitName,
+        factor: u.conversionFactor,
+        isBase: u.isBaseUnit,
+        sellInStore: u.isStoreSaleUnit,
+        barcode: v?.unitBarcodes[u.unitName] ?? "",
+        retail: u.retail,
+        wholesale: u.wholesale,
+        government: u.government,
+      }));
+      originalBarcodeCodes.current = new Map(
+        tmpl.map((unit) => [String(unit.id), unit.barcode || null] as const),
+      );
+      unitSeq.current = tmpl.length + 1;
+      setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
+      setImages(hydrateProductImages(d.images));
+      setConsignment({ isConsignment: !!d.isConsignment, consignorId: d.consignorId ? Number(d.consignorId) : null, consignorName: d.consignorName });
+      setHydrated(true);
+      return;
     }
-    const tmpl: EditUnit[] = d.unitTemplate.map((u, i) => ({
-      id: i + 1,
-      name: u.unitName,
-      factor: u.conversionFactor,
-      isBase: u.isBaseUnit,
-      sellInStore: u.isStoreSaleUnit,
-      barcode: v?.unitBarcodes[u.unitName] ?? "",
-      retail: u.retail,
-      wholesale: u.wholesale,
-      government: u.government,
-    }));
-    originalBarcodeCodes.current = new Map(
-      tmpl.map((unit) => [String(unit.id), unit.barcode || null] as const),
-    );
-    unitSeq.current = tmpl.length + 1;
-    setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
-    setImages(hydrateProductImages(d.images));
-    setConsignment({ isConsignment: !!d.isConsignment, consignorId: d.consignorId ? Number(d.consignorId) : null, consignorName: d.consignorName });
-    setHydrated(true);
-  }, [product.data, hydrated]);
+    const nextImages = hydrateProductImages(product.data.images);
+    const nextSig = nextImages.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
+    const curSig = images.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|");
+    if (nextSig !== curSig) {
+      setImages(nextImages);
+      if (baseline.current) {
+        try {
+          const parsed = JSON.parse(baseline.current) as Record<string, unknown>;
+          parsed.imagesSig = nextSig;
+          baseline.current = JSON.stringify(parsed);
+        } catch {
+          baseline.current = null;
+        }
+      }
+    }
+  }, [product.data, hydrated, images]);
 
   const composedName = useMemo(
     () => [productType, brand, modelName].map((s) => s.trim()).filter(Boolean).join(" "),
@@ -852,6 +870,7 @@ export default function SimpleProductEditForm({
       </Card>
 
       <ProductMediaContentSection
+        productId={productId}
         description={description}
         onDescriptionChange={setDescription}
         images={images}

@@ -618,4 +618,82 @@ describe("بيع الطباعة: فصل درج الطباعة عن التجزئ�
     expect(retailReport?.salesTotal).toBe("0.00");
     expect(retailReport?.payments.length).toBe(0);
   });
+
+  it("يدعم اختيار متغيّر المادة في بيع الطباعة ويخصم المتغيّر المختار ويعكسه عند correctSale", async () => {
+    await db().insert(s.productVariants).values([
+      { id: 101, productId: 1, sku: "MAT-A4-CRM", variantName: "كريمي", color: "كريمي", colorHex: "#fef3c7", costPrice: "50.00" },
+      { id: 102, productId: 1, sku: "MAT-A4-GLD", variantName: "ذهبي", color: "ذهبي", colorHex: "#f59e0b", costPrice: "60.00" },
+      { id: 20, productId: 10, sku: "SVC-BIND", variantName: "تجليد مخصص", costPrice: "0.00" },
+    ]);
+    await db().insert(s.productUnits).values({ id: 20, variantId: 20, unitName: "دفتر", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 20, priceTier: "RETAIL", price: "500.00" });
+    await db().insert(s.branchStock).values([
+      { variantId: 101, branchId: 1, quantity: 60 },
+      { variantId: 102, branchId: 1, quantity: 60 },
+    ]);
+    const [recHead] = await db().insert(s.productionRecipes).values({
+      name: "وصفة تجليد باختيار لون الورق",
+      outputVariantId: 20,
+      outputProductUnitId: 20,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    }).$returningId();
+    const [recLine] = await db().insert(s.productionRecipeLines).values({
+      recipeId: recHead.id,
+      inputVariantId: 1,
+      qtyPerOutputBase: "2.0000",
+      allowVariantChoice: true,
+    }).$returningId();
+
+    await expect(createPrintSale({
+      branchId: 1,
+      shiftId: 1,
+      lines: [{ variantId: 20, productUnitId: 20, quantity: "3", unitPriceOverride: "500" }],
+      payment: { amount: "1500", method: "CASH" },
+    }, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const created = await createPrintSale({
+      branchId: 1,
+      shiftId: 1,
+      lines: [{
+        variantId: 20,
+        productUnitId: 20,
+        quantity: "3",
+        unitPriceOverride: "500",
+        recipeSelections: [{ recipeLineId: recLine.id, variantId: 101 }],
+      }],
+      payment: { amount: "1500", method: "CASH" },
+    }, actor);
+
+    expect(await stock(101)).toBe(54);
+    expect(await stock(1)).toBe(100);
+    const mats1 = await db().select().from(s.invoiceItemServiceMaterials);
+    expect(mats1).toHaveLength(1);
+    expect(Number(mats1[0]!.materialVariantId)).toBe(101);
+    expect(mats1[0]!.unitCost).toBe("50.00");
+    expect(mats1[0]!.lineCost).toBe("300.00");
+
+    const corrected = await correctSale({
+      originalInvoiceId: created.invoiceId,
+      lines: [{
+        variantId: 20,
+        productUnitId: 20,
+        quantity: "3",
+        unitPriceOverride: "500",
+        recipeSelections: [{ recipeLineId: recLine.id, variantId: 102 }],
+      }],
+      overpayHandling: "CASH_REFUND",
+      overpayRefundShiftId: 1,
+    }, { userId: 1, branchId: 1, role: "admin" });
+
+    expect(await stock(101)).toBe(60);
+    expect(await stock(102)).toBe(54);
+    const inv2Items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, corrected.correctedInvoiceId));
+    const mats2 = await db().select().from(s.invoiceItemServiceMaterials).where(eq(s.invoiceItemServiceMaterials.invoiceItemId, inv2Items[0]!.id));
+    expect(mats2).toHaveLength(1);
+    expect(Number(mats2[0]!.materialVariantId)).toBe(102);
+    expect(mats2[0]!.unitCost).toBe("60.00");
+    expect(mats2[0]!.lineCost).toBe("360.00");
+  });
 });

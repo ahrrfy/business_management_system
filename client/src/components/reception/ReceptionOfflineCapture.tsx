@@ -9,6 +9,7 @@ import {
 } from "@/lib/offline/outbox";
 import Decimal from "decimal.js";
 import { D, fmt, round2 } from "@/lib/money";
+import { stripRecipeSelectionMeta } from "@shared/recipeVariantSelection";
 import { notify } from "@/lib/notify";
 import { fmtDate, fmtTime } from "@/lib/date";
 import {
@@ -190,12 +191,15 @@ export async function ReceptionOfflineCapture(
             // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
             lines: regularLines.map((c) => {
               const promoInfo = officialReceptionPromoInfo(c);
+              const strippedLineSelections = stripRecipeSelectionMeta(c.recipeSelections);
+              const selectionsPatch = strippedLineSelections?.length ? { recipeSelections: strippedLineSelections } : {};
               if (!promoInfo) {
                 return {
                   variantId: c.row.variantId,
                   productUnitId: c.row.productUnitId,
                   quantity: String(c.qty),
                   unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+                  ...selectionsPatch,
                 };
               }
               const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
@@ -213,6 +217,7 @@ export async function ReceptionOfflineCapture(
                 promotionId: promoInfo.promotionId,
                 ...(promoDiscount.gt(0) ? { promotionDiscount: promoDiscount.toFixed(2) } : {}),
                 ...(cashierDiscount.gt(0) ? { cashierDiscountAmount: cashierDiscount.toFixed(2) } : {}),
+                ...selectionsPatch,
               };
             }),
             // ٢٣/٨ — الصافي = الأسطر الخام − خصمُ رأس الفاتورة الملتقَط. الخادم يعيد الحساب بنفس المدخلات
@@ -230,12 +235,16 @@ export async function ReceptionOfflineCapture(
     printSale:
       printLines.length > 0
         ? {
-            lines: printLines.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-            })),
+            lines: printLines.map((c) => {
+              const strippedPrintSelections = stripRecipeSelectionMeta(c.recipeSelections);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+                ...(strippedPrintSelections?.length ? { recipeSelections: strippedPrintSelections } : {}),
+              };
+            }),
             amount: round2(
               printLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0)),
             ).toFixed(2),

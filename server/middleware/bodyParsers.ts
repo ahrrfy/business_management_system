@@ -36,6 +36,13 @@ export function applyBodyParsers(app: Express): void {
     if (req.path.includes("storeAdmin.catalog")) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
+    // البطاقات الرقمية: شعارات المزوّدين وصور العروض المضغوطة (data-URL حتى ~٩٣٣ك) ⇒ ٣mb.
+    if (
+      req.path.includes("digitalCards.providers.") ||
+      req.path.includes("digitalCards.offerings.")
+    ) {
+      return express.json({ limit: "3mb" })(req, res, next);
+    }
     // مستندات الأصل: addDocument يرفع صورة مستند data-URL مضغوطة (نفس نمط البنرات) ⇒ ٣mb.
     if (req.path.includes("assets.addDocument")) {
       return express.json({ limit: "3mb" })(req, res, next);

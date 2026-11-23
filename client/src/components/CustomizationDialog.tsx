@@ -10,7 +10,16 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, formatQuantity } from "@/lib/money";
+import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import {
+  formatRecipeSelectionSummary,
+  type RecipeLineSelectionWithMeta,
+} from "@shared/recipeVariantSelection";
+import {
+  areAllCustomizableLinesSelected,
+  RecipeVariantSelectorList,
+} from "@/components/recipe/RecipeVariantSelectorList";
 
 /**
  * نافذة التخصيص — تجمع مواصفات أمر الشغل لصنف مخصّص في سلّة الاستقبال.
@@ -44,6 +53,7 @@ export type CustomizationData = {
   designImages: ImageItem[];
   paymentReceiptImages: ImageItem[];
   deposit: string;
+  recipeSelections?: RecipeLineSelectionWithMeta[];
 };
 
 /**
@@ -110,6 +120,8 @@ export function emptyCustomization(productName: string): CustomizationData {
 /** تركيب نصّ التخصيص النهائي مع رؤوس مهيكلة (مقاس/خامة/توصيل) + ملاحظة العميل. */
 export function composeCustomizationText(d: CustomizationData): string {
   const lines: string[] = [];
+  const selectionSummary = formatRecipeSelectionSummary(d.recipeSelections);
+  if (selectionSummary) lines.push(`[الألوان/المواد] ${selectionSummary}`);
   if (d.size.trim()) lines.push(`[المقاس] ${d.size.trim()}`);
   if (d.material.trim()) lines.push(`[الخامة] ${d.material.trim()}`);
   if (d.hasDelivery) {
@@ -136,19 +148,36 @@ interface Props {
   productName: string;
   price: string;
   quantity?: number;
+  productId?: number;
+  variantId?: number;
+  branchId?: number;
+  conversionFactor?: number;
   initial?: CustomizationData;
   staff?: Array<{ id: number; name: string | null; role?: string | null }>;
   canEditInternalCost?: boolean;
   /** إضافة الصنف بلا تخصيص (بسعره العادي، كصنفٍ جاهز) — غير مُمرَّرة عند تعديل تخصيصٍ موجود. */
-  onAddPlain?: () => void;
+  onAddPlain?: (recipeSelections?: RecipeLineSelectionWithMeta[]) => void;
   onCancel: () => void;
   onSave: (data: CustomizationData) => void;
 }
 
-export function CustomizationDialog({ open, productName, price, quantity = 1, initial, staff = [], canEditInternalCost = false, onAddPlain, onCancel, onSave }: Props) {
+export function CustomizationDialog({ open, productName, price, quantity = 1, productId, variantId, branchId, conversionFactor = 1, initial, staff = [], canEditInternalCost = false, onAddPlain, onCancel, onSave }: Props) {
   const [data, setData] = useState<CustomizationData>(() => initial ?? emptyCustomization(productName));
   // لقطة القيمة الأساس عند الفتح — لكشف «تغييرات غير محفوظة» قبل الإغلاق بالخطأ.
   const baselineRef = useRef<string>("");
+
+  const customizableQ = trpc.production.recipes.customizableLineOptions.useQuery(
+    {
+      productId: productId != null && productId > 0 ? productId : undefined,
+      variantId: variantId != null && variantId > 0 ? variantId : undefined,
+      branchId: branchId != null && branchId > 0 ? branchId : undefined,
+    },
+    {
+      enabled: open && ((variantId != null && variantId > 0) || (productId != null && productId > 0)),
+      staleTime: 30_000,
+    },
+  );
+  const customizableLines = customizableQ.data?.lines ?? [];
 
   useEffect(() => {
     if (open) {
@@ -230,6 +259,10 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
   function handleSave() {
     setSaveError(null);
+    if (customizableLines.length > 0 && !areAllCustomizableLinesSelected(customizableLines, data.recipeSelections)) {
+      setSaveError("اختر اللون/المتغير المطلوب لكل مادة قبل الحفظ");
+      return;
+    }
     // ⛔ العنوانُ لم يعد حاجزاً (بلاغ المالك ١/٩/٢٦): يُشتقّ من سياق الطلب بدل أن يُطلَب.
     if (unitTotal.lte(0)) {
       setSaveError("السعر الإجمالي للوحدة (سعر المنتج + سعر التخصيص) يجب أن يكون أكبر من صفر");
@@ -291,6 +324,18 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               </p>
             </div>
           </div>
+
+          {/* اختيار ألوان/متغيرات المواد عند الطلب (ظاهر فوق الطيّ دائماً) */}
+          {customizableLines.length > 0 && (
+            <RecipeVariantSelectorList
+              lines={customizableLines}
+              selections={data.recipeSelections}
+              onChange={(next) => upd("recipeSelections", next)}
+              quantity={quantity}
+              conversionFactor={conversionFactor}
+              allowShortageIntake
+            />
+          )}
 
           {/* نصّ التخصيص */}
           <div className="space-y-1.5">
@@ -573,7 +618,13 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             <Button
               type="button"
               variant="outline"
-              onClick={onAddPlain}
+              onClick={() => {
+                if (customizableLines.length > 0 && !areAllCustomizableLinesSelected(customizableLines, data.recipeSelections)) {
+                  setSaveError("اختر اللون/المتغير المطلوب لكل مادة قبل الإضافة");
+                  return;
+                }
+                onAddPlain(data.recipeSelections?.length ? data.recipeSelections : undefined);
+              }}
               size="sm"
               className="inline-flex items-center gap-1"
               title={`إضافة القطعة كصنفٍ جاهز بسعرها العادي (${fmt(price || "0")} د.ع) بلا تخصيص`}

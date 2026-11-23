@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { resolveStudioImageSrc } from "@/lib/productImages";
 import { ArrowDown, Camera, CheckCircle2, Eye, Image as ImageIcon, Info, Loader2, ScanLine, Sparkles, ZoomIn } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { StudioProductVariantMatrixCard } from "./StudioProductVariantMatrixCard";
@@ -220,22 +221,31 @@ export function StudioCaptureStation({
               {previousImages.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2.5 pt-1">
                   {previousImages.map((img, idx) => {
-                    const src = img.thumbDataUrl || `/api/img/product/${img.id}?v=${img.contentHash?.slice(0, 16) || "thumb"}`;
+                    const src = resolveStudioImageSrc(img);
+                    const fullSrc = resolveStudioImageSrc(img, true) || src;
                     return (
                       <button
                         key={img.id}
                         type="button"
-                        onClick={() => setPreviewModalImg({ id: img.id, url: src, isPrimary: img.isPrimary })}
+                        onClick={() => {
+                          if (fullSrc) setPreviewModalImg({ id: img.id, url: fullSrc, isPrimary: img.isPrimary });
+                        }}
                         className="group relative size-16 shrink-0 overflow-hidden rounded-md border border-border bg-white shadow-xs transition hover:border-primary hover:ring-2 hover:ring-primary/20 focus-visible:outline-none"
                         title={`معاينة الصورة ${idx + 1}`}
                         aria-label={`معاينة الصورة المعتمدة ${idx + 1}`}
                       >
-                        <img
-                          src={src}
-                          alt={`صورة معتمدة ${idx + 1}`}
-                          className="size-full object-contain p-0.5"
-                          loading="lazy"
-                        />
+                        {src ? (
+                          <img
+                            src={src}
+                            alt={`صورة معتمدة ${idx + 1}`}
+                            className="size-full object-contain p-0.5"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <span className="flex size-full items-center justify-center text-muted-foreground">
+                            <ImageIcon aria-hidden className="size-4" />
+                          </span>
+                        )}
                         {img.isPrimary && (
                           <span className="absolute bottom-0 inset-x-0 bg-primary/90 text-[9px] font-medium text-primary-foreground text-center leading-tight py-0.5">
                             رئيسية

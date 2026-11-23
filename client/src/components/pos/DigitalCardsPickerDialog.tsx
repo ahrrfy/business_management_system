@@ -13,6 +13,7 @@ import { CreditCard, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { StudentDetailsDialog, type StudentSnapshot } from "./StudentDetailsDialog";
 import type { DigitalBasketCapture as CapturedDigitalBasket } from "./digitalBasket";
+import { DigitalCardThumbnail } from "@/components/digitalCards/DigitalCardImage";
 
 export type PosCard = RouterOutputs["digitalCards"]["pos"]["listCards"][number];
 export type ConfirmedCard = RouterOutputs["digitalCards"]["pos"]["confirmCard"];
@@ -133,8 +134,16 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
         <UnifiedSearchInput barcode={false} debounceMs={0} aria-label="بحث في الكروت" placeholder="ابحث باسم الكرت أو الاشتراك…" value={search} onChange={setSearch} className="w-full" />
         {list.isLoading && <p>{ACTION_LABELS.loading}</p>}
         {list.isError && <div role="alert">تعذّر تحميل البطاقات. تحقّق من الاتصال والصلاحية. <button style={button} onClick={() => void list.refetch()}>إعادة المحاولة</button></div>}
-        {!list.isLoading && !list.isError && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8, maxHeight: 260, overflowY: "auto" }}>
+        {!list.isLoading && !list.isError && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8, maxHeight: 320, overflowY: "auto" }}>
           {cards.map((card) => <div key={card.offeringId} style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: 12, display: "grid", gap: 6, background: C.card }}>
+            <DigitalCardThumbnail
+              src={card.imageUrl}
+              alt={card.name}
+              fallback="card"
+              iconSize={28}
+              style={{ height: 88, borderRadius: 6, border: `1px solid ${C.border}`, background: C.muted }}
+              iconStyle={{ color: C.mutedFg }}
+            />
             <strong>{card.name}</strong><small>{digitalOfferingDescription(card)}</small>
             <span>{card.sellPrice == null ? "لا سعر منشور" : `${fmtAr(card.sellPrice)} د.ع`}</span>
             <button style={primary} disabled={picking || quantity + existingCardCount >= 50 || card.availability !== "READY"} onClick={() => add(card)}>{card.availability === "READY" ? "إضافة" : card.availability === "NO_PRICE" ? "لا سعر منشور" : "السعر يحتاج تحديثاً"}</button>

@@ -57,6 +57,8 @@ export interface CartTableProps {
   addTick: number;
   effectiveTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   onUnitChange?: (lineKey: string, newRow: PosRow) => void;
+  onChangeRecipeSelections?: (line: CartLine) => void;
+  customizableVariantIds?: ReadonlySet<number>;
 }
 
 function UnitSelector({
@@ -124,6 +126,8 @@ export function CartTable({
   addTick,
   effectiveTier = "RETAIL",
   onUnitChange,
+  onChangeRecipeSelections,
+  customizableVariantIds,
 }: CartTableProps) {
   // ٢٣/٨ — تمريرٌ تلقائيّ للسطر المُدرَج/المزاد كمّياً (بلاغ المالك «لا يظهر آخر منتجٍ مضاف»):
   // كاشير الاستقبال يضبط `selKey` على السطر الفعّال في `addRow`/المسح؛ يكفي أن يتّبع الجدولُ
@@ -267,9 +271,55 @@ export function CartTable({
                           ))}
                         </div>
                       )}
+                      {!isCustom && (l.recipeSelections?.length || (customizableVariantIds?.has(l.row.variantId) && onChangeRecipeSelections)) && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          {(l.recipeSelections ?? []).map((sel) => (
+                            <span
+                              key={`${sel.recipeLineId}-${sel.variantId}`}
+                              className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold"
+                            >
+                              {sel.colorHex ? (
+                                <span
+                                  aria-hidden
+                                  className="size-2.5 rounded-full border border-black/20 shrink-0"
+                                  style={{ backgroundColor: sel.colorHex }}
+                                />
+                              ) : null}
+                              <span>{sel.materialName ? `${sel.materialName}: ` : ""}{sel.label || sel.color || `#${sel.variantId}`}</span>
+                            </span>
+                          ))}
+                          {onChangeRecipeSelections && customizableVariantIds?.has(l.row.variantId) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onChangeRecipeSelections(l);
+                              }}
+                              className="inline-flex items-center rounded-md border border-dashed border-primary/50 px-2 py-0.5 text-[11px] font-semibold text-primary hover:bg-primary/5"
+                            >
+                              تغيير اللون
+                            </button>
+                          )}
+                        </div>
+                      )}
                       {isCustom && (
                         <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
                           <div className="flex flex-wrap gap-1.5">
+                            {(l.custom!.recipeSelections ?? []).map((sel) => (
+                              <span
+                                key={`${sel.recipeLineId}-${sel.variantId}`}
+                                className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold"
+                              >
+                                {sel.colorHex ? (
+                                  <span
+                                    aria-hidden
+                                    className="size-2.5 rounded-full border border-black/20 shrink-0"
+                                    style={{ backgroundColor: sel.colorHex }}
+                                  />
+                                ) : null}
+                                <span>{sel.materialName ? `${sel.materialName}: ` : ""}{sel.label || sel.color || `#${sel.variantId}`}</span>
+                              </span>
+                            ))}
                             {l.custom!.size && (
                               <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
                                 <Ruler aria-hidden className="size-3" /> {l.custom!.size}

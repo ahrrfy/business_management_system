@@ -3,8 +3,9 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import Decimal from "decimal.js";
-import { branchStock, categories, productImages, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
+import { branchStock, categories, productImageJobs, productImages, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { inventoryProductImageUrl } from "../../imageRoute";
 import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
@@ -98,6 +99,12 @@ export interface AdminProductRow {
   imageCount: number;
   /** عدد الصور المعتمَدة الخاصّة بهذا المتغيّر (`variantId = r.variantId`)، أو الصور العامّة إن كان الصفّ بلا متغيّر. */
   variantImageCount: number;
+  /** عدد الصور/المهام المعلّقة بانتظار المراجعة لهذا الصفّ (أو للمنتج الأب). */
+  pendingReviewCount: number;
+  /** هل توجد صورة قيد المراجعة لهذا الصفّ/المنتج؟ */
+  hasPendingReview: boolean;
+  /** عدد الصور المعتمدة على متغيّرات شقيقة أخرى لنفس المنتج عندما لا يملك هذا الصف صورة. */
+  siblingVariantImageCount: number;
   /** مصغّرة الصورة المعتمَدة الأفضل لهذا الصفّ (تُفضَّل صورة المتغيّر ثمّ صورة المنتج العامّة؛ لا تُسرَّب صورة متغيّر شقيق). */
   primaryImageThumb: string | null;
 }
@@ -308,34 +315,70 @@ export async function listProductsAdmin(
   const pageProductIds = Array.from(
     new Set(rows.map((r) => Number(r.productId))),
   );
-  const pageImageRows = pageProductIds.length
-    ? await db
-        .select({
-          id: productImages.id,
-          productId: productImages.productId,
-          variantId: productImages.variantId,
-          thumbDataUrl: productImages.thumbDataUrl,
-          objectKey: productImages.objectKey,
-          contentHash: productImages.contentHash,
-          origin: productImages.origin,
-          isPrimary: productImages.isPrimary,
-          sortOrder: productImages.sortOrder,
-        })
-        .from(productImages)
-        .where(
-          and(
-            inArray(productImages.productId, pageProductIds),
-            eq(productImages.reviewStatus, "APPROVED"),
+  const [pageImageRows, pendingJobRows, pendingImgRows] = pageProductIds.length
+    ? await Promise.all([
+        db
+          .select({
+            id: productImages.id,
+            productId: productImages.productId,
+            variantId: productImages.variantId,
+            thumbDataUrl: productImages.thumbDataUrl,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            origin: productImages.origin,
+            isPrimary: productImages.isPrimary,
+            sortOrder: productImages.sortOrder,
+            legacyUrl: sql<string | null>`CASE WHEN ${productImages.thumbDataUrl} IS NULL AND ${productImages.contentHash} IS NULL AND ${productImages.objectKey} IS NULL THEN ${productImages.url} ELSE NULL END`,
+          })
+          .from(productImages)
+          .where(
+            and(
+              inArray(productImages.productId, pageProductIds),
+              eq(productImages.reviewStatus, "APPROVED"),
+            ),
+          )
+          .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id)),
+        db
+          .select({
+            productId: productImageJobs.productId,
+            variantId: productImageJobs.variantId,
+          })
+          .from(productImageJobs)
+          .where(
+            and(
+              inArray(productImageJobs.productId, pageProductIds),
+              eq(productImageJobs.status, "PENDING_REVIEW"),
+            ),
           ),
-        )
-        .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id))
-    : [];
+        db
+          .select({
+            productId: productImages.productId,
+            variantId: productImages.variantId,
+          })
+          .from(productImages)
+          .where(
+            and(
+              inArray(productImages.productId, pageProductIds),
+              eq(productImages.reviewStatus, "PENDING_REVIEW"),
+            ),
+          ),
+      ])
+    : [[], [], []];
   const imagesByProduct = new Map<number, typeof pageImageRows>();
   for (const img of pageImageRows) {
     const pid = Number(img.productId);
     const list = imagesByProduct.get(pid);
     if (list) list.push(img);
     else imagesByProduct.set(pid, [img]);
+  }
+  const pendingByProduct = new Map<number, Array<number | null>>();
+  for (const pending of [...pendingJobRows, ...pendingImgRows]) {
+    if (pending.productId == null) continue;
+    const pid = Number(pending.productId);
+    const pvid = pending.variantId == null ? null : Number(pending.variantId);
+    const list = pendingByProduct.get(pid);
+    if (list) list.push(pvid);
+    else pendingByProduct.set(pid, [pvid]);
   }
 
   // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
@@ -362,21 +405,34 @@ export async function listProductsAdmin(
       const parentImgs = prodImgs.filter((img) => img.variantId == null);
       const varImgs = vid != null ? prodImgs.filter((img) => Number(img.variantId) === vid) : [];
       const bestImg = (vid != null ? (varImgs[0] ?? parentImgs[0]) : prodImgs[0]) ?? null;
-      const versionSuffix =
-        bestImg?.contentHash && /^[0-9a-f]{64}$/i.test(bestImg.contentHash)
-          ? `?v=${bestImg.contentHash.toLowerCase().slice(0, 16)}`
-          : "";
       const usableThumb =
         bestImg && !(bestImg.origin === "ORIGINAL" && bestImg.objectKey != null)
           ? bestImg.thumbDataUrl
           : null;
+      const versionedInventoryUrl = bestImg
+        ? inventoryProductImageUrl(Number(bestImg.id), {
+            url: bestImg.legacyUrl ?? "",
+            objectKey: bestImg.objectKey,
+            contentHash: bestImg.contentHash,
+          })
+        : null;
       const primaryImageThumb = bestImg
-        ? (usableThumb || `/api/img/inventory-product/${bestImg.id}${versionSuffix}`)
+        ? (usableThumb || versionedInventoryUrl || bestImg.thumbDataUrl || null)
         : null;
       const imageCount = prodImgs.length;
       const variantImageCount = vid != null ? varImgs.length : prodImgs.length;
       const hasVariantImage = vid != null ? (varImgs.length > 0 || parentImgs.length > 0) : prodImgs.length > 0;
       const hasImage = prodImgs.length > 0;
+      const prodPending = pendingByProduct.get(pid) ?? [];
+      const pendingReviewCount =
+        vid != null
+          ? prodPending.filter((pvid) => pvid === vid || pvid === null).length
+          : prodPending.length;
+      const hasPendingReview = pendingReviewCount > 0;
+      const siblingVariantImageCount =
+        vid != null
+          ? prodImgs.filter((img) => img.variantId != null && Number(img.variantId) !== vid).length
+          : 0;
 
       return {
         branchId: input.branchId,
@@ -452,6 +508,9 @@ export async function listProductsAdmin(
         hasVariantImage,
         imageCount,
         variantImageCount,
+        pendingReviewCount,
+        hasPendingReview,
+        siblingVariantImageCount,
         primaryImageThumb,
       };
     }),

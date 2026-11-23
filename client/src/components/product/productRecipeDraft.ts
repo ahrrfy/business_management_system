@@ -47,6 +47,7 @@ export function recipeDraftSignature(fields: RecipeDraftFields): string {
       line.inputProductUnitId ?? null,
       normalizedDecimal(line.qtyPerOutputBase),
       line.notes?.trim() || null,
+      Boolean(line.allowVariantChoice),
     ]),
   });
 }
@@ -113,6 +114,7 @@ export function buildRecipeChange(
       inputProductUnitId: line.inputProductUnitId ?? null,
       qtyPerOutputBase: line.qtyPerOutputBase.trim(),
       notes: line.notes?.trim() || null,
+      allowVariantChoice: Boolean(line.allowVariantChoice),
     })),
   };
 }

@@ -560,7 +560,7 @@ function VariantRow({
                 <p className="text-[11px] font-semibold text-muted-foreground mb-2">صورة هذا اللون</p>
                 {v.image ? (
                   <div className="flex flex-wrap items-center gap-3">
-                    <img src={v.image} alt={`صورة ${v.color || v.sku}`} className="size-20 rounded-md border object-cover" />
+                    <img src={v.imageDisplayUrl || v.image} alt={`صورة ${v.color || v.sku}`} className="size-20 rounded-md border object-cover" />
                     <button
                       type="button"
                       className="min-h-9 rounded-md border px-3 text-xs text-destructive hover:bg-destructive/10"

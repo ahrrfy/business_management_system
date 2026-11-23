@@ -17,6 +17,19 @@ import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barco
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
+import { inventoryProductImageUrl } from "../imageRoute";
+import {
+  clearRecentCacheInvalidations,
+  getRecentCacheInvalidations,
+  invalidateProductStudioCaches,
+  type CacheInvalidationRecord,
+} from "./productStudioCache";
+export {
+  clearRecentCacheInvalidations,
+  getRecentCacheInvalidations,
+  invalidateProductStudioCaches,
+  type CacheInvalidationRecord,
+};
 import { hashPassword } from "../auth/password";
 import { logger } from "../logger";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
@@ -3703,7 +3716,10 @@ export async function listStudioTasks(
         .select({
           id: productImages.id,
           productId: productImages.productId,
+          variantId: productImages.variantId,
           url: productImages.url,
+          objectKey: productImages.objectKey,
+          contentHash: productImages.contentHash,
           thumbDataUrl: productImages.thumbDataUrl,
           isPrimary: productImages.isPrimary,
         })
@@ -3738,7 +3754,14 @@ export async function listStudioTasks(
       }
       entry.count += 1;
       if (entry.thumbs.length < 3) {
-        const src = img.thumbDataUrl || img.url;
+        const src =
+          img.thumbDataUrl ||
+          inventoryProductImageUrl(Number(img.id), {
+            url: img.url,
+            objectKey: img.objectKey,
+            contentHash: img.contentHash,
+          }) ||
+          (!/^\/api\/img\/product\//i.test(img.url) ? img.url : null);
         if (src) {
           entry.thumbs.push({
             id: Number(img.id),
@@ -3805,10 +3828,10 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
     await requireDb()
       .select({ id: products.id })
       .from(products)
-      .where(and(eq(products.id, productId), eq(products.isActive, true)))
+      .where(eq(products.id, productId))
       .limit(1)
   )[0];
-  if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر عرض صور المنتج", why: "لا منتج نشطٌ بهذا الرقم — حُذف أو عُطِّل بعد فتحك الشاشة", doThis: "حدّث الشاشة واختر منتجاً نشطاً من القائمة" }) });
+  if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر عرض صور المنتج", why: "لا منتج بهذا الرقم — حُذف بعد فتحك الشاشة", doThis: "حدّث الشاشة واختر منتجاً صحيحاً من القائمة" }) });
   const rows = await requireDb()
     .select({
       id: productImages.id,
@@ -3819,6 +3842,7 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
       objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
       mime: productImages.mime,
       width: productImages.width,
       height: productImages.height,
@@ -3831,23 +3855,36 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
     .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
-  return rows.map((r) => ({
-    id: Number(r.id),
-    productId: Number(r.productId),
-    variantId: r.variantId == null ? null : Number(r.variantId),
-    variantName: r.variantName,
-    url: r.url,
-    isPrimary: Boolean(r.isPrimary),
-    sortOrder: Number(r.sortOrder ?? 0),
-    objectKey: r.objectKey,
-    mime: r.mime,
-    width: r.width,
-    height: r.height,
-    bytes: r.bytes,
-    thumbDataUrl: r.thumbDataUrl,
-    origin: r.origin,
-    createdAt: r.createdAt,
-  }));
+  return rows.map((r) => {
+    const id = Number(r.id);
+    const displayUrl =
+      inventoryProductImageUrl(id, {
+        url: r.url,
+        objectKey: r.objectKey,
+        contentHash: r.contentHash,
+      }) ??
+      r.thumbDataUrl ??
+      r.url;
+    return {
+      id,
+      productId: Number(r.productId),
+      variantId: r.variantId == null ? null : Number(r.variantId),
+      variantName: r.variantName,
+      url: r.url,
+      displayUrl,
+      contentHash: r.contentHash,
+      isPrimary: Boolean(r.isPrimary),
+      sortOrder: Number(r.sortOrder ?? 0),
+      objectKey: r.objectKey,
+      mime: r.mime,
+      width: r.width,
+      height: r.height,
+      bytes: r.bytes,
+      thumbDataUrl: r.thumbDataUrl,
+      origin: r.origin,
+      createdAt: r.createdAt,
+    };
+  });
 }
 
 async function stageStudioObject(objectKey: string): Promise<void> {
@@ -3857,6 +3894,30 @@ async function stageStudioObject(objectKey: string): Promise<void> {
     .onDuplicateKeyUpdate({
       set: { touchedAt: new Date() },
     });
+}
+
+const TERMINAL_JOB_STATUSES: StudioStatus[] = ["APPROVED", "REJECTED", "CANCELLED", "REVERTED", "FAILED"];
+
+async function isStagingObjectReferencedTx(tx: StudioTx, objectKey: string): Promise<boolean> {
+  // المهام المنتهية (APPROVED/REJECTED/CANCELLED/REVERTED/FAILED) لا تُبقي مفاتيح R2 معلّقةً
+  // إلى الأبد بعد حذف/استبدال صفّها من productImages؛ ما يزال حيّاً تضمنه productImages نفسها.
+  const jobRef = await tx
+    .select({ id: productImageJobs.id })
+    .from(productImageJobs)
+    .where(
+      and(
+        or(eq(productImageJobs.originalObjectKey, objectKey), eq(productImageJobs.processedObjectKey, objectKey)),
+        notInArray(productImageJobs.status, TERMINAL_JOB_STATUSES),
+      ),
+    )
+    .limit(1);
+  if (jobRef.length > 0) return true;
+  const imageRef = await tx
+    .select({ id: productImages.id })
+    .from(productImages)
+    .where(or(eq(productImages.objectKey, objectKey), eq(productImages.originalKey, objectKey)))
+    .limit(1);
+  return imageRef.length > 0;
 }
 
 /**
@@ -3892,21 +3953,12 @@ export async function cleanupStudioStaging(
     const eligible = await withStudioTx(async (tx) => {
       const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
       if (!staging || staging.touchedAt >= cutoff) return false;
-      const jobRef = await tx
-        .select({ id: productImageJobs.id })
-        .from(productImageJobs)
-        .where(or(eq(productImageJobs.originalObjectKey, candidate.objectKey), eq(productImageJobs.processedObjectKey, candidate.objectKey)))
-        .limit(1);
-      const imageRef = await tx
-        .select({ id: productImages.id })
-        .from(productImages)
-        .where(or(eq(productImages.objectKey, candidate.objectKey), eq(productImages.originalKey, candidate.objectKey)))
-        .limit(1);
+      const hasReference = await isStagingObjectReferencedTx(tx, candidate.objectKey);
       const decision = evaluateStagingRetention({
         state: staging.state,
         touchedAt: staging.touchedAt,
         referencedAt: staging.referencedAt,
-        hasReference: jobRef.length > 0 || imageRef.length > 0,
+        hasReference,
         now,
         // الوضع المُعلَن هو المعيار، لا كون الإثبات قد حُمِّل بعد — التحميل صار كسولاً.
         deleteRequested: gcMode === "delete",
@@ -3950,17 +4002,7 @@ export async function cleanupStudioStaging(
     const deleted = await withStudioTx(async (tx) => {
       const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
       if (!staging) return false;
-      const jobRef = await tx
-        .select({ id: productImageJobs.id })
-        .from(productImageJobs)
-        .where(or(eq(productImageJobs.originalObjectKey, candidate.objectKey), eq(productImageJobs.processedObjectKey, candidate.objectKey)))
-        .limit(1);
-      const imageRef = await tx
-        .select({ id: productImages.id })
-        .from(productImages)
-        .where(or(eq(productImages.objectKey, candidate.objectKey), eq(productImages.originalKey, candidate.objectKey)))
-        .limit(1);
-      if (jobRef.length > 0 || imageRef.length > 0) {
+      if (await isStagingObjectReferencedTx(tx, candidate.objectKey)) {
         await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: now, touchedAt: now }).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
         return false;
       }
@@ -5744,7 +5786,58 @@ export async function getStudioTaskPreviousImages(actor: ProductStudioActor, tas
   }));
 }
 
-export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {
+async function resolveReplaceTargetTx(
+  tx: StudioTx,
+  input: { replaceImageId: number; productId: number; variantId: number | null },
+) {
+  const [target] = await tx
+    .select({
+      id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      objectKey: productImages.objectKey,
+      originalKey: productImages.originalKey,
+      url: productImages.url,
+      contentHash: productImages.contentHash,
+      reviewStatus: productImages.reviewStatus,
+    })
+    .from(productImages)
+    .where(eq(productImages.id, input.replaceImageId))
+    .limit(1)
+    .for("update");
+  if (!target || Number(target.productId) !== Number(input.productId)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر استبدال الصورة",
+        why: "الصورة المستهدفة غير موجودة أو لا تخصّ هذا المنتج",
+        doThis: "حدّث معرض الصور واختر صورةً قائمة للاستبدال",
+      }),
+    });
+  }
+  const targetVariantId = target.variantId == null ? null : Number(target.variantId);
+  if (targetVariantId !== input.variantId) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استبدال الصورة",
+        why: "الصورة المستهدفة تتبع نطاقاً مختلفاً (متغيّر آخر أو مستوى المنتج الأب)",
+        doThis: "اختر الاستبدال من نفس المتغيّر أو أضف صورةً جديدةً بدلاً عن الاستبدال",
+      }),
+    });
+  }
+  return target;
+}
+
+export async function approveStudioTask(
+  actor: ProductStudioActor,
+  taskId: number,
+  adminOverrideReason?: string | null,
+  expectedRevision?: number,
+  replaceImageId?: number,
+) {
   assertStudioOperationBinding(actor, "productStudio.approve");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withStudioTx(async (tx) => {
@@ -5814,12 +5907,24 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
 
     let imageId: number;
     let existingOriginalKey: string | null = null;
+    let replacedImageId: number | null = null;
     if (task.sourceImageId) {
+      if (replaceImageId != null && Number(replaceImageId) !== Number(task.sourceImageId)) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد الاستبدال",
+            why: "المهمّة مرتبطةٌ مسبقاً بصورة مصدر أخرى غير الصورة المحدّدة للاستبدال",
+            doThis: "اعتمد المهمّة على صورتها المرتبطة أو أنشئ مهمّةً جديدةً لاستبدال الصورة المطلوبة",
+          }),
+        });
+      }
       const image = (
         await tx
           .select({
             id: productImages.id,
             productId: productImages.productId,
+            variantId: productImages.variantId,
             originalKey: productImages.originalKey,
             url: productImages.url,
             contentHash: productImages.contentHash,
@@ -5838,7 +5943,11 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
           currentSourceHash = null;
         }
       }
-      if (!image || Number(image.productId) !== Number(task.productId) || image.reviewStatus !== "APPROVED" || !task.sourceContentHash || currentSourceHash !== task.sourceContentHash) {
+      const sameVariantScope =
+        image != null &&
+        (image.variantId == null ? null : Number(image.variantId)) ===
+          (task.variantId == null ? null : Number(task.variantId));
+      if (!image || Number(image.productId) !== Number(task.productId) || !sameVariantScope || image.reviewStatus !== "APPROVED" || !task.sourceContentHash || currentSourceHash !== task.sourceContentHash) {
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({
@@ -5851,6 +5960,14 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       imageId = Number(image.id);
       existingOriginalKey = image.originalKey;
     } else {
+      const replaceTarget =
+        replaceImageId != null
+          ? await resolveReplaceTargetTx(tx, {
+              replaceImageId,
+              productId: Number(task.productId),
+              variantId: task.variantId == null ? null : Number(task.variantId),
+            })
+          : null;
       const scope = and(
         eq(productImages.productId, task.productId),
         task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
@@ -5865,7 +5982,10 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         .from(productImages)
         .where(scope)
         .for("update");
-      const publishedJobIds = existingImages
+      const remainingImages = replaceTarget
+        ? existingImages.filter((img) => Number(img.id) !== Number(replaceTarget.id))
+        : existingImages;
+      const publishedJobIds = remainingImages
         .map((image) => image.publishedStudioJobId)
         .filter((id): id is number => id != null);
       const publishedJobs = publishedJobIds.length
@@ -5889,20 +6009,20 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
           ? Number(task.templateVersion)
           : null;
       const sameCampaign = task.campaignId != null
-        ? existingImages.filter(
+        ? remainingImages.filter(
             (image) =>
               image.publishedStudioJobId != null &&
               jobMetaById.get(Number(image.publishedStudioJobId))?.campaignId === task.campaignId,
           )
         : quickCohortId != null
-          ? existingImages.filter(
+          ? remainingImages.filter(
               (image) =>
                 image.publishedStudioJobId != null &&
                 jobMetaById.get(Number(image.publishedStudioJobId))?.campaignId == null &&
                 Number(jobMetaById.get(Number(image.publishedStudioJobId))?.templateVersion) === quickCohortId,
             )
           : [];
-      const outsideCampaign = existingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
+      const outsideCampaign = remainingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
       const outsidePrimary = outsideCampaign.some((image) => image.isPrimary);
       const sameCampaignPrimaryIds = sameCampaign.filter((image) => image.isPrimary).map((image) => Number(image.id));
       let activeSlot = Math.max(1, Number(task.activeSlot ?? 1));
@@ -5924,22 +6044,29 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
           activeSlot = cohortIdx + 1;
         }
       }
-      // موضعُ دفعة الحملة ثابت بالـslot لا بترتيب مراجعة المدير. الصور السابقة تبقى
-      // كما هي؛ الدفعة تبدأ بعد أعلى ترتيب خارج حملتها ثم تحتل slots متجاورة.
       const baseSortOrder = outsideCampaign.reduce(
         (max, image) => Math.max(max, Number(image.sortOrder ?? 0)),
         -1,
       ) + 1;
-      const nextSortOrder = baseSortOrder + activeSlot - 1;
-      // إن لم توجد صورة رئيسية سابقة، تكون أول نتيجة رئيسية مؤقتاً. وصول slot 1
-      // يصحّحها حتمياً؛ وإن ظهرت صورة رئيسية خارج الحملة نحافظ عليها ونخفض المؤقتة.
-      if (sameCampaignPrimaryIds.length && (outsidePrimary || activeSlot === 1)) {
+      const nextSortOrder = replaceTarget ? Number(replaceTarget.sortOrder ?? 0) : baseSortOrder + activeSlot - 1;
+      if (replaceTarget) {
+        await tx.delete(productImages).where(eq(productImages.id, replaceTarget.id));
+        replacedImageId = Number(replaceTarget.id);
+      }
+      const replacePreservesPrimary = Boolean(replaceTarget?.isPrimary);
+      if (replacePreservesPrimary) {
+        const otherPrimaries = remainingImages.filter((image) => image.isPrimary).map((image) => Number(image.id));
+        if (otherPrimaries.length > 0) {
+          await tx.update(productImages).set({ isPrimary: false }).where(inArray(productImages.id, otherPrimaries));
+        }
+      } else if (sameCampaignPrimaryIds.length && (outsidePrimary || activeSlot === 1)) {
         await tx
           .update(productImages)
           .set({ isPrimary: false })
           .where(inArray(productImages.id, sameCampaignPrimaryIds));
       }
-      const shouldBePrimary = !outsidePrimary && (activeSlot === 1 || sameCampaignPrimaryIds.length === 0);
+      const shouldBePrimary =
+        replacePreservesPrimary || (!outsidePrimary && (activeSlot === 1 || sameCampaignPrimaryIds.length === 0));
       const [created] = await tx
         .insert(productImages)
         .values({
@@ -6000,6 +6127,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       auditValues(actor, "productStudio.approve", taskId, {
         productId: task.productId,
         imageId,
+        replacedImageId,
         processedHash: task.processedContentHash,
         thumbnailHash: thumbnail.hash,
         contentUpdated: Object.keys(productPatch).length > 0,
@@ -6007,6 +6135,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
+    invalidateProductStudioCaches(getCurrentCompanyId() ?? 1, [Number(task.productId)]);
     // إشعار الاعتماد للمصوّر — دورةٌ مغلقةٌ لسلسلة الإشعارات (أُسنِد/رُفض/اعتُمد).
     // قبله كان المصوّر يعرف الاعتماد بتحديث «السجلّ» يدوياً — احتكاكٌ مجانيّ لصمت الخادم.
     const assigneeRole = task.assignedTo == null
@@ -6666,6 +6795,8 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
       isPrimary: productImages.isPrimary,
       thumbDataUrl: productImages.thumbDataUrl,
       contentHash: productImages.contentHash,
+      objectKey: productImages.objectKey,
+      url: productImages.url,
     })
     .from(productImages)
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
@@ -6757,7 +6888,15 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
       allBarcodes,
       units: structuredUnits,
       approvedImagesCount: vImages.length,
-      primaryImageThumb: primaryImg?.thumbDataUrl ?? null,
+      primaryImageThumb: primaryImg
+        ? (primaryImg.thumbDataUrl ||
+          inventoryProductImageUrl(Number(primaryImg.id), {
+            url: primaryImg.url,
+            objectKey: primaryImg.objectKey,
+            contentHash: primaryImg.contentHash,
+          }) ||
+          null)
+        : null,
       primaryImageId: primaryImg ? Number(primaryImg.id) : null,
       activeJob: vActiveJob
         ? {
@@ -6785,7 +6924,15 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
     variantsMissingImages,
     isFullyCovered,
     parentImagesCount: parentImages.length,
-    parentPrimaryImageThumb: parentImages[0]?.thumbDataUrl ?? null,
+    parentPrimaryImageThumb: parentImages[0]
+      ? (parentImages[0].thumbDataUrl ||
+        inventoryProductImageUrl(Number(parentImages[0].id), {
+          url: parentImages[0].url,
+          objectKey: parentImages[0].objectKey,
+          contentHash: parentImages[0].contentHash,
+        }) ||
+        null)
+      : null,
     items: matrixItems,
   };
 }
@@ -7073,6 +7220,8 @@ export async function quickBarcodeLookup(
       productId: productImages.productId,
       variantId: productImages.variantId,
       url: productImages.url,
+      objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
       thumbDataUrl: productImages.thumbDataUrl,
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
@@ -7167,17 +7316,30 @@ export async function quickBarcodeLookup(
       barcode,
       isActive: isTargetActive,
     },
-    images: imageRows.map((img) => ({
-      id: Number(img.id),
-      variantId: img.variantId == null ? null : Number(img.variantId),
-      url: img.url,
-      thumbDataUrl: img.thumbDataUrl,
-      isPrimary: Boolean(img.isPrimary),
-      sortOrder: Number(img.sortOrder),
-      reviewStatus: img.reviewStatus,
-      origin: img.origin,
-      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
-    })),
+    images: imageRows.map((img) => {
+      const id = Number(img.id);
+      const displayUrl =
+        inventoryProductImageUrl(id, {
+          url: img.url,
+          objectKey: img.objectKey,
+          contentHash: img.contentHash,
+        }) ??
+        img.thumbDataUrl ??
+        img.url;
+      return {
+        id,
+        variantId: img.variantId == null ? null : Number(img.variantId),
+        url: img.url,
+        displayUrl,
+        contentHash: img.contentHash,
+        thumbDataUrl: img.thumbDataUrl,
+        isPrimary: Boolean(img.isPrimary),
+        sortOrder: Number(img.sortOrder),
+        reviewStatus: img.reviewStatus,
+        origin: img.origin,
+        createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+      };
+    }),
     activeJob: activeJob
       ? {
           id: Number(activeJob.id),
@@ -7212,6 +7374,7 @@ export async function quickSaveBarcodeProductImage(
     thumbnailDataUrl: string;
     mode: "FLATTEN" | "CUT" | "PRO" | "AI" | "ORIGINAL";
     setAsPrimary?: boolean;
+    replaceImageId?: number | null;
     adminOverrideReason?: string | null;
     clientRequestId?: string | null;
   },
@@ -7232,6 +7395,7 @@ export async function quickSaveBarcodeProductImage(
     ? idempotencyHash({
         productId: input.productId,
         variantId: input.variantId ?? null,
+        replaceImageId: input.replaceImageId ?? null,
         mode: input.mode,
         hash: processed.hash,
       })
@@ -7296,6 +7460,14 @@ export async function quickSaveBarcodeProductImage(
       }
 
       await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
+      const replaceTarget =
+        input.replaceImageId != null
+          ? await resolveReplaceTargetTx(tx, {
+              replaceImageId: Number(input.replaceImageId),
+              productId: input.productId,
+              variantId: input.variantId ?? null,
+            })
+          : null;
       const existingImages = await tx
         .select({
           id: productImages.id,
@@ -7312,11 +7484,18 @@ export async function quickSaveBarcodeProductImage(
         )
         .for("update");
 
-      const hasPrimary = existingImages.some((img) => img.isPrimary);
-      const isPrimary = input.setAsPrimary === true || !hasPrimary;
+      const remainingImages = replaceTarget
+        ? existingImages.filter((img) => Number(img.id) !== Number(replaceTarget.id))
+        : existingImages;
+      const hasRemainingPrimary = remainingImages.some((img) => img.isPrimary);
+      const isPrimary = input.setAsPrimary === true || Boolean(replaceTarget?.isPrimary) || !hasRemainingPrimary;
 
-      if (isPrimary && hasPrimary) {
-        const prevPrimaryIds = existingImages.filter((img) => img.isPrimary).map((img) => Number(img.id));
+      if (replaceTarget) {
+        await tx.delete(productImages).where(eq(productImages.id, replaceTarget.id));
+      }
+
+      if (isPrimary && hasRemainingPrimary) {
+        const prevPrimaryIds = remainingImages.filter((img) => img.isPrimary).map((img) => Number(img.id));
         if (prevPrimaryIds.length > 0) {
           await tx
             .update(productImages)
@@ -7325,8 +7504,8 @@ export async function quickSaveBarcodeProductImage(
         }
       }
 
-      const maxSortOrder = existingImages.reduce((max, img) => Math.max(max, Number(img.sortOrder ?? 0)), 0);
-      const nextSortOrder = maxSortOrder + 1;
+      const maxSortOrder = remainingImages.reduce((max, img) => Math.max(max, Number(img.sortOrder ?? 0)), 0);
+      const nextSortOrder = replaceTarget ? Number(replaceTarget.sortOrder ?? 0) : maxSortOrder + 1;
 
       const origin =
         input.mode === "AI"
@@ -7424,11 +7603,14 @@ export async function quickSaveBarcodeProductImage(
           productId: input.productId,
           variantId: input.variantId ?? null,
           jobId,
+          replacedImageId: replaceTarget ? Number(replaceTarget.id) : null,
+          oldObjectKey: replaceTarget?.objectKey ?? null,
           mode: input.mode,
           isPrimary,
           barcode: input.barcode?.slice(0, 64) ?? null,
         }),
       );
+      invalidateProductStudioCaches(getCurrentCompanyId() ?? 1, [input.productId]);
 
       if (clientRequestId) {
         await recordIdempotencyKey(
@@ -7508,6 +7690,46 @@ export async function quickSaveBarcodeProductImage(
       // قفل صفّ المنتج الأب أولاً وإعادة التحقّق من الأهلية لتسلسل حجز الفتحات حتى حين لا توجد مهمّة نشطة بعد (slot 1).
       await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
 
+      let replaceSourceImageId: number | null = null;
+      let replaceSourceContentHash: string | null = null;
+      if (input.replaceImageId != null) {
+        const replaceTarget = await resolveReplaceTargetTx(tx, {
+          replaceImageId: Number(input.replaceImageId),
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+        });
+        if (replaceTarget.reviewStatus !== "APPROVED") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر ربط الاستبدال",
+              why: "لا يمكن استبدال صورةٍ غير معتمدة",
+              doThis: "اختر صورةً معتمدةً للاستبدال أو أرسل الصورة الجديدة كصورةٍ إضافيّة",
+            }),
+          });
+        }
+        let targetHash = replaceTarget.contentHash ?? null;
+        if (!targetHash) {
+          try {
+            targetHash = decodeStudioImage(replaceTarget.url).hash;
+          } catch {
+            targetHash = null;
+          }
+        }
+        if (!targetHash) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر ربط الاستبدال للاعتماد",
+              why: "صورة المصدر القديمة لا تحمل بصمةً معتمدة للمطابقة عند مراجعة المدير",
+              doThis: "أرسل الصورة الجديدة ثم اطلب من المدير حذف القديمة أو استبدالها مباشرةً",
+            }),
+          });
+        }
+        replaceSourceImageId = Number(replaceTarget.id);
+        replaceSourceContentHash = targetHash;
+      }
+
       // فحص الفتحات النشطة الحالية لنفس (المنتج، المتغيّر) لتفادي تصادم المفتاح الفريد uq_pijob_product_variant_active
       const existingActiveJobs = await tx
         .select({
@@ -7566,7 +7788,8 @@ export async function quickSaveBarcodeProductImage(
           variantId: input.variantId ?? null,
           campaignId: null,
           branchId: actor.branchId ?? null,
-          sourceContentHash: original?.hash ?? processed.hash,
+          sourceImageId: replaceSourceImageId,
+          sourceContentHash: replaceSourceContentHash ?? original?.hash ?? processed.hash,
           originalObjectKey: originalKey ?? processedKey,
           processedObjectKey: processedKey,
           originalMime: original?.mime ?? processed.mime,
@@ -8140,69 +8363,6 @@ export function generateCacheBustedImageUrl(
   return `${base}?${searchParams.toString()}`;
 }
 
-export interface CacheInvalidationRecord {
-  companyId: number;
-  productIds: number[];
-  channels: ("catalog.adminList" | "catalog.posList" | "kiosk.banner" | "storefront")[];
-  timestamp: string;
-}
-
-const recentInvalidations: CacheInvalidationRecord[] = [];
-
-export function getRecentCacheInvalidations(): readonly CacheInvalidationRecord[] {
-  return recentInvalidations;
-}
-
-export function clearRecentCacheInvalidations(): void {
-  recentInvalidations.length = 0;
-}
-
-/**
- * إبطال وتحديث كاش المنتجات عبر الأنظمة (جدول المنتجات، نقاط البيع، الراية، المتجر)
- */
-export function invalidateProductStudioCaches(
-  companyId: number,
-  productIds: number[],
-): {
-  success: boolean;
-  invalidatedChannels: string[];
-  productCount: number;
-  timestamp: string;
-} {
-  const channels: ("catalog.adminList" | "catalog.posList" | "kiosk.banner" | "storefront")[] = [
-    "catalog.adminList",
-    "catalog.posList",
-    "kiosk.banner",
-    "storefront",
-  ];
-  const uniqueProductIds = Array.from(new Set(productIds.map(Number))).filter(
-    (id) => Number.isFinite(id) && id > 0,
-  );
-  const record: CacheInvalidationRecord = {
-    companyId: Number(companyId),
-    productIds: uniqueProductIds,
-    channels,
-    timestamp: new Date().toISOString(),
-  };
-
-  recentInvalidations.push(record);
-  if (recentInvalidations.length > 500) {
-    recentInvalidations.splice(0, recentInvalidations.length - 500);
-  }
-
-  logger.info(
-    { companyId, productCount: uniqueProductIds.length, channels },
-    "product studio multi-system cache invalidation dispatched",
-  );
-
-  return {
-    success: true,
-    invalidatedChannels: channels,
-    productCount: uniqueProductIds.length,
-    timestamp: record.timestamp,
-  };
-}
-
 /**
  * تعيين الصورة الرئيسية للمنتج وضمان وجود صورة رئيسية واحدة حتماً لكل (productId, variantId).
  */
@@ -8216,9 +8376,30 @@ export async function setProductImagePrimaryStatus(
   },
 ): Promise<{ success: boolean; imageId: number; isPrimary: boolean }> {
   assertStudioOperationBinding(actor, "productStudio.setProductImagePrimary");
+  if (!isManager(actor)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تعيين الصورة الرئيسية",
+        why: "تغيير الصورة الرئيسية مخصّصٌ لمدير استوديو المنتجات فقط",
+        doThis: "اطلب من مدير الاستوديو تنفيذ هذا التعديل",
+      }),
+    });
+  }
+  if (!input.isPrimary) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إلغاء الصورة الرئيسية مباشرةً",
+        why: "يجب أن يملك كلّ نطاق صورةً رئيسيّةً واحدةً؛ إلغاء الرئيسية يترك النطاق بلا غلاف",
+        doThis: "عيّن صورةً أخرى معتمدةً كرئيسية لتُنقل الشارة إليها تلقائياً",
+      }),
+    });
+  }
   const companyId = getCurrentCompanyId() ?? 1;
 
   return await withStudioTx(async (tx) => {
+    await assertStudioOperationTx(tx, actor, "productStudio.setProductImagePrimary");
     const [targetImage] = await tx
       .select({
         id: productImages.id,
@@ -8247,36 +8428,51 @@ export async function setProductImagePrimaryStatus(
         }),
       });
     }
-
-    const targetVariantId =
-      input.variantId !== undefined
-        ? (input.variantId == null ? null : Number(input.variantId))
-        : (targetImage.variantId == null ? null : Number(targetImage.variantId));
-
-    if (input.isPrimary) {
-      // صورة رئيسية واحدة بالضبط لكل (منتج، متغيّر)
-      await tx
-        .update(productImages)
-        .set({ isPrimary: false })
-        .where(
-          and(
-            eq(productImages.productId, input.productId),
-            targetVariantId == null
-              ? isNull(productImages.variantId)
-              : eq(productImages.variantId, targetVariantId),
-          ),
-        );
-
-      await tx
-        .update(productImages)
-        .set({ isPrimary: true })
-        .where(eq(productImages.id, input.imageId));
-    } else {
-      await tx
-        .update(productImages)
-        .set({ isPrimary: false })
-        .where(eq(productImages.id, input.imageId));
+    if (targetImage.reviewStatus !== "APPROVED") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تعيين الصورة رئيسيةً",
+          why: "الصورة المحدّدة غير معتمدة بعد (قيد المراجعة أو مرفوضة)",
+          doThis: "اعتمد الصورة أوّلاً قبل تعيينها رئيسيّةً",
+        }),
+      });
     }
+
+    const storedVariantId = targetImage.variantId == null ? null : Number(targetImage.variantId);
+    if (input.variantId !== undefined) {
+      const requestedVariantId = input.variantId == null ? null : Number(input.variantId);
+      if (requestedVariantId !== storedVariantId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تضارب في نطاق الصورة",
+            why: "الصورة لا تتبع المتغيّر المحدّد",
+            doThis: "حدّث قائمة الصور واختر صورةً ضمن النطاق الصحيح",
+          }),
+        });
+      }
+    }
+
+    const targetVariantId = storedVariantId;
+
+    // صورة رئيسية واحدة بالضبط لكل (منتج، متغيّر)
+    await tx
+      .update(productImages)
+      .set({ isPrimary: false })
+      .where(
+        and(
+          eq(productImages.productId, input.productId),
+          targetVariantId == null
+            ? isNull(productImages.variantId)
+            : eq(productImages.variantId, targetVariantId),
+        ),
+      );
+
+    await tx
+      .update(productImages)
+      .set({ isPrimary: true })
+      .where(eq(productImages.id, input.imageId));
 
     await tx.insert(auditLogs).values({
       userId: actor.userId,
@@ -8288,7 +8484,7 @@ export async function setProductImagePrimaryStatus(
         productId: input.productId,
         imageId: input.imageId,
         variantId: targetVariantId,
-        isPrimary: input.isPrimary,
+        isPrimary: true,
       },
     });
 
@@ -8297,7 +8493,7 @@ export async function setProductImagePrimaryStatus(
     return {
       success: true,
       imageId: input.imageId,
-      isPrimary: input.isPrimary,
+      isPrimary: true,
     };
   });
 }

@@ -72,11 +72,15 @@ import {
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { appErrorMessage } from "@shared/errors";
+import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
 import {
+  assertNoUnexpectedRecipeSelections,
   discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
+  resolveRecipeLineSelections,
   SERVICE_RECIPE_CONSUMPTION_NOTE,
   serviceRecipeDefinitionsFingerprint,
+  type ResolvedServiceRecipeLine,
 } from "./serviceRecipeConsumption";
 
 /** علامة عرض ومسار بيع لبنود الطباعة، سواء كانت بلا مخزون أم نواتج مخزنية. */
@@ -110,6 +114,7 @@ export interface PrintSaleLineInput {
   /** السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير). إن غاب يُؤخذ سعر الفئة. */
   unitPriceOverride?: string | null;
   discountPercent?: string | null;
+  recipeSelections?: RecipeLineSelection[] | null;
 }
 
 export interface CreatePrintSaleInput extends CheckoutChargesInput {
@@ -483,8 +488,15 @@ export async function createPrintSaleInTx(
         ),
       ),
     ).sort((a, b) => a - b);
+    const selectedMaterialVarIds = Array.from(
+      new Set(
+        input.lines
+          .flatMap((l) => (l.recipeSelections ?? []).map((s) => Number(s.variantId)))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ).sort((a, b) => a - b);
     const fullScopeVariantIds = Array.from(
-      new Set([...lineVarIds, ...materialVarIds]),
+      new Set([...lineVarIds, ...materialVarIds, ...selectedMaterialVarIds]),
     ).sort((a, b) => a - b);
     const scopeRefs = await tx
       .select({ id: productVariants.id, productId: productVariants.productId })
@@ -492,6 +504,18 @@ export async function createPrintSaleInTx(
       .where(inArray(productVariants.id, fullScopeVariantIds))
       .orderBy(productVariants.id);
     if (scopeRefs.length !== fullScopeVariantIds.length) {
+      const foundScopeIds = new Set(scopeRefs.map((row) => Number(row.id)));
+      const missingSelected = selectedMaterialVarIds.find((id) => !foundScopeIds.has(id));
+      if (missingSelected != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "متغيّر المادة المختار غير موجود",
+            why: `تعذّر العثور على المتغيّر #${missingSelected} في الكتالوج`,
+            doThis: "حدّث شاشة الطباعة واختر متغيّراً نشطاً",
+          }),
+        });
+      }
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -597,9 +621,28 @@ export async function createPrintSaleInTx(
       });
     }
     serviceRecipes = currentServiceRecipes;
+    const resolvedLinesByInputIdx = new Map<number, ResolvedServiceRecipeLine[]>();
+    const resolvedMaterialVarIdSet = new Set<number>(materialVarIds);
+    for (let idx = 0; idx < input.lines.length; idx++) {
+      const l = input.lines[idx]!;
+      const product = lockedProductById.get(preparedProductIdByVariant.get(l.variantId)!);
+      if (product?.isService !== true) {
+        assertNoUnexpectedRecipeSelections(l.recipeSelections, `خدمة الطباعة #${l.variantId}`);
+        continue;
+      }
+      const recipe = serviceRecipes.get(l.variantId);
+      if (!recipe) {
+        assertNoUnexpectedRecipeSelections(l.recipeSelections, `خدمة الطباعة #${l.variantId}`);
+        continue;
+      }
+      const resolved = await resolveRecipeLineSelections(tx, recipe.lines, l.recipeSelections);
+      resolvedLinesByInputIdx.set(idx, resolved);
+      for (const rl of resolved) resolvedMaterialVarIdSet.add(rl.variantId);
+    }
+    const allResolvedMaterialVarIds = Array.from(resolvedMaterialVarIdSet).sort((a, b) => a - b);
     await assertStockedOwnedMaterials(
       tx,
-      materialVarIds,
+      allResolvedMaterialVarIds,
       "مكوّن وصفة خدمة الطباعة",
     );
     const lockedLineRows = await tx
@@ -666,8 +709,8 @@ export async function createPrintSaleInTx(
         throwNonPrintService();
       }
     }
-    const matCostRows = materialVarIds.length
-      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(inArray(productVariants.id, materialVarIds))
+    const matCostRows = allResolvedMaterialVarIds.length
+      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(inArray(productVariants.id, allResolvedMaterialVarIds))
       : [];
     const matCostMap = new Map(matCostRows.map((m) => [Number(m.id), money(m.costPrice)]));
 
@@ -693,7 +736,8 @@ export async function createPrintSaleInTx(
     let manualDiscountGateTriggered = false;
     let referenceGross = money(0);
 
-    for (const l of input.lines) {
+    for (let idx = 0; idx < input.lines.length; idx++) {
+      const l = input.lines[idx]!;
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
       // H6: مرجعُ القياس هو سعر القائمة (غير رامٍ) — القناة تُسعَّر يدوياً بطبيعتها، لكنّ وجود
       // مرجعٍ يجعل الانحراف قابلاً للقياس. بلا مرجع ⇒ لا بوّابة (تلك حالة H7 لا H6).
@@ -727,25 +771,25 @@ export async function createPrintSaleInTx(
           unitCost: string;
           lineCost: Decimal;
         }>();
-        const recipe = serviceRecipes.get(l.variantId);
-        if (recipe) {
-          for (const rl of recipe.lines) {
+        const resolvedLines = resolvedLinesByInputIdx.get(idx);
+        if (resolvedLines) {
+          for (const rl of resolvedLines) {
             const consumed = exactRecipeMaterialQuantity(
               rl.qtyPerOutputBase,
               baseQuantity,
-              `مادة الوصفة #${rl.inputVariantId}`,
+              `مادة الوصفة #${rl.variantId}`,
             );
-            const materialUnitCost = round2(matCostMap.get(rl.inputVariantId) ?? new Decimal(0));
+            const materialUnitCost = round2(matCostMap.get(rl.variantId) ?? new Decimal(0));
             const materialLineCost = round2(materialUnitCost.times(consumed));
             exactLineCost = exactLineCost.plus(materialLineCost);
-            const current = materialByVariant.get(rl.inputVariantId) ?? {
+            const current = materialByVariant.get(rl.variantId) ?? {
               baseQuantity: 0,
               unitCost: materialUnitCost.toFixed(2),
               lineCost: money(0),
             };
             current.baseQuantity = addQuantities(current.baseQuantity, consumed);
             current.lineCost = current.lineCost.plus(materialLineCost);
-            materialByVariant.set(rl.inputVariantId, current);
+            materialByVariant.set(rl.variantId, current);
           }
         }
         lineCost = round2(exactLineCost);

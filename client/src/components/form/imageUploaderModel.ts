@@ -4,6 +4,8 @@ export interface ImageItem {
   dataUrl: string;
   /** url نهائي (بعد رفع للخادم) — قد يكون فارغاً قبل الحفظ. */
   url?: string;
+  /** رابط عرضٍ آمن للمتصفّح (thumbDataUrl أو /api/img/inventory-product/:id?v=...) لا يكسر showInStore = 0. */
+  displayUrl?: string;
   isPrimary: boolean;
   name?: string;
   sizeKB?: number;

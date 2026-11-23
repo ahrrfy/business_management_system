@@ -3,6 +3,7 @@ import { Pencil, Percent, Undo2, X } from "lucide-react";
 import { D, round2 } from "@/lib/money";
 import { CASHIER_INVOICE_DISCOUNT_MAX_PCT, computeInvoiceDiscount } from "@/components/pos/posShared";
 import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 
 export function mapHeldOrderToPrintTabPatch(
   order: {
@@ -15,7 +16,14 @@ export function mapHeldOrderToPrintTabPatch(
     customerId: number | null;
     contactName?: string | null;
     contactPhone?: string | null;
-    lines: Array<{ productUnitId: number; variantId: number; itemNameSnapshot?: string | null; unitPrice: string | number; quantity: string | number }>;
+    lines: Array<{
+      productUnitId: number;
+      variantId: number;
+      itemNameSnapshot?: string | null;
+      unitPrice: string | number;
+      quantity: string | number;
+      recipeSelections?: RecipeLineSelectionWithMeta[];
+    }>;
   },
   services: Array<{ productUnitId: number; variantId: number; productId: number; productName: string; unitName: string; sku: string; price: string; categoryId: number | null; categoryName: string | null }>,
   allocUid: () => number,
@@ -32,7 +40,13 @@ export function mapHeldOrderToPrintTabPatch(
       categoryId: null,
       categoryName: null,
     };
-    return { uid: allocUid(), svc: matchedSvc as any, qty: Number(l.quantity), price: Number(l.unitPrice) };
+    return {
+      uid: allocUid(),
+      svc: matchedSvc as any,
+      qty: Number(l.quantity),
+      price: Number(l.unitPrice),
+      ...(l.recipeSelections?.length ? { recipeSelections: l.recipeSelections } : {}),
+    };
   });
   let channel: "WALK_IN" | "WHATSAPP" | "TELEGRAM" | "PHONE" = "WALK_IN";
   if (order.notes?.includes("واتساب")) channel = "WHATSAPP";
@@ -108,6 +122,8 @@ export interface CheckoutProps {
   invoiceDiscountAmount?: number;
   invoiceDiscountMaxPct?: number;
   onInvoiceDiscountChange?: (type: "percent" | "amount", value: string) => void;
+  customizableVariantIds?: ReadonlySet<number>;
+  onChangeRecipeSelections?: (line: CartLine) => void;
 }
 
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
@@ -179,6 +195,8 @@ export function CheckoutColumn(props: CheckoutProps) {
         customerId={props.customerId}
         setCustomerId={props.setCustomerId}
         addTick={props.addTick}
+        customizableVariantIds={props.customizableVariantIds}
+        onChangeRecipeSelections={props.onChangeRecipeSelections}
       />
       {props.onInvoiceDiscountChange && (props.subtotal ?? 0) > 0 && (() => {
         const mode = props.invoiceDiscountType ?? "percent";

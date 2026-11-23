@@ -27,6 +27,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { resolveStudioImageSrc } from "@/lib/productImages";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 
@@ -762,7 +763,7 @@ function ProductExistingGalleryDialog({
       return galleryImagesQuery.data
         .map((img) => ({
           id: img.id,
-          src: img.thumbDataUrl || img.url,
+          src: resolveStudioImageSrc(img),
           isPrimary: img.isPrimary,
         }))
         .filter((img) => Boolean(img.src));
