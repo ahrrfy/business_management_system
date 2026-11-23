@@ -13961,7 +13961,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:552"
+      "loc": "server/routers/offlineRouter.ts:242"
     },
     {
       "surface": "trpc",
@@ -13980,7 +13980,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:558"
+      "loc": "server/routers/offlineRouter.ts:250"
     },
     {
       "surface": "trpc",
@@ -13999,7 +13999,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1635"
+      "loc": "server/routers/offlineRouter.ts:752"
     },
     {
       "surface": "trpc",
@@ -14018,7 +14018,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1657"
+      "loc": "server/routers/offlineRouter.ts:774"
     },
     {
       "surface": "trpc",
@@ -14037,7 +14037,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:560"
+      "loc": "server/routers/offlineRouter.ts:254"
     },
     {
       "surface": "trpc",
@@ -14056,7 +14056,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1618"
+      "loc": "server/routers/offlineRouter.ts:730"
     },
     {
       "surface": "trpc",
@@ -14075,7 +14075,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1608"
+      "loc": "server/routers/offlineRouter.ts:720"
     },
     {
       "surface": "trpc",
@@ -14094,7 +14094,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1086"
+      "loc": "server/routers/offlineRouter.ts:439"
     },
     {
       "surface": "trpc",
@@ -14113,7 +14113,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: print",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/offlineRouter.ts:1393"
+      "loc": "server/routers/offlineRouter.ts:472"
     },
     {
       "surface": "trpc",
@@ -14132,7 +14132,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1458"
+      "loc": "server/routers/offlineRouter.ts:553"
     },
     {
       "surface": "trpc",
@@ -14151,7 +14151,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:1548"
+      "loc": "server/routers/offlineRouter.ts:662"
     },
     {
       "surface": "trpc",
@@ -14170,7 +14170,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:991"
+      "loc": "server/routers/offlineRouter.ts:312"
     },
     {
       "surface": "trpc",
@@ -14189,7 +14189,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:960"
+      "loc": "server/routers/offlineRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -14208,7 +14208,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:554"
+      "loc": "server/routers/offlineRouter.ts:244"
     },
     {
       "surface": "trpc",
@@ -14227,7 +14227,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:550"
+      "loc": "server/routers/offlineRouter.ts:240"
     },
     {
       "surface": "trpc",
@@ -29010,7 +29010,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 479,
+      "line": 474,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -29021,7 +29021,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 515,
+      "line": 510,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29032,7 +29032,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 557,
+      "line": 552,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29043,7 +29043,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 570,
+      "line": 565,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29054,7 +29054,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 754,
+      "line": 749,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29065,7 +29065,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 762,
+      "line": 757,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29076,7 +29076,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 784,
+      "line": 779,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29087,7 +29087,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 785,
+      "line": 780,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29098,7 +29098,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 802,
+      "line": 797,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29109,7 +29109,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 808,
+      "line": 803,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29120,7 +29120,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 827,
+      "line": 822,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29131,7 +29131,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 831,
+      "line": 826,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29142,7 +29142,7 @@
       "method": "MOUNT",
       "path": "/api/hr/applicant-cv",
       "file": "server/index.ts",
-      "line": 835,
+      "line": 830,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29153,7 +29153,7 @@
       "method": "MOUNT",
       "path": "/api/studio",
       "file": "server/index.ts",
-      "line": 840,
+      "line": 835,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29164,7 +29164,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 864,
+      "line": 859,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29175,7 +29175,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 865,
+      "line": 860,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29186,7 +29186,7 @@
       "method": "MOUNT",
       "path": "/api/realtime",
       "file": "server/index.ts",
-      "line": 866,
+      "line": 861,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -29207,7 +29207,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 989
+      "line": 984
     },
     {
       "kind": "interval",
