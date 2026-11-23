@@ -31,7 +31,7 @@ export default function DigitalCardsHub() {
     review: ["sales.needsReview", "sales.reviewDetails", "sales.requestReviewResolution", "sales.approveReviewResolution", "sales.rejectReviewResolution", "wallets.reconciliations", "sales.expireStale"],
     offerings: ["offerings.list", "offerings.get", "offerings.create", "offerings.update", "offerings.toggle"],
     subscriptions: ["subscriptions.list"],
-    providers: ["providers.list", "providers.create", "providers.update", "providers.toggle"],
+    providers: ["providers.list", "providers.create", "providers.update", "providers.toggle", "providers.applyLogoToOfferings"],
     wallets: ["wallets.list", "wallets.statement", "wallets.create", "wallets.update", "wallets.deposit", "wallets.withdraw", "wallets.reconcile", "wallets.requestAdjustment", "wallets.approveAdjustment", "wallets.rejectAdjustment"],
   };
   const tabs = digitalAccess.canonical

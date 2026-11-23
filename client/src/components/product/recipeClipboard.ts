@@ -33,6 +33,8 @@ export interface EditableLine {
   qtyPerOutputBase: string;
   notes?: string | null;
   unitName?: string;
+  allowVariantChoice?: boolean;
+  activeVariantCount?: number;
 }
 
 export interface CopiedRecipeLine {
@@ -44,6 +46,7 @@ export interface CopiedRecipeLine {
   qtyPerOutputBase: string;
   notes?: string | null;
   unitName?: string;
+  allowVariantChoice?: boolean;
 }
 
 export interface CopiedRecipePayload {
@@ -153,6 +156,7 @@ export function sanitizeRecipeClipboard(
       qtyPerOutputBase: qty,
       notes,
       unitName: uName,
+      allowVariantChoice: it.allowVariantChoice === true,
     });
   }
 

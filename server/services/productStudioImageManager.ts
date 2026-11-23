@@ -15,9 +15,13 @@ import { assertStudioOperationBinding, assertStudioOperationTx, isStudioManager 
  */
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { auditLogs, productImages, productVariants, products } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import { auditLogs, productImages, productVariants } from "../../drizzle/schema";
+import { inventoryProductImageUrl } from "../imageRoute";
+import { getCurrentCompanyId } from "../tenancy/context";
 import { requireDb, withTx } from "./tx";
 import { logger } from "../logger";
+import { invalidateProductStudioCaches } from "./productStudioCache";
 import type { ProductStudioActor } from "./productStudioService";
 
 /** حرّاسٌ أساسيّة — نفس نمط productStudioService (كي لا يتسرّب فحص الصلاحية من مكانَين). */
@@ -44,6 +48,7 @@ export async function listProductImagesForManager(actor: ProductStudioActor, pro
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
       objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
       mime: productImages.mime,
       width: productImages.width,
       height: productImages.height,
@@ -56,29 +61,43 @@ export async function listProductImagesForManager(actor: ProductStudioActor, pro
     .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
     .orderBy(productImages.sortOrder, productImages.id);
-  return rows.map((r) => ({
-    id: Number(r.id),
-    productId: Number(r.productId),
-    variantId: r.variantId == null ? null : Number(r.variantId),
-    variantName: r.variantName,
-    url: r.url,
-    isPrimary: Boolean(r.isPrimary),
-    sortOrder: Number(r.sortOrder ?? 0),
-    objectKey: r.objectKey,
-    mime: r.mime,
-    width: r.width,
-    height: r.height,
-    bytes: r.bytes,
-    thumbDataUrl: r.thumbDataUrl,
-    origin: r.origin,
-    createdAt: r.createdAt,
-  }));
+  return rows.map((r) => {
+    const id = Number(r.id);
+    const displayUrl =
+      inventoryProductImageUrl(id, {
+        url: r.url,
+        objectKey: r.objectKey,
+        contentHash: r.contentHash,
+      }) ??
+      r.thumbDataUrl ??
+      r.url;
+    return {
+      id,
+      productId: Number(r.productId),
+      variantId: r.variantId == null ? null : Number(r.variantId),
+      variantName: r.variantName,
+      url: r.url,
+      displayUrl,
+      contentHash: r.contentHash,
+      isPrimary: Boolean(r.isPrimary),
+      sortOrder: Number(r.sortOrder ?? 0),
+      objectKey: r.objectKey,
+      mime: r.mime,
+      width: r.width,
+      height: r.height,
+      bytes: r.bytes,
+      thumbDataUrl: r.thumbDataUrl,
+      origin: r.origin,
+      createdAt: r.createdAt,
+    };
+  });
 }
 
 /**
- * حذفُ صورةٍ من `productImages`. المفتاح في R2 يُترَك في السجلّ (سعاة الاسترداد
- * البنيويّة يعالجونه)؛ الأثرُ يحفظ objectKey للتشخيص. **لا يُسمح بحذف الصورة الرئيسيّة
- * إن كانت الوحيدة** — يجب أوّلاً تعيين صورةٍ أخرى رئيسيّةً أو إضافة أخرى.
+ * حذفُ صورةٍ من `productImages`. المفتاح في R2 يُستردّ تلقائياً عند غياب المراجع؛
+ * الأثرُ يحفظ objectKey للتشخيص. إذا كانت الصورة المحذوفة رئيسيّةً وُجِد لها بديلٌ
+ * معتمَدٌ في نفس النطاق (variant-scoped) يُرقّى تلقائياً إلى رئيسيّةٍ؛ وإن كانت آخر
+ * صورةٍ في النطاق يُسمح للمدير بإزالتها بعد التأكيد.
  */
 export async function deleteProductImage(
   actor: ProductStudioActor,
@@ -87,6 +106,7 @@ export async function deleteProductImage(
   assertStudioOperationBinding(actor, "productStudio.deleteImage");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const reason = input.reason?.trim() ?? null;
+  const companyId = getCurrentCompanyId() ?? 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.deleteImage");
     const [image] = await tx
@@ -95,28 +115,18 @@ export async function deleteProductImage(
       .where(eq(productImages.id, input.imageId))
       .limit(1)
       .for("update");
-    if (!image) throw new TRPCError({ code: "NOT_FOUND", message: "الصورة غير موجودة" });
-    if (image.isPrimary) {
-      // منعُ حذف الرئيسيّة إن لم يوجد بديلٌ **معتمَدٌ في نفس النطاق** (variant-scoped)
-      // يمكن ترقيتُه. عدُّ الصفوف بلا فلترةٍ كان يقبل صوراً مرفوضةً/انتظارَ مراجعةٍ أو
-      // صور بديلٍ آخر، فيمرّ الحذفُ ثمّ لا يجد المرقّى ما يرقّيه فيبقى النطاق بلا رئيسيّة
-      // (الجذر: مراجعة Codex P2 على PR #825).
-      const [siblings] = await tx
-        .select({ n: sql<number>`count(*)` })
-        .from(productImages)
-        .where(
-          and(
-            eq(productImages.productId, image.productId),
-            eq(productImages.reviewStatus, "APPROVED"),
-            image.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, image.variantId),
-            sql`${productImages.id} <> ${image.id}`,
-          ),
-        );
-      if (Number(siblings?.n ?? 0) === 0) {
-        throw new TRPCError({ code: "CONFLICT", message: "لا يمكن حذف الصورة الوحيدة لهذا البديل — أضِف صورةً أخرى أوّلاً" });
-      }
+    if (!image) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر حذف الصورة",
+          why: "الصورة المطلوبة غير موجودة أو حُذفت مسبقاً",
+          doThis: "حدّث معرض الصور للتحقّق من القائمة الحاليّة",
+        }),
+      });
     }
     await tx.delete(productImages).where(eq(productImages.id, input.imageId));
+    let promotedNewPrimary = false;
     // إن كانت الرئيسيّة: عيّن التاليةَ رئيسيّةً — **في نفس النطاق** (variant-scoped)
     // كي لا نُرقّي صورةَ بديلٍ آخر إلى رئيسيّةٍ لهذا النطاق (خلطٌ يمرّ في الكشك/المتجر).
     if (image.isPrimary) {
@@ -134,6 +144,7 @@ export async function deleteProductImage(
         .limit(1);
       if (next) {
         await tx.update(productImages).set({ isPrimary: true }).where(eq(productImages.id, next.id));
+        promotedNewPrimary = true;
       }
     }
     await tx.insert(auditLogs).values({
@@ -143,29 +154,55 @@ export async function deleteProductImage(
       entityType: "productImage",
       entityId: String(input.imageId),
       oldValue: { productId: image.productId, variantId: image.variantId, objectKey: image.objectKey, isPrimary: image.isPrimary, sortOrder: image.sortOrder },
-      newValue: { deleted: true, reason },
+      newValue: { deleted: true, promotedNewPrimary, reason },
     });
-    return { imageId: input.imageId, promotedNewPrimary: image.isPrimary };
+    invalidateProductStudioCaches(companyId, [Number(image.productId)]);
+    return { imageId: input.imageId, promotedNewPrimary };
   });
 }
 
 /**
  * تعيينُ صورةٍ محدَّدة رئيسيّةً — يخفض بقيّة الرئيسيات على نفس المستوى (variantId).
- * (بعد هجرة 0268 صار كلّ بديلٍ يحتفظ برئيسيّته المستقلّة — approve يفعلها للجديد؛
- * هذا المسار يُوفّر تحكّماً يدوياً للمدير على الصور القائمة.)
+ * يشترط أن تكون الصورة معتمدة (`APPROVED`) حتى لا تُرقّى صورةٌ مرفوضة أو قيد المراجعة.
  */
 export async function setPrimaryProductImage(actor: ProductStudioActor, imageId: number) {
   assertStudioOperationBinding(actor, "productStudio.setImagePrimary");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const companyId = getCurrentCompanyId() ?? 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.setImagePrimary");
     const [image] = await tx
-      .select({ id: productImages.id, productId: productImages.productId, variantId: productImages.variantId, isPrimary: productImages.isPrimary })
+      .select({
+        id: productImages.id,
+        productId: productImages.productId,
+        variantId: productImages.variantId,
+        isPrimary: productImages.isPrimary,
+        reviewStatus: productImages.reviewStatus,
+      })
       .from(productImages)
       .where(eq(productImages.id, imageId))
       .limit(1)
       .for("update");
-    if (!image) throw new TRPCError({ code: "NOT_FOUND", message: "الصورة غير موجودة" });
+    if (!image) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تعيين الصورة رئيسيّةً",
+          why: "سجلّ الصورة غير موجود أو تمّت إزالته",
+          doThis: "حدّث معرض الصور واختر صورةً قائمة",
+        }),
+      });
+    }
+    if (image.reviewStatus !== "APPROVED") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تعيين الصورة رئيسيّةً",
+          why: "لا يمكن ترقية صورة غير معتمدة (قيد المراجعة أو مرفوضة) كصورة رئيسيّة",
+          doThis: "اعتمد الصورة أوّلاً من لوحة المراجعة ثمّ عيّنها رئيسيّةً",
+        }),
+      });
+    }
     if (image.isPrimary) return { imageId, changed: false as const };
     await tx
       .update(productImages)
@@ -186,6 +223,7 @@ export async function setPrimaryProductImage(actor: ProductStudioActor, imageId:
       entityId: String(imageId),
       newValue: { productId: image.productId, variantId: image.variantId },
     });
+    invalidateProductStudioCaches(companyId, [Number(image.productId)]);
     return { imageId, changed: true as const };
   });
 }
@@ -201,7 +239,17 @@ export async function reorderProductImages(
   assertStudioOperationBinding(actor, "productStudio.reorderImages");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const ids = Array.from(new Set(input.orderedImageIds.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0)));
-  if (ids.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "قائمة الصور فارغة" });
+  if (ids.length === 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الترتيب",
+        why: "قائمة معرّفات الصور المرسلة فارغة",
+        doThis: "رتّب صورةً واحدةً على الأقلّ ثمّ أعد الحفظ",
+      }),
+    });
+  }
+  const companyId = getCurrentCompanyId() ?? 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.reorderImages");
     const belonging = await tx
@@ -227,8 +275,9 @@ export async function reorderProductImages(
       action: "productStudio.image.reorder",
       entityType: "product",
       entityId: String(input.productId),
-      newValue: { orderedImageIds: ids.filter((id) => belongingSet.has(id)) },
+      newValue: { orderedImageIds: validIds },
     });
+    invalidateProductStudioCaches(companyId, [Number(input.productId)]);
     return { updatedCount: position };
   });
 }

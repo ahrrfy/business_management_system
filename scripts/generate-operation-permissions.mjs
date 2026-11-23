@@ -978,6 +978,8 @@ const WORDS = {
   items: "البنود",
   line: "السطر",
   lines: "السطور",
+  customizable: "قابلة للتخصيص",
+  logo: "الشعار",
   material: "الخامة",
   materials: "الخامات",
   recipe: "الوصفة",

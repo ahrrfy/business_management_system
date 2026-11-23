@@ -18,6 +18,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import {
+  DigitalCardThumbnail,
+  resolveImageFormSubmission,
+  toExistingImageItems,
+} from "@/components/digitalCards/DigitalCardImage";
 import { AppSelect } from "@/components/ui/AppSelect";
 import {
   DropdownMenu,
@@ -235,9 +241,13 @@ export default function DigitalOfferings() {
   const [fWalletByBranch, setFWalletByBranch] = useState<Record<number, string>>({});
   const [fInitialCost, setFInitialCost] = useState("");
   const [fInitialSellPrice, setFInitialSellPrice] = useState("");
+  const [fImageItems, setFImageItems] = useState<ImageItem[]>([]);
 
   function invalidate() {
     void utils.digitalCards.offerings.list.invalidate();
+    void utils.digitalCards.offerings.get.invalidate();
+    void utils.digitalCards.pos.listCards.invalidate();
+    void utils.digitalCards.pos.confirmCard.invalidate();
   }
 
   const createMut = trpc.digitalCards.offerings.create.useMutation({
@@ -285,6 +295,7 @@ export default function DigitalOfferings() {
     setFWalletByBranch({});
     setFInitialCost("");
     setFInitialSellPrice("");
+    setFImageItems([]);
     setFormOpen(true);
   }
 
@@ -300,6 +311,7 @@ export default function DigitalOfferings() {
     setFMarginPercent(o.marginPercent);
     setFMinimumMargin(o.minimumMargin);
     setFRoundingStep(o.roundingStep);
+    setFImageItems(toExistingImageItems(o.ownImageUrl));
     // الفروع تصل من استعلام التفاصيل (get) لأن قائمة العرض لا تحملها.
     setFBranchIds([]);
     setFWalletByBranch({});
@@ -363,8 +375,14 @@ export default function DigitalOfferings() {
       })),
     };
 
+    const imageUrl = resolveImageFormSubmission(fImageItems);
+
     if (editId != null) {
-      updateMut.mutate({ id: editId, ...shared });
+      updateMut.mutate({
+        id: editId,
+        ...shared,
+        ...(imageUrl !== undefined ? { imageUrl } : {}),
+      });
       return;
     }
     const providerId = Number(fProviderId);
@@ -373,7 +391,11 @@ export default function DigitalOfferings() {
       return notify.err("أدخل تكلفة الشراء وسعر البيع الأول للبطاقة");
     }
     createMut.mutate(
-      { providerId, ...shared },
+      {
+        providerId,
+        ...shared,
+        ...(imageUrl ? { imageUrl } : {}),
+      },
       {
         onSuccess: async (created) => {
           try {
@@ -423,6 +445,9 @@ export default function DigitalOfferings() {
   const saving =
     createMut.isPending || updateMut.isPending || initialPriceMut.isPending;
   const editing = editId != null;
+  const selectedProvider = (providers.data ?? []).find(
+    (p) => p.id === Number(fProviderId),
+  );
 
   /*
    * طباعة A4 بهوية المستند بدل `window.print()` (كان يطبع الشاشة بشريط الأدوات ومنتقي
@@ -477,7 +502,32 @@ export default function DigitalOfferings() {
       header: "البطاقة",
       accessorFn: (o) => o.productName,
       meta: { width: "wide" },
-      cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <div className="flex items-center gap-2.5">
+            <DigitalCardThumbnail
+              src={o.effectiveImageUrl}
+              alt={o.productName}
+              fallback="card"
+              className="size-9 shrink-0"
+            />
+            <div className="min-w-0">
+              <div className="font-medium">{o.productName}</div>
+              {o.hasCustomImage && (
+                <span className="inline-block rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  صورة مخصّصة
+                </span>
+              )}
+              {!o.hasCustomImage && o.inheritsProviderLogo && (
+                <span className="inline-block rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  شعار المزوّد
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      },
     },
     ...(columnVisible("provider")
       ? ([{ id: "supplierName", header: "المزوّد", accessorFn: (o) => o.supplierName, cell: ({ row }) => row.original.supplierName }] as ColumnDef<OfferingRow, unknown>[])
@@ -825,6 +875,44 @@ export default function DigitalOfferings() {
                 الأسعار تُحدّد مباشرةً من حقلي التكلفة وسعر البيع أدناه، دون
                 قواعد تسعير أو تقريب معقّدة.
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-sm font-medium">صورة البطاقة (اختياري)</label>
+                {fImageItems.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFImageItems([])}
+                  >
+                    <RotateCcw aria-hidden className="size-3.5" />
+                    استعادة شعار المزوّد
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                يُترك فارغاً لوراثة شعار المزوّد تلقائياً
+              </p>
+              {fImageItems.length === 0 && selectedProvider?.logoUrl && (
+                <div className="flex items-center gap-2.5 rounded-md border bg-muted/20 p-2 text-xs text-muted-foreground">
+                  <DigitalCardThumbnail
+                    src={selectedProvider.logoUrl}
+                    alt={selectedProvider.supplierName}
+                    fallback="provider"
+                    className="size-8 shrink-0"
+                  />
+                  <span>ترث هذه البطاقة شعار «{selectedProvider.supplierName}» تلقائياً.</span>
+                </div>
+              )}
+              <ImageUploader
+                value={fImageItems}
+                onChange={setFImageItems}
+                maxItems={1}
+                singlePrimary={false}
+                hint="PNG · JPG · WEBP — يُترك فارغاً لوراثة شعار المزوّد تلقائياً"
+              />
             </div>
 
             {!editing && (

@@ -112,11 +112,15 @@ import {
 } from "../idempotency";
 import { computeSaleSemanticPayloadSha256 } from "@shared/offlineCaptureProof";
 import { enqueuePostCommit, enqueuePostRollback } from "../tx";
+import { stripRecipeSelectionMeta } from "@shared/recipeVariantSelection";
 import {
+  assertNoUnexpectedRecipeSelections,
   discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
+  resolveRecipeLineSelections,
   SERVICE_RECIPE_CONSUMPTION_NOTE,
   serviceRecipeDefinitionsFingerprint,
+  type ResolvedServiceRecipeLine,
 } from "../serviceRecipeConsumption";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 import { titleForChannel } from "@shared/productChannelTitles";
@@ -276,6 +280,7 @@ function canonicalSaleSemanticPayload(
       unitCostOverride:
         l.unitCostOverride != null ? money(l.unitCostOverride).toFixed(2) : null,
       isGift: Boolean(l.isGift),
+      recipeSelections: stripRecipeSelectionMeta(l.recipeSelections) ?? null,
     })),
     invoiceDiscount:
       input.invoiceDiscount != null ? money(input.invoiceDiscount).toFixed(2) : null,
@@ -876,6 +881,13 @@ async function createSaleInTxInner(
     tx,
     discoveredServiceVariantIds,
   );
+  const selectedServiceMaterialVariantIds = Array.from(
+    new Set(
+      input.lines
+        .flatMap((l) => (l.recipeSelections ?? []).map((s) => Number(s.variantId)))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ).sort((a, b) => a - b);
   const discoveredNestedVariantIds = [
     ...Array.from(bundleDefs.values()).flatMap((rows) =>
       rows.map((row) => row.componentVariantId),
@@ -883,6 +895,7 @@ async function createSaleInTxInner(
     ...Array.from(serviceDefinitions.values()).flatMap((definition) =>
       definition.lines.map((line) => line.inputVariantId),
     ),
+    ...selectedServiceMaterialVariantIds,
   ];
   const fullScopeVariantIds = Array.from(
     new Set([...uniqueVariantIds, ...discoveredNestedVariantIds]),
@@ -893,6 +906,18 @@ async function createSaleInTxInner(
     .where(inArray(productVariants.id, fullScopeVariantIds))
     .orderBy(productVariants.id);
   if (scopeRefs.length !== fullScopeVariantIds.length) {
+    const foundScopeIds = new Set(scopeRefs.map((row) => Number(row.id)));
+    const missingSelected = selectedServiceMaterialVariantIds.find((id) => !foundScopeIds.has(id));
+    if (missingSelected != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "متغيّر المادة المختار غير موجود",
+          why: `تعذّر العثور على المتغيّر #${missingSelected} في الكتالوج`,
+          doThis: "حدّث شاشة البيع واختر متغيّراً نشطاً",
+        }),
+      });
+    }
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -1106,6 +1131,25 @@ async function createSaleInTxInner(
     });
   }
   serviceDefinitions = currentServiceDefinitions;
+  const resolvedServiceLinesByIdx = new Map<number, ResolvedServiceRecipeLine[]>();
+  for (let lineIdx = 0; lineIdx < input.lines.length; lineIdx++) {
+    const line = input.lines[lineIdx]!;
+    const lineKind = kindByVariant.get(line.variantId) ?? "STOCKED";
+    if (lineKind !== "SERVICE") {
+      assertNoUnexpectedRecipeSelections(line.recipeSelections, `البند #${line.variantId}`);
+      continue;
+    }
+    const definition = serviceDefinitions.get(line.variantId);
+    if (!definition) {
+      assertNoUnexpectedRecipeSelections(line.recipeSelections, `الخدمة #${line.variantId}`);
+      continue;
+    }
+    const resolved = await resolveRecipeLineSelections(tx, definition.lines, line.recipeSelections);
+    resolvedServiceLinesByIdx.set(lineIdx, resolved);
+    for (const rl of resolved) {
+      serviceMaterialIds.add(rl.variantId);
+    }
+  }
   await assertStockedOwnedMaterials(
     tx,
     Array.from(serviceMaterialIds),
@@ -1319,7 +1363,8 @@ async function createSaleInTxInner(
     isGift: boolean;
     lineGross: Decimal;
   }> = [];
-  for (const l of input.lines) {
+  for (let lineIdx = 0; lineIdx < input.lines.length; lineIdx++) {
+    const l = input.lines[lineIdx]!;
     const v = variantById.get(l.variantId);
     if (!v)
       throw new TRPCError({
@@ -1387,7 +1432,7 @@ async function createSaleInTxInner(
     // بكلفتها، ثم unitCost = round2(Σ / baseQuantity). خدمةٌ
     // بلا وصفة ⇒ unitCost=0 (متسّق مع سياسة النقطة النقدية القائمة).
     const computeServiceCostSnapshot = () => {
-      const rlines = serviceRecipe.get(l.variantId);
+      const rlines = resolvedServiceLinesByIdx.get(lineIdx);
       if (!rlines || !rlines.length || baseQuantity <= 0) {
         return {
           unitCost: "0.00",
@@ -1413,21 +1458,21 @@ async function createSaleInTxInner(
         const consumed = exactRecipeMaterialQuantity(
           rl.qtyPerOutputBase,
           baseQuantity,
-          `مادة الوصفة #${rl.inputVariantId}`,
+          `مادة الوصفة #${rl.variantId}`,
         );
         const matCost = round2(
-          money(materialCostByVariant.get(rl.inputVariantId) ?? "0"),
+          money(materialCostByVariant.get(rl.variantId) ?? "0"),
         );
         const materialLineCost = round2(matCost.times(consumed));
         lineCost = lineCost.plus(materialLineCost);
-        const current = byMaterial.get(rl.inputVariantId) ?? {
+        const current = byMaterial.get(rl.variantId) ?? {
           baseQuantity: 0,
           unitCost: matCost.toFixed(2),
           lineCost: money(0),
         };
         current.baseQuantity = addQuantities(current.baseQuantity, consumed);
         current.lineCost = current.lineCost.plus(materialLineCost);
-        byMaterial.set(rl.inputVariantId, current);
+        byMaterial.set(rl.variantId, current);
       }
       const exactLineCost = round2(lineCost);
       return {
@@ -1862,6 +1907,12 @@ async function createSaleInTxInner(
       unitCost,
       lineCost,
       serviceMaterials: serviceCost?.materials ?? [],
+      recipeSelections: l.recipeSelections?.length
+        ? l.recipeSelections.map((s) => ({
+            recipeLineId: Number(s.recipeLineId),
+            variantId: Number(s.variantId),
+          }))
+        : null,
       quantity: lineRes.quantity,
       discountAmount: lineRes.discountAmount,
       total: lineRes.total,
@@ -2472,6 +2523,7 @@ async function createSaleInTxInner(
       // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
       isGift: c.isGift,
       itemNameSnapshot: c.invoiceName,
+      recipeSelections: c.recipeSelections,
     });
     const insertedInvoiceItemId = extractInsertId(itemInsRes);
     if (c.internalLineToken) {

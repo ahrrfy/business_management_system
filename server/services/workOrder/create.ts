@@ -49,7 +49,12 @@ import type { Tx } from "../../db";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
-import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
+import {
+  assertNoUnexpectedRecipeSelections,
+  exactRecipeMaterialQuantity,
+  resolveRecipeLineSelections,
+  type ServiceRecipeLine,
+} from "../serviceRecipeConsumption";
 import { addQuantities, isQuantity } from "@shared/quantity";
 import {
   createWorkOrderDesignRevisionTx,
@@ -95,7 +100,7 @@ async function loadLockedServiceRecipeLines(
   tx: Tx,
   outputVariantId: number,
   lockedScope: ReadonlySet<number>,
-): Promise<Array<{ inputVariantId: number; qtyPerOutputBase: string }> | null> {
+): Promise<ServiceRecipeLine[] | null> {
   const heads = await tx
     .select({
       id: productionRecipes.id,
@@ -131,8 +136,10 @@ async function loadLockedServiceRecipeLines(
   const recipeId = Number(active[0].id);
   const rows = await tx
     .select({
+      id: productionRecipeLines.id,
       inputVariantId: productionRecipeLines.inputVariantId,
       qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+      allowVariantChoice: productionRecipeLines.allowVariantChoice,
     })
     .from(productionRecipeLines)
     .where(eq(productionRecipeLines.recipeId, recipeId))
@@ -148,9 +155,11 @@ async function loadLockedServiceRecipeLines(
       }),
     });
   }
-  const lines = rows.map((row) => ({
+  const lines: ServiceRecipeLine[] = rows.map((row) => ({
+    id: Number(row.id),
     inputVariantId: Number(row.inputVariantId),
     qtyPerOutputBase: String(row.qtyPerOutputBase),
+    allowVariantChoice: row.allowVariantChoice === true,
   }));
   const outsideScope = lines.find(
     (line) => !lockedScope.has(line.inputVariantId),
@@ -359,13 +368,20 @@ export async function createWorkOrderInTx(
       }),
     });
   }
+  if (input.baseVariantId == null) {
+    assertNoUnexpectedRecipeSelections(input.recipeSelections, "أمر الشغل");
+  }
   if (input.baseVariantId != null) {
     const recipeScope = await recipeMaterialScopeIds(tx, input.baseVariantId);
+    const selectedVariantIds = (input.recipeSelections ?? [])
+      .map((s) => Number(s.variantId))
+      .filter((id) => Number.isInteger(id) && id > 0);
     const scopeIds = Array.from(
       new Set([
         input.baseVariantId,
         ...materials.map((material) => material.variantId),
         ...recipeScope,
+        ...selectedVariantIds,
       ]),
     ).sort((a, b) => a - b);
     const lockedScope = await tx
@@ -464,39 +480,50 @@ export async function createWorkOrderInTx(
     );
   }
 
-  if (materials.length === 0 && baseIsService && input.baseVariantId != null) {
+  if (!baseIsService) {
+    assertNoUnexpectedRecipeSelections(input.recipeSelections, "أمر الشغل");
+  } else if (input.baseVariantId != null) {
     const recipeLines = await loadLockedServiceRecipeLines(
       tx,
       input.baseVariantId,
       lockedBaseScope,
     );
-    if (recipeLines) {
-      const derived = new Map<number, number>();
-      for (const line of recipeLines) {
-        const lineQuantity = exactRecipeMaterialQuantity(
-          line.qtyPerOutputBase,
-          baseBaseQuantity!,
-          `مادة وصفة الخدمة #${line.inputVariantId}`,
-        );
-        let total: number;
-        try {
-          total = addQuantities(derived.get(line.inputVariantId) ?? 0, lineQuantity);
-        } catch {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: appErrorMessage({
-              what: "تعذّر اشتقاق مواد أمر الشغل",
-              why: `كمية مادة وصفة الخدمة #${line.inputVariantId} تتجاوز الحد الآمن`,
-              doThis: "خفّض كمية الأمر أو عدّل وصفة الخدمة ثم أعد المحاولة",
-            }),
-          });
+    if (!recipeLines) {
+      assertNoUnexpectedRecipeSelections(input.recipeSelections, "أمر الشغل");
+    } else {
+      const resolvedLines = await resolveRecipeLineSelections(
+        tx,
+        recipeLines,
+        input.recipeSelections,
+      );
+      if (materials.length === 0) {
+        const derived = new Map<number, number>();
+        for (const line of resolvedLines) {
+          const lineQuantity = exactRecipeMaterialQuantity(
+            line.qtyPerOutputBase,
+            baseBaseQuantity!,
+            `مادة وصفة الخدمة #${line.variantId}`,
+          );
+          let total: number;
+          try {
+            total = addQuantities(derived.get(line.variantId) ?? 0, lineQuantity);
+          } catch {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذّر اشتقاق مواد أمر الشغل",
+                why: `كمية مادة وصفة الخدمة #${line.variantId} تتجاوز الحد الآمن`,
+                doThis: "خفّض كمية الأمر أو عدّل وصفة الخدمة ثم أعد المحاولة",
+              }),
+            });
+          }
+          derived.set(line.variantId, total);
         }
-        derived.set(line.inputVariantId, total);
+        materials = Array.from(derived, ([variantId, baseQuantity]) => ({
+          variantId,
+          baseQuantity,
+        })).sort((a, b) => a.variantId - b.variantId);
       }
-      materials = Array.from(derived, ([variantId, baseQuantity]) => ({
-        variantId,
-        baseQuantity,
-      })).sort((a, b) => a.variantId - b.variantId);
     }
   }
 

@@ -43,6 +43,8 @@ import {
 } from "@/components/pos/usePOSOfflineCapture";
 import { usePOSExternalPayment } from "@/components/pos/usePOSExternalPayment";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
+import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
+import { useRetailPosCustomizableLines } from "@/components/recipe/usePrintCustomizableLines";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
 import { trpc } from "@/lib/trpc";
@@ -58,8 +60,9 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, buildSaleLine, createTab, buildPosReceiptPromoSummary,
+  lineIdOf, nextCartLineId, POS_COLORS, fmt, money, buildSaleLine, createTab, buildPosReceiptPromoSummary,
 } from "@/components/pos/posShared";
+import { serializeRecipeSelectionsKey } from "@shared/recipeVariantSelection";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
 import { CartPanel } from "@/components/pos/CartPanel";
@@ -358,55 +361,50 @@ export default function POS() {
   cartHasDigitalRef.current = cartHasDigital;
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
+  const retailCustom = useRetailPosCustomizableLines({
+    branchId, offline, resetCouponItems, patchActive, onAdded: () => setAddTick((t) => t + 1),
+  });
   function addRow(row: PosRow) {
     if (row.price == null) {
       notify.err(`لا سعر لـ ${row.productName} (${row.unitName}) في فئة ${priceTierLabel(effectiveTier)}`);
       return;
     }
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
-    // صفوف الكتالوج الأوفلايني القديمة لا تحمل branchId؛ نربط الصف المضاف بالفرع الحالي صراحةً.
-    const currentRow = { ...row, branchId: row.branchId ?? branchId };
-    setCart((raw) => {
-      const prev = resetCouponItems(raw);
-      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === currentRow.productUnitId);
-      if (i >= 0) {
-        const next = [...prev];
-        const updated = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
-        next.splice(i, 1);
-        next.unshift(updated);
-        return next;
-      }
-      return [{ row: currentRow, qty: 1 }, ...prev];
-    });
-    setSelId(currentRow.productUnitId);
-    // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
-    setAddTick((t) => t + 1);
+    retailCustom.addOrPromptRow(row);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
   }
 
-  function changeItemUnit(oldUnitId: number, newRow: PosRow) {
+  function changeItemUnit(oldLineId: number, newRow: PosRow) {
     if (receipt) setReceipt(null);
-    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null });
     const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
-    setCart((raw) => {
-      const prev = resetCouponItems(raw);
-      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === oldUnitId);
-      if (i < 0) return prev;
+    patchActive((tab) => {
+      const prev = resetCouponItems(tab.cart);
+      const couponReset = tab.couponCode
+        ? { couponCode: null, couponLabel: null, couponFreeShippingPromo: null }
+        : {};
+      const i = prev.findIndex((c) => !c.digital && lineIdOf(c) === oldLineId);
+      if (i < 0) return couponReset;
       const target = prev[i];
-      const dupIdx = prev.findIndex((c, idx) => idx !== i && !c.digital && c.row.productUnitId === currentRow.productUnitId);
+      const targetKey = serializeRecipeSelectionsKey(target.recipeSelections);
+      const dupIdx = prev.findIndex(
+        (c, idx) =>
+          idx !== i &&
+          !c.digital &&
+          c.row.productUnitId === currentRow.productUnitId &&
+          serializeRecipeSelectionsKey(c.recipeSelections) === targetKey,
+      );
       if (dupIdx >= 0) {
         const merged = { ...prev[dupIdx], qty: prev[dupIdx].qty + target.qty, row: currentRow };
         const next = prev.filter((_, idx) => idx !== i && idx !== dupIdx);
         next.unshift(merged);
-        return next;
+        return { ...couponReset, cart: next, selId: lineIdOf(merged) };
       }
       const next = [...prev];
-      next[i] = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
-      return next;
+      const updated = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
+      next[i] = updated;
+      return { ...couponReset, cart: next, selId: lineIdOf(updated) };
     });
-    setSelId(currentRow.productUnitId);
   }
 
   function changeQty(id: number, qty: number) {
@@ -526,7 +524,7 @@ export default function POS() {
       cartFingerprint: digitalCartFingerprint(),
       customerId: activeTab.customerId,
       priceTier: effectiveTier,
-      regularLines: cart.filter((c) => !c.digital).map((c) => ({ lineKey: `regular-${c.row.productUnitId}`, ...buildSaleLine(c) })),
+      regularLines: cart.filter((c) => !c.digital).map((c) => ({ lineKey: `regular-${lineIdOf(c)}`, ...buildSaleLine(c) })),
       lines: digitalLines.map((c) => ({
         lineKey: c.digital!.lineKey,
         offeringId: c.digital!.offeringId,
@@ -548,7 +546,7 @@ export default function POS() {
     patchActive({ couponCode: null, couponLabel: null, couponFreeShippingPromo: null, invoiceDiscountPct: "" });
     // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
     // (تبديل مسار/تبويب) بينما الـref يعود للصفر ⇒ تصادم مفاتيح React. أقلّ معرّف ناقص واحد.
-    const firstLineId = Math.min(0, ...cart.map((c) => c.digital?.lineId ?? 0)) - 1;
+    const firstLineId = nextCartLineId(cart);
     const added: CartItem[] = basket.lines.map(({ card, student }, index) => {
     const lineId = firstLineId - index;
     const row: PosRow = {
@@ -1234,6 +1232,8 @@ export default function POS() {
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
           onUnitChange={changeItemUnit}
+          customizableVariantIds={retailCustom.customizableVariantIds}
+          onEditRecipeSelections={retailCustom.openForCartItem}
           numMode={activeTab.numMode} setNumMode={setNumMode}
           customerId={activeTab.customerId}
           selectedCustomer={selectedCustomer}
@@ -1300,6 +1300,18 @@ export default function POS() {
         onApproveCredit={(appr) => submitSale(appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))}
         onCancelCredit={() => setCreditPrompt(null)}
       />
+      {retailCustom.picker && (
+        <RecipeVariantPickerDialog
+          open
+          title={`تخصيص مواد الخدمة: ${retailCustom.picker.row.productName}`}
+          lines={retailCustom.picker.lines}
+          initialSelections={retailCustom.picker.initialSelections}
+          quantity={retailCustom.picker.quantity}
+          confirmLabel={retailCustom.picker.editingLineId != null ? "تحديث الاختيار" : "إضافة للسلة"}
+          onCancel={retailCustom.closePicker}
+          onConfirm={retailCustom.confirmPicker}
+        />
+      )}
     </div>
   );
 }

@@ -10,13 +10,26 @@ import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, roundCashIQD, formatIqd } from "@/lib/money";
 import { printShiftOpen, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
-import { preopenShippingLabelWindow, printShippingLabel, resolveShippingLabelPaymentState } from "@/lib/printing/shippingLabel";
 import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { cachePrintServices, readCachedPrintServices } from "@/lib/offline/printServicesCache";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineItem, getDeviceCode, isOfflineSaleEnabled, type OfflinePrintSalePayload } from "@/lib/offline/outbox";
+import {
+  cachePrintServices,
+  readCachedPrintServices,
+} from "@/lib/offline/printServicesCache";
+import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
+import {
+  buildOfflinePrintPayloadAndReceipt,
+  toPrintSaleLines,
+  triggerPrintPosShippingLabel,
+  usePrintCustomizableLines,
+} from "@/components/recipe/usePrintCustomizableLines";
+import {
+  serializeRecipeSelectionsKey,
+  type RecipeLineSelectionWithMeta,
+} from "@shared/recipeVariantSelection";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineItem, getDeviceCode, isOfflineSaleEnabled } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -200,6 +213,14 @@ export default function PrintPOS() {
     () => (offline ? (cachedServices ?? []) : (servicesQ.data ?? [])),
     [offline, cachedServices, servicesQ.data],
   );
+
+  const {
+    customizableLinesByVariantId,
+    customizableVariantIds,
+    variantPicker,
+    setVariantPicker,
+    openForCartLine,
+  } = usePrintCustomizableLines<Svc>({ branchId, offline });
 
   // الفئات (تبويبات) مشتقّة من الخدمات مع حفظ ترتيب أول ظهور.
   // print-catalog: تبويب «أخرى» (id=0) للخدمات بلا فئة — وإلا تُحجَب من الشبكة كُلّياً
@@ -445,13 +466,25 @@ export default function PrintPOS() {
   }
 
   // ── عمليات السلة ──
-  function addService(svc: Svc) {
+  function addService(svc: Svc, recipeSelections?: RecipeLineSelectionWithMeta[]) {
     if (receipt) setReceipt(null);
     setMessage(null);
+    if (!recipeSelections) {
+      const customLines = customizableLinesByVariantId.get(Number(svc.variantId));
+      if (customLines?.length) {
+        setVariantPicker({ svc, lines: customLines });
+        return;
+      }
+    }
     bumpRecent(svc.productUnitId);
     const custom = isCustomPriceSku(svc.sku);
+    const selKey = serializeRecipeSelectionsKey(recipeSelections);
     setCart((prev) => {
-      const i = prev.findIndex((c) => c.svc.productUnitId === svc.productUnitId);
+      const i = prev.findIndex(
+        (c) =>
+          c.svc.productUnitId === svc.productUnitId &&
+          serializeRecipeSelectionsKey(c.recipeSelections) === selKey,
+      );
       if (i >= 0 && !custom) {
         const n = [...prev];
         n[i] = { ...n[i], qty: n[i].qty + 1 };
@@ -462,10 +495,22 @@ export default function PrintPOS() {
       const uid = UID++;
       if (custom) setTimeout(() => setEditPriceUid(uid), 30);
       patch({ selUid: uid });
-      return [...prev, { uid, svc, qty: 1, price: Number(svc.price ?? 0) }];
+      return [
+        ...prev,
+        {
+          uid,
+          svc,
+          qty: 1,
+          price: Number(svc.price ?? 0),
+          ...(recipeSelections?.length ? { recipeSelections } : {}),
+        },
+      ];
     });
     // ٢٤/٨: أشِر إلى الجدول أنّ إضافةً حدثت — يشمل حالة رفع الكمية على السطر الأصل.
     setAddTick((t) => t + 1);
+  }
+  function updateLineRecipeSelections(uid: number, nextSelections: RecipeLineSelectionWithMeta[]) {
+    setCart((p) => p.map((c) => (c.uid === uid ? { ...c, recipeSelections: nextSelections } : c)));
   }
   function changeQty(uid: number, q: number) {
     if (q <= 0) { setCart((p) => p.filter((c) => c.uid !== uid)); if (tab.selUid === uid) patch({ selUid: null }); }
@@ -755,23 +800,23 @@ export default function PrintPOS() {
     }
 
     const receiptNumber = await allocateOfflineReceiptNumber(branchId);
-    const payload: OfflinePrintSalePayload = {
+    const { payload, receipt: rec } = buildOfflinePrintPayloadAndReceipt({
       branchId,
       shiftId: shift.id,
-      ...(tab.customerId ? { customerId: tab.customerId } : {}),
-      priceTier: "RETAIL",
-      lines: cart.map((c) => ({
-        variantId: c.svc.variantId,
-        productUnitId: c.svc.productUnitId,
-        quantity: String(c.qty),
-        // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
-        unitPriceOverride: c.price.toFixed(2),
-      })),
-      ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      payment: { amount: total.toFixed(2), method: "CASH" },
+      customerId: tab.customerId,
+      customerName: selectedCustomer?.name,
+      cashierName: me.data?.name ?? undefined,
+      receiptNumber,
       clientRequestId,
-      cashRoundIQD: true,
-    };
+      cart,
+      total,
+      rawTotal,
+      cashTotal,
+      paid,
+      invoiceDiscountAmount,
+      hasInvoiceDiscount: invoiceDiscountAmountD.gt(0),
+      formattedDiscount: invoiceDiscountAmountD.toFixed(2),
+    });
     const stored = await enqueueOfflineItem({
       kind: "PRINT_SALE",
       payload,
@@ -782,30 +827,6 @@ export default function PrintPOS() {
       setMessage({ kind: "err", text: "تعذّر حفظ العملية محلياً (مساحة المتصفح؟) — لا تُسلّم العمل قبل عودة الاتصال." });
       return false;
     }
-
-    const now = new Date();
-    const rec: Receipt = {
-      invoiceId: 0, // لا فاتورة رسميّة بعد — الطباعة تستعمل الرقم المؤقّت.
-      invoiceNumber: receiptNumber,
-      num: receiptNumber,
-      date: fmtDateTime(now),
-      printDate: fmtDate(now),
-      printTime: fmtTime(now),
-      cashierName: me.data?.name ?? undefined,
-      customerName: selectedCustomer?.name,
-      shiftId: shift?.id ?? null,
-      lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
-      subtotal: rawTotal,
-      ...(invoiceDiscountAmount > 0 ? { invoiceDiscount: invoiceDiscountAmount } : {}),
-      cashRounding: cashTotal - total,
-      total: cashTotal,
-      received: paid,
-      change: Math.max(0, paid - cashTotal),
-      credit: 0,
-      method: METHOD_LABEL.CASH,
-      methodCode: "CASH",
-      isCredit: false,
-    };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: cashTotal });
     setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null, invoiceDiscountType: "percent", invoiceDiscountValue: "" });
@@ -847,12 +868,7 @@ export default function PrintPOS() {
         contactName: tab.contactName.trim() || undefined,
         contactPhone: tab.contactPhone.trim() || undefined,
         priceTier: "RETAIL",
-        lines: cart.map((c) => ({
-          variantId: c.svc.variantId,
-          productUnitId: c.svc.productUnitId,
-          quantity: String(c.qty),
-          unitPriceOverride: c.price.toFixed(2),
-        })),
+        lines: toPrintSaleLines(cart),
         ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
         reason: "تعديل بنود الفاتورة المحجوزة من كاشير الطباعة",
         additionalPayment: additionalAmount ? {
@@ -888,7 +904,7 @@ export default function PrintPOS() {
         ...(splitSub.splitDeviceId ? { deviceId: splitSub.splitDeviceId } : {}),
         customerId: tab.customerId ?? undefined, contactName: tab.contactName.trim() || undefined, contactPhone: tab.contactPhone.trim() || undefined,
         channel: tab.channel, isReservation: isReservation ? true : undefined, priceTier: "RETAIL",
-        lines: cart.map((c) => ({ variantId: c.svc.variantId, productUnitId: c.svc.productUnitId, quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2) })),
+        lines: toPrintSaleLines(cart),
         ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
         payments: splitSub.paymentsPayload,
         ...(splitSub.cashFull ? { cashRoundIQD: true } : {}),
@@ -941,10 +957,7 @@ export default function PrintPOS() {
       channel: tab.channel,
       isReservation: isReservation ? true : undefined,
       priceTier: "RETAIL",
-      lines: cart.map((c) => ({
-        variantId: c.svc.variantId, productUnitId: c.svc.productUnitId,
-        quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
-      })),
+      lines: toPrintSaleLines(cart),
       ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       payment: {
         amount:
@@ -1211,7 +1224,10 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder} addTick={addTick} subtotal={rawTotal} invoiceDiscountType={tab.invoiceDiscountType} invoiceDiscountValue={tab.invoiceDiscountValue} invoiceDiscountAmount={invoiceDiscountAmount} onInvoiceDiscountChange={(type, value) => patch({ invoiceDiscountType: type, invoiceDiscountValue: value })} />
+          editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder} addTick={addTick} subtotal={rawTotal} invoiceDiscountType={tab.invoiceDiscountType} invoiceDiscountValue={tab.invoiceDiscountValue} invoiceDiscountAmount={invoiceDiscountAmount} onInvoiceDiscountChange={(type, value) => patch({ invoiceDiscountType: type, invoiceDiscountValue: value })}
+          customizableVariantIds={customizableVariantIds}
+          onChangeRecipeSelections={openForCartLine as any}
+        />
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
@@ -1279,27 +1295,15 @@ export default function PrintPOS() {
               if (!printed.ok) setMessage({ kind: "err", text: "تم الإصدار ولكن فشلت الطباعة الحرارية." });
             }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
           }}
-          onPrintLabel={() => {
-            const win = preopenShippingLabelWindow();
-            const origin = typeof window !== "undefined" ? window.location.origin : "";
-            const orderRef = receipt.invoiceNumber || receipt.num || "";
-            const deliveryFee = receipt.delivery?.fee ? String(receipt.delivery.fee) : null;
-            void printAuthorizedDocument(receipt.invoiceId ?? 0, "SHIPPING_LABEL", true, async () => {
-              const result = await printShippingLabel({
-              orderNumber: orderRef,
-              customerName: receipt.customerName || tab.contactName || null,
-              customerPhone: tab.contactPhone || null,
-              governorate: receipt.delivery && "governorate" in receipt.delivery ? String((receipt.delivery as any).governorate) : null,
-              addressText: receipt.delivery?.address ?? null,
-              total: String(receipt.total),
-              subtotal: receipt.subtotal != null ? String(receipt.subtotal) : String(receipt.total),
-              shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null, paymentState: resolveShippingLabelPaymentState(Math.max(0, receipt.total - receipt.received)), isReprint: true,
-              qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
-              items: receipt.lines.map((line) => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
-              }, { into: win });
-              return result.ok ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" };
-            }).then((r) => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => { try { win?.close(); } catch { /* noop */ } notify.err(error); });
-          }}
+          onPrintLabel={() =>
+            triggerPrintPosShippingLabel({
+              receipt,
+              contactName: tab.contactName,
+              contactPhone: tab.contactPhone,
+              printAuthorizedDocument: printAuthorizedDocument as any,
+              onError: (text) => setMessage({ kind: "err", text }),
+            })
+          }
         />
       )}
       {shifting && (
@@ -1329,6 +1333,25 @@ export default function PrintPOS() {
         cashierName={me.data?.name ?? undefined}
         shiftId={shift?.id}
       />
+      {variantPicker && (
+        <RecipeVariantPickerDialog
+          open
+          title={`اختيار ألوان/متغيرات: ${variantPicker.svc.productName}`}
+          lines={variantPicker.lines}
+          initialSelections={variantPicker.initialSelections}
+          quantity={variantPicker.quantity ?? 1}
+          confirmLabel={variantPicker.editingUid != null ? "تحديث اللون" : "إضافة للفاتورة"}
+          onCancel={() => setVariantPicker(null)}
+          onConfirm={(selections) => {
+            if (variantPicker.editingUid != null) {
+              updateLineRecipeSelections(variantPicker.editingUid, selections);
+            } else {
+              addService(variantPicker.svc, selections);
+            }
+            setVariantPicker(null);
+          }}
+        />
+      )}
     </div>
   );
 }

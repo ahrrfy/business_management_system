@@ -2710,6 +2710,13 @@
 			"when": 1788148888000,
 			"tag": "0430_product_photography_locks",
 			"breakpoints": true
+		},
+		{
+			"idx": 431,
+			"version": "5",
+			"when": 1788148889000,
+			"tag": "0431_recipe_variant_choice_and_digital_images",
+			"breakpoints": true
 		}
 	]
 }

@@ -16,6 +16,7 @@ export const DB_IMG_PREFIX = "dbimg:";
 export interface ServerProductImage {
   id: number;
   url: string;
+  displayUrl?: string;
   isPrimary: boolean;
   sortOrder: number;
 }
@@ -28,14 +29,68 @@ export interface ProductImagePayloadItem {
   sortOrder: number;
 }
 
-/** يحوّل صور الخادم إلى عناصر الرافع (dataUrl=url، وid موسومٌ بمعرّف القاعدة). */
+/** يحوّل صور الخادم إلى عناصر الرافع (مع استخدام displayUrl الآمن للعرض مع بقاء url للمطابقة). */
 export function hydrateProductImages(images: ServerProductImage[] | undefined): ImageItem[] {
   return (images ?? []).map((im) => ({
     id: `${DB_IMG_PREFIX}${im.id}`,
-    dataUrl: im.url,
+    dataUrl: im.displayUrl ?? im.url,
     url: im.url,
+    ...(im.displayUrl !== undefined ? { displayUrl: im.displayUrl } : {}),
     isPrimary: !!im.isPrimary,
   }));
+}
+
+export interface StudioImageSrcInput {
+  id: number;
+  thumbDataUrl?: string | null;
+  displayUrl?: string | null;
+  contentHash?: string | null;
+  url?: string | null;
+}
+
+/**
+ * يبني رابط عرضٍ آمنٍ لصور الاستوديو للموظّفين (لا يطلق 404 عند showInStore = 0
+ * ولا يُصدر رابط `/api/img/inventory-product/:id` عارياً بلا بصمة `?v=<16-hex>`).
+ */
+export function resolveStudioImageSrc(
+  img: StudioImageSrcInput,
+  preferFullRes = false,
+): string {
+  const thumb = img.thumbDataUrl?.trim() || null;
+  const hash16 =
+    img.contentHash && /^[0-9a-f]{64}$/i.test(img.contentHash.trim())
+      ? img.contentHash.trim().toLowerCase().slice(0, 16)
+      : null;
+
+  let inventoryUrl: string | null = null;
+  if (img.displayUrl && /^\/api\/img\/inventory-product\/\d+\?v=[0-9a-f]{16}$/i.test(img.displayUrl.trim())) {
+    inventoryUrl = img.displayUrl.trim();
+  } else if (hash16) {
+    inventoryUrl = `/api/img/inventory-product/${img.id}?v=${hash16}`;
+  } else if (img.url) {
+    const rawUrl = img.url.trim();
+    const publicMatch = /^\/api\/img\/(?:company\/[^/]+\/)?product\/(\d+)(?:\?([^#]*))?$/i.exec(rawUrl);
+    if (publicMatch) {
+      const v = new URLSearchParams(publicMatch[2] ?? "").get("v");
+      if (v && /^[0-9a-f]{16}$/i.test(v)) {
+        inventoryUrl = `/api/img/inventory-product/${publicMatch[1]}?v=${v.toLowerCase()}`;
+      }
+    } else if (/^\/api\/img\/inventory-product\/\d+\?v=[0-9a-f]{16}$/i.test(rawUrl) || /^data:/i.test(rawUrl)) {
+      inventoryUrl = rawUrl;
+    }
+  }
+
+  const safeFallbackUrl =
+    img.url &&
+    !/^\/api\/img\/(?:company\/[^/]+\/)?product\//i.test(img.url.trim()) &&
+    !/^\/api\/img\/inventory-product\/\d+$/i.test(img.url.trim())
+      ? img.url.trim()
+      : null;
+
+  if (preferFullRes) {
+    return inventoryUrl || thumb || safeFallbackUrl || "";
+  }
+  return thumb || inventoryUrl || safeFallbackUrl || "";
 }
 
 /**

@@ -5,6 +5,11 @@ import { computeInvoiceTotals, computeLineTotal } from "../billing";
 import { money } from "../money";
 import type { DigitalCheckoutRegularLineInput } from "../../../shared/digitalSale";
 import { appErrorMessage } from "../../../shared/errors";
+import {
+  recipeSelectionsSchema,
+  stripRecipeSelectionMeta,
+  type RecipeLineSelection,
+} from "../../../shared/recipeVariantSelection";
 
 const nonNegativeMoney = z
   .string()
@@ -48,6 +53,7 @@ export const invoiceSourceLineSchema = z
     discountPercent: percent.optional(),
     discountAmount: nonNegativeMoney.optional(),
     isGift: z.boolean().optional(),
+    recipeSelections: recipeSelectionsSchema.optional(),
     /** Present only on digital instances; one token always represents one issued card. */
     internalLineToken: z.string().trim().min(1).max(64).optional(),
   })
@@ -177,7 +183,9 @@ function normalizedLine(value: {
   discountPercent?: string | null;
   discountAmount?: string | null;
   isGift?: boolean;
+  recipeSelections?: RecipeLineSelection[] | null;
 }): string {
+  const selections = stripRecipeSelectionMeta(value.recipeSelections);
   return JSON.stringify({
     variantId: Number(value.variantId),
     productUnitId: Number(value.productUnitId),
@@ -195,6 +203,7 @@ function normalizedLine(value: {
         ? null
         : money(value.discountAmount).toFixed(2),
     isGift: value.isGift === true,
+    ...(selections?.length ? { recipeSelections: selections } : {}),
   });
 }
 

@@ -29,6 +29,8 @@ export function QuickStudioCaptureEditor({
     canAutoApprove,
     setAsPrimary,
     setSetAsPrimary,
+    replaceTarget,
+    clearReplaceTarget,
     saveForVariantOnly,
     setSaveForVariantOnly,
     processedImage,
@@ -43,18 +45,32 @@ export function QuickStudioCaptureEditor({
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2.5">
             <span className="text-sm font-bold text-foreground flex items-center gap-1.5">
               <Sparkles aria-hidden className="size-4 text-primary" />
-              إضافة صورة جديدة ومعالجتها بستوديو الذكاء
+              {replaceTarget
+                ? `استبدال الصورة الحالية #${replaceTarget.id} ومعالجتها`
+                : "إضافة صورة جديدة ومعالجتها بستوديو الذكاء"}
             </span>
-            {rawImage && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={resetImageState}
-                className="h-8 text-xs text-muted-foreground"
-              >
-                إلغاء اللقطة
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {replaceTarget && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearReplaceTarget}
+                  className="h-8 text-xs text-muted-foreground"
+                >
+                  إلغاء الاستبدال
+                </Button>
+              )}
+              {rawImage && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetImageState}
+                  className="h-8 text-xs text-muted-foreground"
+                >
+                  إلغاء اللقطة
+                </Button>
+              )}
+            </div>
           </div>
 
           <QuickStudioProviderStatus controller={controller} />
@@ -126,7 +142,7 @@ export function QuickStudioCaptureEditor({
                     </Label>
                   </div>
                 )}
-                {product.variantId != null && (
+                {!replaceTarget && product.variantId != null && (
                   <div className="flex items-center gap-2">
                     <input
                       id="quick-studio-variant-scope-check"
@@ -163,7 +179,9 @@ export function QuickStudioCaptureEditor({
                       ) : (
                         <CheckCircle2 aria-hidden className="size-5" />
                       )}
-                      اعتماد ونشر الصورة فورا في الكتالوج
+                      {replaceTarget
+                        ? "اعتماد واستبدال الصورة فوراً"
+                        : "اعتماد ونشر الصورة فورا في الكتالوج"}
                     </Button>
                     <p className="text-[11px] text-center text-muted-foreground">
                       بصفتك مديرا، يتم اعتماد الصورة ونشرها في الكتالوج فورا دون

@@ -74,6 +74,19 @@ function normalizeQtyStr(val: unknown): string {
   return n.toFixed(3);
 }
 
+function normalizeRecipeSelectionsForProof(raw: unknown): Array<{ recipeLineId: number; variantId: number }> | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  return [...raw]
+    .map((item) => {
+      const s = (item ?? {}) as Record<string, unknown>;
+      return {
+        recipeLineId: Number(s.recipeLineId),
+        variantId: Number(s.variantId),
+      };
+    })
+    .sort((a, b) => a.recipeLineId - b.recipeLineId);
+}
+
 export function normalizeSalePayloadForCaptureProof(rawPayload: unknown): unknown {
   if (!rawPayload || typeof rawPayload !== "object") return rawPayload;
   const p = rawPayload as Record<string, unknown>;
@@ -90,6 +103,7 @@ export function normalizeSalePayloadForCaptureProof(rawPayload: unknown): unknow
     priceTier: typeof p.priceTier === "string" ? p.priceTier : null,
     lines: p.lines.map((rawLine) => {
       const l = (rawLine ?? {}) as Record<string, unknown>;
+      const recipeSelections = normalizeRecipeSelectionsForProof(l.recipeSelections);
       return {
         variantId: Number(l.variantId),
         productUnitId: Number(l.productUnitId),
@@ -100,6 +114,7 @@ export function normalizeSalePayloadForCaptureProof(rawPayload: unknown): unknow
         promotionId: l.promotionId != null ? Number(l.promotionId) : null,
         promotionDiscount: normalizeMoneyStr(l.promotionDiscount),
         cashierDiscountAmount: normalizeMoneyStr(l.cashierDiscountAmount),
+        ...(recipeSelections ? { recipeSelections } : {}),
       };
     }),
     invoiceDiscount: normalizeMoneyStr(p.invoiceDiscount),
@@ -299,6 +314,7 @@ export function normalizeSaleSemanticContract(rawPayload: unknown): Record<strin
     priceTier: typeof p.priceTier === "string" ? p.priceTier : null,
     lines: rawLines.map((rawLine) => {
       const l = (rawLine ?? {}) as Record<string, unknown>;
+      const recipeSelections = normalizeRecipeSelectionsForProof(l.recipeSelections);
       return {
         variantId: Number(l.variantId),
         productUnitId: l.productUnitId != null ? Number(l.productUnitId) : null,
@@ -310,6 +326,7 @@ export function normalizeSaleSemanticContract(rawPayload: unknown): Record<strin
         promotionDiscount: normalizeMoneyStr(l.promotionDiscount),
         cashierDiscountAmount: normalizeMoneyStr(l.cashierDiscountAmount),
         isGift: Boolean(l.isGift),
+        ...(recipeSelections ? { recipeSelections } : {}),
       };
     }),
     invoiceDiscount: normalizeMoneyStr(p.invoiceDiscount),

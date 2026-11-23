@@ -345,6 +345,7 @@ export interface ClientVariant {
   retail: string;
   isActive: boolean;
   image: string | null;
+  imageDisplayUrl?: string | null;
   /**
    * باركودات بديلة محلّية لكل وحدة (مفتاحه `ClientUnit.id`) — نفس السلعة/التكلفة/السعر/المخزون
    * بعدّة باركودات. تُجمَع في الواجهة وتُدرَج ذرّياً مع المنتج عبر `createProduct` (وضع local،

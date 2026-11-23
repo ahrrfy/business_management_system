@@ -11,11 +11,41 @@
 import { getMeta, setMeta } from "./db";
 
 const KEY = "printServicesSnapshot";
+const CUSTOMIZABLE_LINES_KEY_PREFIX = "customizableLineOptionsSnapshot";
 
 interface Snapshot<T> {
   savedAt: string;
   tier: string;
   items: T[];
+}
+
+interface CustomizableSnapshot<T> {
+  savedAt: string;
+  branchId: number;
+  lines: T[];
+}
+
+export async function cacheCustomizableLineOptions<T>(branchId: number, lines: T[]): Promise<void> {
+  try {
+    await setMeta(
+      `${CUSTOMIZABLE_LINES_KEY_PREFIX}:${branchId}`,
+      JSON.stringify({ savedAt: new Date().toISOString(), branchId, lines } satisfies CustomizableSnapshot<T>),
+    );
+  } catch {
+    /* تجاهُل */
+  }
+}
+
+export async function readCachedCustomizableLineOptions<T>(branchId: number): Promise<T[] | null> {
+  try {
+    const raw = await getMeta(`${CUSTOMIZABLE_LINES_KEY_PREFIX}:${branchId}`);
+    if (!raw) return null;
+    const snap = JSON.parse(raw) as CustomizableSnapshot<T>;
+    if (snap.branchId !== branchId || !Array.isArray(snap.lines)) return null;
+    return snap.lines;
+  } catch {
+    return null;
+  }
 }
 
 /** يحفظ آخر قائمة خدمات وصلت من الخادم. يفشل بصمت (حصّة/وضع خاص) — الطبقة اختيارية. */

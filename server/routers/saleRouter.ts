@@ -1,4 +1,5 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel"; import { consignmentCreditCollectionSql } from "../services/delivery/creditCollectionTerms";
+import { recipeSelectionsSchema } from "@shared/recipeVariantSelection";
 import { partialReturnReceivedSql } from "../services/delivery/workflow/returnReceipt";
 import {
   checkoutChargesFields,
@@ -720,6 +721,7 @@ const lineSchema = z.object({
   // هدايا الفاتورة (0149): وسمُ سطرٍ مُهدىً. الخادم يُصفّر سعره وخصمه بنفسه ويُرحّل تكلفته قيدَ
   // GIFT_OUT — فالشاشة تُعلن النيّة فقط، ولا تُملي مبلغاً.
   isGift: z.boolean().optional(),
+  recipeSelections: recipeSelectionsSchema.optional(),
 });
 
 // مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).

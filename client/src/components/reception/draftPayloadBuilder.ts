@@ -1,4 +1,5 @@
 import { D, round2 } from "@/lib/money";
+import { stripRecipeSelectionMeta } from "@shared/recipeVariantSelection";
 import { customizationBasePrice, effectivePrice, resolveDraftGoodsPricing, type CartLine } from "./cartMath";
 import { composeCustomizationText } from "@/components/CustomizationDialog";
 
@@ -57,6 +58,7 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
       };
     }
     if (c.row.isPrintService) {
+      const strippedSelections = stripRecipeSelectionMeta(c.recipeSelections);
       return {
         lineKind: "PRINT" as const,
         sortOrder: i,
@@ -65,9 +67,11 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
         quantity: String(c.qty),
         unitPrice: eff,
         title: `${c.row.productName} (${c.row.unitName})`,
+        ...(strippedSelections?.length ? { recipeSelections: strippedSelections } : {}),
       };
     }
     const goodsPricing = resolveDraftGoodsPricing(c);
+    const strippedGoodsSelections = stripRecipeSelectionMeta(c.recipeSelections);
     return {
       lineKind: "GOODS" as const,
       sortOrder: i,
@@ -87,6 +91,7 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
           }
         : {}),
       title: `${c.row.productName} (${c.row.unitName})`,
+      ...(strippedGoodsSelections?.length ? { recipeSelections: strippedGoodsSelections } : {}),
     };
   });
   return { header, lines };

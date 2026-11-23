@@ -38,7 +38,7 @@ import { getDb, type DB, type Tx } from "../../db";
 import { money, round2 } from "../money";
 import { withTx, type MaybeScopedActor } from "../tx";
 import { canCrossBranches } from "../../lib/branchAuthority";
-import { decodeDataUrl, orderCustomizationAssetUrl, productImageUrl } from "../../imageRoute";
+import { inventoryProductImageUrl, orderCustomizationAssetUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
 import {
   awardDeliveredOnlineOrderPoints,
@@ -563,8 +563,6 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         variantName: productVariants.variantName,
         color: productVariants.color,
         size: productVariants.size,
-        imageId: productImages.id,
-        imageUrl: productImages.url,
         unitName: productUnits.unitName,
         quantity: onlineOrderItems.quantity,
         unitPrice: onlineOrderItems.unitPrice,
@@ -583,7 +581,6 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
           eq(retailPrices.priceTier, "RETAIL"),
         ),
       )
-      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
       .where(eq(onlineOrderItems.onlineOrderId, id)),
     loadEditableDeliveryZones(db),
     order.couponCode
@@ -601,6 +598,54 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
           .limit(1)
       : Promise.resolve([]),
   ]);
+  const itemProductIds = Array.from(new Set(items.map((i) => Number(i.productId))));
+  const approvedImages = itemProductIds.length
+    ? await db
+        .select({
+          id: productImages.id,
+          productId: productImages.productId,
+          variantId: productImages.variantId,
+          url: productImages.url,
+          objectKey: productImages.objectKey,
+          contentHash: productImages.contentHash,
+          thumbDataUrl: productImages.thumbDataUrl,
+          origin: productImages.origin,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+        })
+        .from(productImages)
+        .where(
+          and(
+            inArray(productImages.productId, itemProductIds),
+            eq(productImages.reviewStatus, "APPROVED"),
+          ),
+        )
+        .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id))
+    : [];
+  const imagesByProduct = new Map<number, typeof approvedImages>();
+  for (const img of approvedImages) {
+    const pid = Number(img.productId);
+    const list = imagesByProduct.get(pid);
+    if (list) list.push(img);
+    else imagesByProduct.set(pid, [img]);
+  }
+  const resolveOrderItemImageUrl = (productId: number, variantId: number): string | null => {
+    const prodImgs = imagesByProduct.get(productId) ?? [];
+    const varImgs = prodImgs.filter((img) => img.variantId != null && Number(img.variantId) === variantId);
+    const parentImgs = prodImgs.filter((img) => img.variantId == null);
+    const bestImg = varImgs[0] ?? parentImgs[0] ?? null;
+    if (!bestImg) return null;
+    const invUrl = inventoryProductImageUrl(Number(bestImg.id), {
+      url: bestImg.url,
+      objectKey: bestImg.objectKey,
+      contentHash: bestImg.contentHash,
+    });
+    if (invUrl) return invUrl;
+    if (!(bestImg.origin === "ORIGINAL" && bestImg.objectKey != null) && bestImg.thumbDataUrl) {
+      return bestImg.thumbDataUrl;
+    }
+    return bestImg.thumbDataUrl ?? (!/^data:/i.test(bestImg.url) && !/^\/api\/img\/product\//i.test(bestImg.url) ? bestImg.url : null);
+  };
   const lifecycle = lifecycleMap.get(id) ?? null;
   const couponFreeShipping = Boolean(couponPromoRow[0]?.freeShipping);
   const resolvedCustomerNotes = order.customerNotes?.trim()
@@ -659,9 +704,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       productUnitId: i.productUnitId != null ? Number(i.productUnitId) : null,
       productName: i.productName,
       variantLabel: Array.from(new Set([i.variantName, i.color, i.size].map((v) => v?.trim()).filter(Boolean))).join(" — "),
-      imageUrl: i.imageUrl && (!/^data:/i.test(i.imageUrl) || (i.imageId != null && decodeDataUrl(i.imageUrl)))
-        ? (/^data:/i.test(i.imageUrl) ? productImageUrl(Number(i.imageId), i.imageUrl) : i.imageUrl)
-        : null,
+      imageUrl: resolveOrderItemImageUrl(Number(i.productId), Number(i.variantId)),
       unitName: i.unitName ?? "",
       quantity: String(i.quantity),
       unitPrice: String(i.unitPrice),

@@ -4,6 +4,7 @@ import { notify } from "@/lib/notify";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { useQuickStudioAvailability } from "./useQuickStudioAvailability";
 import { useQuickStudioImage } from "./useQuickStudioImage";
+import type { GalleryImageReplaceTarget } from "../ProductImageGallery";
 import type {
   QuickStudioProps,
   QuickStudioSaveInput,
@@ -28,6 +29,7 @@ export function useQuickStudioController({
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [saveForVariantOnly, setSaveForVariantOnly] = useState(true);
   const [setAsPrimary, setSetAsPrimary] = useState(true);
+  const [replaceTarget, setReplaceTarget] = useState<GalleryImageReplaceTarget | null>(null);
   const [previewZoomImage, setPreviewZoomImage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = useRef(false);
@@ -103,9 +105,20 @@ export function useQuickStudioController({
   };
   const closeModal = () => {
     resetImageState();
+    setReplaceTarget(null);
     setProductModalOpen(false);
     setLookupTarget(null);
     onExternalTargetClose?.();
+  };
+  const startReplaceImage = (img: GalleryImageReplaceTarget) => {
+    resetImageState();
+    setReplaceTarget(img);
+    setSaveForVariantOnly(img.variantId != null);
+    if (img.isPrimary) setSetAsPrimary(true);
+    fileInputRef.current?.click();
+  };
+  const clearReplaceTarget = () => {
+    setReplaceTarget(null);
   };
 
   const handleSubmitImage = async () => {
@@ -120,17 +133,20 @@ export function useQuickStudioController({
     savingRef.current = true;
     setIsSaving(true);
     const generation = image.getGeneration();
+    const resolvedVariantId = replaceTarget
+      ? replaceTarget.variantId
+      : product.variantId != null && saveForVariantOnly
+        ? product.variantId
+        : null;
     const snapshot: Omit<QuickStudioSaveInput, "thumbnailDataUrl"> = {
       productId: product.id,
-      variantId:
-        product.variantId != null && saveForVariantOnly
-          ? product.variantId
-          : null,
+      variantId: resolvedVariantId,
       barcode: activeBarcodeBadge || undefined,
       originalDataUrl: image.rawImage,
       processedDataUrl: image.processedImage,
       mode: image.activeMode === "REMOVEBG" ? "PRO" : image.activeMode,
       setAsPrimary,
+      ...(replaceTarget ? { replaceImageId: replaceTarget.id } : {}),
     };
     try {
       const thumbnailDataUrl = await createProductDisplayThumbnail(
@@ -141,11 +157,14 @@ export function useQuickStudioController({
         ...snapshot,
         thumbnailDataUrl,
       });
-      void utils.productStudio.invalidate();
-      void utils.catalog.adminList.invalidate();
-      void utils.catalog.posList.invalidate();
+      void utils.productStudio?.invalidate?.();
+      void utils.catalog?.adminList?.invalidate?.();
+      void utils.catalog?.posList?.invalidate?.();
+      void utils.catalog?.getForVariantEdit?.invalidate?.({ productId: snapshot.productId });
+      void utils.storeAdmin?.catalog?.list?.invalidate?.();
       if (!mountedRef.current) return;
       notify.ok(data.message);
+      setReplaceTarget(null);
       onProductHandled?.(snapshot.productId);
       if (image.isCurrent(generation)) {
         void lookupQuery.refetch();
@@ -172,6 +191,9 @@ export function useQuickStudioController({
     setSaveForVariantOnly,
     setAsPrimary,
     setSetAsPrimary,
+    replaceTarget,
+    startReplaceImage,
+    clearReplaceTarget,
     previewZoomImage,
     setPreviewZoomImage,
     isSaving,

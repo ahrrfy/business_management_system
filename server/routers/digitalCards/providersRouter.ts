@@ -29,6 +29,7 @@ export const providersRouter = router({
         referencePolicy: referencePolicyEnum.default("REQUIRED"),
         settlementCycle: settlementCycleEnum.default("ON_DEMAND"),
         lowBalanceThreshold: nonNegMoneyString.optional(),
+        logoUrl: z.string().max(3_000_000).nullish(),
         notes: z.string().max(2000).nullish(),
       }),
     )
@@ -46,11 +47,23 @@ export const providersRouter = router({
         referencePolicy: referencePolicyEnum.optional(),
         settlementCycle: settlementCycleEnum.optional(),
         lowBalanceThreshold: nonNegMoneyString.optional(),
+        logoUrl: z.string().max(3_000_000).nullish(),
         notes: z.string().max(2000).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => providerService.updateProvider(tx, input, actorOf(ctx))),
+    ),
+
+  applyLogoToOfferings: digitalCardsManagerProcedure
+    .input(
+      z.object({
+        providerId: z.number().int().positive(),
+        logoUrl: z.string().max(3_000_000).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => providerService.applyLogoToOfferings(tx, input, actorOf(ctx))),
     ),
 
   toggle: digitalCardsManagerProcedure

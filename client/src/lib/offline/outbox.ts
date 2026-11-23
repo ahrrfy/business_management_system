@@ -33,6 +33,7 @@ import {
   computeSaleSemanticPayloadSha256,
   type OfflineShiftCaptureGrant,
 } from "@shared/offlineCaptureProof";
+import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
 
 export const OFFLINE_QUEUE_CAP_IQD = 5_000_000;
 export const OFFLINE_CACHE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -1535,6 +1536,7 @@ export interface OfflineSaleLine {
   promotionId?: number;
   promotionDiscount?: string;
   cashierDiscountAmount?: string;
+  recipeSelections?: RecipeLineSelection[];
 }
 
 export interface OfflineSalePayload {
@@ -1561,7 +1563,7 @@ export interface OfflinePrintSalePayload {
   contactName?: string;
   contactPhone?: string;
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-  lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>;
+  lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string; recipeSelections?: RecipeLineSelection[] }>;
   invoiceDiscount?: string;
   payment: { amount: string; method: "CASH" };
   clientRequestId: string;
@@ -1581,7 +1583,7 @@ export interface OfflineReceptionPayload {
   paymentMethod: "CASH";
   paidAmount: string;
   regularSale?: { lines: OfflineSaleLine[]; amount: string; invoiceDiscount?: string } | null;
-  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>; amount: string; invoiceDiscount?: string } | null;
+  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string; recipeSelections?: RecipeLineSelection[] }>; amount: string; invoiceDiscount?: string } | null;
   clientRequestId: string;
 }
 

@@ -6,10 +6,11 @@
  * اسم المنتج، الماركة، الفئة، **سعر المفرد (RETAIL)**، الوحدة، الباركود، والصورة الرئيسية.
  * شرط التوفّر (المخزون > 0) يُطبَّق خادمياً للبنر دون كشف الكمية نفسها.
  */
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products, storeBanners } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { decodeDataUrl, kioskProductImageUrl } from "../imageRoute";
+import { shortHash } from "../lib/imageStore";
 import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
 import { resolvePromotionForLine } from "./salesPromotionService";
 import { todayYmdBaghdad } from "../../shared/promotionScheduling";
@@ -75,6 +76,7 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
       productName: products.name,
       brand: products.brand,
       category: categories.name,
+      variantId: productVariants.id,
       variantName: productVariants.variantName,
       productUnitId: productUnits.id,
       isBaseUnit: productUnits.isBaseUnit,
@@ -82,8 +84,6 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
       unitName: productUnits.unitName,
       price: productPrices.price,
       barcode: productUnits.barcode,
-      imageId: productImages.id,
-      imageUrl: productImages.url,
       stockBase: branchStock.quantity,
     })
     .from(productUnits)
@@ -92,32 +92,99 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
     .leftJoin(categories, eq(products.categoryId, categories.id))
     // LEFT على الأسعار: نريد إرجاع المنتج في البحث حتى لو بلا سعر مفرد (price=null ⇒ تُعرض «اسأل الموظّف»).
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
-    // الصورة الرئيسية فقط (1:0..1) — لا تكرار صفوف.
-    .leftJoin(productImages, and(
-      eq(productImages.productId, products.id),
-      eq(productImages.isPrimary, true),
-      eq(productImages.reviewStatus, "APPROVED"),
-    ));
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)));
+}
+
+type KioskImageRow = {
+  id: number;
+  productId: number;
+  variantId: number | null;
+  url: string;
+  objectKey: string | null;
+  contentHash: string | null;
+  thumbDataUrl: string | null;
+};
+
+async function loadKioskImagesByProduct(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  productIds: number[],
+): Promise<Map<number, KioskImageRow[]>> {
+  const uniqueIds = Array.from(new Set(productIds)).filter((id) => Number.isFinite(id) && id > 0);
+  if (!uniqueIds.length) return new Map();
+  const rows = await db
+    .select({
+      id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      url: productImages.url,
+      objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
+      thumbDataUrl: productImages.thumbDataUrl,
+    })
+    .from(productImages)
+    .where(and(inArray(productImages.productId, uniqueIds), eq(productImages.reviewStatus, "APPROVED")))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id));
+  const map = new Map<number, KioskImageRow[]>();
+  for (const r of rows) {
+    const pid = Number(r.productId);
+    const item: KioskImageRow = {
+      id: Number(r.id),
+      productId: pid,
+      variantId: r.variantId == null ? null : Number(r.variantId),
+      url: r.url,
+      objectKey: r.objectKey,
+      contentHash: r.contentHash,
+      thumbDataUrl: r.thumbDataUrl,
+    };
+    const list = map.get(pid);
+    if (list) list.push(item);
+    else map.set(pid, [item]);
+  }
+  return map;
 }
 
 /**
- * صورة منتج الكشك كما تُرسَل للشاشة — **رابط** لا data URL (١٦/٧).
- *
- * السبب (أضخم من المتجر): `kioskBanner` سقفه **٥٠٠ منتج** وترتيبه «ذوات الصور أولاً» ⇒ ~٣٥٠ ك.ب
- * لكلٍّ ≈ **١٧٥ م.ب في ردٍّ JSON واحد** حين يمتلئ الكتالوج. رابطٌ بـ`immutable` يجعلها بايتاتٍ
- * تُجلَب مرّةً واحدة للأبد، والنافذة في `KioskView` تجلب المرئيّ منها فقط.
- *
- * العقد الثلاثيّ نفسه (درس #207): data URL ⇒ رابط | قيمة أخرى ⇒ **كما هي** | تالفة ⇒ null.
+ * صورة منتج الكشك كما تُرسَل للشاشة — **رابط `/api/img/kiosk-product/...`** لا `/api/img/product/...`
+ * حتى تعمل المنتجات المخفية عن المتجر (`showInStore = 0`) في الكشك بلا 404.
  */
-function toKioskImage(imageId: number | null | undefined, value: string | null): string | null {
-  if (!value) return null;
-  if (!/^data:/i.test(value.trim())) return value;
-  if (imageId == null) return null;
-  return decodeDataUrl(value) ? kioskProductImageUrl(Number(imageId), value) : null;
+function toKioskImage(img: KioskImageRow | null | undefined): string | null {
+  if (!img) return null;
+  if (img.objectKey && img.contentHash && /^[0-9a-f]{64}$/i.test(img.contentHash)) {
+    return `/api/img/kiosk-product/${img.id}?v=${shortHash(img.contentHash)}`;
+  }
+  const value = img.url?.trim() ?? "";
+  if (value) {
+    if (/^data:/i.test(value)) {
+      return decodeDataUrl(value) ? kioskProductImageUrl(img.id, value) : (img.thumbDataUrl ?? null);
+    }
+    const publicMatch = /^\/api\/img\/(?:company\/[^/]+\/)?product\/(\d+)(?:\?([^#]*))?$/i.exec(value);
+    if (publicMatch) {
+      const params = new URLSearchParams(publicMatch[2] ?? "");
+      const v = params.get("v");
+      if (v && /^[0-9a-f]{16}$/i.test(v)) {
+        return `/api/img/kiosk-product/${publicMatch[1]}?v=${v.toLowerCase()}`;
+      }
+      return img.thumbDataUrl ?? null;
+    }
+    return value;
+  }
+  return img.thumbDataUrl ?? null;
 }
 
-function toKioskProduct(r: any): KioskProduct {
+function pickKioskImageForVariant(
+  imagesByProduct: Map<number, KioskImageRow[]>,
+  productId: number,
+  variantId: number | null,
+  allowSiblingFallback = false,
+): KioskImageRow | null {
+  const list = imagesByProduct.get(productId) ?? [];
+  if (!list.length) return null;
+  const varImg = variantId != null ? list.find((img) => img.variantId === variantId) : undefined;
+  const parentImg = list.find((img) => img.variantId == null);
+  return varImg ?? parentImg ?? (allowSiblingFallback ? list[0] : null);
+}
+
+function toKioskProduct(r: any, imageRow: KioskImageRow | null): KioskProduct {
   return {
     productId: Number(r.productId),
     productName: r.productName,
@@ -127,32 +194,37 @@ function toKioskProduct(r: any): KioskProduct {
     unitName: r.unitName,
     price: r.price ?? null,
     barcode: r.barcode ?? null,
-    imageUrl: toKioskImage(r.imageId, r.imageUrl ?? null),
+    imageUrl: toKioskImage(imageRow),
   };
 }
 
 /**
  * بنر الجذب (وضع «معرض تسويقي»): كل منتج بوحدة أساس فعّالة وسعر مفرد صريح — صفّ لكل منتج
  * مع الصورة، مرتّبة: ذوات الصور أولاً ثم أبجدياً. لا تُعيد الكمية.
- *
- * يُعيد **كامل الكتالوج** بلا سقف — البيانات الوصفية خفيفة (~٢٠٠ ب/منتج)، والصور تُحمَّل
- * بنافذة ٣ شرائح في العميل (isNearActive). الخلط يتمّ عميلياً عند كل دورة عرض كاملة.
  */
 export async function kioskBanner(branchId: number): Promise<KioskProduct[]> {
   const db = getDb();
   if (!db) return [];
   const rows = await kioskSelect(db, branchId)
     .where(and(activeOnly, eq(productUnits.isBaseUnit, true), sql`${productPrices.price} is not null`))
-    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name));
+    .orderBy(asc(products.name));
 
-  const seen = new Set<number>();
-  const out: KioskProduct[] = [];
+  const imagesByProduct = await loadKioskImagesByProduct(
+    db,
+    rows.map((r) => Number(r.productId)),
+  );
+  const byProduct = new Map<number, { row: (typeof rows)[number]; imageRow: KioskImageRow | null }>();
   for (const r of rows) {
     const pid = Number(r.productId);
-    if (seen.has(pid)) continue;
-    seen.add(pid);
-    out.push(toKioskProduct(r));
+    const vid = r.variantId != null ? Number(r.variantId) : null;
+    const imgRow = pickKioskImageForVariant(imagesByProduct, pid, vid, true);
+    const existing = byProduct.get(pid);
+    if (!existing || (!existing.imageRow && imgRow)) {
+      byProduct.set(pid, { row: r, imageRow: imgRow });
+    }
   }
+  const out = Array.from(byProduct.values()).map(({ row, imageRow }) => toKioskProduct(row, imageRow));
+  out.sort((a, b) => Number(Boolean(b.imageUrl)) - Number(Boolean(a.imageUrl)));
   return out;
 }
 
@@ -173,7 +245,13 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
     .limit(1);
   if (!rows.length) return null;
 
-  const prod = toKioskProduct(rows[0]);
+  const imagesByProduct = await loadKioskImagesByProduct(db, [Number(rows[0].productId)]);
+  const imgRow = pickKioskImageForVariant(
+    imagesByProduct,
+    Number(rows[0].productId),
+    rows[0].variantId != null ? Number(rows[0].variantId) : null,
+  );
+  const prod = toKioskProduct(rows[0], imgRow);
 
   // ١. فحص العروض والخصومات النشطة لفئة المفرد (نقطة العرض = نقطة الفرض)
   if (prod.price) {

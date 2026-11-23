@@ -23,6 +23,10 @@ import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { appErrorMessage } from "../../../shared/errors";
+import {
+  normalizeAndValidateImageDataUrl,
+  resolveDigitalOfferingImages,
+} from "./imageHelpers";
 
 function offeringBindingError(why: string): string {
   return appErrorMessage({
@@ -134,6 +138,7 @@ export interface CreateOfferingInput {
   roundingStep?: string | null;
   priceValidityHours?: number | null;
   cardColorToken?: string | null;
+  imageUrl?: string | null;
   categoryId?: number | null;
   productId?: number | null;
   branches: OfferingBranchInput[];
@@ -155,6 +160,7 @@ export interface UpdateOfferingInput {
   roundingStep?: string | null;
   priceValidityHours?: number | null;
   cardColorToken?: string | null;
+  imageUrl?: string | null;
   isActive?: boolean;
   branches?: OfferingBranchInput[];
 }
@@ -372,6 +378,7 @@ export async function createOffering(
   const marginPercent = toDbMoney(money(input.marginPercent ?? "0"));
   const minimumMargin = toDbMoney(money(input.minimumMargin ?? "0"));
   const roundingStep = toDbMoney(money(input.roundingStep ?? "250"));
+  const imageUrl = normalizeAndValidateImageDataUrl(input.imageUrl) ?? null;
 
   // 3. Insert digitalOfferings row
   const offeringResult = await tx.insert(digitalOfferings).values({
@@ -392,6 +399,7 @@ export async function createOffering(
     roundingStep,
     priceValidityHours: input.priceValidityHours ?? null,
     cardColorToken: input.cardColorToken?.trim() || null,
+    imageUrl,
     isActive: true,
   });
   const offeringId = extractInsertId(offeringResult);
@@ -406,6 +414,7 @@ export async function createOffering(
     offeringType,
     name,
     branchCount: input.branches.length,
+    hasCustomImage: imageUrl !== null,
   });
 
   return { offeringId, productId, variantId, productUnitId };
@@ -622,6 +631,10 @@ export async function updateOffering(
   if (input.cardColorToken !== undefined) {
     set.cardColorToken = input.cardColorToken?.trim() || null;
   }
+  const normalizedImage = normalizeAndValidateImageDataUrl(input.imageUrl);
+  if (normalizedImage !== undefined) {
+    set.imageUrl = normalizedImage;
+  }
   if (input.isActive !== undefined) {
     set.isActive = input.isActive;
   }
@@ -650,8 +663,12 @@ export async function updateOffering(
     }
   }
 
+  const auditChanges = { ...set };
+  if ("imageUrl" in auditChanges) {
+    auditChanges.imageUrl = auditChanges.imageUrl ? "[REDACTED_IMAGE]" : null;
+  }
   await auditLog(tx, actor, "digitalCards.offering.update", input.id, {
-    changes: set,
+    changes: auditChanges,
     nameChanged: input.name !== undefined,
     branchesReplaced: input.branches !== undefined,
   });
@@ -716,6 +733,8 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
       roundingStep: digitalOfferings.roundingStep,
       priceValidityHours: digitalOfferings.priceValidityHours,
       cardColorToken: digitalOfferings.cardColorToken,
+      ownImageDataUrl: digitalOfferings.imageUrl,
+      providerLogoDataUrl: digitalProviders.logoUrl,
       isActive: digitalOfferings.isActive,
       createdAt: digitalOfferings.createdAt,
       updatedAt: digitalOfferings.updatedAt,
@@ -760,8 +779,9 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
     assignmentsByOffering.set(assignment.offeringId, assignments);
   }
 
-  const withAssignments = rows.map((row) => ({
+  const withAssignments = rows.map(({ ownImageDataUrl, providerLogoDataUrl, ...row }) => ({
     ...row,
+    ...resolveDigitalOfferingImages(row.id, ownImageDataUrl, providerLogoDataUrl),
     assignments: assignmentsByOffering.get(row.id) ?? [],
   }));
 
@@ -796,6 +816,8 @@ export async function getOffering(db: DB, id: number, branchId?: number | null) 
       roundingStep: digitalOfferings.roundingStep,
       priceValidityHours: digitalOfferings.priceValidityHours,
       cardColorToken: digitalOfferings.cardColorToken,
+      ownImageDataUrl: digitalOfferings.imageUrl,
+      providerLogoDataUrl: digitalProviders.logoUrl,
       isActive: digitalOfferings.isActive,
       createdAt: digitalOfferings.createdAt,
       updatedAt: digitalOfferings.updatedAt,
@@ -844,5 +866,10 @@ export async function getOffering(db: DB, id: number, branchId?: number | null) 
     ))
     .orderBy(digitalOfferingBranches.displayOrder);
 
-  return { ...row, branches: offeringBranches };
+  const { ownImageDataUrl, providerLogoDataUrl, ...rest } = row;
+  return {
+    ...rest,
+    ...resolveDigitalOfferingImages(rest.id, ownImageDataUrl, providerLogoDataUrl),
+    branches: offeringBranches,
+  };
 }

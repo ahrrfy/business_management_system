@@ -15,6 +15,7 @@ type Props = Pick<
   | "stockCheckQ"
   | "handleRemoveLine"
   | "handleLineQtyChange"
+  | "handleToggleVariantChoice"
 >;
 export function RecipeMaterialsTable({
   can,
@@ -25,6 +26,7 @@ export function RecipeMaterialsTable({
   stockCheckQ,
   handleRemoveLine,
   handleLineQtyChange,
+  handleToggleVariantChoice,
 }: Props) {
   return (
     <>
@@ -92,8 +94,41 @@ export function RecipeMaterialsTable({
                           {idx + 1}
                         </td>
                         <td className="py-2.5 px-3 font-medium text-foreground">
-                          {line.inputProductName ||
-                            `مادة خام (#${line.inputVariantId})`}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span>
+                              {line.inputProductName ||
+                                `مادة خام (#${line.inputVariantId})`}
+                            </span>
+                            {!isEditing && Boolean(line.allowVariantChoice) && (
+                              <Badge variant="secondary" className="text-[10px] font-normal">
+                                تحديد اللون/المتغير عند الطلب
+                              </Badge>
+                            )}
+                          </div>
+                          {isEditing && (() => {
+                            const siblingCount = "activeVariantCount" in line && line.activeVariantCount != null
+                              ? Number(line.activeVariantCount)
+                              : null;
+                            const checked = Boolean(line.allowVariantChoice);
+                            if (siblingCount !== null && siblingCount <= 1 && !checked) {
+                              return (
+                                <span className="block text-[10px] text-muted-foreground mt-1">
+                                  متغير واحد فعّال — أضف متغيرات للمادة لتفعيل الاختيار عند الطلب
+                                </span>
+                              );
+                            }
+                            return (
+                              <label className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  className="size-3.5 accent-primary rounded"
+                                  checked={checked}
+                                  onChange={(e) => handleToggleVariantChoice(idx, e.target.checked)}
+                                />
+                                <span>تحديد اللون/المتغير عند الطلب</span>
+                              </label>
+                            );
+                          })()}
                           {line.notes && (
                             <span className="block text-[10px] text-muted-foreground mt-0.5">
                               {line.notes}

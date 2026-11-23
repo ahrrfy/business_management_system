@@ -3,17 +3,23 @@
  * Each provider maps to exactly one supplier in the system.
  */
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import {
+  digitalOfferings,
   digitalProviders,
   suppliers,
   auditLogs,
 } from "../../../drizzle/schema";
+import { appErrorMessage } from "../../../shared/errors";
 import type { DB, Tx } from "../../db";
-import { extractInsertId } from "../../lib/insertId";
+import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import {
+  digitalProviderLogoUrl,
+  normalizeAndValidateImageDataUrl,
+} from "./imageHelpers";
 
 /* ────────── Enum validation ────────── */
 const PROVIDER_TYPES = ["TELECOM", "GLOBAL_CARDS", "EDUCATIONAL", "OTHER"] as const;
@@ -38,6 +44,7 @@ export interface CreateProviderInput {
   referencePolicy: string;
   settlementCycle: string;
   lowBalanceThreshold?: string | null;
+  logoUrl?: string | null;
   notes?: string | null;
 }
 
@@ -50,7 +57,13 @@ export interface UpdateProviderInput {
   settlementCycle?: string;
   lowBalanceThreshold?: string | null;
   isActive?: boolean;
+  logoUrl?: string | null;
   notes?: string | null;
+}
+
+export interface ApplyLogoToOfferingsInput {
+  providerId: number;
+  logoUrl?: string | null;
 }
 
 /* ────────── Audit helper (best-effort inside tx) ────────── */
@@ -107,6 +120,8 @@ export async function createProvider(
     throw new TRPCError({ code: "BAD_REQUEST", message: "المورّد معطَّل — فعّله أولاً" });
   }
 
+  const logoUrl = normalizeAndValidateImageDataUrl(input.logoUrl) ?? null;
+
   const result = await tx.insert(digitalProviders).values({
     supplierId: input.supplierId,
     providerType,
@@ -115,6 +130,7 @@ export async function createProvider(
     referencePolicy,
     settlementCycle,
     lowBalanceThreshold: toDbMoney(threshold),
+    logoUrl,
     notes: input.notes?.trim() || null,
     createdBy: actor.userId,
   });
@@ -124,6 +140,7 @@ export async function createProvider(
     supplierId: input.supplierId,
     providerType,
     settlementMode,
+    hasLogo: logoUrl !== null,
   });
 
   return { providerId };
@@ -177,6 +194,10 @@ export async function updateProvider(
   if (input.isActive !== undefined) {
     set.isActive = input.isActive;
   }
+  const normalizedLogo = normalizeAndValidateImageDataUrl(input.logoUrl);
+  if (normalizedLogo !== undefined) {
+    set.logoUrl = normalizedLogo;
+  }
   if (input.notes !== undefined) {
     set.notes = input.notes?.trim() || null;
   }
@@ -185,14 +206,84 @@ export async function updateProvider(
 
   await tx.update(digitalProviders).set(set).where(eq(digitalProviders.id, input.id));
 
+  const auditChanges = { ...set };
+  if ("logoUrl" in auditChanges) {
+    auditChanges.logoUrl = auditChanges.logoUrl ? "[REDACTED_IMAGE]" : null;
+  }
   await auditLog(tx, actor, "digitalCards.provider.update", input.id, {
-    changes: set,
+    changes: auditChanges,
   });
+}
+
+/* ────────── Bulk apply logo to provider offerings ────────── */
+export async function applyLogoToOfferings(
+  tx: Tx,
+  input: ApplyLogoToOfferingsInput,
+  actor: Actor,
+): Promise<{ updatedCount: number }> {
+  const [provider] = await tx
+    .select({ id: digitalProviders.id, logoUrl: digitalProviders.logoUrl })
+    .from(digitalProviders)
+    .where(eq(digitalProviders.id, input.providerId))
+    .limit(1);
+  if (!provider) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تعميم شعار المزوّد على الكروت",
+        why: "المزوّد المحدّد غير موجود",
+        doThis: "حدّث قائمة المزوّدين واختر مزوّداً قائماً",
+      }),
+    });
+  }
+
+  const normalizedInputLogo = normalizeAndValidateImageDataUrl(input.logoUrl);
+  const effectiveLogoUrl =
+    normalizedInputLogo !== undefined
+      ? normalizedInputLogo
+      : provider.logoUrl?.trim() || null;
+
+  if (!effectiveLogoUrl) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تعميم شعار المزوّد على الكروت",
+        why: "المزوّد لا يملك شعاراً محفوظاً حالياً",
+        doThis: "ارفع شعار المزوّد أوّلاً ثم أعد تعميمه على الكروت",
+      }),
+    });
+  }
+
+  if (normalizedInputLogo !== undefined) {
+    await tx
+      .update(digitalProviders)
+      .set({ logoUrl: normalizedInputLogo })
+      .where(eq(digitalProviders.id, input.providerId));
+  }
+
+  const result = await tx
+    .update(digitalOfferings)
+    .set({ imageUrl: null })
+    .where(
+      and(
+        eq(digitalOfferings.providerId, input.providerId),
+        isNotNull(digitalOfferings.imageUrl),
+      ),
+    );
+  const updatedCount = extractAffectedRows(result);
+
+  await auditLog(tx, actor, "digitalCards.provider.applyLogoToOfferings", input.providerId, {
+    providerId: input.providerId,
+    updatedCount,
+    logoUpdated: normalizedInputLogo !== undefined,
+  });
+
+  return { updatedCount };
 }
 
 /* ────────── List ────────── */
 export async function listProviders(db: DB) {
-  return db
+  const rows = await db
     .select({
       id: digitalProviders.id,
       supplierId: digitalProviders.supplierId,
@@ -204,6 +295,7 @@ export async function listProviders(db: DB) {
       settlementCycle: digitalProviders.settlementCycle,
       lowBalanceThreshold: digitalProviders.lowBalanceThreshold,
       isActive: digitalProviders.isActive,
+      logoUrl: digitalProviders.logoUrl,
       notes: digitalProviders.notes,
       createdAt: digitalProviders.createdAt,
       updatedAt: digitalProviders.updatedAt,
@@ -211,6 +303,15 @@ export async function listProviders(db: DB) {
     .from(digitalProviders)
     .innerJoin(suppliers, eq(digitalProviders.supplierId, suppliers.id))
     .orderBy(digitalProviders.id);
+
+  return rows.map(({ logoUrl: rawLogoUrl, ...row }) => {
+    const logoUrl = digitalProviderLogoUrl(row.id, rawLogoUrl);
+    return {
+      ...row,
+      logoUrl,
+      hasLogo: logoUrl !== null,
+    };
+  });
 }
 
 /* ────────── Get single ────────── */
@@ -228,6 +329,7 @@ export async function getProvider(db: DB, id: number) {
       settlementCycle: digitalProviders.settlementCycle,
       lowBalanceThreshold: digitalProviders.lowBalanceThreshold,
       isActive: digitalProviders.isActive,
+      logoUrl: digitalProviders.logoUrl,
       notes: digitalProviders.notes,
       createdBy: digitalProviders.createdBy,
       createdAt: digitalProviders.createdAt,
@@ -240,5 +342,11 @@ export async function getProvider(db: DB, id: number) {
   if (!row) {
     throw new TRPCError({ code: "NOT_FOUND", message: "المزوّد غير موجود" });
   }
-  return row;
+  const { logoUrl: rawLogoUrl, ...rest } = row;
+  const logoUrl = digitalProviderLogoUrl(rest.id, rawLogoUrl);
+  return {
+    ...rest,
+    logoUrl,
+    hasLogo: logoUrl !== null,
+  };
 }

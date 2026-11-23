@@ -49,9 +49,13 @@ import {
   type PriceTier,
 } from "../pricing";
 import {
+  assertNoUnexpectedRecipeSelections,
+  discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
-  loadServiceRecipeDefinitions,
+  resolveRecipeLineSelections,
+  type ResolvedServiceRecipeLine,
 } from "../serviceRecipeConsumption";
+import { stripRecipeSelectionMeta } from "../../../shared/recipeVariantSelection";
 import type { SaleLineInput } from "../sale/types";
 import type { Actor } from "../tx";
 
@@ -122,6 +126,7 @@ function normalizedRequest(input: CheckoutSnapshotInput) {
         }
         return toDbMoney(amount);
       };
+      const recipeSelections = stripRecipeSelectionMeta(line.recipeSelections);
       return {
         lineKey,
         variantId: line.variantId,
@@ -132,6 +137,7 @@ function normalizedRequest(input: CheckoutSnapshotInput) {
         discountPercent: optionalMoney(line.discountPercent),
         promotionId: line.promotionId ?? null,
         isGift: line.isGift === true,
+        ...(recipeSelections?.length ? { recipeSelections } : {}),
       };
     })
     .sort((a, b) => a.lineKey.localeCompare(b.lineKey));
@@ -524,6 +530,7 @@ export async function prepareCheckoutSnapshot(
         total: priced.total,
         promotionId: authPromo ? authPromo.promotionId : null,
         isGift: line.isGift === true,
+        ...(line.recipeSelections?.length ? { recipeSelections: line.recipeSelections } : {}),
       });
     }
     const requestedStock = new Map<
@@ -589,41 +596,52 @@ export async function prepareCheckoutSnapshot(
     const serviceVariantIds = variants
       .filter((variant) => variant.isService && !variant.isBundle)
       .map((variant) => Number(variant.id));
-    const serviceRecipes = await loadServiceRecipeDefinitions(tx, serviceVariantIds);
+    const serviceRecipes = await discoverServiceRecipeDefinitions(tx, serviceVariantIds);
+    const resolvedServiceLinesByKey = new Map<string, ResolvedServiceRecipeLine[]>();
     const materialCostByVariant = new Map<number, string>();
     const serviceMaterialIds = new Set<number>();
-    if (serviceRecipes.size) {
-      for (const recipe of Array.from(serviceRecipes.values())) {
-        for (const rl of recipe.lines) serviceMaterialIds.add(rl.inputVariantId);
+    for (const line of request.regularLines) {
+      const variant = byId.get(line.variantId)!;
+      if (!variant.isService || variant.isBundle) {
+        assertNoUnexpectedRecipeSelections(line.recipeSelections, `البند #${line.variantId}`);
+        continue;
       }
-      if (serviceMaterialIds.size) {
-        const matRows = await tx
-          .select({
-            id: productVariants.id,
-            cost: productVariants.costPrice,
-          })
-          .from(productVariants)
-          .where(inArray(productVariants.id, Array.from(serviceMaterialIds)));
-        for (const r of matRows) {
-          materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
-        }
+      const recipe = serviceRecipes.get(line.variantId);
+      if (!recipe) {
+        assertNoUnexpectedRecipeSelections(line.recipeSelections, `الخدمة #${line.variantId}`);
+        continue;
+      }
+      const resolved = await resolveRecipeLineSelections(tx, recipe.lines, line.recipeSelections);
+      resolvedServiceLinesByKey.set(line.lineKey, resolved);
+      for (const rl of resolved) serviceMaterialIds.add(rl.variantId);
+    }
+    if (serviceMaterialIds.size) {
+      const matRows = await tx
+        .select({
+          id: productVariants.id,
+          cost: productVariants.costPrice,
+        })
+        .from(productVariants)
+        .where(inArray(productVariants.id, Array.from(serviceMaterialIds)));
+      for (const r of matRows) {
+        materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
       }
     }
     const computeServiceUnitCost = (
-      variantId: number,
+      lineKey: string,
       baseQuantity: number,
     ): string => {
-      const recipe = serviceRecipes.get(variantId);
-      if (!recipe || baseQuantity <= 0) return "0.00";
+      const resolvedLines = resolvedServiceLinesByKey.get(lineKey);
+      if (!resolvedLines?.length || baseQuantity <= 0) return "0.00";
       let lineCost = money(0);
-      for (const rl of recipe.lines) {
+      for (const rl of resolvedLines) {
         const consumed = exactRecipeMaterialQuantity(
           rl.qtyPerOutputBase,
           baseQuantity,
-          `مادة الوصفة #${rl.inputVariantId}`,
+          `مادة الوصفة #${rl.variantId}`,
         );
         const matCost = round2(
-          money(materialCostByVariant.get(rl.inputVariantId) ?? "0"),
+          money(materialCostByVariant.get(rl.variantId) ?? "0"),
         );
         lineCost = lineCost.plus(round2(matCost.times(consumed)));
       }
@@ -644,7 +662,7 @@ export async function prepareCheckoutSnapshot(
         unitCost: variant.isBundle
           ? (bundleCosts.get(line.variantId) ?? "0")
           : variant.isService
-            ? computeServiceUnitCost(line.variantId, baseQuantity)
+            ? computeServiceUnitCost(line.lineKey, baseQuantity)
             : variant.costPrice,
         baseQuantity,
         isGift: line.isGift,
@@ -673,16 +691,16 @@ export async function prepareCheckoutSnapshot(
           );
         }
       } else if (variant.isService === true) {
-        const recipe = serviceRecipes.get(line.variantId);
-        for (const recipeLine of recipe?.lines ?? []) {
+        const resolvedLines = resolvedServiceLinesByKey.get(line.lineKey) ?? [];
+        for (const resolvedLine of resolvedLines) {
           const consumed = exactRecipeMaterialQuantity(
-            recipeLine.qtyPerOutputBase,
+            resolvedLine.qtyPerOutputBase,
             baseQuantity,
-            `مادة الوصفة #${recipeLine.inputVariantId}`,
+            `مادة الوصفة #${resolvedLine.variantId}`,
           );
           addRequestedStock(
             line.variantId,
-            recipeLine.inputVariantId,
+            resolvedLine.variantId,
             consumed,
             true,
             `مادة الخدمة «${variant.name}»`,
@@ -868,5 +886,6 @@ export function checkoutSnapshotToSaleLines(
     discountAmount: line.discountAmount,
     promotionId: line.promotionId,
     isGift: line.isGift,
+    ...(line.recipeSelections?.length ? { recipeSelections: line.recipeSelections } : {}),
   }));
 }
