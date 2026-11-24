@@ -12,6 +12,7 @@ import {
   deliveryConsignments,
   deliveryParties,
   doubleEntrySettings,
+  employeeAdvances,
   fulfillmentChargePayments,
   inventoryMovements,
   invoices,
@@ -1341,4 +1342,70 @@ export async function reconcileOrphanJournalLines(): Promise<ReconcileResult[]> 
   }
 
   return issues;
+}
+
+/**
+ * مطابقة رصيد ذمم وسلف الموظفين التشغيلية (`employeeAdvances.remaining`)
+ * مقابل صافي حساب `EMPLOYEE_ADVANCES` في الدفتر المزدوج (`journalLines`).
+ * تكشف فوراً أي قيد يتيم بلا سلفة (مثل عجز وردية غير مربوط) أو سلفة بلا قيد مدين مطابق.
+ */
+export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const [settings] = await db
+    .select({
+      mode: doubleEntrySettings.mode,
+      cycleId: doubleEntrySettings.shadowCycleId,
+    })
+    .from(doubleEntrySettings)
+    .where(eq(doubleEntrySettings.id, 1))
+    .limit(1);
+
+  // خارج وضعي SHADOW/ACTIVE أو قبل تهيئة دورة القطع الحالية لا يوجد دفتر مزدوج نشط للمطابقة.
+  if (
+    !settings ||
+    settings.mode === "OFF" ||
+    !settings.cycleId ||
+    !/^[A-Za-z0-9_-]{1,36}$/.test(settings.cycleId)
+  ) {
+    return [];
+  }
+
+  const [operationalRow] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(CAST(${employeeAdvances.remaining} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(employeeAdvances)
+    .where(eq(employeeAdvances.status, "ACTIVE"));
+
+  const [ledgerRow] = await db
+    .select({
+      net: sql<string>`COALESCE(SUM(CAST(${journalLines.debit} AS DECIMAL(15,2)) - CAST(${journalLines.credit} AS DECIMAL(15,2))), 0)`,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(
+      and(
+        eq(journalLines.role, "EMPLOYEE_ADVANCES"),
+        eq(journalEntries.status, "POSTED"),
+        eq(journalEntries.cycleId, settings.cycleId),
+      ),
+    );
+
+  const expected = round2(money(operationalRow?.total ?? "0"));
+  const actual = round2(money(ledgerRow?.net ?? "0"));
+  const drift = round2(actual.minus(expected));
+  if (drift.abs().lt("0.01")) return [];
+
+  return [
+    {
+      entity: "employeeAdvancesLedger",
+      id: 0,
+      expected: expected.toFixed(2),
+      actual: actual.toFixed(2),
+      drift: drift.abs().toFixed(2),
+      note: `انحراف بين مجموع أرصدة السلف النشطة في الموارد البشرية (employeeAdvances.remaining) وصافي حساب EMPLOYEE_ADVANCES في الدورة ${settings.cycleId} (الفرق الموقّع: ${drift.toFixed(2)})`,
+    },
+  ];
 }

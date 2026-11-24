@@ -481,25 +481,13 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       push: true,
     });
     await expect(creating).resolves.toEqual({ created: true });
-    expect(inserted).toHaveLength(4);
+    expect(inserted).toHaveLength(2);
     expect(inserted[0]).toEqual(
       expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
     );
     expect(inserted[1]).toEqual(
       expect.objectContaining({
-        environment: expect.any(String),
-        payload: expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
-      }),
-    );
-    expect(inserted[2]).toEqual(
-      expect.objectContaining({
         payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
-      }),
-    );
-    expect(inserted[3]).toEqual(
-      expect.objectContaining({
-        environment: expect.any(String),
-        payload: { version: "1", destination: "my-day" },
       }),
     );
     expect(sendPushToUser).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSuperAppAuthority } from "../superAppRouter";
+import { resolveSuperAppAuthority } from "../../services/superAppAuthority";
 import { normalizeOwnerAuthority, type AuthUser } from "../../context";
 import { adminProcedure, router } from "../../trpc";
 import {

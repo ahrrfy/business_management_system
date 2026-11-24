@@ -275,7 +275,6 @@ describe("runMorningBriefPush", () => {
       family: "ADMIN",
       title: "برنامج اليوم — الرؤية العربية",
     })]);
-    expect(await db().select().from(s.nativePushOutbox)).toHaveLength(1);
     expect(await db().select().from(s.webPushOutbox)).toHaveLength(1);
   });
 

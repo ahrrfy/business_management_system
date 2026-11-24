@@ -24,8 +24,6 @@ import { canViewOperationData, hasOperationPolicy, operationRecordScope, type Op
 import { assertOperationAuthorized, canonicalOperationAllowed } from "./operationAuthorization";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
-import { EXPO_SUPERAPP_CLIENT_ID } from "./auth/deviceProof";
-import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthorization";
 import { canCrossBranches } from "./lib/branchAuthority";
@@ -229,20 +227,6 @@ const requirePasswordResetTokenShape = t.middleware(async ({ getRawInput, next }
 
 export const passwordResetTokenProcedure = auditedProcedure.use(requirePasswordResetTokenShape);
 
-/**
- * Credential-free bootstrap boundary for the native Android client. This does not authenticate
- * a user or grant a session; it only prevents browsers and obsolete clients from minting device
- * registration challenges outside the current signed-device protocol.
- */
-const requireNativeBootstrapClient = t.middleware(async ({ ctx, next }) => {
-  if (!isCurrentNativeClient(ctx.req)) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-  }
-  return next({ ctx });
-});
-
-export const nativeBootstrapProcedure = auditedProcedure.use(requireNativeBootstrapClient);
-
 // ─── M9 (تدقيق ٣/٨): إلزام 2FA خادمياً للمدير/المشرف ─────────────────────────
 // كانت راية `mustEnroll2FA` توجيهاً واجهياً فقط (ForceTwoFactorEnroll يحجب الشاشة)، فعميلٌ
 // غير قياسيّ أو استدعاء API مباشر يتجاهلها ويعمل بكامل الصلاحية بلا عاملٍ ثانٍ. الآن يُحجب أي
@@ -362,25 +346,6 @@ export const selfServiceProcedure = protectedProcedure;
  * user's permission map and keep all records branch-scoped.
  */
 export const superAppProcedure = protectedProcedure;
-
-/**
- * A deliberately narrow BFF boundary for the Expo client. The identity comes
- * from a verified device-bound session in `getSessionContext`; testing a raw
- * request header here would turn this check into presentation-only security.
- */
-export const expoSuperAppProcedure = superAppProcedure.use(({ ctx, next }) => {
-  if (process.env.NODE_ENV !== "development" && ctx.nativeClientId !== EXPO_SUPERAPP_CLIENT_ID) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "لا يمكن فتح هذه المساحة من هذه الجلسة",
-        why: "يجب أن تكون الجلسة صادرة من تطبيق سوبر العربية المثبت على جهاز موثق",
-        doThis: "افتح التطبيق المثبت وسجّل الدخول من جديد",
-      }),
-    });
-  }
-  return next({ ctx });
-});
 
 /**
  * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً

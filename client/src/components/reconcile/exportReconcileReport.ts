@@ -75,6 +75,7 @@ export function exportReconcileReport({
     sheet("طلبات المتجر × الإرساليات", data.onlineOrders ?? []),
     // Tier-3 #5 (٢٧/٨): محور أيتام journalLines — role/accountId + note شارحٌ للخيار المُقترَح.
     sheet("أيتام قيود الدفتر", data.journalOrphans ?? []),
+    sheet("سلف وذمم الموظفين", data.employeeAdvances ?? []),
     {
       sheetName: "الدفتر المزدوج",
       title: `مطابقة الدفتر المزدوج — ${data.doubleEntry.scope.month ?? "نافذة الظل"}`,

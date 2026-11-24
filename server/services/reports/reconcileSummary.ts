@@ -1,6 +1,7 @@
 import {
   reconcileCustomerBalances,
   reconcileDeliveryFloat,
+  reconcileEmployeeAdvances,
   reconcileInventory,
   reconcileLedgerProfit,
   reconcileOnlineOrderConsignmentSync,
@@ -22,6 +23,8 @@ export interface FinancialReconciliationDetails {
   journalOrphans: ReconcileResult[];
   /** أذونات استلام مخزني مرحّلة بانتظار فاتورة مورد مرحّلة ومطابقة (GRNI). */
   unbilledGoodsReceipts: ReconcileResult[];
+  /** مطابقة أرصدة سلف وذمم الموظفين النشطة مقابل حساب EMPLOYEE_ADVANCES في الدفتر المزدوج. */
+  employeeAdvances?: ReconcileResult[];
   runAt: string;
 }
 
@@ -57,6 +60,7 @@ export async function getFinancialReconciliationDetails(): Promise<FinancialReco
     onlineOrders,
     journalOrphans,
     unbilledGoodsReceipts,
+    employeeAdvances,
   ] = await Promise.all([
     reconcileCustomerBalances(),
     reconcileSupplierBalances(),
@@ -66,6 +70,7 @@ export async function getFinancialReconciliationDetails(): Promise<FinancialReco
     reconcileOnlineOrderConsignmentSync(),
     reconcileOrphanJournalLines(),
     reconcileUnbilledGoodsReceipts(),
+    reconcileEmployeeAdvances(),
   ]);
   return {
     customers,
@@ -76,17 +81,14 @@ export async function getFinancialReconciliationDetails(): Promise<FinancialReco
     onlineOrders,
     journalOrphans,
     unbilledGoodsReceipts,
+    employeeAdvances,
     runAt: new Date().toISOString(),
   };
 }
 
 /**
- * Produces the mobile-safe projection. It never copies a row body, entity id, balance or note into
+ * Produces the safe summary projection. It never copies a row body, entity id, balance or note into
  * the returned graph, so serialization cannot expose detailed company reconciliation records.
- *
- * ملاحظة معمارية: تطبيق Android يحصر محاور المطابقة في ٧ محاور صارمة (AccountingControlsRepository.kt).
- * أذونات الاستلام غير المفوترة (GRNI) تُضمّ إلى محور suppliers في هذا الإسقاط الموجز، لضمان استمرار عمل
- * تطبيق Android بلا انهيار مع رصد أي خلل غير مفوتر في إجمالي الانحرافات.
  */
 export function toFinancialReconciliationSummary(
   details: FinancialReconciliationDetails,
@@ -99,7 +101,10 @@ export function toFinancialReconciliationSummary(
     ]),
     delivery: section(details.delivery),
     inventory: section(details.inventory),
-    ledger: section(details.ledger),
+    ledger: section([
+      ...details.ledger,
+      ...(details.employeeAdvances ?? []),
+    ]),
     onlineOrders: section(details.onlineOrders),
     journalOrphans: section(details.journalOrphans),
   } satisfies FinancialReconciliationSummary["sections"];

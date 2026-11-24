@@ -343,7 +343,7 @@ function GlobalPrinterAutoConnect() {
     if (!usb) return;
     let disposed = false;
     const reconnect = () => {
-      void import("@/lib/printing/print")
+      void import("@/lib/printing/thermal")
         .then(({ isWebUsbSupported, tryReconnectPrinter }) => {
           if (!disposed && isWebUsbSupported()) {
             return tryReconnectPrinter("receipt").catch(() => { /* صامت */ });

@@ -14,7 +14,6 @@ import { employees, userSessions, users } from "../../drizzle/schema";
 import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import {
   createNativeSessionMarker,
-  issueNativeDeviceChallenge,
   nativeClientIdFromRequest,
   nativeSessionDisplayName,
   parseNativeSessionMarker,
@@ -56,11 +55,8 @@ import {
   consumePasswordResetToken,
   PASSWORD_RESET_GENERIC_ERROR,
 } from "../services/passwordResetService";
-import { revokeAllNativePushDevicesForUser } from "../services/nativePushService";
-import { revokeAllSuperAppExpoPushDevicesForUser } from "../services/superAppPushService";
 import {
   adminProcedure,
-  nativeBootstrapProcedure,
   protectedProcedure,
   publicProcedure,
   passwordResetTokenProcedure,
@@ -164,11 +160,6 @@ function clearIpFailures(key: string): void {
 }
 
 export const authRouter = router({
-  /** Short-lived signed bootstrap challenge; it grants neither identity nor a session. */
-  nativeDeviceChallenge: nativeBootstrapProcedure.query(() =>
-    issueNativeDeviceChallenge(),
-  ),
-
   me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر + pinHash (لا شأن للعميل بها).
@@ -931,12 +922,6 @@ export const authRouter = router({
             ),
           );
       }
-      // The session is no longer usable after logout, so its Expo device must
-      // not continue receiving even generic lock-screen prompts.
-      await Promise.allSettled([
-        revokeAllNativePushDevicesForUser(ctx.user.id),
-        revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
-      ]);
       await logAudit(ctx, {
         action: "auth.logout",
         entityType: "user",
@@ -1064,10 +1049,6 @@ export const authRouter = router({
           ),
         );
     });
-    await Promise.allSettled([
-      revokeAllNativePushDevicesForUser(ctx.user.id),
-      revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
-    ]);
     await logAudit(ctx, {
       action: "auth.revokeSessions",
       entityType: "user",

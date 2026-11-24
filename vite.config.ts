@@ -602,6 +602,19 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
               id.includes("/client/src/lib/moduleRegistry.ts")
             )
               return "erp-navigation";
+            // Isolate the ERP-only offline queue, crypto, PIN lock, and capture-proof engine
+            // so erp-routes stays cleanly under the 500KB chunk budget without affecting storefront.
+            if (
+              !storefront &&
+              (id.includes("/client/src/lib/offline/outbox.ts") ||
+                id.includes("/client/src/lib/offline/catalogSync.ts") ||
+                id.includes("/client/src/lib/offline/pinLock.ts") ||
+                id.includes("/client/src/lib/offline/outboxIdentity.ts") ||
+                id.includes("/client/src/lib/offline/crypto.ts") ||
+                id.includes("/client/src/lib/offline/db.ts") ||
+                id.includes("/shared/offlineCaptureProof.ts"))
+            )
+              return "erp-offline";
             if (
               id.includes("/shared/operationPermissionCatalog.part1.generated")
             )

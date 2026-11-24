@@ -4,7 +4,7 @@ import { webRuntimeRole } from "../lib/clusterRole";
 const PUBLIC_HOSTS = new Set(["alarabiya.online", "www.alarabiya.online"]);
 
 const PUBLIC_AUTH = new Set([
-  "nativeDeviceChallenge", "me", "tenancyMode", "resetPasswordWithToken", "login", "twoFactorVerify",
+  "me", "tenancyMode", "resetPasswordWithToken", "login", "twoFactorVerify",
   "changePassword", "revokeMySessions", "mySessions", "revokeSession", "twoFactorStatus",
   "twoFactorSetupStart", "twoFactorSetupConfirm", "twoFactorDisable", "twoFactorRegenerateCodes",
 ]);

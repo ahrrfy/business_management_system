@@ -1042,6 +1042,10 @@ async function receivePurchaseInTx(
         recognizedAt: new Date(),
         recognitionAccountingEntryId: Number(recognitionEntry.id),
       });
+      // طلب الصرف المعلّق (PENDING_APPROVAL، cashBucket: null) يُنشأ دائماً كمستند clearing تشغيلي
+      // بلا أثر نقدي أو قيد PAYMENT_OUT (نظير automaticInvoicePosting)، فيظلّ الشحن القابل للصرف
+      // من الخزينة أو البطاقة/التحويل قابلاً للاعتماد لاحقاً حتى لو تجاوز سقف نثرية الدرج؛
+      // أما التنفيذ الفوري فيقتصر على DRAWER أو (TREASURY + CASH) ولا يمسّ ACCRUAL إطلاقاً.
       const request = await createSystemPaymentRequestTx(
         tx,
         {

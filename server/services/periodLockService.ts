@@ -208,15 +208,21 @@ export async function unlockLatestPeriod(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "طھط؛ظٹط± ط¢ط®ط± ط¥ظ‚ظپط§ظ„ ظ…ظ†ط° ظپطھط­ ط§ظ„ط´ط§ط´ط©ط› ط£ط¹ط¯ ط§ظ„طھط­ظ…ظٹظ„ ظ‚ط¨ظ„ ط§ظ„ظپطھط­.",
+      message: appErrorMessage({
+        what: "تعذّر فتح الفترة المالية",
+        why: "تغيّر آخر إقفال منذ فتح الشاشة",
+        doThis: "أعد تحميل الشاشة للتحقق من آخر إقفال نشِط ثم أعد المحاولة",
+      }),
     });
   }
   if (!existing.closeMonth || !existing.closeRevision) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "ط£ط­ط¯ط« ظ‚ظپظ„ ظ„ط§ ظٹط­ظ…ظ„ ظ‡ظˆظٹط© ط§ظ„طھط³ظ„ط³ظ„ط› ط£ط¹ط¯ طھظ‡ظٹط¦ط© ط§ظ„ط£ظ‚ظپط§ظ„ ط§ظ„ط¥ط±ط«ظٹط©.",
+      message: appErrorMessage({
+        what: "تعذّر فتح الفترة المالية",
+        why: "أحدث قفل لا يحمل هوية التسلسل الشهري المعتمدة",
+        doThis: "أعد تهيئة الأقفال الإرثية من إعدادات التسلسل ثم أعد المحاولة",
+      }),
     });
   }
 
@@ -234,8 +240,11 @@ export async function unlockLatestPeriod(
   if (pendingRequests[0]) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "ظٹظˆط¬ط¯ ط·ظ„ط¨ ط¥ظ‚ظپط§ظ„ ظ…ط¹ظ„ظ‚ ظ„ظ‡ط°ط§ ط§ظ„ط´ظ‡ط±ط› ط­ط³ظ…ظ‡ ط£ظˆظ„ط§ظ‹.",
+      message: appErrorMessage({
+        what: "تعذّر فتح الفترة المالية",
+        why: "يوجد طلب إقفال معلّق لهذا الشهر قيد الاعتماد",
+        doThis: "احسم طلب الإقفال المعلّق أولاً (اعتماد أو رفض) ثم أعد المحاولة",
+      }),
     });
   }
 
@@ -252,8 +261,11 @@ export async function unlockLatestPeriod(
   if (certificate?.kind === "YEAR_END") {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "ط¥ط¹ط§ط¯ط© ظپطھط­ ط¥ظ‚ظپط§ظ„ ظ†ظ‡ط§ظٹط© ط³ظ†ط© طھطھط·ظ„ط¨ ظ…ط³ط§ط± ط¹ظƒط³ ط³ظ†ظˆظٹ طµط±ظٹط­طŒ ظˆظ„ط§ طھظ†ظپط° ظƒظپطھط­ ط´ظ‡ط±ظٹ ط¹ط§ط¯ظٹ.",
+      message: appErrorMessage({
+        what: "تعذّر فتح إقفال نهاية السنة من مسار الفتح الشهري",
+        why: "إعادة فتح إقفال نهاية السنة تتطلب مسار عكس سنوي صريح واعتماداً مزدوجاً",
+        doThis: "استخدم شاشة طلب إعادة فتح السنة المالية بدلاً من الفتح الشهري العادي",
+      }),
       cause: "YEAR_END_REOPEN_REQUIRES_REVERSAL",
     });
   }

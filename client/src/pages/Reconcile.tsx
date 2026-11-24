@@ -160,6 +160,7 @@ export default function Reconcile() {
       (data.journalOrphans?.length ?? 0) +
       // أذونات الاستلام غير المفوترة (GRNI): بضاعة مستلمة مخزنياً دون فاتورة مورد مرحلة في AP
       (data.unbilledGoodsReceipts?.length ?? 0) +
+      (data.employeeAdvances?.length ?? 0) +
       doubleEntryIssues
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
@@ -555,6 +556,14 @@ export default function Reconcile() {
             rows={data.unbilledGoodsReceipts ?? []}
             link={(id) => `/purchases?search=${id}`}
             linkLabel="أوامر الشراء"
+          />
+
+          <DriftSection
+            title="سلف وذمم الموظفين"
+            desc="مطابقة مجموع أرصدة السلف النشطة في الموارد البشرية (employeeAdvances.remaining) مع صافي حساب EMPLOYEE_ADVANCES في الدفتر المزدوج."
+            idLabel="المعرّف"
+            money
+            rows={data.employeeAdvances ?? []}
           />
         </>
       )}

@@ -22,7 +22,7 @@ import {
   hasCheckoutCharges,
 } from "./checkoutCharges";
 import Decimal from "decimal.js";
-import { and, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
   invoiceItemServiceMaterials,
@@ -50,8 +50,7 @@ import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
-import { nextInvoiceNumber, nextTransactionTrackingNumber } from "./numbering";
-import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
+import { resolveInvoiceNumberTx } from "./sale/invoiceNumbering";
 import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
@@ -1019,53 +1018,10 @@ export async function createPrintSaleInTx(
     }
 
     // ٩. رأس الفاتورة بالرقم الموحّد للمعاملة.
-    let invoiceNumber: string;
-    if (input.trackingNumber?.trim()) {
-      const cleanTracking = stripDocPrefix(input.trackingNumber.trim());
-      const isExplicitlySuffixed =
-        /^\d+-\d+$/.test(cleanTracking) ||
-        /^(?:INV|WO|ORD|CNS?|PO|QUO)-\d+-\d{8}-\d+-\d+$/i.test(cleanTracking);
-      const baseTrackingNumber = isExplicitlySuffixed
-        ? cleanTracking.replace(/-\d+$/, "")
-        : cleanTracking;
-      const hasExplicitSuffix =
-        isExplicitlySuffixed || input.siblingIndex != null;
-      const preferred =
-        isExplicitlySuffixed && input.siblingIndex == null
-          ? cleanTracking
-          : formatDocumentNumber(
-              baseTrackingNumber,
-              input.siblingIndex ?? undefined,
-            );
-      const existingNums = await tx
-        .select({ invoiceNumber: invoices.invoiceNumber })
-        .from(invoices)
-        .where(
-          or(
-            eq(invoices.invoiceNumber, baseTrackingNumber),
-            like(invoices.invoiceNumber, `${baseTrackingNumber}-%`),
-          ),
-        )
-        .for("update");
-      const used = new Set(existingNums.map((r) => r.invoiceNumber));
-      const needsSiblingSuffix =
-        used.has(preferred) || (!hasExplicitSuffix && used.size > 0);
-      if (!needsSiblingSuffix) {
-        invoiceNumber = preferred;
-      } else {
-        let k = 1;
-        while (used.has(formatDocumentNumber(baseTrackingNumber, k))) {
-          k += 1;
-        }
-        invoiceNumber = formatDocumentNumber(baseTrackingNumber, k);
-      }
-    } else {
-      const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
-      invoiceNumber = formatDocumentNumber(
-        baseTrackingNumber,
-        input.siblingIndex ?? undefined,
-      );
-    }
+    const invoiceNumber = await resolveInvoiceNumberTx(tx, {
+      trackingNumber: input.trackingNumber,
+      siblingIndex: input.siblingIndex,
+    });
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const insRes = await tx.insert(invoices).values({

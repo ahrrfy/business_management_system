@@ -7,6 +7,8 @@ import {
   accrualObligationEvents,
   accrualObligations,
   digitalSaleIntents,
+  employeeAdvances,
+  employees,
   expenses,
   invoices,
   onlineOrders,
@@ -465,9 +467,8 @@ export async function closeShift(
     const reason = (input.varianceReason ?? "").trim();
     const reasonCode = input.varianceReasonCode ?? null;
     const varianceApproverId =
-      role === "manager" || role === "admin"
-        ? actor.userId
-        : (input.managerApprovedByUserId ?? null);
+      input.managerApprovedByUserId ??
+      (role === "manager" || role === "admin" ? actor.userId : null);
 
     // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً.
     // التحقق من صحة تفصيل الفئات إن وُجد
@@ -485,6 +486,17 @@ export async function closeShift(
     }
 
     if (hasVariance && varianceApproverId) {
+      // فصل المهام: يمنع اعتماد مدير الفرع لفرق نقدي على ورديته الشخصية (المدير العام/admin مُستثنى للضرورة الإدارية).
+      if (varianceApproverId === Number(sh.userId) && role !== "admin") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد فرق الوردية ذاتياً",
+            why: "لا يجوز لصاحب الوردية اعتماد فرق نقدي على درج ورديته الخاصة (فصل المهام)",
+            doThis: "اطلب من مدير آخر أو مسؤول النظام مراجعة العدّ واعتماد إغلاق الوردية",
+          }),
+        });
+      }
       if (!reasonCode || !reason) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -565,6 +577,31 @@ export async function closeShift(
           dedupeKey: `SHIFT_VARIANCE_SHORTAGE:${input.shiftId}`,
           notes: `عجز وردية #${input.shiftId} بذمة الموظف — معتمد من المدير (${reasonCode}: ${reason})`,
         });
+
+        // ربط عجز الوردية بسجل سلفة فعلي (employeeAdvances) لصاحب الوردية ليُستقطع من مسير الرواتب
+        // ولا يبقى قيد EMPLOYEE_ADVANCES يتيماً في الدفتر بلا استرداد.
+        const [responsibleEmp] = await tx
+          .select({ id: employees.id })
+          .from(employees)
+          .where(eq(employees.userId, Number(sh.userId)))
+          .orderBy(sql`${employees.isActive} DESC`, desc(employees.id))
+          .limit(1);
+        if (responsibleEmp) {
+          await tx.insert(employeeAdvances).values({
+            employeeId: Number(responsibleEmp.id),
+            branchId: Number(sh.branchId),
+            amount: toDbMoney(shortageAmount),
+            remaining: toDbMoney(shortageAmount),
+            monthlyDeduction: null,
+            sourceType: "OTHER_DEDUCTION",
+            payrollPeriod: null,
+            status: "ACTIVE",
+            receiptId: outReceiptId,
+            note: `ذمة عجز وردية #${input.shiftId} — معتمد (${reasonCode}: ${reason})`.slice(0, 255),
+            createdBy: actor.userId,
+            grantedAt: new Date(),
+          });
+        }
       } else if (variance.isPositive()) {
         const surplusAmount = variance;
         const inRes = await tx.insert(receipts).values({

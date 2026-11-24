@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { appNotifications, nativePushOutbox, users, webPushOutbox } from "../../../drizzle/schema";
+import { appNotifications, users, webPushOutbox } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   buildAppWebPushPayload,
@@ -22,7 +22,6 @@ function db() {
 beforeEach(async () => {
   const database = db();
   await database.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  await database.execute(sql`TRUNCATE TABLE nativePushOutbox`);
   await database.execute(sql`TRUNCATE TABLE webPushOutbox`);
   await database.execute(sql`TRUNCATE TABLE appNotificationPreferences`);
   await database.execute(sql`TRUNCATE TABLE appNotifications`);
@@ -158,27 +157,12 @@ describe("appNotificationService", () => {
     expect(await createAppNotification(input)).toEqual({ created: true });
     expect(await createAppNotification(input)).toEqual({ created: false });
 
-    const rows = await db().select().from(nativePushOutbox);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      userId: 41,
-      eventKey: input.eventKey,
-      environment: "dev",
-      status: "PENDING",
-    });
-    expect(rows[0].payload).toMatchObject({
-      kind: "TASK_ASSIGNED",
-      family: "OPERATIONS",
-      destination: "alrueya://app/module/tasks/view/902",
-      urgency: "action",
-      sensitive: "false",
-    });
     const webRows = await db().select().from(webPushOutbox);
     expect(webRows).toHaveLength(1);
     expect(webRows[0]).toMatchObject({ userId: 41, eventKey: input.eventKey, status: "PENDING" });
   });
 
-  it("يصنّف إشعار الإدارة ويحفظ النظام والجلسة للتسليم خارج التطبيق", async () => {
+  it("يصنّف إشعار الإدارة ويحفظ النظام والجلسة للتسليم عبر Web Push", async () => {
     await createAppNotification({
       userId: 41,
       kind: "ATTENDANCE",
@@ -195,7 +179,7 @@ describe("appNotificationService", () => {
       family: "ADMIN",
       title: "دخول: أحمد",
       body: "جهاز موثوق",
-      route: "/mobile#session-events",
+      route: "/my-work",
       eventKey: "session:login:1:41",
     });
     await createAppNotification({
@@ -209,37 +193,10 @@ describe("appNotificationService", () => {
 
     const notices = await db().select().from(appNotifications);
     expect(notices.map((row) => row.family)).toEqual(["ADMIN", "ADMIN", "SYSTEM"]);
-    const nativeRows = await db().select().from(nativePushOutbox);
-    expect(nativeRows).toHaveLength(3);
-    expect(nativeRows[0].payload).toMatchObject({ family: "ADMIN" });
-    expect(nativeRows[1].payload).toMatchObject({ family: "ADMIN" });
-    expect(nativeRows[2].payload).toMatchObject({ family: "SYSTEM" });
-    expect(nativeRows[1].payload).toMatchObject({ destination: "alrueya://app/alerts" });
-    expect(nativeRows[2].payload).toMatchObject({ kind: "SYSTEM", destination: "alrueya://app/alerts" });
     expect(await db().select().from(webPushOutbox)).toHaveLength(3);
   });
 
-  it("يوجّه إشعار حملة الاستوديو إلى وجهة Android مسجّلة", async () => {
-    await createAppNotification({
-      userId: 41,
-      kind: "TASK_ASSIGNED",
-      title: "تغيّرت حالة حملة الاستوديو",
-      body: "راجع حملة التصوير.",
-      route: "/product-studio/campaigns/77",
-      eventKey: "studio:campaign:77:status:ACTIVE:41",
-      entityType: "productStudioCampaign",
-      entityId: 77,
-      push: true,
-    });
-
-    const [row] = await db().select().from(nativePushOutbox);
-    expect(row.payload).toMatchObject({
-      kind: "TASK_ASSIGNED",
-      destination: "alrueya://app/modules",
-    });
-  });
-
-  it("يحترم تعطيل فئة الإشعار ولا ينشئ صف إرسال أصلي", async () => {
+  it("يحترم تعطيل فئة الإشعار ولا ينشئ صف Web Push", async () => {
     await updateNotificationPreferences(41, {
       taskAssigned: false,
       payrollReady: true,
@@ -252,11 +209,11 @@ describe("appNotificationService", () => {
       kind: "TASK_ASSIGNED",
       title: "مهمة",
       body: "تحديث",
-      route: "/mobile#tasks",
+      route: "/my-work",
       eventKey: "task:903:assigned:41",
       push: true,
     });
-    expect(await db().select().from(nativePushOutbox)).toHaveLength(0);
+    expect(await db().select().from(webPushOutbox)).toHaveLength(0);
     expect((await listUserNotifications(41)).rows).toHaveLength(1);
   });
 
@@ -266,16 +223,15 @@ describe("appNotificationService", () => {
       kind: "ATTENDANCE",
       title: "نص غير موثوق",
       body: "تفاصيل لا ينبغي عرضها",
-      route: "/mobile#attendance",
+      route: "/hr?tab=attendance",
       eventKey: "attendance:unsafe:ATTENDANCE_CHECK_IN",
       push: true,
     });
-    const [row] = await db().select().from(nativePushOutbox);
+    const [row] = await db().select().from(webPushOutbox);
     expect(row.payload).toMatchObject({
-      kind: "ATTENDANCE",
-      title: "تحديث آمن",
-      body: "افتح سوبر العربية لعرض التفاصيل.",
-      sensitive: "true",
+      kind: "ATTENDANCE_CHECK_IN",
+      title: "تحديث الحضور",
+      body: "تم تحديث سجل الدوام.",
     });
   });
 
@@ -285,19 +241,18 @@ describe("appNotificationService", () => {
       kind: "LEAVE_STATUS",
       title: "تمت الموافقة على الإجازة",
       body: "مرضية · 2026-08-10 — 2026-08-12",
-      route: "/mobile#leave",
+      route: "/hr",
       eventKey: "leave:555:approved",
       entityType: "leaveRequest",
       entityId: 555,
       push: true,
     });
-    const [row] = await db().select().from(nativePushOutbox);
+    const [row] = await db().select().from(webPushOutbox);
     expect(row.payload).toMatchObject({
       kind: "LEAVE_STATUS",
-      title: "تحديث آمن",
-      body: "افتح سوبر العربية لعرض التفاصيل.",
-      sensitive: "true",
+      body: "لديك تحديث جديد في مساحة العمل.",
     });
+    expect(JSON.stringify(row.payload)).not.toContain("مرضية");
   });
 
   it("يعرض تنبيه الإدارة الكامل خارج التطبيق عندما تكون حمولته العددية معتمدة", async () => {
@@ -311,14 +266,7 @@ describe("appNotificationService", () => {
       eventKey: "morning-brief:2026-09-01:41",
       lockScreenSafe: true,
     });
-    const [native] = await db().select().from(nativePushOutbox);
     const [web] = await db().select().from(webPushOutbox);
-    expect(native.payload).toMatchObject({
-      kind: "SYSTEM",
-      title: "برنامج اليوم — الرؤية العربية",
-      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
-      sensitive: "false",
-    });
     expect(web.payload).toMatchObject({
       kind: "SYSTEM",
       title: "برنامج اليوم — الرؤية العربية",

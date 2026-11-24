@@ -299,8 +299,6 @@ jobs:
         run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
       - name: الحزمة الوحدوية الكاملة (حاجبة — بلا تنظيف قاعدة)
         run: pnpm exec cross-env TZ=UTC vitest run --config vitest.unit.config.ts --retry=1
-      - name: حارس عقد إصدار تطبيق Android الأصلي
-        run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
         run: pnpm check:emoji
       - name: حارِس المخطّطات المالية (z.string العارية)

@@ -7,20 +7,18 @@ const read = (path: string) =>
   readFileSync(resolve(process.cwd(), path), "utf8");
 
 describe("dependency security coverage", () => {
-  it("يفحص Security Audit أقفال الجذر وتطبيقي Expo", () => {
+  it("يفحص Security Audit قفل الجذر بعد إزالة تطبيقات Expo", () => {
     const workflow = read(".github/workflows/security.yml");
 
     expect(workflow).toContain("pnpm-lock.yaml");
-    expect(workflow).toContain("expo/customer-store-mobile/pnpm-lock.yaml");
-    expect(workflow).toContain("expo/superapp-mobile/pnpm-lock.yaml");
+    expect(workflow).not.toContain("expo/customer-store-mobile/pnpm-lock.yaml");
+    expect(workflow).not.toContain("expo/superapp-mobile/pnpm-lock.yaml");
     expect(workflow).toContain("--config=osv-scanner.toml");
   });
 
   it("يبقي فحص الثغرات مركزياً في OSV بلا اعتماد على npm audit المتقاعد", () => {
-    const mobileWorkflow = read(".github/workflows/expo-mobile-check.yml");
     const securityWorkflow = read(".github/workflows/security.yml");
 
-    expect(mobileWorkflow).not.toContain("pnpm audit");
     expect(securityWorkflow).toContain("osv-scanner scan");
   });
 
@@ -43,53 +41,6 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(rootOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
     expect(rootOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
-
-    const packageJson = JSON.parse(
-      read("expo/customer-store-mobile/package.json"),
-    ) as {
-      pnpm?: {
-        overrides?: Record<string, string>;
-      };
-    };
-    const overrides = packageJson.pnpm?.overrides ?? {};
-
-    expect(overrides["fast-uri"]).toBe("3.1.9");
-    expect(overrides["undici"]).toBe("6.29.1");
-    expect(overrides["@grpc/grpc-js"]).toBe("1.13.6");
-    expect(overrides["re2js"]).toBe("2.8.7");
-    expect(overrides["brace-expansion@1.1.18"]).toBe("1.1.21");
-    expect(overrides["brace-expansion@2.1.4"]).toBe("2.1.7");
-    expect(overrides["brace-expansion@5.0.9"]).toBe("5.0.12");
-    expect(overrides["compression"]).toBe("1.8.2");
-    expect(overrides["postcss-selector-parser"]).toBe("7.1.6");
-    expect(overrides["source-map-js"]).toBe("1.2.2");
-    expect(overrides["shell-quote"]).toBe("^1.12.0");
-    expect(overrides["http-cache-semantics"]).toBe("4.3.0");
-    expect(overrides["node-forge"]).toBe("1.4.3");
-    expect(overrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
-    expect(overrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
-    expect(overrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
-
-    const superappPackageJson = JSON.parse(
-      read("expo/superapp-mobile/package.json"),
-    ) as {
-      pnpm?: {
-        overrides?: Record<string, string>;
-      };
-    };
-    const superappOverrides = superappPackageJson.pnpm?.overrides ?? {};
-    expect(superappOverrides["fast-uri"]).toBe("3.1.9");
-    expect(superappOverrides["undici"]).toBe("6.29.1");
-    expect(superappOverrides["brace-expansion@1.1.18"]).toBe("1.1.21");
-    expect(superappOverrides["brace-expansion@2.1.4"]).toBe("2.1.7");
-    expect(superappOverrides["brace-expansion@5.0.9"]).toBe("5.0.12");
-    expect(superappOverrides["compression"]).toBe("1.8.2");
-    expect(superappOverrides["source-map-js"]).toBe("1.2.2");
-    expect(superappOverrides["shell-quote"]).toBe("^1.12.0");
-    expect(superappOverrides["node-forge"]).toBe("1.4.3");
-    expect(superappOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
-    expect(superappOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
-    expect(superappOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");
 
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-g3hv-75wg-m249"');
@@ -124,12 +75,8 @@ describe("dependency security coverage", () => {
     ).not.toThrow();
   });
 
-  it("يستبدل deepmerge الضعيفة ببديل مصحح ومثبت في الأقفال الثلاثة", () => {
-    for (const lock of [
-      "pnpm-lock.yaml",
-      "expo/customer-store-mobile/pnpm-lock.yaml",
-      "expo/superapp-mobile/pnpm-lock.yaml",
-    ]) {
+  it("يستبدل deepmerge الضعيفة ببديل مصحح ومثبت في قفل الجذر", () => {
+    for (const lock of ["pnpm-lock.yaml"]) {
       const lockSource = read(lock).replaceAll("\r\n", "\n");
       expect(lockSource).toContain("@stackline/deepmerge@1.1.0");
       expect(lockSource).toContain(
@@ -182,11 +129,7 @@ describe("dependency security coverage", () => {
       "readdir-glob@1.1.3",
       "test-exclude@6.0.0",
     ];
-    for (const lock of [
-      "pnpm-lock.yaml",
-      "expo/customer-store-mobile/pnpm-lock.yaml",
-      "expo/superapp-mobile/pnpm-lock.yaml",
-    ]) {
+    for (const lock of ["pnpm-lock.yaml"]) {
       let parent = "";
       for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
         if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
@@ -211,22 +154,16 @@ describe("dependency security coverage", () => {
     }
   });
 
-  it("يفتح Dependabot تحديثات أسبوعية مستقلة ويقصر Expo على ترقيات patch", () => {
+  it("يفتح Dependabot تحديثات أسبوعية للجذر وحده بعد إزالة تطبيقات Expo", () => {
     const dependabot = read(".github/dependabot.yml");
-    expect(dependabot.match(/package-ecosystem: npm/g)).toHaveLength(3);
-    for (const directory of [
-      "/",
-      "/expo/superapp-mobile",
-      "/expo/customer-store-mobile",
-    ]) {
-      expect(dependabot).toContain(`directory: "${directory}"`);
-    }
-    expect(dependabot.match(/interval: weekly/g)).toHaveLength(3);
+    expect(dependabot.match(/package-ecosystem: npm/g)).toHaveLength(1);
+    expect(dependabot).toContain('directory: "/"');
+    expect(dependabot).not.toContain("/expo/superapp-mobile");
+    expect(dependabot).not.toContain("/expo/customer-store-mobile");
+    expect(dependabot.match(/interval: weekly/g)).toHaveLength(1);
     expect(dependabot.match(/safe-non-major-updates:/g)).toHaveLength(1);
-    expect(dependabot.match(/safe-patch-updates:/g)).toHaveLength(2);
     expect(dependabot.match(/- minor\s+- patch/g)).toHaveLength(1);
-    expect(dependabot.match(/dependency-name: "\*"/g)).toHaveLength(3);
-    expect(dependabot.match(/"version-update:semver-major"/g)).toHaveLength(3);
-    expect(dependabot.match(/"version-update:semver-minor"/g)).toHaveLength(2);
+    expect(dependabot.match(/dependency-name: "\*"/g)).toHaveLength(1);
+    expect(dependabot.match(/"version-update:semver-major"/g)).toHaveLength(1);
   });
 });

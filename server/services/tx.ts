@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { getDb, type DB, type Tx } from "../db";
+import { logger } from "../logger";
 import {
   ensureFinancialPostingGate,
   isMonthCloseGateMissing,
@@ -93,8 +94,9 @@ async function drainPostCommitHooks(tx: Tx): Promise<void> {
   for (const hook of hooks) {
     try {
       await hook();
-    } catch {
-      // fail-open: transaction already committed; side-effects don't affect integrity.
+    } catch (err) {
+      // fail-open: transaction already committed; log so side-effect failures are never invisible.
+      logger.error({ err }, "tx.postCommitHook.failed");
     }
   }
 }

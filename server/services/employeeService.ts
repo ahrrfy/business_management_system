@@ -25,8 +25,6 @@ import { getEmployeeClearance } from "./hr/offboarding";
 import { companyBranchScope, resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
 import { assertOperationAuthorized } from "../operationAuthorization";
 import type { OperationUser } from "@shared/operationPermissions";
-import { revokeAllNativePushDevicesForUser } from "./nativePushService";
-import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 import Decimal from "decimal.js";
 
 const COMPANY_SCOPE: CompanyBranchScope = { branchId: null };
@@ -575,19 +573,10 @@ export async function setEmploymentStatus(
     const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
     return {
       userDisabled,
-      disabledUserId: userDisabled ? e.userId : null,
       deviceLinksReleased,
       deviceLinksRestored: 0,
     };
   });
-  if (effects.disabledUserId != null) {
-    // Termination commits first; the separate delivery channels then lose the
-    // device bindings as a best-effort containment action.
-    await Promise.allSettled([
-      revokeAllNativePushDevicesForUser(effects.disabledUserId),
-      revokeAllSuperAppExpoPushDevicesForUser(effects.disabledUserId),
-    ]);
-  }
   const e = await getEmployee(id, scope);
   return { ...e!, ...effects };
 }

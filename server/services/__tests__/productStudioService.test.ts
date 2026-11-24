@@ -350,7 +350,7 @@ describe("product studio governed workflow", () => {
     expect(results.reduce((sum, result) => sum + result.createdCount, 0)).toBe(1);
     const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
     expect(notices).toHaveLength(1);
-    expect(await db().select().from(s.nativePushOutbox).where(eq(s.nativePushOutbox.eventKey, notices[0].eventKey))).toHaveLength(1);
+    expect(await db().select().from(s.webPushOutbox).where(eq(s.webPushOutbox.eventKey, notices[0].eventKey))).toHaveLength(1);
   });
 
   it("لا يختم النية إذا أعاد الكاتب duplicate بلا إشعار تطبيق دائم", async () => {

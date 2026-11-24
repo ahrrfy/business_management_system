@@ -161,6 +161,8 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_CUSTODY_RECOVERY"
+  | "ADJUST_CUSTODY_RECOVERY_REVERSAL"
   | "ADJUST_DAMAGED_RETURN_RECLASS"
   | "ADJUST_INVENTORY_REVALUATION_GAIN"
   | "ADJUST_INVENTORY_REVALUATION_LOSS"
@@ -355,6 +357,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_CUSTODY_RECOVERY",
+    "ADJUST_CUSTODY_RECOVERY_REVERSAL",
     "ADJUST_DAMAGED_RETURN_RECLASS",
     "ADJUST_INVENTORY_REVALUATION_GAIN",
     "ADJUST_INVENTORY_REVALUATION_LOSS",
@@ -1858,6 +1862,33 @@ export const PROFILE_POLICIES = Object.freeze({
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
   }),
+  // تعويض عهدة موظف تالفة أو مفقودة محمّلة للاستقطاع من راتبه: يُثبت ذمّةً على الموظف
+  // (EMPLOYEE_ADVANCES) مقابل إيراد/استرداد تعويض (OTHER_REVENUE) دون مساسٍ بالمخزون،
+  // فتعود ذمة EMPLOYEE_ADVANCES صفراً عند الاستقطاع في مسير الرواتب وتتطابق مع reconcileEmployeeAdvances.
+  ADJUST_CUSTODY_RECOVERY: profilePolicy(
+    "ADJUST",
+    ["EMPLOYEE_ADVANCES"],
+    ["OTHER_REVENUE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["EMPLOYEE_ADVANCES"]),
+      ],
+      requireRoleComponents: ["EMPLOYEE_ADVANCES", "OTHER_REVENUE"],
+    },
+  ),
+  // إعفاء الموظف من استقطاع تعويض العهدة غير النقدي قبل أي خصم من الراتب: يعكس ذمة
+  // EMPLOYEE_ADVANCES وإيراد التعويض المقابل مع بقاء سجل العهدة وقيد الخسارة الأصليين محفوظين.
+  ADJUST_CUSTODY_RECOVERY_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["OTHER_REVENUE"],
+    ["EMPLOYEE_ADVANCES"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["EMPLOYEE_ADVANCES"]),
+      ],
+      requireRoleComponents: ["OTHER_REVENUE", "EMPLOYEE_ADVANCES"],
+    },
+  ),
   ADJUST_DAMAGED_RETURN_RECLASS: profilePolicy("ADJUST", ["LOSSES"], ["COGS"], {
     reversible: false,
     sourceAssertions: [

@@ -47,7 +47,7 @@ afterEach(async () => {
 beforeEach(async () => {
   await resetAttendanceFoldState();
   await truncateTables([
-    "nativePushOutbox",
+    "webPushOutbox",
     "appNotificationPreferences",
     "appNotifications",
     "hrDeviceCommands",
@@ -295,28 +295,26 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
 
       let outbox = await db()
         .select()
-        .from(s.nativePushOutbox)
-        .where(eq(s.nativePushOutbox.userId, 1));
+        .from(s.webPushOutbox)
+        .where(eq(s.webPushOutbox.userId, 1));
       expect(outbox).toHaveLength(1);
       expect(outbox[0].payload).toMatchObject({
-        kind: "ATTENDANCE",
+        kind: "ATTENDANCE_CHECK_IN",
         title: "تم تسجيل الحضور",
         body: expect.stringContaining("08:05 • مسجّل"),
-        destination: "alrueya://app/module/hr/browse",
-        sensitive: "false",
+        url: "/hr?tab=attendance",
       });
       expect(JSON.stringify(outbox[0].payload)).not.toContain("أحمد");
       const managerOutbox = await db()
         .select()
-        .from(s.nativePushOutbox)
-        .where(eq(s.nativePushOutbox.userId, 2));
+        .from(s.webPushOutbox)
+        .where(eq(s.webPushOutbox.userId, 2));
       expect(managerOutbox).toHaveLength(1);
       expect(managerOutbox[0].payload).toMatchObject({
-        kind: "ATTENDANCE",
+        kind: "ATTENDANCE_CHECK_IN",
         title: "أحمد علي الجبوري سجّل الحضور",
         body: "08:05 • الرئيسي • جهاز الرئيسي",
-        destination: "alrueya://app/module/hr/browse",
-        sensitive: "false",
+        url: "/hr?tab=attendance",
       });
 
       // البصمة الأولى لا تُختلق منها حركة انصراف. وصول الحركة الثانية يعيد الطيّ،
@@ -331,8 +329,8 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
         .where(eq(s.appNotifications.userId, 1));
       outbox = await db()
         .select()
-        .from(s.nativePushOutbox)
-        .where(eq(s.nativePushOutbox.userId, 1));
+        .from(s.webPushOutbox)
+        .where(eq(s.webPushOutbox.userId, 1));
       expect(notices).toHaveLength(2);
       expect(outbox).toHaveLength(2);
       expect(notices.map((row) => row.title).sort()).toEqual(
@@ -346,7 +344,7 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
       ]);
       expect((await processPendingFolds()).days).toBe(0);
       expect(await db().select().from(s.appNotifications)).toHaveLength(4);
-      expect(await db().select().from(s.nativePushOutbox)).toHaveLength(4);
+      expect(await db().select().from(s.webPushOutbox)).toHaveLength(4);
     } finally {
       if (previousWorkplacePolicy === undefined) {
         delete process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE;

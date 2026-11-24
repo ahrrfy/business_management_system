@@ -616,12 +616,22 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
       amount: sourceEntryBefore.amount,
     });
     expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
-    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+    const entriesAfter = await db().select().from(s.accountingEntries);
+    expect(entriesAfter).toHaveLength(entriesBefore.length + 1);
+    const [waiverEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `CUSTODY_LOSS_WAIVER:${loss.advanceId}`));
+    expect(waiverEntry).toMatchObject({
+      entryType: "ADJUST",
+      dedupeKey: `CUSTODY_LOSS_WAIVER:${loss.advanceId}`,
+      amount: sourceEntryBefore.amount,
+    });
 
     await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
       .rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
-    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length + 1);
   });
 
   it("يرفض السلفة النقدية أو التاريخية بلا رابط سند يثبت عودة النقد", async () => {

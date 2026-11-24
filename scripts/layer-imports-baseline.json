@@ -16,7 +16,6 @@
   "server/routers/integrationRouter.ts": 2,
   "server/routers/inventoryRouter.ts": 2,
   "server/routers/kioskRouter.ts": 2,
-  "server/routers/offlineRouter.ts": 1,
   "server/routers/payrollRouter.ts": 1,
   "server/routers/periodLockRouter.ts": 1,
   "server/routers/platformAdminRouter.ts": 2,
@@ -34,7 +33,6 @@
   "server/routers/salesControlRouter.ts": 2,
   "server/routers/shiftRouter.ts": 2,
   "server/routers/stocktakeRouter.ts": 2,
-  "server/routers/superAppRouter.ts": 1,
   "server/routers/systemRouter.ts": 2,
   "server/routers/voucherRouter.ts": 2,
   "server/routers/workOrderRouter.ts": 2

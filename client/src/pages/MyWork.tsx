@@ -220,7 +220,7 @@ export default function MyWork() {
     },
     { enabled: decisionsActive, staleTime: 15_000 },
   );
-  const notifications = trpc.superApp.notifications.useQuery(
+  const notifications = trpc.notifications.list.useQuery(
     { limit: 20, unreadOnly },
     { enabled: updatesActive, staleTime: 30_000 },
   );
@@ -258,14 +258,14 @@ export default function MyWork() {
   );
 
   useRealtimeEvent(REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED, () => {
-    void utils?.superApp?.notifications?.invalidate?.();
+    void utils?.notifications?.list?.invalidate?.();
   });
 
   useRealtimeEvent(REALTIME_EVENT_TYPES.ANNOUNCEMENT_PUBLISHED, () => {
     void utils?.announcements?.mine?.invalidate?.();
   });
 
-  const markRead = trpc.superApp.markNotificationRead.useMutation({
+  const markRead = trpc.notifications.markRead.useMutation({
     onSuccess: () => void notifications.refetch(),
   });
   const markAnnouncementRead = trpc.announcements.markRead.useMutation({

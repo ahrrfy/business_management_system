@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { appNotifications, branches, nativePushOutbox, users } from "../../../drizzle/schema";
+import { appNotifications, branches, users, webPushOutbox } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   acknowledgeAnnouncement,
@@ -11,7 +11,7 @@ import {
   myAnnouncements,
   setAnnouncementActive,
 } from "../announcementService";
-import type { NormalizedNativePushPayload } from "../nativePushService";
+import type { AppPushPayload } from "../pushService";
 
 function db() {
   const value = getDb();
@@ -25,7 +25,7 @@ beforeEach(async () => {
   await d.execute(sql`TRUNCATE TABLE announcementReads`);
   await d.execute(sql`TRUNCATE TABLE announcements`);
   await d.execute(sql`TRUNCATE TABLE appNotifications`);
-  await d.execute(sql`TRUNCATE TABLE nativePushOutbox`);
+  await d.execute(sql`TRUNCATE TABLE webPushOutbox`);
   await d.execute(sql`TRUNCATE TABLE users`);
   await d.execute(sql`TRUNCATE TABLE branches`);
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -68,20 +68,18 @@ describe("announcementService", () => {
     // المستهدَف النشط 10,11,12,13؛ الناشر 10 مُستثنى والمعطّل 14 مستبعَد ⇒ 11,12,13.
     expect(notes.map((n) => Number(n.userId)).sort((x, y) => x - y)).toEqual([11, 12, 13]);
     expect(notes.every((n) => Number(n.entityId) === a.id)).toBe(true);
-    // دفعٌ أصيل مُدرَجٌ في الصندوق الصادر لمستهدَفٍ نشط.
-    const push = await d.select().from(nativePushOutbox).where(eq(nativePushOutbox.userId, 11));
+    // دفع ويب مُدرَجٌ في الصندوق الصادر لمستهدَفٍ نشط.
+    const push = await d.select().from(webPushOutbox).where(eq(webPushOutbox.userId, 11));
     expect(push.length).toBeGreaterThanOrEqual(1);
   });
 
   it("دفع الإعلان مُنقَّحٌ على شاشة القفل افتراضاً — لا يُسرّب العنوان/النص", async () => {
     const d = db();
     await createAnnouncement({ title: "اجتماع سرّي", body: "تفاصيل داخليّة", audienceType: "ALL" }, 10);
-    const [push] = await d.select().from(nativePushOutbox).where(eq(nativePushOutbox.userId, 11));
-    // حمولات FCM نصّية ⇒ العَلَم يُسلسَل نصّاً "true" لا boolean.
-    const payload = push.payload as NormalizedNativePushPayload;
-    expect(payload.sensitive).toBe("true");
-    expect(payload.title).toBe("تحديث آمن");
-    expect(payload.body).toBe("افتح سوبر العربية لعرض التفاصيل.");
+    const [push] = await d.select().from(webPushOutbox).where(eq(webPushOutbox.userId, 11));
+    const payload = push.payload as AppPushPayload;
+    expect(payload.title).toBe("إعلان جديد");
+    expect(payload.body).toBe("افتح النظام لقراءة الإعلان.");
     // النصّ الأصليّ لا يُسرَّب في حمولة الدفع (شاشة القفل تعرض النصّ الآمن فقط).
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toContain("اجتماع سرّي");

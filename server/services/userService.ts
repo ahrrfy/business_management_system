@@ -55,8 +55,6 @@ import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { logAuditTx } from "./auditService";
 import { assertCanAdministerUser } from "./userAdminPolicy";
 import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
-import { revokeAllNativePushDevicesForUser } from "./nativePushService";
-import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 import {
   resolveCustomRole,
   normalizeOwnerAuthority,
@@ -699,12 +697,6 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
     await tx.update(users).set({ isActive: true }).where(eq(users.id, userId));
     return { userId, isActive: true };
   });
-  if (!result.isActive) {
-    await Promise.allSettled([
-      revokeAllNativePushDevicesForUser(result.userId),
-      revokeAllSuperAppExpoPushDevicesForUser(result.userId),
-    ]);
-  }
   return result;
 }
 
@@ -750,10 +742,6 @@ export async function resetUserPassword(
       );
     return { userId, success: true };
   });
-  await Promise.allSettled([
-    revokeAllNativePushDevicesForUser(result.userId),
-    revokeAllSuperAppExpoPushDevicesForUser(result.userId),
-  ]);
   return result;
 }
 
@@ -797,10 +785,6 @@ export async function changePassword(userId: number, oldPassword: string, newPas
       );
     return { userId, success: true, validFrom };
   });
-  await Promise.allSettled([
-    revokeAllNativePushDevicesForUser(result.userId),
-    revokeAllSuperAppExpoPushDevicesForUser(result.userId),
-  ]);
   return result;
 }
 
@@ -824,18 +808,6 @@ export async function revokeUserSessions(userId: number, _actor: Actor) {
     await tx.update(userSessions).set({ revokedAt }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
     return { userId, revokedAt, subject: u };
   });
-  // Codex P1 (٢٥/٨) — الإبطالُ يجب أن يُقفل قناةَ push الأصيلة أيضاً، وإلّا استمرّ الجهاز
-  // المطرود يتلقّى إشعارات حسّاسة. `nativePush.revokeDevice` من العميل عاجزٌ الآن (401)،
-  // فالخادم مسؤولٌ عن ذلك بنفسه. خارج المعاملة لأنّ nativePushService يستعمل pool مباشرةً؛
-  // fail-open كي لا يُلغى الإبطالُ الرئيسيّ لعطلٍ في قناةٍ ثانوية.
-  try {
-    await Promise.allSettled([
-      revokeAllNativePushDevicesForUser(outcome.userId),
-      revokeAllSuperAppExpoPushDevicesForUser(outcome.userId),
-    ]);
-  } catch {
-    /* ignore — تسجيلُ الأثر يتكفّل به مسار المخارج */
-  }
   // ن-٢-د (٢٤/٨) — إشعارٌ إداريّ: مديرٌ أنهى جلسة موظّف ⇒ يُخطَر بقيّة الإداريّين. يقع بعد
   // نجاح المعاملة كي لا يُنشأ إشعارٌ لعملٍ لم يحدث. fail-open داخل الخدمة.
   void notifyAdminsOfSessionEvent({

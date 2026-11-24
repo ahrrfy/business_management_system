@@ -17,14 +17,14 @@
 
 ```
 client/src/pages (٢٧٢ صفحة، wouter + TanStack Query)
-   └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٨ راوتراً)
+   └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٧ راوتراً)
         └─ server/routers/*  : تحقّق zod + اختيار الإجراء المُبوَّب (بلا منطق أعمال)
              └─ server/services/*  : منطق الأعمال داخل withTx (٨٠٣ ملفاً/حزمة)
-                  └─ drizzle/schema.ts (٣٥٤ جدولاً، ١٩٤٧٠ سطراً) ──▶ MySQL 8
+                  └─ drizzle/schema.ts (٣٥٥ جدولاً، ١٩٥١٤ سطراً) ──▶ MySQL 8
 ```
 
 - **قاعدة الطبقات:** الراوتر بلا منطق أعمال، والخدمة **لا تقرأ `ctx`** — تستقبل `Actor { userId, branchId, role }` (`server/services/tx.ts`). كسرُ هذا يُعمي حرّاس الصلاحيات ويجعل الخدمة غير قابلة لإعادة الاستعمال من قناةٍ أخرى (أوفلاين/أندرويد/استيراد).
-- **مفردات التفويض = `server/trpc.ts`** (١١٤ إجراءً مُصدَّراً جاهزاً): **لا تكتب فحص صلاحيةٍ جديداً — اختر الإجراء المناسب.** الاصطلاح `query ⇒ READ` و`mutation ⇒ FULL`؛ `moduleProcedure(roles, moduleKey, level)` = بوّابة وحدة + إلزام فرعٍ مُسنَد؛ و`branchScopedProcedure` يحقن `scopedBranchId` (عزل الفرع) و`scopedOwnerId` (عزل سجلّات الموظف: يرى ما أنشأه فقط). الخريطة المشتركة مع الواجهة في `shared/permissions.ts` — والإنفاذ النهائيّ **خادميّ دائماً**.
+- **مفردات التفويض = `server/trpc.ts`** (١١٢ إجراءً مُصدَّراً جاهزاً): **لا تكتب فحص صلاحيةٍ جديداً — اختر الإجراء المناسب.** الاصطلاح `query ⇒ READ` و`mutation ⇒ FULL`؛ `moduleProcedure(roles, moduleKey, level)` = بوّابة وحدة + إلزام فرعٍ مُسنَد؛ و`branchScopedProcedure` يحقن `scopedBranchId` (عزل الفرع) و`scopedOwnerId` (عزل سجلّات الموظف: يرى ما أنشأه فقط). الخريطة المشتركة مع الواجهة في `shared/permissions.ts` — والإنفاذ النهائيّ **خادميّ دائماً**.
 - **المسارات المختصرة:** `@/*` ⇐ `client/src/*` و`@shared/*` ⇐ `shared/*` (مضبوطة في `tsconfig.json` + `vite.config.ts` + كلا ملفَّي vitest).
 
 ## ٣. التشغيل (Windows + PowerShell)
@@ -40,8 +40,8 @@ pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
 pnpm check:guards                 # حزمة الحرّاس (٤٩ حارساً) — بوّابة ما قبل الدفع (§٣.١)
 pnpm test:db:init                 # تهيئة قاعدة اختبار هذه الشجرة طازجةً (بعد تغيّر المخطط)
-pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٥٩٩ ملف اختبار)
-pnpm test:unit                    # ٦٧٢ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
+pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٦١٥ ملف اختبار)
+pnpm test:unit                    # ٦٩٣ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
 pnpm build && pnpm start          # بناء الإنتاج (vite + esbuild) ثم تشغيله من dist/
 pnpm format                       # prettier — ⚠️ **بلا نطاق**: يُعيد تنسيق المستودع كلّه (~٢٥٩٦ ملفاً)
                                   #   فينتفخ فرقُك ويصير مغناطيسَ تعارض. `pre-commit` لا يستدعيه أصلاً.
@@ -141,7 +141,7 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 3. **الدمج والنشر الآلي (Automated Merge & Deploy):**
    - بعد اجتياز جميع الفحوصات بنجاح تام وتحولها للأخضر، يتم دمج الفرع مع `main` وتنفيذ إجراءات النشر المعتمدة.
 
-## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٥٩٩ ملف اختبار + حرّاس §٣.١)
+## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٦١٥ ملف اختبار + حرّاس §٣.١)
 - **الذرّية:** كل عملية أعمال داخل `withTx(tx => …)` (server/services/tx.ts)؛ أي throw ⇒ ROLLBACK كامل.
 - **المخزون:** بالوحدة الأساس `decimal(15,4)` لكل (variant × branch) في `branchStock`؛ مواد الوصفات تقبل الكسر حتى أربع منازل بلا تقريب، وحساب الكميات عبر `shared/quantity.ts` وDecimal. كل تغيير عبر `inventoryService.applyMovement` (حركة + رصيد تحت قفل `.for("update")`). كمية المنتج النهائي المباعة تبقى صحيحة بالأساس؛ التحويل الكسري متاح فقط في سياق المواد الصريح. يربط `drizzle/quantityColumn.ts` التخزين النصي العشري بعقود القراءة الرقمية المتحققة.
 - **الأموال:** كلها عبر `decimal.js` + `money.ts` (round2 HALF_UP، toDbMoney نصاً). **ممنوع** `parseFloat`/`Number` على الأموال.
@@ -166,10 +166,9 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 
 **🗃️ الهجرات:** ملفات SQL مولَّدة (`pnpm db:generate` محلياً) تُطبَّق عبر drizzle-orm migrator. ⛔ **لا رقمَ «آخر هجرة» هنا** — كان هذا السطر يقول `0220` بينما `main` عند `0238`، وهو نوع الادّعاء الذي يشيخ في ساعات ويُضلّل من يبني عليه. اشتقّ رقمك دائماً بـ§٧-٤ب: `git fetch origin main` + `SELECT MAX(created_at) FROM __drizzle_migrations` على الإنتاج + `pnpm check:migrations`. ⛔ ولا `db:push` عارياً على الإنتاج (حارس `db-push-guard.mjs`)، ولا `drizzle-kit migrate` (يفشل صامتاً).
 
-**📱 تطبيقا الجوال الأصيلان بنظام Expo (Android + iOS)** (أُعيد بناؤهما جذرياً وتطهير الإرث الكوتلن/TWA القديم):
-- **تطبيق سوبر العربية للموظفين والإدارة (`expo/superapp-mobile/`):** تطبيق أصيل (Android: `online.alarabiya.store` بـ`versionCode: 24`، وiOS: `online.alarabiya.superapp`). يدعم مركز القيادة، البصمة/التحقق الحيوي، بطاقات الرواتب، وسجل الدوام، مع نقل مؤمن وتثبيت الشهادات (SPKI Pinning).
-- **تطبيق مكتبة العربية للزبائن والمتجر (`expo/customer-store-mobile/`):** تطبيق أصيل (Android وiOS: `online.alarabiya.customerstore`). تجربة شراء إلكترونية كاملة بالهوية الزمردية (`#0E806A`) والخط العربي، مع سلة الشراء، الدفع عند الاستلام، وتتبع الطلبات.
-- **الحوكمة والفحص:** يحرس سلامة التطبيقين وعقود الخادم `pnpm check:mobile-release` و`pnpm mobile:check` و`pnpm mobile:test` والمسار الآلي `.github/workflows/expo-mobile-check.yml`.
+**📱 واجهة الويب وتغليف المتجر `TWA` (بلا تطبيقات هاتف أصلية):**
+- أُزيلت تطبيقات الهاتف (`expo/` و`android-native/`) نهائياً من الشيفرة لتخفيف الصيانة والتركيز على نظام الويب الأساسي ومتجر الويب التقدمي (`PWA`).
+- أُبقي على مشروع تغليف الويب الموثوق (`twa/` — Trusted Web Activity) ومسار التحقق `/.well-known/assetlinks.json` في `server/wellKnown.ts` وإشعارات `Web Push`.
 
 
 **⚙️ وحدات مبنيّة كاملةً لكنها معطَّلة/مشروطة افتراضياً — لا تفترض أنها تعمل، ولا تحذفها ظنّاً أنها ميتة:**

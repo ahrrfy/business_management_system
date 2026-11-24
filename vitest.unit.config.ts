@@ -722,6 +722,8 @@ export const UNIT_TEST_FILES: string[] = [
       "tests/e2e/products-studio/tier4_scenarios.test.ts",
       "server/services/__tests__/recipeVariantSelection.unit.test.ts",
       "client/src/lib/receptionWorkspaceState.test.ts",
+      "server/services/accounting/custodyRecoveryPosting.test.ts",
+      "server/services/__tests__/reconcileEmployeeAdvances.unit.test.ts",
 ];
 
 export default defineConfig({
