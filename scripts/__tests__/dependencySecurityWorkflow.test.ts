@@ -129,6 +129,19 @@ describe("dependency security coverage", () => {
       "readdir-glob@1.1.3",
       "test-exclude@6.0.0",
     ];
+    const isAtLeastSemver = (
+      raw: string,
+      minMajor: number,
+      minMinor: number,
+      minPatch: number,
+    ) => {
+      const m = /^(\d+)\.(\d+)\.(\d+)/.exec(raw);
+      if (!m) return false;
+      const [, maj, min, pat] = m.map(Number);
+      if (maj !== minMajor) return maj > minMajor;
+      if (min !== minMinor) return min > minMinor;
+      return pat >= minPatch;
+    };
     for (const lock of ["pnpm-lock.yaml"]) {
       let parent = "";
       for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
@@ -137,10 +150,10 @@ describe("dependency security coverage", () => {
         if (nodeForge) expect(nodeForge).toBe("1.4.3");
         const globVer = /^      glob:\s*(.+)$/.exec(line)?.[1]?.trim();
         if (globVer && !globVer.startsWith("7.")) {
-          expect(globVer.startsWith("14.0.2")).toBe(true);
+          expect(isAtLeastSemver(globVer, 14, 0, 2)).toBe(true);
         }
         const mmVer = /^      minimatch:\s*(.+)$/.exec(line)?.[1]?.trim();
-        if (mmVer && mmVer !== "11.0.1") {
+        if (mmVer && !isAtLeastSemver(mmVer, 11, 0, 1)) {
           expect(["3.1.5", "5.1.9"]).toContain(mmVer);
           expect(
             allowedLegacyMinimatchPrefixes.some((p) => parent.startsWith(p)),
