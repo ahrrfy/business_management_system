@@ -447,4 +447,55 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     expect(evidence.shiftCount).toBe(1);
     expect(evidence.unmatchedShiftCount).toBe(1); // محظور لعدم وجود إيصال التسوية SV
   });
+
+  it("يرفض اعتماد المدير لفرق ورديته ذاتياً ويسمح بإغلاقها عند تمرير اعتماد مدير آخر مستقل", async () => {
+    const SECOND_MANAGER = { userId: 21, branchId: 1, role: "manager" };
+    await db().insert(users).values({
+      id: SECOND_MANAGER.userId,
+      openId: "cash-governance-manager-2",
+      name: "مدير ثانٍ مستقل",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const managerShift = await openShift(
+      { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
+      MANAGER,
+    );
+
+    await expect(
+      closeShift(
+        {
+          shiftId: managerShift.shiftId,
+          countedCash: "80000",
+          countedBreakdown: { "25000": 3, "5000": 1 },
+          varianceReasonCode: "COUNT_ERROR",
+          varianceReason: "محاولة اعتماد ذاتي من نفس المدير",
+          enforceCashGovernance: false,
+        },
+        MANAGER,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect((await row(managerShift.shiftId)).status).toBe("OPEN");
+
+    const approvedResult = await closeShift(
+      {
+        shiftId: managerShift.shiftId,
+        countedCash: "80000",
+        countedBreakdown: { "25000": 3, "5000": 1 },
+        varianceReasonCode: "COUNT_ERROR",
+        varianceReason: "عجز معتمد من مدير آخر مستقل",
+        managerApprovedByUserId: SECOND_MANAGER.userId,
+        enforceCashGovernance: false,
+      },
+      MANAGER,
+    );
+
+    expect(approvedResult.reconciliationStatus).toBe("MANAGER_APPROVED");
+    const closedShift = await row(managerShift.shiftId);
+    expect(closedShift.status).toBe("CLOSED");
+    expect(Number(closedShift.varianceReviewedByUserId)).toBe(SECOND_MANAGER.userId);
+  });
 });

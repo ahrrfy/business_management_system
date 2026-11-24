@@ -6,7 +6,6 @@ import { deliveryConsignments, deliveryLedgerEntries, deliveryShipmentMembers, i
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
 import { createFeeWithholdingPolicy, verifiedFeeBalance } from "./fees";
-import { isWithholdableShopFeeSource } from "./feeWithholdingPolicy";
 import { consignmentShortfallAssignedSql, shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 
 type Consignment = typeof deliveryConsignments.$inferSelect;
@@ -48,7 +47,7 @@ export async function planDetachedShipmentFees(
     .where(inArray(deliveryConsignments.id, standaloneIds)) : null;
   const standalone = standaloneQuery ? await (input.currentRead ? standaloneQuery.for("share") : standaloneQuery) : [];
   const feeMembers = [...members.map(({ cn }) => cn), ...standalone]
-    .filter((cn) => isWithholdableShopFeeSource(cn.sourceType) && cn.feeCollection === "SHOP");
+    .filter((cn) => cn.sourceType === "ONLINE_ORDER" && cn.feeCollection === "SHOP");
   const feeMemberIds = Array.from(new Set(feeMembers.map((cn) => Number(cn.id))));
   const feeInvoiceIds = Array.from(new Set(feeMembers.flatMap((cn) => (cn.invoiceId == null ? [] : [Number(cn.invoiceId)]))));
   const invQuery = feeInvoiceIds.length ? db.select({
@@ -117,7 +116,7 @@ export async function planDetachedShipmentFees(
         return [id, round2(Decimal.max(0, input.capacityOverrides.get(id) ?? money(0)))] as const;
       }
       const balance = feeBalances.get(id);
-      const ownDue = isWithholdableShopFeeSource(row.cn.sourceType) && row.cn.feeCollection === "SHOP"
+      const ownDue = row.cn.sourceType === "ONLINE_ORDER" && row.cn.feeCollection === "SHOP"
         ? (balance?.active ? balance.due : input.includePending && !row.cn.feeSettledAt ? money(row.cn.deliveryFee) : money(0))
         : money(0);
       const ownFee = quoteFee(ownDue, orderTotalFor(row.cn));
@@ -125,7 +124,7 @@ export async function planDetachedShipmentFees(
     }));
     if (input.includeTargetOverflow !== false) {
       for (const source of targets) {
-        if (!isWithholdableShopFeeSource(source.cn.sourceType) || source.cn.feeCollection !== "SHOP") continue;
+        if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP") continue;
         const sourceId = Number(source.cn.id);
         const balance = feeBalances.get(sourceId);
         const ownDue = balance?.active
@@ -165,7 +164,7 @@ export async function planDetachedShipmentFees(
       }
     }
     for (const source of group) {
-      if (!isWithholdableShopFeeSource(source.cn.sourceType) || source.cn.feeCollection !== "SHOP" ||
+      if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP" ||
           targets.some((row) => Number(row.cn.id) === Number(source.cn.id))) continue;
       const balance = feeBalances.get(Number(source.cn.id));
       const earned = balance?.due ?? money(0);

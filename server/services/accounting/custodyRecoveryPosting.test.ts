@@ -41,6 +41,33 @@ describe("ADJUST_CUSTODY_RECOVERY double-entry contract", () => {
     expect(custodyDebit.minus(payrollCredit).toFixed(2)).toBe("0.00");
   });
 
+  it("clears EMPLOYEE_ADVANCES and OTHER_REVENUE via ADJUST_CUSTODY_RECOVERY_REVERSAL when compensation is waived", () => {
+    const waiverAmount = new Decimal("75000.00");
+    const components = {
+      roleDebits: { OTHER_REVENUE: waiverAmount },
+      roleCredits: { EMPLOYEE_ADVANCES: waiverAmount },
+    };
+    const intent = createPostingIntent(
+      "ADJUST_CUSTODY_RECOVERY_REVERSAL",
+      "ADJUST",
+      [
+        debitLine("OTHER_REVENUE", waiverAmount),
+        creditLine("EMPLOYEE_ADVANCES", waiverAmount),
+      ],
+      components,
+    );
+
+    const validated = validatePostingIntentPolicy(intent, "ADJUST", {
+      amount: waiverAmount,
+      ...components,
+    });
+    expect(validated.profile).toBe("ADJUST_CUSTODY_RECOVERY_REVERSAL");
+    expect(validated.lines).toEqual([
+      { role: "OTHER_REVENUE", debit: "75000.00", credit: "0.00" },
+      { role: "EMPLOYEE_ADVANCES", debit: "0.00", credit: "75000.00" },
+    ]);
+  });
+
   it("rejects touching INVENTORY or LOSSES under ADJUST_CUSTODY_RECOVERY", () => {
     const badInventory = createPostingIntent("ADJUST_CUSTODY_RECOVERY", "ADJUST", [
       debitLine("EMPLOYEE_ADVANCES", "50000.00"),

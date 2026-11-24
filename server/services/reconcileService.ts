@@ -1382,7 +1382,6 @@ export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
   const [ledgerRow] = await db
     .select({
       net: sql<string>`COALESCE(SUM(CAST(${journalLines.debit} AS DECIMAL(15,2)) - CAST(${journalLines.credit} AS DECIMAL(15,2))), 0)`,
-      count: sql<number>`COUNT(*)`,
     })
     .from(journalLines)
     .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
@@ -1393,9 +1392,6 @@ export async function reconcileEmployeeAdvances(): Promise<ReconcileResult[]> {
         eq(journalEntries.cycleId, settings.cycleId),
       ),
     );
-
-  // لا يوجد ترحيل مزدوج مسجل في الدورة الحالية على هذا الحساب ⇒ لا انحراف مزدوج قابل للقياس.
-  if (Number(ledgerRow?.count ?? 0) === 0) return [];
 
   const expected = round2(money(operationalRow?.total ?? "0"));
   const actual = round2(money(ledgerRow?.net ?? "0"));

@@ -467,9 +467,8 @@ export async function closeShift(
     const reason = (input.varianceReason ?? "").trim();
     const reasonCode = input.varianceReasonCode ?? null;
     const varianceApproverId =
-      role === "manager" || role === "admin"
-        ? actor.userId
-        : (input.managerApprovedByUserId ?? null);
+      input.managerApprovedByUserId ??
+      (role === "manager" || role === "admin" ? actor.userId : null);
 
     // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً.
     // التحقق من صحة تفصيل الفئات إن وُجد

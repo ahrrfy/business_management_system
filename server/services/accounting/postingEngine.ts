@@ -162,6 +162,7 @@ export type PostingProfile =
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
   | "ADJUST_CUSTODY_RECOVERY"
+  | "ADJUST_CUSTODY_RECOVERY_REVERSAL"
   | "ADJUST_DAMAGED_RETURN_RECLASS"
   | "ADJUST_INVENTORY_REVALUATION_GAIN"
   | "ADJUST_INVENTORY_REVALUATION_LOSS"
@@ -357,6 +358,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
     "ADJUST_CUSTODY_RECOVERY",
+    "ADJUST_CUSTODY_RECOVERY_REVERSAL",
     "ADJUST_DAMAGED_RETURN_RECLASS",
     "ADJUST_INVENTORY_REVALUATION_GAIN",
     "ADJUST_INVENTORY_REVALUATION_LOSS",
@@ -1872,6 +1874,19 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["EMPLOYEE_ADVANCES"]),
       ],
       requireRoleComponents: ["EMPLOYEE_ADVANCES", "OTHER_REVENUE"],
+    },
+  ),
+  // إعفاء الموظف من استقطاع تعويض العهدة غير النقدي قبل أي خصم من الراتب: يعكس ذمة
+  // EMPLOYEE_ADVANCES وإيراد التعويض المقابل مع بقاء سجل العهدة وقيد الخسارة الأصليين محفوظين.
+  ADJUST_CUSTODY_RECOVERY_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["OTHER_REVENUE"],
+    ["EMPLOYEE_ADVANCES"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["EMPLOYEE_ADVANCES"]),
+      ],
+      requireRoleComponents: ["OTHER_REVENUE", "EMPLOYEE_ADVANCES"],
     },
   ),
   ADJUST_DAMAGED_RETURN_RECLASS: profilePolicy("ADJUST", ["LOSSES"], ["COGS"], {

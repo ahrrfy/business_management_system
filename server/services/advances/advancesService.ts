@@ -12,6 +12,7 @@ import { appErrorMessage } from "@shared/errors";
 import { levelSatisfies } from "@shared/permissions";
 import { voucherApprovalTrigger } from "@shared/approvalTriggers";
 import {
+  accountingEntries,
   advanceSettlements,
   branches,
   employeeAdvanceHistoricalRecoveries,
@@ -50,6 +51,12 @@ import {
 import { planApproval, resolveApprovalActor } from "../approval/ownerGate";
 import { requireOpenShiftIdTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { postEntry } from "../ledgerService";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "../accounting/postingEngine";
 
 function currentHrWriteAllowed(current: StoredOperationSnapshot): boolean {
   return (
@@ -979,10 +986,60 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
 
     const isNoncashWaiver =
       adv.sourceType === "OTHER_DEDUCTION" && adv.receiptId == null;
+    const reason = input.reason?.trim();
     let voucherNotice: string;
     if (isNoncashWaiver) {
+      const custodyMatch =
+        /^استقطاع تعويض عهدة (?:تالفة|مفقودة): [\s\S]* \(#(\d+)\)$/.exec(
+          (adv.note ?? "").trim(),
+        );
+      if (custodyMatch) {
+        const custodyId = Number(custodyMatch[1]);
+        const [sourceEntry] = await tx
+          .select({
+            id: accountingEntries.id,
+            postingProfile: accountingEntries.postingProfile,
+          })
+          .from(accountingEntries)
+          .where(eq(accountingEntries.dedupeKey, `CUSTODY_LOSS:${custodyId}`))
+          .for("update")
+          .limit(1);
+        const waiverAmount = money(adv.remaining);
+        if (
+          sourceEntry &&
+          sourceEntry.postingProfile !== "ADJUST_INVENTORY_LOSS" &&
+          waiverAmount.gt(0)
+        ) {
+          const postingSourceComponents = {
+            roleDebits: { OTHER_REVENUE: waiverAmount },
+            roleCredits: { EMPLOYEE_ADVANCES: waiverAmount },
+          };
+          const postingIntent = createPostingIntent(
+            "ADJUST_CUSTODY_RECOVERY_REVERSAL",
+            "ADJUST",
+            [
+              debitLine("OTHER_REVENUE", waiverAmount),
+              creditLine("EMPLOYEE_ADVANCES", waiverAmount),
+            ],
+            postingSourceComponents,
+          );
+          await postEntry(tx, {
+            entryType: "ADJUST",
+            branchId: Number(adv.branchId),
+            dedupeKey: `CUSTODY_LOSS_WAIVER:${adv.id}`,
+            amount: waiverAmount,
+            notes: `إعفاء تعويض عهدة (#${custodyId}) — إلغاء استقطاع #${adv.id}${reason ? `: ${reason}` : ""}`.slice(
+              0,
+              255,
+            ),
+            createdBy: actor.userId,
+            postingIntent,
+            postingSourceComponents,
+          });
+        }
+      }
       voucherNotice =
-        "أُلغي الاستقطاع غير النقدي بلا حركة نقد أو مخزون؛ بقي أثر المصدر وقيده محفوظين.";
+        "أُلغي الاستقطاع غير النقدي بلا حركة نقد أو مخزون؛ بقي أثر المصدر محفوظاً وبُرّئت ذمة الموظف بقيد تسوية مقابل.";
     } else {
       if (adv.receiptId == null) {
         throw new TRPCError({
@@ -1022,7 +1079,6 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
       voucherNotice =
         "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.";
     }
-    const reason = input.reason?.trim();
     const cancellationNote =
       isNoncashWaiver
         ? reason

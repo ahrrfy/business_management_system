@@ -187,6 +187,11 @@ export async function returnEmployeeCustody(
           postingSourceComponents,
         });
 
+        const notePrefix = `استقطاع تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: `;
+        const noteSuffix = ` (#${c.id})`;
+        const maxItemLength = Math.max(1, 255 - notePrefix.length - noteSuffix.length);
+        const custodyAdvanceNote = `${notePrefix}${c.itemName.slice(0, maxItemLength)}${noteSuffix}`;
+
         const [advRes] = await tx.insert(employeeAdvances).values({
           employeeId: c.employeeId,
           branchId,
@@ -195,7 +200,7 @@ export async function returnEmployeeCustody(
           sourceType: "OTHER_DEDUCTION",
           payrollPeriod: null,
           status: "ACTIVE",
-          note: `استقطاع تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: ${c.itemName} (#${c.id})`,
+          note: custodyAdvanceNote,
           createdBy: actor.userId,
         });
         advanceId = extractInsertId(advRes);

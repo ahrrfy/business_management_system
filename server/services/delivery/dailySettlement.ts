@@ -1,10 +1,7 @@
 import Decimal from "decimal.js";
 import { consignmentFeeDueSql, createFeeWithholdingPolicy } from "./fees";
 import { planDetachedShipmentFees } from "./detachedShipmentFees";
-import {
-  assertFeeWithholdingCapacity,
-  isWithholdableShopFeeSource,
-} from "./feeWithholdingPolicy";
+import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 /**
  * **التسويةُ اليوميّة لجهة التوصيل — «المتوقَّع محسوبٌ سلفاً، والتأكيدُ واحد»** (م١، PR-2).
  *
@@ -224,7 +221,7 @@ async function loadSettlementLines(
   for (const { r, cod, collected, remaining } of candidates) {
     const id = Number(r.id);
     let ownFee = money(0);
-    if (isWithholdableShopFeeSource(r.sourceType) && r.feeCollection === "SHOP") {
+    if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
       const due = money(r.feeDue);
       const quotedCash = quoteFee(due, money(r.orderTotal));
       const projected = detached.projectedFromSource.get(id) ?? money(0);
