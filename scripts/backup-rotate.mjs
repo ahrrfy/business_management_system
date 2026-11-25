@@ -35,12 +35,21 @@ function int(v, d) {
   return Number.isFinite(n) && n >= 0 ? n : d;
 }
 
+export function isBackupSqlName(name) {
+  return (
+    typeof name === "string" &&
+    name === path.basename(name) &&
+    !name.includes("..") &&
+    /^[A-Za-z0-9_.$-]+\.sql$/.test(name)
+  );
+}
+
 /**
  * يحلّل اسم النسخة الاحتياطية بدقة مرساة من اليمين لمنع تداخل أسماء القواعد التي تحوي شرطة
  * (مثل `erp` مقابل `erp-baghdad`).
  */
 export function parseBackupSqlName(name) {
-  if (typeof name !== "string" || name.includes("..") || name !== path.basename(name)) {
+  if (!isBackupSqlName(name)) {
     return null;
   }
   const m = /^([A-Za-z0-9_$-]+)-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z-[0-9a-f]{8})?\.sql$/i.exec(
@@ -203,32 +212,126 @@ export async function inspectVerifiedManifest(directory, sqlName) {
   return manifest;
 }
 
+function sameFingerprint(a, b) {
+  return (
+    Boolean(a && b) &&
+    Number.isSafeInteger(a.size) &&
+    a.size > 0 &&
+    typeof a.sha256 === "string" &&
+    SHA256_RE.test(a.sha256) &&
+    a.size === b.size &&
+    a.sha256 === b.sha256
+  );
+}
+
+function isValidDrillSummary(drill, sqlName, manifest) {
+  if (
+    !drill ||
+    drill.version !== 1 ||
+    drill.file !== sqlName ||
+    !sameFingerprint(drill.source, manifest) ||
+    typeof drill.lease !== "string" ||
+    !/^\d+:[a-f0-9-]{36}$/i.test(drill.lease) ||
+    typeof drill.startedAt !== "string" ||
+    typeof drill.finishedAt !== "string"
+  ) {
+    return false;
+  }
+  const startedMs = Date.parse(drill.startedAt);
+  const finishedMs = Date.parse(drill.finishedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(finishedMs) || finishedMs < startedMs) {
+    return false;
+  }
+  const res = drill.result;
+  if (!res || (res.status !== "VERIFIED" && res.status !== "PARTIAL")) return false;
+  if (!Number.isSafeInteger(res.tableCount) || res.tableCount <= 0) return false;
+  const att = res.attachmentCheck;
+  if (
+    !att ||
+    att.scope !== "KNOWN_FILE_REFERENCES_V1" ||
+    !Number.isSafeInteger(att.references) ||
+    att.references < 0 ||
+    !Number.isSafeInteger(att.inlineVerified) ||
+    att.inlineVerified < 0 ||
+    !Number.isSafeInteger(att.mirroredVerified) ||
+    att.mirroredVerified < 0 ||
+    att.inlineVerified + att.mirroredVerified > att.references
+  ) {
+    return false;
+  }
+  return true;
+}
+
 async function preserveLatestRestoreSummary(reportDir, sqlName, manifest) {
   if (!manifest) return;
-  const restorePath = join(reportDir, `${sqlName}.restore.json`);
-  const report = await readSmallJson(restorePath);
+  let bestAt = null;
+  let bestMs = Number.NEGATIVE_INFINITY;
+
+  const report = await readSmallJson(join(reportDir, `${sqlName}.restore.json`));
   if (
-    !report ||
-    report.status !== "SQL_RESTORED_CORE_READS_PASSED" ||
-    report.productionContact !== false ||
-    report.stopped !== true ||
-    typeof report.finishedAt !== "string" ||
-    report.sqlFingerprint?.size !== manifest.source.size ||
-    report.sqlFingerprint?.sha256 !== manifest.source.sha256
+    report &&
+    report.status === "SQL_RESTORED_CORE_READS_PASSED" &&
+    report.productionContact === false &&
+    report.stopped === true &&
+    typeof report.finishedAt === "string" &&
+    sameFingerprint(report.sourceBefore, report.sourceAfter) &&
+    (sameFingerprint(report.sourceBefore, manifest) ||
+      sameFingerprint(report.sourceBefore, manifest.source)) &&
+    sameFingerprint(report.sqlFingerprint, manifest.source)
   ) {
-    return;
+    const ms = Date.parse(report.finishedAt);
+    if (Number.isFinite(ms)) {
+      bestAt = report.finishedAt;
+      bestMs = ms;
+    }
   }
+
+  const drill = await readSmallJson(join(reportDir, `${sqlName}.drill.json`));
+  if (isValidDrillSummary(drill, sqlName, manifest)) {
+    const drillMs = Date.parse(drill.finishedAt);
+    if (Number.isFinite(drillMs) && drillMs >= bestMs) {
+      bestAt = drill.finishedAt;
+      bestMs = drillMs;
+    }
+  }
+
+  if (!bestAt || !Number.isFinite(bestMs)) return;
+
   const summaryPath = join(reportDir, "latest-verified-restore.json");
   const current = await readSmallJson(summaryPath);
-  const reportMs = Date.parse(report.finishedAt);
-  const currentMs = Date.parse(current?.at ?? "");
-  if (!current || !Number.isFinite(currentMs) || (Number.isFinite(reportMs) && reportMs > currentMs)) {
-    await atomicWriteJson(summaryPath, {
-      version: 1,
-      name: sqlName,
-      at: report.finishedAt,
-    });
+  const byDatabase = {};
+  if (current && typeof current === "object") {
+    if (current.byDatabase && typeof current.byDatabase === "object" && !Array.isArray(current.byDatabase)) {
+      for (const [k, v] of Object.entries(current.byDatabase)) {
+        if (v && typeof v === "object" && isBackupSqlName(v.name) && Number.isFinite(Date.parse(v.at ?? ""))) {
+          byDatabase[k] = { name: v.name, at: v.at };
+        }
+      }
+    }
+    if (isBackupSqlName(current.name) && Number.isFinite(Date.parse(current.at ?? ""))) {
+      const legacyKey = parseBackupSqlName(current.name)?.dbName ?? `file:${current.name}`;
+      const existing = byDatabase[legacyKey];
+      if (!existing || Date.parse(current.at) > Date.parse(existing.at)) {
+        byDatabase[legacyKey] = { name: current.name, at: current.at };
+      }
+    }
   }
+
+  const dbKey = parseBackupSqlName(sqlName)?.dbName ?? `file:${sqlName}`;
+  const prevEntry = byDatabase[dbKey];
+  if (prevEntry && Date.parse(prevEntry.at) >= bestMs) {
+    return;
+  }
+  byDatabase[dbKey] = { name: sqlName, at: bestAt };
+
+  const allEntries = Object.values(byDatabase).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const newestGlobal = allEntries[0] ?? { name: sqlName, at: bestAt };
+  await atomicWriteJson(summaryPath, {
+    version: 1,
+    name: newestGlobal.name,
+    at: newestGlobal.at,
+    byDatabase,
+  });
 }
 
 async function sweepExpiredRetiring({ backupDir, offsiteDir, reportDir, now, dryRun }) {
@@ -241,7 +344,7 @@ async function sweepExpiredRetiring({ backupDir, offsiteDir, reportDir, now, dry
   for (const entry of entries) {
     if (!entry.endsWith(".retired.json")) continue;
     const sqlName = entry.slice(0, -".retired.json".length);
-    if (!parseBackupSqlName(sqlName)) continue;
+    if (!isBackupSqlName(sqlName)) continue;
     const markerPath = join(retiringDir, entry);
     const meta = await readSmallJson(markerPath);
     const expiresAt = Date.parse(meta?.expiresAt ?? "");
@@ -345,18 +448,6 @@ export async function rotateBackups({
     };
   }
 
-  if (await hasActiveRestoreOrDrillFence(env)) {
-    return {
-      ok: true,
-      dryRun,
-      skippedReason: "RESTORE_OR_DRILL_ACTIVE",
-      plainSqlDeleted: [],
-      encryptedRetired: [],
-      retiringPurged: [],
-      failedAttemptsDeleted: [],
-    };
-  }
-
   const releaseLock = dryRun ? async () => {} : await acquireRetentionLock(resolvedDir, { now });
   if (!releaseLock) {
     return {
@@ -371,6 +462,17 @@ export async function rotateBackups({
   }
 
   try {
+    if (await hasActiveRestoreOrDrillFence(env)) {
+      return {
+        ok: true,
+        dryRun,
+        skippedReason: "RESTORE_OR_DRILL_ACTIVE",
+        plainSqlDeleted: [],
+        encryptedRetired: [],
+        retiringPurged: [],
+        failedAttemptsDeleted: [],
+      };
+    }
     const resolvedOffsite = offsiteDir ? path.resolve(offsiteDir) : null;
     const distinctOffsite =
       resolvedOffsite && resolvedOffsite !== resolvedDir ? resolvedOffsite : null;
