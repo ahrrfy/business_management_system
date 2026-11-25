@@ -607,12 +607,6 @@ export async function closeShift(
 
         // ربط عجز الوردية بسجل سلفة فعلي (employeeAdvances) لصاحب الوردية ليُستقطع من مسير الرواتب
         // ولا يبقى قيد EMPLOYEE_ADVANCES يتيماً في الدفتر بلا استرداد.
-        const shortageGrantedAt = new Date();
-        const shortageBaghdadPeriod = new Date(
-          shortageGrantedAt.getTime() + 3 * 60 * 60 * 1000,
-        )
-          .toISOString()
-          .slice(0, 7);
         await tx.insert(employeeAdvances).values({
           employeeId: Number(responsibleEmp.id),
           branchId: Number(sh.branchId),
@@ -620,12 +614,12 @@ export async function closeShift(
           remaining: toDbMoney(shortageAmount),
           monthlyDeduction: null,
           sourceType: "OTHER_DEDUCTION",
-          payrollPeriod: shortageBaghdadPeriod,
+          payrollPeriod: null,
           status: "ACTIVE",
           receiptId: outReceiptId,
           note: `ذمة عجز وردية #${input.shiftId} — معتمد (${reasonCode}: ${reason})`.slice(0, 255),
           createdBy: actor.userId,
-          grantedAt: shortageGrantedAt,
+          grantedAt: new Date(),
         });
       } else if (variance.isPositive()) {
         const surplusAmount = variance;
