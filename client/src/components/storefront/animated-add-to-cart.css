@@ -22,10 +22,13 @@
   font-size: 0.92rem;
   font-weight: 800;
   touch-action: manipulation;
-  transition: background-color 120ms ease;
+  transition: transform 100ms ease-out, background-color 140ms ease;
 }
 .animated-cart-btn:hover:not(:disabled) {
   background: var(--store-brand-strong, #172554);
+}
+.animated-cart-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .animated-cart-btn:focus-visible {
   outline: 2px solid var(--store-brand, #1e3a8a);

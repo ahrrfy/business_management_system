@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
 import { appErrorMessage } from "@shared/errors";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { managerApprovalSchema } from "@shared/managerApproval";
@@ -16,11 +17,13 @@ import { deliveryCashierProcedure, router, storeFulfillProcedure, storeManagerPr
 import {
   autoAssignRoundRobinOnlineOrders,
   claimOnlineOrder,
+  claimOnlineOrderAlertPrint,
   getOnlineOrder,
   getOnlineOrderLeaderboard,
   listOnlineOrders,
   markOnlineOrderPrepared,
   onlineOrderStatusCounts,
+  releaseOnlineOrderAlertPrint,
   reviveAndConfirmOnlineOrder,
   setOnlineOrderStatus,
   updateOnlineOrder,
@@ -456,6 +459,43 @@ const ordersRouter = router({
         newValue: { invoiceId: res.invoiceId, partyId: input.partyId, assignedUserId: input.assignedUserId ?? null, total: res.total, externalTrackingRef: input.externalTrackingRef ?? null },
       });
       return res;
+    }),
+
+  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن فقط */
+  claimNotificationPrint: storeFulfillProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      if (!isStoreOrderAlertRecipientUser(ctx.user)) {
+        return {
+          claimed: false, alreadyPrinted: false, leaseToken: null,
+          eligible: false,
+          orderNumber: null,
+          total: null,
+          itemCount: 0,
+          createdAt: null,
+        };
+      }
+      const res = await claimOnlineOrderAlertPrint({
+        id: input.id,
+        scopedBranchId: actorScopedBranch(ctx.user),
+      });
+      return {
+        ...res,
+        eligible: true,
+      };
+    }),
+
+  /** إقرار اكتمال طباعة الإشعار أو تجديد/تحرير حجزه المؤقت إذا تعذّر الإرسال الفيزيائي للطابعة */
+  releaseNotificationPrint: storeFulfillProcedure
+    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional() }))
+    .mutation(async ({ input, ctx }) => {
+      if (!isStoreOrderAlertRecipientUser(ctx.user)) return { released: false, completed: false, renewed: false, leaseToken: null };
+      return releaseOnlineOrderAlertPrint({
+        id: input.id, renew: input.renew === true,
+        scopedBranchId: actorScopedBranch(ctx.user),
+        leaseToken: input.leaseToken ?? null,
+        completed: input.completed === true,
+      });
     }),
 });
 

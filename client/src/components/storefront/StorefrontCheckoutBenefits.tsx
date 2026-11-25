@@ -36,10 +36,10 @@ export function StorefrontCheckoutBenefits({
   return (
     <>
       {" "}
-      <div className="rounded-2xl border border-[#c9dced] bg-[#f7fbff] p-3 ring-1 ring-[#e7f0f7] dark:bg-slate-900 dark:ring-slate-700">
+      <div className="rounded-2xl border border-slate-200/90 bg-[#f5f5f7] p-3 ring-1 ring-slate-900/[0.04] dark:border-slate-800 dark:bg-slate-900 dark:ring-slate-800">
         <label
           htmlFor="storefront-checkout-coupon"
-          className="mb-1 block text-xs font-bold text-slate-600"
+          className="mb-1 block text-xs font-bold text-slate-600 dark:text-slate-300"
         >
           لديك كوبون؟
         </label>
@@ -55,14 +55,14 @@ export function StorefrontCheckoutBenefits({
               }
             }}
             placeholder="مثال: WELCOME10"
-            className="min-w-0 flex-1 rounded-lg border-0 bg-white px-3 py-2 text-sm font-bold tracking-wide outline-none placeholder:font-normal placeholder:tracking-normal dark:bg-slate-800"
+            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold tracking-wide outline-none placeholder:font-normal placeholder:tracking-normal focus:border-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-800"
             aria-describedby="storefront-coupon-feedback"
           />
           <button
             type="button"
             onClick={appliedCouponCode ? removeCoupon : applyCoupon}
             disabled={!appliedCouponCode && !couponDraft.trim()}
-            className="shrink-0 rounded-lg bg-[#1e4a63] px-3 py-2 text-xs font-black text-white transition hover:bg-[#17394c] disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-xl bg-[#1d1d1f] px-3.5 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-[#1d1d1f]"
           >
             {appliedCouponCode ? "إزالة" : "تطبيق"}
           </button>

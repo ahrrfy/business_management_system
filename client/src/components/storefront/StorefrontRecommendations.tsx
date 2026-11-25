@@ -1,5 +1,12 @@
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
-import { AlertTriangle, ArrowRight, ChevronDown } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AlertTriangle, ArrowRight } from "lucide-react";
 import React, { useRef, useState } from "react";
 import { priceLabel } from "./storefrontCartMath";
 import { matchesPriceFilter, type PriceFilter } from "./storefrontCatalogModel";
@@ -145,7 +152,7 @@ export function RelatedProductStrip({
   };
 
   return (
-    <div className="animate__animated animate__fadeIn mt-5 min-w-0">
+    <div className="mt-5 min-w-0">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-200">
@@ -156,31 +163,26 @@ export function RelatedProductStrip({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          {/* لا يُحوَّل إلى AppSelect عمداً: حبّةُ فلترٍ دقيقة (نصّ 10px · ارتفاع ~٢٤px · سهمٌ
-              خاصّ) بجوار زرَّي تنقّل size-7 (٢٨px). أقلّ ارتفاعٍ يبلغه AppSelect هو
-              `--ui-control-sm` = 40px بأولويّةٍ لا يهزمها صنفُ ارتفاعٍ خارجيّ ⇒ التحويل
-              يُضخّم الحبّة ٦٦٪ ويكسر صفّ الشريط. راجع تبرير الموجة. */}
-          <label className="relative shrink-0">
-            <span className="sr-only">تصفية التوصيات حسب السعر</span>
-            <select
-              value={priceFilter}
-              onChange={(event) =>
-                setPriceFilter(event.target.value as PriceFilter)
-              }
-              className="appearance-none rounded-full border border-slate-200 bg-white py-1.5 pr-2.5 pl-6 text-[10px] font-bold text-slate-600 outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+          <Select
+            dir="rtl"
+            value={priceFilter}
+            onValueChange={(value) => setPriceFilter(value as PriceFilter)}
+          >
+            <SelectTrigger
+              aria-label="تصفية التوصيات حسب السعر"
+              className="!h-7 !min-h-0 rounded-full border-slate-200 bg-white px-2.5 text-[10px] font-bold text-slate-600 shadow-none focus-visible:border-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
             >
-              <option value="ALL">كل الأسعار</option>
-              <option value="UNDER_5000">أقل من 5,000 د.ع</option>
-              <option dir="ltr" value="FROM_5000_TO_15000">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent dir="rtl" align="end">
+              <SelectItem value="ALL">كل الأسعار</SelectItem>
+              <SelectItem value="UNDER_5000">أقل من 5,000 د.ع</SelectItem>
+              <SelectItem dir="ltr" value="FROM_5000_TO_15000">
                 5,000–15,000 د.ع
-              </option>
-              <option value="OVER_15000">أكثر من 15,000 د.ع</option>
-            </select>
-            <ChevronDown
-              aria-hidden
-              className="pointer-events-none absolute left-1.5 top-1/2 size-3 -translate-y-1/2 text-slate-400"
-            />
-          </label>
+              </SelectItem>
+              <SelectItem value="OVER_15000">أكثر من 15,000 د.ع</SelectItem>
+            </SelectContent>
+          </Select>
           <div
             className="flex items-center gap-1"
             aria-label="تنقل المنتجات المقترحة"
@@ -188,7 +190,7 @@ export function RelatedProductStrip({
             <button
               type="button"
               onClick={() => move(1)}
-              className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95"
+              className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] active:scale-95"
               aria-label="مرر المنتجات المقترحة إلى اليسار"
             >
               <ArrowRight aria-hidden className="size-3.5 rotate-180" />
@@ -196,7 +198,7 @@ export function RelatedProductStrip({
             <button
               type="button"
               onClick={() => move(-1)}
-              className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95"
+              className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] active:scale-95"
               aria-label="مرر المنتجات المقترحة إلى اليمين"
             >
               <ArrowRight aria-hidden className="size-3.5" />

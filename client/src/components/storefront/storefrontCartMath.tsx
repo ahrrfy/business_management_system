@@ -158,17 +158,21 @@ export function addStorefrontCartLine(
     product.stockLimit == null
       ? (existing?.stockLimit ?? null)
       : Math.max(1, Math.min(Math.floor(product.stockLimit), 999));
+  const cleanVariantLabel =
+    product.variantLabel && product.variantLabel !== "الخيار الافتراضي"
+      ? product.variantLabel
+      : undefined;
   next.set(cartKey, {
     cartKey,
     productUnitId: product.productUnitId,
     productId: product.productId,
-    name: product.variantLabel
-      ? `${product.productName} — ${product.variantLabel}`
+    name: cleanVariantLabel
+      ? `${product.productName} — ${cleanVariantLabel}`
       : product.productName,
     price: effectivePrice,
     imageUrl: product.imageUrl,
     unitName: product.unitName,
-    variantLabel: product.variantLabel,
+    variantLabel: cleanVariantLabel,
     isCustomizable: product.isCustomizable,
     customization: product.customization,
     stockLimit,
@@ -357,6 +361,6 @@ export function money(v: string | number | null): string {
 export const normalizeStorefrontArabic = normalizeArabicSearch;
 
 export function priceLabel(price: string | null): string {
-  if (price == null || price === "") return "اسأل الموظّف";
+  if (price == null || price === "") return "تواصل معنا للسعر";
   return `${money(price)} د.ع`;
 }

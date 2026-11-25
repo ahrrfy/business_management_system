@@ -126,7 +126,7 @@ export function StorefrontTrackingPanel({
                   : "storefront-track-token-help"
               }
               placeholder="ألصق الرمز الكامل هنا"
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             />
             {trackError ? (
               <p
@@ -148,7 +148,7 @@ export function StorefrontTrackingPanel({
           <button
             type="submit"
             disabled={trackState === "loading"}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 py-3 text-sm font-extrabold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--store-brand)] py-3 text-sm font-extrabold text-white transition hover:bg-[var(--store-brand-strong)] disabled:opacity-50"
           >
             {trackState === "loading" ? (
               <Loader2 aria-hidden className="size-4 animate-spin" />
@@ -162,7 +162,7 @@ export function StorefrontTrackingPanel({
               href={`https://wa.me/${settings.whatsappNumber.replace(/[^\d]/g, "")}`}
               target="_blank"
               rel="noreferrer"
-              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 hover:border-emerald-500 hover:text-emerald-800 dark:border-slate-700 dark:text-slate-200"
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] dark:border-slate-700 dark:text-slate-200"
             >
               <MessageCircle aria-hidden className="size-4" /> تواصل مع الدعم
               إذا فقدت الرمز
@@ -210,17 +210,17 @@ export function StorefrontTrackingPanel({
               </span>
             </div>
             {trackResult.deliveryHandshakeOtp && (
-              <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-950/30">
+              <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-[#f5f5f7] p-3 dark:border-slate-700 dark:bg-slate-800/70">
                 <div>
-                  <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                  <p className="text-xs font-black text-slate-900 dark:text-white">
                     رمز تسليم الشحنة للمندوب (Handshake PIN)
                   </p>
-                  <p className="text-[10px] font-bold text-amber-700/80 dark:text-amber-400">
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                     سلّم هذا الرمز للمندوب يداً بيد عند استلام شحنتك
                   </p>
                 </div>
                 <span
-                  className="font-mono text-base font-black tracking-widest text-amber-900 bg-white dark:bg-slate-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 px-3 py-1 rounded-lg shadow-xs"
+                  className="font-mono text-base font-black tracking-widest text-[var(--store-brand)] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-1 rounded-lg shadow-xs"
                   dir="ltr"
                 >
                   {trackResult.deliveryHandshakeOtp}
@@ -283,7 +283,7 @@ export function StorefrontTrackingPanel({
             <div className="flex justify-between text-base font-extrabold">
               <span className="text-slate-900 dark:text-white">الإجمالي</span>
               <span
-                className="tabular-nums text-emerald-600 dark:text-emerald-400"
+                className="tabular-nums text-[var(--store-brand)]"
                 dir="ltr"
               >
                 {money(trackResult.total)} د.ع

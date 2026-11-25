@@ -1,15 +1,9 @@
-import { StorefrontCartPanel } from "@/components/storefront/StorefrontCartPanel";
 import { StorefrontCatalogSurface } from "@/components/storefront/StorefrontCatalogSurface";
-import { StorefrontCheckoutPanel } from "@/components/storefront/StorefrontCheckoutPanel";
-import { StorefrontConfirmationPanel } from "@/components/storefront/StorefrontConfirmationPanel";
 import { StorefrontFooter } from "@/components/storefront/StorefrontFooter";
 import { StorefrontHeader } from "@/components/storefront/StorefrontHeader";
 import { type BannerItem } from "@/components/storefront/StorefrontInlineStrip";
-import { StorefrontLabelPanel } from "@/components/storefront/StorefrontLabelPanel";
 import { storefrontVariantMedia } from "@/components/storefront/StorefrontMedia";
-import { StorefrontProductDialog } from "@/components/storefront/StorefrontProductDialog";
 import { type StorefrontProductForCartAction,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
-import { StorefrontTrackingPanel } from "@/components/storefront/StorefrontTrackingPanel";
 import { type CartLine,type StorefrontCartSelection,addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,money,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities } from "@/components/storefront/storefrontCartMath";
 import { type AvailabilityFilter,type CatalogSort,type Panel,type PriceFilter,type ShareFeedbackTone,collectStorefrontFailures,hasStorefrontAnalyticsConsent,shouldAutoLoadStorefrontNextPage } from "@/components/storefront/storefrontCatalogModel";
 import { type StorefrontCustomization,type StorefrontCustomizationField,buildStorefrontCustomizationPayload,customizationCartKey,getStorefrontCustomizationConfig } from "@/components/storefront/storefrontCustomizationModel";
@@ -18,7 +12,7 @@ import { type CheckoutFieldErrors,type CheckoutForm,DEFAULT_FORM,STOREFRONT_PERS
 import { storefrontSharingActions } from "@/components/storefront/storefrontSharing";
 import { storefrontCatalogProductScope } from "@/components/storefront/storefrontCatalogModel";
 import { storefrontShippingThreshold } from "@/lib/storefrontShipping";
-export { BundleMedia,clampStorefrontZoomPoint,storefrontMediaUrls,storefrontVariantMedia } from "@/components/storefront/StorefrontMedia";
+export { BundleMedia,clampStorefrontZoomPoint,computeStorefrontZoomLensGeometry,storefrontMediaUrls,storefrontVariantMedia } from "@/components/storefront/StorefrontMedia";
 export { recommendationActionLabel,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
 export { addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,resolveStorefrontProductQuantityDelta,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities,type CartLine,type StorefrontCartProduct,type StorefrontCartSelection,type StorefrontPricingSnapshot,type StorefrontProductCartSummary,type StorefrontProductQuantityDeltaAction } from "@/components/storefront/storefrontCartMath";
 export { collectStorefrontFailures,shouldAutoLoadStorefrontNextPage,storefrontCategoryCount,type AvailabilityFilter,type StorefrontSource } from "@/components/storefront/storefrontCatalogModel";
@@ -27,9 +21,8 @@ export { loadCart,loadCheckoutAttempt,saveCart,saveCheckoutAttempt,saveForm,save
 /**
  * /store — واجهة المتجر التسويقي للزبون (B2C) على الجوال.
  *
- * صفحة **علنية** بملء الشاشة (بلا AppLayout وبلا جلسة دخول) — نقطة دخول التطبيق للزبون.
+ * صفحة **علنية** بملء الشاشة (بلا AppLayout وبلا جلسة دخول أو حسابات) — تسوّق مباشر للزبون.
  * تصفّح كتالوجك الحقيقي (storefront.*، بيانات آمنة) + سلة + **الدفع عند الاستلام**.
- * زرّ «دخول الفريق» منفصلٌ في الترويسة يفتح دخول الموظف/المندوب بعيداً عن المتجر.
  *
  * نظام عرض تجاري مستقل للمتجر: تنقل واضح، اكتشاف بالفئات، عروض مختارة، كتالوج قابل للتصفية، وسلة ودفع عند الاستلام.
  * الأولوية للوضوح والمقارنة وسرعة الوصول إلى قرار الشراء، مع الحفاظ على منطق البيانات الحقيقي في النظام.
@@ -39,7 +32,6 @@ import { ConsentChoice,ConsentProvider } from "@/components/storefront/ConsentCh
 import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
 import { type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontFloatingCart } from "@/components/storefront/StorefrontFloatingCart";
-import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { type ThematicCollectionCard } from "@/components/storefront/StorefrontThematicStrip";
 import { useOrderTrackingRefresh } from "@/hooks/useOrderTrackingRefresh";
 import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
@@ -52,6 +44,25 @@ import {
 MessageCircle
 } from "lucide-react";
 import React,{ useEffect,useMemo,useRef,useState } from "react";
+
+const StorefrontCartPanel = React.lazy(() =>
+  import("@/components/storefront/StorefrontCartPanel").then((m) => ({ default: m.StorefrontCartPanel })),
+);
+const StorefrontCheckoutPanel = React.lazy(() =>
+  import("@/components/storefront/StorefrontCheckoutPanel").then((m) => ({ default: m.StorefrontCheckoutPanel })),
+);
+const StorefrontConfirmationPanel = React.lazy(() =>
+  import("@/components/storefront/StorefrontConfirmationPanel").then((m) => ({ default: m.StorefrontConfirmationPanel })),
+);
+const StorefrontLabelPanel = React.lazy(() =>
+  import("@/components/storefront/StorefrontLabelPanel").then((m) => ({ default: m.StorefrontLabelPanel })),
+);
+const StorefrontTrackingPanel = React.lazy(() =>
+  import("@/components/storefront/StorefrontTrackingPanel").then((m) => ({ default: m.StorefrontTrackingPanel })),
+);
+const StorefrontProductDialog = React.lazy(() =>
+  import("@/components/storefront/StorefrontProductDialog").then((m) => ({ default: m.StorefrontProductDialog })),
+);
 import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH,storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 export { formatStorefrontReservationDeadline } from "@/components/storefront/storefrontCatalogModel";
@@ -201,7 +212,11 @@ function StorefrontContent() {
   const viewedProductIds = useRef(new Set<number>());
   const catalogLoadMoreRef = useRef<HTMLDivElement | null>(null);
 
-  // تتبّع الضيف بملكيةٍ opaque قصيرة العمر؛ لا رقم هاتف ولا بيانات عميل في الطلب أو التخزين.
+  // تتبّع الضيف بملكيةٍ opaque قصيرة العمر؛ المتجر يعمل بدون حسابات أو تسجيل دخول.
+  const [hasOpenedProductDialog, setHasOpenedProductDialog] = useState(false);
+  useEffect(() => {
+    if (selectedId != null) setHasOpenedProductDialog(true);
+  }, [selectedId]);
   const utils = trpc.useUtils();
   const trackOrderByToken = trpc.storefront.trackOrderByToken.useMutation();
   const [trustedTrackingOrders, setTrustedTrackingOrders] = useState<GuestTrackingOrder[]>(loadGuestTrackingOrders);
@@ -290,7 +305,7 @@ function StorefrontContent() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `${STORE_NAME} | التسوق والتوصيل في العراق`;
+    document.title = `متجر ${STORE_NAME} | قرطاسية وطباعة وتوصيل في العراق`;
     return () => { document.title = previousTitle; };
   }, []);
 
@@ -309,13 +324,13 @@ function StorefrontContent() {
   // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage). طلب التحديث
   // الآمن يستدعي الحافظ المتزامن أدناه ويأخذ نتيجة صريحة؛ امتلاء التخزين لا يعود فشلاً صامتاً.
   useEffect(() => {
-    saveStorefrontSnapshot(cart, form, localStorage, checkoutAttempt);
+    saveStorefrontSnapshot(cart, form, undefined, checkoutAttempt);
   }, [cart, form, checkoutAttempt]);
   useEffect(() => {
     const persist = (event: Event) => {
       const detail = (event as CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>).detail;
       detail?.report(
-        saveStorefrontSnapshot(cartRef.current, formRef.current, localStorage, checkoutAttemptRef.current),
+        saveStorefrontSnapshot(cartRef.current, formRef.current, undefined, checkoutAttemptRef.current),
         { inFlight: orderInFlightRef.current },
       );
     };
@@ -421,10 +436,25 @@ function StorefrontContent() {
     const token = params.get("cartToken")?.trim();
     if (!token || !/^[A-Za-z0-9_-]{20,32}$/.test(token)) return;
     let cancelled = false;
+    const stripCartTokenFromUrl = () => {
+      try {
+        const nextUrl = new URL(window.location.href);
+        if (!nextUrl.searchParams.has("cartToken")) return;
+        nextUrl.searchParams.delete("cartToken");
+        window.history.replaceState(window.history.state, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+      } catch {
+        /* ignore URL replace failure */
+      }
+    };
     void utils.storefront.getCartShare.fetch({ token }).then((shared) => {
       if (cancelled) return;
+      stripCartTokenFromUrl();
       const incoming = new Map<string, CartLine>();
       for (const item of shared.items) {
+        const cleanVariant =
+          item.variantLabel && item.variantLabel !== "الخيار الافتراضي"
+            ? item.variantLabel
+            : undefined;
         const line: CartLine = {
           cartKey: customizationCartKey(item.productUnitId),
           productUnitId: item.productUnitId,
@@ -433,7 +463,7 @@ function StorefrontContent() {
           price: Number(item.price).toFixed(2),
           imageUrl: item.imageUrl,
           unitName: item.unitName,
-          variantLabel: item.variantLabel,
+          variantLabel: cleanVariant,
           qty: Math.min(Math.max(Math.floor(item.quantity), 1), 999),
         };
         incoming.set(line.cartKey, line);
@@ -450,10 +480,19 @@ function StorefrontContent() {
           : { text: "تم تحميل السلة المشتركة؛ راجع الأسعار قبل التأكيد", tone: "ok" });
       }
     }).catch(() => {
-      if (!cancelled) setShareFeedback({ text: "تعذّر فتح رابط السلة أو انتهت صلاحيته؛ يمكنك متابعة التصفح بشكل طبيعي", tone: "err" });
+      if (!cancelled) {
+        stripCartTokenFromUrl();
+        setShareFeedback({ text: "تعذّر فتح رابط السلة أو انتهت صلاحيته؛ يمكنك متابعة التصفح بشكل طبيعي", tone: "err" });
+      }
     });
     return () => { cancelled = true; };
   }, [utils]);
+
+  useEffect(() => {
+    if (!shareFeedback) return;
+    const t = window.setTimeout(() => setShareFeedback(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [shareFeedback]);
 
   // كل فتح متعمد لتفاصيل منتج = مشاهدة؛ لا نرسل اسم المنتج أو هويّة/جلسة الزائر.
   useEffect(() => {
@@ -761,7 +800,10 @@ function StorefrontContent() {
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null && !hasRefinements;
 
   function scrollToResults() {
-    window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    window.setTimeout(() => {
+      const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      document.getElementById("store-results")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+    }, 0);
   }
   function selectCategory(id: number | null) {
     setSelectedThematicCollection(null);
@@ -1067,7 +1109,7 @@ function StorefrontContent() {
           createdAt: Date.now(),
         };
     // fail-closed قبل الشبكة: الرد الضائع آمن فقط إذا بقي نفس المفتاح بعد reload/PWA.
-    if (!saveStorefrontSnapshot(cart, form, localStorage, attempt)) {
+    if (!saveStorefrontSnapshot(cart, form, undefined, attempt)) {
       setCheckoutSafetyError("تعذّر تأمين رقم محاولة الطلب على هذا الجهاز — حرّر مساحة التخزين ثم أعد المحاولة.");
       return;
     }
@@ -1104,29 +1146,20 @@ function StorefrontContent() {
   const orderPending = createOrder.isPending, orderFailed = createOrder.isError, orderErrorMessage = createOrder.error?.message;
   const labelData = labelQ.data, labelLoading = labelQ.isLoading, labelFailed = labelQ.isError, labelErrorMessage = labelQ.error?.message;
   return (
-    <div className="storefront min-h-dvh overflow-x-clip bg-[#FFFBF7] text-[#183D36] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(254,243,199,0.22),rgba(255,255,255,0))] dark:hidden" />
-      <StorefrontStickyFilter
-        categories={cats.map((c: any) => ({ categoryId: c.id ?? c.categoryId, name: c.name }))}
-        selectedCategoryId={categoryId}
-        onSelectCategory={(id) => { setCategoryId(id); scrollToResults(); }}
-        availability={availability}
-        onToggleAvailability={() => { setAvailability((v) => v === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
-        sort={sort}
-        onChangeSort={(s) => { setSort(s as CatalogSort); scrollToResults(); }}
-        totalCount={filteredItems.length}
-        onScrollToTop={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-      />
-      <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
+    <div className="storefront min-h-dvh overflow-x-clip bg-[var(--store-canvas)] text-[var(--store-ink)] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_75%_45%_at_50%_-5%,rgba(30,58,138,0.045),transparent)] dark:hidden" />
+      <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-[var(--store-brand)] px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{cartStatus}</div>
       <StorefrontHeader categoryId={categoryId} search={search} setCategoryId={setCategoryId} setSearch={setSearch} setRawSearch={setRawSearch} rawSearch={rawSearch} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} pulseHeart={pulseHeart} setShowWishlist={setShowWishlist} showWishlist={showWishlist} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} wishlistIds={wishlistIds} setPanel={setPanel} cartCount={cartCount} cats={cats} selectCategory={selectCategory} />
 
-      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} cartSubtotal={cartSubtotal} settings={settings} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} selectedThematicCollection={selectedThematicCollection} handleSelectThematicCollection={handleSelectThematicCollection} handleClearThematicCollection={handleClearThematicCollection} activeCatName={activeCatName} filteredItems={filteredItems} setAvailability={setAvailability} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} setCatalogSeed={setCatalogSeed} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} />
+      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} cartSubtotal={cartSubtotal} settings={settings} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} selectedThematicCollection={selectedThematicCollection} handleSelectThematicCollection={handleSelectThematicCollection} handleClearThematicCollection={handleClearThematicCollection} activeCatName={activeCatName} filteredItems={filteredItems} setAvailability={setAvailability} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} setCatalogSeed={setCatalogSeed} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} dealProducts={dealProducts} addFeaturedToCart={addFeaturedToCart} />
 
       <div className="mx-auto max-w-6xl px-4">
         <StoreTrustAndHelp
           whatsappNumber={settings?.whatsappNumber}
           freeShippingThreshold={freeThreshold}
+          freeShippingThresholdBaghdad={settings?.freeShippingThreshold}
+          freeShippingThresholdGovernorates={settings?.freeShippingThresholdGovernorates}
         />
       </div>
 
@@ -1134,53 +1167,65 @@ function StorefrontContent() {
           هامش سفلي إضافي كي لا يحجبه شريط السلة العائم. */}
       <StorefrontFooter openTrack={openTrack} settings={settings} />
 
-      {/* شريط السلة الذكي العائم — نمط عالمي في متناول الإبهام يظهر عند إضافة منتجات */}
-      {panel == null && cartCount > 0 && (
-        <StorefrontFloatingCart
-          cartCount={cartCount}
-          cartSubtotal={cartSubtotal}
-          onOpenCart={() => setPanel("cart")}
-        />
-      )}
+      {/* شريط السلة الذكي العائم — نمط متناول الإبهام بفيزياء نوابض قابلة للمقاطعة */}
+      <StorefrontFloatingCart
+        visible={panel == null && selectedId == null && cartCount > 0}
+        cartCount={cartCount}
+        cartSubtotal={cartSubtotal}
+        onOpenCart={() => setPanel("cart")}
+      />
 
-      {/* شارة «الخصوصية» ثابتة أسفل اليسار؛ نرفع واتساب 4rem حتى لا يتراكبا على الهاتف. */}
-      {panel == null && cartCount === 0 && settings?.whatsappNumber && (
+      {panel == null && selectedId == null && cartCount === 0 && settings?.whatsappNumber && (
         <a
           href={`https://wa.me/${settings.whatsappNumber.replace(/[^\d]/g, "")}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="fixed left-4 z-20 flex min-h-11 items-center gap-2 rounded-full bg-[#168457] px-4 py-3 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition hover:-translate-y-0.5 hover:bg-[#116c49]"
-          style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
+          className="fixed left-4 z-20 flex min-h-11 items-center gap-2 rounded-full bg-[#1d1d1f] px-4 py-3 text-xs font-bold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
+          style={{ bottom: "calc(1rem + env(safe-area-inset-bottom))" }}
           aria-label="تواصل مع فريق المتجر عبر واتساب"
         >
-          <MessageCircle aria-hidden className="size-4" /> اسألنا عبر واتساب
+          <MessageCircle aria-hidden className="size-4 text-emerald-400 dark:text-emerald-600" /> اسألنا عبر واتساب
         </a>
       )}
 
       {/* تفاصيل المنتج (ورقة سفلية) */}
-      <StorefrontProductDialog selectedId={selectedId} setSelectedId={setSelectedId} productDialogCloseRef={productDialogCloseRef} productDialogTriggerRef={productDialogTriggerRef} product={product} toggleWishlist={toggleWishlist} wishlistIds={wishlistIds} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} shareProduct={shareProduct} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} productLoading={productLoading} detailMedia={detailMedia} setProductReviewOpenRequest={setProductReviewOpenRequest} selectCategory={selectCategory} detailUnit={detailUnit} variantQuantities={variantQuantities} setSelectedVariantId={setSelectedVariantId} setSelectedStoreUnitId={setSelectedStoreUnitId} setVariantQuantity={setVariantQuantity} detailVariant={detailVariant} customizationConfig={customizationConfig} visibleCustomizationFields={visibleCustomizationFields} customizationValues={customizationValues} customizationValidation={customizationValidation} updateCustomizationField={updateCustomizationField} customizationUploadState={customizationUploadState} setCustomizationUploadState={setCustomizationUploadState} setCustomizationAssets={setCustomizationAssets} addSelectedVariants={addSelectedVariants} addSelectedUnit={addSelectedUnit} getProductCartQty={getProductCartQty} settings={settings} relatedQ={relatedQ} addCatalogProduct={addCatalogProduct} trackRecommendationClick={trackRecommendationClick} productReviewOpenRequest={productReviewOpenRequest} />
+      {(selectedId != null || hasOpenedProductDialog) && (
+        <React.Suspense fallback={null}>
+          <StorefrontProductDialog selectedId={selectedId} setSelectedId={setSelectedId} productDialogCloseRef={productDialogCloseRef} productDialogTriggerRef={productDialogTriggerRef} product={product} toggleWishlist={toggleWishlist} wishlistIds={wishlistIds} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} shareProduct={shareProduct} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} productLoading={productLoading} detailMedia={detailMedia} setProductReviewOpenRequest={setProductReviewOpenRequest} selectCategory={selectCategory} detailUnit={detailUnit} variantQuantities={variantQuantities} setSelectedVariantId={setSelectedVariantId} setSelectedStoreUnitId={setSelectedStoreUnitId} setVariantQuantity={setVariantQuantity} detailVariant={detailVariant} customizationConfig={customizationConfig} visibleCustomizationFields={visibleCustomizationFields} customizationValues={customizationValues} customizationValidation={customizationValidation} updateCustomizationField={updateCustomizationField} customizationUploadState={customizationUploadState} setCustomizationUploadState={setCustomizationUploadState} setCustomizationAssets={setCustomizationAssets} addSelectedVariants={addSelectedVariants} addSelectedUnit={addSelectedUnit} getProductCartQty={getProductCartQty} settings={settings} relatedQ={relatedQ} addCatalogProduct={addCatalogProduct} trackRecommendationClick={trackRecommendationClick} productReviewOpenRequest={productReviewOpenRequest} />
+        </React.Suspense>
+      )}
 
       {/* ═══ السلة ═══ */}
       {panel === "cart" && (
-        <StorefrontCartPanel setPanel={setPanel} cartLines={cartLines} setQty={setQty} cartRecommendations={cartRecommendations} setSelectedId={setSelectedId} addFeaturedToCart={addFeaturedToCart} recentlyAddedProductId={recentlyAddedProductId} cartSubtotal={cartSubtotal} freeThreshold={freeThreshold} setShowWishlist={setShowWishlist} scrollToResults={scrollToResults} shareCart={shareCart} cartHasCustomization={cartHasCustomization} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} openCheckout={openCheckout} storeOpen={storeOpen} orderingEnabled={orderingEnabled} settingsQ={settingsQ} settings={settings} />
+        <React.Suspense fallback={null}>
+          <StorefrontCartPanel setPanel={setPanel} cartLines={cartLines} setQty={setQty} cartRecommendations={cartRecommendations} setSelectedId={setSelectedId} addFeaturedToCart={addFeaturedToCart} recentlyAddedProductId={recentlyAddedProductId} cartSubtotal={cartSubtotal} freeThreshold={freeThreshold} setShowWishlist={setShowWishlist} scrollToResults={scrollToResults} shareCart={shareCart} cartHasCustomization={cartHasCustomization} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} openCheckout={openCheckout} storeOpen={storeOpen} orderingEnabled={orderingEnabled} settingsQ={settingsQ} settings={settings} />
+        </React.Suspense>
       )}
 
       {/* ═══ الدفع عند الاستلام ═══ */}
       {panel === "checkout" && (
-        <StorefrontCheckoutPanel setTurnstileToken={setTurnstileToken} setCheckoutErrors={setCheckoutErrors} setPanel={setPanel} submitOrder={submitOrder} cartCount={cartCount} checkoutErrors={checkoutErrors} form={form} updateCheckoutField={updateCheckoutField} orderInFlightRef={orderInFlightRef} couponDraft={couponDraft} setCouponDraft={setCouponDraft} applyCoupon={applyCoupon} appliedCouponCode={appliedCouponCode} removeCoupon={removeCoupon} quoteFetching={quoteFetching} quoteError={quoteError} quoteErrorMessage={quoteErrorMessage} couponSuperseded={couponSuperseded} quoteData={quoteData} quotedCouponDiscount={quotedCouponDiscount} couponFeedback={couponFeedback} quotedSubtotal={quotedSubtotal} quotedDeliveryFree={quotedDeliveryFree} quotedDeliveryFee={quotedDeliveryFee} quotedTotal={quotedTotal} orderingEnabled={orderingEnabled} settings={settings} turnstileResetKey={turnstileResetKey} orderFailed={orderFailed} checkoutSafetyError={checkoutSafetyError} orderErrorMessage={orderErrorMessage} orderPending={orderPending} />
+        <React.Suspense fallback={null}>
+          <StorefrontCheckoutPanel setTurnstileToken={setTurnstileToken} setCheckoutErrors={setCheckoutErrors} setPanel={setPanel} submitOrder={submitOrder} cartCount={cartCount} checkoutErrors={checkoutErrors} form={form} updateCheckoutField={updateCheckoutField} orderInFlightRef={orderInFlightRef} couponDraft={couponDraft} setCouponDraft={setCouponDraft} applyCoupon={applyCoupon} appliedCouponCode={appliedCouponCode} removeCoupon={removeCoupon} quoteFetching={quoteFetching} quoteError={quoteError} quoteErrorMessage={quoteErrorMessage} couponSuperseded={couponSuperseded} quoteData={quoteData} quotedCouponDiscount={quotedCouponDiscount} couponFeedback={couponFeedback} quotedSubtotal={quotedSubtotal} quotedDeliveryFree={quotedDeliveryFree} quotedDeliveryFee={quotedDeliveryFee} quotedTotal={quotedTotal} orderingEnabled={orderingEnabled} settings={settings} turnstileResetKey={turnstileResetKey} orderFailed={orderFailed} checkoutSafetyError={checkoutSafetyError} orderErrorMessage={orderErrorMessage} orderPending={orderPending} />
+        </React.Suspense>
       )}
 
       {/* ═══ تأكيد الطلب ═══ */}
       {panel === "confirmation" && confirmation && (
-        <StorefrontConfirmationPanel setPanel={setPanel} confirmation={confirmation} setConfirmation={setConfirmation} openTrack={openTrack} />
+        <React.Suspense fallback={null}>
+          <StorefrontConfirmationPanel setPanel={setPanel} confirmation={confirmation} setConfirmation={setConfirmation} openTrack={openTrack} />
+        </React.Suspense>
       )}
 
       {panel === "label" && (
-        <StorefrontLabelPanel setPanel={setPanel} labelLoading={labelLoading} labelData={labelData} />
+        <React.Suspense fallback={null}>
+          <StorefrontLabelPanel setPanel={setPanel} labelLoading={labelLoading} labelData={labelData} />
+        </React.Suspense>
       )}
 
       {panel === "track" && (
-        <StorefrontTrackingPanel setPanel={setPanel} trustedTrackingOrders={trustedTrackingOrders} doTrack={doTrack} trackState={trackState} trackToken={trackToken} setTrackToken={setTrackToken} setTrackError={setTrackError} setTrackState={setTrackState} trackError={trackError} settings={settings} trackResult={trackResult} openProduct={openProduct} />
+        <React.Suspense fallback={null}>
+          <StorefrontTrackingPanel setPanel={setPanel} trustedTrackingOrders={trustedTrackingOrders} doTrack={doTrack} trackState={trackState} trackToken={trackToken} setTrackToken={setTrackToken} setTrackError={setTrackError} setTrackState={setTrackState} trackError={trackError} settings={settings} trackResult={trackResult} openProduct={openProduct} />
+        </React.Suspense>
       )}
     </div>
   );

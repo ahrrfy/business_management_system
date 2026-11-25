@@ -8862,6 +8862,7 @@ export const onlineOrders = mysqlTable(
     claimedAt: timestamp("claimedAt"),
     preparedByUserId: int("preparedByUserId").references(() => users.id),
     preparedAt: timestamp("preparedAt"),
+    alertPrintedAt: timestamp("alertPrintedAt", { fsp: 3 }),
     fulfillmentDurationMinutes: int("fulfillmentDurationMinutes"),
     // حالة التواصل والمراسلة مع العميل وتثبيت الطلب
     contactStatus: mysqlEnum("contactStatus", [

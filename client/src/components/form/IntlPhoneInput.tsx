@@ -54,7 +54,7 @@ export function IntlPhoneInput({
     <div
       dir="ltr"
       className={cn(
-        "flex items-stretch gap-1 rounded-md border border-input bg-transparent shadow-xs focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px] transition-[color,box-shadow]",
+        "flex items-stretch gap-1 rounded-lg border border-border bg-background shadow-2xs focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px] transition-[color,box-shadow]",
         disabled && "opacity-50 pointer-events-none",
         className
       )}
@@ -67,10 +67,11 @@ export function IntlPhoneInput({
         }}
         disabled={disabled}
         aria-label="مفتاح الدولة"
-        className="h-9 shrink-0 rounded-r-md bg-transparent px-2 text-xs font-medium outline-none border-l border-input cursor-pointer"
+        dir="ltr"
+        className="h-9 shrink-0 rounded-l-lg bg-transparent px-2 text-xs font-medium outline-none border-r border-border cursor-pointer"
       >
         {DIAL_CODES.map((d) => (
-          <option key={d.code} value={d.code} title={d.label}>
+          <option key={d.code} value={d.code} title={d.label} dir="ltr" style={{ direction: "ltr", textAlign: "left" }}>
             {d.flag} {d.code}
           </option>
         ))}

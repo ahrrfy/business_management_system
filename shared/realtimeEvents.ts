@@ -228,6 +228,9 @@ export interface StorefrontOrderPlacedPayload {
   totalAmount: string;
   customerName?: string;
   itemsCount?: number;
+  createdAt?: string;
+  /** إعادة بثّ صامتة لتسليم طباعة القصاصة لمحطة بديلة بعد تعثّر الطابعة في المحطة الأولى */
+  alertPrintHandoff?: boolean;
 }
 
 /**

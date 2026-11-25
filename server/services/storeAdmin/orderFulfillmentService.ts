@@ -10,7 +10,9 @@ import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { publishRealtimeEvent } from "../../realtime";
 import {
   bundleComponents,
   couponPrograms,
@@ -2661,4 +2663,236 @@ export async function autoAssignRoundRobinOnlineOrders(
   });
 }
 
+/**
+ * قفل طباعة ذرّي لمرة واحدة لقصاصة تنبيه وصول طلب المتجر (10 سم).
+ * يعيد claimed=true لمحطة الاستقبال/خدمة الزبائن الأولى فقط حتى لا تتكرر القصاصة.
+ */
+// عتبة التمييز بين حجز الطباعة المؤقت (< 2020-01-01، أي UTC_TIMESTAMP - 30 سنة بمدة إيجار 20 ثانية) والطباعة المؤكدة نهائياً (>= 2020-01-01).
+const ALERT_PRINT_CONFIRMED_CUTOFF_SQL = sql`TIMESTAMP('2020-01-01 00:00:00')`;
+const ALERT_PRINT_LEASE_STAMP_SQL = sql`DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR)`;
+const ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL = sql`DATE_SUB(DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR), INTERVAL 20 SECOND)`;
 
+export async function claimOnlineOrderAlertPrint(input: {
+  id: number;
+  scopedBranchId: number | null;
+}): Promise<{
+  claimed: boolean;
+  alreadyPrinted: boolean;
+  leaseToken: string | null;
+  orderNumber: string | null;
+  total: string | null;
+  itemCount: number;
+  createdAt: Date | null;
+}> {
+  const db = getDb();
+  if (!db) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير متاحة.",
+    });
+  }
+  const conds = [
+    eq(onlineOrders.id, input.id),
+    sql`(${onlineOrders.alertPrintedAt} IS NULL OR (${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL} AND ${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL}))`,
+  ];
+  if (input.scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  const res = await db
+    .update(onlineOrders)
+    .set({ alertPrintedAt: ALERT_PRINT_LEASE_STAMP_SQL })
+    .where(and(...conds));
+  const affectedRows = Number(
+    (res as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+      (res as unknown as { affectedRows?: number })?.affectedRows ??
+      0,
+  );
+  if (affectedRows !== 1) {
+    const stateConds = [eq(onlineOrders.id, input.id)];
+    if (input.scopedBranchId != null) {
+      stateConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const existing = (
+      await db
+        .select({
+          alreadyPrinted: sql<number>`CASE WHEN ${onlineOrders.alertPrintedAt} >= ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL} THEN 1 ELSE 0 END`,
+        })
+        .from(onlineOrders)
+        .where(and(...stateConds))
+        .limit(1)
+    )[0];
+    return {
+      claimed: false,
+      alreadyPrinted: Number(existing?.alreadyPrinted ?? 0) === 1,
+      leaseToken: null,
+      orderNumber: null,
+      total: null,
+      itemCount: 0,
+      createdAt: null,
+    };
+  }
+  const row = (
+    await db
+      .select({
+        orderNumber: onlineOrders.orderNumber,
+        total: onlineOrders.total,
+        createdAt: onlineOrders.createdAt,
+        leaseToken: sql<string | null>`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f')`,
+        itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
+      })
+      .from(onlineOrders)
+      .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+      .where(eq(onlineOrders.id, input.id))
+      .limit(1)
+  )[0];
+  return {
+    claimed: true,
+    alreadyPrinted: false,
+    leaseToken: row?.leaseToken ?? null,
+    orderNumber: row?.orderNumber ?? null,
+    total: row?.total != null ? String(row.total) : null,
+    itemCount: Number(row?.itemCount ?? 0),
+    createdAt: row?.createdAt ? new Date(row.createdAt) : null,
+  };
+}
+
+/** يثبّت اكتمال الطباعة الفعلي، أو يحرّر الحجز المؤقت عند تعثّر الطابعة ويعيد البثّ للمحطات البديلة. */
+export async function releaseOnlineOrderAlertPrint(input: {
+  id: number;
+  scopedBranchId: number | null;
+  leaseToken?: string | null;
+  completed?: boolean;
+  renew?: boolean;
+}): Promise<{
+  released: boolean;
+  completed: boolean;
+  renewed?: boolean;
+  leaseToken?: string | null;
+}> {
+  const db = getDb();
+  if (!db) return { released: false, completed: false, renewed: false, leaseToken: null };
+  if (input.renew === true) {
+    const renewToken = input.leaseToken?.trim();
+    if (!renewToken) {
+      return { released: false, completed: false, renewed: false, leaseToken: null };
+    }
+    const renewConds = [
+      eq(onlineOrders.id, input.id),
+      isNotNull(onlineOrders.alertPrintedAt),
+      sql`${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL}`,
+      sql`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f') = ${renewToken}`,
+    ];
+    if (input.scopedBranchId != null) {
+      renewConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const renewRes = await db
+      .update(onlineOrders)
+      .set({ alertPrintedAt: ALERT_PRINT_LEASE_STAMP_SQL })
+      .where(and(...renewConds));
+    const renewedRows = Number(
+      (renewRes as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+        (renewRes as unknown as { affectedRows?: number })?.affectedRows ??
+        0,
+    );
+    if (renewedRows !== 1) {
+      return { released: false, completed: false, renewed: false, leaseToken: null };
+    }
+    const renewedRow = (
+      await db
+        .select({
+          leaseToken: sql<string | null>`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f')`,
+        })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .limit(1)
+    )[0];
+    return {
+      released: false,
+      completed: false,
+      renewed: true,
+      leaseToken: renewedRow?.leaseToken ?? renewToken,
+    };
+  }
+  if (input.completed === true) {
+    const confirmConds = [
+      eq(onlineOrders.id, input.id),
+      sql`(${onlineOrders.alertPrintedAt} IS NULL OR ${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL})`,
+    ];
+    if (input.scopedBranchId != null) {
+      confirmConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const confirmRes = await db
+      .update(onlineOrders)
+      .set({ alertPrintedAt: sql`UTC_TIMESTAMP(3)` })
+      .where(and(...confirmConds));
+    const confirmedRows = Number(
+      (confirmRes as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+        (confirmRes as unknown as { affectedRows?: number })?.affectedRows ??
+        0,
+    );
+    return { released: false, completed: confirmedRows === 1 };
+  }
+
+  const conds = [
+    eq(onlineOrders.id, input.id),
+    isNotNull(onlineOrders.alertPrintedAt),
+    sql`${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL}`,
+  ];
+  if (input.scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  const cleanToken = input.leaseToken?.trim();
+  if (cleanToken) {
+    conds.push(
+      sql`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f') = ${cleanToken}`,
+    );
+  }
+  const res = await db
+    .update(onlineOrders)
+    .set({ alertPrintedAt: null })
+    .where(and(...conds));
+  const affectedRows = Number(
+    (res as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+      (res as unknown as { affectedRows?: number })?.affectedRows ??
+      0,
+  );
+  if (affectedRows !== 1) {
+    return { released: false, completed: false };
+  }
+  const row = (
+    await db
+      .select({
+        id: onlineOrders.id,
+        branchId: onlineOrders.branchId,
+        orderNumber: onlineOrders.orderNumber,
+        total: onlineOrderAmountDueAtDoor,
+        customerName: customers.name,
+        createdAt: onlineOrders.createdAt,
+        itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
+      })
+      .from(onlineOrders)
+      .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
+      .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+      .where(eq(onlineOrders.id, input.id))
+      .limit(1)
+  )[0];
+  if (row) {
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+      {
+        orderId: row.id,
+        orderNumber: row.orderNumber,
+        branchId: row.branchId,
+        totalAmount: String(row.total),
+        customerName: row.customerName ?? undefined,
+        itemsCount: Number(row.itemCount ?? 1),
+        createdAt: row.createdAt
+          ? new Date(row.createdAt).toISOString()
+          : new Date().toISOString(),
+        alertPrintHandoff: true,
+      },
+      { branchId: row.branchId ?? undefined },
+    );
+  }
+  return { released: true, completed: false };
+}

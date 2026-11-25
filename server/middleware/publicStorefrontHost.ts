@@ -75,9 +75,11 @@ export function isPublicStorefrontProcedure(procedure: string): boolean {
   return namespace === "recruitment" && PUBLIC_RECRUITMENT.has(operation);
 }
 
+const PUBLIC_IMAGE_PATH = /^\/api\/img\/(?:(?:company\/[^/]+\/)?product\/\d+|banner\/\d+\/[^/]+)$/;
+
 export function isAllowedOnPublicStorefrontHost(method: string, path: string): boolean {
   if (!path.startsWith("/api/")) return false;
-  const isPublicImage = (method === "GET" || method === "HEAD") && path.startsWith("/api/img/");
+  const isPublicImage = (method === "GET" || method === "HEAD") && PUBLIC_IMAGE_PATH.test(path);
   const trpcPath = path.match(/^\/api\/trpc\/([^/]+)$/)?.[1];
   const isPublicTrpc = !!trpcPath && trpcPath.split(",").every(isPublicStorefrontProcedure);
   return isPublicImage || isPublicTrpc;

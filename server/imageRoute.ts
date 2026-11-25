@@ -506,6 +506,10 @@ async function sendStoredProductImage(
       res.off("close", abortOnEarlyClose);
     }
     if (!body) {
+      if (requestedWidth != null) {
+        const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
+        if (fallback) return fallback;
+      }
       preventCachingStoredImageFailure(res);
       return res.status(404).end();
     }
@@ -584,13 +588,6 @@ async function kioskViewerAllowed(req: Request): Promise<boolean> {
     // جلسة تالفة/منتهية ⇒ جرّب مسار الجهاز
   }
   if ((await resolveKioskDevice(req)) != null) return true;
-
-  // السماح بطلب الصور الصادر من متصفح شاشة قارئ الأسعار أو الكشك في التطبيق
-  const referer = req.headers.referer || "";
-  const secFetchDest = req.headers["sec-fetch-dest"];
-  if (secFetchDest === "image" && (referer.includes("/price-checker") || referer.includes("/kiosk"))) {
-    return true;
-  }
 
   return false;
 }

@@ -9,6 +9,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { summarizeStorefrontCustomization } from "@/components/storefront/storefrontCustomizationModel";
@@ -34,7 +41,6 @@ export interface StorefrontB2BQuoteDialogProps {
   cartLines: B2BQuoteCartLineInput[];
   orderingEnabled?: boolean;
   turnstileSiteKey?: string | null;
-  customerSessionToken?: string | null;
 }
 
 interface QuoteRequestSuccessState {
@@ -169,7 +175,6 @@ export default function StorefrontB2BQuoteDialog({
   cartLines,
   orderingEnabled = true,
   turnstileSiteKey = null,
-  customerSessionToken = null,
 }: StorefrontB2BQuoteDialogProps) {
   const hasCustomItems = useMemo(
     () => cartLines.some((l) => Boolean(describeB2BCartLineCustomization(l.customization))),
@@ -322,7 +327,11 @@ export default function StorefrontB2BQuoteDialog({
       return;
     }
     if (!canSubmitOnline) {
-      setFormError("استقبال الطلبات متوقف مؤقتاً؛ يمكنك تنزيل عرض السعر التقديري (PDF) أو التواصل عبر واتساب.");
+      setFormError(
+        !orderingEnabled
+          ? "استقبال الطلبات متوقف مؤقتاً؛ يمكنك تنزيل عرض السعر التقديري (PDF) أو التواصل عبر واتساب."
+          : "التحقق الأمني قيد التهيئة؛ يمكنك أيضاً تنزيل عرض السعر التقديري (PDF) مباشرة.",
+      );
       return;
     }
     if (!turnstileToken) {
@@ -332,10 +341,6 @@ export default function StorefrontB2BQuoteDialog({
 
     const cleanCompany = companyName.trim() || undefined;
     const cleanGovernorate = governorate.trim() || undefined;
-    const cleanSession =
-      customerSessionToken && customerSessionToken.trim().length >= 40
-        ? customerSessionToken.trim()
-        : undefined;
     const finalNote = combinedNote;
 
     const fingerprint = JSON.stringify({
@@ -360,7 +365,6 @@ export default function StorefrontB2BQuoteDialog({
     isSubmittingRef.current = true;
     setIsSubmittingLocal(true);
     createQuoteM.mutate({
-      customerSessionToken: cleanSession,
       customerName: cleanName,
       customerPhone: cleanPhone,
       companyName: cleanCompany,
@@ -486,27 +490,39 @@ export default function StorefrontB2BQuoteDialog({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-3 py-1 text-xs">
-            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 flex items-center justify-between">
+            <div className="rounded-xl border border-slate-200/80 bg-[#f5f5f7] px-3 py-2 flex items-center justify-between dark:border-slate-800 dark:bg-slate-900">
               <span className="text-muted-foreground">عدد بنود السلة المشمولة بالطلب</span>
               <span className="font-black text-foreground tabular-nums">{normalizedLines.length} صنف</span>
+            </div>
+
+            <div className="rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+              <strong className="font-bold text-slate-900 dark:text-white">ضوابط التسعير للشركات:</strong>{" "}
+              تسري عروض الأسعار لمدة <strong>5 أيام كحد أقصى</strong> من تاريخ الإصدار، ولا تشمل <strong>ورق الاستنساخ</strong> أو الأصناف المتعامَل بها يومياً ذات الأسعار المتغيّرة.
             </div>
 
             <div className="space-y-1">
               <label className="block font-bold text-foreground" htmlFor="b2b-quote-request-type">
                 نوع الطلب
               </label>
-              <select
-                id="b2b-quote-request-type"
+              <Select
+                dir="rtl"
                 value={requestType}
-                onChange={(e) => setRequestType(e.target.value as B2BQuoteRequestType)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground"
+                onValueChange={(value) => setRequestType(value as B2BQuoteRequestType)}
               >
-                {REQUEST_TYPE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  id="b2b-quote-request-type"
+                  className="w-full !h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold text-foreground shadow-none"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent dir="rtl" align="start">
+                  {REQUEST_TYPE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -561,18 +577,25 @@ export default function StorefrontB2BQuoteDialog({
                 <label className="block font-bold text-foreground" htmlFor="b2b-quote-governorate">
                   المحافظة
                 </label>
-                <select
-                  id="b2b-quote-governorate"
+                <Select
+                  dir="rtl"
                   value={governorate}
-                  onChange={(e) => setGovernorate(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground"
+                  onValueChange={setGovernorate}
                 >
-                  {GOVERNORATES.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger
+                    id="b2b-quote-governorate"
+                    className="w-full !h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold text-foreground shadow-none"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent dir="rtl" align="start">
+                    {GOVERNORATES.map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -627,12 +650,19 @@ export default function StorefrontB2BQuoteDialog({
                 resetKey={turnstileResetKey}
                 onTokenChange={setTurnstileToken}
               />
-            ) : (
+            ) : !orderingEnabled ? (
               <p
                 role="alert"
                 className="rounded-xl bg-[var(--sem-neg)]/5 px-3 py-2 text-xs font-medium text-[var(--sem-neg)]"
               >
                 استقبال الطلبات متوقف مؤقتاً؛ يمكنك تنزيل عرض السعر التقديري (PDF) أو التواصل عبر واتساب.
+              </p>
+            ) : (
+              <p
+                role="alert"
+                className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              >
+                التحقق الأمني قيد التهيئة؛ يمكنك أيضاً تنزيل عرض السعر التقديري (PDF) مباشرة.
               </p>
             )}
 

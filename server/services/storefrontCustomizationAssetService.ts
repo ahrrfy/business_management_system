@@ -19,7 +19,7 @@ import {
 } from "../lib/imageStore";
 import { parseImageDimensions } from "../lib/imageValidation";
 import { splitQuoteCustomerNoteAndAssets } from "../lib/quoteRequestCustomizationMeta";
-import { requireDb } from "./tx";
+import { requireDb, withTx } from "./tx";
 
 export const MAX_CUSTOMIZATION_ASSET_BYTES = 2 * 1024 * 1024;
 export const MAX_CUSTOMIZATION_BASE64_CHARS = 2_800_000;
@@ -165,15 +165,71 @@ export async function uploadStorefrontCustomizationAsset(
 
   const db = requireDb();
   const [existingAsset] = await db
-    .select({ id: storefrontCustomizationAssets.id })
+    .select({
+      id: storefrontCustomizationAssets.id,
+      expiresAt: storefrontCustomizationAssets.expiresAt,
+    })
     .from(storefrontCustomizationAssets)
     .where(eq(storefrontCustomizationAssets.assetKey, assetKey))
     .limit(1);
 
-  if (!existingAsset) {
+  const hadLiveExistingAsset = Boolean(
+    existingAsset &&
+      (existingAsset.expiresAt === null ||
+        existingAsset.expiresAt.getTime() > Date.now()),
+  );
+
+  if (!hadLiveExistingAsset) {
+    // تنظيف انتهازي منسّق بقفل صفّي (`FOR UPDATE`) وهامش أمان زمني يمنع حذف مرفق يُعاد رفعه بالتوازي.
+    const candidateExpired = await db
+      .select({ id: storefrontCustomizationAssets.id })
+      .from(storefrontCustomizationAssets)
+      .where(
+        and(
+          isNotNull(storefrontCustomizationAssets.expiresAt),
+          sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+          sql`${storefrontCustomizationAssets.assetKey} <> ${assetKey}`,
+        ),
+      )
+      .limit(4);
+
+    for (const candidate of candidateExpired) {
+      await withTx(async (tx) => {
+        const [locked] = await tx
+          .select({
+            id: storefrontCustomizationAssets.id,
+            assetKey: storefrontCustomizationAssets.assetKey,
+          })
+          .from(storefrontCustomizationAssets)
+          .where(
+            and(
+              eq(storefrontCustomizationAssets.id, candidate.id),
+              isNotNull(storefrontCustomizationAssets.expiresAt),
+              sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+              sql`${storefrontCustomizationAssets.assetKey} <> ${assetKey}`,
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!locked) return;
+        await getImageStore()
+          .delete(locked.assetKey)
+          .catch(() => {});
+        await tx
+          .delete(storefrontCustomizationAssets)
+          .where(
+            and(
+              eq(storefrontCustomizationAssets.id, locked.id),
+              isNotNull(storefrontCustomizationAssets.expiresAt),
+              sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+            ),
+          );
+      }).catch(() => {});
+    }
+
     const orphanWindowMax = Number(
       process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX ??
-        DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX,
+        Math.max(DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX, 300),
     );
     if (Number.isFinite(orphanWindowMax) && orphanWindowMax > 0) {
       const [recentOrphans] = await db
@@ -182,6 +238,7 @@ export async function uploadStorefrontCustomizationAsset(
         .where(
           and(
             isNotNull(storefrontCustomizationAssets.expiresAt),
+            sql`${storefrontCustomizationAssets.expiresAt} >= NOW()`,
             sql`${storefrontCustomizationAssets.createdAt} >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)`,
           ),
         );
@@ -197,6 +254,26 @@ export async function uploadStorefrontCustomizationAsset(
       }
     }
   }
+
+  // المرحلة ١ (حجز انتقالي رتيب قبل الكتابة في المخزن):
+  // نضبط expiresAt على NOW() - 30s للصفوف الجديدة أو المنتهية قديماً (دون خفض أي صلاحية حيّة أو مربوطة بطلب):
+  // - يحمي الصف من التنظيف الانتهازي (الذي يشترط expiresAt < NOW() - 5 MINUTE) طوال زمن الكتابة.
+  // - يبقى <= CURRENT_TIMESTAMP فلا يُقبل ربطه بطلب إن فشلت الكتابة دون الحاجة لحذف الصف المشترك.
+  await db
+    .insert(storefrontCustomizationAssets)
+    .values({
+      assetKey,
+      sha256,
+      mimeType: input.mimeType,
+      byteLength: bytes.length,
+      kind: input.kind,
+      expiresAt: sql`DATE_SUB(NOW(), INTERVAL 30 SECOND)`,
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, GREATEST(${storefrontCustomizationAssets.expiresAt}, DATE_SUB(NOW(), INTERVAL 30 SECOND)))`,
+      },
+    });
 
   try {
     await getImageStore().put(assetKey, bytes, input.mimeType);
@@ -214,6 +291,7 @@ export async function uploadStorefrontCustomizationAsset(
     throw error;
   }
 
+  // المرحلة ٢ (ترقية رتيبة لصلاحية المرفق بعد نجاح الكتابة في المخزن):
   const expiresAt = new Date(Date.now() + ORPHAN_ASSET_TTL_MS);
   await db
     .insert(storefrontCustomizationAssets)
@@ -227,7 +305,7 @@ export async function uploadStorefrontCustomizationAsset(
     })
     .onDuplicateKeyUpdate({
       set: {
-        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, VALUES(expiresAt))`,
+        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, GREATEST(${storefrontCustomizationAssets.expiresAt}, VALUES(expiresAt)))`,
       },
     });
 

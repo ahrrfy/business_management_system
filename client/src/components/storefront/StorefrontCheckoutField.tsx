@@ -19,24 +19,24 @@ export function StorefrontCheckoutField({
   const errorId = `${htmlFor}-error`;
   const toneClass =
     tone === "mint"
-      ? "border-[#c5e8dc] bg-[#f7fffc] ring-[#e9f7f2]"
+      ? "border-slate-200/90 bg-white ring-slate-900/[0.04]"
       : tone === "lilac"
-        ? "border-[#dfcdea] bg-[#fcf8ff] ring-[#f3ebf8]"
-        : "border-[#ead8c8] bg-white ring-[#f3e5da]";
+        ? "border-slate-200/90 bg-white ring-slate-900/[0.04]"
+        : "border-slate-200/90 bg-white ring-slate-900/[0.04]";
   return (
     <div
       role="group"
       aria-labelledby={`${htmlFor}-label`}
       aria-describedby={error ? errorId : undefined}
       aria-invalid={Boolean(error)}
-      className={`rounded-2xl border p-3 ring-1 dark:bg-slate-900 dark:ring-slate-700 ${toneClass}`}
+      className={`rounded-2xl border p-3 ring-1 transition-[border-color,box-shadow] duration-150 focus-within:border-[var(--store-brand)] focus-within:ring-[var(--store-brand)]/15 dark:border-slate-800 dark:bg-slate-900 dark:ring-slate-800 ${toneClass}`}
     >
       <label
         id={`${htmlFor}-label`}
         htmlFor={htmlFor}
-        className="mb-1 flex items-center gap-1.5 text-xs font-bold text-slate-600"
+        className="mb-1 flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-300"
       >
-        <span className="text-emerald-500">{icon}</span>
+        <span className="text-[var(--store-brand)]">{icon}</span>
         {label}
         {required && (
           <>

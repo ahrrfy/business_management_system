@@ -24,7 +24,7 @@ export type RowProduct = {
 };
 
 function priceLabel(price: string | null): string {
-  if (price == null || price === "") return "اسأل الموظّف";
+  if (price == null || price === "") return "تواصل معنا للسعر";
   return `${money(price)} د.ع`;
 }
 
@@ -55,16 +55,16 @@ function CuratedProductCard({
 
   return (
     <div
-      className={`store-product-card group relative flex w-[152px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-white transition-all duration-300 sm:w-[184px] lg:w-[196px] dark:bg-slate-900 ${
+      className={`store-product-card group relative flex w-[152px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-white sm:w-[184px] lg:w-[196px] dark:bg-slate-900 ${
         showAdded
-          ? "border-emerald-400 ring-2 ring-emerald-400/20 shadow-lg shadow-emerald-500/10"
-          : "border-slate-200/80 hover:-translate-y-1 hover:border-blue-300 hover:shadow-lg dark:border-slate-800"
+          ? "border-[var(--store-brand)] ring-2 ring-[var(--store-brand)]/20"
+          : "border-slate-900/[0.08] dark:border-slate-800"
       }`}
     >
       <button
         type="button"
         onClick={onSelect}
-        className="relative block w-full overflow-hidden bg-slate-50 text-right focus:outline-none dark:bg-slate-950"
+        className="relative block w-full overflow-hidden bg-slate-50 text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--store-brand)] dark:bg-slate-950"
         aria-label={`عرض تفاصيل ${p.productName}`}
       >
         <div className="flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-50 p-2.5 transition-transform duration-500 ease-out group-hover:scale-105 dark:bg-slate-950">
@@ -84,7 +84,7 @@ function CuratedProductCard({
         </div>
 
         {onSale && pct > 0 && (
-          <span className="absolute right-2 top-2 rounded-md bg-orange-600 px-2 py-0.5 text-[10px] font-black text-white shadow-sm whitespace-nowrap">
+          <span className="absolute right-2 top-2 rounded-md bg-[var(--store-accent)] px-2 py-0.5 text-[10px] font-black text-white shadow-sm whitespace-nowrap">
             خصم {pct}٪
           </span>
         )}
@@ -116,7 +116,7 @@ function CuratedProductCard({
           <button
             type="button"
             onClick={onSelect}
-            className="w-full text-right focus:outline-none"
+            className="w-full text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--store-brand)] rounded"
           >
             <span className="line-clamp-2 text-xs font-black leading-snug text-slate-900 transition-colors group-hover:text-blue-700 dark:text-slate-100 dark:group-hover:text-blue-400">
               {p.productName}
@@ -137,7 +137,7 @@ function CuratedProductCard({
             )}
           </div>
           {onSale && pct > 0 ? (
-            <span className="text-[8.5px] sm:text-[9px] font-black text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+            <span className="text-[8.5px] sm:text-[9px] font-black text-[var(--store-brand)] whitespace-nowrap">
               توفير {pct}٪
             </span>
           ) : (
@@ -147,7 +147,7 @@ function CuratedProductCard({
 
         {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً بارتفاع h-9 sm:h-10 */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (
-          <div className="mt-auto flex h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
+          <div className="mt-auto flex h-10 w-full items-center justify-between rounded-xl border border-slate-900/12 bg-[#f5f5f7] px-1.5 text-[#1d1d1f] shadow-2xs dark:border-slate-700 dark:bg-slate-800 dark:text-white">
             <button
               type="button"
               onClick={(e) => {
@@ -155,14 +155,14 @@ function CuratedProductCard({
                 onUpdateQuantity(p.productId, -1);
               }}
               aria-label={`تقليل كمية ${p.productName}`}
-              className="flex size-7 items-center justify-center rounded-lg bg-white text-emerald-700 shadow-xs transition hover:bg-emerald-100/60 active:scale-90 dark:bg-slate-800 dark:text-emerald-400"
+              className="flex size-7 items-center justify-center rounded-lg bg-white text-[#1d1d1f] shadow-xs transition hover:bg-slate-100 active:scale-90 dark:bg-slate-900 dark:text-white"
             >
               <Minus aria-hidden className="size-3 stroke-[2.5]" />
             </button>
 
             <div className="flex min-w-0 flex-1 items-center justify-center gap-1 px-0.5 font-mono text-[11px] font-black tabular-nums">
               <span className="shrink-0">{formatQuantity(cartQuantity)}</span>
-              <span className="truncate text-[8.5px] sm:text-[9px] font-bold text-emerald-700 dark:text-emerald-400">
+              <span className="truncate text-[8.5px] sm:text-[9px] font-bold text-slate-600 dark:text-slate-300">
                 {p.unitName ? p.unitName : "بالسلة"}
               </span>
             </div>
@@ -174,7 +174,7 @@ function CuratedProductCard({
                 onUpdateQuantity(p.productId, 1);
               }}
               aria-label={`زيادة كمية ${p.productName}`}
-              className="flex size-7 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-xs transition hover:bg-emerald-500 active:scale-90"
+              className="flex size-7 items-center justify-center rounded-lg bg-[#1d1d1f] text-white shadow-xs transition hover:bg-slate-800 active:scale-90 dark:bg-white dark:text-[#1d1d1f]"
             >
               <Plus aria-hidden className="size-3 stroke-[2.5]" />
             </button>
@@ -186,7 +186,6 @@ function CuratedProductCard({
               disabled={!isOrderable}
               label={p.isCustomizable ? "طلب مخصص" : "أضف إلى السلة"}
               addedLabel="تمت الإضافة"
-              icon={p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : undefined}
               onAdd={(btnEl) => {
                 return onAdd({ currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
               }}
@@ -231,13 +230,15 @@ export function CuratedRow({
   const [interactionPaused, setInteractionPaused] = useState(false);
   const [autoPlayPaused, setAutoPlayPaused] = useState(false);
 
-  // تكرار قائمة المنتجات إن كانت قليلة لضمان استمرار الحركة الانسيابية على الشاشات العريضة
-  const displayProducts = products.length < 10 ? [...products, ...products] : products;
+  const displayProducts = React.useMemo(
+    () => Array.from(new Map(products.map((item) => [item.productId, item])).values()),
+    [products],
+  );
 
-  // محرك الحركة المستمرة الانسيابية بمعدل 60 إطاراً في الثانية مع فيزياء التباطؤ والتسارع الانسيابية
+  // محرك الحركة المستمرة الانسيابية للقوائم الطويلة فقط دون تكرار مصطنع للبطاقات
   useEffect(() => {
     const scroller = scrollerRef.current;
-    if (!scroller || products.length < 3) return;
+    if (!scroller || displayProducts.length < 8) return;
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduceMotion) return;
 
@@ -374,12 +375,12 @@ export function CuratedRow({
     <section className="min-w-0">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <span className="flex size-7 items-center justify-center rounded-lg bg-orange-100 text-orange-600 dark:bg-slate-800 dark:text-orange-400">
+          <span className="flex size-7 items-center justify-center rounded-lg bg-[#f5f5f7] text-[var(--store-brand)] dark:bg-slate-800 dark:text-blue-400">
             {icon}
           </span>
           <h3 className="flex items-center gap-2 text-base font-black text-slate-900 dark:text-slate-100">
             <span>{title}</span>
-            <span className="inline-block size-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="inline-block size-2 rounded-full bg-[var(--store-brand)]" />
           </h3>
         </div>
         <div className="flex items-center gap-1.5" aria-label={`تنقل ${title}`}>

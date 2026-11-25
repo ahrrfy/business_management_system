@@ -184,6 +184,15 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
       );
     });
 
+    const mockPopupDoc = { write: vi.fn(), close: vi.fn(), open: vi.fn() };
+    const mockPopup = {
+      closed: false,
+      close: vi.fn(),
+      document: mockPopupDoc,
+    } as unknown as Window;
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(mockPopup);
+    printQuotationV2Mock.mockReturnValue(true);
+
     const pdfBtn = Array.from(container.querySelectorAll("button")).find((b) =>
       b.textContent?.includes("B2B PDF"),
     );
@@ -191,7 +200,21 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     await act(async () => {
       pdfBtn!.click();
     });
+    expect(openSpy).toHaveBeenCalledTimes(1);
     expect(printQuotationV2Mock).toHaveBeenCalledTimes(1);
+    expect(printQuotationV2Mock.mock.calls[0]?.[1]).toEqual({
+      into: mockPopup,
+    });
+    expect(container.textContent).toContain("تم توليد عرض السعر بنجاح");
+
+    // If popup is blocked (printQuotationV2 returns false), do not claim success and close leaked popup
+    printQuotationV2Mock.mockReturnValueOnce(false);
+    await act(async () => {
+      pdfBtn!.click();
+    });
+    expect(mockPopup.close).toHaveBeenCalled();
+    expect(container.textContent).toContain("حجب المتصفح نافذة عرض السعر");
+    openSpy.mockRestore();
 
     const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
       b.textContent?.includes("طلب عرض سعر رسمي"),
@@ -213,8 +236,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     document.body.appendChild(container);
     root = createRoot(container);
 
-    const sessionToken = "s".repeat(48);
-
     await act(async () => {
       root!.render(
         <StorefrontB2BQuoteButton
@@ -222,7 +243,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
           cartSubtotal={205000}
           orderingEnabled={true}
           turnstileSiteKey="site-key"
-          customerSessionToken={sessionToken}
         />,
       );
     });
@@ -267,7 +287,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
     const payload = createQuoteMutateMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(payload).toMatchObject({
-      customerSessionToken: sessionToken,
       customerName: "حيدر الكاظمي",
       customerPhone: "+9647701234567",
       companyName: "شركة الأفق للمقاولات",

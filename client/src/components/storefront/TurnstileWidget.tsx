@@ -199,7 +199,7 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
         <button
           type="button"
           onClick={retryVerification}
-          className="mt-3 min-h-11 w-full rounded-xl border border-[#1e4a63] bg-white px-4 py-2 text-xs font-black text-[#1e4a63] transition hover:bg-[#eef5f7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2"
+          className="mt-3 min-h-11 w-full rounded-xl border border-[var(--store-brand)] bg-white px-4 py-2 text-xs font-black text-[var(--store-brand)] transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--store-brand)] focus-visible:ring-offset-2"
         >
           إعادة تحميل تحقق الأمان
         </button>

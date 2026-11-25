@@ -131,7 +131,7 @@ export function CustomizationFieldControl({
   invalid?: boolean;
 }) {
   const common =
-    "mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none transition focus:border-[#e65f4a]";
+    "mt-1.5 w-full rounded-xl border border-slate-200/90 bg-white px-3 py-2 text-xs font-bold text-[#1d1d1f] outline-none transition focus:border-[var(--store-brand)] focus:ring-1 focus:ring-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100";
   if (field.fieldType === "SELECT") {
     // ⛔ يبقى `<select>` خامّاً عمداً (لا AppSelect): حقول التخصيص كلّها تتقاسم `common` نفسه —
     // input/textarea/select بارتفاعٍ واحد (~٣٢px) وهويّة المتجر (rounded-xl + لوحة #ead8c8).
@@ -174,7 +174,7 @@ export function CustomizationFieldControl({
             role="radio"
             aria-checked={value === option.value}
             onClick={() => onChange(option.value)}
-            className={`min-h-11 rounded-full border px-3 py-1.5 text-xs font-bold transition ${value === option.value ? "border-[#25406f] bg-[#25406f] text-white" : "border-[#ead8c8] bg-white text-[#5b5147] hover:border-[#e65f4a]"}`}
+            className={`min-h-11 rounded-full border px-3 py-1.5 text-xs font-bold transition ${value === option.value ? "border-[var(--store-brand)] bg-[var(--store-brand)] text-white" : "border-slate-200 bg-white text-slate-700 hover:border-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"}`}
           >
             {option.label}
             {option.priceDelta !== "0" ? ` · +${option.priceDelta}` : ""}

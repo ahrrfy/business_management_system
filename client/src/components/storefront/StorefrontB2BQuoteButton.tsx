@@ -1,10 +1,31 @@
 import React, { Suspense, lazy, useState } from "react";
-import Decimal from "decimal.js";
 import { Building2, Check, FileText, Loader2 } from "lucide-react";
-import { printQuotationV2 } from "@/lib/printing/printTemplatesV2";
 import { summarizeStorefrontCustomization } from "@/components/storefront/storefrontCustomizationModel";
 
 const StorefrontB2BQuoteDialog = lazy(() => import("./StorefrontB2BQuoteDialog"));
+
+function preopenQuotePrintWindow(): Window | null {
+  if (typeof window === "undefined") return null;
+  let opened: Window | null = null;
+  try {
+    opened = window.open("", "_blank", "width=900,height=1100");
+    if (!opened) return null;
+    opened.document.write(
+      '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>جارٍ تجهيز عرض السعر</title></head>' +
+        '<body style="font-family:sans-serif;display:grid;place-items:center;min-height:90vh;color:#555">' +
+        "<p>جارٍ تجهيز قالب عرض السعر المعتمد…</p></body></html>",
+    );
+    opened.document.close();
+    return opened;
+  } catch {
+    try {
+      opened?.close();
+    } catch {
+      /* لا نسرّب نافذة فارغة عند فشل التجهيز */
+    }
+    return null;
+  }
+}
 
 export interface CartLineItem {
   cartKey: string;
@@ -22,17 +43,7 @@ export interface StorefrontB2BQuoteButtonProps {
   cartSubtotal: number;
   orderingEnabled?: boolean;
   turnstileSiteKey?: string | null;
-  customerSessionToken?: string | null;
   className?: string;
-}
-
-function toDecimalSafe(val: unknown): Decimal {
-  if (val === null || val === undefined || val === "") return new Decimal(0);
-  try {
-    return new Decimal(val as Decimal.Value);
-  } catch {
-    return new Decimal(0);
-  }
 }
 
 export function StorefrontB2BQuoteButton({
@@ -40,11 +51,11 @@ export function StorefrontB2BQuoteButton({
   cartSubtotal: _cartSubtotal,
   orderingEnabled = true,
   turnstileSiteKey = null,
-  customerSessionToken = null,
   className = "",
 }: StorefrontB2BQuoteButtonProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGenerated, setIsGenerated] = useState(false);
+  const [printBlocked, setPrintBlocked] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [hasOpenedDialog, setHasOpenedDialog] = useState(false);
 
@@ -53,16 +64,32 @@ export function StorefrontB2BQuoteButton({
     setDialogOpen(true);
   };
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (cartLines.length === 0) return;
+    setPrintBlocked(false);
+    // نحجز نافذة الطباعة متزامناً ضمن نقرة المستخدم قبل انتظار التحميل الكسول حتى لا يحجبها Safari.
+    const reservedWindow = preopenQuotePrintWindow();
     setIsGenerating(true);
 
     try {
+      const [{ default: Decimal }, { printQuotationV2 }] = await Promise.all([
+        import("decimal.js"),
+        import("@/lib/printing/printTemplatesV2"),
+      ]);
+      const toDecimalSafe = (val: unknown) => {
+        if (val === null || val === undefined || val === "") return new Decimal(0);
+        try {
+          return new Decimal(val as InstanceType<typeof Decimal> | string | number);
+        } catch {
+          return new Decimal(0);
+        }
+      };
+
       const today = new Date();
       const quoteNumber = `EST-${today.toISOString().slice(0, 10).replace(/-/g, "")}-B2B`;
 
       const expiryDate = new Date(today);
-      expiryDate.setDate(expiryDate.getDate() + 15);
+      expiryDate.setDate(expiryDate.getDate() + 5);
       const expiryFormatted = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
         day: "numeric",
         month: "short",
@@ -73,7 +100,11 @@ export function StorefrontB2BQuoteButton({
 
       const items = cartLines.map((line) => {
         const customText = summarizeStorefrontCustomization(line.customization as never);
-        const details = [line.variantLabel, line.unitName, customText].filter(Boolean).join(" - ");
+        const cleanVariant =
+          line.variantLabel && line.variantLabel !== "الخيار الافتراضي"
+            ? line.variantLabel
+            : undefined;
+        const details = [cleanVariant, line.unitName, customText].filter(Boolean).join(" - ");
         const fullName = details ? `${line.name} (${details})` : line.name;
         const decUnitPrice = toDecimalSafe(line.price);
         const decQty = toDecimalSafe(line.qty);
@@ -91,23 +122,42 @@ export function StorefrontB2BQuoteButton({
 
       const finalSubtotal = computedSubtotal.toFixed(2);
 
-      printQuotationV2({
-        quoteNumber,
-        quoteDate: today,
-        validUntil: expiryFormatted,
-        customerName: "السادة / شركة أو مؤسسة محترمة",
-        deliveryLocation: "بغداد وكافة المحافظات العراقية",
-        items,
-        subtotal: finalSubtotal,
-        discountAmount: 0,
-        taxAmount: 0,
-        taxRate: 0,
-        total: finalSubtotal,
-        terms: "عرض سعر تقديري صادر من متجر شركة الرؤية العربية للتجارة العامة والمكتبة العربية. العرض سارٍ لمدة 15 يوماً. الأسعار شاملة ومطابقة لقوائم الأسعار المعلنة وخاضعة لنسبة ضريبة 0% في جمهورية العراق. لاعتماد عرض سعر رسمي ومختوم برقم مرجعي للمؤسسات، يرجى تقديم طلب عرض السعر المباشر أو التواصل مع الإدارة.",
-      });
+      const printed = printQuotationV2(
+        {
+          quoteNumber,
+          quoteDate: today,
+          validUntil: expiryFormatted,
+          customerName: "السادة / شركة أو مؤسسة محترمة",
+          deliveryLocation: "بغداد وكافة المحافظات العراقية",
+          items,
+          subtotal: finalSubtotal,
+          discountAmount: 0,
+          taxAmount: 0,
+          taxRate: 0,
+          total: finalSubtotal,
+          terms: "عرض سعر تقديري صادر من متجر شركة الرؤية العربية للتجارة العامة والمكتبة العربية. مدة صلاحية عروض الشركات وعروض الأسعار 5 أيام كحد أقصى من تاريخ الإصدار، ولا تشمل ورق الاستنساخ أو الأصناف المتداولة يومياً ذات الأسعار المتغيّرة (تُحدَّد بأسعار يوم الشراء). لاعتماد عرض سعر رسمي ومختوم برقم مرجعي للمؤسسات، يرجى تقديم طلب عرض السعر المباشر أو التواصل مع الإدارة.",
+        },
+        { into: reservedWindow },
+      );
 
-      setIsGenerated(true);
-      window.setTimeout(() => setIsGenerated(false), 3000);
+      if (printed) {
+        setIsGenerated(true);
+        window.setTimeout(() => setIsGenerated(false), 3000);
+      } else {
+        try {
+          if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+        } catch {
+          /* ignore */
+        }
+        setPrintBlocked(true);
+      }
+    } catch (error) {
+      try {
+        if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+      } catch {
+        /* ignore */
+      }
+      throw error;
     } finally {
       setIsGenerating(false);
     }
@@ -119,7 +169,7 @@ export function StorefrontB2BQuoteButton({
         type="button"
         onClick={openQuoteDialog}
         disabled={cartLines.length === 0}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#183D36]/25 bg-[#183D36] px-4 py-3 text-xs font-black text-white shadow-xs transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--store-brand)] px-4 py-3 text-xs font-black text-white shadow-xs transition hover:bg-[var(--store-brand-strong)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
         aria-label="تقديم طلب عرض سعر رسمي للشركات"
       >
         <Building2 aria-hidden className="size-4 shrink-0" />
@@ -130,7 +180,7 @@ export function StorefrontB2BQuoteButton({
         type="button"
         onClick={handleGenerate}
         disabled={isGenerating || cartLines.length === 0}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-black text-white shadow-xs transition hover:bg-slate-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-[#f5f5f7] px-4 py-2.5 text-xs font-black text-[#1d1d1f] transition hover:bg-slate-200/70 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
         aria-label="تنزيل وطباعة عرض سعر تقديري B2B PDF"
       >
         {isGenerating ? (
@@ -140,16 +190,22 @@ export function StorefrontB2BQuoteButton({
           </>
         ) : isGenerated ? (
           <>
-            <Check aria-hidden className="size-4 text-emerald-400" />
+            <Check aria-hidden className="size-4 text-[var(--store-brand)]" />
             <span>تم توليد عرض السعر بنجاح</span>
           </>
         ) : (
           <>
-            <FileText aria-hidden className="size-4 text-amber-400" />
+            <FileText aria-hidden className="size-4 text-[var(--store-brand)]" />
             <span>تنزيل عرض سعر تقديري فوري (B2B PDF)</span>
           </>
         )}
       </button>
+
+      {printBlocked && (
+        <p role="alert" className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+          حجب المتصفح نافذة عرض السعر المنبثقة — اسمح بالنوافذ المنبثقة لهذا الموقع ثم أعد المحاولة.
+        </p>
+      )}
 
       {(dialogOpen || hasOpenedDialog) && (
         <Suspense fallback={null}>
@@ -159,7 +215,6 @@ export function StorefrontB2BQuoteButton({
             cartLines={cartLines}
             orderingEnabled={orderingEnabled}
             turnstileSiteKey={turnstileSiteKey}
-            customerSessionToken={customerSessionToken}
           />
         </Suspense>
       )}

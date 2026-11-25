@@ -126,7 +126,9 @@ describe("storefrontSeoMetaService", () => {
     } as unknown as Request;
 
     const result = await injectStorefrontSeoMeta(sampleHtml, mockReq);
-    expect(result).toContain("<title>المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق</title>");
+    expect(result).toContain("<title>متجر المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق</title>");
+    expect(result).toContain("متجر مكتبه العربية");
+    expect(result).toContain("متجر مكتبة العربية");
     expect(result).toContain("application/ld+json");
     expect(result).toContain('"@type": "WebSite"');
     expect(result).toContain('"@type": "Store"');
@@ -160,7 +162,7 @@ describe("storefrontSeoMetaService", () => {
     } as unknown as Request;
 
     const result = await injectStorefrontSeoMeta(sampleHtml, mockReq);
-    expect(result).toContain("<title>المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق</title>");
+    expect(result).toContain("<title>متجر المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق</title>");
     expect(result).toContain('rel="canonical" href="https://alarabiya.online/store"');
   });
 

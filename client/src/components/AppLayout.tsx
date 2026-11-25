@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -11,7 +11,15 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useRealtimeEvent } from "@/lib/realtime";
-import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
+import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
+import { playAudioFeedback } from "@/lib/audioFeedback";
+import { notify } from "@/lib/notify";
+import {
+  createStoreOrderAlertCoordinator,
+  hasConnectedAlertThermalPrinter,
+  printStoreOrderAlertSilent,
+} from "@/lib/printing/storeOrderAlertSlip";
 import { openSearch } from "@/lib/searchEvents";
 import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -273,6 +281,43 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const workOrderReadyCount = woCounts.data?.ready ?? 0;
   const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
+  const isStoreAlertRecipient = isStoreOrderAlertRecipientUser(me.data);
+  const claimAlertPrintM = trpc.storeAdmin.orders.claimNotificationPrint.useMutation();
+  const releaseAlertPrintM = trpc.storeAdmin.orders.releaseNotificationPrint.useMutation();
+  const claimAlertMutateRef = useRef(claimAlertPrintM.mutateAsync);
+  claimAlertMutateRef.current = claimAlertPrintM.mutateAsync;
+  const releaseAlertMutateRef = useRef(releaseAlertPrintM.mutateAsync);
+  releaseAlertMutateRef.current = releaseAlertPrintM.mutateAsync;
+
+  const alertCoordinator = useMemo(
+    () =>
+      createStoreOrderAlertCoordinator({
+        hasPrinter: hasConnectedAlertThermalPrinter,
+        claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
+        renew: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, renew: true }),
+        confirm: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: true }),
+        release: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: false }),
+        print: printStoreOrderAlertSilent,
+        onNotify: (payload) => {
+          playAudioFeedback("notification");
+          notify.info(`وصل طلب متجر جديد: ${payload.orderNumber}`);
+        },
+      }),
+    [],
+  );
+
+  useEffect(() => () => alertCoordinator.dispose(), [alertCoordinator]);
+
+  useRealtimeEvent<StorefrontOrderPlacedPayload>(
+    REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+    (event) => {
+      if (!isStoreAlertRecipient || !event.payload) return;
+      void alertCoordinator.handleEvent(event.payload);
+    },
+  );
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
       await resetSessionForLogout(queryClient);

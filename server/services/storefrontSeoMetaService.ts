@@ -35,6 +35,7 @@ function resolvePublicOrigin(req: Request): string {
 export interface SeoMetaData {
   title: string;
   description: string;
+  keywords?: string;
   canonicalUrl: string;
   imageUrl: string;
   ogType: string;
@@ -80,7 +81,61 @@ export async function resolveStorefrontSeoMeta(
             : `${baseOrigin}${prod.imageUrl.startsWith("/") ? "" : "/"}${prod.imageUrl}`;
         }
 
-        const price = prod.salePrice || prod.price || "0";
+        const rawPrice = prod.salePrice ?? prod.price;
+        const hasValidPrice = rawPrice != null && Number(rawPrice) > 0;
+        const price = hasValidPrice ? String(rawPrice) : undefined;
+
+        const offerSchema: Record<string, unknown> = {
+          "@type": "Offer",
+          url: canonicalUrl,
+          priceCurrency: "IQD",
+          ...(price ? { price } : {}),
+          availability: prod.inStock ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+          itemCondition: "https://schema.org/NewCondition",
+          seller: {
+            "@type": "Store",
+            name: "المكتبة العربية",
+            alternateName: ["متجر مكتبة العربية", "متجر مكتبه العربية", "متجر المكتبة العربية"],
+            telephone: "+9647838666999",
+            url: `${baseOrigin}/store`,
+          },
+          shippingDetails: {
+            "@type": "OfferShippingDetails",
+            shippingRate: {
+              "@type": "MonetaryAmount",
+              minValue: "2000",
+              maxValue: "8000",
+              currency: "IQD",
+            },
+            shippingDestination: {
+              "@type": "DefinedRegion",
+              addressCountry: "IQ",
+            },
+            deliveryTime: {
+              "@type": "ShippingDeliveryTime",
+              handlingTime: {
+                "@type": "QuantitativeValue",
+                minValue: 0,
+                maxValue: 1,
+                unitCode: "d",
+              },
+              transitTime: {
+                "@type": "QuantitativeValue",
+                minValue: 1,
+                maxValue: 3,
+                unitCode: "d",
+              },
+            },
+          },
+          hasMerchantReturnPolicy: {
+            "@type": "MerchantReturnPolicy",
+            applicableCountry: "IQ",
+            returnPolicyCategory: "https://schema.org/MerchantReturnFiniteReturnWindow",
+            merchantReturnDays: 3,
+            returnMethod: "https://schema.org/ReturnByMail",
+            returnFees: "https://schema.org/ReturnShippingFees",
+          },
+        };
 
         const productSchema: Record<string, unknown> = {
           "@context": "https://schema.org/",
@@ -89,55 +144,7 @@ export async function resolveStorefrontSeoMeta(
           image: [fullImageUrl],
           description: desc,
           sku: `PROD-${prod.productId}`,
-          offers: {
-            "@type": "Offer",
-            url: canonicalUrl,
-            priceCurrency: "IQD",
-            price,
-            availability: prod.inStock ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
-            itemCondition: "https://schema.org/NewCondition",
-            seller: {
-              "@type": "Store",
-              name: "المكتبة العربية",
-              telephone: "+9647838666999",
-              url: `${baseOrigin}/store`,
-            },
-            shippingDetails: {
-              "@type": "OfferShippingDetails",
-              shippingRate: {
-                "@type": "MonetaryAmount",
-                value: "5000",
-                currency: "IQD",
-              },
-              shippingDestination: {
-                "@type": "DefinedRegion",
-                addressCountry: "IQ",
-              },
-              deliveryTime: {
-                "@type": "ShippingDeliveryTime",
-                handlingTime: {
-                  "@type": "QuantitativeValue",
-                  minValue: 0,
-                  maxValue: 1,
-                  unitCode: "d",
-                },
-                transitTime: {
-                  "@type": "QuantitativeValue",
-                  minValue: 1,
-                  maxValue: 3,
-                  unitCode: "d",
-                },
-              },
-            },
-            hasMerchantReturnPolicy: {
-              "@type": "MerchantReturnPolicy",
-              applicableCountry: "IQ",
-              returnPolicyCategory: "https://schema.org/MerchantReturnFiniteReturnWindow",
-              merchantReturnDays: 7,
-              returnMethod: "https://schema.org/ReturnByMail",
-              returnFees: "https://schema.org/FreeReturn",
-            },
-          },
+          offers: offerSchema,
         };
 
         if (prod.brand) {
@@ -168,7 +175,7 @@ export async function resolveStorefrontSeoMeta(
               },
               author: {
                 "@type": "Person",
-                name: "عميل موثق",
+                name: item.reviewerName || "عميل موثق",
               },
               reviewBody: item.comment,
               datePublished: item.createdAt ? new Date(item.createdAt).toISOString().split("T")[0] : undefined,
@@ -183,16 +190,16 @@ export async function resolveStorefrontSeoMeta(
             {
               "@type": "ListItem",
               position: 1,
-              name: "المتجر",
+              name: "متجر المكتبة العربية",
               item: `${baseOrigin}/store`,
             },
-            ...(prod.category
+            ...(prod.category && prod.categoryId != null
               ? [
                   {
                     "@type": "ListItem",
                     position: 2,
                     name: prod.category,
-                    item: `${baseOrigin}/store?category=${prod.categoryId || ""}`,
+                    item: `${baseOrigin}/store/category/${prod.categoryId}`,
                   },
                   {
                     "@type": "ListItem",
@@ -309,15 +316,26 @@ export async function resolveStorefrontSeoMeta(
 
   // الصفحة الرئيسية للمتجر /store أو /
   if (pathname === "/store" || pathname === "/store/" || pathname === "/") {
-    const title = "المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق";
-    const description = "تسوّق أفضل أدوات القرطاسية المدرسية والمكتبية، خدمات الطباعة المتكاملة والهدايا في العراق مع خدمة التوصيل والدفع نقد عند الاستلام.";
+    const title = "متجر المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق";
+    const description = "متجر المكتبة العربية (متجر مكتبة العربية / متجر مكتبه العربية) في العراق — تسوّق القرطاسية المدرسية والمكتبية، خدمات الطباعة المتكاملة، الكتب والهدايا مع توصيل سريع لكافة المحافظات والدفع نقداً عند الاستلام بدون تسجيل حساب.";
+    const keywords = "متجر مكتبة العربية, متجر مكتبه العربية, متجر المكتبة العربية, مكتبة العربية, مكتبه العربية, قرطاسية العراق, قرطاسية بغداد, مطبعة المكتبة العربية";
     const canonicalUrl = `${baseOrigin}/store`;
     const imageUrl = `${baseOrigin}/icon-512.png`;
+
+    const storeAlternateNames = [
+      "متجر مكتبة العربية",
+      "متجر مكتبه العربية",
+      "متجر المكتبة العربية",
+      "مكتبة العربية",
+      "مكتبه العربية",
+      "المكتبة العربية للقرطاسية والطباعة",
+    ];
 
     const websiteSchema: Record<string, unknown> = {
       "@context": "https://schema.org",
       "@type": "WebSite",
-      name: "المكتبة العربية",
+      name: "متجر المكتبة العربية",
+      alternateName: storeAlternateNames,
       url: `${baseOrigin}/store`,
       potentialAction: {
         "@type": "SearchAction",
@@ -330,6 +348,7 @@ export async function resolveStorefrontSeoMeta(
       "@context": "https://schema.org",
       "@type": "Store",
       name: "المكتبة العربية للطباعة والقرطاسية",
+      alternateName: storeAlternateNames,
       description,
       url: `${baseOrigin}/store`,
       logo: `${baseOrigin}/icon-512.png`,
@@ -359,7 +378,7 @@ export async function resolveStorefrontSeoMeta(
       },
       hasOfferCatalog: {
         "@type": "OfferCatalog",
-        name: "أقسام وخدمات المكتبة العربية",
+        name: "أقسام وخدمات متجر المكتبة العربية",
         itemListElement: [
           {
             "@type": "OfferCatalog",
@@ -387,26 +406,26 @@ export async function resolveStorefrontSeoMeta(
       mainEntity: [
         {
           "@type": "Question",
-          name: "هل توفر المكتبة العربية التوصيل لجميع محافظات العراق؟",
+          name: "هل يوفر متجر مكتبة العربية (المكتبة العربية) التوصيل لجميع محافظات العراق؟",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "نعم، توفر المكتبة العربية خدمة التوصيل السريع لكافة محافظات العراق الـ 18 مع خدمة الدفع نقد عند الاستلام (COD).",
+            text: "نعم، يوفر متجر المكتبة العربية (متجر مكتبه العربية) خدمة التوصيل السريع لبغداد وكافة محافظات العراق الـ 18 مع الدفع نقداً عند الاستلام (COD).",
           },
         },
         {
           "@type": "Question",
-          name: "ما هي المنتجات والخدمات التي تقدمها المكتبة العربية؟",
+          name: "ما هي المنتجات والخدمات التي يقدمها متجر مكتبة العربية؟",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "توفر المكتبة العربية مستلزمات القرطاسية المدرسية والمكتبية والهندسية، خدمات الطباعة الرقمية والتجليد، الكتب والروايات، ومستلزمات الهدايا والألعاب التعليمية وتجهيز الشركات والمدارس.",
+            text: "يوفر متجر المكتبة العربية مستلزمات القرطاسية المدرسية والمكتبية والهندسية، خدمات الطباعة الرقمية والتجليد، الكتب والروايات، الهدايا والألعاب التعليمية، وعروض تجهيز الشركات والمؤسسات.",
           },
         },
         {
           "@type": "Question",
-          name: "كيف يمكنني الطلب من المكتبة العربية؟",
+          name: "كيف يمكنني الطلب من متجر مكتبه العربية؟",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "يمكنك الشراء والطلب مباشرة عبر المتجر الإلكتروني https://alarabiya.online/store أو عبر طلب سريع من واتساب على الرقم 9647838666999+ دون الحاجة لتسجيل حساب مسبق.",
+            text: "يمكنك التسوق والطلب فوراً ومباشرة عبر متجر المكتبة العربية الإلكتروني https://alarabiya.online/store أو عبر واتساب على الرقم 9647838666999+ دون الحاجة لتسجيل حساب مسبق.",
           },
         },
       ],
@@ -415,10 +434,49 @@ export async function resolveStorefrontSeoMeta(
     return {
       title,
       description,
+      keywords,
       canonicalUrl,
       imageUrl,
       ogType: "website",
       jsonLd: [websiteSchema, storeSchema, faqSchema],
+    };
+  }
+
+  const staticRoutes: Record<string, { title: string; description: string }> = {
+    "/legal/privacy": {
+      title: "سياسة الخصوصية | متجر المكتبة العربية",
+      description: "سياسة الخصوصية وحماية بيانات المتسوقين في متجر المكتبة العربية — شركة الرؤية العربية للتجارة العامة في العراق.",
+    },
+    "/legal/terms": {
+      title: "الشروط والأحكام | متجر المكتبة العربية",
+      description: "شروط الاستخدام والتسوق وعروض أسعار الشركات في متجر المكتبة العربية في العراق.",
+    },
+    "/legal/returns": {
+      title: "سياسة الاسترجاع والاستبدال | متجر المكتبة العربية",
+      description: "ضوابط المعاينة عند التسليم والاسترجاع والاستبدال خلال 3 أيام في متجر المكتبة العربية.",
+    },
+    "/legal/delete-account": {
+      title: "طلب حذف البيانات | متجر المكتبة العربية",
+      description: "نموذج طلب حذف البيانات المسجلة وفق سياسة الاحتفاظ القانونية في متجر المكتبة العربية.",
+    },
+    "/apply": {
+      title: "التقديم على الوظائف | المكتبة العربية",
+      description: "تقدّم للانضمام إلى فريق العمل في المكتبة العربية وشركة الرؤية العربية للتجارة العامة في العراق.",
+    },
+    "/shelf-lookup": {
+      title: "استعلام سعر الرف | المكتبة العربية",
+      description: "استعلم عن سعر المنتج وتفاصيله مباشرة عبر مسح الباركود في معارض المكتبة العربية.",
+    },
+  };
+  const cleanPath = pathname.replace(/\/+$/, "") || "/";
+  const staticMeta = staticRoutes[cleanPath];
+  if (staticMeta) {
+    return {
+      title: staticMeta.title,
+      description: staticMeta.description,
+      canonicalUrl: `${baseOrigin}${cleanPath}`,
+      imageUrl: `${baseOrigin}/icon-512.png`,
+      ogType: "website",
     };
   }
 
@@ -494,6 +552,10 @@ export async function injectStorefrontSeoMeta(
 
   // 5. بناء الكتل الإضافية لحقنها قبل </head>
   const extraTags: string[] = [];
+
+  if (meta.keywords && !result.includes('name="keywords"')) {
+    extraTags.push(`  <meta name="keywords" content="${escapeHtml(meta.keywords)}" />`);
+  }
 
   // Twitter cards
   extraTags.push(`  <meta name="twitter:title" content="${escapeHtml(meta.title)}" />`);

@@ -2035,6 +2035,7 @@ export async function createOnlineOrder(
       totalAmount: result.total,
       customerName: input.customerName,
       itemsCount: result.itemCount,
+      createdAt: new Date().toISOString(),
     },
     { branchId: result.branchId },
   );

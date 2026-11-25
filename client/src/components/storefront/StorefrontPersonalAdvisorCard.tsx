@@ -21,20 +21,20 @@ export function StorefrontPersonalAdvisorCard({
 
   return (
     <div
-      className={`rounded-2xl border border-emerald-200/80 bg-emerald-50/60 p-3 sm:p-3.5 transition dark:border-emerald-800/40 dark:bg-emerald-950/20 ${className}`}
+      className={`rounded-2xl border border-slate-200/90 bg-[#f5f5f7] p-3 sm:p-3.5 transition dark:border-slate-800 dark:bg-slate-900/70 ${className}`}
       aria-label="بطاقة المستشار الشخصي"
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <div className="flex size-9 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-xs dark:bg-emerald-500">
+          <div className="flex size-9 items-center justify-center rounded-xl bg-[#1d1d1f] text-white shadow-xs dark:bg-white dark:text-[#1d1d1f]">
             <UserCheck aria-hidden className="size-5" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <h5 className="text-xs font-black text-slate-800 dark:text-slate-100">
+              <h5 className="text-xs font-black text-[#1d1d1f] dark:text-slate-100">
                 مستشارك المباشر للطلب والشركات
               </h5>
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300">
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-[var(--store-brand)] ring-1 ring-slate-200/80 dark:bg-slate-800 dark:text-blue-300 dark:ring-slate-700">
                 <ShieldCheck aria-hidden className="size-2.5" />
                 <span>معتمد</span>
               </span>
@@ -48,9 +48,9 @@ export function StorefrontPersonalAdvisorCard({
         <button
           type="button"
           onClick={() => openWhatsApp(whatsappNumber, inquiryMessage)}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-600 bg-white px-3 py-1.5 text-[11px] font-black text-emerald-700 shadow-xs transition hover:bg-emerald-600 hover:text-white active:scale-95 dark:border-emerald-500 dark:bg-slate-900 dark:text-emerald-400 dark:hover:bg-emerald-600 dark:hover:text-white"
+          className="inline-flex items-center gap-1.5 rounded-full bg-[#1d1d1f] px-3.5 py-1.5 text-[11px] font-bold text-white shadow-xs transition hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-[#1d1d1f]"
         >
-          <MessageCircle aria-hidden className="size-3.5" />
+          <MessageCircle aria-hidden className="size-3.5 text-emerald-400 dark:text-emerald-600" />
           <span className="hidden sm:inline">استشارة فورية</span>
           <span className="sm:hidden">واتساب</span>
         </button>

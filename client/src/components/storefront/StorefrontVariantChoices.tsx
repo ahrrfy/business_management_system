@@ -14,6 +14,14 @@ type Props = Pick<
   | "setVariantQuantity"
   | "detailVariant"
 > & { product: NonNullable<StorefrontProductDialogProps["product"]> };
+function formatArabicOptionsCount(count: number): string {
+  if (count <= 0) return "نفد";
+  if (count === 1) return "خيار واحد";
+  if (count === 2) return "خياران";
+  if (count <= 10) return `${count} خيارات`;
+  return `${count} خياراً`;
+}
+
 export function StorefrontVariantChoices({
   product,
   detailUnit,
@@ -76,7 +84,9 @@ export function StorefrontVariantChoices({
                     </div>
                     <span className="shrink-0 text-[10px] text-slate-400">
                       {variant.inStock
-                        ? `${variant.units.filter((unit) => unit.inStock).length} خيارات`
+                        ? formatArabicOptionsCount(
+                            variant.units.filter((unit) => unit.inStock).length,
+                          )
                         : "نفد"}
                     </span>
                   </div>
@@ -88,14 +98,21 @@ export function StorefrontVariantChoices({
                         unit.stockLeft == null
                           ? 999
                           : Math.min(Math.floor(unit.stockLeft), 999);
+                      const unitPriceText = priceLabel(unit.salePrice ?? unit.price);
+                      const stockStatusText = !unit.inStock
+                        ? "نفد"
+                        : unit.stockLeft != null
+                          ? `المتوفر ${formatQuantity(unit.stockLeft)}`
+                          : "متوفر";
                       return (
                         <div
                           key={unit.productUnitId}
-                          className={`flex items-center justify-between gap-1 rounded-md border px-1.5 py-0.5 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}
+                          className={`flex items-center justify-between gap-1.5 rounded-md border px-2 py-1 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}
                         >
                           <button
                             type="button"
                             disabled={!unit.inStock}
+                            aria-label={`${unit.unitName}${variant.size ? ` مقاس ${variant.size}` : ""} — ${unitPriceText} — ${stockStatusText}`}
                             onClick={() => {
                               setSelectedVariantId(variant.variantId);
                               setSelectedStoreUnitId(unit.productUnitId);
@@ -108,13 +125,12 @@ export function StorefrontVariantChoices({
                               {unit.unitName}
                               {variant.size ? ` · ${variant.size}` : ""}
                             </span>
-                            <span className="mt-0.5 block truncate text-xs font-extrabold text-[var(--sem-pos)]">
-                              {priceLabel(unit.salePrice ?? unit.price)}
-                              {!unit.inStock
-                                ? " · نفد"
-                                : unit.stockLeft != null
-                                  ? ` · المتوفر ${formatQuantity(unit.stockLeft)}`
-                                  : " · متوفر"}
+                            <span className="mt-0.5 flex flex-wrap items-center gap-x-1 text-xs font-extrabold text-[var(--sem-pos)]">
+                              <span dir="ltr">{unitPriceText}</span>
+                              <span aria-hidden>·</span>
+                              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400">
+                                {stockStatusText}
+                              </span>
                             </span>
                           </button>
                           <div className="flex shrink-0 items-center gap-1.5">
@@ -130,9 +146,9 @@ export function StorefrontVariantChoices({
                                   quantity - 1,
                                 );
                               }}
-                              className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
+                              className="flex size-8 touch-manipulation items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
                             >
-                              <Minus aria-hidden className="size-3" />
+                              <Minus aria-hidden className="size-3.5" />
                             </button>
                             <span className="w-5 text-center text-sm font-extrabold tabular-nums">
                               {formatQuantity(quantity)}
@@ -149,9 +165,9 @@ export function StorefrontVariantChoices({
                                   quantity + 1,
                                 );
                               }}
-                              className="flex size-6 items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:cursor-not-allowed disabled:opacity-40"
+                              className="flex size-8 touch-manipulation items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              <Plus aria-hidden className="size-3" />
+                              <Plus aria-hidden className="size-3.5" />
                             </button>
                           </div>
                         </div>
@@ -203,7 +219,7 @@ export function StorefrontVariantChoices({
                   return (
                     <div
                       key={unit.productUnitId}
-                      className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${selected ? "border-[var(--sem-pos)] bg-emerald-50/60 dark:bg-emerald-500/10" : "border-slate-200 dark:border-slate-700"}`}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${selected ? "border-[var(--store-brand)] bg-[#eff6ff] dark:border-blue-500 dark:bg-blue-950/30" : "border-slate-200 dark:border-slate-700"}`}
                     >
                       <button
                         type="button"

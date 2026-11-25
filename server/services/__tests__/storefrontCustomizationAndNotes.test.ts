@@ -10,6 +10,7 @@ import * as s from "../../../drizzle/schema";
 import { signSession } from "../../auth/session";
 import { getDb } from "../../db";
 import { imageRouter } from "../../imageRoute";
+import * as imageStoreModule from "../../lib/imageStore";
 import { __resetImageStoreForTest } from "../../lib/imageStore";
 import { storefrontRouter } from "../../routers/storefrontRouter";
 import { router } from "../../trpc";
@@ -17,7 +18,13 @@ import { hashCouponCode } from "../couponService";
 import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import * as salesPromoService from "../salesPromotionService";
 import { resolveCouponPromotionForLine, resolvePromotionForLine } from "../salesPromotionService";
-import { getOnlineOrder, updateOnlineOrder } from "../storeAdmin/orderFulfillmentService";
+import {
+  claimOnlineOrderAlertPrint,
+  getOnlineOrder,
+  releaseOnlineOrderAlertPrint,
+  updateOnlineOrder,
+} from "../storeAdmin/orderFulfillmentService";
+import * as realtimeModule from "../../realtime";
 import { withTx } from "../tx";
 import { truncateAllTables } from "./__testUtils__";
 
@@ -1047,6 +1054,170 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
       expect(unassignedRes.status).toBe(403);
     } finally {
       await srv.close();
+    }
+  });
+
+  it("preserves shared customization asset row when a concurrent upload fails put(), rejects standalone failed uploads, and publishes alert handoff with joined tables", async () => {
+    const caller = publicCaller();
+    const realStore = imageStoreModule.getImageStore();
+    const origPut = realStore.put.bind(realStore);
+    let putCalls = 0;
+    const putSpy = vi.spyOn(realStore, "put").mockImplementation(async (key, buf, contentType) => {
+      putCalls += 1;
+      if (putCalls === 1) {
+        throw new Error("transient storage write error");
+      }
+      return origPut(key, buf, contentType);
+    });
+
+    try {
+      await expect(
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/jpeg",
+          dataBase64: VALID_JPEG_BASE64,
+        }),
+      ).rejects.toThrow("transient storage write error");
+      const [failedOnlyRow] = await db()
+        .select()
+        .from(s.storefrontCustomizationAssets);
+      expect(failedOnlyRow).toBeDefined();
+      await expect(
+        quoteOnlineOrder({
+          governorate: "baghdad",
+          lines: [
+            {
+              productUnitId: 100,
+              quantity: 1,
+              customization: {
+                templateId: 1,
+                values: { engraving_text: "اختبار فشل منفرد" },
+                logoAssetKey: failedOnlyRow.assetKey,
+              } as any,
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      let pngCall = 0;
+      putSpy.mockImplementation(async (key, buf, contentType) => {
+        pngCall += 1;
+        if (pngCall === 1) {
+          await new Promise((r) => setTimeout(r, 25));
+          throw new Error("concurrent storage failure");
+        }
+        return origPut(key, buf, contentType);
+      });
+
+      const [firstOutcome, secondOutcome] = await Promise.allSettled([
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+      ]);
+      expect(firstOutcome.status).toBe("rejected");
+      expect(secondOutcome.status).toBe("fulfilled");
+      const succeededAsset = (secondOutcome as PromiseFulfilledResult<{ assetKey: string }>).value;
+
+      const quote = await quoteOnlineOrder({
+        governorate: "baghdad",
+        lines: [
+          {
+            productUnitId: 100,
+            quantity: 1,
+            customization: {
+              templateId: 1,
+              values: { engraving_text: "مرفق ناجح بالتوازي" },
+              logoAssetKey: succeededAsset.assetKey,
+            } as any,
+          },
+        ],
+      });
+      const created = await createOnlineOrder({
+        customerName: "عميل اختبار التنبيه",
+        customerPhone: "07701112233",
+        governorate: "baghdad",
+        addressText: "بغداد - المنصور",
+        clientRequestId: "w2-alert-handoff-order-001",
+        expectedGrandTotal: quote.total,
+        lines: [
+          {
+            productUnitId: 100,
+            quantity: 1,
+            expectedUnitPrice: "6500.00",
+            customization: {
+              templateId: 1,
+              values: { engraving_text: "مرفق ناجح بالتوازي" },
+              logoAssetKey: succeededAsset.assetKey,
+            } as any,
+          },
+        ],
+      });
+
+      const publishSpy = vi.spyOn(realtimeModule, "publishRealtimeEvent");
+      const claim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(claim.claimed).toBe(true);
+      expect(claim.alreadyPrinted).toBe(false);
+      expect(claim.leaseToken).toBeTruthy();
+      // Active lease blocks immediate duplicate claim
+      const activeContested = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(activeContested.claimed).toBe(false);
+      expect(activeContested.alreadyPrinted).toBe(false);
+      // Expired lease (>20s old in lease epoch) is automatically reclaimable if winning station died
+      await db()
+        .update(s.onlineOrders)
+        .set({ alertPrintedAt: new Date("1996-01-01T00:00:00.000Z") })
+        .where(eq(s.onlineOrders.id, created.orderId));
+      const reclaimed = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(reclaimed.claimed).toBe(true);
+      // Stale leaseToken from dead station cannot release the new station's active lease
+      const staleRelease = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: "1996-01-01 00:00:00.000000",
+      });
+      expect(staleRelease.released).toBe(false);
+      // Valid leaseToken releases cleanly and publishes handoff
+      const released = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: reclaimed.leaseToken,
+      });
+      expect(released.released).toBe(true);
+      expect(publishSpy).toHaveBeenCalledWith(
+        "STOREFRONT_ORDER_PLACED",
+        expect.objectContaining({
+          orderId: created.orderId,
+          orderNumber: created.orderNumber,
+          customerName: "عميل اختبار التنبيه",
+          alertPrintHandoff: true,
+        }),
+        expect.objectContaining({ branchId: 1 }),
+      );
+      publishSpy.mockRestore();
+      // Reclaim and confirm permanent print completion -> blocks both future claim and future release
+      const finalClaim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(finalClaim.claimed).toBe(true);
+      const confirmed = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: finalClaim.leaseToken,
+        completed: true,
+      });
+      expect(confirmed.completed).toBe(true);
+      const postConfirmClaim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(postConfirmClaim.claimed).toBe(false);
+      expect(postConfirmClaim.alreadyPrinted).toBe(true);
+      const postConfirmRelease = await releaseOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(postConfirmRelease.released).toBe(false);
+    } finally {
+      putSpy.mockRestore();
     }
   });
 });

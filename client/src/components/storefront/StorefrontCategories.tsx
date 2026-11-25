@@ -1,13 +1,5 @@
 import React, { useState } from "react";
-import { BookOpen, Gift, Layers, PenTool, ChevronDown } from "lucide-react";
-
-interface CategoryItem {
-  id: number;
-  name: string;
-  productCount?: number;
-  availableCount?: number;
-  [key: string]: any;
-}
+import { ChevronDown } from "lucide-react";
 
 interface StorefrontCategoriesProps {
   categories: any[];
@@ -17,37 +9,6 @@ interface StorefrontCategoriesProps {
   className?: string;
   id?: string;
 }
-
-const CATEGORY_THEMES = [
-  {
-    bg: "from-blue-50/80 to-slate-50",
-    border: "border-blue-100 hover:border-blue-300",
-    iconBg: "bg-blue-600 text-white",
-    hoverGlow: "group-hover:shadow-blue-500/10",
-    icon: <BookOpen aria-hidden className="size-4" />,
-  },
-  {
-    bg: "from-amber-50/80 to-orange-50/40",
-    border: "border-amber-100 hover:border-amber-300",
-    iconBg: "bg-orange-500 text-white",
-    hoverGlow: "group-hover:shadow-orange-500/10",
-    icon: <Gift aria-hidden className="size-4" />,
-  },
-  {
-    bg: "from-emerald-50/80 to-teal-50/40",
-    border: "border-emerald-100 hover:border-emerald-300",
-    iconBg: "bg-emerald-600 text-white",
-    hoverGlow: "group-hover:shadow-emerald-500/10",
-    icon: <PenTool aria-hidden className="size-4" />,
-  },
-  {
-    bg: "from-slate-50 to-zinc-100/60",
-    border: "border-slate-200 hover:border-slate-400",
-    iconBg: "bg-slate-800 text-white",
-    hoverGlow: "group-hover:shadow-slate-500/10",
-    icon: <Layers aria-hidden className="size-4" />,
-  },
-];
 
 export function StorefrontCategories({
   categories,
@@ -69,16 +30,16 @@ export function StorefrontCategories({
     <section
       id={id}
       aria-labelledby="store-category-title"
-      className={`rounded-3xl border border-slate-200/80 bg-white p-3.5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900 ${className}`}
+      className={`rounded-2xl border border-slate-900/[0.08] bg-white p-4 sm:p-6 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >
       <div className="mb-4 sm:mb-5 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-orange-600 dark:text-orange-400">
+          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
             تصفح حسب اهتمامك
           </span>
           <h2
             id="store-category-title"
-            className="mt-0.5 sm:mt-1 text-xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100"
+            className="store-display-title mt-0.5 text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100"
           >
             الأقسام الرئيسية
           </h2>
@@ -88,20 +49,19 @@ export function StorefrontCategories({
             <button
               type="button"
               onClick={() => onSelectCategory(null)}
-              className="rounded-full border border-slate-200 bg-white px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 transition hover:border-[#0E806A] hover:text-[#0E806A] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              className="touch-manipulation rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition-[transform,border-color,color] duration-150 ease-out hover:border-slate-400 hover:text-slate-900 active:scale-[0.97] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
             >
               عرض كل الأقسام
             </button>
           )}
-          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-            {categories.length} أقسام متاحة
+          <span className="text-xs font-medium text-slate-500 tabular-nums dark:text-slate-400">
+            {categories.length} قسم
           </span>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-        {displayedCategories.map((cat, index) => {
-          const theme = CATEGORY_THEMES[index % CATEGORY_THEMES.length];
+      <div className="grid grid-cols-2 gap-2 sm:gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+        {displayedCategories.map((cat) => {
           const isSelected = selectedId === cat.id;
           const count = categoryCountFn(cat);
 
@@ -110,53 +70,44 @@ export function StorefrontCategories({
               key={cat.id}
               type="button"
               onClick={() => onSelectCategory(cat.id)}
-              className={`group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-gradient-to-br p-3 sm:p-4 text-right transition-all duration-300 hover:-translate-y-1 hover:shadow-lg active:scale-95 ${
+              aria-pressed={isSelected}
+              className={`group flex min-h-[4.75rem] touch-manipulation flex-col justify-between rounded-xl border p-3.5 text-right transition-[transform,border-color,background-color] duration-150 ease-out active:scale-[0.98] ${
                 isSelected
-                  ? "border-blue-600 bg-blue-50/90 shadow-md ring-2 ring-blue-600/20 dark:bg-blue-950/40"
-                  : `${theme.bg} ${theme.border} ${theme.hoverGlow}`
+                  ? "border-[var(--store-brand)] bg-[var(--store-brand)] text-white shadow-xs"
+                  : "border-slate-900/[0.08] bg-[#f8f8fa] text-slate-900 hover:border-slate-900/20 hover:bg-white dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-100 dark:hover:border-slate-700"
               }`}
             >
-              {/* الدائرة الجمالية الخلفية */}
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute -left-4 -top-4 size-16 rounded-full bg-white/40 blur-sm dark:bg-white/5"
-              />
-
-              <div className="mb-3 sm:mb-6 flex items-center justify-between">
-                <div
-                  className={`flex size-8 sm:size-10 items-center justify-center rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-110 ${theme.iconBg}`}
+              <span className="line-clamp-2 text-xs sm:text-[13px] font-semibold leading-snug">
+                {cat.name}
+              </span>
+              {count > 0 && (
+                <span
+                  className={`mt-2 text-[11px] font-medium tabular-nums ${
+                    isSelected
+                      ? "text-white/80"
+                      : "text-slate-500 dark:text-slate-400"
+                  }`}
                 >
-                  {theme.icon}
-                </div>
-                {count > 0 && (
-                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[9px] sm:text-[10px] font-black text-slate-600 shadow-2xs backdrop-blur-xs dark:bg-slate-800/80 dark:text-slate-300 whitespace-nowrap">
-                    {count} منتج
-                  </span>
-                )}
-              </div>
-
-              <div>
-                <span className="block text-xs sm:text-sm font-black text-slate-800 line-clamp-2 transition-colors group-hover:text-blue-700 dark:text-slate-100 dark:group-hover:text-blue-400">
-                  {cat.name}
+                  {count} منتج
                 </span>
-                <span className="mt-1 block text-[10px] sm:text-[11px] font-semibold text-slate-400 dark:text-slate-500">
-                  تصفح المنتجات
-                </span>
-              </div>
+              )}
             </button>
           );
         })}
       </div>
 
       {categories.length > 12 && (
-        <div className="mt-5 text-center">
+        <div className="mt-4 text-center">
           <button
             type="button"
             onClick={() => setShowAll((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-bold text-slate-700 transition hover:border-[#0E806A] hover:bg-white hover:text-[#0E806A] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            className="inline-flex touch-manipulation items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-xs font-semibold text-slate-700 transition-[transform,border-color,color] duration-150 ease-out hover:border-slate-400 hover:text-slate-900 active:scale-[0.97] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
           >
             <span>{showAll ? "عرض أقسام أقل" : `عرض جميع الأقسام (${categories.length})`}</span>
-            <ChevronDown aria-hidden className={`size-3.5 transition-transform duration-200 ${showAll ? "rotate-180" : ""}`} />
+            <ChevronDown
+              aria-hidden
+              className={`size-3.5 transition-transform duration-200 ${showAll ? "rotate-180" : ""}`}
+            />
           </button>
         </div>
       )}

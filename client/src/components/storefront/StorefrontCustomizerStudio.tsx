@@ -677,8 +677,9 @@ export function StorefrontCustomizerStudio({
               onClick={redrawCanvas}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
               title="إعادة تحديث المعاينة"
+              aria-label="إعادة تحديث المعاينة"
             >
-              <RefreshCw className="size-3.5" />
+              <RefreshCw aria-hidden className="size-3.5" />
             </button>
           </div>
         </div>
@@ -780,7 +781,7 @@ export function StorefrontCustomizerStudio({
               رفع شعار الشركة (PNG / JPEG / WebP حتى 2 ميجابايت)
             </Label>
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 focus-within:ring-2 focus-within:ring-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                 <ImageIcon className="size-3.5" />
                 <span>اختر ملف الشعار</span>
                 <input

@@ -5,7 +5,7 @@ import {
   recommendationActionLabel,
   storefrontProductCanBeOrdered,
 } from "@/components/storefront/StorefrontRecommendations";
-import { type ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import type { StorefrontCatalogSurfaceProps } from "./StorefrontCatalogSurface";
 type Props = Pick<
   StorefrontCatalogSurfaceProps,
@@ -26,7 +26,7 @@ type Props = Pick<
   | "feedStrips"
   | "inlineBanners"
 >;
-export function StorefrontProductGrid({
+export const StorefrontProductGrid = React.memo(function StorefrontProductGrid({
   filteredItems,
   wishlistIds,
   recentlyAddedProductId,
@@ -80,10 +80,10 @@ export function StorefrontProductGrid({
         if (
           !search &&
           feedStrips.length > 0 &&
-          (idx + 1) % 10 === 0 &&
+          (idx + 1) % 12 === 0 &&
           idx + 1 < filteredItems.length
         ) {
-          const k = ((idx + 1) / 10 - 1) % feedStrips.length;
+          const k = ((idx + 1) / 12 - 1) % feedStrips.length;
           nodes.push(
             <InlineStrip
               key={`strip-${idx}`}
@@ -96,4 +96,4 @@ export function StorefrontProductGrid({
       })}
     </div>
   );
-}
+});
