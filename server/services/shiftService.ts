@@ -552,7 +552,7 @@ export async function closeShift(
             code: "PRECONDITION_FAILED",
             message: appErrorMessage({
               what: "تعذر تحميل عجز الوردية كذمة موظف",
-              why: `حساب صاحب الوردية #${input.shiftId} غير مربوط بسجل موظف نشط في الموارد البشرية`,
+              why: `حساب صاحب الوردية #${input.shiftId} (المستخدم #${sh.userId}) غير مربوط بسجل موظف نشط في الموارد البشرية`,
               doThis: "اربط حساب المستخدم بسجل موظف نشط أولاً كي لا يُرحّل قيد ذمة موظف يتيم بلا استرداد",
             }),
           });

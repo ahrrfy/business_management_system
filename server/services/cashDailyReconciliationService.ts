@@ -666,11 +666,11 @@ export async function buildDailyCashEvidenceTx(
                 FROM cashVarianceCases cvc
                 INNER JOIN cashVarianceCaseEvents cvce
                   ON cvce.caseId = cvc.id
-                  AND cvce.eventType = 'APPROVED'
+                  AND cvce.cashVarianceEventType = 'APPROVED'
                 INNER JOIN accountingEntries cvEntry
                   ON cvEntry.id = cvce.accountingEntryId
                   AND cvEntry.dedupeKey = CONCAT('CASH_VARIANCE:', cvc.id)
-                WHERE cvc.sourceType = 'CUSTODY'
+                WHERE cvc.cashVarianceSourceType = 'CUSTODY'
                   AND cvc.custodyReceiptId = target.id
                   AND cvc.branchId = target.branchId
               )
@@ -781,11 +781,11 @@ export async function buildDailyCashEvidenceTx(
                   FROM cashVarianceCases cvc
                   INNER JOIN cashVarianceCaseEvents cvce
                     ON cvce.caseId = cvc.id
-                    AND cvce.eventType = 'APPROVED'
+                    AND cvce.cashVarianceEventType = 'APPROVED'
                   INNER JOIN accountingEntries cvEntry
                     ON cvEntry.id = cvce.accountingEntryId
                     AND cvEntry.dedupeKey = CONCAT('CASH_VARIANCE:', cvc.id)
-                  WHERE cvc.sourceType = 'CUSTODY'
+                  WHERE cvc.cashVarianceSourceType = 'CUSTODY'
                     AND cvc.custodyReceiptId = target.id
                     AND cvc.branchId = target.branchId
                 )
