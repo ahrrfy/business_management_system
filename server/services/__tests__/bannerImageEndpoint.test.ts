@@ -175,6 +175,18 @@ describe("listActiveBanners — رابط لا base64", () => {
         customerTier: "RETAIL",
         isActive: true,
       },
+      {
+        id: 5,
+        name: "عرض كاشير فقط",
+        type: "PERCENT",
+        discountPercent: "30",
+        scope: "ALL",
+        channel: "POS_ONLY",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2099-12-31T00:00:00Z"),
+        customerTier: "RETAIL",
+        isActive: true,
+      },
     ]);
     const promoBanner = await createBanner(
       {
@@ -183,6 +195,7 @@ describe("listActiveBanners — رابط لا base64", () => {
           { url: PNG_DATA_URL, ctaUrl: "/store?promo=2", sortOrder: 0 },
           { url: JPEG_DATA_URL, ctaUrl: "/store?promo=3", sortOrder: 1 },
           { url: JPEG_DATA_URL, ctaUrl: "/store?promo=4", sortOrder: 2 },
+          { url: JPEG_DATA_URL, ctaUrl: "/store?promo=5", sortOrder: 3 },
         ],
       },
       1,

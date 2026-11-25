@@ -4,7 +4,7 @@
  * مستقلّة عن بنرات «عروض اليوم» المشتقّة من promotions (تُعرَض بجانبها في المتجر).
  */
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { promotions, storeBanners } from "../../../drizzle/schema";
+import { promotions, promotionTargets, storeBanners } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { withTx } from "../tx";
@@ -77,26 +77,69 @@ function extractLinkedPromoId(ctaUrl: string | null | undefined): number | null 
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-async function resolveLivePromoIds(promoIds: number[], today: string): Promise<Set<number>> {
+async function resolveLivePromoIds(
+  promoIds: number[],
+  today: string,
+  branchIdInput?: number,
+): Promise<Set<number>> {
   const db = getDb();
   const unique = Array.from(new Set(promoIds.filter((n) => n > 0)));
   if (!db || unique.length === 0) return new Set();
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
   const rows = await db
-    .select({ id: promotions.id, activeDays: promotions.activeDays })
+    .select({
+      id: promotions.id,
+      scope: promotions.scope,
+      activeDays: promotions.activeDays,
+    })
     .from(promotions)
     .where(
       and(
         inArray(promotions.id, unique),
         eq(promotions.isActive, true),
+        eq(promotions.applicationMode, "AUTO"),
+        inArray(promotions.channel, ["ALL", "STORE_ONLY"]),
         sql`${promotions.effectiveFrom} <= DATE(${today})`,
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${today})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, "RETAIL"))!,
       ),
     );
-  return new Set(
-    rows
-      .filter((r) => isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, today))
-      .map((r) => Number(r.id)),
+  const dayEligible = rows.filter((r) =>
+    isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, today),
   );
+  if (dayEligible.length === 0) return new Set();
+
+  const scopedIds = dayEligible
+    .filter((r) => r.scope !== "ALL")
+    .map((r) => Number(r.id));
+  const targetRows =
+    scopedIds.length > 0
+      ? await db
+          .select({
+            promotionId: promotionTargets.promotionId,
+            categoryId: promotionTargets.categoryId,
+            productId: promotionTargets.productId,
+          })
+          .from(promotionTargets)
+          .where(inArray(promotionTargets.promotionId, scopedIds))
+      : [];
+
+  const hasValidTarget = new Set<number>();
+  for (const r of dayEligible) {
+    const id = Number(r.id);
+    if (r.scope === "ALL") {
+      hasValidTarget.add(id);
+      continue;
+    }
+    const matching = targetRows.filter((t) => Number(t.promotionId) === id);
+    if (r.scope === "CATEGORIES" && matching.some((t) => Number(t.categoryId ?? 0) > 0)) {
+      hasValidTarget.add(id);
+    } else if (r.scope !== "CATEGORIES" && matching.some((t) => Number(t.productId ?? 0) > 0)) {
+      hasValidTarget.add(id);
+    }
+  }
+  return hasValidTarget;
 }
 
 /** كل البنرات (لوحة الإدارة) — مرتّبة بالترتيب ثم الأحدث، مع كشف ارتباط البنر بعرض متوقف أو منتهٍ. */
@@ -200,7 +243,7 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
       if (slidePromo) candidatePromoIds.push(slidePromo);
     }
   }
-  const livePromoIds = await resolveLivePromoIds(candidatePromoIds, today);
+  const livePromoIds = await resolveLivePromoIds(candidatePromoIds, today, branchId);
 
   return rows.flatMap((r) => {
     const images = activeBannerImages(r.images, today);

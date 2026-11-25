@@ -239,6 +239,7 @@ export function BannerStudioComposer({
   );
   const [aiSceneDataUrl, setAiSceneDataUrl] = useState<string | null>(null);
   const [aiSceneMode, setAiSceneMode] = useState<"FULL_SCENE" | "STAGE_BACKDROP" | null>(null);
+  const [aiSceneProductKey, setAiSceneProductKey] = useState<string>("");
   const [composed, setComposed] = useState<ComposedBannerPair | null>(null);
   const [composedSnapshotKey, setComposedSnapshotKey] = useState<string>("");
   const [composing, setComposing] = useState(false);
@@ -311,6 +312,7 @@ export function BannerStudioComposer({
     sceneReqSeqRef.current += 1;
     setAiSceneDataUrl(null);
     setAiSceneMode(null);
+    setAiSceneProductKey("");
     setExtraMergedProducts([]);
     setOrderedProductIds([]);
     setExcludedProductIds([]);
@@ -441,6 +443,20 @@ export function BannerStudioComposer({
 
   const studioPlacement: StudioBannerPlacement = placement === "INLINE" ? "INLINE" : "HERO";
 
+  const activeProductKey = useMemo(
+    () => activeProductItems.map((p) => p.productId).slice(0, 5).join(","),
+    [activeProductItems],
+  );
+
+  useEffect(() => {
+    if (aiSceneMode === "FULL_SCENE" && aiSceneProductKey !== activeProductKey) {
+      sceneReqSeqRef.current += 1;
+      setAiSceneDataUrl(null);
+      setAiSceneMode(null);
+      setAiSceneProductKey("");
+    }
+  }, [activeProductKey, aiSceneMode, aiSceneProductKey]);
+
   const expectedSceneMode =
     visualMode === "AI_FULL_SCENE"
       ? "FULL_SCENE"
@@ -448,7 +464,10 @@ export function BannerStudioComposer({
         ? "STAGE_BACKDROP"
         : null;
   const effectiveVisualMode: StudioVisualRenderMode =
-    expectedSceneMode && aiSceneDataUrl && aiSceneMode === expectedSceneMode
+    expectedSceneMode &&
+    aiSceneDataUrl &&
+    aiSceneMode === expectedSceneMode &&
+    (expectedSceneMode !== "FULL_SCENE" || aiSceneProductKey === activeProductKey)
       ? visualMode
       : "LOCAL_STUDIO";
   const compositionSnapshotKey = useMemo(
@@ -1027,6 +1046,7 @@ export function BannerStudioComposer({
                             sceneReqSeqRef.current += 1;
                             setAiSceneDataUrl(null);
                             setAiSceneMode(null);
+                            setAiSceneProductKey("");
                           }
                           setVisualMode("HYBRID_STAGE");
                         }}
@@ -1041,10 +1061,11 @@ export function BannerStudioComposer({
                       <button
                         type="button"
                         onClick={() => {
-                          if (aiSceneMode !== "FULL_SCENE") {
+                          if (aiSceneMode !== "FULL_SCENE" || aiSceneProductKey !== activeProductKey) {
                             sceneReqSeqRef.current += 1;
                             setAiSceneDataUrl(null);
                             setAiSceneMode(null);
+                            setAiSceneProductKey("");
                           }
                           setVisualMode("AI_FULL_SCENE");
                         }}
@@ -1098,6 +1119,7 @@ export function BannerStudioComposer({
                             }
                             setAiSceneDataUrl(res.sceneDataUrl);
                             setAiSceneMode(reqSceneMode);
+                            setAiSceneProductKey(reqProductKey);
                             setVisualMode(reqSceneMode === "FULL_SCENE" ? "AI_FULL_SCENE" : "HYBRID_STAGE");
                             notify.ok(
                               reqSceneMode === "FULL_SCENE"

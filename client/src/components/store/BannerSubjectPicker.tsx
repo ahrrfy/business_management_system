@@ -162,6 +162,7 @@ export function BannerSubjectPicker({ value, onChange }: BannerSubjectPickerProp
 
   const catsQ = trpc.storeAdmin.categories.list.useQuery();
   const promosQ = trpc.storeAdmin.promotions.list.useQuery({ includeInactive: false });
+  const storeEligiblePromos = (promosQ.data ?? []).filter((p) => p.channel !== "POS_ONLY");
   const productsQ = trpc.storeAdmin.banners.products.useQuery(
     {
       q: searchQuery.trim() || undefined,
@@ -188,7 +189,7 @@ export function BannerSubjectPicker({ value, onChange }: BannerSubjectPickerProp
         ctaUrl: firstCat ? buildSafeBannerDestinationUrl({ kind: "CATEGORY", categoryId: firstCat }) : "/store",
       });
     } else if (mode === "PROMOTION") {
-      const firstPromo = value.promotionId ?? promosQ.data?.[0]?.id ?? null;
+      const firstPromo = value.promotionId ?? storeEligiblePromos[0]?.id ?? null;
       onChange({
         ...value,
         mode,
@@ -382,7 +383,7 @@ export function BannerSubjectPicker({ value, onChange }: BannerSubjectPickerProp
       {/* 3. وضع اختيار عرض ترويجي */}
       {value.mode === "PROMOTION" && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {(promosQ.data ?? []).map((promo) => {
+          {storeEligiblePromos.map((promo) => {
             const active = value.promotionId === promo.id && value.specialTarget === "NONE";
             return (
               <button
