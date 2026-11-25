@@ -12,7 +12,7 @@ export function InlineStrip({
   tone?: "emerald" | "amber";
 }) {
   return (
-    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
+    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-2xl shadow-sm ring-1 ring-slate-900/8">
       <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );

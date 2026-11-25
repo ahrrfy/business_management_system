@@ -9,7 +9,7 @@ type Scope = {
   categoryId: number | null;
   availability: "IN_STOCK" | "ALL";
   brand: string;
-  priceFilter: "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
+  priceFilter: "ALL" | "ON_SALE" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
   productIds?: number[] | null;
 };
 type Props = Scope & {
@@ -108,6 +108,18 @@ export function StorefrontSearch({
         run: () => chooseProduct(product.productId),
       }),
     );
+    if (
+      scope.categoryId != null &&
+      data.products.length === 0 &&
+      value.trim().length >= 2
+    ) {
+      options.push({
+        key: "global-all-categories",
+        label: `البحث عن «${value.trim()}» في جميع أقسام المتجر`,
+        group: "توسيع نطاق البحث",
+        run: () => submit(value.trim(), 0),
+      });
+    }
   }
   if (value.trim().length >= 2)
     options.push({
@@ -174,7 +186,7 @@ export function StorefrontSearch({
           }
         }}
         aria-label="البحث في منتجات مكتبة العربية"
-        placeholder="ابحث بكلمة أو جزء منها: ملزمة، قلم، دفتر…"
+        placeholder="ابحث بالاسم أو العامية أو جزء من الكلمة: ملزمة، جنطة، فسفوري، اكرلك…"
         inputProps={{
           role: "combobox",
           maxLength: 64,
@@ -252,7 +264,7 @@ export function StorefrontSearchAlternatives({
   ...scope
 }: Scope & {
   query: string;
-  onSearch: (query: string) => void;
+  onSearch: (query: string, categoryId?: number) => void;
   onSelectProduct: (id: number) => void;
 }) {
   const result = trpc.storefront.searchSuggestions.useQuery(
@@ -265,36 +277,103 @@ export function StorefrontSearchAlternatives({
       retry: false,
     },
   );
+  const needsUnscopedFallback =
+    query.trim().length >= 2 &&
+    result.isSuccess &&
+    !result.data?.products.length &&
+    !result.data?.similar.length &&
+    (scope.categoryId != null ||
+      Boolean(scope.brand) ||
+      scope.priceFilter !== "ALL" ||
+      Boolean(scope.productIds?.length));
+
+  const globalFallback = trpc.storefront.searchSuggestions.useQuery(
+    {
+      query,
+      categoryId: null,
+      availability: "IN_STOCK",
+      brand: "",
+      priceFilter: "ALL",
+    },
+    {
+      enabled: needsUnscopedFallback,
+      staleTime: 5_000,
+      gcTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  );
+
   const data = result.data;
-  if (!data?.correction && !data?.similar.length) return null;
+  const globalHits = [
+    ...(globalFallback.data?.products ?? []),
+    ...(globalFallback.data?.similar ?? []),
+  ];
+  const effectiveCorrection =
+    data?.correction ?? globalFallback.data?.correction ?? null;
+  const effectiveSimilar =
+    data?.similar && data.similar.length > 0 ? data.similar : globalHits;
+
+  if (!effectiveCorrection && !effectiveSimilar.length) return null;
   return (
     <div
-      className="mt-4 w-full max-w-lg px-3 text-right"
+      className="mt-4 w-full max-w-xl rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-right shadow-2xs"
       aria-label="اقتراحات بديلة للبحث"
     >
-      {data.correction && (
-        <button
-          type="button"
-          onClick={() => onSearch(data.correction!)}
-          className="font-bold text-[var(--store-brand)] underline"
-        >
-          هل تقصد «{data.correction}»؟
-        </button>
+      {scope.categoryId != null && globalHits.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/30 bg-sky-50 px-3.5 py-2.5">
+          <span className="text-xs font-bold text-slate-800">
+            البحث مقيّد بالقسم الحالي — وجدنا نتائج في أقسام المتجر الأخرى:
+          </span>
+          <button
+            type="button"
+            onClick={() => onSearch(query, 0)}
+            className="rounded-full bg-[var(--store-brand)] px-3.5 py-1 text-xs font-extrabold text-white shadow-2xs transition hover:opacity-95"
+          >
+            عرض النتائج في كل المتجر
+          </button>
+        </div>
       )}
-      {data.similar.length > 0 && (
+      {effectiveCorrection && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-50 px-3.5 py-2.5">
+          <span className="text-xs font-bold text-slate-700">
+            أقرب عبارة مطابقة في المتجر:
+          </span>
+          <button
+            type="button"
+            onClick={() => onSearch(effectiveCorrection, 0)}
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--store-brand)] px-3.5 py-1 text-xs font-extrabold text-white shadow-2xs transition hover:opacity-95"
+          >
+            هل تقصد «{effectiveCorrection}»؟
+          </button>
+        </div>
+      )}
+      {effectiveSimilar.length > 0 && (
         <>
-          <p className="mt-3 text-xs font-bold text-slate-600">
-            منتجات مشابهة للبحث
+          <p className="mt-3 text-xs font-extrabold text-slate-700">
+            منتجات قريبة ومطابقة لبحثك في الكتالوج:
           </p>
-          <div className="mt-2 grid gap-2">
-            {data.similar.map((product) => (
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {effectiveSimilar.map((product) => (
               <button
                 type="button"
                 key={product.productId}
                 onClick={() => onSelectProduct(product.productId)}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-right text-xs font-semibold text-[var(--store-brand)]"
+                className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-right text-xs font-bold text-slate-900 shadow-2xs transition hover:border-[var(--store-brand)]/40 hover:bg-slate-50"
               >
-                {product.productName}
+                <span className="line-clamp-2 flex-1">
+                  {product.productName}
+                  {!product.inStock && (
+                    <span className="mr-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                      نافد حالياً
+                    </span>
+                  )}
+                </span>
+                {(product.salePrice ?? product.price) && (
+                  <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-[var(--store-brand)] tabular-nums">
+                    {fmtInt(product.salePrice ?? product.price!)} د.ع
+                  </span>
+                )}
               </button>
             ))}
           </div>

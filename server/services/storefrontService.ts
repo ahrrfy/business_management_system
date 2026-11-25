@@ -22,11 +22,15 @@ import {
   productUnits,
   productVariants,
   products,
+  promotionTargets,
   promotions,
   storefrontProductReviews,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { loadStorefrontSearchMatches } from "./storefrontSearchIndex";
+import {
+  loadClosestStorefrontSearchMatches,
+  loadStorefrontSearchMatches,
+} from "./storefrontSearchIndex";
 import { matchesStorefrontRefinements, refineStorefrontProductIds, type StorefrontCatalogRefinements } from "./storefrontCatalogRefinements";
 import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
@@ -914,6 +918,8 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   availability?: StorefrontAvailability;
   /** بذرة عشوائية حتمية لجلسة الزائر لتغيير تشكيلة المنتجات في كل زيارة أو تحديث للصفحة. */
   seed?: string | null;
+  /** استرجاع أقرب المنتجات المتوفرة دلالياً/إملائياً عندما يعيد البحث الحرفي صفر نتائج. */
+  relaxedFallback?: boolean;
 }): Promise<StorefrontCatalogPage> {
   const db = getDb();
   if (!db) return { items: [], hasMore: false, nextCursor: null };
@@ -930,7 +936,9 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
     conds.push(inArray(products.id, opts.productIds));
   }
   const s = String(opts.search ?? "").trim();
+  const useRelaxedFallback = Boolean(opts.relaxedFallback && s);
   let resolvedBarcodeUnitId: number | null = null;
+  let closestScoreByProduct: Map<number, number> | null = null;
   if (s) {
     // هوية الباركود تُحسم أولاً بالمساواة المفهرسة على الشكل الخام ومرشّحات UPC/EAN؛
     // لا نمرّرها عبر مطبّع بحث الأسماء الذي يطوي مسافتين داخليتين إلى واحدة.
@@ -943,6 +951,16 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       conds.push(eq(productUnits.id, barcodeResolution.owner.productUnitId));
     } else if (barcodeResolution.status === "AMBIGUOUS") {
       conds.push(sql`false`);
+    } else if (useRelaxedFallback) {
+      const closest = (await loadClosestStorefrontSearchMatches(s, opts)).slice(0, 180);
+      if (!closest.length) return { items: [], hasMore: false, nextCursor: null };
+      closestScoreByProduct = new Map<number, number>();
+      for (const row of closest) {
+        const prev = closestScoreByProduct.get(row.productId) ?? 0;
+        if (row.match.score > prev) closestScoreByProduct.set(row.productId, row.match.score);
+      }
+      const unitIds = Array.from(new Set(closest.map((row) => row.productUnitId)));
+      conds.push(inArray(productUnits.id, unitIds));
     } else {
       const matches = await loadStorefrontSearchMatches(s, opts);
       // Per-unit candidates preserve partial barcode-unit selection, too.
@@ -962,26 +980,37 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   const seedKey = (opts.seed ?? "").trim();
   const loadOrderedIds = async (): Promise<CatalogRanking> => {
     let brands: string[] = [];
-    const ids = await loadRankedStorefrontProductIds(
-    db,
-    branchId,
-    conds,
-    {
-      availability: availabilityFilter,
-      categoryIds: opts.categoryId == null ? null : [opts.categoryId],
-      search: s,
-      seed: opts.seed,
-      brand: opts.brand,
-      priceFilter: opts.priceFilter,
-      sort: opts.sort,
-    },
-    false,
-    (value) => { brands = value; },
-  );
+    const baseIds = await loadRankedStorefrontProductIds(
+      db,
+      branchId,
+      conds,
+      {
+        availability: availabilityFilter,
+        categoryIds: opts.categoryId == null ? null : [opts.categoryId],
+        search: useRelaxedFallback ? undefined : s,
+        seed: opts.seed,
+        brand: opts.brand,
+        priceFilter: opts.priceFilter,
+        sort: opts.sort,
+      },
+      false,
+      (value) => {
+        brands = value;
+      },
+    );
+    const ids = closestScoreByProduct
+      ? [...baseIds].sort(
+          (a, b) =>
+            (closestScoreByProduct!.get(b) ?? 0) -
+              (closestScoreByProduct!.get(a) ?? 0) || a - b,
+        )
+      : baseIds;
     return { ids, brands };
   };
   // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
-  const searchKey = resolvedBarcodeUnitId == null ? normalizeArabicSearch(s) : `barcode-unit:${resolvedBarcodeUnitId}`;
+  const searchKey = resolvedBarcodeUnitId == null
+    ? `${useRelaxedFallback ? "relaxed:" : ""}${normalizeArabicSearch(s)}`
+    : `barcode-unit:${resolvedBarcodeUnitId}`;
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
@@ -1415,6 +1444,11 @@ export interface StorefrontOffer {
   discountAmount: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
   summary?: string;
+  ctaUrl?: string;
+  effectiveTo?: string | null;
+  targetCount?: number;
+  targetCategoryIds?: number[];
+  targetProductIds?: number[];
 }
 
 /** العروض الفعّالة اليوم (للبنرات) — نفس نافذة resolvePromotionForLine. */
@@ -1440,6 +1474,7 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
       bogoGetDiscountPercent: promotions.bogoGetDiscountPercent,
       tieredMode: promotions.tieredMode,
       activeDays: promotions.activeDays,
+      effectiveTo: promotions.effectiveTo,
       scope: promotions.scope,
       priority: promotions.priority,
     })
@@ -1457,16 +1492,60 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
     )
     .orderBy(desc(promotions.priority), desc(promotions.id))
     .limit(30);
-  return rows
+  const activeRows = rows
     .filter((r) => isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, todayYmd))
-    .slice(0, 10)
-    .map((r) => ({
-      id: Number(r.id),
+    .slice(0, 10);
+
+  const offerIds = activeRows.map((r) => Number(r.id));
+  const targetRows = offerIds.length
+    ? await db
+        .select({
+          promotionId: promotionTargets.promotionId,
+          categoryId: promotionTargets.categoryId,
+          productId: promotionTargets.productId,
+        })
+        .from(promotionTargets)
+        .where(inArray(promotionTargets.promotionId, offerIds))
+    : [];
+
+  const catsByOffer = new Map<number, number[]>();
+  const prodsByOffer = new Map<number, number[]>();
+  for (const t of targetRows) {
+    const pid = Number(t.promotionId);
+    if (t.categoryId != null) {
+      const arr = catsByOffer.get(pid) ?? [];
+      if (!arr.includes(Number(t.categoryId))) arr.push(Number(t.categoryId));
+      catsByOffer.set(pid, arr);
+    }
+    if (t.productId != null) {
+      const arr = prodsByOffer.get(pid) ?? [];
+      if (!arr.includes(Number(t.productId))) arr.push(Number(t.productId));
+      prodsByOffer.set(pid, arr);
+    }
+  }
+
+  return activeRows.map((r) => {
+    const id = Number(r.id);
+    const catIds = catsByOffer.get(id) ?? [];
+    const prodIds = prodsByOffer.get(id) ?? [];
+    const effectiveToYmd =
+      r.effectiveTo instanceof Date
+        ? r.effectiveTo.toISOString().slice(0, 10)
+        : r.effectiveTo
+          ? String(r.effectiveTo).slice(0, 10)
+          : null;
+    return {
+      id,
       name: r.name,
       type: r.type as PromotionType,
       discountPercent: String(r.discountPercent ?? "0"),
       discountAmount: String(r.discountAmount ?? "0"),
       scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
+      ctaUrl: `/store?promo=${id}`,
+      effectiveTo: effectiveToYmd,
+      targetCount: r.scope === "CATEGORIES" ? catIds.length : r.scope === "PRODUCTS" ? prodIds.length : undefined,
+      targetCategoryIds: catIds,
+      targetProductIds: prodIds,
       summary: formatPromotionSummary({
         type: r.type,
         discountPercent: r.discountPercent,
@@ -1481,5 +1560,6 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
         bogoGetDiscountPercent: r.bogoGetDiscountPercent,
         tieredMode: r.tieredMode,
       }),
-    }));
+    };
+  });
 }

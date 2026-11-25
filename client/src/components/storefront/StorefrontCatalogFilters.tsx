@@ -83,23 +83,18 @@ export function StorefrontCatalogFilters({
 
       <div className="mb-5 flex flex-col gap-2.5 rounded-xl border border-slate-900/[0.06] bg-[#f8f8fa] p-2.5 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900/60">
         <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <button
-            type="button"
+          <span
             onClick={() => {
-              setAvailability((value) =>
-                value === "IN_STOCK" ? "ALL" : "IN_STOCK",
-              );
-              scrollToResults();
+              if (availability !== "IN_STOCK") {
+                setAvailability("IN_STOCK");
+                scrollToResults();
+              }
             }}
-            aria-pressed={availability === "IN_STOCK"}
-            className={`shrink-0 touch-manipulation rounded-lg px-3 py-1.5 text-xs font-semibold transition-[transform,background-color,color] duration-150 ease-out active:scale-[0.97] ${
-              availability === "IN_STOCK"
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            }`}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#1d1d1f] px-3 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-[#1d1d1f]"
           >
-            {availability === "IN_STOCK" ? "المتوفر فقط" : "جميع المنتجات"}
-          </button>
+            <span aria-hidden className="size-1.5 rounded-full bg-emerald-400 dark:bg-emerald-600" />
+            المتوفر بالمخزون فقط
+          </span>
 
           <div className="shrink-0">
             <Select
@@ -118,6 +113,7 @@ export function StorefrontCatalogFilters({
               </SelectTrigger>
               <SelectContent dir="rtl" align="end">
                 <SelectItem value="ALL">كل الأسعار</SelectItem>
+                <SelectItem value="ON_SALE">عروض وتخفيضات فقط</SelectItem>
                 <SelectItem value="UNDER_5000">أقل من 5,000 د.ع</SelectItem>
                 <SelectItem value="FROM_5000_TO_15000">
                   من 5,000 إلى 15,000 د.ع

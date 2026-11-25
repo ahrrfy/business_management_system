@@ -10,6 +10,7 @@ export type AvailabilityFilter = "IN_STOCK" | "ALL";
 
 export type PriceFilter =
   | "ALL"
+  | "ON_SALE"
   | "UNDER_5000"
   | "FROM_5000_TO_15000"
   | "OVER_15000";

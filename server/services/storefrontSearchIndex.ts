@@ -13,6 +13,7 @@ import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefron
 import { getCurrentCompanyId } from "../tenancy/context";
 import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import {
+  createClosestRelaxedSearchMatcher,
   createStorefrontSearchMatcher,
   normalizeArabicSearch,
   tokenizeSearchTerms,
@@ -90,6 +91,44 @@ export async function loadStorefrontSearchMatches(
         );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);
   const match = createStorefrontSearchMatcher(search, allowSimilar);
+  const matches = [];
+  let deadline = performance.now() + 8;
+  for (const row of rows) {
+    if (
+      (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (ids == null || ids.has(row.productId))
+    ) {
+      const result = match(row);
+      if (result) matches.push({ ...row, match: result });
+    }
+    if (performance.now() >= deadline) {
+      await yieldToRequests();
+      deadline = performance.now() + 8;
+    }
+  }
+  return matches.sort(
+    (a, b) =>
+      b.match.score - a.match.score ||
+      a.productId - b.productId ||
+      a.productUnitId - b.productUnitId,
+  );
+}
+
+/** يسترجع أقرب المنتجات المطابقة دلالياً أو إملائياً عند خلوّ البحث الصارم من النتائج. */
+export async function loadClosestStorefrontSearchMatches(
+  search: string,
+  scope: StorefrontSearchScope = {},
+) {
+  const rows = !storefrontReadCacheEnabled()
+    ? await readCandidates()
+    : await storefrontCacheGet(
+        indexCache,
+        "index",
+        String(getCurrentCompanyId() ?? 0),
+        readCandidates,
+      );
+  const ids = scope.productIds == null ? null : new Set(scope.productIds);
+  const match = createClosestRelaxedSearchMatcher(search);
   const matches = [];
   let deadline = performance.now() + 8;
   for (const row of rows) {

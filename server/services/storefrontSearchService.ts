@@ -22,7 +22,7 @@ export interface StorefrontSearchSuggestionInput extends StorefrontSearchScope {
   query: string;
   availability?: "IN_STOCK" | "ALL";
   brand?: string;
-  priceFilter?: "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
+  priceFilter?: "ALL" | "ON_SALE" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 }
 export interface StorefrontSearchProductSuggestion {
   productId: number;

@@ -52,6 +52,12 @@ export class AiImageError extends Error {
   }
 }
 
+export type GeminiImageAspectRatioEnum =
+  | "ASPECT_RATIO_ONE_BY_ONE"
+  | "ASPECT_RATIO_SIXTEEN_BY_NINE"
+  | "ASPECT_RATIO_THREE_BY_TWO"
+  | "ASPECT_RATIO_FOUR_BY_THREE";
+
 export interface GenerateStudioImageParams {
   /** مفتاح API مفكوك (يُمرَّر، لا يُقرأ من الإعدادات). */
   apiKey: string;
@@ -63,6 +69,10 @@ export interface GenerateStudioImageParams {
   imageBase64?: string | null;
   /** نوع MIME لصورة الإدخال (image/jpeg|png|webp). */
   mimeType?: string | null;
+  /** صور مرجعية إضافية (لبنرات تجمع 1-3 منتجات حقيقية في مشهد واحد). */
+  referenceImages?: Array<{ data: string; mimeType: string }>;
+  /** نسبة أبعاد الإخراج (الافتراضي 1:1 لصور المنتجات، و16:9 لمشاهد البنرات). */
+  aspectRatioEnum?: GeminiImageAspectRatioEnum;
 }
 
 export interface GenerateStudioImageResult {
@@ -234,12 +244,22 @@ async function generateStudioImageAttempt(
       inline_data: { mime_type: params.mimeType || "image/jpeg", data: params.imageBase64 },
     });
   }
+  for (const ref of (params.referenceImages ?? []).slice(0, 4)) {
+    if (ref?.data) {
+      parts.push({
+        inline_data: { mime_type: ref.mimeType || "image/jpeg", data: ref.data },
+      });
+    }
+  }
 
   const generationConfig: Record<string, unknown> = { responseModalities: ["IMAGE"] };
   if (opts.includeImageConfig !== false) {
     // REST responseFormat يستقبل أسماء enum؛ اختصارات SDK (1:1 / 1K) تُرفض بـ400.
     generationConfig.responseFormat = {
-      image: { aspectRatio: "ASPECT_RATIO_ONE_BY_ONE", imageSize: "IMAGE_SIZE_ONE_K" },
+      image: {
+        aspectRatio: params.aspectRatioEnum ?? "ASPECT_RATIO_ONE_BY_ONE",
+        imageSize: "IMAGE_SIZE_ONE_K",
+      },
     };
   }
 

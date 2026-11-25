@@ -282,10 +282,11 @@ export const storefrontRouter = router({
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
         brand: z.string().max(120).optional(),
-        priceFilter: z.enum(["ALL", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
+        priceFilter: z.enum(["ALL", "ON_SALE", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
         sort: z.enum(["RECOMMENDED", "PRICE_ASC", "PRICE_DESC", "BEST_SELLERS"]).default("RECOMMENDED"),
         // بذرة عشوائية لتنويع ظهور المنتجات عند كل دخول أو تحديث للصفحة
         seed: z.string().max(64).nullish(),
+        relaxedFallback: z.boolean().optional(),
       })
     )
     .query(({ input }) =>
@@ -300,6 +301,7 @@ export const storefrontRouter = router({
         priceFilter: input.priceFilter,
         sort: input.sort,
         seed: input.seed,
+        relaxedFallback: input.relaxedFallback,
       })
     ),
 
@@ -311,7 +313,7 @@ export const storefrontRouter = router({
       productIds: z.array(z.number().int().positive()).max(500).nullish(),
       availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       brand: z.string().max(120).optional(),
-      priceFilter: z.enum(["ALL", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
+      priceFilter: z.enum(["ALL", "ON_SALE", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
     }))
     .query(({ input }) => storefrontSearchSuggestions(input)),
 
