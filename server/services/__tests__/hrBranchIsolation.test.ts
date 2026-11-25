@@ -215,7 +215,6 @@ async function caller(id: number) {
     req: { headers: {} },
     res: { cookie() {}, clearCookie() {} },
     sessionId: null,
-    platformAdmin: null,
     user,
   } as unknown as TrpcContext;
   return appRouter.createCaller(context);
@@ -396,7 +395,6 @@ describe("recruitment branch isolation", () => {
       req: { headers: {} },
       res: { cookie() {}, clearCookie() {} },
       sessionId: null,
-      platformAdmin: null,
       user: null,
     } as unknown as TrpcContext);
     const validInput = {
@@ -447,7 +445,6 @@ describe("recruitment branch isolation", () => {
       req: { headers: {} },
       res: { cookie() {}, clearCookie() {} },
       sessionId: null,
-      platformAdmin: null,
       user: null,
     } as unknown as TrpcContext);
 
@@ -514,7 +511,6 @@ describe("recruitment branch isolation", () => {
       req: { headers: {} },
       res: { cookie() {}, clearCookie() {} },
       sessionId: null,
-      platformAdmin: null,
       user: null,
     } as unknown as TrpcContext);
     await expect(

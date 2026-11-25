@@ -25,7 +25,6 @@ function categoryAdminCaller() {
     req: { headers: {}, id: "voucher-category-test" },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 1,
       role: "admin",

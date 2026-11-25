@@ -261,7 +261,6 @@ const ROOT_LABELS = {
   priceWaves: "موجات تحديث الأسعار",
   salesPromotions: "العروض التجارية",
   crm: "الحملات والعلاقات",
-  platformAdmin: "إدارة المنصة",
   contacts: "جهات الاتصال",
   broadcasts: "البث التسويقي",
   reservations: "الحجوزات",
@@ -1923,7 +1922,6 @@ export function generateOperationPermissions() {
       FIXED_HANDLER_AUTHORITY.has(ep.path);
     const identity = [
       "self-assignment",
-      "platform",
       "token",
       "device-bootstrap",
     ].includes(meta.authority);

@@ -9,7 +9,6 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "count.auth",
   "kiosk.deviceLogin",
   "recruitment.submit",
-  "platformAdmin.login",
   "storefront.createOrder",
   "storefront.createQuoteRequest",
   "storefront.quoteOrder",

@@ -113,7 +113,6 @@ function makeCaller(user: {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       ...user,
       isActive: true,

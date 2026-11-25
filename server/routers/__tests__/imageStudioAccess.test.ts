@@ -40,7 +40,7 @@ function db() {
 
 function caller(role: string, productStudio?: "FULL" | "READ" | "NONE", options: { id?: number; branchId?: number | null } = {}) {
   return imageStudioRouter.createCaller({
-    req: { headers: {} }, res: {}, sessionId: null, platformAdmin: null,
+    req: { headers: {} }, res: {}, sessionId: null,
     user: {
       id: options.id ?? 92, role, branchId: options.branchId === undefined ? 1 : options.branchId,
       permissionsOverride: productStudio ? { productStudio } : null, totpEnabledAt: new Date(),

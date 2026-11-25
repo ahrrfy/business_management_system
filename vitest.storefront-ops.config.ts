@@ -16,7 +16,7 @@ export default defineConfig({
       "server/lib/__tests__/storefrontCachePolicy.test.ts",
       "server/middleware/__tests__/runtimeLabObservation.test.ts",
       "server/lib/__tests__/clusterRole.test.ts",
-      "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
+      "server/__tests__/dbPoolPolicy.test.ts",
       "server/services/__tests__/pm2EnvDeclaration.test.ts",
       "server/services/__tests__/publicStorefrontHost.test.ts",
       "server/middleware/__tests__/runtimeBoundary.test.ts",

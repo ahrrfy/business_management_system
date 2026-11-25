@@ -17,7 +17,6 @@ import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { evaluateStorefrontUnitEligibility } from "./storefrontEligibilityService";
 import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
-import { getCurrentCompanyId } from "../tenancy/context";
 
 export interface StorefrontSearchSuggestionInput extends StorefrontSearchScope {
   query: string;
@@ -77,7 +76,7 @@ export async function storefrontSearchSuggestions(
   if (normalizeArabicSearch(query).length < 2) return empty;
   const branchId = await resolveStorefrontBranchId();
   const key = JSON.stringify([
-    getCurrentCompanyId() ?? 0,
+    0,
     branchId,
     query,
     input.categoryId,

@@ -23,8 +23,6 @@ const ERROR_MAP = "shared/errorMap.ar.ts";
  * الحذف**: قيدٌ أُضيف في هجرةٍ ثمّ أُسقط في أخرى ليس حيّاً، وإغفال ذلك يجعل الحارس
  * يُبلّغ عن قيودٍ ميتة فيصير إنذاراً كاذباً يُتجاوَز — وهو أسوأ من غياب الحارس.
  */
-const CONTROL_ONLY = new Set(["uq_provision_active_code"]);
-
 function liveUniqueKeys() {
   const files = readdirSync(MIGRATIONS_DIR, { recursive: true })
     .filter((name) => typeof name === "string" && name.endsWith(".sql"))
@@ -51,7 +49,7 @@ function main() {
   for (const match of mapSource.matchAll(/^\s*"?([A-Za-z0-9_]+)"?\s*:\s*\{/gm)) mapped.add(match[1]);
 
   const missing = [...declared].filter((name) => !mapped.has(name)).sort();
-  const stale = [...mapped].filter((name) => name.startsWith("uq_") && !declared.has(name) && !CONTROL_ONLY.has(name)).sort();
+  const stale = [...mapped].filter((name) => name.startsWith("uq_") && !declared.has(name)).sort();
   if (missing.length > 0) {
     console.error(`✗ حارس UNIQUE_AR: قيود بلا مدخل تشخيصيّ في ${ERROR_MAP}:`);
     for (const name of missing) console.error(`  - ${name}`);

@@ -74,7 +74,6 @@ function callerFor(user: { id: number; role: string; branchId: number }) {
     req: { headers: { "user-agent": "vitest" }, ip: "127.0.0.1", method: "POST" },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: { id: user.id, role: user.role, branchId: user.branchId, permissionsOverride: null, totpEnabledAt: new Date(), isActive: true },
   } as never);
 }

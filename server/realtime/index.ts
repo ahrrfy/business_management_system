@@ -15,8 +15,6 @@ import {
 import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
 import { realtimeRouter } from "./streamRouter";
 
-import { getCurrentCompanyId } from "../tenancy/context";
-
 setBridgeReleaseHandler((event) => {
   const scope = event.scope;
   if (
@@ -55,14 +53,7 @@ export function publishRealtimeEvent<T = unknown>(
   payload: T,
   scope?: RealtimeEventScope,
 ): RealtimeEvent<T> {
-  const currentCompany = getCurrentCompanyId();
-  const mergedScope: RealtimeEventScope = {
-    ...(currentCompany != null && scope?.companyId === undefined
-      ? { companyId: currentCompany }
-      : {}),
-    ...scope,
-  };
-  const event = createRealtimeEvent(type, payload, mergedScope);
+  const event = createRealtimeEvent(type, payload, scope);
   publishToBridge(event);
   return event;
 }

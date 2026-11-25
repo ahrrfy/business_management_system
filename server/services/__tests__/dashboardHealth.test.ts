@@ -22,7 +22,6 @@ describe("dashboard source health", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: {
         id: 55,
         openId: "health-manager",

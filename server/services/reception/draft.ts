@@ -32,7 +32,7 @@ import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../../lib/backgroundJobRunner";
 import { heldNetOfDraft } from "../deposits";
 import { checkIdempotency, findIdempotentRefId, idempotencyHash, withIdempotency } from "../idempotency";
 import { nextCounterValue, nextTransactionTrackingNumber } from "../numbering";
@@ -586,7 +586,7 @@ export async function cancelDraft(
 /** كنّاس ق٤: يطوي الفارغة المنقضية فقط — **لا يمسّ المموّلة أبداً** (I14). idempotent. */
 export async function sweepExpiredDrafts(): Promise<number> {
   if (!isBackgroundOperationActive("reception_draft_sweep")) {
-    const runs = await runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts);
+    const runs = await runBackgroundJob("reception_draft_sweep", sweepExpiredDrafts);
     return runs.reduce((sum, affected) => sum + affected, 0);
   }
   const db = getDb();

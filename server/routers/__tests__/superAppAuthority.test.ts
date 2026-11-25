@@ -83,7 +83,6 @@ describe("super app effective authority", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: { ...owner, totpEnabledAt: new Date() },
     } as never);
     await expect(caller.read()).resolves.toBe(true);

@@ -39,7 +39,7 @@ import {
   resolveCustomRole,
   type AuthUser,
 } from "./context";
-import { getDb, isMultiTenantModeActive } from "./db";
+import { getDb } from "./db";
 import { canCrossBranches } from "./lib/branchAuthority";
 import {
   getImageStore,
@@ -61,8 +61,6 @@ import { findStorefrontCustomizationAssetForStaff } from "./services/storefrontC
 import type { Request, Response } from "express";
 import type { Readable } from "node:stream";
 import type { PublicProductImageWidth } from "./lib/imageStore";
-import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
-import { getCurrentCompanyId } from "./tenancy/context";
 import { resolvePortalIdentity, type PortalIdentity } from "./services/countPortal/identity";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
@@ -154,7 +152,7 @@ function assertPublicProductImageWidth(value: number): PublicProductImageWidth {
 /** يضيف عقد الحجم فقط لمسارات صور المنتج الداخلية؛ الروابط المستوردة الخارجية تبقى كما هي. */
 export function withPublicProductImageWidth(value: string, width: PublicProductImageWidth): string {
   assertPublicProductImageWidth(width);
-  if (!/^\/api\/img\/(?:company\/[^/]+\/)?product\/\d+(?:\?|$)/.test(value)) return value;
+  if (!/^\/api\/img\/product\/\d+(?:\?|$)/.test(value)) return value;
   const parsed = new URL(value, "http://storefront.local");
   parsed.searchParams.set("w", String(width));
   return `${parsed.pathname}${parsed.search}`;
@@ -681,8 +679,6 @@ export function imageRouter(): Router {
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
     const requestedWidth = parsePublicProductImageWidth(req.query.w);
     if (!requestedWidth.valid) return res.status(400).end();
-    // الرابط غير المسند لشركة متاح فقط في النشر الأحادي أو داخل جلسة شركة؛ المجهول في multi يستخدم /company/:code/.
-    if (isMultiTenantModeActive() && getCurrentCompanyId() == null) return res.status(404).end();
     const db = getDb();
     if (!db) return res.status(503).end();
 
@@ -723,13 +719,6 @@ export function imageRouter(): Router {
     }
   });
 
-  // في تعدد الشركات يحمل الرابط العام رمز الشركة نفسه، لأن الزائر المجهول لا يملك session
-  // يمكن اشتقاق المستأجر منها. الوسيط يحجز اتصال الشركة ويغلف القراءة وسلسلة R2 في ALS.
-  const publicCompanyTenancy = companyCodeTenancyMiddleware();
-  r.get("/company/:companyCode/product/:id", (req, res, next) => {
-    void withStorefrontContextWork(req, async () => { await publicCompanyTenancy(req, res, next); }).catch(next);
-  }, servePublicProduct);
-  // توافق أحادي الشركة وروابط الإرث؛ في multi-tenant يفشل getDb مغلقاً بلا سياق ولا يتسرب مستأجر آخر.
   r.get("/product/:id", servePublicProduct);
 
   /**

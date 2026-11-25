@@ -88,10 +88,9 @@ describe("restore script streaming contract", () => {
     ]);
     const guard = service.slice(
       service.indexOf("function getOnlineMaintenanceBlockReason"),
-      service.indexOf("class OnlineMaintenanceBlockedError"),
+      service.indexOf("export function isEncryptedRestoreFile"),
     );
     expect(guard).toContain('process.env.NODE_ENV === "production"');
-    expect(guard).toContain("isMultiTenantModeActive()");
     expect(guard).not.toContain("ALLOW_ONLINE_DB_MAINTENANCE");
     expect(router).toContain("maint.getOnlineMaintenanceBlockReason()");
     expect(upload).toContain("getOnlineMaintenanceBlockReason()");
@@ -106,7 +105,6 @@ describe("restore script streaming contract", () => {
       readFile(path.resolve(process.cwd(), ".env.production.example"), "utf8"),
     ]);
     expect(index).toContain("delete process.env.DB_ROOT_PW");
-    expect(ecosystem).toContain("provisionPrivilegedEnvironment");
     expect(ecosystem).toContain("filter_env: webForbiddenEnvironmentKeys");
     expect(ecosystem).toContain(
       "for (const key of webForbiddenEnvironmentKeys) delete process.env[key]",
@@ -117,7 +115,7 @@ describe("restore script streaming contract", () => {
     expect(productionEnv).not.toContain("DATABASE_URL=mysql://root:");
   });
 
-  it("يفصل سر root فعلياً عن محمّل PM2 ويمرّره لعامل التوفير فقط", () => {
+  it("يفصل سر root والأسرار الإدارية فعلياً عن محمّل PM2 وعامل الويب", () => {
     const probe = `
       const config = require("./ecosystem.config.cjs");
       const web = config.apps.find((app) => app.name === "erp-server");
@@ -127,8 +125,7 @@ describe("restore script streaming contract", () => {
         loaderClean: forbidden.every((key) => !process.env[key]),
         filterComplete: forbidden.every((key) => web.filter_env.includes(key)),
         webExplicitClean: forbidden.every((key) => !web.env[key]),
-        provisionRoot: provision.env.DB_ROOT_PW === "root-marker",
-        provisionContainer: provision.env.DB_CONTAINER === "container-marker",
+        noProvisionWorker: provision === undefined,
       };
       process.stdout.write(JSON.stringify(result));
     `;
@@ -150,70 +147,28 @@ describe("restore script streaming contract", () => {
       loaderClean: true,
       filterComplete: true,
       webExplicitClean: true,
-      provisionRoot: true,
-      provisionContainer: true,
+      noProvisionWorker: true,
     });
   });
 
-  it("ينقّي عامل التوفير نفسه ويعطي كل child أقل بيئة لازمة", async () => {
-    const [worker, companyNew, provision] = await Promise.all([
-      readFile(
-        path.resolve(process.cwd(), "scripts/company-provision-worker.mjs"),
-        "utf8",
-      ),
-      readFile(path.resolve(process.cwd(), "scripts/company-new.mjs"), "utf8"),
-      readFile(
-        path.resolve(process.cwd(), "scripts/lib/provisionCompany.mjs"),
-        "utf8",
-      ),
-    ]);
-    expect(worker).toContain("buildWorkerEnvironment");
-    expect(worker).toContain(
-      "for (const key of Object.keys(process.env)) delete process.env[key]",
-    );
-    expect(worker).toContain("buildControlStepEnvironment");
-    expect(worker).toContain(
-      "buildControlStepEnvironment(process.env, command)",
-    );
-    expect(worker).toContain("{ mode: 0o600 }");
-    expect(worker).toContain(
-      "integrationsEncryptionKey: process.env.INTEGRATIONS_ENCRYPTION_KEY",
-    );
-    expect(worker).not.toContain("env: { ...process.env");
-    expect(companyNew).toContain('rootEnv.get("INTEGRATIONS_ENCRYPTION_KEY")');
-    expect(companyNew).toContain("integrationsEncryptionKey,");
-    expect(provision).toContain("buildMysqlEnvironment");
-    expect(provision).toContain("buildTenantCommandEnvironment");
-    expect(provision).toContain("buildRegisterEnvironment");
-    expect(provision).toContain("opts.integrationsEncryptionKey");
-    expect(provision).toContain('[opts.demo ? "seed" : "seed:prod"]');
-    expect(provision).toContain(
-      'CONFIRM_SAMPLE_DATA_SEED: opts.demo ? "1" : ""',
-    );
-    expect(provision).not.toContain("env: { ...process.env");
-    expect(provision).not.toContain("const cleanEnv = { ...process.env");
-  });
-
-  it("تبقى عينة تعدد الشركات ضمن ميزانية الاتصالات الآمنة", async () => {
+  it("تبقى عينة البيئة ضمن ميزانية اتصالات المنشأة الواحدة الآمنة", async () => {
     const sample = await readFile(
       path.resolve(process.cwd(), ".env.example"),
       "utf8",
     );
     expect(sample).toContain("WEB_INSTANCES=2");
     expect(sample).toContain("DB_POOL_LIMIT=10");
-    expect(sample).toContain("DB_MAX_TENANT_POOLS_PER_WORKER=5");
     expect(sample).toContain("MYSQL_MAX_CONNECTIONS=151");
     expect(sample).toContain("DB_CONNECTION_RESERVE=20");
-    expect(sample).toContain("CONTROL_DB_POOL_LIMIT=5");
+    expect(sample).not.toContain("DB_MAX_TENANT_POOLS_PER_WORKER");
+    expect(sample).not.toContain("CONTROL_DATABASE_URL");
   });
 
-  it("يغلق CLI استعادة المدير تجمعي الشركة والتحكم دائماً", async () => {
+  it("يغلق CLI استعادة المدير تجمّع القاعدة دائماً", async () => {
     const source = await readFile(
       path.resolve(process.cwd(), "scripts/recover-last-admin.ts"),
       "utf8",
     );
     expect(source).toContain("closeDb().catch");
-    expect(source).toContain("closeControlDb().catch");
-    expect(source).toContain("await Promise.all");
   });
 });

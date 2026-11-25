@@ -45,7 +45,6 @@ function caller(store: "NONE" | "FULL") {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 91,
       role: store === "NONE" ? "manager" : "user",
@@ -61,7 +60,6 @@ function adminCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 92,
       role: "admin",

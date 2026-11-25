@@ -18,13 +18,10 @@ before(async () => {
   const virtualModules = {
     session: `export async function getSessionContext() { const state = globalThis[${JSON.stringify(FIXTURE_STATE)}]; return { user: structuredClone(state.user), sessionId: 7001, nativeClientId: null }; }`,
     role: `export async function loadActiveCustomRole(id) { const role = globalThis[${JSON.stringify(FIXTURE_STATE)}].role; return role?.id === id ? structuredClone(role) : null; }`,
-    platform:
-      "export async function getPlatformAdminFromRequest() { return null; }",
   };
   const replacements = {
     "./auth/session": "session",
     "./services/roleService": "role",
-    "./tenancy/platformAuth": "platform",
   };
   await build({
     absWorkingDir: ROOT,

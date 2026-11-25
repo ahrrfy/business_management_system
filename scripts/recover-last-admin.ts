@@ -12,11 +12,8 @@ import { readFile, stat } from "node:fs/promises";
 import { stdin, stdout } from "node:process";
 import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
-import { closeDb, isMultiTenantModeActive, withTenantDb } from "../server/db";
+import { closeDb } from "../server/db";
 import { recoverLastAdminAccess } from "../server/services/passwordResetService";
-import { runWithCompany } from "../server/tenancy/context";
-import { resolveCompanyByCode } from "../server/tenancy/registry";
-import { closeControlDb } from "../server/tenancy/controlDb";
 
 const CONFIRM_PHRASE = "RECOVER LAST ADMIN";
 const args = process.argv.slice(2);
@@ -164,21 +161,10 @@ async function main() {
   }
 
   const resetTwoFactor = has("--reset-2fa");
-  const execute = () =>
-    recoverLastAdminAccess(identifier!, password, { resetTwoFactor });
-  let result: Awaited<ReturnType<typeof recoverLastAdminAccess>>;
-  if (isMultiTenantModeActive()) {
-    if (companyCode === "single")
-      fail("الخادم متعدد الشركات؛ يجب تحديد رمز الشركة الحقيقي.");
-    const company = await resolveCompanyByCode(companyCode);
-    if (!company) fail("الشركة غير موجودة أو معطّلة.");
-    result = await withTenantDb(company.id, (db) => runWithCompany(company.id, db, execute));
-  } else {
-    if (companyCode !== "single") {
-      fail("النشر أحادي الشركة؛ اكتب single صراحةً لتأكيد قاعدة الهدف.");
-    }
-    result = await execute();
+  if (companyCode !== "single") {
+    fail("النشر أحادي الشركة؛ اكتب single صراحةً لتأكيد قاعدة الهدف.");
   }
+  const result = await recoverLastAdminAccess(identifier!, password, { resetTwoFactor });
 
   stdout.write(
     `تمت استعادة حساب الأدمن #${result.userId} وإبطال جلساته ورموز الاستعادة${result.twoFactorReset ? " وتصفير المصادقة الثنائية" : ""}.\n`,
@@ -186,15 +172,14 @@ async function main() {
   if (passwordFile) stdout.write("احذف ملف كلمة المرور المؤقت الآن.\n");
 }
 
-try {
-  await main();
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`فشلت الاستعادة: ${message}\n`);
-  process.exitCode = 1;
-} finally {
-  await Promise.all([
-    closeDb().catch(() => undefined),
-    closeControlDb().catch(() => undefined),
-  ]);
-}
+void (async () => {
+  try {
+    await main();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`فشلت الاستعادة: ${message}\n`);
+    process.exitCode = 1;
+  } finally {
+    await closeDb().catch(() => undefined);
+  }
+})();

@@ -1,8 +1,8 @@
 import { logger } from "../logger";
 import {
   isBackgroundOperationActive,
-  runAcrossActiveTenants,
-} from "../tenancy/backgroundTenants";
+  runBackgroundJob,
+} from "../lib/backgroundJobRunner";
 import { reconcileAppNotificationOutbox } from "./appNotificationOutboxService";
 
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -16,7 +16,7 @@ export type AppNotificationOutboxRunResult = {
 /** مصالحة عامة لكل نوايا الإشعارات؛ لا تعتمد دورة المهام على عامل ميزة أخرى. */
 export async function runAppNotificationOutboxBatch(): Promise<AppNotificationOutboxRunResult> {
   if (!isBackgroundOperationActive("app_notification_outbox")) {
-    const runs = await runAcrossActiveTenants(
+    const runs = await runBackgroundJob(
       "app_notification_outbox",
       runAppNotificationOutboxBatch,
     );

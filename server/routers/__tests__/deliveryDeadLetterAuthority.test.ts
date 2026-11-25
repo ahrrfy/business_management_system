@@ -31,7 +31,6 @@ function caller(role: string, permissionsOverride: Record<string, "NONE" | "READ
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: role === "admin" ? 1 : 2,
       role,

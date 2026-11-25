@@ -16,7 +16,7 @@ import { deliveryConsignments, deliveryEvents, deliveryParties, users } from "..
 import { getDb } from "../../db";
 import { logger } from "../../logger";
 import { rolloutMode } from "../../config/rolloutFlags";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../../lib/backgroundJobRunner";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, assertParcelTransition, type ParcelStatus } from "./lifecycle";
 
@@ -209,9 +209,8 @@ export async function autoFailStaleParcels(
 export async function sweepStaleConsignments(
   opts: { now?: Date; escalateHours?: number } = {},
 ): Promise<StaleSweepResult> {
-  // نفس تعميم sweepDeliveryOutboxOnce متعدّد الشركات: الاستدعاء بلا سياق شركةٍ يمسح الجميع.
   if (!isBackgroundOperationActive("delivery_stale_sweep")) {
-    const runs = await runAcrossActiveTenants("delivery_stale_sweep", () => sweepStaleConsignments(opts));
+    const runs = await runBackgroundJob("delivery_stale_sweep", () => sweepStaleConsignments(opts));
     return {
       escalated: runs.reduce((s, r) => s + r.escalated, 0),
       skippedDuplicates: runs.reduce((s, r) => s + r.skippedDuplicates, 0),

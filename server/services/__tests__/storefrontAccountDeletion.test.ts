@@ -41,7 +41,6 @@ function publicCaller(ip = "198.51.100.42") {
     res: {},
     user: null,
     sessionId: null,
-    platformAdmin: null,
   } as never).storefront;
 }
 

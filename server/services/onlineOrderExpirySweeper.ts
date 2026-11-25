@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { onlineOrders } from "../../drizzle/schema";
 import { extractAffectedRows } from "../lib/insertId";
 import { logger } from "../logger";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../lib/backgroundJobRunner";
 import { withTx } from "./tx";
 import { releaseCouponReservationForOnlineOrder } from "./couponService";
 
@@ -16,7 +16,7 @@ export async function sweepExpiredOnlineOrdersOnce(
   limit = DEFAULT_BATCH,
 ): Promise<{ cancelled: number }> {
   if (!isBackgroundOperationActive("online_order_reservation_expiry")) {
-    const runs = await runAcrossActiveTenants(
+    const runs = await runBackgroundJob(
       "online_order_reservation_expiry",
       () => sweepExpiredOnlineOrdersOnce(now, limit),
     );

@@ -1,32 +1,29 @@
-import { afterEach, describe, expect, it } from "vitest";
-import type { DB } from "../../../db";
-import { runWithCompany } from "../../../tenancy/context";
-import { imageStoreTenantPrefix, studioObjectPrefix, studioObjectRoot } from "../tenantNamespace";
+import { describe, expect, it } from "vitest";
+import {
+  customizerObjectPrefix,
+  customizerObjectRoot,
+  imageStoreTenantPrefix,
+  isCurrentTenantCandidateKey,
+  isCurrentTenantCustomizerKey,
+  studioObjectPrefix,
+  studioObjectRoot,
+} from "../tenantNamespace";
 
-const originalControlUrl = process.env.CONTROL_DATABASE_URL;
-
-afterEach(() => {
-  if (originalControlUrl === undefined) delete process.env.CONTROL_DATABASE_URL;
-  else process.env.CONTROL_DATABASE_URL = originalControlUrl;
-});
-
-describe("image store tenant namespace", () => {
-  it("uses distinct stable prefixes for two companies", () => {
-    const fakeDb = {} as DB;
-    const first = runWithCompany(101, fakeDb, () => studioObjectPrefix("candidate"));
-    const second = runWithCompany(202, fakeDb, () => studioObjectPrefix("candidate"));
-    expect(first).toBe("company-101/studio/candidate");
-    expect(second).toBe("company-202/studio/candidate");
-    expect(first).not.toBe(second);
-    expect(runWithCompany(101, fakeDb, () => studioObjectRoot())).toBe("company-101/studio/");
-  });
-
-  it("derives the single-company Studio retention root from the same namespace contract", () => {
+describe("image store single-company namespace", () => {
+  it("always uses the stable single prefix for Studio and customizer objects", () => {
+    expect(imageStoreTenantPrefix()).toBe("single");
     expect(studioObjectRoot()).toBe("single/studio/");
+    expect(studioObjectPrefix("candidate")).toBe("single/studio/candidate");
+    expect(studioObjectPrefix("original")).toBe("single/studio/original");
+    expect(customizerObjectRoot()).toBe("single/storefront-customizer/");
+    expect(customizerObjectPrefix("logo")).toBe("single/storefront-customizer/logo");
+    expect(customizerObjectPrefix("preview")).toBe("single/storefront-customizer/preview");
   });
 
-  it("fails closed without company context in multi-tenant mode", () => {
-    process.env.CONTROL_DATABASE_URL = "mysql://control.invalid/test";
-    expect(() => imageStoreTenantPrefix()).toThrow(/company context is required/);
+  it("validates candidate and customizer keys strictly under single/", () => {
+    expect(isCurrentTenantCandidateKey("single/studio/candidate/img-1.webp")).toBe(true);
+    expect(isCurrentTenantCandidateKey("company-1/studio/candidate/img-1.webp")).toBe(false);
+    expect(isCurrentTenantCustomizerKey("single/storefront-customizer/logo/a.png")).toBe(true);
+    expect(isCurrentTenantCustomizerKey("single/storefront-customizer/logo/../a.png")).toBe(false);
   });
 });

@@ -13,7 +13,7 @@ import {
   reservations,
 } from "../../../drizzle/schema";
 import { normalizeIraqPhoneE164 } from "../../lib/phone";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../../lib/backgroundJobRunner";
 import { requireDb } from "../tx";
 import {
   createFlowNotifyCycleCache,
@@ -93,7 +93,7 @@ export async function notifyNearExpiryReservations(
   options: NotifyNearExpiryOptions = {},
 ): Promise<NotifyNearExpiryResult> {
   if (!isBackgroundOperationActive("reservation_near_expiry")) {
-    const runs = await runAcrossActiveTenants(
+    const runs = await runBackgroundJob(
       "reservation_near_expiry",
       () => notifyNearExpiryReservations(options),
     );

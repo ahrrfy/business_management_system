@@ -2,12 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Tx } from "../../db";
 
 const state = vi.hoisted(() => ({
-  companyId: null as number | null,
   publish: vi.fn(),
   committed: false,
 }));
 vi.mock("../index", () => ({ publishRealtimeEvent: state.publish }));
-vi.mock("../../tenancy/context", () => ({ getCurrentCompanyId: () => state.companyId }));
 vi.mock("../../db", () => ({ getDb: () => ({ transaction: async (fn: (tx: Tx) => Promise<unknown>) => {
   const result = await fn({} as Tx);
   state.committed = true;
@@ -31,8 +29,6 @@ import { isFinancialMutation } from "@shared/financialRealtime";
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.stubEnv("CONTROL_DATABASE_URL", "");
-  state.companyId = null;
   state.committed = false;
   state.publish.mockReset();
 });
@@ -48,7 +44,7 @@ describe("financial refresh publication", () => {
     await api.inventory.transferReceive();
     await vi.advanceTimersByTimeAsync(400);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: null }, { companyId: null, branchId: null });
+      { branchIds: null }, { branchId: null });
   });
   it("keeps concurrent mutation hints isolated and publishes nothing for a rolled back return", async () => {
     let resume!: () => void;
@@ -75,7 +71,7 @@ describe("financial refresh publication", () => {
     await expect(caller(3, 3).returns.executeSalesReturnCart()).rejects.toThrow("rollback");
     await vi.advanceTimersByTimeAsync(400);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: [2, 1] }, { companyId: null, branchId: null });
+      { branchIds: [2, 1] }, { branchId: null });
   });
   it("preserves the committed branch through a branch-bound return mutation's audit middleware", async () => {
     const api = router({ returns: router({ create: publicProcedure.mutation(async () => {
@@ -86,7 +82,7 @@ describe("financial refresh publication", () => {
     await api.returns.create();
     await vi.advanceTimersByTimeAsync(400);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: [2] }, { companyId: null, branchId: 2 });
+      { branchIds: [2] }, { branchId: 2 });
   });
   it("retains a company-wide fallback when an owner cart may affect invoice and stock in different branches", async () => {
     const api = router({ returns: router({ executeSalesReturnCart: publicProcedure.mutation(async () => {
@@ -97,7 +93,7 @@ describe("financial refresh publication", () => {
     await api.returns.executeSalesReturnCart();
     await vi.advanceTimersByTimeAsync(400);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: null }, { companyId: null, branchId: null });
+      { branchIds: null }, { branchId: null });
   });
   it("scopes a successful cashier lifecycle fallback to that cashier's branch", async () => {
     const api = router({ returns: router({ create: publicProcedure.mutation(() => ({ mode: "EXECUTED" })) }) })
@@ -106,7 +102,7 @@ describe("financial refresh publication", () => {
     await api.returns.create();
     await vi.advanceTimersByTimeAsync(400);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: [2] }, { companyId: null, branchId: 2 });
+      { branchIds: [2] }, { branchId: 2 });
   });
   it("publishes only after COMMIT and coalesces all entries/branches in a transaction", async () => {
     await withTx(async (tx) => {
@@ -119,7 +115,7 @@ describe("financial refresh publication", () => {
     expect(state.committed).toBe(true);
     expect(state.publish).toHaveBeenCalledExactlyOnceWith(
       REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-      { branchIds: [1, 2] }, { companyId: null, branchId: null },
+      { branchIds: [1, 2] }, { branchId: null },
     );
   });
   it("does not publish a rolled-back financial operation", async () => {
@@ -130,16 +126,6 @@ describe("financial refresh publication", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(state.publish).not.toHaveBeenCalled();
   });
-  it("isolates companies even when the shared timer was created by another tenant", async () => {
-    state.companyId = 11;
-    scheduleFinancialRefresh(1);
-    state.companyId = 22;
-    scheduleFinancialRefresh(2);
-    await vi.advanceTimersByTimeAsync(400);
-    expect(state.publish.mock.calls.map((c) => c[2])).toEqual([
-      { companyId: 11, branchId: 1 }, { companyId: 22, branchId: 2 },
-    ]);
-  });
   it("coalesces a burst and allows a company-wide lifecycle update to supersede branch hints", async () => {
     for (let i = 0; i < 200; i++) scheduleFinancialRefresh(1);
     scheduleFinancialRefresh();
@@ -149,12 +135,6 @@ describe("financial refresh publication", () => {
     expect(state.publish.mock.calls[0][1]).toEqual({ branchIds: null });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(state.publish).toHaveBeenCalledOnce();
-  });
-  it("fails closed for a tenant-less producer in multi-tenant mode", async () => {
-    vi.stubEnv("CONTROL_DATABASE_URL", "mysql://control");
-    scheduleFinancialRefresh();
-    await vi.advanceTimersByTimeAsync(400);
-    expect(state.publish).not.toHaveBeenCalled();
   });
   it("includes financial lifecycle and payroll changes without triggering for unrelated mutations", () => {
     for (const path of ["treasury.reassignHandoverReceipt", "shifts.open", "accounts.createManualJournal", "hrEnterprise.approveContract", "attendance.correct", "leaves.approve", "offline.sync", "returns.create", "returns.executeSalesReturnCart", "inventory.adjust", "storeAdmin.orders.dispatch", "storefront.cancelOrderByToken"])

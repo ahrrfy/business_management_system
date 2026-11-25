@@ -308,6 +308,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const isAutoPrintStationActive =
     canAutoPrintStoreOrders &&
     (stationExplicitSetting !== null ? stationExplicitSetting : isStoreAlertRecipient);
+  const isAutoPrintStationActiveRef = useRef(isAutoPrintStationActive);
+  isAutoPrintStationActiveRef.current = isAutoPrintStationActive;
   const stationOptIn = stationExplicitSetting === true && !isStoreAlertRecipient;
   const stationOptInRef = useRef(stationOptIn);
   stationOptInRef.current = stationOptIn;
@@ -322,8 +324,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const alertCoordinator = useMemo(
     () =>
       createStoreOrderAlertCoordinator({
-        hasPrinter: hasConnectedAlertThermalPrinter,
-        canBrowserFallback: () => typeof document !== "undefined",
+        hasPrinter: async () =>
+          isAutoPrintStationActiveRef.current && (await hasConnectedAlertThermalPrinter()),
+        canBrowserFallback: () =>
+          isAutoPrintStationActiveRef.current && typeof document !== "undefined",
         claim: (orderId) =>
           claimAlertMutateRef.current({ id: orderId, stationOptIn: stationOptInRef.current }),
         renew: (orderId, leaseToken) =>
@@ -401,7 +405,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
     REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
     (event) => {
-      if (!isAutoPrintStationActive || !event.payload) return;
+      if ((!isStoreAlertRecipient && !isAutoPrintStationActive) || !event.payload) return;
       void alertCoordinator.handleEvent(event.payload);
     },
   );

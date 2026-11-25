@@ -25,7 +25,7 @@ const approver = { userId: 3, branchId: 1, role: "manager" };
 function db() { const value = getDb(); if (!value) throw new Error("Missing isolated test DB"); return value; }
 function callerContext(user: TrpcContext["user"]): TrpcContext {
   return { req: { headers: {} } as TrpcContext["req"], res: {} as TrpcContext["res"],
-    user, sessionId: null, nativeClientId: null, platformAdmin: null };
+    user, sessionId: null, nativeClientId: null };
 }
 
 beforeEach(async () => {

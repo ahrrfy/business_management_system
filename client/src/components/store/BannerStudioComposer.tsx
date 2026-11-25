@@ -94,6 +94,9 @@ export interface EditableBannerRecord {
   effectiveFrom: string | null;
   effectiveTo: string | null;
   placement: string | null;
+  renderMode?: string | null;
+  focusX?: number | null;
+  focusY?: number | null;
   linkedPromoInactive?: boolean;
 }
 
@@ -111,7 +114,7 @@ export interface BannerSavePayload {
   effectiveFrom: string | null;
   effectiveTo: string | null;
   placement: BannerPlacementOption;
-  renderMode: "PRESERVE_FULL";
+  renderMode: "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
   focusX: number;
   focusY: number;
 }
@@ -626,7 +629,7 @@ export function BannerStudioComposer({
               url,
               mobileUrl:
                 uploadedDesktop.length === 1
-                  ? singleMob
+                  ? null
                   : (prevMeta?.mobileUrl ?? null),
               title: prevMeta?.title ?? null,
               subtitle: prevMeta?.subtitle ?? null,
@@ -642,16 +645,18 @@ export function BannerStudioComposer({
             };
           })
           .filter((i) => i.url),
-        ctaLabel: null,
+        ctaLabel: editingBanner?.ctaLabel ?? null,
         ctaUrl: subject.ctaUrl.trim() || null,
         sortOrder: Number(sortOrder) || 0,
         isActive,
         effectiveFrom: effectiveFrom || null,
         effectiveTo: effectiveTo || null,
         placement,
-        renderMode: "PRESERVE_FULL",
-        focusX: 50,
-        focusY: 50,
+        renderMode:
+          (editingBanner?.renderMode as "SMART_CROP" | "PRESERVE_FULL" | "LAYERED" | undefined) ??
+          "PRESERVE_FULL",
+        focusX: editingBanner?.focusX ?? 50,
+        focusY: editingBanner?.focusY ?? 50,
       });
       return;
     }
@@ -696,7 +701,11 @@ export function BannerStudioComposer({
       subtitle: first.subtitle ?? (safeCopy.subtitle.trim() || null),
       imageUrl: first.url,
       mobileImageUrl: finalSlides.length === 1 ? (first.mobileUrl ?? null) : null,
-      images: finalSlides.map((s, idx) => ({ ...s, sortOrder: idx })),
+      images: finalSlides.map((s, idx) => ({
+        ...s,
+        mobileUrl: finalSlides.length === 1 ? null : s.mobileUrl,
+        sortOrder: idx,
+      })),
       ctaLabel: null,
       ctaUrl: first.ctaUrl ?? (subject.ctaUrl.trim() || (editingBanner ? null : "/store")),
       sortOrder: Number(sortOrder) || 0,

@@ -351,7 +351,6 @@ describe("دورة اعتماد المصروفات", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: {
         id: creator.userId,
         openId: "expense-creator",
@@ -572,7 +571,6 @@ describe("دورة اعتماد المصروفات", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: {
         id: ownerA.userId,
         openId: "expense-owner-a",

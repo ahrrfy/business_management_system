@@ -3,8 +3,8 @@ import { getDb, getPool } from "../db";
 import { logger } from "../logger";
 import {
   isBackgroundOperationActive,
-  runAcrossActiveTenants,
-} from "../tenancy/backgroundTenants";
+  runBackgroundJob,
+} from "../lib/backgroundJobRunner";
 import {
   isPushEnabled,
   sendPushToUser,
@@ -166,7 +166,7 @@ export async function runWebPushOutboxBatch(
   options: WebPushOutboxRunOptions = {},
 ): Promise<WebPushOutboxRunResult> {
   if (!isBackgroundOperationActive("web_push_outbox")) {
-    const runs = await runAcrossActiveTenants(
+    const runs = await runBackgroundJob(
       "web_push_outbox",
       () => runWebPushOutboxBatch(batchSize, options),
     );

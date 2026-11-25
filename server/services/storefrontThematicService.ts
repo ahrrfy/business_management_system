@@ -18,7 +18,6 @@ import { storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { resolveStorefrontBranchId, storefrontCatalog, type StorefrontProduct } from "./storefrontService";
 import { createTtlCache } from "../lib/ttlCache";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { withTx } from "./tx";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
@@ -643,8 +642,7 @@ export async function computeAlgorithmicThematicCollections(
   branchId?: number | null
 ): Promise<ThematicCollectionCard[]> {
   const resolvedBranchId = await resolveStorefrontBranchId(branchId ?? undefined);
-  const companyKey = getCurrentCompanyId() ?? 0;
-  const cacheKey = `thematic_company_${companyKey}_branch_${resolvedBranchId}`;
+  const cacheKey = `thematic_company_0_branch_${resolvedBranchId}`;
 
   return thematicCache.get(cacheKey, async () => {
     // جمع المرشحين الذكي عبر الفئات المستهدفة والكلمات المفتاحية الموجهة

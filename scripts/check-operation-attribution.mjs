@@ -101,14 +101,6 @@ for (const file of serverFiles) {
   unsafeHttp.push(...routes.map((route) => `${file}:${route[0]}`));
 }
 
-const platformRouter = read("server/routers/platformAdminRouter.ts");
-const platformMutations = platformRouter.match(/\.mutation\s*\(/g)?.length ?? 0;
-const platformAudits = platformRouter.match(/\blogPlatformAudit\s*\(/g)?.length ?? 0;
-if (platformAudits < platformMutations) {
-  fail(`إدارة المنصّة: ${platformMutations} mutations مقابل ${platformAudits} سجلات منصة.`);
-}
-if (!platformRouter.includes("listPlatformAudit")) fail("سجلّ إدارة المنصّة يُكتب لكنه غير قابل للعرض.");
-
 // كل عامل جديد يجب أن يُصنّف هنا صراحةً: سجل نظام مركزي، سجل حدث/صندوق دائم، أو قراءة فقط.
 const BACKGROUND_POLICIES = {
   startAppNotificationOutboxWorker: "durable appNotificationOutbox + system summary",
@@ -132,10 +124,10 @@ const registeredJobs = new Set(
 );
 for (const job of registeredJobs) if (!BACKGROUND_POLICIES[job]) fail(`العامل ${job} بلا سياسة إسناد صريحة.`);
 for (const job of Object.keys(BACKGROUND_POLICIES)) if (!registeredJobs.has(job)) fail(`سياسة عامل يتيم: ${job}.`);
-if (!index.includes('runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts)')) {
+if (!index.includes('runBackgroundJob("reception_draft_sweep", sweepExpiredDrafts)')) {
   fail("كنّاس مسودات الاستقبال خارج سجل عامل النظام.");
 }
-const background = read("server/tenancy/backgroundTenants.ts");
+const background = read("server/lib/backgroundJobRunner.ts");
 for (const contract of ["backgroundOperationEffectCount", "auditBackgroundFailure", "system.job.", 'source: "system"', 'outcome: "FAILURE"']) {
   if (!background.includes(contract)) fail(`عقد العامل المركزي ناقص: ${contract}`);
 }
@@ -147,6 +139,7 @@ const CENTRALIZED_JOB_FILES = {
   morning_push: "server/services/morningPushScheduler.ts",
   web_push_outbox: "server/services/webPushOutboxWorker.ts",
   online_order_reservation_expiry: "server/services/onlineOrderExpirySweeper.ts",
+  product_studio_due_notifications: "server/services/productStudioNotificationWorker.ts",
   product_studio_staging: "server/services/productStudioStagingWorker.ts",
   reception_draft_sweep: "server/services/reception/draft.ts",
   reservation_near_expiry: "server/services/reservations/nearExpiry.ts",
@@ -155,7 +148,7 @@ const CENTRALIZED_JOB_FILES = {
 for (const [job, file] of Object.entries(CENTRALIZED_JOB_FILES)) {
   const source = read(file);
   const escapedJob = job.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const entersScope = new RegExp(`runAcrossActiveTenants\\s*\\(\\s*["']${escapedJob}["']`).test(source);
+  const entersScope = new RegExp(`runBackgroundJob\\s*\\(\\s*["']${escapedJob}["']`).test(source);
   const guardsRecursion = new RegExp(`isBackgroundOperationActive\\s*\\(\\s*["']${escapedJob}["']\\s*\\)`).test(source);
   if (!entersScope || !guardsRecursion) fail(`${file}: العامل ${job} يستطيع تجاوز نطاق الإسناد المركزي.`);
 }
@@ -170,10 +163,6 @@ if (!auditRouteProtected(app, read("client/src/lib/navVisibility.ts"))) fail("م
 const auditPage = read("client/src/pages/AuditLogs.tsx");
 for (const contract of ['mode: "columns" as const', "screenPath", "auditOperationMeta", "محاولة فاشلة"]) {
   if (!auditPage.includes(contract)) fail(`واجهة سجل الحركات ناقصة: ${contract}`);
-}
-const platformPage = read("client/src/pages/PlatformAdmin.tsx");
-if (!platformPage.includes("<PlatformAuditTable />") || !platformPage.includes("operation={operation}")) {
-  fail("واجهة إدارة المنصّة لا تعرض عقد من/ماذا/الهدف/الوقت.");
 }
 
 const screenContextClients = [

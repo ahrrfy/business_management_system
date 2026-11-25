@@ -158,7 +158,6 @@ describe("online order current lifecycle", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: { ...user, isOwner: true, totpEnabledAt: new Date() },
     } as never);
     expect(

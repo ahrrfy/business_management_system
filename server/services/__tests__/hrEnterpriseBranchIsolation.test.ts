@@ -275,7 +275,6 @@ function createCaller(user: { id: number; role: string; branchId: number | null;
     req: { headers: {} },
     res: { cookie() {}, clearCookie() {} },
     sessionId: null,
-    platformAdmin: null,
     user,
   } as unknown as TrpcContext;
   return hrEnterpriseRouter.createCaller(context);

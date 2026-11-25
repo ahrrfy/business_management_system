@@ -17,7 +17,6 @@ function adminCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 81,
       openId: "tracking_ref_terminal_admin",

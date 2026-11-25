@@ -21,7 +21,6 @@ function caller(
     req: { headers: {} },
     res: { cookie() {}, clearCookie() {} },
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 91,
       role,

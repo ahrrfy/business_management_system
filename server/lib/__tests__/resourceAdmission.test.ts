@@ -306,20 +306,19 @@ it("keeps an accepted root and its late tail in the drain, and times out honestl
 
 it("rejects new background jobs while accepted job descendants still settle during drain", async () => {
   vi.resetModules();
-  vi.stubEnv("CONTROL_DATABASE_URL", "");
   try {
     const { runtimeWorkDrain } = await import("../workDrain");
-    const { runAcrossActiveTenants } = await import("../../tenancy/backgroundTenants");
+    const { runBackgroundJob } = await import("../backgroundJobRunner");
     let commit!: () => void;
     const committed = new Promise<void>(r => { commit = r; });
     let lateChild = false, newJob = false;
-    const accepted = runAcrossActiveTenants("accepted", async () => {
+    const accepted = runBackgroundJob("accepted", async () => {
       await committed;
-      await runAcrossActiveTenants("late-child", async () => { lateChild = true; return 0; });
+      await runBackgroundJob("late-child", async () => { lateChild = true; return 0; });
       return 0;
     });
     runtimeWorkDrain.stopAccepting();
-    expect(await runAcrossActiveTenants("new", async () => { newJob = true; return 0; })).toEqual([]);
+    expect(await runBackgroundJob("new", async () => { newJob = true; return 0; })).toEqual([]);
     commit(); await accepted; await runtimeWorkDrain.wait(1000);
     expect(lateChild).toBe(true); expect(newJob).toBe(false);
   } finally { vi.unstubAllEnvs(); vi.resetModules(); }

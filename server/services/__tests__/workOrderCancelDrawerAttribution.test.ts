@@ -29,7 +29,6 @@ function workOrderCaller(user: { id: number; role: string; isOwner: boolean }, b
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       ...user,
       branchId,

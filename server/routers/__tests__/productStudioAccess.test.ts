@@ -20,7 +20,6 @@ function caller(
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 71,
       role,

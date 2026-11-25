@@ -25,7 +25,7 @@ import {
 function context(grants: Record<string, boolean>, overrides: Record<string, unknown> = {}): TrpcContext {
   const policy: OperationPolicy = { version: 1, grants };
   return {
-    req: {}, res: {}, sessionId: null, nativeClientId: null, platformAdmin: null,
+    req: {}, res: {}, sessionId: null, nativeClientId: null,
     user: { id: 17, role: "warehouse", branchId: 2, isOwner: false,
       permissionsOverride: { sales: "NONE", store: "NONE", workorders: "NONE", pos: "NONE" },
       operationPolicyEnabled: true, resolvedOperationPolicy: policy,

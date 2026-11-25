@@ -1,7 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { logger } from "../logger";
 import { isImageStoreOperational } from "../lib/imageStore";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../lib/backgroundJobRunner";
 import { cleanupStudioStaging } from "./productStudioService";
 
 /**
@@ -23,7 +23,7 @@ export async function sweepProductStudioStagingOnce(): Promise<number> {
     return 0;
   }
   if (!isBackgroundOperationActive("product_studio_staging")) {
-    const runs = await runAcrossActiveTenants("product_studio_staging", sweepProductStudioStagingOnce);
+    const runs = await runBackgroundJob("product_studio_staging", sweepProductStudioStagingOnce);
     return runs.reduce((sum, removed) => sum + removed, 0);
   }
   return cleanupStudioStaging(SWEEP_BATCH);
