@@ -373,14 +373,19 @@ async function resolveLegacyClient(
     const image = JSON.parse(
       execute("docker", ["image", "inspect", inspected.Image], PROCESS_OPTIONS),
     )[0];
+    const pinnedImageId = process.env.ALROYA_PINNED_MYSQL80_IMAGE_ID?.trim();
+    const hasVerifiedImageDigest =
+      image.RepoDigests?.some((ref) =>
+        /^(?:mysql|docker\.io\/library\/mysql)@sha256:[a-f0-9]{64}$/.test(ref),
+      ) ||
+      (/^sha256:[a-f0-9]{64}$/.test(pinnedImageId ?? "") &&
+        image?.Id === pinnedImageId);
     if (
       image?.Id !== inspected.Image ||
       !officialEntrypoint(image.Config?.Entrypoint) ||
       image.Config?.Cmd?.length !== 1 ||
       image.Config.Cmd[0] !== "mysqld" ||
-      !image.RepoDigests?.some((ref) =>
-        /^(?:mysql|docker\.io\/library\/mysql)@sha256:[a-f0-9]{64}$/.test(ref),
-      )
+      !hasVerifiedImageDigest
     )
       throw new Error(
         "BACKUP_TARGET_CONTINUITY: matching official image is unavailable",
