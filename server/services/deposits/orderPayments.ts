@@ -216,22 +216,45 @@ export async function appliedCollectionsForWorkOrder(tx: Tx, workOrderId: number
     .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "REFUND")))
     .groupBy(orderPayments.parentPaymentId);
   const refundOf = new Map(refundSums.map((r) => [Number(r.parentPaymentId), String(r.v)]));
-  return apps.map((a) => {
-    const parent = parentOf.get(Number(a.parentPaymentId));
-    return {
+  const remainingRefundByParent = new Map<number, ReturnType<typeof money>>(
+    Array.from(refundOf.entries()).map(([pid, val]) => [pid, round2(money(val))]),
+  );
+  const out: Array<{
+    applicationId: number;
+    collectionId: number;
+    amount: string;
+    method: DepositMethod;
+    receiptId: number | null;
+    draftId: number | null;
+    customerId: number | null;
+    soleTarget: boolean;
+  }> = [];
+  for (const a of apps) {
+    const parentId = Number(a.parentPaymentId);
+    const parent = parentOf.get(parentId);
+    const appAmt = round2(money(a.amount));
+    const remRefund = remainingRefundByParent.get(parentId) ?? money(0);
+    const deducted = remRefund.gt(0) ? (remRefund.gte(appAmt) ? appAmt : remRefund) : money(0);
+    if (deducted.gt(0)) {
+      remainingRefundByParent.set(parentId, round2(remRefund.minus(deducted)));
+    }
+    const netAmt = round2(appAmt.minus(deducted));
+    if (netAmt.lte(0)) continue;
+    out.push({
       applicationId: Number(a.applicationId),
-      collectionId: Number(a.parentPaymentId),
-      amount: String(a.amount),
+      collectionId: parentId,
+      amount: toDbMoney(netAmt),
       method: (parent?.method ?? "CASH") as DepositMethod,
       receiptId: parent?.receiptId != null ? Number(parent.receiptId) : null,
       draftId: parent != null ? Number(parent.draftId) : null,
       /** عميل القبض لحظته — ساقا الردّ تُكتبان به لا بعميل المسوّدة الحاليّ (قابلٍ للتغيّر). */
       customerId: parent?.customerId != null ? Number(parent.customerId) : null,
       soleTarget:
-        (countOf.get(Number(a.parentPaymentId)) ?? 0) === 1 &&
-        !money(refundOf.get(Number(a.parentPaymentId)) ?? "0").gt(0),
-    };
-  });
+        (countOf.get(parentId) ?? 0) === 1 &&
+        !money(refundOf.get(parentId) ?? "0").gt(0),
+    });
+  }
+  return out;
 }
 
 /** ربط إيصالات P أحاديّة الهدف بفاتورة تسليم أمر الشغل (نمط deliver.ts:161-185 حرفياً). */

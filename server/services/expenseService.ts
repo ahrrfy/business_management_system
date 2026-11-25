@@ -609,7 +609,7 @@ async function createStockExpenseTx(
   for (const id of varIds) {
     const v = existByVar.get(id)!;
     const p = prodById.get(Number(v.productId));
-    if (!p || !p.isActive || !v.variantActive || p.isService || p.isBundle || p.productType === "DIGITAL_CARD") {
+    if (!p || !p.isActive || !v.variantActive || p.isService || p.isBundle || p.isConsignment || p.productType === "DIGITAL_CARD") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({

@@ -116,7 +116,7 @@ export async function planDetachedShipmentFees(
         return [id, round2(Decimal.max(0, input.capacityOverrides.get(id) ?? money(0)))] as const;
       }
       const balance = feeBalances.get(id);
-      const ownDue = row.cn.sourceType === "ONLINE_ORDER" && row.cn.feeCollection === "SHOP"
+      const ownDue = row.cn.sourceType !== "AFTERCARE_EXECUTION" && row.cn.feeCollection === "SHOP"
         ? (balance?.active ? balance.due : input.includePending && !row.cn.feeSettledAt ? money(row.cn.deliveryFee) : money(0))
         : money(0);
       const ownFee = quoteFee(ownDue, orderTotalFor(row.cn));
@@ -124,7 +124,7 @@ export async function planDetachedShipmentFees(
     }));
     if (input.includeTargetOverflow !== false) {
       for (const source of targets) {
-        if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP") continue;
+        if (source.cn.sourceType === "AFTERCARE_EXECUTION" || source.cn.feeCollection !== "SHOP") continue;
         const sourceId = Number(source.cn.id);
         const balance = feeBalances.get(sourceId);
         const ownDue = balance?.active
@@ -164,7 +164,7 @@ export async function planDetachedShipmentFees(
       }
     }
     for (const source of group) {
-      if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP" ||
+      if (source.cn.sourceType === "AFTERCARE_EXECUTION" || source.cn.feeCollection !== "SHOP" ||
           targets.some((row) => Number(row.cn.id) === Number(source.cn.id))) continue;
       const balance = feeBalances.get(Number(source.cn.id));
       const earned = balance?.due ?? money(0);

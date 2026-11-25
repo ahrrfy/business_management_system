@@ -41,6 +41,10 @@ import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
 } from "../delivery/lifecycle";
+import {
+  autoOffsetShopDeliveryFeeOnDispatchTx,
+  reverseAutoOffsetShopDeliveryFeeTx,
+} from "../delivery/shopFeeAutoOffset";
 import type { DeliveryTxActor } from "../delivery/types";
 import { logAuditTx } from "../auditService";
 import { assertNoStaleOpenParcelsTx } from "../delivery/parties";
@@ -257,6 +261,15 @@ export async function dispatchChargeOnlyRequestTx(
     consignmentId,
     actorUserId: actor.userId,
     operationId: `fulfillment.request.release:${input.clientRequestId}`,
+  });
+  await autoOffsetShopDeliveryFeeOnDispatchTx(tx, {
+    consignmentId,
+    actor: {
+      userId: actor.userId,
+      branchId: request.branchId,
+      role: actor.role ?? "admin",
+    },
+    operationKey: `fulfillment.request.release:${input.clientRequestId}`,
   });
   enqueuePostCommit(tx, () => {
     publishRealtimeEvent(
@@ -775,6 +788,16 @@ export async function returnFulfillmentRequestConsignmentTx(
       amount: toDbMoney(exposure),
       actorUserId: actor.userId,
     });
+  await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+    consignmentId: cn.id,
+    actor: {
+      userId: actor.userId,
+      branchId: cn.branchId,
+      role: actor.role ?? "admin",
+    },
+    operationKey: `fulfillment.request.return:${input.clientRequestId}`,
+    reason: input.reason.trim(),
+  });
   await tx
     .update(deliveryConsignments)
     .set({

@@ -6,6 +6,7 @@ import { addQuantities, subtractQuantities } from "@shared/quantity";
 import {
   branchStock,
   inventoryMovements,
+  invoices,
   products,
   productUnits,
   productVariants,
@@ -337,8 +338,17 @@ async function loadReviewCore(
           referenceId: inventoryMovements.referenceId,
           notes: inventoryMovements.notes,
           createdAt: inventoryMovements.createdAt,
+          originatedOffline: invoices.originatedOffline,
+          capturedAt: invoices.capturedAt,
         })
         .from(inventoryMovements)
+        .leftJoin(
+          invoices,
+          and(
+            inArray(inventoryMovements.referenceType, ["SALE", "PRINT_SALE"]),
+            eq(inventoryMovements.referenceId, invoices.id),
+          ),
+        )
         .where(
           and(
             eq(inventoryMovements.branchId, branchId),
@@ -348,18 +358,18 @@ async function loadReviewCore(
         )
         .orderBy(asc(inventoryMovements.createdAt), asc(inventoryMovements.id));
       for (const m of rows) {
-        // تسوية الجلسة نفسها — بمرجعها الدوري (STOCKTAKE) أو الافتتاحي (OPENING بreferenceId=الجلسة):
-        // بعد الاعتماد تُستبعد من netAfter كي لا يلوّث الاعتمادُ السابق إعادةَ الحساب/التقرير.
-        // (حركات OPENING بلا referenceId — إنشاء منتج/استيراد — تدخل الحساب: تدفّق حقيقي.)
         if (
           (m.referenceType === "STOCKTAKE" || m.referenceType === "OPENING") &&
           Number(m.referenceId) === sessionId
         )
           continue;
+        const effectiveAt =
+          m.originatedOffline && m.capturedAt ? m.capturedAt : m.createdAt;
         const v = Number(m.variantId);
         const list = movesByVariant.get(v) ?? [];
         list.push({
           ...m,
+          createdAt: effectiveAt,
           variantId: v,
           referenceId: m.referenceId == null ? null : Number(m.referenceId),
         });

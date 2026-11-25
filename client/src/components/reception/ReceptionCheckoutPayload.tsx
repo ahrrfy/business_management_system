@@ -167,9 +167,11 @@ export function buildReceptionCheckoutPayload({
     // baseQuantity = qty * conversionFactor (يُقرَّب لعدد صحيح لمطابقة فحص createWorkOrder).
     const materials: { variantId: number; baseQuantity: number }[] = [];
     if (!c.row.isService) {
-      const factor = Number(c.row.conversionFactor) || 1;
-      const baseQty = Math.max(1, Math.round(c.qty * factor));
-      materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
+      const factor = new Decimal(c.row.conversionFactor || 1);
+      const baseQty = new Decimal(c.qty).times(factor).toDecimalPlaces(4).toNumber();
+      if (baseQty > 0) {
+        materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
+      }
     }
     const strippedSelections = stripRecipeSelectionMeta(custom.recipeSelections);
     return {

@@ -1,6 +1,10 @@
 import { activeDeliveryInvoiceIdsTx } from "../delivery/guards";
 import { loadRefundCaps } from "../returns/refundCaps";
-import { applyCustomerReceiptCreditTx, customerReceiptCreditTotalTx } from "../customerReceiptSettlement";
+import {
+  applyCustomerHistoricalCreditTx,
+  applyCustomerReceiptCreditTx,
+  customerReceiptCreditTotalTx,
+} from "../customerReceiptSettlement";
 import { consumeRetainedSupplierBookExcessTx } from "../purchase/supplierBookSettlement";
 /**
  * خدمة التسوية التلقائية والمطابقة الذكية لذمم العملاء والموردين (FIFO Auto-Settlement).
@@ -314,24 +318,17 @@ export async function autoSettleCustomerAccountTx(
       if (needed.lte(0)) continue;
 
       const tracked = await applyCustomerReceiptCreditTx(tx, inv.id, needed, actor);
-      const legacyPart = Decimal.min(legacyCredit, needed.minus(tracked));
-      legacyCredit = legacyCredit.minus(legacyPart);
-      const allocate = tracked.plus(legacyPart);
+      const histCap = Decimal.min(legacyCredit, needed.minus(tracked));
+      const hist = histCap.gt(0)
+        ? await applyCustomerHistoricalCreditTx(tx, inv.id, histCap, actor, "autoSettle")
+        : money(0);
+      legacyCredit = legacyCredit.minus(hist);
+      const allocate = tracked.plus(hist);
       if (allocate.lte(0)) continue;
       const newPaid = currentPaid.plus(allocate);
       totalSettled = totalSettled.plus(allocate);
 
       const newStatus = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
-
-      await tx
-        .update(invoices)
-        .set({
-          paidAmount: toDbMoney(newPaid),
-          status: newStatus,
-          paymentDate: new Date(),
-        })
-        .where(eq(invoices.id, inv.id));
-
       inv.paidAmount = toDbMoney(newPaid);
       inv.status = newStatus;
 
@@ -415,6 +412,7 @@ export async function autoSettleSupplierAccountTx(
       and(
         eq(purchaseOrders.supplierId, supplierId),
         sql`${purchaseOrders.status} IN ('CONFIRMED', 'RECEIVED')`,
+        sql`COALESCE(${purchaseOrders.agreedCurrency}, 'IQD') = 'IQD'`,
         sql`${purchaseOrders.paidAmount} < ${purchaseOrders.total}`,
         withoutNativeSupplierInvoice(),
       ),

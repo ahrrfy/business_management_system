@@ -305,7 +305,13 @@ export function materialize(
       customizationText: l.customizationText ?? null,
       quantity: qtyInt,
       materials: variantId != null && !isServiceVariant
-        ? [{ variantId, baseQuantity: Math.max(1, Math.round(qtyInt * factor)) }]
+        ? [{
+            variantId,
+            baseQuantity: money(l.quantity)
+              .times(money(factor))
+              .toDecimalPlaces(4)
+              .toNumber(),
+          }]
         : [],
       ...(recipeSelections ? { recipeSelections } : {}),
       laborCost: s.laborCost ? money(s.laborCost).toFixed(2) : "0",

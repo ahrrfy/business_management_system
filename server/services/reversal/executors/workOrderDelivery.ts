@@ -20,7 +20,8 @@ import Decimal from "decimal.js";
 
 import { appErrorMessage } from "@shared/errors";
 
-import { invoices, receipts, workOrders } from "../../../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { invoices, orderPayments, receipts, workOrders } from "../../../../drizzle/schema";
 import { extractInsertId } from "../../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../../accounting/postingEngine";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../../cash/cashAvailability";
@@ -206,6 +207,37 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
       });
       const refundReceiptId = extractInsertId(inserted);
       firstReceiptId ??= refundReceiptId;
+      if (plan.counterRole !== "AR") {
+        const [collection] = await tx
+          .select()
+          .from(orderPayments)
+          .where(
+            and(
+              eq(orderPayments.receiptId, sourceReceiptId),
+              eq(orderPayments.kind, "COLLECTION"),
+            ),
+          )
+          .limit(1);
+        if (collection) {
+          await tx.insert(orderPayments).values({
+            draftId: Number(collection.draftId),
+            branchId: Number(ctx.wo.branchId),
+            customerId:
+              collection.customerId != null
+                ? Number(collection.customerId)
+                : (ctx.wo.customerId ?? null),
+            kind: "REFUND",
+            amount: toDbMoney(amount),
+            method: (plan.refundMethod === "CHECK" ? "TRANSFER" : plan.refundMethod) as typeof collection.method,
+            receiptId: refundReceiptId,
+            shiftId: cash ? ctx.cashShiftId : null,
+            parentPaymentId: Number(collection.id),
+            appliedKind: "WORKORDER",
+            appliedId: workOrderId,
+            createdBy: run.actor.userId,
+          });
+        }
+      }
       if (!cash) {
         state.pendingRefundReceiptIds.push(refundReceiptId);
         leftOpenWhy = `الردّ بـ${plan.refundMethod} سندُ صرفٍ معلَّق (إيصال ${refundReceiptId}) لا يخرج به مالٌ حتى يعتمده المالك`;

@@ -113,6 +113,7 @@ export interface PrintSaleLineInput {
   /** السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير). إن غاب يُؤخذ سعر الفئة. */
   unitPriceOverride?: string | null;
   discountPercent?: string | null;
+  discountAmount?: string | null;
   recipeSelections?: RecipeLineSelection[] | null;
 }
 
@@ -750,6 +751,7 @@ export async function createPrintSaleInTx(
         unitPrice,
         quantity: money(l.quantity),
         discountPercent: l.discountPercent ?? null,
+        discountAmount: l.discountAmount ?? null,
       });
       referenceGross = referenceGross.plus(round2((listRef ?? unitPrice).times(money(l.quantity))));
       const variant = varMap.get(l.variantId)!;

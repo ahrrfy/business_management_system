@@ -17,6 +17,7 @@ import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
 import { physicalHandoverConsignmentIdsTx } from "./handoverEvidence";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "./shopFeeAutoOffset";
 
 export interface CancelDeliveryAssignmentInput {
   consignmentId: number;
@@ -245,6 +246,13 @@ export async function cancelDeliveryAssignmentInTx(
         occurredAt: cancelledAt,
       });
     }
+
+    await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+      consignmentId: Number(cn.id),
+      actor,
+      operationKey: `delivery.cancelAssignment:${input.clientRequestId}`,
+      reason,
+    });
 
     assertConsignmentStatusTransition(cn.status, "CANCELLED");
     await tx

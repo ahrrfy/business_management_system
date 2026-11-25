@@ -597,9 +597,9 @@ export const receptionRouter = router({
           deliveryFeeTender: input.deliveryFeeTender ?? null,
           delivery: input.delivery ?? null,
           openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
-          priceOverrideApproved: elevated || approvedBy != null,
-          // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه (سلطة ذاتية).
-          priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),
+          priceOverrideApproved: elevated || ctx.user.role === "manager" || approvedBy != null,
+          // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع/مدير الفرع نفسه (سلطة ذاتية).
+          priceApprovedBy: approvedBy ?? ((elevated || ctx.user.role === "manager") ? ctx.user.id : null),
         },
         actor as never,
       ),

@@ -11,6 +11,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { validateDeliveryDriverTx } from "./driverValidation";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
+import { autoOffsetShopDeliveryFeeOnDispatchTx } from "./shopFeeAutoOffset";
 import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
@@ -1000,6 +1001,12 @@ async function runWorkOrderDispatchTx(
     .update(workOrders)
     .set({ invoiceId })
     .where(eq(workOrders.id, Number(wo.id)));
+  await autoOffsetShopDeliveryFeeOnDispatchTx(tx, {
+    consignmentId,
+    actor,
+    operationKey:
+      input.clientRequestId ?? `delivery.dispatchWorkOrder:${consignmentId}`,
+  });
   if (input.clientRequestId)
     await recordIdempotencyKey(
       tx,

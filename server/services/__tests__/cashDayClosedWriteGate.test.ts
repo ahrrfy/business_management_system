@@ -62,6 +62,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "purchase/supplierPayments.ts": 2,
   "purchaseReturnsService.ts": 1,
   "reception/deposits.ts": 3,
+  "returns/noReceiptExchangeService.ts": 1,
   "returnService.ts": 5,
   // م٢ ق٧: ردُّ إلغاء البيع/المرتجع الكامل وردُّ عكس تسليم أمر الشغل يكتبهما منفّذا محرّك العكس —
   // `sale/cancel.ts` و`workOrder/reverseDelivery.ts` لم يعودا يكتبان إيصالاً (يقفلان المصدر وحسب).

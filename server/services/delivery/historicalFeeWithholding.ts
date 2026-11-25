@@ -177,7 +177,7 @@ export async function repairHistoricalFeeWithholding(
         Number(rm.partyId) !== Number(cn.partyId) ||
         Number(cn.branchId) !== branchId ||
         Number(cn.remittanceId) !== target.remittanceId ||
-        cn.sourceType !== "ONLINE_ORDER" ||
+        cn.sourceType === "AFTERCARE_EXECUTION" ||
         cn.feeCollection !== "SHOP" ||
         cn.parcelStatus !== "DELIVERED" ||
         cn.moneyStatus !== "SETTLED" ||

@@ -9,6 +9,7 @@ import {
   listCheckoutChargeOptions,
 } from "../services/checkoutCharges";
 import { failOpaque } from "../lib/opaqueFailure";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
   hashBadgeBarcode,
   isPlaintextManagerBadgeFormat,
@@ -1672,7 +1673,7 @@ export const saleRouter = router({
           role: ctx.user.role,
           isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
         };
-        return withTx(async (tx) => {
+        return retryOnDeadlock(() => withTx(async (tx) => {
           const [inv] = await tx
             .select()
             .from(invoices)
@@ -1909,7 +1910,7 @@ export const saleRouter = router({
             balanceBefore,
             balanceAfter,
           };
-        }, { isolationLevel: "read committed" });
+        }, { isolationLevel: "read committed" }));
       }
 
       const totalPaymentAmount =

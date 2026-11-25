@@ -692,7 +692,7 @@ export async function reverseWorkOrderDeliveryInTx(
       returnedAt: reversedAt, settledAt: reversedAt,
       returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null,
     }).where(eq(deliveryConsignments.id, Number(consignment.id)));
-    if (consignment.partyId != null && money(consignment.codAmount ?? "0").gt(0)) {
+    if (consignment.partyId != null && consignment.moneyStatus !== "SETTLED" && money(consignment.codAmount ?? "0").gt(0)) {
       await appendDeliveryLedgerEntry(tx, {
         eventKey: `CN:${Number(consignment.id)}:COD_RELEASED:WO_REVERSED:${invoiceId}`,
         partyId: Number(consignment.partyId),
@@ -716,7 +716,7 @@ export async function reverseWorkOrderDeliveryInTx(
   }
   await tx.update(workOrders).set(input.reopen === true ? {
     status: "READY", invoiceId: null, deliveredAt: null,
-    deposit: "0.00", depositReceiptId: null, paymentMethod: "CASH",
+    deposit: "0.00", depositReceiptId: null, paymentMethod: null,
     cancelReason: null, cancelledAt: null, cancelledBy: null,
     kanbanState: "NORMAL", blockedReason: null,
   } : {

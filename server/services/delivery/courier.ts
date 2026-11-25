@@ -1105,18 +1105,32 @@ async function recognizeDeliveredShipmentFeeTx(
       }),
     });
   }
+  const { activeShopFeeAutoOffsetAmountTx } = await import("./shopFeeAutoOffset");
+  const { verifiedLedgerFeeDue } = await import("./fees");
   for (const cn of members.filter((row) => money(row.deliveryFee).gt(0))) {
-    const [earned] = await tx
+    if (cn.feeSettledAt != null) continue;
+    const currentDue = await verifiedLedgerFeeDue(tx, {
+      id: Number(cn.id),
+      partyId: Number(cn.partyId),
+      branchId: Number(cn.branchId),
+    });
+    if (currentDue.gt(0)) continue;
+    const autoOffset = await activeShopFeeAutoOffsetAmountTx(tx, Number(cn.id));
+    const totalFee = round2(money(cn.deliveryFee));
+    const fee = round2(Decimal.max(0, totalFee.minus(autoOffset.offsetAmount)));
+    if (fee.lte(0)) continue;
+    const [priorEarned] = await tx
       .select({ id: deliveryLedgerEntries.id })
       .from(deliveryLedgerEntries)
       .where(eq(deliveryLedgerEntries.eventKey, `CN:${cn.id}:FEE_EARNED`))
       .for("share")
       .limit(1);
-    if (earned) continue;
-    const fee = round2(money(cn.deliveryFee));
+    const cycleSuffix = priorEarned
+      ? `:${autoOffset.cycleKey ?? (cn.dispatchedAt ? new Date(cn.dispatchedAt).getTime() : "react")}`
+      : "";
     if (fee.gt(0)) {
       await appendDeliveryLedgerEntry(tx, {
-        eventKey: `CN:${cn.id}:FEE_EARNED`,
+        eventKey: `CN:${cn.id}:FEE_EARNED${cycleSuffix}`,
         partyId: Number(cn.partyId),
         consignmentId: Number(cn.id),
         branchId: Number(cn.branchId),
@@ -1128,7 +1142,7 @@ async function recognizeDeliveredShipmentFeeTx(
         await postEntry(tx, {
           entryType: "DELIVERY_FEE",
           postingIntent: deliveryFeeAccrualIntent(fee),
-          dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}`,
+          dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}${cycleSuffix}`,
           branchId: Number(cn.branchId),
           invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
           deliveryPartyId: Number(cn.partyId),

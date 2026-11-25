@@ -102,7 +102,7 @@ export async function postFeePayment(
   commissionOverride?: Decimal | null,
   withholding?: { cashBucket: "DRAWER" | "TREASURY"; remittanceId: number },
 ): Promise<void> {
-  if ((cn.sourceType === "AFTERCARE_EXECUTION" && cn.feeCollection !== "SHOP") || ((cn.sourceType === "AFTERCARE_EXECUTION" || cn.sourceType === "FULFILLMENT_REQUEST") && withholding)) {
+  if ((cn.sourceType === "AFTERCARE_EXECUTION" && cn.feeCollection !== "SHOP") || (cn.sourceType === "AFTERCARE_EXECUTION" && withholding)) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر صرف أجرة التوصيل", why: "أجرة معالجة النقص على المكتبة وتُصرف من مصدر نقد معتمد", doThis: "راجع مصدر الإرسالية ثم اصرف الأجرة من مسار الأجور المعتمد" }) });
   }
   await appendDeliveryLedgerEntry(tx, {
@@ -409,7 +409,7 @@ export async function payPartyDeliveryFees(
       if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? due.gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) continue;
       const invoice = await lockFeeSourceTx(tx, cn);
       if (due.lte(0)) continue;
-      if (feePolicy.hasOrderBasedCommission && cn.sourceType === "ONLINE_ORDER" && cn.feeCollection === "SHOP" &&
+      if (feePolicy.hasOrderBasedCommission && cn.sourceType !== "AFTERCARE_EXECUTION" && cn.feeCollection === "SHOP" &&
           (await loadShipmentMembersTx(tx, Number(cn.id), { currentRead: true })).length > 1) {
         const shortfall = await shortfallAssignedForConsignmentTx(tx, Number(cn.id), {
           partyId: Number(cn.partyId), branchId: Number(cn.branchId),
