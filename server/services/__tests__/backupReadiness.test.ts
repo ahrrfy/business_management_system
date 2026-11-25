@@ -324,7 +324,13 @@ describe("backup readiness evidence", () => {
     }
     await writeAttempt(local, failedRow, "FAILED");
     await writeFile(path.join(reports, "latest-verified-restore.json"), JSON.stringify({
-      version: 1, name: b4Old, at: "2026-11-24T09:15:00+00:00",
+      version: 1,
+      name: otherTenant,
+      at: "2026-11-25T11:30:00+00:00",
+      byDatabase: {
+        erp: { name: b4Old, at: "2026-11-24T09:15:00+00:00" },
+        "erp-baghdad": { name: otherTenant, at: "2026-11-25T11:30:00+00:00" },
+      },
     }));
 
     const scoped = await inspectBackupReadiness(local, offsite, "erp-");
