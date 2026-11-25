@@ -174,4 +174,99 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
     await stationB.handleEvent(initialPayload);
     expect(stationBPrints).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers via expiring lease when claim commits on DB but response is lost or winning tab closes before printing", async () => {
+    let nowMs = 10_000;
+    let leaseExpiresAt: number | null = null;
+    let confirmedPrinted = false;
+    const scheduled: Array<{ runAt: number; fn: () => void; cancelled: boolean }> = [];
+
+    const scheduleFn = (fn: () => void, delayMs: number) => {
+      const item = { runAt: nowMs + delayMs, fn, cancelled: false };
+      scheduled.push(item);
+      return item as unknown as ReturnType<typeof setTimeout>;
+    };
+    const cancelFn = (handle: ReturnType<typeof setTimeout>) => {
+      (handle as unknown as { cancelled: boolean }).cancelled = true;
+    };
+    const advanceTo = async (targetMs: number) => {
+      nowMs = targetMs;
+      const due = scheduled.filter((t) => !t.cancelled && t.runAt <= nowMs);
+      for (const t of due) {
+        t.cancelled = true;
+        t.fn();
+      }
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    let dropFirstClaimResponse = true;
+    const claimServer = async () => {
+      if (confirmedPrinted) return { claimed: false, alreadyPrinted: true };
+      if (leaseExpiresAt !== null && nowMs <= leaseExpiresAt) {
+        return { claimed: false, alreadyPrinted: false };
+      }
+      leaseExpiresAt = nowMs + 20_000;
+      const token = String(leaseExpiresAt);
+      if (dropFirstClaimResponse) {
+        dropFirstClaimResponse = false;
+        throw new Error("network socket hang up after DB commit");
+      }
+      return {
+        claimed: true,
+        alreadyPrinted: false,
+        leaseToken: token,
+        orderNumber: "ORD-LEASE-88",
+        total: "19000.00",
+        itemCount: 2,
+      };
+    };
+    const confirmServer = vi.fn(async () => {
+      confirmedPrinted = true;
+    });
+
+    const stationAPrint = vi.fn().mockResolvedValue("printed" as const);
+    const stationBPrint = vi.fn().mockResolvedValue("printed" as const);
+
+    const stationA = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      claim: claimServer,
+      confirm: confirmServer,
+      release: async () => {},
+      print: stationAPrint,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+    const stationB = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      claim: claimServer,
+      confirm: confirmServer,
+      release: async () => {},
+      print: stationBPrint,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const payload = { orderId: 88, orderNumber: "ORD-LEASE-88", totalAmount: "19000.00" };
+    // Station A commits DB lease, loses response; Station B sees active lease -> neither prints yet
+    await stationA.handleEvent(payload);
+    await stationB.handleEvent(payload);
+    expect(stationAPrint).not.toHaveBeenCalled();
+    expect(stationBPrint).not.toHaveBeenCalled();
+
+    // Simulate Station A tab closing before recovery
+    stationA.dispose();
+
+    // At +2.5s lease is still active (expires at 30_000ms)
+    await advanceTo(12_600);
+    expect(stationBPrint).not.toHaveBeenCalled();
+
+    // At +21.5s after 12_600 -> lease has expired, Station B reclaims, prints once, and confirms completion!
+    await advanceTo(35_000);
+    expect(stationBPrint).toHaveBeenCalledTimes(1);
+    expect(confirmServer).toHaveBeenCalledTimes(1);
+    expect(confirmedPrinted).toBe(true);
+  });
 });

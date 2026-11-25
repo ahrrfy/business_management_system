@@ -294,7 +294,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
       createStoreOrderAlertCoordinator({
         hasPrinter: hasConnectedAlertThermalPrinter,
         claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
-        release: (orderId) => releaseAlertMutateRef.current({ id: orderId }),
+        confirm: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: true }),
+        release: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: false }),
         print: printStoreOrderAlertSilent,
         onNotify: (payload) => {
           playAudioFeedback("notification");

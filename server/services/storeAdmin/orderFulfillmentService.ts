@@ -2667,11 +2667,18 @@ export async function autoAssignRoundRobinOnlineOrders(
  * قفل طباعة ذرّي لمرة واحدة لقصاصة تنبيه وصول طلب المتجر (10 سم).
  * يعيد claimed=true لمحطة الاستقبال/خدمة الزبائن الأولى فقط حتى لا تتكرر القصاصة.
  */
+// عتبة التمييز بين حجز الطباعة المؤقت (< 2020-01-01، أي UTC_TIMESTAMP - 30 سنة بمدة إيجار 20 ثانية) والطباعة المؤكدة نهائياً (>= 2020-01-01).
+const ALERT_PRINT_CONFIRMED_CUTOFF_SQL = sql`TIMESTAMP('2020-01-01 00:00:00')`;
+const ALERT_PRINT_LEASE_STAMP_SQL = sql`DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR)`;
+const ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL = sql`DATE_SUB(DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR), INTERVAL 20 SECOND)`;
+
 export async function claimOnlineOrderAlertPrint(input: {
   id: number;
   scopedBranchId: number | null;
 }): Promise<{
   claimed: boolean;
+  alreadyPrinted: boolean;
+  leaseToken: string | null;
   orderNumber: string | null;
   total: string | null;
   itemCount: number;
@@ -2686,14 +2693,14 @@ export async function claimOnlineOrderAlertPrint(input: {
   }
   const conds = [
     eq(onlineOrders.id, input.id),
-    isNull(onlineOrders.alertPrintedAt),
+    sql`(${onlineOrders.alertPrintedAt} IS NULL OR (${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL} AND ${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL}))`,
   ];
   if (input.scopedBranchId != null) {
     conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
   }
   const res = await db
     .update(onlineOrders)
-    .set({ alertPrintedAt: sql`CURRENT_TIMESTAMP(3)` })
+    .set({ alertPrintedAt: ALERT_PRINT_LEASE_STAMP_SQL })
     .where(and(...conds));
   const affectedRows = Number(
     (res as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
@@ -2701,8 +2708,23 @@ export async function claimOnlineOrderAlertPrint(input: {
       0,
   );
   if (affectedRows !== 1) {
+    const stateConds = [eq(onlineOrders.id, input.id)];
+    if (input.scopedBranchId != null) {
+      stateConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const existing = (
+      await db
+        .select({
+          alreadyPrinted: sql<number>`CASE WHEN ${onlineOrders.alertPrintedAt} >= ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL} THEN 1 ELSE 0 END`,
+        })
+        .from(onlineOrders)
+        .where(and(...stateConds))
+        .limit(1)
+    )[0];
     return {
       claimed: false,
+      alreadyPrinted: Number(existing?.alreadyPrinted ?? 0) === 1,
+      leaseToken: null,
       orderNumber: null,
       total: null,
       itemCount: 0,
@@ -2715,6 +2737,7 @@ export async function claimOnlineOrderAlertPrint(input: {
         orderNumber: onlineOrders.orderNumber,
         total: onlineOrders.total,
         createdAt: onlineOrders.createdAt,
+        leaseToken: sql<string | null>`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f')`,
         itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
       })
       .from(onlineOrders)
@@ -2724,6 +2747,8 @@ export async function claimOnlineOrderAlertPrint(input: {
   )[0];
   return {
     claimed: true,
+    alreadyPrinted: false,
+    leaseToken: row?.leaseToken ?? null,
     orderNumber: row?.orderNumber ?? null,
     total: row?.total != null ? String(row.total) : null,
     itemCount: Number(row?.itemCount ?? 0),
@@ -2731,19 +2756,48 @@ export async function claimOnlineOrderAlertPrint(input: {
   };
 }
 
-/** يحرر قفل الطباعة فقط إذا تعذّرت الطابعة فيزيائياً بعد المطالبة، ويعيد البثّ للمحطات البديلة. */
+/** يثبّت اكتمال الطباعة الفعلي، أو يحرّر الحجز المؤقت عند تعثّر الطابعة ويعيد البثّ للمحطات البديلة. */
 export async function releaseOnlineOrderAlertPrint(input: {
   id: number;
   scopedBranchId: number | null;
-}): Promise<{ released: boolean }> {
+  leaseToken?: string | null;
+  completed?: boolean;
+}): Promise<{ released: boolean; completed: boolean }> {
   const db = getDb();
-  if (!db) return { released: false };
+  if (!db) return { released: false, completed: false };
+  if (input.completed === true) {
+    const confirmConds = [
+      eq(onlineOrders.id, input.id),
+      sql`(${onlineOrders.alertPrintedAt} IS NULL OR ${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL})`,
+    ];
+    if (input.scopedBranchId != null) {
+      confirmConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const confirmRes = await db
+      .update(onlineOrders)
+      .set({ alertPrintedAt: sql`UTC_TIMESTAMP(3)` })
+      .where(and(...confirmConds));
+    const confirmedRows = Number(
+      (confirmRes as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+        (confirmRes as unknown as { affectedRows?: number })?.affectedRows ??
+        0,
+    );
+    return { released: false, completed: confirmedRows === 1 };
+  }
+
   const conds = [
     eq(onlineOrders.id, input.id),
     isNotNull(onlineOrders.alertPrintedAt),
+    sql`${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL}`,
   ];
   if (input.scopedBranchId != null) {
     conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  const cleanToken = input.leaseToken?.trim();
+  if (cleanToken) {
+    conds.push(
+      sql`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f') = ${cleanToken}`,
+    );
   }
   const res = await db
     .update(onlineOrders)
@@ -2755,7 +2809,7 @@ export async function releaseOnlineOrderAlertPrint(input: {
       0,
   );
   if (affectedRows !== 1) {
-    return { released: false };
+    return { released: false, completed: false };
   }
   const row = (
     await db
@@ -2792,7 +2846,5 @@ export async function releaseOnlineOrderAlertPrint(input: {
       { branchId: row.branchId ?? undefined },
     );
   }
-  return { released: true };
+  return { released: true, completed: false };
 }
-
-

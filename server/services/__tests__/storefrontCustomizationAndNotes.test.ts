@@ -1163,7 +1163,32 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
       const publishSpy = vi.spyOn(realtimeModule, "publishRealtimeEvent");
       const claim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
       expect(claim.claimed).toBe(true);
-      const released = await releaseOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(claim.alreadyPrinted).toBe(false);
+      expect(claim.leaseToken).toBeTruthy();
+      // Active lease blocks immediate duplicate claim
+      const activeContested = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(activeContested.claimed).toBe(false);
+      expect(activeContested.alreadyPrinted).toBe(false);
+      // Expired lease (>20s old in lease epoch) is automatically reclaimable if winning station died
+      await db()
+        .update(s.onlineOrders)
+        .set({ alertPrintedAt: new Date("1996-01-01T00:00:00.000Z") })
+        .where(eq(s.onlineOrders.id, created.orderId));
+      const reclaimed = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(reclaimed.claimed).toBe(true);
+      // Stale leaseToken from dead station cannot release the new station's active lease
+      const staleRelease = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: "1996-01-01 00:00:00.000000",
+      });
+      expect(staleRelease.released).toBe(false);
+      // Valid leaseToken releases cleanly and publishes handoff
+      const released = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: reclaimed.leaseToken,
+      });
       expect(released.released).toBe(true);
       expect(publishSpy).toHaveBeenCalledWith(
         "STOREFRONT_ORDER_PLACED",
@@ -1176,6 +1201,21 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
         expect.objectContaining({ branchId: 1 }),
       );
       publishSpy.mockRestore();
+      // Reclaim and confirm permanent print completion -> blocks both future claim and future release
+      const finalClaim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(finalClaim.claimed).toBe(true);
+      const confirmed = await releaseOnlineOrderAlertPrint({
+        id: created.orderId,
+        scopedBranchId: 1,
+        leaseToken: finalClaim.leaseToken,
+        completed: true,
+      });
+      expect(confirmed.completed).toBe(true);
+      const postConfirmClaim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(postConfirmClaim.claimed).toBe(false);
+      expect(postConfirmClaim.alreadyPrinted).toBe(true);
+      const postConfirmRelease = await releaseOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(postConfirmRelease.released).toBe(false);
     } finally {
       putSpy.mockRestore();
     }

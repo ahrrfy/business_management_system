@@ -355,6 +355,8 @@ export function previewOrPrintStoreOrderAlertBrowser(d: StoreOrderAlertData): bo
 
 export interface StoreOrderAlertClaimResult {
   claimed: boolean;
+  alreadyPrinted?: boolean;
+  leaseToken?: string | null;
   orderNumber?: string | null;
   total?: string | null;
   itemCount?: number | null;
@@ -371,16 +373,17 @@ export interface StoreOrderAlertIncomingPayload {
 }
 
 /**
- * منسّق طباعة قصاصة التنبيه عبر عدة محطات:
+ * منسّق طباعة قصاصة التنبيه عبر عدة محطات بنظام حجز مؤقت قابل للاسترداد + إقرار اكتمال منفصل:
  *  - يفصل سجلّ التنبيه الصوتي/البصري (مرة واحدة لكل طلب) عن سجلّ الطباعة المكتملة فعلياً.
- *  - إذا فازت محطةٌ بالقفل ثم تعثّرت طابعتها، تضع الطلب في تهدئةٍ محلية قصيرة وتحرّر القفل
- *    لتستلمه محطةٌ بديلة فوراً عبر إعادة البثّ (`alertPrintHandoff`) أو عبر إعادة المحاولة المؤجلة
- *    للمحطات التي خسرت المنافسة الأولى.
+ *  - يعيد المحاولة على مراحل (`recoveryRetryDelaysMs`: بعد 2.5s ثم بعد انتهاء إيجار الـ 20s عند 21.5s)
+ *    حتى لو فُقدت استجابة `claim` بعد التزامها في قاعدة البيانات أو أُغلقت نافذة المحطة الفائزة قبل الطباعة.
+ *  - لا تُسجَّل الطباعة كمكتملة نهائياً على الخادم إلا بعد نجاح الإرسال الفعلي للطابعة عبر `confirm`.
  */
 export function createStoreOrderAlertCoordinator(deps: {
   hasPrinter: () => Promise<boolean>;
   claim: (orderId: number) => Promise<StoreOrderAlertClaimResult | null>;
-  release: (orderId: number) => Promise<unknown>;
+  confirm?: (orderId: number, leaseToken?: string | null) => Promise<unknown>;
+  release: (orderId: number, leaseToken?: string | null) => Promise<unknown>;
   print: (
     data: StoreOrderAlertData,
   ) => Promise<"printed" | "no_printer" | "hardware_error">;
@@ -389,6 +392,7 @@ export function createStoreOrderAlertCoordinator(deps: {
   scheduleRetry?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   cancelRetry?: (handle: ReturnType<typeof setTimeout>) => void;
   contestedRetryDelayMs?: number;
+  recoveryRetryDelaysMs?: readonly number[];
   failedStationCooldownMs?: number;
 }) {
   const getNow = deps.now ?? (() => Date.now());
@@ -396,20 +400,32 @@ export function createStoreOrderAlertCoordinator(deps: {
     deps.scheduleRetry ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
   const cancel =
     deps.cancelRetry ?? ((handle) => globalThis.clearTimeout(handle));
-  const contestedRetryDelayMs = deps.contestedRetryDelayMs ?? 2_500;
+  const recoveryDelays =
+    deps.recoveryRetryDelaysMs ??
+    (deps.contestedRetryDelayMs !== undefined
+      ? [deps.contestedRetryDelayMs, 21_500]
+      : [2_500, 21_500]);
   const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
 
   const notifiedOrderIds = new Set<number>();
   const printedOrderIds = new Set<number>();
   const inFlightOrderIds = new Set<number>();
-  const contestedRetriedOrderIds = new Set<number>();
+  const recoveryStepByOrder = new Map<number, number>();
   const failedCooldownUntil = new Map<number, number>();
   const pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  const confirmRetryTimers = new Set<ReturnType<typeof setTimeout>>();
 
   const boundSet = (set: Set<number>, keep: number) => {
     if (set.size > 200) {
       set.clear();
       set.add(keep);
+    }
+  };
+
+  const boundMap = <V>(map: Map<number, V>, keepKey: number, keepVal: V) => {
+    if (map.size > 200) {
+      map.clear();
+      map.set(keepKey, keepVal);
     }
   };
 
@@ -421,68 +437,101 @@ export function createStoreOrderAlertCoordinator(deps: {
     }
   };
 
+  const scheduleNextRecovery = (payload: StoreOrderAlertIncomingPayload) => {
+    const { orderId } = payload;
+    if (printedOrderIds.has(orderId) || pendingTimers.has(orderId)) return;
+    const step = recoveryStepByOrder.get(orderId) ?? 0;
+    if (step >= recoveryDelays.length) return;
+    const delayMs = recoveryDelays[step] ?? 2_500;
+    recoveryStepByOrder.set(orderId, step + 1);
+    boundMap(recoveryStepByOrder, orderId, step + 1);
+    const timer = schedule(() => {
+      pendingTimers.delete(orderId);
+      void attemptPrint(payload);
+    }, delayMs);
+    pendingTimers.set(orderId, timer);
+  };
+
   const attemptPrint = async (
     payload: StoreOrderAlertIncomingPayload,
-    isContestedFollowup = false,
   ): Promise<void> => {
     const { orderId } = payload;
     if (printedOrderIds.has(orderId) || inFlightOrderIds.has(orderId)) return;
     const cooldownUntil = failedCooldownUntil.get(orderId);
     if (cooldownUntil !== undefined) {
-      if (getNow() < cooldownUntil) return;
+      if (getNow() < cooldownUntil) {
+        scheduleNextRecovery(payload);
+        return;
+      }
       failedCooldownUntil.delete(orderId);
     }
 
     inFlightOrderIds.add(orderId);
     try {
-      const printerReady = await deps.hasPrinter();
+      const printerReady = await deps.hasPrinter().catch(() => false);
       if (!printerReady) return;
 
       let claimRes: StoreOrderAlertClaimResult | null = null;
       try {
         claimRes = await deps.claim(orderId);
       } catch {
+        // إذا فُقدت استجابة المطالبة بعد التزامها على الخادم أو حدث انقطاع عابر، نجدول استرداداً بعد انتهاء الإيجار.
+        scheduleNextRecovery(payload);
         return;
       }
 
-      if (!claimRes?.claimed) {
-        // إذا خسرت المحطة السباق الأول ضد محطة أخرى، تجدول محاولة احتياطية واحدة تحسّباً لتعثّر الفائز
-        // حتى لو سقطت حزمة إعادة البثّ عبر الشبكة.
-        if (
-          !isContestedFollowup &&
-          !payload.alertPrintHandoff &&
-          !contestedRetriedOrderIds.has(orderId)
-        ) {
-          contestedRetriedOrderIds.add(orderId);
-          boundSet(contestedRetriedOrderIds, orderId);
-          clearPendingTimer(orderId);
-          const timer = schedule(() => {
-            pendingTimers.delete(orderId);
-            void attemptPrint(payload, true);
-          }, contestedRetryDelayMs);
-          pendingTimers.set(orderId, timer);
-        }
-        return;
-      }
-
-      clearPendingTimer(orderId);
-      const outcome = await deps.print({
-        orderNumber: claimRes.orderNumber ?? payload.orderNumber,
-        createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
-        itemsCount: claimRes.itemCount || payload.itemsCount || 1,
-        totalAmount: claimRes.total ?? payload.totalAmount,
-      });
-
-      if (outcome === "printed") {
+      if (claimRes?.alreadyPrinted) {
         printedOrderIds.add(orderId);
         boundSet(printedOrderIds, orderId);
+        clearPendingTimer(orderId);
+        recoveryStepByOrder.delete(orderId);
         failedCooldownUntil.delete(orderId);
         return;
       }
 
-      // تعثّرت الطابعة فيزيائياً بعد أخذ القفل: تهدئة قصيرة على هذه المحطة كي تتقدم محطة سليمة عند التحرير.
+      if (!claimRes?.claimed) {
+        // محطة أخرى تحمل إيجاراً نشطاً: نجدول محاولات استرداد تحسّباً لإغلاق نافذتها أو تعثّر شبكتها قبل الإقرار.
+        scheduleNextRecovery(payload);
+        return;
+      }
+
+      clearPendingTimer(orderId);
+      const outcome = await deps
+        .print({
+          orderNumber: claimRes.orderNumber ?? payload.orderNumber,
+          createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
+          itemsCount: claimRes.itemCount || payload.itemsCount || 1,
+          totalAmount: claimRes.total ?? payload.totalAmount,
+        })
+        .catch(() => "hardware_error" as const);
+
+      if (outcome === "printed") {
+        printedOrderIds.add(orderId);
+        boundSet(printedOrderIds, orderId);
+        recoveryStepByOrder.delete(orderId);
+        failedCooldownUntil.delete(orderId);
+        if (deps.confirm) {
+          try {
+            await deps.confirm(orderId, claimRes.leaseToken ?? null);
+          } catch {
+            const retryHandle = schedule(() => {
+              confirmRetryTimers.delete(retryHandle);
+              void deps.confirm?.(orderId, claimRes?.leaseToken ?? null).catch(() => {});
+            }, 2_000);
+            confirmRetryTimers.add(retryHandle);
+          }
+        }
+        return;
+      }
+
+      // تعثّرت الطابعة فيزيائياً بعد أخذ الإيجار: تهدئة قصيرة على هذه المحطة وتحرير الإيجار،
+      // وإن تعذّر التحرير شبكياً تضمن جدولة الاسترداد إعادة المحاولة بعد انتهاء الإيجار.
       failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
-      await deps.release(orderId).catch(() => {});
+      try {
+        await deps.release(orderId, claimRes.leaseToken ?? null);
+      } catch {
+        scheduleNextRecovery(payload);
+      }
     } finally {
       inFlightOrderIds.delete(orderId);
     }
@@ -502,13 +551,17 @@ export function createStoreOrderAlertCoordinator(deps: {
         boundSet(notifiedOrderIds, payload.orderId);
         deps.onNotify?.(payload);
       }
-      return attemptPrint(payload, false);
+      return attemptPrint(payload);
     },
     dispose(): void {
       pendingTimers.forEach((timer) => {
         cancel(timer);
       });
       pendingTimers.clear();
+      confirmRetryTimers.forEach((timer) => {
+        cancel(timer);
+      });
+      confirmRetryTimers.clear();
     },
   };
 }
