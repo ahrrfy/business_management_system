@@ -42,12 +42,61 @@ export async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decim
   return round2(money(sums?.earned ?? "0").minus(money(sums?.paid ?? "0")));
 }
 
+/**
+ * استبعاد أزواج المقاصة التلقائية الملغاة لجهات توصيل سابقة على نفس الإرسالية (`CN:<id>:FEE_EARNED:SHOP:<cycle>`
+ * + `CN:<id>:FEE_OFFSET:SHOP:<cycle>` متساوية القيمة والفرع وصافية الأثر 0.00) حتى لا يمنع إلغاء الإسناد
+ * وإعادة توجيه الطرد لمندوب آخر تسليمَ الإرسالية الجديدة، مع إبقاء أي قيد غير مقترن أو سالب خاضعاً للرفض الصارم.
+ */
+function stripNeutralSupersededShopFeePairs(
+  cn: { id: number | string; partyId: number | string; branchId: number | string },
+  rows: Array<typeof deliveryLedgerEntries.$inferSelect>,
+): Array<typeof deliveryLedgerEntries.$inferSelect> {
+  const earnedPrefix = `CN:${cn.id}:FEE_EARNED:SHOP:`;
+  const offsetPrefix = `CN:${cn.id}:FEE_OFFSET:SHOP:`;
+  const foreignEarnedByCycle = new Map<string, typeof deliveryLedgerEntries.$inferSelect>();
+  const foreignOffsetByCycle = new Map<string, typeof deliveryLedgerEntries.$inferSelect>();
+
+  for (const row of rows) {
+    if (Number(row.partyId) === Number(cn.partyId)) continue;
+    if (row.branchId == null || Number(row.branchId) !== Number(cn.branchId)) continue;
+    if (money(row.amount).lte(0)) continue;
+    if (row.entryType === "FEE_EARNED" && row.eventKey.startsWith(earnedPrefix)) {
+      const cycle = row.eventKey.slice(earnedPrefix.length);
+      if (cycle && !foreignEarnedByCycle.has(cycle)) {
+        foreignEarnedByCycle.set(cycle, row);
+      }
+    } else if (row.entryType === "FEE_OFFSET" && row.eventKey.startsWith(offsetPrefix)) {
+      const cycle = row.eventKey.slice(offsetPrefix.length);
+      if (cycle && !foreignOffsetByCycle.has(cycle)) {
+        foreignOffsetByCycle.set(cycle, row);
+      }
+    }
+  }
+
+  const neutralSupersededIds = new Set<number>();
+  for (const [cycle, earned] of Array.from(foreignEarnedByCycle.entries())) {
+    const offset = foreignOffsetByCycle.get(cycle);
+    if (
+      offset &&
+      Number(earned.partyId) === Number(offset.partyId) &&
+      money(earned.amount).eq(money(offset.amount))
+    ) {
+      neutralSupersededIds.add(Number(earned.id));
+      neutralSupersededIds.add(Number(offset.id));
+    }
+  }
+
+  if (neutralSupersededIds.size === 0) return rows;
+  return rows.filter((row) => !neutralSupersededIds.has(Number(row.id)));
+}
+
 /** Validate and total locked fee evidence without counting an exact legacy snapshot twice. */
 export function verifiedFeeBalance(
   cn: { id: number | string; partyId: number | string; branchId: number | string },
   rows: Array<typeof deliveryLedgerEntries.$inferSelect>,
 ): { due: Decimal; active: boolean } {
-  const effective = verifiedConsignmentLedgerRows(cn, rows, "تعذر مطابقة قيود الأجرة للشحنة");
+  const scopedRows = stripNeutralSupersededShopFeePairs(cn, rows);
+  const effective = verifiedConsignmentLedgerRows(cn, scopedRows, "تعذر مطابقة قيود الأجرة للشحنة");
   const due = round2(effective.reduce((sum, row) => row.entryType === "FEE_EARNED"
     ? sum.plus(money(row.amount)) : sum.minus(money(row.amount)), money(0)));
   if (due.lt(0)) {

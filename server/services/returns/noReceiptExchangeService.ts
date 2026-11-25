@@ -122,6 +122,7 @@ async function ensureNoReceiptCreditProgramTx(
     name: `قسيمة مرتجع استثنائي ${voucherCode}`,
     type: "AMOUNT",
     discountAmount: amountStr,
+    maxDiscountAmount: amountStr,
     discountPercent: "0.00",
     scope: "ALL",
     effectiveFrom: now,
@@ -361,14 +362,125 @@ export async function executeNoReceiptOrExchangeService(
         });
       }
 
-      // ٤) التسوية المالية وحفظ حق العميل (رصيد عميل أو كوبون فعلي أو إيصال فرق استبدال)
-      const returnTotalDec = round2(money(input.settlement.returnTotal));
-      const exchangeTotalDec = round2(
-        money(input.settlement.exchangeTotal ?? "0"),
-      );
-      const diffDec =
+      // ٤) اشتقاق مجاميع التسوية من بنود المرتجع والبديل فعلياً ورفض أي تضارب مع حمولة العميل
+      if (input.returnItems.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر تنفيذ الإرجاع الاستثنائي",
+            why: "قائمة بنود المرتجع فارغة",
+            doThis: "أضف صنفاً واحداً على الأقل إلى سلة المرتجعات قبل التنفيذ",
+          }),
+        });
+      }
+      if (
+        input.mode === "DIRECT_EXCHANGE" &&
+        (!input.exchangeItems || input.exchangeItems.length === 0)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر تنفيذ الاستبدال المباشر",
+            why: "قائمة الأصناف البديلة فارغة في وضع الاستبدال المباشر",
+            doThis: "أضف صنفاً بديلاً واحداً على الأقل إلى سلة الاستبدال قبل التنفيذ",
+          }),
+        });
+      }
+
+      let computedReturnTotal = money(0);
+      for (const itm of input.returnItems) {
+        const qty = money(itm.quantity);
+        const unitPrice = round2(money(itm.unitPrice));
+        if (qty.lte(0) || unitPrice.lt(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: `بيانات بند المرتجع «${itm.productName}» غير صالحة`,
+              why: "الكمية يجب أن تكون موجبة وسعر الوحدة غير سالب",
+              doThis: "راجع كميات وأسعار البنود المرتجعة ثم أعد المحاولة",
+            }),
+          });
+        }
+        computedReturnTotal = round2(
+          computedReturnTotal.plus(round2(unitPrice.times(qty))),
+        );
+      }
+
+      let computedExchangeTotal = money(0);
+      if (input.mode === "DIRECT_EXCHANGE") {
+        for (const itm of input.exchangeItems ?? []) {
+          const qty = money(itm.quantity);
+          const unitPrice = round2(money(itm.unitPrice));
+          if (qty.lte(0) || unitPrice.lt(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: `بيانات البند البديل «${itm.productName}» غير صالحة`,
+                why: "الكمية يجب أن تكون موجبة وسعر الوحدة غير سالب",
+                doThis: "راجع كميات وأسعار البنود البديلة ثم أعد المحاولة",
+              }),
+            });
+          }
+          computedExchangeTotal = round2(
+            computedExchangeTotal.plus(round2(unitPrice.times(qty))),
+          );
+        }
+      }
+
+      const submittedReturnTotal = round2(money(input.settlement.returnTotal));
+      if (!computedReturnTotal.eq(submittedReturnTotal)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تضارب في إجمالي قيمة المرتجع",
+            why: `مجموع بنود المرتجع (${toDbMoney(computedReturnTotal)}) لا يطابق الإجمالي المرسل (${toDbMoney(submittedReturnTotal)})`,
+            doThis: "حدّث السلة لإعادة احتساب الإجمالي الفعلي ثم أعد الإرسال",
+          }),
+        });
+      }
+
+      if (input.mode === "DIRECT_EXCHANGE") {
+        const submittedExchangeTotal = round2(
+          money(input.settlement.exchangeTotal ?? "0"),
+        );
+        if (!computedExchangeTotal.eq(submittedExchangeTotal)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تضارب في إجمالي الأصناف البديلة",
+              why: `مجموع بنود الاستبدال (${toDbMoney(computedExchangeTotal)}) لا يطابق الإجمالي المرسل (${toDbMoney(submittedExchangeTotal)})`,
+              doThis: "حدّث السلة لإعادة احتساب إجمالي الاستبدال ثم أعد المحاولة",
+            }),
+          });
+        }
+      }
+
+      const returnTotalDec = computedReturnTotal;
+      const exchangeTotalDec = computedExchangeTotal;
+      const expectedSignedDiff =
         input.mode === "DIRECT_EXCHANGE"
           ? round2(exchangeTotalDec.minus(returnTotalDec))
+          : round2(returnTotalDec.neg());
+      const submittedDiffDec = round2(money(input.settlement.differenceAmount));
+      const diffMatches =
+        input.mode === "DIRECT_EXCHANGE"
+          ? submittedDiffDec.eq(expectedSignedDiff)
+          : submittedDiffDec.eq(expectedSignedDiff) ||
+            submittedDiffDec.eq(money(0)) ||
+            submittedDiffDec.abs().eq(returnTotalDec);
+      if (!diffMatches) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تضارب في فرق التسوية المالية",
+            why: `فرق التسوية المرسل (${toDbMoney(submittedDiffDec)}) لا يطابق الفرق الفعلي (${toDbMoney(expectedSignedDiff)})`,
+            doThis: "حدّث السلة لإعادة احتساب فرق التسوية ثم أعد المحاولة",
+          }),
+        });
+      }
+      const diffDec =
+        input.mode === "DIRECT_EXCHANGE"
+          ? expectedSignedDiff
           : money(0);
 
       let matchedCustomerId: number | null = null;

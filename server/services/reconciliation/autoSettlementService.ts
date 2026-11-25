@@ -328,7 +328,37 @@ export async function autoSettleCustomerAccountTx(
       const newPaid = currentPaid.plus(allocate);
       totalSettled = totalSettled.plus(allocate);
 
-      const newStatus = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
+      // NOTE: Both `applyCustomerReceiptCreditTx` and `applyCustomerHistoricalCreditTx` execute
+      // `allocateVoucherToInvoiceTx(tx, ...)` which persists `invoices.paidAmount`, `invoices.status`,
+      // and `invoices.paymentDate` directly in MySQL inside this transaction. Re-read and verify the
+      // persisted invoice row so the in-memory summary always matches MySQL 100%.
+      const [persistedInv] = await tx
+        .select({
+          paidAmount: invoices.paidAmount,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, inv.id))
+        .limit(1);
+      const expectedStatus = computeInvoiceStatus(
+        inv.total,
+        toDbMoney(newPaid),
+        inv.returnedTotal ?? "0",
+      );
+      if (
+        !persistedInv ||
+        !money(persistedInv.paidAmount).eq(newPaid)
+      ) {
+        await tx
+          .update(invoices)
+          .set({
+            paidAmount: toDbMoney(newPaid),
+            status: expectedStatus,
+            paymentDate: new Date(),
+          })
+          .where(eq(invoices.id, inv.id));
+      }
+      const newStatus = persistedInv?.status ?? expectedStatus;
       inv.paidAmount = toDbMoney(newPaid);
       inv.status = newStatus;
 

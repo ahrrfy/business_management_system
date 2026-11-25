@@ -215,6 +215,41 @@ export async function autoOffsetShopDeliveryFeeOnDispatchTx(
     .orderBy(asc(deliveryConsignments.id))
     .for("update");
 
+  const openIds = deliveredOpen.map((r) => Number(r.id));
+  const parcelCustodyByConsignment = new Map<number, Decimal>();
+  if (openIds.length > 0) {
+    const parcelCustodyRows = await tx
+      .select({
+        consignmentId: deliveryLedgerEntries.consignmentId,
+        netCustody: sql<string>`COALESCE(SUM(CASE
+          WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} = 'COD_REMITTED' THEN -${deliveryLedgerEntries.amount}
+          ELSE 0 END), 0)`,
+      })
+      .from(deliveryLedgerEntries)
+      .where(
+        and(
+          inArray(deliveryLedgerEntries.consignmentId, openIds),
+          eq(deliveryLedgerEntries.partyId, partyId),
+          eq(deliveryLedgerEntries.branchId, branchId),
+          inArray(deliveryLedgerEntries.entryType, [
+            "COD_COLLECTED",
+            "COD_REMITTED",
+          ]),
+          effectiveDeliveryLedgerEntrySql(),
+        ),
+      )
+      .groupBy(deliveryLedgerEntries.consignmentId);
+    for (const r of parcelCustodyRows) {
+      if (r.consignmentId != null) {
+        parcelCustodyByConsignment.set(
+          Number(r.consignmentId),
+          round2(Decimal.max(0, money(r.netCustody ?? "0"))),
+        );
+      }
+    }
+  }
+
   const deliveredCandidates: Array<{
     row: typeof deliveryConsignments.$inferSelect;
     rem: Decimal;
@@ -226,7 +261,7 @@ export async function autoOffsetShopDeliveryFeeOnDispatchTx(
       partyId,
       branchId,
     });
-    const rem = round2(
+    const outstandingClaim = round2(
       Decimal.max(
         0,
         money(row.codAmount ?? "0")
@@ -235,6 +270,11 @@ export async function autoOffsetShopDeliveryFeeOnDispatchTx(
           .minus(sf),
       ),
     );
+    const verifiedCustody =
+      parcelCustodyByConsignment.get(Number(row.id)) ?? money(0);
+    // تقيد المقاصة حصراً بالنقد الفعلي المتحصل في عهدة جهة التوصيل (COD_COLLECTED - COD_REMITTED)
+    // حتى لا تُقفل إرسالية كشف شركة غير مقبوضة نقداً من الزبون بعد.
+    const rem = round2(Decimal.min(outstandingClaim, verifiedCustody));
     if (rem.gt(0)) {
       deliveredCandidates.push({ row, rem, shortfall: sf });
       totalUnremittedDeliveredCash = round2(

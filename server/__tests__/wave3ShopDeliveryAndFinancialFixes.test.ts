@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,7 @@ import {
   validatePostingIntentPolicy,
 } from "../services/accounting/postingEngine";
 import { computeLineTotal } from "../services/billing";
+import { verifiedFeeBalance } from "../services/delivery/fees";
 import {
   deliveryFeeAccrualIntent,
   deliveryFeeSettlementIntent,
@@ -114,5 +116,87 @@ describe("wave 3 — SHOP delivery auto-offset & financial fixes", () => {
     const factor = new Decimal("1");
     const baseQty = qty.times(factor).toDecimalPlaces(4).toNumber();
     expect(baseQty).toBe(0.25);
+  });
+
+  it("verifiedFeeBalance ignores neutral superseded SHOP auto-offset pairs from a cancelled courier while rejecting unpaired foreign rows", () => {
+    const now = new Date();
+    const baseRow = {
+      consignmentId: 77,
+      branchId: 1,
+      shortfallReason: null,
+      receiptId: null,
+      notes: null,
+      actorUserId: 1,
+      occurredAt: now,
+      createdAt: now,
+    };
+    const neutralSupersededRows = [
+      {
+        ...baseRow,
+        id: 1,
+        eventKey: "CN:77:FEE_EARNED:SHOP:cyc_old",
+        partyId: 10,
+        entryType: "FEE_EARNED" as const,
+        amount: "5000.00",
+      },
+      {
+        ...baseRow,
+        id: 2,
+        eventKey: "CN:77:FEE_OFFSET:SHOP:cyc_old",
+        partyId: 10,
+        entryType: "FEE_OFFSET" as const,
+        amount: "5000.00",
+      },
+      {
+        ...baseRow,
+        id: 3,
+        eventKey: "CN:77:FEE_EARNED:cyc_new",
+        partyId: 20,
+        entryType: "FEE_EARNED" as const,
+        amount: "5000.00",
+      },
+    ];
+    const verified = verifiedFeeBalance(
+      { id: 77, partyId: 20, branchId: 1 },
+      neutralSupersededRows as never,
+    );
+    expect(verified.due.toFixed(2)).toBe("5000.00");
+    expect(verified.active).toBe(true);
+
+    // Unpaired foreign FEE_EARNED row must still fail closed!
+    expect(() =>
+      verifiedFeeBalance(
+        { id: 77, partyId: 20, branchId: 1 },
+        [neutralSupersededRows[0]!] as never,
+      ),
+    ).toThrow();
+  });
+
+  it("enforces credit registration, line-derived totals, coupon cap, verified custody, and work-order refund attribution", () => {
+    const settlementSrc = readFileSync(
+      new URL("../services/customerReceiptSettlement.ts", import.meta.url),
+      "utf8",
+    );
+    expect(settlementSrc).toContain("LIKE 'NO-RECEIPT-CREDIT:%'");
+
+    const noReceiptSrc = readFileSync(
+      new URL("../services/returns/noReceiptExchangeService.ts", import.meta.url),
+      "utf8",
+    );
+    expect(noReceiptSrc).toContain("maxDiscountAmount: amountStr");
+    expect(noReceiptSrc).toContain("computedReturnTotal");
+    expect(noReceiptSrc).toContain("computedExchangeTotal");
+
+    const shopOffsetSrc = readFileSync(
+      new URL("../services/delivery/shopFeeAutoOffset.ts", import.meta.url),
+      "utf8",
+    );
+    expect(shopOffsetSrc).toContain("Decimal.min(outstandingClaim, verifiedCustody)");
+
+    const orderPaymentsSrc = readFileSync(
+      new URL("../services/deposits/orderPayments.ts", import.meta.url),
+      "utf8",
+    );
+    expect(orderPaymentsSrc).toContain("targetedWoRefund");
   });
 });
