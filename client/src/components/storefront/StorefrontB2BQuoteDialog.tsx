@@ -326,11 +326,15 @@ export default function StorefrontB2BQuoteDialog({
       );
       return;
     }
-    if (!orderingEnabled) {
-      setFormError("استقبال الطلبات متوقف مؤقتاً؛ يمكنك تنزيل عرض السعر التقديري (PDF) أو التواصل عبر واتساب.");
+    if (!canSubmitOnline) {
+      setFormError(
+        !orderingEnabled
+          ? "استقبال الطلبات متوقف مؤقتاً؛ يمكنك تنزيل عرض السعر التقديري (PDF) أو التواصل عبر واتساب."
+          : "التحقق الأمني قيد التهيئة؛ يمكنك أيضاً تنزيل عرض السعر التقديري (PDF) مباشرة.",
+      );
       return;
     }
-    if (!turnstileSiteKey || !turnstileToken) {
+    if (!turnstileToken) {
       setFormError("أكمل التحقق الأمني قبل إرسال طلب عرض السعر.");
       return;
     }

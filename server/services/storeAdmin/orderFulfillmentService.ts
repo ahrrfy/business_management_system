@@ -2769,6 +2769,8 @@ export async function releaseOnlineOrderAlertPrint(input: {
         itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
       })
       .from(onlineOrders)
+      .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
+      .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
       .where(eq(onlineOrders.id, input.id))
       .limit(1)
   )[0];

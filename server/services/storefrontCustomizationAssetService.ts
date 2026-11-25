@@ -255,8 +255,43 @@ export async function uploadStorefrontCustomizationAsset(
     }
   }
 
-  // نثبّت أو نمدّد دورة حياة السجلّ قبل الكتابة في المخزن حتى ينتظر الرفعُ أيّ معاملة تنظيفٍ
-  // ممسكةٍ بالقفل على نفس assetKey، ويمنع أيّ تنظيفٍ لاحق من مطابقة الصفّ المجدَّد.
+  // المرحلة ١ (حجز انتقالي رتيب قبل الكتابة في المخزن):
+  // نضبط expiresAt على NOW() - 30s للصفوف الجديدة أو المنتهية قديماً (دون خفض أي صلاحية حيّة أو مربوطة بطلب):
+  // - يحمي الصف من التنظيف الانتهازي (الذي يشترط expiresAt < NOW() - 5 MINUTE) طوال زمن الكتابة.
+  // - يبقى <= CURRENT_TIMESTAMP فلا يُقبل ربطه بطلب إن فشلت الكتابة دون الحاجة لحذف الصف المشترك.
+  await db
+    .insert(storefrontCustomizationAssets)
+    .values({
+      assetKey,
+      sha256,
+      mimeType: input.mimeType,
+      byteLength: bytes.length,
+      kind: input.kind,
+      expiresAt: sql`DATE_SUB(NOW(), INTERVAL 30 SECOND)`,
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, GREATEST(${storefrontCustomizationAssets.expiresAt}, DATE_SUB(NOW(), INTERVAL 30 SECOND)))`,
+      },
+    });
+
+  try {
+    await getImageStore().put(assetKey, bytes, input.mimeType);
+  } catch (error) {
+    if (isImageStoreUnavailableError(error)) {
+      throw new TRPCError({
+        code: "SERVICE_UNAVAILABLE",
+        message: appErrorMessage({
+          what: "خدمة رفع المرفقات غير متاحة مؤقتاً",
+          why: "تعثّر الاتصال بمخزن الملفات الآمن",
+          doThis: "انتظر لحظات ثم أعد رفع الشعار",
+        }),
+      });
+    }
+    throw error;
+  }
+
+  // المرحلة ٢ (ترقية رتيبة لصلاحية المرفق بعد نجاح الكتابة في المخزن):
   const expiresAt = new Date(Date.now() + ORPHAN_ASSET_TTL_MS);
   await db
     .insert(storefrontCustomizationAssets)
@@ -270,36 +305,9 @@ export async function uploadStorefrontCustomizationAsset(
     })
     .onDuplicateKeyUpdate({
       set: {
-        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, VALUES(expiresAt))`,
+        expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, GREATEST(${storefrontCustomizationAssets.expiresAt}, VALUES(expiresAt)))`,
       },
     });
-
-  try {
-    await getImageStore().put(assetKey, bytes, input.mimeType);
-  } catch (error) {
-    if (!hadLiveExistingAsset) {
-      await db
-        .delete(storefrontCustomizationAssets)
-        .where(
-          and(
-            eq(storefrontCustomizationAssets.assetKey, assetKey),
-            isNotNull(storefrontCustomizationAssets.expiresAt),
-          ),
-        )
-        .catch(() => {});
-    }
-    if (isImageStoreUnavailableError(error)) {
-      throw new TRPCError({
-        code: "SERVICE_UNAVAILABLE",
-        message: appErrorMessage({
-          what: "خدمة رفع المرفقات غير متاحة مؤقتاً",
-          why: "تعثّر الاتصال بمخزن الملفات الآمن",
-          doThis: "انتظر لحظات ثم أعد رفع الشعار",
-        }),
-      });
-    }
-    throw error;
-  }
 
   return {
     assetKey,

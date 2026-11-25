@@ -1,6 +1,6 @@
 import express from "express";
 import { eq } from "drizzle-orm";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import * as s from "../../../drizzle/schema";
 import { signSession } from "../../auth/session";
 import { getDb } from "../../db";
 import { imageRouter } from "../../imageRoute";
+import * as imageStoreModule from "../../lib/imageStore";
 import { __resetImageStoreForTest } from "../../lib/imageStore";
 import { storefrontRouter } from "../../routers/storefrontRouter";
 import { router } from "../../trpc";
@@ -17,7 +18,13 @@ import { hashCouponCode } from "../couponService";
 import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import * as salesPromoService from "../salesPromotionService";
 import { resolveCouponPromotionForLine, resolvePromotionForLine } from "../salesPromotionService";
-import { getOnlineOrder, updateOnlineOrder } from "../storeAdmin/orderFulfillmentService";
+import {
+  claimOnlineOrderAlertPrint,
+  getOnlineOrder,
+  releaseOnlineOrderAlertPrint,
+  updateOnlineOrder,
+} from "../storeAdmin/orderFulfillmentService";
+import * as realtimeModule from "../../realtime";
 import { withTx } from "../tx";
 import { truncateAllTables } from "./__testUtils__";
 
@@ -1047,6 +1054,130 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
       expect(unassignedRes.status).toBe(403);
     } finally {
       await srv.close();
+    }
+  });
+
+  it("preserves shared customization asset row when a concurrent upload fails put(), rejects standalone failed uploads, and publishes alert handoff with joined tables", async () => {
+    const caller = publicCaller();
+    const realStore = imageStoreModule.getImageStore();
+    let putCalls = 0;
+    const putSpy = vi.spyOn(realStore, "put").mockImplementation(async (key) => {
+      putCalls += 1;
+      if (putCalls === 1) {
+        throw new Error("transient storage write error");
+      }
+      await realStore.get(key);
+    });
+
+    try {
+      await expect(
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/jpeg",
+          dataBase64: VALID_JPEG_BASE64,
+        }),
+      ).rejects.toThrow("transient storage write error");
+      const [failedOnlyRow] = await db()
+        .select()
+        .from(s.storefrontCustomizationAssets);
+      expect(failedOnlyRow).toBeDefined();
+      await expect(
+        quoteOnlineOrder({
+          governorate: "baghdad",
+          lines: [
+            {
+              productUnitId: 100,
+              quantity: 1,
+              customization: {
+                templateId: 1,
+                values: { engraving_text: "اختبار فشل منفرد" },
+                logoAssetKey: failedOnlyRow.assetKey,
+              } as any,
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      let pngCall = 0;
+      putSpy.mockImplementation(async (key, buf) => {
+        pngCall += 1;
+        if (pngCall === 1) {
+          await new Promise((r) => setTimeout(r, 25));
+          throw new Error("concurrent storage failure");
+        }
+        await fs.promises.mkdir(path.dirname(path.join(tempImageDir, key)), { recursive: true });
+        await fs.promises.writeFile(path.join(tempImageDir, key), buf);
+      });
+
+      const [firstOutcome, secondOutcome] = await Promise.allSettled([
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+      ]);
+      expect(firstOutcome.status).toBe("rejected");
+      expect(secondOutcome.status).toBe("fulfilled");
+      const succeededAsset = (secondOutcome as PromiseFulfilledResult<{ assetKey: string }>).value;
+
+      const quote = await quoteOnlineOrder({
+        governorate: "baghdad",
+        lines: [
+          {
+            productUnitId: 100,
+            quantity: 1,
+            customization: {
+              templateId: 1,
+              values: { engraving_text: "مرفق ناجح بالتوازي" },
+              logoAssetKey: succeededAsset.assetKey,
+            } as any,
+          },
+        ],
+      });
+      const created = await createOnlineOrder({
+        customerName: "عميل اختبار التنبيه",
+        customerPhone: "07701112233",
+        governorate: "baghdad",
+        addressText: "بغداد - المنصور",
+        clientRequestId: "w2-alert-handoff-order-001",
+        expectedGrandTotal: quote.total,
+        lines: [
+          {
+            productUnitId: 100,
+            quantity: 1,
+            expectedUnitPrice: "6500.00",
+            customization: {
+              templateId: 1,
+              values: { engraving_text: "مرفق ناجح بالتوازي" },
+              logoAssetKey: succeededAsset.assetKey,
+            } as any,
+          },
+        ],
+      });
+
+      const publishSpy = vi.spyOn(realtimeModule, "publishRealtimeEvent");
+      const claim = await claimOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(claim.claimed).toBe(true);
+      const released = await releaseOnlineOrderAlertPrint({ id: created.orderId, scopedBranchId: 1 });
+      expect(released.released).toBe(true);
+      expect(publishSpy).toHaveBeenCalledWith(
+        "STOREFRONT_ORDER_PLACED",
+        expect.objectContaining({
+          orderId: created.orderId,
+          orderNumber: created.orderNumber,
+          customerName: "عميل اختبار التنبيه",
+          alertPrintHandoff: true,
+        }),
+        expect.objectContaining({ branchId: 1 }),
+      );
+      publishSpy.mockRestore();
+    } finally {
+      putSpy.mockRestore();
     }
   });
 });
