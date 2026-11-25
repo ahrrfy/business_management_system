@@ -627,7 +627,7 @@ export function BannerStudioComposer({
       return;
     }
 
-    if (!isCompositionFresh && campaignSlides.length === 0) {
+    if (!isCompositionFresh && (campaignSlides.length === 0 || composing || generateCopyM.isPending)) {
       notify.err("انتظر لحظة حتى تكتمل المعاينة المحدثة للبنر.");
       return;
     }
@@ -656,7 +656,11 @@ export function BannerStudioComposer({
           ? [currentStudioSlide]
           : [];
 
-    const first = finalSlides[0]!;
+    const first = finalSlides[0];
+    if (!first) {
+      notify.err("لا توجد شرائح جاهزة للنشر — انتظر اكتمال المعاينة أو ثبّت شريحة أولاً.");
+      return;
+    }
     onSubmit({
       ...(editingBanner ? { id: editingBanner.id } : {}),
       title: first.title?.trim() || title,
