@@ -9,6 +9,7 @@ import type { TrpcContext } from "../context";
 import { getDb } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
 import { verifyPassword } from "../auth/password";
+import { appErrorMessage } from "../../shared/errors";
 import { logAudit } from "../services/auditService";
 import { getConfiguredTarget, describeTarget } from "../services/printService";
 import * as maint from "../services/maintenanceService";
@@ -88,13 +89,52 @@ export const systemRouter = router({
     return { ok: true as const, created };
   }),
 
-  /** حذف نسخة احتياطية (للمدير، مسار آمن). */
-  deleteBackup: adminProcedure.input(z.object({ name: z.string() })).mutation(async ({ ctx, input }) => {
-    const ok = await maint.deleteBackup(input.name);
-    if (!ok) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
-    await logAudit(ctx, { action: "system.backup.delete", entityType: "system", entityId: input.name });
-    return { ok: true as const };
-  }),
+  /** حذف ملف SQL محلي أو تقاعد/تنظيف سجل النسخة بحواجز أمان صريحة. */
+  deleteBackup: adminProcedure
+    .input(
+      z.object({
+        name: z.string().max(180),
+        scope: z.enum(["sql", "entry"]).optional(),
+        password: z.string().max(256).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const scope = input.scope ?? "sql";
+      const hasPassword = typeof input.password === "string" && input.password.length > 0;
+      if (scope === "entry" && hasPassword) {
+        await assertPassword(ctx, input.password!);
+      }
+      let ok: boolean;
+      try {
+        ok = await maint.deleteBackup(input.name, {
+          scope,
+          isOwner: ctx.user.isOwner === true,
+          passwordVerified: scope === "entry" && hasPassword,
+          actorId: ctx.user.id,
+        });
+      } catch (error) {
+        if (error instanceof maint.BackupDeleteGuardError) {
+          throw new TRPCError({ code: error.code, message: error.message });
+        }
+        throw error;
+      }
+      if (!ok) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذر العثور على النسخة المطلوبة",
+            why: "الملف أو السجل المحدد غير موجود في مجلد النسخ الحالي.",
+            doThis: "حدث قائمة النسخ الاحتياطية وتحقق من حالة السجل.",
+          }),
+        });
+      }
+      await logAudit(ctx, {
+        action: scope === "entry" ? "system.backup.purge" : "system.backup.delete",
+        entityType: "system",
+        entityId: input.name,
+      });
+      return { ok: true as const, scope };
+    }),
 
   /** استعادة من نسخة خادم (مدمّر): كلمة مرور + رمز تأكيد + نسخة أمان تلقائية. */
   restoreBackup: ownerProcedure
