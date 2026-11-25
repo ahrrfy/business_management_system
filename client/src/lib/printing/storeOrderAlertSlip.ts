@@ -400,10 +400,17 @@ export function setStoreOrderAutoPrintStationSetting(enabled: boolean | null): v
  * ليتجاوز حاجب النوافذ المنبثقة (Popup Blocker) عند وصول أحداث SSE الخلفية،
  * فيعمل تلقائياً مع طابعات Windows الافتراضية (ومع --kiosk-printing بصمت تام).
  */
+export type StoreOrderAlertPrintOutcome =
+  | "printed"
+  | "dialog_opened"
+  | "no_printer"
+  | "hardware_error"
+  | "lease_lost";
+
 export async function printStoreOrderAlertIframe(
   d: StoreOrderAlertData,
   options?: { signal?: AbortSignal },
-): Promise<"printed" | "hardware_error" | "lease_lost"> {
+): Promise<"dialog_opened" | "hardware_error" | "lease_lost"> {
   if (typeof document === "undefined" || !document.body) return "hardware_error";
   const signal = options?.signal;
   if (signal?.aborted) return "lease_lost";
@@ -422,7 +429,7 @@ export async function printStoreOrderAlertIframe(
         /* ignore */
       }
     };
-    const finish = (res: "printed" | "hardware_error" | "lease_lost") => {
+    const finish = (res: "dialog_opened" | "hardware_error" | "lease_lost") => {
       if (settled) return;
       settled = true;
       resolve(res);
@@ -465,7 +472,7 @@ export async function printStoreOrderAlertIframe(
         globalThis.setTimeout(cleanup, 60_000);
         win.focus();
         win.print();
-        finish("printed");
+        finish("dialog_opened");
       } catch (err) {
         console.warn("[store-order-alert] iframe print failed:", err);
         cleanup();
@@ -481,7 +488,7 @@ export async function printStoreOrderAlertIframe(
 export async function printStoreOrderAlertAuto(
   d: StoreOrderAlertData,
   options?: { signal?: AbortSignal; allowBrowserFallback?: boolean },
-): Promise<"printed" | "no_printer" | "hardware_error" | "lease_lost"> {
+): Promise<StoreOrderAlertPrintOutcome> {
   const silentRes = await printStoreOrderAlertSilent(d, options);
   if (silentRes === "printed" || silentRes === "lease_lost") {
     return silentRes;
@@ -536,7 +543,14 @@ export function createStoreOrderAlertCoordinator(deps: {
   print: (
     data: StoreOrderAlertData,
     options?: { signal?: AbortSignal; allowBrowserFallback?: boolean },
-  ) => Promise<"printed" | "no_printer" | "hardware_error" | "lease_lost">;
+  ) => Promise<StoreOrderAlertPrintOutcome>;
+  onBrowserDialogOpened?: (ctx: {
+    orderId: number;
+    orderNumber: string;
+    confirmPrinted: () => Promise<void>;
+    retryOrRelease: () => Promise<void>;
+  }) => void;
+  unconfirmedDialogHoldMs?: number;
   onNotify?: (payload: StoreOrderAlertIncomingPayload) => void;
   now?: () => number;
   scheduleRetry?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -561,9 +575,11 @@ export function createStoreOrderAlertCoordinator(deps: {
       ? [deps.contestedRetryDelayMs, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]
       : [2_500, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]);
   const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
+  const unconfirmedDialogHoldMs = deps.unconfirmedDialogHoldMs ?? 90_000;
 
   const notifiedOrderIds = new Set<number>();
   const printedOrderIds = new Set<number>();
+  const awaitingDialogConfirmIds = new Set<number>();
   const inFlightOrderIds = new Set<number>();
   const recoveryStepByOrder = new Map<number, number>();
   const failedCooldownUntil = new Map<number, number>();
@@ -612,7 +628,13 @@ export function createStoreOrderAlertCoordinator(deps: {
     payload: StoreOrderAlertIncomingPayload,
   ): Promise<void> => {
     const { orderId } = payload;
-    if (printedOrderIds.has(orderId) || inFlightOrderIds.has(orderId)) return;
+    if (
+      printedOrderIds.has(orderId) ||
+      awaitingDialogConfirmIds.has(orderId) ||
+      inFlightOrderIds.has(orderId)
+    ) {
+      return;
+    }
     const cooldownUntil = failedCooldownUntil.get(orderId);
     if (cooldownUntil !== undefined) {
       if (getNow() < cooldownUntil) {
@@ -737,7 +759,7 @@ export function createStoreOrderAlertCoordinator(deps: {
       armExpiryGuard();
       scheduleLeaseRenewal();
 
-      let outcome: "printed" | "no_printer" | "hardware_error" | "lease_lost" = "hardware_error";
+      let outcome: StoreOrderAlertPrintOutcome = "hardware_error";
       try {
         outcome = await deps
           .print(
@@ -773,6 +795,121 @@ export function createStoreOrderAlertCoordinator(deps: {
             auxTimers.add(retryHandle);
           }
         }
+        return;
+      }
+
+      if (outcome === "dialog_opened") {
+        if (!deps.onBrowserDialogOpened) {
+          failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+          try {
+            await deps.release(orderId, activeLeaseToken);
+          } catch {
+            scheduleNextRecovery(payload);
+          }
+          return;
+        }
+
+        awaitingDialogConfirmIds.add(orderId);
+        boundSet(awaitingDialogConfirmIds, orderId);
+        let dialogSettled = false;
+        let holdRenewTimer: ReturnType<typeof setTimeout> | null = null;
+        let holdExpireTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const clearDialogTimers = () => {
+          if (holdRenewTimer !== null) {
+            cancel(holdRenewTimer);
+            auxTimers.delete(holdRenewTimer);
+            holdRenewTimer = null;
+          }
+          if (holdExpireTimer !== null) {
+            cancel(holdExpireTimer);
+            auxTimers.delete(holdExpireTimer);
+            holdExpireTimer = null;
+          }
+        };
+
+        const scheduleHoldRenew = () => {
+          if (dialogSettled || !deps.renew) return;
+          holdRenewTimer = schedule(async () => {
+            auxTimers.delete(holdRenewTimer!);
+            holdRenewTimer = null;
+            if (dialogSettled) return;
+            try {
+              const renewed = await deps.renew!(orderId, activeLeaseToken);
+              if (dialogSettled) return;
+              if (renewed?.renewed) {
+                activeLeaseToken = renewed.leaseToken ?? activeLeaseToken;
+                scheduleHoldRenew();
+                return;
+              }
+              if (renewed && renewed.renewed === false) {
+                dialogSettled = true;
+                clearDialogTimers();
+                awaitingDialogConfirmIds.delete(orderId);
+                failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+                scheduleNextRecovery(payload);
+                return;
+              }
+            } catch {
+              /* ignore transient renew error */
+            }
+            if (!dialogSettled) {
+              scheduleHoldRenew();
+            }
+          }, leaseRenewIntervalMs);
+          auxTimers.add(holdRenewTimer);
+        };
+
+        const confirmPrinted = async () => {
+          if (dialogSettled) return;
+          dialogSettled = true;
+          clearDialogTimers();
+          awaitingDialogConfirmIds.delete(orderId);
+          printedOrderIds.add(orderId);
+          boundSet(printedOrderIds, orderId);
+          recoveryStepByOrder.delete(orderId);
+          failedCooldownUntil.delete(orderId);
+          if (deps.confirm) {
+            const tokenToConfirm = activeLeaseToken;
+            try {
+              await deps.confirm(orderId, tokenToConfirm);
+            } catch {
+              const retryHandle = schedule(() => {
+                auxTimers.delete(retryHandle);
+                void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
+              }, 2_000);
+              auxTimers.add(retryHandle);
+            }
+          }
+        };
+
+        const retryOrRelease = async () => {
+          if (dialogSettled) return;
+          dialogSettled = true;
+          clearDialogTimers();
+          awaitingDialogConfirmIds.delete(orderId);
+          failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+          try {
+            await deps.release(orderId, activeLeaseToken);
+          } catch {
+            scheduleNextRecovery(payload);
+          }
+        };
+
+        scheduleHoldRenew();
+        holdExpireTimer = schedule(() => {
+          auxTimers.delete(holdExpireTimer!);
+          holdExpireTimer = null;
+          void retryOrRelease();
+        }, unconfirmedDialogHoldMs);
+        auxTimers.add(holdExpireTimer);
+
+        deps.onBrowserDialogOpened({
+          orderId,
+          orderNumber: claimRes.orderNumber ?? payload.orderNumber,
+          confirmPrinted,
+          retryOrRelease,
+        });
         return;
       }
 

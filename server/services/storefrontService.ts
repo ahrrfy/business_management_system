@@ -914,7 +914,6 @@ export async function resolveStorefrontPromotionScope(
   valid: boolean;
   categoryIds?: number[];
   productIds?: number[];
-  forceOnSale?: boolean;
 }> {
   const db = getDb();
   if (!db) return { valid: false };
@@ -943,7 +942,7 @@ export async function resolveStorefrontPromotionScope(
     return { valid: false };
   }
   if (promo.scope === "ALL") {
-    return { valid: true, forceOnSale: true };
+    return { valid: true };
   }
   const targets = await db
     .select({
@@ -1004,9 +1003,6 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       effectiveProdIdsInput = effectiveProdIdsInput
         ? effectiveProdIdsInput.filter((id) => promoScope.productIds!.includes(id))
         : promoScope.productIds;
-    }
-    if (promoScope.forceOnSale && (!effectivePriceFilter || effectivePriceFilter === "ALL")) {
-      effectivePriceFilter = "ON_SALE";
     }
   }
 

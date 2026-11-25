@@ -241,56 +241,67 @@ export async function listBannerCandidateProducts(input?: {
     conds.push(sql`(${products.name} LIKE ${pat} ESCAPE '!' OR COALESCE(${products.brand}, '') LIKE ${pat} ESCAPE '!')`);
   }
 
-  const unitRows = await db
-    .select({
-      productId: products.id,
-      variantId: productVariants.id,
-      conversionFactor: productUnits.conversionFactor,
-      price: productPrices.price,
-      isFeatured: products.isFeatured,
-      hasImage: sql<number>`EXISTS (SELECT 1 FROM productImages pi WHERE pi.productId = ${products.id} AND pi.reviewStatus = 'APPROVED')`,
-    })
-    .from(products)
-    .leftJoin(categories, eq(products.categoryId, categories.id))
-    .innerJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
-    .innerJoin(
-      productUnits,
-      and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isStoreSaleUnit, true)),
-    )
-    .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
-    .where(and(...conds))
-    .orderBy(
-      desc(sql`EXISTS (SELECT 1 FROM productImages pi WHERE pi.productId = ${products.id} AND pi.reviewStatus = 'APPROVED')`),
-      desc(products.isFeatured),
-      desc(products.id),
-    )
-    .limit(limit * 6);
-
-  const availability = await loadVariantAvailability(
-    db,
-    branchId,
-    unitRows.map((r) => Number(r.variantId)),
-  );
+  const batchSize = Math.max(120, limit * 10);
   const inStockProductIds: number[] = [];
   const seen = new Set<number>();
-  for (const r of unitRows) {
-    const pid = Number(r.productId);
-    if (seen.has(pid)) continue;
-    const state = availability.get(Number(r.variantId));
-    const available =
-      state?.isService === true ||
-      evaluateStorefrontUnitEligibility({
-        isActive: true,
-        isStoreSaleUnit: true,
-        retailPrice: r.price,
-        conversionFactor: r.conversionFactor,
-        stockBase: state?.hasStockRow ? state.onHandBase : null,
-        availableBase: state?.availableBase ?? 0,
-      }).available;
-    if (!available) continue;
-    seen.add(pid);
-    inStockProductIds.push(pid);
-    if (inStockProductIds.length >= limit) break;
+
+  for (let offset = 0; offset < 2_400 && inStockProductIds.length < limit; offset += batchSize) {
+    const unitRows = await db
+      .select({
+        productId: products.id,
+        variantId: productVariants.id,
+        conversionFactor: productUnits.conversionFactor,
+        price: productPrices.price,
+        isFeatured: products.isFeatured,
+        hasImage: sql<number>`EXISTS (SELECT 1 FROM productImages pi WHERE pi.productId = ${products.id} AND pi.reviewStatus = 'APPROVED')`,
+      })
+      .from(products)
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .innerJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
+      .innerJoin(
+        productUnits,
+        and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isStoreSaleUnit, true)),
+      )
+      .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
+      .where(and(...conds))
+      .orderBy(
+        desc(sql`EXISTS (SELECT 1 FROM productImages pi WHERE pi.productId = ${products.id} AND pi.reviewStatus = 'APPROVED')`),
+        desc(products.isFeatured),
+        desc(products.id),
+        asc(productVariants.id),
+        asc(productUnits.id),
+      )
+      .limit(batchSize)
+      .offset(offset);
+
+    if (unitRows.length === 0) break;
+
+    const availability = await loadVariantAvailability(
+      db,
+      branchId,
+      unitRows.map((r) => Number(r.variantId)),
+    );
+    for (const r of unitRows) {
+      const pid = Number(r.productId);
+      if (seen.has(pid)) continue;
+      const state = availability.get(Number(r.variantId));
+      const available =
+        state?.isService === true ||
+        evaluateStorefrontUnitEligibility({
+          isActive: true,
+          isStoreSaleUnit: true,
+          retailPrice: r.price,
+          conversionFactor: r.conversionFactor,
+          stockBase: state?.hasStockRow ? state.onHandBase : null,
+          availableBase: state?.availableBase ?? 0,
+        }).available;
+      if (!available) continue;
+      seen.add(pid);
+      inStockProductIds.push(pid);
+      if (inStockProductIds.length >= limit) break;
+    }
+
+    if (unitRows.length < batchSize) break;
   }
 
   const hydrated = await loadRichProductsByIds(inStockProductIds);

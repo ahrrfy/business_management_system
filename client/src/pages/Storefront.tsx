@@ -361,8 +361,7 @@ function StorefrontContent() {
     categoryId == null && activeOffer?.scope === "CATEGORIES"
       ? (activeOffer.targetCategoryIds ?? [])
       : null;
-  const effectivePriceFilter: PriceFilter =
-    activeOffer?.scope === "ALL" && priceFilter === "ALL" ? "ON_SALE" : priceFilter;
+  const effectivePriceFilter: PriceFilter = priceFilter;
   const scopedIds =
     bannerProductIds ??
     (activeOffer?.scope === "PRODUCTS"

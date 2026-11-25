@@ -463,21 +463,36 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
       await new Promise((r) => setTimeout(r, 0));
     };
 
-    // Case 1: OS-only reception station (no WebUSB) prints automatically after head-start
+    // Case 1: OS-only reception station (no WebUSB) opens dialog after head-start and requires explicit confirmation before marking printed
     let order101Claimed = false;
-    const osOnlyPrint = vi.fn().mockResolvedValue("printed" as const);
+    let order101Confirmed = false;
+    let order101Released = false;
+    let pendingAck: {
+      confirmPrinted: () => Promise<void>;
+      retryOrRelease: () => Promise<void>;
+    } | null = null;
+    const osOnlyPrint = vi.fn().mockResolvedValue("dialog_opened" as const);
     const osOnlyStation = createStoreOrderAlertCoordinator({
       hasPrinter: async () => false,
       canBrowserFallback: () => true,
       browserFallbackHeadStartMs: 700,
       claim: async () => {
-        if (order101Claimed) return { claimed: false, alreadyPrinted: true };
+        if (order101Confirmed) return { claimed: false, alreadyPrinted: true };
+        if (order101Claimed) return { claimed: false, alreadyPrinted: false };
         order101Claimed = true;
         return { claimed: true, leaseToken: "t-101", orderNumber: "ORD-OS-101", total: "15000", itemCount: 1 };
       },
-      confirm: async () => {},
-      release: async () => {},
+      confirm: async () => {
+        order101Confirmed = true;
+      },
+      release: async () => {
+        order101Claimed = false;
+        order101Released = true;
+      },
       print: osOnlyPrint,
+      onBrowserDialogOpened: (ctx) => {
+        pendingAck = ctx;
+      },
       now: () => nowMs,
       scheduleRetry: scheduleFn,
       cancelRetry: cancelFn,
@@ -490,6 +505,12 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
     await pOs;
     expect(osOnlyPrint).toHaveBeenCalledTimes(1);
     expect(osOnlyPrint.mock.calls[0]?.[1]?.allowBrowserFallback).toBe(true);
+    // Unconfirmed browser dialog must NOT auto-confirm alertPrintedAt
+    expect(order101Confirmed).toBe(false);
+    expect(order101Released).toBe(false);
+    expect(pendingAck).not.toBeNull();
+    await pendingAck!.confirmPrinted();
+    expect(order101Confirmed).toBe(true);
 
     // Case 2: Both a WebUSB station and an OS-only station receive Order 102 -> WebUSB wins at 0ms!
     let order102Claimed = false;

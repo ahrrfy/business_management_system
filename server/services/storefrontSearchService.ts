@@ -103,10 +103,6 @@ export async function storefrontSearchSuggestions(
         productIds: promoScope.productIds
           ? (input.productIds ? input.productIds.filter((id) => promoScope.productIds!.includes(id)) : promoScope.productIds)
           : input.productIds,
-        priceFilter:
-          promoScope.forceOnSale && (!input.priceFilter || input.priceFilter === "ALL")
-            ? "ON_SALE"
-            : input.priceFilter,
       };
     }
     const barcode = await resolveBarcodeOwnerResult(db, query, {

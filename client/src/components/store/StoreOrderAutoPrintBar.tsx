@@ -49,11 +49,11 @@ export function StoreOrderAutoPrintBar({
         },
         { allowBrowserFallback: true },
       );
-      if (outcome === "printed") {
+      if (outcome === "printed" || outcome === "dialog_opened") {
         notify.ok(
-          hasThermal
+          hasThermal && outcome === "printed"
             ? "تمت طباعة قصاصة الاختبار صامتاً عبر الطابعة الحرارية"
-            : "تم إرسال قصاصة الاختبار (80مم) إلى طابعة المتصفح",
+            : "تم فتح نافذة طباعة قصاصة الاختبار (80مم)",
         );
       } else {
         notify.err("تعذر إرسال قصاصة الاختبار للطابعة");

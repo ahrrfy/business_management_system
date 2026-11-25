@@ -238,6 +238,7 @@ export function BannerStudioComposer({
       : DEFAULT_COPY,
   );
   const [aiSceneDataUrl, setAiSceneDataUrl] = useState<string | null>(null);
+  const [aiSceneMode, setAiSceneMode] = useState<"FULL_SCENE" | "STAGE_BACKDROP" | null>(null);
   const [composed, setComposed] = useState<ComposedBannerPair | null>(null);
   const [composedSnapshotKey, setComposedSnapshotKey] = useState<string>("");
   const [composing, setComposing] = useState(false);
@@ -309,6 +310,7 @@ export function BannerStudioComposer({
 
     sceneReqSeqRef.current += 1;
     setAiSceneDataUrl(null);
+    setAiSceneMode(null);
     setExtraMergedProducts([]);
     setOrderedProductIds([]);
     setExcludedProductIds([]);
@@ -439,8 +441,16 @@ export function BannerStudioComposer({
 
   const studioPlacement: StudioBannerPlacement = placement === "INLINE" ? "INLINE" : "HERO";
 
+  const expectedSceneMode =
+    visualMode === "AI_FULL_SCENE"
+      ? "FULL_SCENE"
+      : visualMode === "HYBRID_STAGE"
+        ? "STAGE_BACKDROP"
+        : null;
   const effectiveVisualMode: StudioVisualRenderMode =
-    visualMode !== "LOCAL_STUDIO" && aiSceneDataUrl ? visualMode : "LOCAL_STUDIO";
+    expectedSceneMode && aiSceneDataUrl && aiSceneMode === expectedSceneMode
+      ? visualMode
+      : "LOCAL_STUDIO";
   const compositionSnapshotKey = useMemo(
     () =>
       JSON.stringify([
@@ -1012,7 +1022,14 @@ export function BannerStudioComposer({
                     <div className="flex gap-1">
                       <button
                         type="button"
-                        onClick={() => setVisualMode("HYBRID_STAGE")}
+                        onClick={() => {
+                          if (aiSceneMode !== "STAGE_BACKDROP") {
+                            sceneReqSeqRef.current += 1;
+                            setAiSceneDataUrl(null);
+                            setAiSceneMode(null);
+                          }
+                          setVisualMode("HYBRID_STAGE");
+                        }}
                         className={`rounded px-2 py-0.5 text-[10px] font-bold ${
                           visualMode === "HYBRID_STAGE"
                             ? "bg-[var(--sem-pos)] text-background"
@@ -1023,7 +1040,14 @@ export function BannerStudioComposer({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setVisualMode("AI_FULL_SCENE")}
+                        onClick={() => {
+                          if (aiSceneMode !== "FULL_SCENE") {
+                            sceneReqSeqRef.current += 1;
+                            setAiSceneDataUrl(null);
+                            setAiSceneMode(null);
+                          }
+                          setVisualMode("AI_FULL_SCENE");
+                        }}
                         className={`rounded px-2 py-0.5 text-[10px] font-bold ${
                           visualMode === "AI_FULL_SCENE"
                             ? "bg-primary text-primary-foreground"
@@ -1073,6 +1097,7 @@ export function BannerStudioComposer({
                               return;
                             }
                             setAiSceneDataUrl(res.sceneDataUrl);
+                            setAiSceneMode(reqSceneMode);
                             setVisualMode(reqSceneMode === "FULL_SCENE" ? "AI_FULL_SCENE" : "HYBRID_STAGE");
                             notify.ok(
                               reqSceneMode === "FULL_SCENE"

@@ -14,6 +14,7 @@ import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
 import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
 import { playAudioFeedback } from "@/lib/audioFeedback";
+import { toast } from "sonner";
 import { notify } from "@/lib/notify";
 import {
   createStoreOrderAlertCoordinator,
@@ -347,6 +348,24 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
             stationOptIn: stationOptInRef.current,
           }),
         print: printStoreOrderAlertAuto,
+        onBrowserDialogOpened: ({ orderNumber, confirmPrinted, retryOrRelease }) => {
+          toast(`تأكيد طباعة قصاصة الطلب ${orderNumber}`, {
+            description: "اضغط تأكيد بعد خروج الورقة، أو إعادة المحاولة إذا أغلقت نافذة الطباعة.",
+            duration: 90_000,
+            action: {
+              label: "تأكيد الطباعة",
+              onClick: () => {
+                void confirmPrinted();
+              },
+            },
+            cancel: {
+              label: "لم تطبع",
+              onClick: () => {
+                void retryOrRelease();
+              },
+            },
+          });
+        },
         onNotify: (payload) => {
           playAudioFeedback("notification");
           notify.info(`وصل طلب متجر جديد: ${payload.orderNumber}`);
