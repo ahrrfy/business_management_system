@@ -143,10 +143,10 @@ export const systemRouter = router({
       assertOnlineMaintenanceAllowed();
       await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
-      const abs = await maint.resolveStoredRestoreFile(input.name);
-      if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
       const releaseLock = await maint.acquireRestoreLock();
       try {
+        const abs = await maint.resolveStoredRestoreFile(input.name);
+        if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
         await logAudit(ctx, { action: "system.restore.begin", entityType: "system", entityId: input.name });
         await maint.runRestore(abs);
         await logAudit(ctx, { action: "system.restore", entityType: "system", entityId: input.name });
