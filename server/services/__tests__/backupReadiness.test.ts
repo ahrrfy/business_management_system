@@ -354,4 +354,40 @@ describe("backup readiness evidence", () => {
     await expect(deleteBackup(b3, { scope: "entry", isOwner: true, passwordVerified: true }))
       .rejects.toBeInstanceOf(BackupDeleteGuardError);
   });
+
+  it("sorts mixed timezone offset timestamps chronologically before computing protectedRecent and delete guards", async () => {
+    const newestUtc = "erp-2026-11-25T10-00-00-000Z-aaaa1111.sql";
+    const secondUtc = "erp-2026-11-25T09-45-00-000Z-aaaa2222.sql";
+    const thirdUtc = "erp-2026-11-25T09-30-00-000Z-aaaa3333.sql";
+    // 12:00:00+03:00 equals 09:00:00Z (older than all three above, even though "12:" > "10:" lexicographically!)
+    const olderPlus3 = "erp-2026-11-25T09-00-00-000Z-aaaa4444.sql";
+
+    for (const n of [newestUtc, secondUtc, thirdUtc, olderPlus3]) {
+      await writeCopy(local, n);
+    }
+    await writeFile(path.join(local, `${newestUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: newestUtc, status: "COMPLETED", startedAt: "2026-11-25T10:00:00Z", finishedAt: "2026-11-25T10:01:00Z",
+    }));
+    await writeFile(path.join(local, `${secondUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: secondUtc, status: "COMPLETED", startedAt: "2026-11-25T09:45:00Z", finishedAt: "2026-11-25T09:46:00Z",
+    }));
+    await writeFile(path.join(local, `${thirdUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: thirdUtc, status: "COMPLETED", startedAt: "2026-11-25T09:30:00Z", finishedAt: "2026-11-25T09:31:00Z",
+    }));
+    await writeFile(path.join(local, `${olderPlus3}.attempt.json`), JSON.stringify({
+      version: 1, file: olderPlus3, status: "COMPLETED", startedAt: "2026-11-25T12:00:00+03:00", finishedAt: "2026-11-25T12:01:00+03:00",
+    }));
+
+    const readiness = await inspectBackupReadiness(local, undefined, "erp-");
+    expect(readiness.backups.map((r) => r.name)).toEqual([newestUtc, secondUtc, thirdUtc, olderPlus3]);
+    expect(readiness.latestAttempt?.file).toBe(newestUtc);
+    expect(readiness.backups.find((r) => r.name === thirdUtc)?.protectedRecent).toBe(true);
+    expect(readiness.backups.find((r) => r.name === olderPlus3)?.protectedRecent).toBe(false);
+
+    // Chronologically third-newest UTC archive is protected, whereas older +03:00 archive can be retired by Owner
+    await expect(deleteBackup(thirdUtc, { scope: "entry", isOwner: true, passwordVerified: true }))
+      .rejects.toBeInstanceOf(BackupDeleteGuardError);
+    await expect(deleteBackup(olderPlus3, { scope: "entry", isOwner: true, passwordVerified: true, actorId: 1 }))
+      .resolves.toBe(true);
+  });
 });
