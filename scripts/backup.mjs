@@ -20,13 +20,36 @@
 import "dotenv/config";
 import { publishEncryptedBackup, mirrorPublishedBackup } from "./lib/backup-publication.mjs";
 import { encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
+import { rotateBackups } from "./backup-rotate.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createWriteStream, mkdirSync, statSync, unlinkSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertDbTarget, parseDbTarget, targetEnvironment } from "./lib/db-target.mjs";
 import { resolveBackupClient, backupDumpCommand, completeBackupDump } from "./lib/backup-client.mjs";
+
+function assertMountpointIfRequired(mountRoot) {
+  if (!mountRoot) return;
+  const resolved = resolve(mountRoot);
+  const parent = dirname(resolved);
+  if (parent === resolved) return;
+  const targetStat = statSync(resolved);
+  const parentStat = statSync(parent);
+  if (targetStat.dev === parentStat.dev) {
+    throw new Error(`BACKUP_MOUNTPOINT_NOT_MOUNTED: ${resolved}`);
+  }
+}
+if (process.env.BACKUP_REQUIRE_MOUNTPOINT) {
+  try {
+    for (const mp of process.env.BACKUP_REQUIRE_MOUNTPOINT.split(":").map((s) => s.trim()).filter(Boolean)) {
+      assertMountpointIfRequired(mp);
+    }
+  } catch (error) {
+    console.error("✗ تعذّر إثبات وحدة تخزين النسخ المشفّرة:", error?.message ?? error);
+    process.exit(1);
+  }
+}
 
 // ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
 if (process.argv.includes("--all-companies")) {
@@ -217,8 +240,6 @@ try {
 }
 
 if (!noRotate) {
-  // Retention is deliberately paused until a complete recovery set is verified.
-  // Do not call backup-rotate here: it deletes files before offsite publication.
   const passphrase = process.env.BACKUP_GPG_PASSPHRASE;
   const offsite = process.env.BACKUP_OFFSITE_DIR;
   if (offsite && !passphrase) {
@@ -244,7 +265,14 @@ if (!noRotate) {
       process.exit(1);
     }
   }
-  console.log("Retention paused: no existing backup or recovery evidence removed.");
+  try {
+    const rotation = await rotateBackups({ backupDir, offsiteDir: offsite, dbFilter: db });
+    console.log(
+      `Verified backup retention: plainSqlDeleted=${rotation.plainSqlDeleted.length}, encryptedRetired=${rotation.encryptedRetired.length}, retiringPurged=${rotation.retiringPurged.length}`,
+    );
+  } catch (rotationError) {
+    console.warn(`⚠ تعذّر إكمال التدوير اللاحق للنسخ (النسخة الجديدة سليمة ومحفوظة): ${rotationError?.message ?? rotationError}`);
+  }
 }
 saveAttempt("COMPLETED");
 if (process.argv.includes("--print-receipt")) {

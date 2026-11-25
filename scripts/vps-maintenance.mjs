@@ -15,12 +15,18 @@ async function directory(file) {
   return stat;
 }
 
-async function roots(root) {
-  if ((await fs.realpath(root)) !== path.resolve(root)) {
+async function roots(root, explicitBackupDir = null) {
+  const resolvedRoot = path.resolve(root);
+  if ((await fs.realpath(resolvedRoot)) !== resolvedRoot) {
     throw new Error("UNSAFE_PROJECT_PATH");
   }
-  const backups = path.join(root, "backups");
+  const backups = explicitBackupDir
+    ? path.resolve(resolvedRoot, explicitBackupDir)
+    : path.join(resolvedRoot, "backups");
   await directory(backups);
+  if ((await fs.realpath(backups)) !== backups) {
+    throw new Error("UNSAFE_BACKUP_PATH");
+  }
   const cache = path.join(backups, ".download-cache");
   const stat = await directory(cache);
   if ((await fs.realpath(cache)) !== cache) {
@@ -71,13 +77,14 @@ function sameFile(left, right) {
 /** Default dry run. Apply uses the same .cleanup mutex as backupDownloadService. */
 export async function sweepDownloadCache({
   root = PROJECT_ROOT,
+  backupDir = root === PROJECT_ROOT ? process.env.BACKUP_DIR?.trim() || null : null,
   now = Date.now(),
   apply = false,
 } = {}) {
   const result = { apply, candidates: [], removed: [], skipped: 0 };
   let initial;
   try {
-    initial = await roots(path.resolve(root));
+    initial = await roots(path.resolve(root), backupDir);
   } catch (error) {
     if (error.code === "ENOENT") return { ...result, absent: true };
     throw error;
@@ -109,7 +116,7 @@ export async function sweepDownloadCache({
     try {
       await fs.mkdir(lock, { mode: 0o700 });
       held = true;
-      const checkedRoots = await roots(path.resolve(root));
+      const checkedRoots = await roots(path.resolve(root), backupDir);
       const current = await generation(slot, now, true);
       if (
         !sameFile(initial.stat, checkedRoots.stat) ||
