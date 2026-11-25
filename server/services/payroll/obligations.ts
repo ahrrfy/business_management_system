@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
@@ -164,7 +164,13 @@ async function settleItemAdvanceTx(
           ),
           // الدين الآخر ذو المصدر الموثّق يحتفظ بقسطه المخزن. أما التاريخي غير
           // المصنف فلا يدخل راتباً حتى تُطابق ذمته بمصدر موثّق.
-          eq(employeeAdvances.sourceType, "OTHER_DEDUCTION"),
+          and(
+            eq(employeeAdvances.sourceType, "OTHER_DEDUCTION"),
+            or(
+              isNull(employeeAdvances.payrollPeriod),
+              sql`${employeeAdvances.payrollPeriod} <= ${input.payrollPeriod}`,
+            ),
+          ),
         ),
       ),
     )

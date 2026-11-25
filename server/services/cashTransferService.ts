@@ -20,6 +20,7 @@ import {
   assertCashTransferAvailable,
   assertTreasuryOutException,
   computeTreasuryCashBalance,
+  lockMaterializedCashReceiptSourceForWrite,
 } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { nextCounterValue } from "./numbering";
@@ -314,6 +315,15 @@ export async function receiveTransfer(
       });
     }
 
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: toBranchId,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
+
     // 4. receipt IN في فرع المستلم.
     const recRes = await tx.insert(receipts).values({
       branchId: toBranchId,
@@ -429,6 +439,15 @@ export async function cancelTransfer(
 
     const amount = money(t.amount);
     const fromBranchId = Number(t.fromBranchId);
+
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: fromBranchId,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
 
     // receipt تعويضي IN في فرع الإرسال (يُعيد النقد للخزينة).
     const revRes = await tx.insert(receipts).values({

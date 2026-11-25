@@ -310,7 +310,7 @@ async function listProductionsFiltered(f: {
         };
       }
 
-      const mltRefMatch = notes.match(/MLT-\d+-\d+-[a-f0-9]+/i);
+      const mltRefMatch = notes.match(/(?:MLT|MULTI)-\d+-\d+-[a-f0-9]+/i);
       if (mltRefMatch || notes.includes("إنتاج متعدد")) {
         multiRecipeInfo = {
           isMultiRecipe: true,

@@ -4,6 +4,8 @@ import {
   accountingEntries,
   branches,
   doubleEntrySettings,
+  employeeAdvances,
+  employees,
   receipts,
   shifts,
   users,
@@ -46,6 +48,10 @@ beforeEach(async () => {
   await database.insert(users).values([
     { id: CASHIER.userId, openId: "cash-governance-cashier", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: MANAGER.userId, openId: "cash-governance-manager", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
+  await database.insert(employees).values([
+    { id: 101, userId: CASHIER.userId, branchId: 1, firstName: "كاشير", lastName: "الوردية", isActive: true, employmentStatus: "active" },
+    { id: 102, userId: MANAGER.userId, branchId: 1, firstName: "مدير", lastName: "الفرع", isActive: true, employmentStatus: "active" },
   ]);
   await database.insert(receipts).values({
     branchId: 1,
@@ -497,5 +503,36 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     const closedShift = await row(managerShift.shiftId);
     expect(closedShift.status).toBe("CLOSED");
     expect(Number(closedShift.varianceReviewedByUserId)).toBe(SECOND_MANAGER.userId);
+  });
+
+  it("يرفض ترحيل عجز الوردية كذمة يتيمة حين يكون صاحب الوردية منهيةً خدماته أو غير مربوط بموظف نشط", async () => {
+    await db()
+      .update(employees)
+      .set({ employmentStatus: "terminated", isActive: false })
+      .where(eq(employees.userId, CASHIER.userId));
+
+    const shift = await openShift(
+      { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
+      CASHIER,
+    );
+
+    await expect(
+      closeShift(
+        {
+          shiftId: shift.shiftId,
+          countedCash: "80000",
+          countedBreakdown: { "25000": 3, "5000": 1 },
+          varianceReasonCode: "COUNT_ERROR",
+          varianceReason: "عجز لمستخدم غير مربوط بموظف نشط",
+          managerApprovedByUserId: MANAGER.userId,
+          enforceCashGovernance: false,
+        },
+        CASHIER,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect((await row(shift.shiftId)).status).toBe("OPEN");
+    const advances = await db().select().from(employeeAdvances);
+    expect(advances).toHaveLength(0);
   });
 });

@@ -12,13 +12,16 @@ import {
   attendance,
   commissionRunLines,
   commissionRuns,
+  employeePenalties,
   employees,
   employeeSpotBonuses,
   employeeTerminations,
   hrAttendancePunches,
   hrAttendanceSettings,
   leaveRequests,
+  payrollAccountingEvents,
   payrollItems,
+  payrollPenaltyAllocations,
   payrollRuns,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -42,7 +45,7 @@ import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { approveRun } from "./lifecycle";
 import { logAuditTx } from "../auditService";
-import { allocatePenaltyCap, readPenaltySourcesTx, savePenaltyAllocationsTx } from "./penaltyAllocations";
+import { allocatePenaltyCap, readPenaltySourcesTx, refreshPenaltyStatesTx, savePenaltyAllocationsTx } from "./penaltyAllocations";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
@@ -105,14 +108,95 @@ export async function generatePayroll(period: string, actor: Actor) {
   }
 
   return withTx(async (tx) => {
-    // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
+    // رفض التكرار لمسيّر جديد أو معتمد؛ أمّا المسودة المُعاد فتحها من اعتماد سابق (revisionNo > 0 ولها تاريخ محاسبي يمنع حذفها)
+    // فتُعاد صياغة بنودها وروابطها في موضعها على نفس runId وrevisionNo دون كسر سجل payrollAccountingEvents.
     const [exists] = await tx
-      .select({ id: payrollRuns.id })
+      .select({
+        id: payrollRuns.id,
+        status: payrollRuns.status,
+        revisionNo: payrollRuns.revisionNo,
+      })
       .from(payrollRuns)
       .where(eq(payrollRuns.period, p))
       .for("update")
       .limit(1);
-    if (exists) throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${p} بالفعل` });
+    let reopenedDraftRunId: number | null = null;
+    let targetRevisionNo = 0;
+    if (exists) {
+      const [hasHistory] =
+        exists.status === "draft" && Number(exists.revisionNo) > 0
+          ? await tx
+              .select({ id: payrollAccountingEvents.id })
+              .from(payrollAccountingEvents)
+              .where(eq(payrollAccountingEvents.runId, Number(exists.id)))
+              .limit(1)
+          : [];
+      if (!hasHistory) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `يوجد مسيّر رواتب لشهر ${p} بالفعل`,
+        });
+      }
+      reopenedDraftRunId = Number(exists.id);
+      targetRevisionNo = Number(exists.revisionNo);
+      const penaltyAllocations = await tx
+        .select({ penaltyId: payrollPenaltyAllocations.penaltyId })
+        .from(payrollPenaltyAllocations)
+        .where(eq(payrollPenaltyAllocations.runId, reopenedDraftRunId))
+        .for("update");
+      const penaltyIds = penaltyAllocations.map((row) => Number(row.penaltyId));
+      if (penaltyIds.length) {
+        const [later] = await tx
+          .select({
+            period: payrollRuns.period,
+            penaltyId: payrollPenaltyAllocations.penaltyId,
+          })
+          .from(payrollPenaltyAllocations)
+          .innerJoin(
+            payrollRuns,
+            eq(payrollPenaltyAllocations.runId, payrollRuns.id),
+          )
+          .where(
+            and(
+              inArray(payrollPenaltyAllocations.penaltyId, penaltyIds),
+              sql`${payrollRuns.period} > ${p}`,
+            ),
+          )
+          .for("share")
+          .limit(1);
+        if (later) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر إعادة بناء مسودة الرواتب المعاد فتحها",
+              why: `للعقوبة #${later.penaltyId} تخصيص في مسيّر لاحق (${later.period})`,
+              doThis: "راجع المسيّر اللاحق واحذف مسودته أولاً إن كان ذلك مسموحاً",
+            }),
+          });
+        }
+      }
+      await tx
+        .delete(payrollPenaltyAllocations)
+        .where(eq(payrollPenaltyAllocations.runId, reopenedDraftRunId));
+      await tx
+        .update(employeePenalties)
+        .set({ payrollRunId: null, status: "APPROVED" })
+        .where(eq(employeePenalties.payrollRunId, reopenedDraftRunId));
+      await tx
+        .update(employeeSpotBonuses)
+        .set({ payrollRunId: null })
+        .where(eq(employeeSpotBonuses.payrollRunId, reopenedDraftRunId));
+      await tx
+        .update(commissionRuns)
+        .set({ payrollRunId: null })
+        .where(eq(commissionRuns.payrollRunId, reopenedDraftRunId));
+      if (penaltyIds.length) {
+        await refreshPenaltyStatesTx(tx, penaltyIds);
+      }
+      await tx
+        .delete(payrollItems)
+        .where(eq(payrollItems.runId, reopenedDraftRunId));
+    }
 
     // كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق الترقيات المعتمَدة المؤجَّلة (effectiveDate مستقبليّ
     // عند الاعتماد) التي بلغ تاريخُها آخرَ يوم في فترة المسيّر — **قبل** قراءة الرواتب أدناه ⇒ تسري
@@ -468,21 +552,43 @@ export async function generatePayroll(period: string, actor: Actor) {
         };
       }),
     );
-    const runRes = await tx.insert(payrollRuns).values({
-      period: p,
-      branchId: actor.branchId ?? null,
-      status: "draft",
-      employeeCount: 0,
-      totalGross: "0",
-      totalOvertime: "0",
-      totalDeductions: "0",
-      totalNet: "0",
-      notes: terminationCoverageNote,
-      legalPolicySnapshot: legalPolicy.snapshot,
-      legalPolicyHash: legalPolicy.hash,
-      createdBy: actor.userId,
-    });
-    const runId = extractInsertId(runRes);
+    let runId: number;
+    if (reopenedDraftRunId != null) {
+      await tx
+        .update(payrollRuns)
+        .set({
+          branchId: actor.branchId ?? null,
+          status: "draft",
+          employeeCount: 0,
+          totalGross: "0",
+          totalOvertime: "0",
+          totalDeductions: "0",
+          totalNet: "0",
+          notes: terminationCoverageNote,
+          legalPolicySnapshot: legalPolicy.snapshot,
+          legalPolicyHash: legalPolicy.hash,
+          approvalSnapshotHash: null,
+          createdBy: actor.userId,
+        })
+        .where(eq(payrollRuns.id, reopenedDraftRunId));
+      runId = reopenedDraftRunId;
+    } else {
+      const runRes = await tx.insert(payrollRuns).values({
+        period: p,
+        branchId: actor.branchId ?? null,
+        status: "draft",
+        employeeCount: 0,
+        totalGross: "0",
+        totalOvertime: "0",
+        totalDeductions: "0",
+        totalNet: "0",
+        notes: terminationCoverageNote,
+        legalPolicySnapshot: legalPolicy.snapshot,
+        legalPolicyHash: legalPolicy.hash,
+        createdBy: actor.userId,
+      });
+      runId = extractInsertId(runRes);
+    }
     const attendancePayByEmp = new Map<number, AttendancePayResult>();
     /**
      * أيامٌ مفتوحة موسومة (دخولٌ بلا انصراف) — تُرافق نتيجة التوليد فتراها الشاشة.
@@ -737,7 +843,7 @@ export async function generatePayroll(period: string, actor: Actor) {
               ? actor.branchId
               : null
             : Number(e.branchId),
-        revisionNo: 0,
+        revisionNo: targetRevisionNo,
         payType: monthly ? "monthly" : "hourly",
         hours,
         gross: toDbMoney(gross),

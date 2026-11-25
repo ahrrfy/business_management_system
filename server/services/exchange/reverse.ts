@@ -156,7 +156,10 @@ export async function deriveForeignCashUsdPosition(
       eq(exchangeTransactions.branchId, branchId),
       eq(exchangeTransactions.status, "ACTIVE"),
     ))
-    .orderBy(asc(exchangeTransactions.createdAt), asc(exchangeTransactions.id))
+    .orderBy(
+      sql`COALESCE(${exchangeTransactions.executionSeq}, ${exchangeTransactions.id}) ASC`,
+      asc(exchangeTransactions.id),
+    )
     .for("update");
   let quantityUsd = new Decimal(0);
   let carryingIqd = new Decimal(0);
@@ -202,7 +205,10 @@ export async function recomputeHouseFromLog(tx: Tx, houseId: number): Promise<vo
     .select()
     .from(exchangeTransactions)
     .where(and(eq(exchangeTransactions.exchangeHouseId, houseId), eq(exchangeTransactions.status, "ACTIVE")))
-    .orderBy(asc(exchangeTransactions.createdAt), asc(exchangeTransactions.id))
+    .orderBy(
+      sql`COALESCE(${exchangeTransactions.executionSeq}, ${exchangeTransactions.id}) ASC`,
+      asc(exchangeTransactions.id),
+    )
     // Current locking read: reverse starts with a nonlocking preview before waiting on the
     // house mutex. A snapshot read here could miss a settlement that committed while we
     // waited and overwrite its wallet effect during recomputation.
@@ -364,6 +370,7 @@ export async function reverseExchangeTransaction(
     // نمنعه: تُعكَس العمليات اللاحقة المستهلِكة للدولار أوّلاً (id تصاعديّ = ترتيب الإدراج، لا الساعة).
     if (txn.currency === "USD") {
       const laterSensitiveTypes = ["DEPOSIT", "SETTLE", "WITHDRAW", "FX_BUY"] as const;
+      const effectiveTxnSeq = Number(txn.executionSeq ?? txnId);
       const [laterDisposal] = await tx
         .select({ txnNumber: exchangeTransactions.txnNumber })
         .from(exchangeTransactions)
@@ -373,7 +380,7 @@ export async function reverseExchangeTransaction(
             eq(exchangeTransactions.status, "ACTIVE"),
             eq(exchangeTransactions.currency, "USD"),
             inArray(exchangeTransactions.type, laterSensitiveTypes),
-            gt(exchangeTransactions.id, txnId),
+            sql`COALESCE(${exchangeTransactions.executionSeq}, ${exchangeTransactions.id}) > ${effectiveTxnSeq}`,
           ),
         )
         .limit(1);

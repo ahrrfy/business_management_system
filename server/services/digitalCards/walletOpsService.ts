@@ -590,8 +590,18 @@ export async function statement(
   const creator = alias(users, "digitalWalletCreator");
   const approver = alias(users, "digitalWalletApprover");
   const conds = [eq(digitalWalletTransactions.walletId, input.walletId)];
-  if (input.from) conds.push(gte(digitalWalletTransactions.createdAt, new Date(`${input.from}T00:00:00Z`)));
-  if (input.to) conds.push(lt(digitalWalletTransactions.createdAt, new Date(`${input.to}T00:00:00Z`)));
+  if (input.from) {
+    const fromBaghdadStartUtc = new Date(
+      new Date(`${input.from}T00:00:00.000Z`).getTime() - 3 * 60 * 60 * 1000,
+    );
+    conds.push(gte(digitalWalletTransactions.createdAt, fromBaghdadStartUtc));
+  }
+  if (input.to) {
+    const toBaghdadEndExclusiveUtc = new Date(
+      new Date(`${input.to}T00:00:00.000Z`).getTime() + 21 * 60 * 60 * 1000,
+    );
+    conds.push(lt(digitalWalletTransactions.createdAt, toBaghdadEndExclusiveUtc));
+  }
 
   const rows = await db
     .select({

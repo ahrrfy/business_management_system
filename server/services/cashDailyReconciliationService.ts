@@ -651,14 +651,29 @@ export async function buildDailyCashEvidenceTx(
                 AND sourceTransferEntry.branchId = source.branchId
                 AND sourceTransferEntry.amount = source.amount
             )
-            AND EXISTS (
-              SELECT 1
-              FROM accountingEntries targetEntry
-              WHERE targetEntry.receiptId = target.id
-                AND targetEntry.entryType = 'CASH_TRANSFER_IN'
-                AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
-                AND targetEntry.branchId = target.branchId
-                AND targetEntry.amount = target.amount
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM accountingEntries targetEntry
+                WHERE targetEntry.receiptId = target.id
+                  AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                  AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                  AND targetEntry.branchId = target.branchId
+                  AND targetEntry.amount = target.amount
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM cashVarianceCases cvc
+                INNER JOIN cashVarianceCaseEvents cvce
+                  ON cvce.caseId = cvc.id
+                  AND cvce.cashVarianceEventType = 'APPROVED'
+                INNER JOIN accountingEntries cvEntry
+                  ON cvEntry.id = cvce.accountingEntryId
+                  AND cvEntry.dedupeKey = CONCAT('CASH_VARIANCE:', cvc.id)
+                WHERE cvc.cashVarianceSourceType = 'CUSTODY'
+                  AND cvc.custodyReceiptId = target.id
+                  AND cvc.branchId = target.branchId
+              )
             )
           )
         )
@@ -751,14 +766,29 @@ export async function buildDailyCashEvidenceTx(
             OR sourceEvidence.entryType = 'CASH_HANDOVER'
             OR (
               sourceEvidence.entryType = 'CASH_TRANSFER_OUT'
-              AND EXISTS (
-                SELECT 1
-                FROM accountingEntries targetEntry
-                WHERE targetEntry.receiptId = target.id
-                  AND targetEntry.entryType = 'CASH_TRANSFER_IN'
-                  AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
-                  AND targetEntry.branchId = target.branchId
-                  AND targetEntry.amount = target.amount
+              AND (
+                EXISTS (
+                  SELECT 1
+                  FROM accountingEntries targetEntry
+                  WHERE targetEntry.receiptId = target.id
+                    AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                    AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                    AND targetEntry.branchId = target.branchId
+                    AND targetEntry.amount = target.amount
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM cashVarianceCases cvc
+                  INNER JOIN cashVarianceCaseEvents cvce
+                    ON cvce.caseId = cvc.id
+                    AND cvce.cashVarianceEventType = 'APPROVED'
+                  INNER JOIN accountingEntries cvEntry
+                    ON cvEntry.id = cvce.accountingEntryId
+                    AND cvEntry.dedupeKey = CONCAT('CASH_VARIANCE:', cvc.id)
+                  WHERE cvc.cashVarianceSourceType = 'CUSTODY'
+                    AND cvc.custodyReceiptId = target.id
+                    AND cvc.branchId = target.branchId
+                )
               )
             )
           )

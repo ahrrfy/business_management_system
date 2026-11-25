@@ -42,6 +42,7 @@ export const UNIT_TEST_FILES: string[] = [
       "server/services/__tests__/storefrontMobilePushRetirement.unit.test.ts",
       "client/src/components/installments/installmentDisclosure.test.tsx",
       "server/auth/sessionResourceSettlement.test.ts",
+      "server/__tests__/wave4TreasuryFxPayrollAssetsFixes.test.ts",
       "server/lib/__tests__/resourceAdmission.test.ts",
       "server/middleware/__tests__/storefrontAdmission.test.ts",
       "server/middleware/__tests__/storefrontAdmission.integration.test.ts",

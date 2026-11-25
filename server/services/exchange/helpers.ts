@@ -35,4 +35,19 @@ async function nextTxnNumber(tx: Tx, branchId: number | null): Promise<string> {
 }
 
 
-export { toDbRate, lockHouse, nextTxnNumber };
+/** تسلسل تنفيذ فعلي تصاعدي لحركات الصيرفة النشطة (يسبق أو يتبع ترتيب الاعتماد الفعلي لا تاريخ إنشاء الطلب المعلق). */
+async function nextExchangeExecutionSeq(tx: Tx): Promise<number> {
+  const [maxRow] = await tx
+    .select({
+      maxSeq: sql<string>`COALESCE(MAX(COALESCE(${exchangeTransactions.executionSeq}, ${exchangeTransactions.id})), 0)`,
+    })
+    .from(exchangeTransactions);
+  const floor = Number(maxRow?.maxSeq ?? 0);
+  return nextCounterValue(
+    tx,
+    "exchange_execution_seq",
+    Number.isFinite(floor) && floor > 0 ? floor : 0,
+  );
+}
+
+export { toDbRate, lockHouse, nextTxnNumber, nextExchangeExecutionSeq };

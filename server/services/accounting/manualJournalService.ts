@@ -346,6 +346,17 @@ export async function createManualJournal(
     const isAR = acc.systemRole === "AR" || acc.systemRole === "ACCOUNTS_RECEIVABLE";
     const isAP = acc.systemRole === "AP" || acc.systemRole === "ACCOUNTS_PAYABLE";
 
+    if ((isAR || isAP) && effectiveBranchId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مطلوب تحديد الفرع للقيد اليدوي على الذمم",
+          why: `السطر رقم ${idx + 1} يمس حساب ذمم "${acc.name}" بدون تحديد فرع للقيد، ما يحجز الرصيد خارج نطاق الفروع.`,
+          doThis: "اختر الفرع المعني في رأس القيد اليدوي قبل الترحيل على حسابات العملاء أو الموردين.",
+        }),
+      });
+    }
+
     if (isAR) {
       if (!line.customerId) {
         throw new TRPCError({

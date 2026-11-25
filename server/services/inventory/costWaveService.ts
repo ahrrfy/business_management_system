@@ -1057,8 +1057,15 @@ export async function submitCostWave(
   });
 }
 
-function assertChecker(wave: { createdBy: number }, actor: Actor): void {
+function assertChecker(
+  wave: { createdBy: number },
+  actor: Actor,
+  options: { allowOwnerFinalAfterIndependentReview?: boolean; allowOwnerWithdraw?: boolean } = {},
+): void {
   if (Number(wave.createdBy) === actor.userId) {
+    if (options.allowOwnerFinalAfterIndependentReview || options.allowOwnerWithdraw) {
+      return;
+    }
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
@@ -1288,7 +1295,18 @@ export async function approveCostWave(
         }),
       });
     }
-    assertChecker({ createdBy: Number(wave.createdBy) }, actor);
+    const resolvedActorForChecker = await resolveApprovalActor(tx, actor);
+    assertChecker(
+      { createdBy: Number(wave.createdBy) },
+      actor,
+      {
+        allowOwnerFinalAfterIndependentReview:
+          isRolloutOn("ownerOnlyApproval") &&
+          Boolean(resolvedActorForChecker.isOwner) &&
+          Number(wave.approvalCount) + 1 === COST_WAVE_REQUIRED_APPROVALS &&
+          Number(wave.approvalCount) >= 1,
+      },
+    );
     const prior = (
       await tx
         .select({ id: costUpdateWaveApprovals.id })
@@ -1555,7 +1573,16 @@ export async function rejectCostWave(
         }),
       });
     }
-    assertChecker({ createdBy: Number(wave.createdBy) }, actor);
+    const resolvedActorForChecker = await resolveApprovalActor(tx, actor);
+    assertChecker(
+      { createdBy: Number(wave.createdBy) },
+      actor,
+      {
+        allowOwnerWithdraw:
+          isRolloutOn("ownerOnlyApproval") &&
+          Boolean(resolvedActorForChecker.isOwner),
+      },
+    );
     const prior = (
       await tx
         .select({ id: costUpdateWaveApprovals.id })

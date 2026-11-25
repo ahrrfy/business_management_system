@@ -36,7 +36,7 @@ export async function transferAssetBranch(
 
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, input.assetId, scope);
-    if (a.status === "disposed") {
+    if (a.status === "disposed" || a.status === "retired") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
