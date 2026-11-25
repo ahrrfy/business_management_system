@@ -266,7 +266,12 @@ if (!noRotate) {
     }
   }
   try {
-    const rotation = await rotateBackups({ backupDir, offsiteDir: offsite, dbFilter: db });
+    const rotation = await rotateBackups({
+      backupDir,
+      offsiteDir: offsite,
+      dbFilter: db,
+      preserveSqlNames: [basename(out)],
+    });
     console.log(
       `Verified backup retention: plainSqlDeleted=${rotation.plainSqlDeleted.length}, encryptedRetired=${rotation.encryptedRetired.length}, retiringPurged=${rotation.retiringPurged.length}`,
     );

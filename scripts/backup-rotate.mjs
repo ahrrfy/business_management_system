@@ -152,7 +152,13 @@ export async function acquireRetentionLock(backupDir, { now = Date.now(), waitAt
       const handle = await fs.open(lockPath, "wx", 0o600);
       await handle.writeFile(`${owner}\n${new Date(now).toISOString()}\n`);
       await handle.close();
+      const heartbeat = setInterval(() => {
+        const tick = new Date();
+        void fs.utimes(lockPath, tick, tick).catch(() => {});
+      }, 60_000);
+      heartbeat.unref();
       return async () => {
+        clearInterval(heartbeat);
         const cur = (await fs.readFile(lockPath, "utf8").catch(() => "")).split("\n", 1)[0];
         if (cur === owner) await fs.unlink(lockPath).catch(() => {});
       };
@@ -160,8 +166,9 @@ export async function acquireRetentionLock(backupDir, { now = Date.now(), waitAt
       if (error?.code !== "EEXIST") throw error;
       const st = await lstatOrNull(lockPath);
       if (st && Date.now() - st.mtimeMs > RETENTION_LOCK_STALE_MS) {
-        await fs.unlink(lockPath).catch(() => {});
-        continue;
+        // Fail closed rather than unlinking without CAS so two racing callers cannot delete a replacement owner's lock.
+        console.error(`Stale backup retention lock requires operator review: ${lockPath}`);
+        return null;
       }
       if (i < waitAttempts - 1) await delay(150);
     }
@@ -213,7 +220,9 @@ async function preserveLatestRestoreSummary(reportDir, sqlName, manifest) {
   }
   const summaryPath = join(reportDir, "latest-verified-restore.json");
   const current = await readSmallJson(summaryPath);
-  if (!current || typeof current.at !== "string" || report.finishedAt > current.at) {
+  const reportMs = Date.parse(report.finishedAt);
+  const currentMs = Date.parse(current?.at ?? "");
+  if (!current || !Number.isFinite(currentMs) || (Number.isFinite(reportMs) && reportMs > currentMs)) {
     await atomicWriteJson(summaryPath, {
       version: 1,
       name: sqlName,
@@ -241,10 +250,16 @@ async function sweepExpiredRetiring({ backupDir, offsiteDir, reportDir, now, dry
     purged.push(sqlName);
     if (dryRun) continue;
 
-    const retiredManifest = await inspectVerifiedManifest(retiringDir, sqlName);
+    const retiredManifest =
+      (await inspectVerifiedManifest(backupDir, sqlName)) ??
+      (await inspectVerifiedManifest(retiringDir, sqlName));
     await preserveLatestRestoreSummary(reportDir, sqlName, retiredManifest).catch(() => {});
 
     for (const target of [
+      join(backupDir, sqlName),
+      join(backupDir, `${sqlName}.gpg.manifest.json`),
+      join(backupDir, `${sqlName}.gpg`),
+      join(backupDir, `${sqlName}.attempt.json`),
       join(retiringDir, `${sqlName}.gpg.manifest.json`),
       join(retiringDir, `${sqlName}.gpg`),
       join(retiringDir, `${sqlName}.attempt.json`),
@@ -286,12 +301,17 @@ async function retireEncryptedArchive({ backupDir, sqlName, now, ttlMs, reason, 
     expiresAt: new Date(now + ttlMs).toISOString(),
   });
   await fs.unlink(join(backupDir, sqlName)).catch(() => {});
-  for (const suffix of [".gpg.manifest.json", ".gpg", ".attempt.json"]) {
-    const src = join(backupDir, `${sqlName}${suffix}`);
-    const dst = join(retiringDir, `${sqlName}${suffix}`);
-    await fs.rename(src, dst).catch((error) => {
-      if (error?.code !== "ENOENT") throw error;
-    });
+  // During automatic GFS rotation, keep `<sqlName>.gpg` and `<sqlName>.gpg.manifest.json`
+  // accessible at their public paths throughout the 60-minute grace window so any overlapping
+  // offsite pull (`pull-vps-backup.ps1` / `alroya-backup-sync.py`) finishes verification cleanly.
+  if (reason !== "GFS_ROTATE") {
+    for (const suffix of [".gpg.manifest.json", ".gpg", ".attempt.json"]) {
+      const src = join(backupDir, `${sqlName}${suffix}`);
+      const dst = join(retiringDir, `${sqlName}${suffix}`);
+      await fs.rename(src, dst).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+    }
   }
 }
 
@@ -299,6 +319,7 @@ export async function rotateBackups({
   backupDir = process.env.BACKUP_DIR ?? "backups",
   offsiteDir = process.env.BACKUP_OFFSITE_DIR?.trim() || null,
   dbFilter = null,
+  preserveSqlNames = [],
   keepPlainSql = int(process.env.BACKUP_KEEP_PLAIN_SQL, 3),
   keepAllHours = int(process.env.BACKUP_KEEP_ALL_HOURS, 48),
   keepDaily = int(process.env.BACKUP_KEEP_DAILY, 14),
@@ -432,7 +453,11 @@ export async function rotateBackups({
 
       // ── Tier 1: Hot Plain `.sql` Eviction (2 newest + 1 previous-day, gated on verified GPG) ──
       const plainItems = enriched.filter((item) => item.hasSql);
+      const preservedSet = new Set(preserveSqlNames);
       const keepSql = new Set();
+      for (const item of plainItems) {
+        if (preservedSet.has(item.name)) keepSql.add(item.name);
+      }
       if (keepPlainSql > 0 && plainItems.length > 0) {
         const newestDay = utcDayKey(plainItems[0].date);
         const immediateCount = Math.max(1, keepPlainSql - 1);
@@ -526,6 +551,11 @@ export async function rotateBackups({
           }
         }
       }
+      orphanAttempts.sort(
+        (a, b) =>
+          (Number.isFinite(b.startedMs) ? b.startedMs : b.date.getTime()) -
+          (Number.isFinite(a.startedMs) ? a.startedMs : a.date.getTime()),
+      );
 
       orphanAttempts.forEach((item, idx) => {
         const ageExceeded = Number.isFinite(item.startedMs) && now - item.startedMs > FAILED_MAX_AGE_MS;
