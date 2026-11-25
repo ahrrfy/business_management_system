@@ -175,6 +175,7 @@ export type DeleteBackupOptions = {
 
 export async function deleteBackup(name: string, options?: DeleteBackupOptions): Promise<boolean> {
   const scope = options?.scope ?? "sql";
+  const ownerPaths = ownerRestorePaths();
   if (scope === "sql") {
     const abs = await resolveBackupFile(name);
     if (!abs) return false;
@@ -190,6 +191,16 @@ export async function deleteBackup(name: string, options?: DeleteBackupOptions):
       );
     }
     try {
+      if ((await activeRestoreLease()) || (ownerPaths && hasOwnerRestoreFence(ownerPaths.fence))) {
+        throw new BackupDeleteGuardError(
+          "PRECONDITION_FAILED",
+          appErrorMessage({
+            what: "تعذر إخلاء ملف SQL أثناء الصيانة",
+            why: "توجد عملية استعادة أو تمرين استعادة قيد التنفيذ حالياً.",
+            doThis: "انتظر اكتمال العملية الجارية قبل تعديل سجل النسخ.",
+          }),
+        );
+      }
       await unlink(abs);
       return true;
     } catch (error) {
@@ -213,18 +224,6 @@ export async function deleteBackup(name: string, options?: DeleteBackupOptions):
   }
   if (!matchesBackupPrefix(name, prefix)) return false;
 
-  const ownerPaths = ownerRestorePaths();
-  if ((await activeRestoreLease()) || (ownerPaths && hasOwnerRestoreFence(ownerPaths.fence))) {
-    throw new BackupDeleteGuardError(
-      "PRECONDITION_FAILED",
-      appErrorMessage({
-        what: "تعذر حذف سجل النسخة أثناء الصيانة",
-        why: "توجد عملية استعادة أو تمرين استعادة قيد التنفيذ حالياً.",
-        doThis: "انتظر اكتمال العملية الجارية قبل تعديل سجل النسخ.",
-      }),
-    );
-  }
-
   const directory = backupsDir();
   const release = await acquireBackupRetentionLock(directory);
   if (!release) {
@@ -239,6 +238,16 @@ export async function deleteBackup(name: string, options?: DeleteBackupOptions):
   }
 
   try {
+    if ((await activeRestoreLease()) || (ownerPaths && hasOwnerRestoreFence(ownerPaths.fence))) {
+      throw new BackupDeleteGuardError(
+        "PRECONDITION_FAILED",
+        appErrorMessage({
+          what: "تعذر حذف سجل النسخة أثناء الصيانة",
+          why: "توجد عملية استعادة أو تمرين استعادة قيد التنفيذ حالياً.",
+          doThis: "انتظر اكتمال العملية الجارية قبل تعديل سجل النسخ.",
+        }),
+      );
+    }
     const readiness = await inspectBackupReadiness(
       directory,
       process.env.BACKUP_OFFSITE_DIR?.trim(),
@@ -904,13 +913,24 @@ export async function acquireRestoreLock(): Promise<() => Promise<void>> {
     void utimes(RESTORE_LOCK_PATH, now, now).catch(() => {});
   }, RESTORE_LOCK_HEARTBEAT_MS);
   heartbeat.unref();
-  return async () => {
+  const releaseRestore = async () => {
     clearInterval(heartbeat);
     // إن استعاد عامل آخر قفلاً قديماً فلا يحق للمالك القديم حذف القفل الجديد عند انتهائه.
     const currentOwner = (await readFile(RESTORE_LOCK_PATH, "utf8").catch(() => "")).split("\n", 1)[0];
     if (currentOwner !== owner) return;
     await unlink(RESTORE_LOCK_PATH).catch(() => {});
   };
+  // حاجز تزامن مع `.retention.lock` يمنع أي تدوير أو حذف جارٍ من إزالة ملف الاستعادة بعد التحقق منه.
+  const bDir = backupsDir();
+  if ((await lstat(bDir).catch(() => null))?.isDirectory()) {
+    const releaseRetention = await acquireBackupRetentionLock(bDir);
+    if (!releaseRetention) {
+      await releaseRestore();
+      throw new RestoreUploadValidationError("توجد عملية تدوير أو حذف نسخ جارية حالياً؛ انتظر لحظات ثم أعد المحاولة.");
+    }
+    await releaseRetention();
+  }
+  return releaseRestore;
 }
 
 export async function cleanupTmp(p: string): Promise<void> {
