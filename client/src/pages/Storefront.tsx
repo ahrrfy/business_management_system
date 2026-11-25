@@ -129,6 +129,8 @@ function StorefrontContent() {
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [selectedThematicCollection, setSelectedThematicCollection] = useState<ThematicCollectionCard | null>(null);
+  const [activePromoId, setActivePromoId] = useState<number | null>(null);
+  const [bannerProductIds, setBannerProductIds] = useState<number[] | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
@@ -299,7 +301,7 @@ function StorefrontContent() {
   });
 
   useEffect(() => {
-    const t = setTimeout(() => setSearch(rawSearch.trim()), 220);
+    const t = setTimeout(() => setSearch(rawSearch.trim()), 140);
     return () => clearTimeout(t);
   }, [rawSearch]);
 
@@ -342,16 +344,40 @@ function StorefrontContent() {
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
-  // يطبّق الخادم مرشح التوفر قبل حدّ الصفحة. useInfiniteQuery يمرّر nextCursor فقط عند
-  // «تحميل المزيد»، فتصل كل المنتجات المنشورة بلا سقف 120 صامت ولا تكرار بطاقات.
-  const searchProductIds = useMemo(() => {
-    return storefrontCatalogProductScope(showWishlist, wishlistIds, selectedThematicCollection?.productIds);
-  }, [showWishlist, wishlistIds, selectedThematicCollection]);
+  const dealsPreviewQ = trpc.storefront.catalog.useQuery(
+    { priceFilter: "ON_SALE", limit: 24, availability: "IN_STOCK" },
+    { staleTime: 5 * 60 * 1000, enabled: !search && categoryId == null && !showWishlist },
+  );
+  const activeOffer = useMemo(
+    () => (activePromoId == null ? null : (offersQ.data ?? []).find((o) => o.id === activePromoId) ?? null),
+    [activePromoId, offersQ.data],
+  );
+  const effectiveCategoryId =
+    categoryId ??
+    (activeOffer?.scope === "CATEGORIES" && activeOffer.targetCategoryIds?.length === 1
+      ? activeOffer.targetCategoryIds[0]!
+      : null);
+  const effectiveCategoryIds =
+    categoryId == null && activeOffer?.scope === "CATEGORIES"
+      ? (activeOffer.targetCategoryIds ?? [])
+      : null;
+  const effectivePriceFilter: PriceFilter = priceFilter;
+  const scopedIds =
+    bannerProductIds ??
+    (activeOffer?.scope === "PRODUCTS"
+      ? (activeOffer.targetProductIds ?? [])
+      : selectedThematicCollection?.productIds);
+  const searchProductIds = useMemo(
+    () => storefrontCatalogProductScope(showWishlist, wishlistIds, scopedIds),
+    [showWishlist, wishlistIds, scopedIds],
+  );
   const catalogInput = {
-    categoryId,
+    categoryId: effectiveCategoryId,
+    categoryIds: effectiveCategoryIds,
+    promotionId: activePromoId,
     productIds: searchProductIds,
     brand: brand || undefined,
-    priceFilter,
+    priceFilter: effectivePriceFilter,
     sort,
     search: search || undefined,
     limit: 48,
@@ -365,7 +391,35 @@ function StorefrontContent() {
     },
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
-  useStorefrontUrlSync({ selectedId, setSelectedId, selectedProductTitle: detailQ.data?.productName, categoryId, setCategoryId });
+  useStorefrontUrlSync({
+    selectedId,
+    setSelectedId,
+    selectedProductTitle: detailQ.data?.productName,
+    categoryId,
+    setCategoryId,
+    onSelectPromoId: (pid) => {
+      setSelectedThematicCollection(null);
+      setActivePromoId(pid);
+    },
+    onActivateDeals: () => {
+      setSelectedThematicCollection(null);
+      setActivePromoId(null);
+      setPriceFilter("ON_SALE");
+    },
+    onDeactivateDeals: () => {
+      setPriceFilter((prev) => (prev === "ON_SALE" ? "ALL" : prev));
+    },
+    onSelectProductGroup: (ids) => {
+      setSelectedThematicCollection(null);
+      setBannerProductIds(ids);
+    },
+    onApplySearch: (q) => {
+      setRawSearch(q);
+      setSearch(q);
+    },
+    onOpenCartPanel: () => setPanel("cart"),
+    onScrollToResults: scrollToResults,
+  });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const recommendationClickM = trpc.storefront.trackRecommendationClick.useMutation();
@@ -771,32 +825,52 @@ function StorefrontContent() {
   const supportingFailures = sourceFailures.filter(
     (source) => source !== "catalog",
   );
-  // توزيع البنرات على مواضعها الثلاثة (الصفوف القديمة بلا placement = رئيسي).
   const heroBanners = useMemo(() => banners.filter((b) => (b.placement ?? "HERO") === "HERO"), [banners]);
-  const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE"), [banners]);
+  const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE" || b.placement === "SIDE"), [banners]);
   const announcement = settingsQ.data?.announcement ?? null;
-  // الفشل المغلق: لا نسمح بإرسال طلب قبل معرفة حالة المتجر فعلياً. خطأ الإعدادات له
-  // تنبيه مستقل أدناه، فلا يتنكر في هيئة «مفتوح» ولا «مغلق».
   const storeOpen = settingsQ.isSuccess && settingsQ.data.isOpen;
   const orderingEnabled =
     settingsQ.isSuccess && settingsQ.data.orderingEnabled === true;
   const activeCatName = useMemo(
-    () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
-    [categoryId, cats]
+    () =>
+      activeOffer?.name ??
+      (bannerProductIds && bannerProductIds.length > 0
+        ? `تشكيلة مختارة (${bannerProductIds.length} أصناف)`
+        : categoryId == null
+          ? null
+          : cats.find((c) => c.id === categoryId)?.name ?? null),
+    [activeOffer?.name, bannerProductIds, categoryId, cats]
   );
   const brands = useMemo(
     () => Array.from(new Set([...(catalogQ.data?.pages[0]?.brands ?? []), ...(brand ? [brand] : [])])).sort((a, b) => a.localeCompare(b, 'ar')),
     [catalogQ.data?.pages[0]?.brands, brand]
   );
-  const filteredItems = items;
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null;
-  const searchScope = { categoryId, availability, brand, priceFilter, productIds: searchProductIds };
+  const filteredItems = useMemo(
+    () => items.filter((item) => showWishlist || item.inStock !== false),
+    [items, showWishlist],
+  );
+  const handleRawSearchChange = (nextRaw: string) => {
+    setRawSearch(nextRaw);
+    if (nextRaw.trim()) {
+      setBannerProductIds(null);
+      setActivePromoId(null);
+      setSelectedThematicCollection(null);
+    }
+  };
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null || activePromoId != null || bannerProductIds != null;
+  const searchScope = { categoryId: effectiveCategoryId, categoryIds: effectiveCategoryIds, promotionId: activePromoId, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
   function submitStoreSearch(query: string, selectedCategory?: number) {
-    setRawSearch(query); setSearch(query.trim());
-    if (selectedCategory != null) setCategoryId(selectedCategory);
+    setRawSearch(query);
+    setSearch(query.trim());
+    // تحرير البحث من أي قيد باقة بنر أو عرض سابق حتى لا ينحبس البحث في 4 أصناف فقط
+    setBannerProductIds(null);
+    setActivePromoId(null);
+    setSelectedThematicCollection(null);
+    if (selectedCategory !== undefined) {
+      setCategoryId(selectedCategory || null);
+    }
     scrollToResults();
   }
-  // All catalog refinements and ordering are applied by the server before cursor pagination.
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null && !hasRefinements;
 
   function scrollToResults() {
@@ -807,11 +881,15 @@ function StorefrontContent() {
   }
   function selectCategory(id: number | null) {
     setSelectedThematicCollection(null);
+    setActivePromoId(null);
+    setBannerProductIds(null);
     setCategoryId(id);
     scrollToResults();
   }
   function handleSelectThematicCollection(card: ThematicCollectionCard) {
     setSelectedThematicCollection(card);
+    setActivePromoId(null);
+    setBannerProductIds(null);
     setCategoryId(null);
     setSearch("");
     setRawSearch("");
@@ -821,12 +899,26 @@ function StorefrontContent() {
     setSelectedThematicCollection(null);
     clearCatalogFilters();
   }
+  function handleSelectOffer(offer: (typeof offers)[number]) {
+    setSelectedThematicCollection(null);
+    setBannerProductIds(null);
+    setCategoryId(null);
+    setActivePromoId(offer.id);
+    window.history.pushState(null, "", `/store?promo=${offer.id}`);
+    scrollToResults();
+  }
+  function handleClearOffer() {
+    setActivePromoId(null);
+    if (window.location.search.includes("promo=")) window.history.pushState(null, "", "/store");
+  }
   function clearRefinements() {
     setAvailability("IN_STOCK");
     setPriceFilter("ALL");
     setBrand("");
     setSort("RECOMMENDED");
     setSelectedThematicCollection(null);
+    setActivePromoId(null);
+    setBannerProductIds(null);
     setShowWishlist(false);
   }
   function clearCatalogFilters() {
@@ -834,6 +926,9 @@ function StorefrontContent() {
     setSearch("");
     setCategoryId(null);
     setSelectedThematicCollection(null);
+    setActivePromoId(null);
+    setBannerProductIds(null);
+    if (window.location.search) window.history.pushState(null, "", "/store");
     clearRefinements();
   }
   function retrySupportingSources() {
@@ -843,8 +938,6 @@ function StorefrontContent() {
     if (offersQ.isError) retries.push(offersQ.refetch());
     void Promise.allSettled(retries);
   }
-  // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
-  // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
   const feedStrips = useMemo<BannerItem[]>(() => {
     if (inlineBanners.length) return inlineBanners;
     if (offers.length) {
@@ -854,30 +947,22 @@ function StorefrontContent() {
         subtitle:
           o.summary ||
           (o.type === "PERCENT"
-            ? `خصم ${Number(o.discountPercent)}٪`
+            ? `خصم ${Number(o.discountPercent)}%`
             : `خصم ${money(o.discountAmount)} د.ع`),
-        ctaLabel: "عرض اليوم",
+        ctaLabel: "تسوّق العرض",
+        ctaUrl: o.ctaUrl ?? `/store?promo=${o.id}`,
       }));
     }
-    // إذا لم تُعرّف لوحة الإدارة مواضع INLINE بعد، نعيد استخدام حملات HERO الحقيقية
-    // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
     return heroBanners.slice(1, 4);
   }, [heroBanners, inlineBanners, offers]);
   const topBanners = heroBanners.length ? heroBanners : feedStrips;
   const topBannerSlot = heroBanners.length || !inlineBanners.length ? "HERO" : "INLINE";
 
-  const dealProducts = useMemo(
-    () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
-    [items]
-  );
-  const dealProductIds = useMemo(() => new Set(dealProducts.map((p) => p.productId)), [dealProducts]);
-  const bestSellers = useMemo(
-    () => [...items]
-      .filter((p) => p.inStock && !dealProductIds.has(p.productId))
-      .sort((a, b) => ((b.soldCount ?? 0) - (a.soldCount ?? 0)) || (b.productId - a.productId))
-      .slice(0, 12),
-    [dealProductIds, items]
-  );
+  const dealProducts = useMemo(() => {
+    const serverDeals = (dealsPreviewQ.data?.items ?? []).filter((p) => p.inStock !== false);
+    if (serverDeals.length > 0) return serverDeals.slice(0, 24);
+    return items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 24);
+  }, [dealsPreviewQ.data?.items, items]);
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
   const { pulseHeart, toggleWishlist, shareProduct, shareCart } = storefrontSharingActions({setHeartPulseTarget, setHeartPulseNonce, setSharePulseTarget, setSharePulseNonce, setWishlistIds, setShareFeedback, cartLines, createCartShareM});
@@ -1150,9 +1235,9 @@ function StorefrontContent() {
       <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_75%_45%_at_50%_-5%,rgba(30,58,138,0.045),transparent)] dark:hidden" />
       <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-[var(--store-brand)] px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{cartStatus}</div>
-      <StorefrontHeader categoryId={categoryId} search={search} setCategoryId={setCategoryId} setSearch={setSearch} setRawSearch={setRawSearch} rawSearch={rawSearch} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} pulseHeart={pulseHeart} setShowWishlist={setShowWishlist} showWishlist={showWishlist} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} wishlistIds={wishlistIds} setPanel={setPanel} cartCount={cartCount} cats={cats} selectCategory={selectCategory} />
+      <StorefrontHeader categoryId={categoryId} search={search} setCategoryId={setCategoryId} setSearch={setSearch} setRawSearch={handleRawSearchChange} rawSearch={rawSearch} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} pulseHeart={pulseHeart} setShowWishlist={setShowWishlist} showWishlist={showWishlist} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} wishlistIds={wishlistIds} setPanel={setPanel} cartCount={cartCount} cats={cats} selectCategory={selectCategory} />
 
-      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} cartSubtotal={cartSubtotal} settings={settings} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} selectedThematicCollection={selectedThematicCollection} handleSelectThematicCollection={handleSelectThematicCollection} handleClearThematicCollection={handleClearThematicCollection} activeCatName={activeCatName} filteredItems={filteredItems} setAvailability={setAvailability} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} setCatalogSeed={setCatalogSeed} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} dealProducts={dealProducts} addFeaturedToCart={addFeaturedToCart} />
+      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} cartSubtotal={cartSubtotal} settings={settings} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} selectedThematicCollection={selectedThematicCollection} handleSelectThematicCollection={handleSelectThematicCollection} handleClearThematicCollection={handleClearThematicCollection} activeCatName={activeCatName} filteredItems={filteredItems} setAvailability={setAvailability} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} setCatalogSeed={setCatalogSeed} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} dealProducts={dealProducts} addFeaturedToCart={addFeaturedToCart} offers={offers} activeOfferId={activePromoId} onSelectOffer={handleSelectOffer} onClearOffer={handleClearOffer} />
 
       <div className="mx-auto max-w-6xl px-4">
         <StoreTrustAndHelp

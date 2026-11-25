@@ -2,6 +2,7 @@ import { money } from "./money";
 
 export type StorefrontPriceFilter =
   | "ALL"
+  | "ON_SALE"
   | "UNDER_5000"
   | "FROM_5000_TO_15000"
   | "OVER_15000";
@@ -29,6 +30,12 @@ export function matchesStorefrontRefinements(
     return false;
   const price = money(product.salePrice ?? product.price ?? "0");
   switch (input.priceFilter) {
+    case "ON_SALE":
+      return (
+        product.salePrice != null &&
+        product.price != null &&
+        money(product.salePrice).lt(product.price)
+      );
     case "UNDER_5000":
       return price.lt(5000);
     case "FROM_5000_TO_15000":

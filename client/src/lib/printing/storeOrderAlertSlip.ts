@@ -42,7 +42,11 @@ function formatAlertItemsCount(count: number | null | undefined): string {
   return n === 1 ? "صنف واحد" : n === 2 ? "صنفان" : `${n} أصناف`;
 }
 
-export function buildStoreOrderAlertHtml(d: StoreOrderAlertData): string {
+export function buildStoreOrderAlertHtml(
+  d: StoreOrderAlertData,
+  opts?: { autoScript?: boolean },
+): string {
+  const autoScript = opts?.autoScript !== false;
   const dateStr = formatAlertDate(d.createdAt);
   const countStr = formatAlertItemsCount(d.itemsCount);
   const totalStr = `${fmtInt(Number(d.totalAmount || 0))} د.ع`;
@@ -166,7 +170,11 @@ ${CAIRO_FONT}
     <div class="total-caption">قيمة الطلب</div>
     <div class="total-val" dir="ltr">${esc(totalStr)}</div>
   </div>
-  <script>window.addEventListener('load',()=>{(document.fonts?.ready||Promise.resolve()).then(()=>setTimeout(()=>window.print(),60))});window.addEventListener('afterprint',()=>window.close())</script>
+  ${
+    autoScript
+      ? "<script>window.addEventListener('load',()=>{(document.fonts?.ready||Promise.resolve()).then(()=>setTimeout(()=>window.print(),60))});window.addEventListener('afterprint',()=>window.close())</script>"
+      : ""
+  }
 </body>
 </html>`;
 }
@@ -361,6 +369,136 @@ export async function printStoreOrderAlertSilent(
   }
 }
 
+export const STORE_ORDER_AUTOPRINT_STATION_KEY = "erp.storeOrders.autoPrintStation";
+export const STORE_ORDER_AUTOPRINT_STATION_EVENT = "erp:store-order-autoprint-station";
+
+export function readStoreOrderAutoPrintStationSetting(): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoreOrderAutoPrintStationSetting(enabled: boolean | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (enabled === null) window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
+    else window.localStorage.setItem(STORE_ORDER_AUTOPRINT_STATION_KEY, enabled ? "1" : "0");
+    window.dispatchEvent(new CustomEvent(STORE_ORDER_AUTOPRINT_STATION_EVENT, { detail: { enabled } }));
+  } catch {
+    /* ignore storage error */
+  }
+}
+
+/**
+ * يطبع قصاصة 80mm × 100mm عبر إطار مخفي داخل الصفحة (Same-Origin Hidden Iframe)
+ * ليتجاوز حاجب النوافذ المنبثقة (Popup Blocker) عند وصول أحداث SSE الخلفية،
+ * فيعمل تلقائياً مع طابعات Windows الافتراضية (ومع --kiosk-printing بصمت تام).
+ */
+export type StoreOrderAlertPrintOutcome =
+  | "printed"
+  | "dialog_opened"
+  | "no_printer"
+  | "hardware_error"
+  | "lease_lost";
+
+export async function printStoreOrderAlertIframe(
+  d: StoreOrderAlertData,
+  options?: { signal?: AbortSignal },
+): Promise<"dialog_opened" | "hardware_error" | "lease_lost"> {
+  if (typeof document === "undefined" || !document.body) return "hardware_error";
+  const signal = options?.signal;
+  if (signal?.aborted) return "lease_lost";
+
+  return new Promise((resolve) => {
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.cssText =
+      "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;";
+
+    let settled = false;
+    const cleanup = () => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    };
+    const finish = (res: "dialog_opened" | "hardware_error" | "lease_lost") => {
+      if (settled) return;
+      settled = true;
+      resolve(res);
+    };
+
+    const failTimer = globalThis.setTimeout(() => {
+      cleanup();
+      finish("hardware_error");
+    }, 8_000);
+
+    iframe.onload = async () => {
+      globalThis.clearTimeout(failTimer);
+      if (signal?.aborted) {
+        cleanup();
+        finish("lease_lost");
+        return;
+      }
+      try {
+        const win = iframe.contentWindow;
+        const doc = iframe.contentDocument;
+        if (!win || !doc) {
+          cleanup();
+          finish("hardware_error");
+          return;
+        }
+        if (doc.fonts?.ready) {
+          await Promise.race([
+            doc.fonts.ready,
+            new Promise<void>((r) => globalThis.setTimeout(r, 1_200)),
+          ]);
+        }
+        if (signal?.aborted) {
+          cleanup();
+          finish("lease_lost");
+          return;
+        }
+        win.addEventListener("afterprint", () => {
+          globalThis.setTimeout(cleanup, 400);
+        });
+        globalThis.setTimeout(cleanup, 60_000);
+        win.focus();
+        win.print();
+        finish("dialog_opened");
+      } catch (err) {
+        console.warn("[store-order-alert] iframe print failed:", err);
+        cleanup();
+        finish("hardware_error");
+      }
+    };
+
+    iframe.srcdoc = buildStoreOrderAlertHtml(d, { autoScript: false });
+    document.body.appendChild(iframe);
+  });
+}
+
+export async function printStoreOrderAlertAuto(
+  d: StoreOrderAlertData,
+  options?: { signal?: AbortSignal; allowBrowserFallback?: boolean },
+): Promise<StoreOrderAlertPrintOutcome> {
+  const silentRes = await printStoreOrderAlertSilent(d, options);
+  if (silentRes === "printed" || silentRes === "lease_lost") {
+    return silentRes;
+  }
+  if (options?.allowBrowserFallback) {
+    return printStoreOrderAlertIframe(d, options);
+  }
+  return silentRes;
+}
+
 export function previewOrPrintStoreOrderAlertBrowser(d: StoreOrderAlertData): boolean {
   return openPrintWindow(buildStoreOrderAlertHtml(d), "width=380,height=480");
 }
@@ -393,6 +531,8 @@ export interface StoreOrderAlertIncomingPayload {
  */
 export function createStoreOrderAlertCoordinator(deps: {
   hasPrinter: () => Promise<boolean>;
+  canBrowserFallback?: () => boolean;
+  browserFallbackHeadStartMs?: number;
   claim: (orderId: number) => Promise<StoreOrderAlertClaimResult | null>;
   renew?: (
     orderId: number,
@@ -402,8 +542,15 @@ export function createStoreOrderAlertCoordinator(deps: {
   release: (orderId: number, leaseToken?: string | null) => Promise<unknown>;
   print: (
     data: StoreOrderAlertData,
-    options?: { signal?: AbortSignal },
-  ) => Promise<"printed" | "no_printer" | "hardware_error" | "lease_lost">;
+    options?: { signal?: AbortSignal; allowBrowserFallback?: boolean },
+  ) => Promise<StoreOrderAlertPrintOutcome>;
+  onBrowserDialogOpened?: (ctx: {
+    orderId: number;
+    orderNumber: string;
+    confirmPrinted: () => Promise<void>;
+    retryOrRelease: () => Promise<void>;
+  }) => void;
+  unconfirmedDialogHoldMs?: number;
   onNotify?: (payload: StoreOrderAlertIncomingPayload) => void;
   now?: () => number;
   scheduleRetry?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -428,9 +575,11 @@ export function createStoreOrderAlertCoordinator(deps: {
       ? [deps.contestedRetryDelayMs, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]
       : [2_500, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]);
   const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
+  const unconfirmedDialogHoldMs = deps.unconfirmedDialogHoldMs ?? 90_000;
 
   const notifiedOrderIds = new Set<number>();
   const printedOrderIds = new Set<number>();
+  const awaitingDialogConfirmIds = new Set<number>();
   const inFlightOrderIds = new Set<number>();
   const recoveryStepByOrder = new Map<number, number>();
   const failedCooldownUntil = new Map<number, number>();
@@ -479,7 +628,13 @@ export function createStoreOrderAlertCoordinator(deps: {
     payload: StoreOrderAlertIncomingPayload,
   ): Promise<void> => {
     const { orderId } = payload;
-    if (printedOrderIds.has(orderId) || inFlightOrderIds.has(orderId)) return;
+    if (
+      printedOrderIds.has(orderId) ||
+      awaitingDialogConfirmIds.has(orderId) ||
+      inFlightOrderIds.has(orderId)
+    ) {
+      return;
+    }
     const cooldownUntil = failedCooldownUntil.get(orderId);
     if (cooldownUntil !== undefined) {
       if (getNow() < cooldownUntil) {
@@ -491,13 +646,30 @@ export function createStoreOrderAlertCoordinator(deps: {
 
     inFlightOrderIds.add(orderId);
     try {
-      const printerReady = await deps.hasPrinter().catch(() => false);
-      if (!printerReady) return;
+      const hardwarePrinterReady = await deps.hasPrinter().catch(() => false);
+      let useBrowserFallback = false;
+      if (!hardwarePrinterReady) {
+        const fallbackAllowed = deps.canBrowserFallback ? deps.canBrowserFallback() : false;
+        if (!fallbackAllowed) return;
+        useBrowserFallback = true;
+        const headStartMs = deps.browserFallbackHeadStartMs ?? 700;
+        if (headStartMs > 0) {
+          await new Promise<void>((resolve) => {
+            const waitHandle = schedule(() => {
+              auxTimers.delete(waitHandle);
+              resolve();
+            }, headStartMs);
+            auxTimers.add(waitHandle);
+          });
+          if (printedOrderIds.has(orderId)) return;
+        }
+      }
 
       let claimRes: StoreOrderAlertClaimResult | null = null;
       try {
         claimRes = await deps.claim(orderId);
-      } catch {
+      } catch (err) {
+        console.warn("[store-order-alert] claimNotificationPrint failed:", err);
         scheduleNextRecovery(payload);
         return;
       }
@@ -587,7 +759,7 @@ export function createStoreOrderAlertCoordinator(deps: {
       armExpiryGuard();
       scheduleLeaseRenewal();
 
-      let outcome: "printed" | "no_printer" | "hardware_error" | "lease_lost" = "hardware_error";
+      let outcome: StoreOrderAlertPrintOutcome = "hardware_error";
       try {
         outcome = await deps
           .print(
@@ -597,7 +769,7 @@ export function createStoreOrderAlertCoordinator(deps: {
               itemsCount: claimRes.itemCount || payload.itemsCount || 1,
               totalAmount: claimRes.total ?? payload.totalAmount,
             },
-            { signal: abortController.signal },
+            { signal: abortController.signal, allowBrowserFallback: useBrowserFallback },
           )
           .catch(() => "hardware_error" as const);
       } finally {
@@ -623,6 +795,121 @@ export function createStoreOrderAlertCoordinator(deps: {
             auxTimers.add(retryHandle);
           }
         }
+        return;
+      }
+
+      if (outcome === "dialog_opened") {
+        if (!deps.onBrowserDialogOpened) {
+          failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+          try {
+            await deps.release(orderId, activeLeaseToken);
+          } catch {
+            scheduleNextRecovery(payload);
+          }
+          return;
+        }
+
+        awaitingDialogConfirmIds.add(orderId);
+        boundSet(awaitingDialogConfirmIds, orderId);
+        let dialogSettled = false;
+        let holdRenewTimer: ReturnType<typeof setTimeout> | null = null;
+        let holdExpireTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const clearDialogTimers = () => {
+          if (holdRenewTimer !== null) {
+            cancel(holdRenewTimer);
+            auxTimers.delete(holdRenewTimer);
+            holdRenewTimer = null;
+          }
+          if (holdExpireTimer !== null) {
+            cancel(holdExpireTimer);
+            auxTimers.delete(holdExpireTimer);
+            holdExpireTimer = null;
+          }
+        };
+
+        const scheduleHoldRenew = () => {
+          if (dialogSettled || !deps.renew) return;
+          holdRenewTimer = schedule(async () => {
+            auxTimers.delete(holdRenewTimer!);
+            holdRenewTimer = null;
+            if (dialogSettled) return;
+            try {
+              const renewed = await deps.renew!(orderId, activeLeaseToken);
+              if (dialogSettled) return;
+              if (renewed?.renewed) {
+                activeLeaseToken = renewed.leaseToken ?? activeLeaseToken;
+                scheduleHoldRenew();
+                return;
+              }
+              if (renewed && renewed.renewed === false) {
+                dialogSettled = true;
+                clearDialogTimers();
+                awaitingDialogConfirmIds.delete(orderId);
+                failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+                scheduleNextRecovery(payload);
+                return;
+              }
+            } catch {
+              /* ignore transient renew error */
+            }
+            if (!dialogSettled) {
+              scheduleHoldRenew();
+            }
+          }, leaseRenewIntervalMs);
+          auxTimers.add(holdRenewTimer);
+        };
+
+        const confirmPrinted = async () => {
+          if (dialogSettled) return;
+          dialogSettled = true;
+          clearDialogTimers();
+          awaitingDialogConfirmIds.delete(orderId);
+          printedOrderIds.add(orderId);
+          boundSet(printedOrderIds, orderId);
+          recoveryStepByOrder.delete(orderId);
+          failedCooldownUntil.delete(orderId);
+          if (deps.confirm) {
+            const tokenToConfirm = activeLeaseToken;
+            try {
+              await deps.confirm(orderId, tokenToConfirm);
+            } catch {
+              const retryHandle = schedule(() => {
+                auxTimers.delete(retryHandle);
+                void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
+              }, 2_000);
+              auxTimers.add(retryHandle);
+            }
+          }
+        };
+
+        const retryOrRelease = async () => {
+          if (dialogSettled) return;
+          dialogSettled = true;
+          clearDialogTimers();
+          awaitingDialogConfirmIds.delete(orderId);
+          failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+          try {
+            await deps.release(orderId, activeLeaseToken);
+          } catch {
+            scheduleNextRecovery(payload);
+          }
+        };
+
+        scheduleHoldRenew();
+        holdExpireTimer = schedule(() => {
+          auxTimers.delete(holdExpireTimer!);
+          holdExpireTimer = null;
+          void retryOrRelease();
+        }, unconfirmedDialogHoldMs);
+        auxTimers.add(holdExpireTimer);
+
+        deps.onBrowserDialogOpened({
+          orderId,
+          orderNumber: claimRes.orderNumber ?? payload.orderNumber,
+          confirmPrinted,
+          retryOrRelease,
+        });
         return;
       }
 

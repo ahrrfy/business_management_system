@@ -590,17 +590,18 @@ async function kioskViewerAllowed(req: Request): Promise<boolean> {
   return false;
 }
 
-type BannerImageSlot = { url: string; sortOrder?: number; isActive?: boolean; effectiveFrom?: string | null; effectiveTo?: string | null };
+type BannerImageSlot = { url: string; mobileUrl?: string | null; sortOrder?: number; isActive?: boolean; effectiveFrom?: string | null; effectiveTo?: string | null };
 
-/** يختار الـdata URL المنشور المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
+/** يختار الـdata URL المنشور المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile أو mobile-<i>). */
 function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUrl: string | null }, slot: string, today: string): string | null {
   if (slot === "mobile") return row.mobileImageUrl;
-  const m = /^main-(\d+)$/.exec(slot);
+  const m = /^(main|mobile)-(\d+)$/.exec(slot);
   if (!m) return null;
-  const idx = Number(m[1]);
+  const kind = m[1];
+  const idx = Number(m[2]);
   const list = Array.isArray(row.images) ? row.images : [];
   // الصور المتعددة (#203) أوّلاً بترتيب sortOrder — نفس ترتيب listActiveBanners؛ فإن لم تكن
-  // مُهيّأة فالصورة الأحادية القديمة (imageUrl) عند الفهرس 0 حصراً.
+  // مُهيّأة فالصورة الأحادية القديمة (imageUrl / mobileImageUrl) عند الفهرس 0 حصراً.
   if (list.length) {
     const sorted = [...list]
       .filter((x): x is BannerImageSlot => {
@@ -609,8 +610,12 @@ function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUr
         return image.isActive !== false && (!image.effectiveFrom || image.effectiveFrom <= today) && (!image.effectiveTo || image.effectiveTo >= today);
       })
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    if (kind === "mobile") {
+      return sorted[idx]?.mobileUrl ?? (sorted.length === 1 && idx === 0 ? row.mobileImageUrl : null);
+    }
     return sorted[idx]?.url ?? null;
   }
+  if (kind === "mobile") return idx === 0 ? row.mobileImageUrl : null;
   return idx === 0 ? row.imageUrl : null;
 }
 

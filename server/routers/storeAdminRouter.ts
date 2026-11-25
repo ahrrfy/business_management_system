@@ -21,6 +21,7 @@ import {
   getOnlineOrder,
   getOnlineOrderLeaderboard,
   listOnlineOrders,
+  listPendingOnlineOrderAlertPrints,
   markOnlineOrderPrepared,
   onlineOrderStatusCounts,
   releaseOnlineOrderAlertPrint,
@@ -39,6 +40,17 @@ import {
   listBanners,
   updateBanner,
 } from "../services/storeAdmin/bannerService";
+import { getBannerMetricsSummary } from "../services/storeAdmin/bannerMetricsService";
+import {
+  generateBannerCopyForTarget,
+  generateBannerSceneBackdrop,
+  listBannerCandidateProducts,
+} from "../services/storeAdmin/bannerAiStudioService";
+import {
+  BANNER_LIGHTING_MODES,
+  BANNER_SCENE_MODELS,
+  BANNER_STUDIO_PRESET_IDS,
+} from "@shared/imageStudio/bannerStudioContract";
 import { getStoreSettings, updateStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
@@ -461,11 +473,23 @@ const ordersRouter = router({
       return res;
     }),
 
-  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن فقط */
+  /** استرجاع طلبات المتجر الحديثة غير المطبوعة (آخر 30 دقيقة) عند اتصال محطة الاستقبال أو استعادة الشبكة */
+  pendingNotificationPrint: storeFulfillProcedure
+    .input(z.object({ stationOptIn: z.boolean().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input?.stationOptIn !== true) {
+        return [];
+      }
+      return listPendingOnlineOrderAlertPrints({
+        scopedBranchId: actorScopedBranch(ctx.user),
+      });
+    }),
+
+  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن أو محطة مفعّلة صراحةً */
   claimNotificationPrint: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive() }))
+    .input(z.object({ id: z.number().int().positive(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user)) {
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
         return {
           claimed: false, alreadyPrinted: false, leaseToken: null,
           eligible: false,
@@ -487,9 +511,11 @@ const ordersRouter = router({
 
   /** إقرار اكتمال طباعة الإشعار أو تجديد/تحرير حجزه المؤقت إذا تعذّر الإرسال الفيزيائي للطابعة */
   releaseNotificationPrint: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional() }))
+    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user)) return { released: false, completed: false, renewed: false, leaseToken: null };
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
+        return { released: false, completed: false, renewed: false, leaseToken: null };
+      }
       return releaseOnlineOrderAlertPrint({
         id: input.id, renew: input.renew === true,
         scopedBranchId: actorScopedBranch(ctx.user),
@@ -502,6 +528,11 @@ const ordersRouter = router({
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح");
 const bannerImage = z.object({
   url: z.string().max(3_000_000),
+  mobileUrl: z.string().max(3_000_000).nullish(),
+  title: z.string().trim().max(255).nullish(),
+  subtitle: z.string().max(500).nullish(),
+  ctaLabel: z.string().max(120).nullish(),
+  ctaUrl: z.string().max(500).nullish(),
   effectiveFrom: dateStr.nullish(),
   effectiveTo: dateStr.nullish(),
   isActive: z.boolean().optional(),
@@ -535,13 +566,72 @@ const bannerInput = bannerInputFields.refine((v) => !v.effectiveFrom || !v.effec
 function assertSafeBannerInput(input: Partial<z.infer<typeof bannerInput>>) {
   assertValidImageDataUrl(input.imageUrl, 2_000_000, true);
   assertValidImageDataUrl(input.mobileImageUrl, 2_000_000, true);
-  for (const image of input.images ?? []) assertValidImageDataUrl(image.url, 2_000_000, true);
+  for (const image of input.images ?? []) {
+    assertValidImageDataUrl(image.url, 2_000_000, true);
+    assertValidImageDataUrl(image.mobileUrl, 2_000_000, true);
+    assertSafeBannerCtaUrl(image.ctaUrl);
+  }
   assertSafeBannerCtaUrl(input.ctaUrl);
 }
 
 /** بنرات المتجر (إدارة — storeManagerProcedure). */
 const bannersRouter = router({
   list: storeReadProcedure.query(() => listBanners()),
+  metrics: storeReadProcedure
+    .input(z.object({ days: z.number().int().min(1).max(365).default(30) }).optional())
+    .query(({ input }) => getBannerMetricsSummary({ days: input?.days ?? 30 })),
+  products: storeReadProcedure
+    .input(
+      z
+        .object({
+          q: z.string().trim().max(120).nullish(),
+          categoryId: z.number().int().positive().nullish(),
+          limit: z.number().int().min(4).max(24).default(16),
+        })
+        .optional(),
+    )
+    .query(({ input }) => listBannerCandidateProducts(input)),
+  generateCopy: storeGlobalAdminProcedure
+    .input(
+      z.object({
+        targetKind: z.enum(["PROMOTION", "CATEGORY", "PRODUCTS", "DEALS", "QUOTE"]),
+        promotionId: z.number().int().positive().nullish(),
+        categoryId: z.number().int().positive().nullish(),
+        productIds: z.array(z.number().int().positive()).max(6).optional(),
+        customTopic: z.string().trim().max(200).nullish(),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      generateBannerCopyForTarget(input, {
+        userId: Number(ctx.user.id),
+        branchId: ctx.user.branchId ?? null,
+      }),
+    ),
+  generateImage: storeGlobalAdminProcedure
+    .input(
+      z.object({
+        presetId: z.enum(BANNER_STUDIO_PRESET_IDS),
+        placement: z.enum(["HERO", "INLINE"]),
+        model: z.enum(BANNER_SCENE_MODELS).nullish(),
+        productIds: z.array(z.number().int().positive()).max(6).optional(),
+        customHint: z.string().trim().max(300).nullish(),
+        lightingMode: z.enum(BANNER_LIGHTING_MODES).optional(),
+        sceneMode: z.enum(["FULL_SCENE", "STAGE_BACKDROP"]).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await generateBannerSceneBackdrop(input, {
+        userId: Number(ctx.user.id),
+        branchId: ctx.user.branchId ?? null,
+      });
+      await logAudit(ctx, {
+        action: "store.banner.ai_scene",
+        entityType: "storeBanner",
+        entityId: 0,
+        newValue: { presetId: input.presetId, placement: input.placement, modelUsed: res.modelUsed },
+      });
+      return res;
+    }),
   create: storeGlobalAdminProcedure.input(bannerInput).mutation(async ({ input, ctx }) => {
     assertSafeBannerInput(input);
     const r = await createBanner(input, ctx.user.id);
@@ -734,9 +824,10 @@ const promotionsRouter = router({
     .input(z.object({
       name: z.string().min(1).max(255),
       description: z.string().max(2000).nullish(),
-      type: z.enum(["PERCENT", "AMOUNT"]),
+      type: z.enum(["PERCENT", "AMOUNT", "FIXED_PRICE"]),
       discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة غير صالحة").optional(),
       discountAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+      fixedPrice: z.string().regex(/^\d+(\.\d{1,2})?$/, "سعر موحد غير صالح").optional(),
       scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]),
       effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
       effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),
@@ -781,9 +872,10 @@ const promotionsRouter = router({
         id: z.number().int().positive(),
         name: z.string().min(1).max(255).optional(),
         description: z.string().max(2000).nullish(),
-        type: z.enum(["PERCENT", "AMOUNT"]).optional(),
+        type: z.enum(["PERCENT", "AMOUNT", "FIXED_PRICE"]).optional(),
         discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة غير صالحة").optional(),
         discountAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+        fixedPrice: z.string().regex(/^\d+(\.\d{1,2})?$/, "سعر موحد غير صالح").optional(),
         scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).optional(),
         effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
         effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),

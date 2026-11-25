@@ -9,6 +9,7 @@
  * 5. تعطيل وإعادة تفعيل العروض بنقرة واحدة مع حماية العروض الخاصة بالمتاجر الأخرى أو العامة.
  */
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   AlertCircle,
@@ -19,6 +20,7 @@ import {
   Layers,
   Loader2,
   Package,
+  Palette,
   Pencil,
   Percent,
   Plus,
@@ -62,9 +64,10 @@ interface PromoFormState {
   id: number | null;
   name: string;
   description: string;
-  type: "PERCENT" | "AMOUNT";
+  type: "PERCENT" | "AMOUNT" | "FIXED_PRICE";
   discountPercent: string;
   discountAmount: string;
+  fixedPrice: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
   effectiveFrom: string;
   effectiveTo: string;
@@ -86,6 +89,7 @@ const INITIAL_FORM: PromoFormState = {
   type: "PERCENT",
   discountPercent: "10",
   discountAmount: "",
+  fixedPrice: "",
   scope: "ALL",
   effectiveFrom: getTodayYmd(),
   effectiveTo: "",
@@ -95,6 +99,7 @@ const INITIAL_FORM: PromoFormState = {
 };
 
 export default function StorePromotionsManager() {
+  const [loc, navigate] = useLocation();
   const utils = trpc.useUtils();
   const [includeInactive, setIncludeInactive] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -195,8 +200,8 @@ export default function StorePromotionsManager() {
   }
 
   function openEditModal(promo: StorePromotion) {
-    if (promo.type !== "PERCENT" && promo.type !== "AMOUNT") {
-      notify.err("هذا العرض متقدم (باقة/كميات/سعر موحد)؛ يرجى تعديله من شاشة العروض والتخفيضات المركزية.");
+    if (promo.type !== "PERCENT" && promo.type !== "AMOUNT" && promo.type !== "FIXED_PRICE") {
+      notify.err("هذا العرض متقدم (باقة/كميات)؛ يرجى تعديله من شاشة العروض والتخفيضات المركزية.");
       return;
     }
     const initialTargets: TargetItem[] = (promo.targets ?? []).map((t) => {
@@ -215,6 +220,7 @@ export default function StorePromotionsManager() {
       type: promo.type,
       discountPercent: promo.type === "PERCENT" ? String(Number(promo.discountPercent)) : "10",
       discountAmount: promo.type === "AMOUNT" ? String(Number(promo.discountAmount)) : "",
+      fixedPrice: promo.type === "FIXED_PRICE" && promo.fixedPrice ? String(Number(promo.fixedPrice)) : "",
       scope: promo.scope,
       effectiveFrom: promo.effectiveFrom,
       effectiveTo: promo.effectiveTo ?? "",
@@ -295,6 +301,12 @@ export default function StorePromotionsManager() {
         setFormError("نسبة الخصم يجب أن تكون أكبر من 0 وأقل من أو تساوي 100");
         return;
       }
+    } else if (form.type === "FIXED_PRICE") {
+      const fp = Number(form.fixedPrice);
+      if (isNaN(fp) || fp <= 0) {
+        setFormError("السعر الموحد يجب أن يكون أكبر من صفر");
+        return;
+      }
     } else {
       const amt = Number(form.discountAmount);
       if (isNaN(amt) || amt <= 0) {
@@ -331,6 +343,7 @@ export default function StorePromotionsManager() {
         type: form.type,
         discountPercent: form.type === "PERCENT" ? String(Number(form.discountPercent)) : undefined,
         discountAmount: form.type === "AMOUNT" ? String(Number(form.discountAmount)) : undefined,
+        fixedPrice: form.type === "FIXED_PRICE" ? String(Number(form.fixedPrice)) : undefined,
         scope: form.scope,
         effectiveFrom: form.effectiveFrom,
         effectiveTo: form.effectiveTo || null,
@@ -346,6 +359,7 @@ export default function StorePromotionsManager() {
         type: form.type,
         discountPercent: form.type === "PERCENT" ? String(Number(form.discountPercent)) : undefined,
         discountAmount: form.type === "AMOUNT" ? String(Number(form.discountAmount)) : undefined,
+        fixedPrice: form.type === "FIXED_PRICE" ? String(Number(form.fixedPrice)) : undefined,
         scope: form.scope,
         effectiveFrom: form.effectiveFrom,
         effectiveTo: form.effectiveTo || null,
@@ -535,6 +549,20 @@ export default function StorePromotionsManager() {
           const promo = row.original;
           return (
             <div className="flex items-center justify-center gap-1">
+              {promo.isActive && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const basePath = loc.split("?")[0] || "/store-admin";
+                    navigate(`${basePath}?tab=banners&studioPromo=${promo.id}`);
+                  }}
+                  className="size-8 p-0 text-primary hover:bg-primary/10"
+                  title="تصميم بنر إعلاني احترافي لهذا العرض"
+                >
+                  <Palette aria-hidden className="size-4" />
+                </Button>
+              )}
               {promo.storeOwned && (
                 <Button
                   variant="ghost"
@@ -846,20 +874,25 @@ export default function StorePromotionsManager() {
             {/* نوع وقيمة الخصم */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label className="mb-1 block font-medium text-muted-foreground">نوع الخصم</label>
+                <label className="mb-1 block font-medium text-muted-foreground">نوع العرض والتسعير</label>
                 <AppSelect
                   value={form.type}
-                  onValueChange={(val) => setForm({ ...form, type: val as "PERCENT" | "AMOUNT" })}
+                  onValueChange={(val) => setForm({ ...form, type: val as "PERCENT" | "AMOUNT" | "FIXED_PRICE" })}
                   aria-label="نوع الخصم"
                 >
-                  <option value="PERCENT">نسبة مئوية (%)</option>
-                  <option value="AMOUNT">مبلغ ثابت بالدينار (د.ع)</option>
+                  <option value="PERCENT">نسبة خصم مئوية (%)</option>
+                  <option value="AMOUNT">خصم مبلغ ثابت (د.ع)</option>
+                  <option value="FIXED_PRICE">سعر بيع موحّد للصنف (مثل: 3,000 د.ع)</option>
                 </AppSelect>
               </div>
 
               <div>
                 <label className="mb-1 block font-medium text-muted-foreground">
-                  {form.type === "PERCENT" ? "نسبة الخصم (%) *" : "مبلغ الخصم الثابت بالدينار *"}
+                  {form.type === "PERCENT"
+                    ? "نسبة الخصم (%) *"
+                    : form.type === "FIXED_PRICE"
+                      ? "السعر الموحّد للصنف بالدينار *"
+                      : "مبلغ الخصم الثابت بالدينار *"}
                 </label>
                 {form.type === "PERCENT" ? (
                   <Input
@@ -870,6 +903,14 @@ export default function StorePromotionsManager() {
                     onChange={(e) => setForm({ ...form, discountPercent: e.target.value })}
                     placeholder="مثال: 15"
                     className="text-xs"
+                  />
+                ) : form.type === "FIXED_PRICE" ? (
+                  <MoneyInput
+                    value={form.fixedPrice}
+                    onChange={(val) => setForm({ ...form, fixedPrice: val })}
+                    decimals={0}
+                    placeholder="مثال: 3,000"
+                    ariaLabel="السعر الموحد للصنف"
                   />
                 ) : (
                   <MoneyInput

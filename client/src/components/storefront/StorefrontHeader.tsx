@@ -21,7 +21,7 @@ interface Props {
   search: string;
   setCategoryId: React.Dispatch<React.SetStateAction<number | null>>;
   setSearch: React.Dispatch<React.SetStateAction<string>>;
-  setRawSearch: React.Dispatch<React.SetStateAction<string>>;
+  setRawSearch: (value: string) => void;
   rawSearch: string;
   submitStoreSearch: (
     query: string,
@@ -38,6 +38,8 @@ interface Props {
   ) => void;
   searchScope: {
     categoryId: number | null;
+    categoryIds?: number[] | null;
+    promotionId?: number | null;
     availability: AvailabilityFilter;
     brand: string;
     priceFilter: PriceFilter;

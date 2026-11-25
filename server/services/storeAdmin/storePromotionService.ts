@@ -44,6 +44,7 @@ export interface StorePromotionRow {
   channel: string;
   discountPercent: string;
   discountAmount: string;
+  fixedPrice: string | null;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
   effectiveFrom: string; // YYYY-MM-DD
   effectiveTo: string | null;
@@ -140,6 +141,7 @@ export async function listStorePromotions(input: {
       channel: resolvedChannel,
       discountPercent: String(r.discountPercent ?? "0"),
       discountAmount: String(r.discountAmount ?? "0"),
+      fixedPrice: r.fixedPrice != null ? String(r.fixedPrice) : null,
       scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
       effectiveFrom: from,
       effectiveTo: to,

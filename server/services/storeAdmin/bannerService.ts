@@ -3,14 +3,15 @@
  * القراءة العلنية (listActiveBanners) آمنة: حقول عرض فقط، ضمن النافذة الزمنية + الفرع + مفعّلة.
  * مستقلّة عن بنرات «عروض اليوم» المشتقّة من promotions (تُعرَض بجانبها في المتجر).
  */
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
-import { storeBanners } from "../../../drizzle/schema";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { promotions, promotionTargets, storeBanners } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { withTx } from "../tx";
 import { resolveStorefrontBranchId } from "../storefrontService";
 import { normalizeInternalBannerUrl } from "../../lib/bannerSafety";
 import { bannerImageUrl, decodeDataUrl } from "../../imageRoute";
+import { isPromotionActiveOnDay } from "../../../shared/promotionScheduling";
 
 function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -41,6 +42,11 @@ export interface BannerInput {
 
 export interface BannerImageInput {
   url: string;
+  mobileUrl?: string | null;
+  title?: string | null;
+  subtitle?: string | null;
+  ctaLabel?: string | null;
+  ctaUrl?: string | null;
   effectiveFrom?: string | null;
   effectiveTo?: string | null;
   isActive?: boolean;
@@ -48,15 +54,111 @@ export interface BannerImageInput {
 }
 
 function normalizeImages(input: Partial<BannerInput>): BannerImageInput[] {
-  if (input.images?.length) return input.images.map((image, index) => ({ ...image, isActive: image.isActive ?? true, sortOrder: image.sortOrder ?? index }));
+  if (input.images?.length) {
+    return input.images.map((image, index) => ({
+      ...image,
+      mobileUrl: image.mobileUrl || null,
+      title: image.title?.trim() || null,
+      subtitle: image.subtitle?.trim() || null,
+      ctaLabel: image.ctaLabel?.trim() || null,
+      ctaUrl: normalizeInternalBannerUrl(image.ctaUrl),
+      isActive: image.isActive ?? true,
+      sortOrder: image.sortOrder ?? index,
+    }));
+  }
   return input.imageUrl ? [{ url: input.imageUrl, isActive: true, sortOrder: 0 }] : [];
 }
 
-/** كل البنرات (لوحة الإدارة) — مرتّبة بالترتيب ثم الأحدث. */
+function extractLinkedPromoId(ctaUrl: string | null | undefined): number | null {
+  if (!ctaUrl) return null;
+  const match = ctaUrl.match(/[?&]promo=(\d+)\b/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+async function resolveLivePromoIds(
+  promoIds: number[],
+  today: string,
+  branchIdInput?: number,
+): Promise<Set<number>> {
+  const db = getDb();
+  const unique = Array.from(new Set(promoIds.filter((n) => n > 0)));
+  if (!db || unique.length === 0) return new Set();
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const rows = await db
+    .select({
+      id: promotions.id,
+      scope: promotions.scope,
+      activeDays: promotions.activeDays,
+    })
+    .from(promotions)
+    .where(
+      and(
+        inArray(promotions.id, unique),
+        eq(promotions.isActive, true),
+        eq(promotions.applicationMode, "AUTO"),
+        inArray(promotions.channel, ["ALL", "STORE_ONLY"]),
+        sql`${promotions.effectiveFrom} <= DATE(${today})`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${today})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, "RETAIL"))!,
+      ),
+    );
+  const dayEligible = rows.filter((r) =>
+    isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, today),
+  );
+  if (dayEligible.length === 0) return new Set();
+
+  const scopedIds = dayEligible
+    .filter((r) => r.scope !== "ALL")
+    .map((r) => Number(r.id));
+  const targetRows =
+    scopedIds.length > 0
+      ? await db
+          .select({
+            promotionId: promotionTargets.promotionId,
+            categoryId: promotionTargets.categoryId,
+            productId: promotionTargets.productId,
+          })
+          .from(promotionTargets)
+          .where(inArray(promotionTargets.promotionId, scopedIds))
+      : [];
+
+  const hasValidTarget = new Set<number>();
+  for (const r of dayEligible) {
+    const id = Number(r.id);
+    if (r.scope === "ALL") {
+      hasValidTarget.add(id);
+      continue;
+    }
+    const matching = targetRows.filter((t) => Number(t.promotionId) === id);
+    if (r.scope === "CATEGORIES" && matching.some((t) => Number(t.categoryId ?? 0) > 0)) {
+      hasValidTarget.add(id);
+    } else if (r.scope !== "CATEGORIES" && matching.some((t) => Number(t.productId ?? 0) > 0)) {
+      hasValidTarget.add(id);
+    }
+  }
+  return hasValidTarget;
+}
+
+/** كل البنرات (لوحة الإدارة) — مرتّبة بالترتيب ثم الأحدث، مع كشف ارتباط البنر بعرض متوقف أو منتهٍ. */
 export async function listBanners() {
   const db = getDb();
   if (!db) return [];
-  return db.select().from(storeBanners).orderBy(asc(storeBanners.sortOrder), desc(storeBanners.id));
+  const today = todayYmdBaghdad();
+  const rows = await db.select().from(storeBanners).orderBy(asc(storeBanners.sortOrder), desc(storeBanners.id));
+  const promoIds = rows
+    .map((r) => extractLinkedPromoId(r.ctaUrl))
+    .filter((id): id is number => id != null);
+  const liveSet = await resolveLivePromoIds(promoIds, today);
+  return rows.map((r) => {
+    const linkedPromoId = extractLinkedPromoId(r.ctaUrl);
+    return {
+      ...r,
+      linkedPromoInactive: linkedPromoId != null && !liveSet.has(linkedPromoId),
+    };
+  });
 }
 
 export interface PublicBanner {
@@ -132,31 +234,49 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     )
     .orderBy(asc(storeBanners.sortOrder), desc(storeBanners.id))
     .limit(24);
+  const candidatePromoIds: number[] = [];
+  for (const r of rows) {
+    const rootPromo = extractLinkedPromoId(r.ctaUrl);
+    if (rootPromo) candidatePromoIds.push(rootPromo);
+    for (const img of activeBannerImages(r.images, today)) {
+      const slidePromo = extractLinkedPromoId(img.ctaUrl);
+      if (slidePromo) candidatePromoIds.push(slidePromo);
+    }
+  }
+  const livePromoIds = await resolveLivePromoIds(candidatePromoIds, today, branchId);
+
   return rows.flatMap((r) => {
     const images = activeBannerImages(r.images, today);
-    // A banner may intentionally be text-only; BannerFrame renders a gradient
-    // fallback when imageUrl is null, so do not drop active banners without an image.
-    const sources: Array<{ url: string | null }> = images.length
+    const sources: Array<Omit<Partial<BannerImageInput>, "url"> & { url: string | null }> = images.length
       ? images
       : [{ url: r.imageUrl ?? null }];
-    return sources.map((image, imageIndex) => ({
-    id: Number(r.id),
-    title: r.title,
-    subtitle: r.subtitle ?? null,
-    // **رابط** لا data URL (١٦/٧): كان الردّ يحمل الصور base64 داخله ⇒ ١٫٣٢ م.ب مضغوطة في كل
-    // تحميلٍ للمتجر، بلا كاش (الـSW يضع /api/* على NetworkOnly عمداً). الآن مورد HTTP مستقلّ
-    // بـimmutable+ETag ⇒ الردّ ~٢ ك.ب، والصورة تُجلَب مرّةً واحدة للأبد وتُحمَّل كسولاً.
-    // ⚠️ العلني فقط — `listBanners` (لوحة الإدارة) يبقى data URL لأن المحرّر يعرضها ويعدّلها.
-    imageUrl: toPublicImage(Number(r.id), `main-${imageIndex}`, image.url),
-    mobileImageUrl: toPublicImage(Number(r.id), "mobile", r.mobileImageUrl),
-    renderMode: (r.renderMode as BannerRenderMode) ?? "PRESERVE_FULL",
-    focusX: Math.min(100, Math.max(0, r.focusX ?? 50)),
-    focusY: Math.min(100, Math.max(0, r.focusY ?? 50)),
-    ctaLabel: r.ctaLabel ?? null,
-    ctaUrl: normalizeInternalBannerUrl(r.ctaUrl),
-    placement: (r.placement as BannerPlacement) ?? "HERO",
-    imageIndex,
-    }));
+    return sources.flatMap((image, imageIndex) => {
+      const resolvedCtaUrl = normalizeInternalBannerUrl(image.ctaUrl) ?? normalizeInternalBannerUrl(r.ctaUrl);
+      const linkedPromoId = extractLinkedPromoId(resolvedCtaUrl);
+      // أتمتة دورة الحياة: إذا كان البنر أو الشريحة يروّج لعرض ترويجي انتهى أو عُطّل، يُحجب آلياً من المتجر
+      if (linkedPromoId != null && !livePromoIds.has(linkedPromoId)) {
+        return [];
+      }
+      const resolvedMobile = image.mobileUrl
+        ? toPublicImage(Number(r.id), `mobile-${imageIndex}`, image.mobileUrl)
+        : sources.length === 1
+          ? toPublicImage(Number(r.id), "mobile", r.mobileImageUrl)
+          : null;
+      return [{
+        id: Number(r.id),
+        title: image.title?.trim() || r.title,
+        subtitle: image.subtitle?.trim() || r.subtitle || null,
+        imageUrl: toPublicImage(Number(r.id), `main-${imageIndex}`, image.url),
+        mobileImageUrl: resolvedMobile,
+        renderMode: (r.renderMode as BannerRenderMode) ?? "PRESERVE_FULL",
+        focusX: Math.min(100, Math.max(0, r.focusX ?? 50)),
+        focusY: Math.min(100, Math.max(0, r.focusY ?? 50)),
+        ctaLabel: image.ctaLabel?.trim() || r.ctaLabel || null,
+        ctaUrl: resolvedCtaUrl,
+        placement: (r.placement as BannerPlacement) ?? "HERO",
+        imageIndex,
+      }];
+    });
   });
 }
 

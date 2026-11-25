@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { BarChart3, Eye, Loader2, MapPin, MousePointerClick, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { Card, CardContent } from "@/components/ui/card";
 import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { ONLINE_ORDER_STATUSES, orderStatusLabel, orderStatusChartColor } from "@shared/onlineOrderStatus";
 
@@ -35,7 +36,9 @@ export default function StoreAnalytics() {
   const [preset, setPreset] = useState<Preset>("30");
   const range = useMemo(() => PRESETS.find((p) => p.key === preset)!.range(), [preset]);
   const q = trpc.storeAdmin.analytics.summary.useQuery(range);
+  const bannerMetricsQ = trpc.storeAdmin.banners.metrics.useQuery({ days: preset === "7" ? 7 : 30 });
   const d = q.data;
+  const bm = bannerMetricsQ.data;
   const pct = (v: number) => `${Math.round(v * 100)}٪`;
 
   return (
@@ -70,6 +73,35 @@ export default function StoreAnalytics() {
           </div>
 
           <ConversionFunnel funnel={d.conversionFunnel} pct={pct} />
+
+          {bm && bm.totalImpressions > 0 && (
+            <Card>
+              <CardContent className="p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-sm font-bold text-muted-foreground">
+                    <MousePointerClick aria-hidden className="size-4" /> أداء البنرات الإعلانية (آخر {bm.days} يوماً)
+                  </div>
+                  <span className="text-xs font-bold text-primary tabular-nums">
+                    CTR الإجمالي: {(bm.overallCtr * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="rounded-xl bg-muted/50 p-3">
+                    <div className="text-[11px] text-muted-foreground">إجمالي مشاهدات البنرات</div>
+                    <div className="mt-1 text-xl font-bold tabular-nums">{fmtInt(bm.totalImpressions)}</div>
+                  </div>
+                  <div className="rounded-xl bg-muted/50 p-3">
+                    <div className="text-[11px] text-muted-foreground">إجمالي نقرات البنرات</div>
+                    <div className="mt-1 text-xl font-bold tabular-nums">{fmtInt(bm.totalClicks)}</div>
+                  </div>
+                  <div className="rounded-xl bg-muted/50 p-3">
+                    <div className="text-[11px] text-muted-foreground">معدل التحويل البصري (CTR)</div>
+                    <div className="mt-1 text-xl font-bold tabular-nums">{(bm.overallCtr * 100).toFixed(1)}%</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* الاتّجاه اليوميّ */}
           <TrendChart trend={d.trend} />

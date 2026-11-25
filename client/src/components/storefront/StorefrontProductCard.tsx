@@ -1,5 +1,5 @@
 import React from "react";
-import { Heart, Share2, Plus, Minus, Sparkles, Package, Eye, Star } from "lucide-react";
+import { Heart, Share2, Plus, Minus, PenTool, Package, Eye, Star } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
@@ -70,22 +70,24 @@ export const StorefrontProductCard = React.memo(function StorefrontProductCard({
   const showAdded = isRecentlyAdded;
 
 
-  const cardButtonLabel = (actionLabel ?? "أضف إلى السلة").length > 20
-    ? "غير متاح إلكترونياً"
-    : (actionLabel ?? "أضف إلى السلة");
+  const cardButtonLabel = !p.inStock
+    ? "نافد من المخزون"
+    : (actionLabel ?? "أضف إلى السلة").length > 20
+      ? "غير متاح إلكترونياً"
+      : (actionLabel ?? "أضف إلى السلة");
 
   return (
     <article
       className={`store-product-card group relative flex h-full flex-col overflow-hidden rounded-2xl border bg-white dark:bg-slate-900 ${
         showAdded
-          ? "border-emerald-500 ring-2 ring-emerald-500/20"
+          ? "border-[var(--store-brand)] ring-2 ring-[var(--store-brand)]/20"
           : p.inStock
           ? "border-slate-900/[0.08] dark:border-slate-800"
           : "border-slate-900/[0.08] opacity-75 dark:border-slate-800"
       }`}
     >
       {/* منطقة صورة المنتج والوسائط — نسبة ثابتة محكمة */}
-      <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-[#f7f7f8] text-right dark:bg-slate-950">
+      <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-[#f5f5f7] text-right dark:bg-slate-950">
         <button
           type="button"
           onClick={() => onOpen(p.productId)}
@@ -95,8 +97,8 @@ export const StorefrontProductCard = React.memo(function StorefrontProductCard({
           {mediaComponent}
 
           {!p.inStock && (
-            <span className="absolute inset-x-0 bottom-0 bg-slate-950/75 py-1.5 text-center text-[11px] font-semibold text-white backdrop-blur-xs">
-              غير متوفر حالياً
+            <span className="absolute inset-x-0 bottom-0 bg-[#1d1d1f]/85 py-1.5 text-center text-[11px] font-bold text-white backdrop-blur-xs">
+              نافد حالياً
             </span>
           )}
         </button>
@@ -104,7 +106,12 @@ export const StorefrontProductCard = React.memo(function StorefrontProductCard({
         {/* شريط الشارات والإجراءات العلوي — مبسّط وهادئ */}
         <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex items-start justify-between gap-1">
           <div className="pointer-events-auto flex flex-wrap items-start gap-1 max-w-[calc(100%-36px)]">
-            {onSale && pct > 0 && (
+            {!p.inStock && (
+              <span className="inline-flex items-center rounded-md bg-[#1d1d1f] px-2 py-0.5 text-[10px] font-bold text-white whitespace-nowrap">
+                نافد حالياً
+              </span>
+            )}
+            {p.inStock && onSale && pct > 0 && (
               <span className="inline-flex items-center rounded-md bg-[var(--store-accent)] px-1.5 py-0.5 text-[10px] font-bold text-white whitespace-nowrap tabular-nums">
                 خصم {pct}٪
               </span>
@@ -291,7 +298,7 @@ export const StorefrontProductCard = React.memo(function StorefrontProductCard({
               disabled={!orderable}
               label={cardButtonLabel}
               addedLabel="تمت الإضافة"
-              icon={p.isCustomizable ? <Sparkles aria-hidden className="size-3.5" /> : undefined}
+              icon={p.isCustomizable ? <PenTool aria-hidden className="size-3.5" /> : undefined}
               onAdd={(btnEl) => {
                 return onAdd(p, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
               }}
