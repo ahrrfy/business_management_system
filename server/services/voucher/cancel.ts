@@ -365,7 +365,14 @@ export async function cancelVoucher(
       PaymentMethod,
       "EXCHANGE"
     >;
-    const requestPartyType = (r.partyType as PartyType | null) ?? "OTHER";
+    const isDeliveryPartyVoucher =
+      r.partyType === "OTHER" &&
+      r.partyId != null &&
+      typeof r.internalNote === "string" &&
+      r.internalNote.startsWith("DELIVERY_PARTY:");
+    const requestPartyType: PartyType = isDeliveryPartyVoucher
+      ? "DELIVERY_PARTY"
+      : ((r.partyType as PartyType | null) ?? "OTHER");
     if (originalSystemRequest?.kind === "EMPLOYEE_ADVANCE") {
       await assertEmployeeAdvanceVoucherRequestTx(
         tx,

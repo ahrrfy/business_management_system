@@ -13849,6 +13849,8 @@ export const exchangeTransactions = mysqlTable(
     ])
       .default("ACTIVE")
       .notNull(),
+    executionSeq: bigint("executionSeq", { mode: "number" }),
+    executedAt: timestamp("executedAt"),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

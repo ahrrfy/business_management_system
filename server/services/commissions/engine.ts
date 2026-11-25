@@ -635,6 +635,7 @@ export async function computeCommissionRun(
         totalBaseSales: toDbMoney(runTotals?.totalBaseSales ?? "0"),
         totalBaseReturns: toDbMoney(runTotals?.totalBaseReturns ?? "0"),
         totalCommission: toDbMoney(runTotals?.totalCommission ?? "0"),
+        version: sql`${commissionRuns.version} + 1`,
         createdBy: actor.userId,
         computedAt: new Date(),
       })

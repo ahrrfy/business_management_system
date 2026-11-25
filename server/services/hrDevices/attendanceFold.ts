@@ -138,7 +138,7 @@ async function canMutateAttendanceDate(date: string): Promise<boolean> {
   const [lockedRun] = await db
     .select({ id: payrollRuns.id })
     .from(payrollRuns)
-    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["draft", "approved", "paid"])))
     .limit(1);
   if (lockedRun) return false;
   try {

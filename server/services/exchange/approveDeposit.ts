@@ -11,7 +11,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, toDbMoney } from "../money";
 import { requireDb, withTx, type Actor } from "../tx";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
-import { lockHouse, toDbRate } from "./helpers";
+import { lockHouse, nextExchangeExecutionSeq, toDbRate } from "./helpers";
 import { allocateCarryingIqd, calculateSignedUsdMovement, deriveForeignCashUsdPosition, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
 import { resolveApprovalActor } from "../approval/ownerGate";
@@ -117,13 +117,18 @@ export async function approveExchangeDeposit(
     const movement = calculateSignedUsdMovement(oldUsd, oldCarrying, amount, carryingIqd);
 
     await persistSignedUsdControl(tx, houseId, movement);
+    const executionSeq = await nextExchangeExecutionSeq(tx);
+    const executedAt = new Date();
     await tx
       .update(exchangeTransactions)
       .set({
         status: "ACTIVE",
+        executionSeq,
+        executedAt,
         iqdAmount: toDbMoney(carryingIqd),
         exchangeRate: toDbRate(custody.wavgRate),
         fxDiff: toDbMoney(movement.fxGainIqd),
+        balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
         balanceUsdAfter: toDbMoney(movement.balanceUsd),
       })
       .where(eq(exchangeTransactions.id, txnId));

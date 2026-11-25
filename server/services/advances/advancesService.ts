@@ -1162,6 +1162,14 @@ export async function suggestDeductionsTx(
     ) {
       continue;
     }
+    if (
+      adv.sourceType === "OTHER_DEDUCTION" &&
+      payrollPeriod != null &&
+      adv.payrollPeriod != null &&
+      adv.payrollPeriod > payrollPeriod
+    ) {
+      continue;
+    }
     const monthly =
       adv.sourceType === "SALARY_ADVANCE"
         ? remaining

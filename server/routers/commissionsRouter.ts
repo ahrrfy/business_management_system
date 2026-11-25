@@ -47,7 +47,12 @@ const planPayload = z.object({
 });
 
 function actorOf(ctx: { user: NonNullable<TrpcContext["user"]> }) {
-  return { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+  return {
+    userId: ctx.user.id,
+    branchId: ctx.user.branchId ?? 0,
+    role: ctx.user.role,
+    isOwner: Boolean(ctx.user.isOwner),
+  };
 }
 
 // لا نستعمل moduleProcedure هنا: المالية المركزية المشروعة قد تكون بلا فرع مُسنَد.
