@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { parseBackupSqlName, rotateBackups } from "../backup-rotate.mjs";
+import { acquireRetentionLock, parseBackupSqlName, rotateBackups } from "../backup-rotate.mjs";
 
 const SQL_PAYLOAD = "-- ALROYA_DB_NEUTRAL_BACKUP:erp\n" + "SELECT 1;\n".repeat(80);
 const GPG_PAYLOAD = "encrypted-gpg-payload-bytes-".repeat(25);
@@ -127,13 +127,14 @@ test("enforces minKeepEncrypted floor, two-phase .retiring/ cushion, and preserv
     minKeepEncrypted: 10,
     now,
   });
-  // Exactly 10 kept by floor, 2 oldest moved to .retiring/ (NOT deleted yet!)
+  // Exactly 10 kept by floor, 2 oldest marked in .retiring/ while keeping public `.gpg` + `.manifest.json` accessible during 60m grace!
   assert.equal(r1.encryptedRetired.length, 2);
   assert.ok(r1.encryptedRetired.includes(oldest));
-  await fs.stat(path.join(dir, ".retiring", `${oldest}.gpg`));
+  await fs.stat(path.join(dir, `${oldest}.gpg`));
+  await fs.stat(path.join(dir, `${oldest}.gpg.manifest.json`));
   await fs.stat(path.join(dir, ".retiring", `${oldest}.retired.json`));
 
-  // Before 60m grace expires, Phase 2 keeps .retiring/ intact
+  // Before 60m grace expires, Phase 2 keeps public archive paths and .retiring/ marker intact
   const r2 = await rotateBackups({
     backupDir: dir,
     keepAllHours: 1,
@@ -144,9 +145,10 @@ test("enforces minKeepEncrypted floor, two-phase .retiring/ cushion, and preserv
     now: now + 30 * 60 * 1000,
   });
   assert.equal(r2.retiringPurged.length, 0);
-  await fs.stat(path.join(dir, ".retiring", `${oldest}.gpg`));
+  await fs.stat(path.join(dir, `${oldest}.gpg`));
+  await fs.stat(path.join(dir, `${oldest}.gpg.manifest.json`));
 
-  // After 61 minutes, Phase 2 physically purges .retiring/ AND writes latest-verified-restore.json!
+  // After 61 minutes, Phase 2 physically purges public archive + .retiring/ AND writes latest-verified-restore.json!
   const r3 = await rotateBackups({
     backupDir: dir,
     keepAllHours: 1,
@@ -157,9 +159,38 @@ test("enforces minKeepEncrypted floor, two-phase .retiring/ cushion, and preserv
     now: now + 61 * 60 * 1000,
   });
   assert.ok(r3.retiringPurged.includes(oldest));
-  await assert.rejects(fs.stat(path.join(dir, ".retiring", `${oldest}.gpg`)), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(dir, `${oldest}.gpg`)), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(dir, `${oldest}.gpg.manifest.json`)), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(dir, ".retiring", `${oldest}.retired.json`)), { code: "ENOENT" });
   const summary = JSON.parse(await fs.readFile(path.join(reports, "latest-verified-restore.json"), "utf8"));
   assert.deepEqual(summary, { version: 1, name: oldest, at: restoredAt });
+});
+
+test("preserves current invocation SQL when keepPlainSql is 0 and fails closed on stale retention lock", async (t) => {
+  const dir = await makeTempDir(t);
+  const older = "erp-2026-11-25T10-00-00-000Z-dddd0001.sql";
+  const current = "erp-2026-11-25T11-00-00-000Z-dddd0002.sql";
+  await writeVerifiedSet(dir, older);
+  await writeVerifiedSet(dir, current);
+
+  const rotated = await rotateBackups({
+    backupDir: dir,
+    keepPlainSql: 0,
+    preserveSqlNames: [current],
+    now: Date.parse("2026-11-25T11:05:00.000Z"),
+  });
+  assert.deepEqual(rotated.plainSqlDeleted, [older]);
+  await fs.stat(path.join(dir, current)); // preserved for receipt/download consumer!
+  await assert.rejects(fs.stat(path.join(dir, older)), { code: "ENOENT" });
+
+  // Stale `.retention.lock` fails closed without unlinking a replacement lock
+  const lockPath = path.join(dir, ".retention.lock");
+  await fs.writeFile(lockPath, "999999:stale-owner\n2026-11-25T00:00:00.000Z\n");
+  const staleDate = new Date(Date.now() - 45 * 60 * 1000);
+  await fs.utimes(lockPath, staleDate, staleDate);
+  const lock = await acquireRetentionLock(dir, { waitAttempts: 2 });
+  assert.equal(lock, null);
+  await fs.stat(lockPath); // untouched — never unlinked without CAS!
 });
 
 test("isolates multi-tenant databases so erp-baghdad never evicts erp backups", async (t) => {
