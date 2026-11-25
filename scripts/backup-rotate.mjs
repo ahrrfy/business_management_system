@@ -1,40 +1,86 @@
-// تدوير النسخ الاحتياطية: يُبقي سياسة احتفاظ متدرّجة ويحذف الباقي، ثم ينسخ خارجياً.
+// تدوير النسخ الاحتياطية المحصّن ثنائي الطبقات (Plain SQL + Encrypted GFS + Two-Phase .retiring/).
 //
-// السياسة (قابلة للضبط عبر .env):
-//   BACKUP_KEEP_DAILY   = 7   آخر ٧ نسخ يومية
-//   BACKUP_KEEP_WEEKLY  = 4   نسخة من كل أسبوع لآخر ٤ أسابيع (أحدث نسخة في الأسبوع)
-//   BACKUP_KEEP_MONTHLY = 3   نسخة من كل شهر لآخر ٣ أشهر (أحدث نسخة في الشهر)
+// السياسة (قابلة للضبط عبر .env، وتُطبَّق لكل قاعدة بيانات على حدة):
+//   BACKUP_KEEP_PLAIN_SQL        = 3   الإبقاء على آخر نسختين نصيتين + أحدث نسخة نصية لليوم السابق
+//                                      (ولا يُحذف أي ملف .sql إلا بعد إثبات أرشيفه المشفر .sql.gpg + .manifest.json)
+//   BACKUP_KEEP_ALL_HOURS        = 48  الإبقاء على جميع الأرشيفات المشفرة الموثقة خلال آخر ٤٨ ساعة
+//   BACKUP_KEEP_DAILY            = 14  أحدث نسخة مشفرة موثقة لكل يوم لآخر ١٤ يوماً (UTC)
+//   BACKUP_KEEP_WEEKLY           = 8   أحدث نسخة مشفرة موثقة لكل أسبوع لآخر ٨ أسابيع (UTC ISO)
+//   BACKUP_KEEP_MONTHLY          = 6   أحدث نسخة مشفرة موثقة لكل شهر لآخر ٦ أشهر (UTC)
+//   BACKUP_MIN_KEEP_ENCRYPTED    = 10  سقف أدنى صلب لا يُمس دونه أي أرشيف مشفر موثق
+//   BACKUP_KEEP_FAILED_ATTEMPTS  = 5   الإبقاء على آخر ٥ إيصالات محاولات فاشلة/يتيمة للتشخيص
 //
-// النسخة تُحتفَظ إن طابقت أيّ فئة. الباقي يُحذف. ثم تُنسخ النسخ المُبقاة إلى BACKUP_OFFSITE_DIR
-// (OneDrive/USB) إن ضُبط — فقد الجهاز لا يعني فقد البيانات.
-import { readdirSync, statSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+// المرحلة الأولى من تقاعد الأرشيف المشفر تنقله ذرياً إلى backups/.retiring/ لمدة ٦٠ دقيقة
+// (أو ٧٢ ساعة عند الحذف اليدوي للمالك) حتى لا تتأثر أي جلسة سحب خارجي جارية، ثم تُحذف فيزيائياً.
+import "dotenv/config";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import { lstatSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path, { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { sweepDownloadCache } from "./vps-maintenance.mjs";
 
-const backupDir = process.env.BACKUP_DIR ?? "backups";
-const db = process.env.DB_NAME ?? "erp";
-const keepDaily = int(process.env.BACKUP_KEEP_DAILY, 7);
-const keepWeekly = int(process.env.BACKUP_KEEP_WEEKLY, 4);
-const keepMonthly = int(process.env.BACKUP_KEEP_MONTHLY, 3);
-const offsite = process.env.BACKUP_OFFSITE_DIR;
+const GFS_RETIRING_TTL_MS = 60 * 60 * 1000;
+const STALE_STARTED_MS = 6 * 60 * 60 * 1000;
+const FAILED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const RETENTION_LOCK_STALE_MS = 30 * 60 * 1000;
+const RESTORE_LOCK_STALE_MS = 5 * 60 * 1000;
+const SHA256_RE = /^[a-f0-9]{64}$/;
 
 function int(v, d) {
-  const n = parseInt(v ?? "", 10);
+  const n = Number.parseInt(String(v ?? ""), 10);
   return Number.isFinite(n) && n >= 0 ? n : d;
 }
 
-// الأسماء القديمة: <db>-YYYY-MM-DDTHH-MM-SS.sql
-// الأسماء الذرية الحالية: <db>-YYYY-MM-DDTHH-MM-SS-mmmZ-<uuid8>.sql
-// نشتقّ التاريخ من الاسم، لا من mtime الذي قد يتغيّر بالنسخ الخارجي.
-function parseStamp(name) {
-  const m = name.match(
-    /-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z-[0-9a-f]{8})?\.sql$/i,
+export function isBackupSqlName(name) {
+  return (
+    typeof name === "string" &&
+    name === path.basename(name) &&
+    !name.includes("..") &&
+    /^[A-Za-z0-9_.$-]+\.sql$/.test(name)
+  );
+}
+
+/**
+ * يحلّل اسم النسخة الاحتياطية بدقة مرساة من اليمين لمنع تداخل أسماء القواعد التي تحوي شرطة
+ * (مثل `erp` مقابل `erp-baghdad`).
+ */
+export function parseBackupSqlName(name) {
+  if (!isBackupSqlName(name)) {
+    return null;
+  }
+  const m = /^([A-Za-z0-9_$-]+)-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z-[0-9a-f]{8})?\.sql$/i.exec(
+    name,
   );
   if (!m) return null;
-  const [, Y, Mo, D, H, Mi, S, milliseconds = "000"] = m;
+  const [, dbName, Y, Mo, D, H, Mi, S, milliseconds = "000"] = m;
   const stamp = new Date(`${Y}-${Mo}-${D}T${H}:${Mi}:${S}.${milliseconds}Z`);
-  return Number.isNaN(stamp.getTime()) ? null : stamp;
+  if (Number.isNaN(stamp.getTime())) return null;
+  return { dbName, date: stamp };
+}
+
+export function parseStamp(name) {
+  return parseBackupSqlName(name)?.date ?? null;
+}
+
+export function utcDayKey(d) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+export function utcMonthKey(d) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function utcWeekKey(d) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 if (process.argv.includes("--selftest")) {
@@ -46,111 +92,616 @@ if (process.argv.includes("--selftest")) {
     parseStamp("erp-2026-08-12T10-36-22.sql")?.toISOString(),
     "2026-08-12T10:36:22.000Z",
   );
+  assert.equal(
+    parseBackupSqlName("erp-baghdad-2026-08-12T10-36-22-123Z-acde1234.sql")?.dbName,
+    "erp-baghdad",
+  );
   assert.equal(parseStamp("erp-invalid.sql"), null);
   console.log("backup filename parser selftest: OK");
   process.exit(0);
 }
 
-// مفتاح الأسبوع ISO (سنة-أسبوع) لتجميع نسخ الأسبوع الواحد.
-function weekKey(d) {
-  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = t.getUTCDay() || 7;
-  t.setUTCDate(t.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
-  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
-}
-
-function monthKey(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function dayKey(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-let files;
-try {
-  files = readdirSync(backupDir)
-    .filter((f) => f.startsWith(`${db}-`) && f.endsWith(".sql"))
-    .map((name) => ({ name, date: parseStamp(name) }))
-    .filter((f) => f.date)
-    .sort((a, b) => b.date - a.date); // الأحدث أولاً
-} catch {
-  console.log("لا مجلّد نسخ بعد — لا شيء للتدوير.");
-  process.exit(0);
-}
-
-if (files.length === 0) {
-  console.log("لا نسخ للتدوير.");
-  process.exit(0);
-}
-
-const keep = new Set();
-
-// أحدث نسخة لكل يوم/أسبوع/شهر (الملفات مرتّبة تنازلياً فأوّل ظهور = الأحدث).
-const seenDay = new Map();
-const seenWeek = new Map();
-const seenMonth = new Map();
-for (const f of files) {
-  const dk = dayKey(f.date);
-  if (!seenDay.has(dk)) seenDay.set(dk, f.name);
-  const wk = weekKey(f.date);
-  if (!seenWeek.has(wk)) seenWeek.set(wk, f.name);
-  const mk = monthKey(f.date);
-  if (!seenMonth.has(mk)) seenMonth.set(mk, f.name);
-}
-
-[...seenDay.values()].slice(0, keepDaily).forEach((n) => keep.add(n));
-[...seenWeek.values()].slice(0, keepWeekly).forEach((n) => keep.add(n));
-[...seenMonth.values()].slice(0, keepMonthly).forEach((n) => keep.add(n));
-
-let deleted = 0;
-for (const f of files) {
-  if (keep.has(f.name)) continue;
+async function lstatOrNull(file) {
   try {
-    unlinkSync(join(backupDir, f.name));
-    deleted++;
-  } catch (e) {
-    console.error(`⚠ تعذّر حذف ${f.name}: ${e?.message ?? e}`);
+    return await fs.lstat(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
   }
 }
 
-console.log(`✓ تدوير: ${keep.size} نسخة محفوظة (يومية≤${keepDaily}/أسبوعية≤${keepWeekly}/شهرية≤${keepMonthly})، حُذف ${deleted}.`);
+async function readSmallJson(file, maxBytes = 64 * 1024) {
+  const st = await lstatOrNull(file);
+  if (!st || !st.isFile() || st.size > maxBytes) return null;
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
 
-// نسخ خارجي مشفّر للنسخ المُبقاة (BC-02).
-// النسخة النصّية تحوي جدول users + تجزئات scrypt لكلمات المرور + كامل بيانات العملاء/الموردين ⇒
-// **ممنوع** أن تغادر الجهاز نصّاً صريحاً (OneDrive/USB ضائع = تسريب اعتمادات + PII). نُشفّر عند النسخ
-// بـgpg AES256 (العبارة عبر stdin --passphrase-fd 0، لا تظهر في ps)، ونرفض النسخ الخارجي إن غابت العبارة.
-if (offsite) {
-  const passphrase = process.env.BACKUP_GPG_PASSPHRASE;
-  if (!passphrase) {
-    console.error(
-      "⛔ BC-02: BACKUP_OFFSITE_DIR مضبوط لكن BACKUP_GPG_PASSPHRASE غائب ⇒ رُفِض النسخ الخارجي" +
-        " (لا نُسرّب نسخاً نصّية تحوي تجزئات كلمات المرور و PII). اضبط العبارة السرّية لتفعيل نسخ خارجي مشفّر.",
-    );
-  } else {
+async function atomicWriteJson(file, payload) {
+  const dir = path.dirname(file);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    await fs.rename(tmp, file);
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+async function hasActiveRestoreOrDrillFence(env = process.env) {
+  const ownerDir = env.ERP_OWNER_RESTORE_DIRECTORY?.trim();
+  if (ownerDir && path.isAbsolute(ownerDir)) {
     try {
-      mkdirSync(offsite, { recursive: true });
-      let copied = 0;
-      for (const name of keep) {
-        const dest = join(offsite, `${name}.gpg`);
-        if (existsSync(dest)) continue; // موجود مسبقاً — تخطَّ
-        const r = spawnSync(
-          "gpg",
-          ["--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256", "-o", dest, join(backupDir, name)],
-          { input: passphrase },
-        );
-        if (r.status === 0 && existsSync(dest)) {
-          copied++;
-        } else {
-          const err = (r.stderr?.toString() ?? r.error?.message ?? "").split("\n").filter(Boolean).slice(-1)[0] ?? "";
-          console.error(`⚠ تعذّر تشفير ${name} للنسخ الخارجي${err ? `: ${err}` : ""}.`);
-        }
-      }
-      console.log(`✓ نسخ خارجي مشفّر (gpg AES256) إلى ${offsite}: ${copied} ملف جديد.`);
-    } catch (e) {
-      console.error(`⚠ تعذّر النسخ الخارجي المشفّر إلى ${offsite}: ${e?.message ?? e}`);
+      lstatSync(path.join(path.resolve(ownerDir), "maintenance"));
+      return true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return true;
     }
   }
+  const tmpEntries = await fs.readdir(tmpdir()).catch(() => []);
+  const now = Date.now();
+  for (const entry of tmpEntries) {
+    if (!/^erp-restore-[a-f0-9]{12}\.lock$/i.test(entry)) continue;
+    const st = await lstatOrNull(path.join(tmpdir(), entry));
+    if (st?.isFile() && now - st.mtimeMs <= RESTORE_LOCK_STALE_MS) return true;
+  }
+  return false;
+}
+
+export async function acquireRetentionLock(backupDir, { now = Date.now(), waitAttempts = 10 } = {}) {
+  await fs.mkdir(backupDir, { recursive: true });
+  const lockPath = join(backupDir, ".retention.lock");
+  const owner = `${process.pid}:${randomUUID()}`;
+  for (let i = 0; i < waitAttempts; i++) {
+    try {
+      const handle = await fs.open(lockPath, "wx", 0o600);
+      await handle.writeFile(`${owner}\n${new Date(now).toISOString()}\n`);
+      await handle.close();
+      const heartbeat = setInterval(() => {
+        const tick = new Date();
+        void fs.utimes(lockPath, tick, tick).catch(() => {});
+      }, 60_000);
+      heartbeat.unref();
+      return async () => {
+        clearInterval(heartbeat);
+        const cur = (await fs.readFile(lockPath, "utf8").catch(() => "")).split("\n", 1)[0];
+        if (cur === owner) await fs.unlink(lockPath).catch(() => {});
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const st = await lstatOrNull(lockPath);
+      if (st && Date.now() - st.mtimeMs > RETENTION_LOCK_STALE_MS) {
+        // Fail closed rather than unlinking without CAS so two racing callers cannot delete a replacement owner's lock.
+        console.error(`Stale backup retention lock requires operator review: ${lockPath}`);
+        return null;
+      }
+      if (i < waitAttempts - 1) await delay(150);
+    }
+  }
+  return null;
+}
+
+export async function inspectVerifiedManifest(directory, sqlName) {
+  const archiveName = `${sqlName}.gpg`;
+  const manifestPath = join(directory, `${archiveName}.manifest.json`);
+  const archivePath = join(directory, archiveName);
+  const [archiveStat, manifestStat] = await Promise.all([
+    lstatOrNull(archivePath),
+    lstatOrNull(manifestPath),
+  ]);
+  if (!archiveStat?.isFile() || !manifestStat?.isFile()) return null;
+  if (archiveStat.mtimeMs > manifestStat.mtimeMs) return null;
+  const manifest = await readSmallJson(manifestPath);
+  if (
+    !manifest ||
+    manifest.version !== 1 ||
+    manifest.file !== archiveName ||
+    manifest.size !== archiveStat.size ||
+    !SHA256_RE.test(manifest.sha256 ?? "") ||
+    manifest.source?.file !== sqlName ||
+    !Number.isSafeInteger(manifest.source?.size) ||
+    manifest.source.size < 512 ||
+    !SHA256_RE.test(manifest.source?.sha256 ?? "")
+  ) {
+    return null;
+  }
+  return manifest;
+}
+
+function sameFingerprint(a, b) {
+  return (
+    Boolean(a && b) &&
+    Number.isSafeInteger(a.size) &&
+    a.size > 0 &&
+    typeof a.sha256 === "string" &&
+    SHA256_RE.test(a.sha256) &&
+    a.size === b.size &&
+    a.sha256 === b.sha256
+  );
+}
+
+function isValidDrillSummary(drill, sqlName, manifest) {
+  if (
+    !drill ||
+    drill.version !== 1 ||
+    drill.file !== sqlName ||
+    !sameFingerprint(drill.source, manifest) ||
+    typeof drill.lease !== "string" ||
+    !/^\d+:[a-f0-9-]{36}$/i.test(drill.lease) ||
+    typeof drill.startedAt !== "string" ||
+    typeof drill.finishedAt !== "string"
+  ) {
+    return false;
+  }
+  const startedMs = Date.parse(drill.startedAt);
+  const finishedMs = Date.parse(drill.finishedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(finishedMs) || finishedMs < startedMs) {
+    return false;
+  }
+  const res = drill.result;
+  if (!res || (res.status !== "VERIFIED" && res.status !== "PARTIAL")) return false;
+  if (!Number.isSafeInteger(res.tableCount) || res.tableCount <= 0) return false;
+  const att = res.attachmentCheck;
+  if (
+    !att ||
+    att.scope !== "KNOWN_FILE_REFERENCES_V1" ||
+    !Number.isSafeInteger(att.references) ||
+    att.references < 0 ||
+    !Number.isSafeInteger(att.inlineVerified) ||
+    att.inlineVerified < 0 ||
+    !Number.isSafeInteger(att.mirroredVerified) ||
+    att.mirroredVerified < 0 ||
+    att.inlineVerified + att.mirroredVerified > att.references
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function preserveLatestRestoreSummary(reportDir, sqlName, manifest) {
+  if (!manifest) return;
+  let bestAt = null;
+  let bestMs = Number.NEGATIVE_INFINITY;
+
+  const report = await readSmallJson(join(reportDir, `${sqlName}.restore.json`));
+  if (
+    report &&
+    report.status === "SQL_RESTORED_CORE_READS_PASSED" &&
+    report.productionContact === false &&
+    report.stopped === true &&
+    typeof report.finishedAt === "string" &&
+    sameFingerprint(report.sourceBefore, report.sourceAfter) &&
+    (sameFingerprint(report.sourceBefore, manifest) ||
+      sameFingerprint(report.sourceBefore, manifest.source)) &&
+    sameFingerprint(report.sqlFingerprint, manifest.source)
+  ) {
+    const ms = Date.parse(report.finishedAt);
+    if (Number.isFinite(ms)) {
+      bestAt = report.finishedAt;
+      bestMs = ms;
+    }
+  }
+
+  const drill = await readSmallJson(join(reportDir, `${sqlName}.drill.json`));
+  if (isValidDrillSummary(drill, sqlName, manifest)) {
+    const drillMs = Date.parse(drill.finishedAt);
+    if (Number.isFinite(drillMs) && drillMs >= bestMs) {
+      bestAt = drill.finishedAt;
+      bestMs = drillMs;
+    }
+  }
+
+  if (!bestAt || !Number.isFinite(bestMs)) return;
+
+  const summaryPath = join(reportDir, "latest-verified-restore.json");
+  const current = await readSmallJson(summaryPath);
+  const byDatabase = {};
+  if (current && typeof current === "object") {
+    if (current.byDatabase && typeof current.byDatabase === "object" && !Array.isArray(current.byDatabase)) {
+      for (const [k, v] of Object.entries(current.byDatabase)) {
+        if (v && typeof v === "object" && isBackupSqlName(v.name) && Number.isFinite(Date.parse(v.at ?? ""))) {
+          byDatabase[k] = { name: v.name, at: v.at };
+        }
+      }
+    }
+    if (isBackupSqlName(current.name) && Number.isFinite(Date.parse(current.at ?? ""))) {
+      const legacyKey = parseBackupSqlName(current.name)?.dbName ?? `file:${current.name}`;
+      const existing = byDatabase[legacyKey];
+      if (!existing || Date.parse(current.at) > Date.parse(existing.at)) {
+        byDatabase[legacyKey] = { name: current.name, at: current.at };
+      }
+    }
+  }
+
+  const dbKey = parseBackupSqlName(sqlName)?.dbName ?? `file:${sqlName}`;
+  const prevEntry = byDatabase[dbKey];
+  if (prevEntry && Date.parse(prevEntry.at) >= bestMs) {
+    return;
+  }
+  byDatabase[dbKey] = { name: sqlName, at: bestAt };
+
+  const allEntries = Object.values(byDatabase).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const newestGlobal = allEntries[0] ?? { name: sqlName, at: bestAt };
+  await atomicWriteJson(summaryPath, {
+    version: 1,
+    name: newestGlobal.name,
+    at: newestGlobal.at,
+    byDatabase,
+  });
+}
+
+async function sweepExpiredRetiring({ backupDir, offsiteDir, reportDir, now, dryRun }) {
+  const retiringDir = join(backupDir, ".retiring");
+  const entries = await fs.readdir(retiringDir).catch((error) => {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  });
+  const purged = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".retired.json")) continue;
+    const sqlName = entry.slice(0, -".retired.json".length);
+    if (!isBackupSqlName(sqlName)) continue;
+    const markerPath = join(retiringDir, entry);
+    const meta = await readSmallJson(markerPath);
+    const expiresAt = Date.parse(meta?.expiresAt ?? "");
+    if (!Number.isFinite(expiresAt) || expiresAt > now) continue;
+
+    purged.push(sqlName);
+    if (dryRun) continue;
+
+    const retiredManifest =
+      (await inspectVerifiedManifest(backupDir, sqlName)) ??
+      (await inspectVerifiedManifest(retiringDir, sqlName));
+    await preserveLatestRestoreSummary(reportDir, sqlName, retiredManifest).catch(() => {});
+
+    for (const target of [
+      join(backupDir, sqlName),
+      join(backupDir, `${sqlName}.gpg.manifest.json`),
+      join(backupDir, `${sqlName}.gpg`),
+      join(backupDir, `${sqlName}.attempt.json`),
+      join(retiringDir, `${sqlName}.gpg.manifest.json`),
+      join(retiringDir, `${sqlName}.gpg`),
+      join(retiringDir, `${sqlName}.attempt.json`),
+      join(reportDir, `${sqlName}.restore.json`),
+      join(reportDir, `${sqlName}.drill.json`),
+    ]) {
+      await fs.unlink(target).catch(() => {});
+    }
+
+    let offsiteStillPresent = false;
+    if (offsiteDir) {
+      for (const suffix of [".gpg.manifest.json", ".gpg"]) {
+        const offTarget = join(offsiteDir, `${sqlName}${suffix}`);
+        await fs.unlink(offTarget).catch(() => {});
+      }
+      const rem = await lstatOrNull(join(offsiteDir, `${sqlName}.gpg`));
+      offsiteStillPresent = !!rem;
+    }
+
+    // Remove the tombstone unless an immutable/read-only offsite vault still holds the archive
+    // for an owner-retired entry (preventing the row from reappearing in active UI).
+    if (!offsiteStillPresent || meta?.reason !== "OWNER_RETIRE") {
+      await fs.unlink(markerPath).catch(() => {});
+    }
+  }
+  return purged;
+}
+
+async function retireEncryptedArchive({ backupDir, sqlName, now, ttlMs, reason, dryRun }) {
+  if (dryRun) return;
+  const retiringDir = join(backupDir, ".retiring");
+  await fs.mkdir(retiringDir, { recursive: true, mode: 0o700 });
+  const markerPath = join(retiringDir, `${sqlName}.retired.json`);
+  await atomicWriteJson(markerPath, {
+    version: 1,
+    file: sqlName,
+    reason,
+    retiredAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + ttlMs).toISOString(),
+  });
+  await fs.unlink(join(backupDir, sqlName)).catch(() => {});
+  // During automatic GFS rotation, keep `<sqlName>.gpg` and `<sqlName>.gpg.manifest.json`
+  // accessible at their public paths throughout the 60-minute grace window so any overlapping
+  // offsite pull (`pull-vps-backup.ps1` / `alroya-backup-sync.py`) finishes verification cleanly.
+  if (reason !== "GFS_ROTATE") {
+    for (const suffix of [".gpg.manifest.json", ".gpg", ".attempt.json"]) {
+      const src = join(backupDir, `${sqlName}${suffix}`);
+      const dst = join(retiringDir, `${sqlName}${suffix}`);
+      await fs.rename(src, dst).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+    }
+  }
+}
+
+export async function rotateBackups({
+  backupDir = process.env.BACKUP_DIR ?? "backups",
+  offsiteDir = process.env.BACKUP_OFFSITE_DIR?.trim() || null,
+  dbFilter = null,
+  preserveSqlNames = [],
+  keepPlainSql = int(process.env.BACKUP_KEEP_PLAIN_SQL, 3),
+  keepAllHours = int(process.env.BACKUP_KEEP_ALL_HOURS, 48),
+  keepDaily = int(process.env.BACKUP_KEEP_DAILY, 14),
+  keepWeekly = int(process.env.BACKUP_KEEP_WEEKLY, 8),
+  keepMonthly = int(process.env.BACKUP_KEEP_MONTHLY, 6),
+  minKeepEncrypted = int(process.env.BACKUP_MIN_KEEP_ENCRYPTED, 10),
+  keepFailedAttempts = int(process.env.BACKUP_KEEP_FAILED_ATTEMPTS, 5),
+  now = Date.now(),
+  dryRun = false,
+  env = process.env,
+} = {}) {
+  const resolvedDir = path.resolve(backupDir);
+  const dirStat = await lstatOrNull(resolvedDir);
+  if (!dirStat?.isDirectory()) {
+    return {
+      ok: true,
+      dryRun,
+      absent: true,
+      plainSqlDeleted: [],
+      encryptedRetired: [],
+      retiringPurged: [],
+      failedAttemptsDeleted: [],
+    };
+  }
+
+  const releaseLock = dryRun ? async () => {} : await acquireRetentionLock(resolvedDir, { now });
+  if (!releaseLock) {
+    return {
+      ok: true,
+      dryRun,
+      skippedReason: "RETENTION_LOCK_BUSY",
+      plainSqlDeleted: [],
+      encryptedRetired: [],
+      retiringPurged: [],
+      failedAttemptsDeleted: [],
+    };
+  }
+
+  try {
+    if (await hasActiveRestoreOrDrillFence(env)) {
+      return {
+        ok: true,
+        dryRun,
+        skippedReason: "RESTORE_OR_DRILL_ACTIVE",
+        plainSqlDeleted: [],
+        encryptedRetired: [],
+        retiringPurged: [],
+        failedAttemptsDeleted: [],
+      };
+    }
+    const resolvedOffsite = offsiteDir ? path.resolve(offsiteDir) : null;
+    const distinctOffsite =
+      resolvedOffsite && resolvedOffsite !== resolvedDir ? resolvedOffsite : null;
+    const reportDir = join(resolvedDir, "restore-reports");
+    const syncAckDir = join(resolvedDir, ".sync-ack");
+    const hasSyncAckDir = (await lstatOrNull(syncAckDir))?.isDirectory() === true;
+
+    const retiringPurged = await sweepExpiredRetiring({
+      backupDir: resolvedDir,
+      offsiteDir: distinctOffsite,
+      reportDir,
+      now,
+      dryRun,
+    });
+    await sweepDownloadCache({
+      root: process.cwd(),
+      backupDir: resolvedDir,
+      now,
+      apply: !dryRun,
+    }).catch(() => {});
+
+    const entries = await fs.readdir(resolvedDir);
+    const entrySet = new Set(entries);
+    const retiringSet = new Set(
+      await fs.readdir(join(resolvedDir, ".retiring")).catch(() => []),
+    );
+
+    // Group candidate base `.sql` names by exact parsed dbName
+    const byDb = new Map();
+    for (const entry of entries) {
+      const base = entry.replace(/(?:\.attempt\.json|\.gpg(?:\.manifest\.json)?)$/, "");
+      const parsed = parseBackupSqlName(base);
+      if (!parsed) continue;
+      if (dbFilter && parsed.dbName !== dbFilter) continue;
+      if (retiringSet.has(`${base}.retired.json`)) continue;
+      let group = byDb.get(parsed.dbName);
+      if (!group) {
+        group = new Map();
+        byDb.set(parsed.dbName, group);
+      }
+      if (!group.has(base)) group.set(base, parsed);
+    }
+
+    const plainSqlDeleted = [];
+    const encryptedRetired = [];
+    const failedAttemptsDeleted = [];
+
+    for (const [, candidatesMap] of byDb) {
+      const items = Array.from(candidatesMap.entries())
+        .map(([name, meta]) => ({ name, date: meta.date }))
+        .sort((a, b) => b.date.getTime() - a.date.getTime() || b.name.localeCompare(a.name));
+
+      // Evaluate verified encrypted status & plain SQL presence
+      const enriched = await Promise.all(
+        items.map(async (item) => {
+          const sqlStat = entrySet.has(item.name)
+            ? await lstatOrNull(join(resolvedDir, item.name))
+            : null;
+          const hasSql = !!sqlStat?.isFile() && sqlStat.size >= 512;
+          const localManifest = await inspectVerifiedManifest(resolvedDir, item.name);
+          const offsiteManifest =
+            !localManifest && distinctOffsite
+              ? await inspectVerifiedManifest(distinctOffsite, item.name)
+              : null;
+          const hasAnyGpg =
+            entrySet.has(`${item.name}.gpg`) || entrySet.has(`${item.name}.gpg.manifest.json`);
+          const attempt = entrySet.has(`${item.name}.attempt.json`)
+            ? await readSmallJson(join(resolvedDir, `${item.name}.attempt.json`))
+            : null;
+          return {
+            ...item,
+            hasSql,
+            verifiedManifest: localManifest ?? offsiteManifest,
+            hasLocalVerified: !!localManifest,
+            hasAnyGpg,
+            attempt,
+          };
+        }),
+      );
+
+      // ── Tier 1: Hot Plain `.sql` Eviction (2 newest + 1 previous-day, gated on verified GPG) ──
+      const plainItems = enriched.filter((item) => item.hasSql);
+      const preservedSet = new Set(preserveSqlNames);
+      const keepSql = new Set();
+      for (const item of plainItems) {
+        if (preservedSet.has(item.name)) keepSql.add(item.name);
+      }
+      if (keepPlainSql > 0 && plainItems.length > 0) {
+        const newestDay = utcDayKey(plainItems[0].date);
+        const immediateCount = Math.max(1, keepPlainSql - 1);
+        for (const item of plainItems.slice(0, immediateCount)) {
+          keepSql.add(item.name);
+        }
+        const prevDayItem = plainItems.find(
+          (item) => !keepSql.has(item.name) && utcDayKey(item.date) !== newestDay,
+        );
+        if (prevDayItem && keepSql.size < keepPlainSql) {
+          keepSql.add(prevDayItem.name);
+        }
+        for (const item of plainItems) {
+          if (keepSql.size >= keepPlainSql) break;
+          keepSql.add(item.name);
+        }
+      }
+
+      for (const item of plainItems) {
+        if (keepSql.has(item.name)) continue;
+        // CRITICAL SAFETY GATE: Never delete plain `.sql` unless a verified `.gpg` + `.manifest.json` exists!
+        if (!item.verifiedManifest) continue;
+        plainSqlDeleted.push(item.name);
+        if (!dryRun) {
+          await fs.unlink(join(resolvedDir, item.name)).catch((error) => {
+            if (error?.code !== "ENOENT") throw error;
+          });
+        }
+      }
+
+      // ── Tier 2: Encrypted `.sql.gpg` GFS Retention (with 60m `.retiring/` cushion) ──
+      const verifiedItems = enriched.filter((item) => item.hasLocalVerified);
+      const keepEnc = new Set();
+      for (const item of verifiedItems.slice(0, minKeepEncrypted)) {
+        keepEnc.add(item.name);
+      }
+
+      const allHoursCutoff = now - keepAllHours * 3600 * 1000;
+      const syncAckSafetyCutoff = now - 14 * 24 * 3600 * 1000;
+      const seenDays = new Map();
+      const seenWeeks = new Map();
+      const seenMonths = new Map();
+
+      for (const item of verifiedItems) {
+        if (item.date.getTime() >= allHoursCutoff) {
+          keepEnc.add(item.name);
+        }
+        if (hasSyncAckDir && item.date.getTime() >= syncAckSafetyCutoff) {
+          const ackStat = await lstatOrNull(join(syncAckDir, `${item.name}.gpg.ack.json`));
+          if (!ackStat?.isFile()) keepEnc.add(item.name);
+        }
+        const dk = utcDayKey(item.date);
+        if (!seenDays.has(dk)) seenDays.set(dk, item.name);
+        const wk = utcWeekKey(item.date);
+        if (!seenWeeks.has(wk)) seenWeeks.set(wk, item.name);
+        const mk = utcMonthKey(item.date);
+        if (!seenMonths.has(mk)) seenMonths.set(mk, item.name);
+      }
+
+      for (const n of Array.from(seenDays.values()).slice(0, keepDaily)) keepEnc.add(n);
+      for (const n of Array.from(seenWeeks.values()).slice(0, keepWeekly)) keepEnc.add(n);
+      for (const n of Array.from(seenMonths.values()).slice(0, keepMonthly)) keepEnc.add(n);
+
+      for (const item of verifiedItems) {
+        if (keepEnc.has(item.name)) continue;
+        // Do not retire an archive whose plain `.sql` is still retained in hot tier
+        if (keepSql.has(item.name)) continue;
+        encryptedRetired.push(item.name);
+        await retireEncryptedArchive({
+          backupDir: resolvedDir,
+          sqlName: item.name,
+          now,
+          ttlMs: GFS_RETIRING_TTL_MS,
+          reason: "GFS_ROTATE",
+          dryRun,
+        });
+      }
+
+      // ── Tier 3: Orphan FAILED / Stale STARTED `.attempt.json` Cleanup ──
+      const orphanAttempts = [];
+      for (const item of enriched) {
+        if (item.hasSql || item.hasAnyGpg || item.verifiedManifest || !item.attempt) continue;
+        const status = item.attempt.status;
+        const startedMs = Date.parse(item.attempt.startedAt ?? "");
+        if (status === "FAILED") {
+          orphanAttempts.push({ ...item, startedMs });
+        } else if (status === "STARTED" && Number.isFinite(startedMs) && now - startedMs > STALE_STARTED_MS) {
+          const partialStat = await lstatOrNull(join(resolvedDir, `${item.name}.partial`));
+          if (!partialStat || now - partialStat.mtimeMs > 3600 * 1000) {
+            orphanAttempts.push({ ...item, startedMs });
+          }
+        }
+      }
+      orphanAttempts.sort(
+        (a, b) =>
+          (Number.isFinite(b.startedMs) ? b.startedMs : b.date.getTime()) -
+          (Number.isFinite(a.startedMs) ? a.startedMs : a.date.getTime()),
+      );
+
+      orphanAttempts.forEach((item, idx) => {
+        const ageExceeded = Number.isFinite(item.startedMs) && now - item.startedMs > FAILED_MAX_AGE_MS;
+        if (idx < keepFailedAttempts && !ageExceeded) return;
+        failedAttemptsDeleted.push(item.name);
+      });
+
+      if (!dryRun) {
+        for (const sqlName of failedAttemptsDeleted) {
+          await fs.unlink(join(resolvedDir, `${sqlName}.attempt.json`)).catch(() => {});
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      dryRun,
+      plainSqlDeleted,
+      encryptedRetired,
+      retiringPurged,
+      failedAttemptsDeleted,
+    };
+  } finally {
+    await releaseLock();
+  }
+}
+
+if (
+  process.argv[1] &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
+) {
+  const args = process.argv.slice(2);
+  const unknown = args.filter((a) => !["--dry-run", "--apply"].includes(a));
+  if (unknown.length > 0) {
+    console.error(`USAGE: node scripts/backup-rotate.mjs [--dry-run|--apply|--selftest]`);
+    process.exit(1);
+  }
+  const dryRun = args.includes("--dry-run");
+  rotateBackups({ dryRun })
+    .then((summary) => {
+      console.log(JSON.stringify(summary));
+    })
+    .catch((error) => {
+      console.error("✗ فشل تدوير النسخ الاحتياطية:", error?.message ?? error);
+      process.exit(1);
+    });
 }

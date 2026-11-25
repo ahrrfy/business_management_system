@@ -3,17 +3,21 @@
 // الأمان: لا تركيب أوامر شِل (execFile بمصفوفات)، مسار النسخ مُقيَّد داخل مجلّد backups (لا path traversal).
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { promisify } from "node:util";
-import { lstat, mkdtemp, open, readFile, readdir, rm, rmdir, stat, unlink, utimes } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, rmdir, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Readable } from "node:stream";
 import { SignJWT, jwtVerify } from "jose";
+import { appErrorMessage } from "../../shared/errors";
 import { isMultiTenantModeActive } from "../db";
 import {
-  inspectBackupReadiness, isBackupSqlName, readBackupAttempt, resolveRecordedArchive,
-  summarizeRestoreDrill, writeRestoreDrillAttempt, type RestoreDrillAttempt,
+  inspectBackupReadiness, isBackupSqlName, matchesBackupPrefix, parseBackupDatabaseName, readBackupAttempt,
+  resolveRecordedArchive, summarizeRestoreDrill, writeRestoreDrillAttempt, type RestoreDrillAttempt,
 } from "../lib/backupEvidence";
+import { hasOwnerRestoreFence, ownerRestorePaths } from "../lib/ownerRestoreFiles";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { resolveCompanyById } from "../tenancy/registry";
 
@@ -68,7 +72,7 @@ export async function listBackupFiles(): Promise<BackupFile[]> {
   // الملَفّ `<dbName>-<ts>.sql`) — لا تَسريب أَسماء/أَحجام نُسَخ شَركات أُخرى عَبر هذه القائمة.
   const prefix = await backupFilePrefix();
   const out: BackupFile[] = [];
-  for (const name of entries.filter((f) => isBackupSqlName(f) && (!prefix || f.startsWith(prefix)))) {
+  for (const name of entries.filter((f) => matchesBackupPrefix(f, prefix))) {
     try {
       const s = await lstat(path.join(backupsDir(), name));
       if (!s.isFile()) continue;
@@ -102,7 +106,7 @@ export async function resolveBackupFile(name: string): Promise<string | null> {
   // تَعدّد الشركات: مَلَفّ لا يَحمِل بادِئة قاعدة الشَركة الحالية ⇒ كَأَنّه غَير مَوجود (لا
   // كَشف وُجود اسم مَلَفّ شَركة أُخرى، ولا حَذف/تَنزيل/استعادة عَبر تَخمين الاسم).
   const prefix = await backupFilePrefix();
-  if (prefix && !name.startsWith(prefix)) return null;
+  if (!matchesBackupPrefix(name, prefix)) return null;
   const abs = path.join(backupsDir(), path.basename(name));
   if (path.dirname(abs) !== backupsDir()) return null;
   try {
@@ -114,11 +118,282 @@ export async function resolveBackupFile(name: string): Promise<string | null> {
   return abs;
 }
 
-export async function deleteBackup(name: string): Promise<boolean> {
-  const abs = await resolveBackupFile(name);
-  if (!abs) return false;
-  await unlink(abs);
-  return true;
+const RETENTION_LOCK_STALE_MS = 30 * 60 * 1000;
+const OWNER_RETIRE_TTL_MS = 72 * 60 * 60 * 1000;
+const STALE_STARTED_ATTEMPT_MS = 6 * 60 * 60 * 1000;
+const MIN_PROTECTED_ENCRYPTED_BACKUPS = 3;
+
+export class BackupDeleteGuardError extends Error {
+  constructor(
+    readonly code: "FORBIDDEN" | "UNAUTHORIZED" | "PRECONDITION_FAILED",
+    message: string,
+  ) {
+    super(message);
+    this.name = "BackupDeleteGuardError";
+  }
+}
+
+async function acquireBackupRetentionLock(directory: string): Promise<(() => Promise<void>) | null> {
+  await mkdir(directory, { recursive: true });
+  const lockPath = path.join(directory, ".retention.lock");
+  const owner = `${process.pid}:${randomUUID()}`;
+  for (let i = 0; i < 12; i++) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      await handle.writeFile(`${owner}\n${new Date().toISOString()}\n`);
+      await handle.close();
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void utimes(lockPath, now, now).catch(() => {});
+      }, 60_000);
+      heartbeat.unref();
+      return async () => {
+        clearInterval(heartbeat);
+        const cur = (await readFile(lockPath, "utf8").catch(() => "")).split("\n", 1)[0];
+        if (cur === owner) await unlink(lockPath).catch(() => {});
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const st = await lstat(lockPath).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > RETENTION_LOCK_STALE_MS) {
+        // نفشل مغلقين بدلاً من unlink بلا CAS حتى لا يحذف طلبان متزامنان قفل المالك البديل.
+        console.error(`Stale backup retention lock requires operator review: ${lockPath}`);
+        return null;
+      }
+      if (i < 11) await delay(150);
+    }
+  }
+  return null;
+}
+
+export type DeleteBackupOptions = {
+  scope?: "sql" | "entry";
+  isOwner?: boolean;
+  passwordVerified?: boolean;
+  actorId?: number;
+};
+
+export async function deleteBackup(name: string, options?: DeleteBackupOptions): Promise<boolean> {
+  const scope = options?.scope ?? "sql";
+  const ownerPaths = ownerRestorePaths();
+  if (scope === "sql") {
+    const abs = await resolveBackupFile(name);
+    if (!abs) return false;
+    const release = await acquireBackupRetentionLock(backupsDir());
+    if (!release) {
+      throw new BackupDeleteGuardError(
+        "PRECONDITION_FAILED",
+        appErrorMessage({
+          what: "تعذر إخلاء ملف SQL حالياً",
+          why: "توجد عملية تدوير أو صيانة جارية على سجل النسخ الاحتياطية.",
+          doThis: "انتظر بضع ثوان ثم أعد المحاولة.",
+        }),
+      );
+    }
+    try {
+      if ((await activeRestoreLease()) || (ownerPaths && hasOwnerRestoreFence(ownerPaths.fence))) {
+        throw new BackupDeleteGuardError(
+          "PRECONDITION_FAILED",
+          appErrorMessage({
+            what: "تعذر إخلاء ملف SQL أثناء الصيانة",
+            why: "توجد عملية استعادة أو تمرين استعادة قيد التنفيذ حالياً.",
+            doThis: "انتظر اكتمال العملية الجارية قبل تعديل سجل النسخ.",
+          }),
+        );
+      }
+      await unlink(abs);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    } finally {
+      await release();
+    }
+  }
+
+  const prefix = await backupFilePrefix();
+  if (isMultiTenantModeActive() && !prefix) {
+    throw new BackupDeleteGuardError(
+      "PRECONDITION_FAILED",
+      appErrorMessage({
+        what: "تعذر تحديد الشركة لسجل النسخ",
+        why: "سياق الشركة غير متاح أثناء طلب الحذف.",
+        doThis: "أعد تحميل الصفحة وحاول مجدداً.",
+      }),
+    );
+  }
+  if (!matchesBackupPrefix(name, prefix)) return false;
+
+  const directory = backupsDir();
+  const release = await acquireBackupRetentionLock(directory);
+  if (!release) {
+    throw new BackupDeleteGuardError(
+      "PRECONDITION_FAILED",
+      appErrorMessage({
+        what: "سجل النسخ الاحتياطية قيد التحديث",
+        why: "تعمل عملية تدوير أو حذف متزامنة على مجلد النسخ الآن.",
+        doThis: "انتظر بضع ثوان ثم أعد المحاولة.",
+      }),
+    );
+  }
+
+  try {
+    if ((await activeRestoreLease()) || (ownerPaths && hasOwnerRestoreFence(ownerPaths.fence))) {
+      throw new BackupDeleteGuardError(
+        "PRECONDITION_FAILED",
+        appErrorMessage({
+          what: "تعذر حذف سجل النسخة أثناء الصيانة",
+          why: "توجد عملية استعادة أو تمرين استعادة قيد التنفيذ حالياً.",
+          doThis: "انتظر اكتمال العملية الجارية قبل تعديل سجل النسخ.",
+        }),
+      );
+    }
+    const readiness = await inspectBackupReadiness(
+      directory,
+      process.env.BACKUP_OFFSITE_DIR?.trim(),
+      prefix,
+      await activeRestoreLease(),
+      { limit: null },
+    );
+    const target = readiness.backups.find((row) => row.name === name);
+    if (!target) return false;
+
+    const hasRecordedArchive =
+      target.encryption.status === "RECORDED" || target.offsite.status === "RECORDED";
+    const hasUnverifiedArchive =
+      !hasRecordedArchive &&
+      (target.encryption.status === "UNVERIFIED" || target.offsite.status === "UNVERIFIED");
+
+    if (
+      target.attempt?.status === "STARTED" &&
+      !target.sqlAvailable &&
+      !hasRecordedArchive &&
+      !hasUnverifiedArchive &&
+      Date.now() - Date.parse(target.attempt.startedAt) <= STALE_STARTED_ATTEMPT_MS
+    ) {
+      throw new BackupDeleteGuardError(
+        "PRECONDITION_FAILED",
+        appErrorMessage({
+          what: "لا يمكن حذف محاولة نسخ قيد التشغيل",
+          why: "بدأت هذه المحاولة مؤخراً وقد تكون عملية النسخ جارية الآن.",
+          doThis: "انتظر انتهاء النسخ الحالي قبل تنظيف السجل.",
+        }),
+      );
+    }
+
+    if (hasRecordedArchive) {
+      if (!options?.isOwner) {
+        throw new BackupDeleteGuardError(
+          "FORBIDDEN",
+          appErrorMessage({
+            what: "حذف الأرشيف المشفر متاح لمالك النظام فقط",
+            why: "الأرشيف المشفر يمثل نسخة استرداد موثقة؛ للمدير إخلاء ملف SQL النصي فقط.",
+            doThis: "استخدم خيار إخلاء ملف SQL النصي لتفريغ المساحة أو اطلب التنفيذ من مالك النظام.",
+          }),
+        );
+      }
+      if (!options.passwordVerified) {
+        throw new BackupDeleteGuardError(
+          "UNAUTHORIZED",
+          appErrorMessage({
+            what: "يلزم تأكيد كلمة مرور المالك لحذف أرشيف مشفر",
+            why: "حماية نقاط الاسترداد تتطلب إعادة التحقق من هوية المالك.",
+            doThis: "أكد العملية عبر نافذة كلمة مرور المالك لإرسال النسخة إلى سلة التقاعد (72 ساعة).",
+          }),
+        );
+      }
+      const targetDb = parseBackupDatabaseName(name);
+      const verifiedRows = readiness.backups.filter(
+        (row) =>
+          (targetDb === null || parseBackupDatabaseName(row.name) === targetDb) &&
+          (row.encryption.status === "RECORDED" || row.offsite.status === "RECORDED"),
+      );
+      if (verifiedRows.length <= MIN_PROTECTED_ENCRYPTED_BACKUPS) {
+        throw new BackupDeleteGuardError(
+          "PRECONDITION_FAILED",
+          appErrorMessage({
+            what: "رفض حذف الأرشيف المشفر لحماية الحد الأدنى للاسترداد",
+            why: `يوجد حالياً ${verifiedRows.length} أرشيفات مشفرة موثقة فقط، والحد الأدنى المحمي هو ${MIN_PROTECTED_ENCRYPTED_BACKUPS}.`,
+            doThis: "أنشئ نسخاً احتياطية مشفرة جديدة أولاً قبل تقاعد النسخ الأقدم.",
+          }),
+        );
+      }
+      if (verifiedRows.slice(0, MIN_PROTECTED_ENCRYPTED_BACKUPS).some((row) => row.name === name)) {
+        throw new BackupDeleteGuardError(
+          "PRECONDITION_FAILED",
+          appErrorMessage({
+            what: "هذه النسخة محمية ضمن أحدث نقاط الاسترداد",
+            why: `يحظر النظام حذف أحدث ${MIN_PROTECTED_ENCRYPTED_BACKUPS} أرشيفات مشفرة موثقة لحماية أحدث البيانات.`,
+            doThis: "يمكنك إخلاء ملف SQL النصي لتوفير المساحة مع بقاء الأرشيف المشفر محمياً.",
+          }),
+        );
+      }
+    } else if (hasUnverifiedArchive && !options?.isOwner) {
+      throw new BackupDeleteGuardError(
+        "FORBIDDEN",
+        appErrorMessage({
+          what: "حذف ملفات الأرشيف المشفر يتطلب صلاحية المالك",
+          why: "يحتوي هذا السجل على ملف مشفر قديم غير مرفق ببيان تحقق.",
+          doThis: "نفذ الحذف بحساب مالك النظام لإرساله إلى سلة التقاعد المحمية.",
+        }),
+      );
+    }
+
+    if (hasRecordedArchive || hasUnverifiedArchive) {
+      const retiringDir = path.join(directory, ".retiring");
+      await mkdir(retiringDir, { recursive: true, mode: 0o700 });
+      const now = Date.now();
+      const markerPath = path.join(retiringDir, `${name}.retired.json`);
+      const tmpMarker = `${markerPath}.${randomUUID()}.tmp`;
+      const payload = {
+        version: 1,
+        file: name,
+        reason: "OWNER_RETIRE",
+        actorId: options?.actorId ?? null,
+        retiredAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + OWNER_RETIRE_TTL_MS).toISOString(),
+      };
+      try {
+        await writeFile(tmpMarker, JSON.stringify(payload, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+        await rename(tmpMarker, markerPath);
+      } finally {
+        await unlink(tmpMarker).catch(() => {});
+      }
+      await unlink(path.join(directory, name)).catch(() => {});
+      for (const suffix of [".gpg.manifest.json", ".gpg", ".attempt.json"]) {
+        await rename(path.join(directory, `${name}${suffix}`), path.join(retiringDir, `${name}${suffix}`)).catch((err) => {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        });
+      }
+      return true;
+    }
+
+    // Plain unencrypted SQL or orphan FAILED / stale STARTED attempt: clean removal
+    const reportDir = path.join(directory, "restore-reports");
+    for (const targetFile of [
+      path.join(directory, name),
+      path.join(directory, `${name}.attempt.json`),
+      path.join(reportDir, `${name}.restore.json`),
+      path.join(reportDir, `${name}.drill.json`),
+    ]) {
+      await unlink(targetFile).catch((err) => {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      });
+    }
+    return true;
+  } finally {
+    await release();
+  }
+}
+
+function getRestoreDrillUiBlockReason(): string | null {
+  if (isMultiTenantModeActive()) {
+    return "تمرين الاستعادة عبر الويب معطل في وضع تعدد الشركات.";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return "يُنفذ تمرين الاستعادة المعزول في الإنتاج تلقائياً عبر خدمة التحقق الخلفية المعزولة دون المساس بقاعدة العمل.";
+  }
+  return getLocalRestoreBlockReason();
 }
 
 export async function backupReadiness() {
@@ -129,29 +404,94 @@ export async function backupReadiness() {
   return {
     ...(await inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix, await activeRestoreLease())),
     encryptedRestoreBlockReason: getEncryptedRestoreBlockReason(),
-    restoreDrillBlockReason: getLocalRestoreBlockReason(),
+    restoreDrillBlockReason: getRestoreDrillUiBlockReason(),
   };
+}
+
+function requestLocalBackupBroker(socketPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ action: "backup-now" });
+    const req = httpRequest(
+      {
+        socketPath,
+        path: "/v1/backup-now",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.setEncoding("utf8");
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+          if (raw.length > 64 * 1024) req.destroy(new Error("BACKUP_BROKER_RESPONSE_TOO_LARGE"));
+        });
+        res.on("error", reject);
+        res.on("end", () => {
+          let parsed: { ok?: boolean; name?: string; error?: string } | null = null;
+          try {
+            parsed = JSON.parse(raw) as { ok?: boolean; name?: string; error?: string };
+          } catch {
+            parsed = null;
+          }
+          if (res.statusCode !== 200 || !parsed?.ok || !parsed.name) {
+            reject(
+              new Error(
+                parsed?.error || "تعذر إتمام النسخة عبر وسيط النسخ المحلي المعزول. راجع حالة خدمة alroya-backup-broker.",
+              ),
+            );
+            return;
+          }
+          resolve(`ERP_BACKUP_RESULT: ${parsed.name}\n`);
+        });
+      },
+    );
+    req.on("error", () =>
+      reject(
+        new Error("وسيط النسخ المحلي المعزول غير متاح حالياً (/run/alroya-backup/broker.sock). تحقق من خدمة alroya-backup-broker."),
+      ),
+    );
+    req.setTimeout(15 * 60 * 1000, () => req.destroy(new Error("انتهت مهلة انتظار وسيط النسخ المحلي.")));
+    req.end(body);
+  });
 }
 
 /** يعود إلى إيصال العملية نفسها حتى عند تزامن النسخ المجدول واليدوي. */
 export async function runBackup(): Promise<BackupFile> {
   const company = await currentCompanyInfo();
-  const { stdout } = await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs"), "--print-receipt"], {
-    env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024 * 64,
-  });
+  const brokerSocket = !company ? process.env.ALROYA_BACKUP_BROKER_SOCKET?.trim() : undefined;
+  const stdout = brokerSocket
+    ? await requestLocalBackupBroker(brokerSocket)
+    : (
+        await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs"), "--print-receipt"], {
+          env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024 * 64,
+        })
+      ).stdout;
   const name = /^ERP_BACKUP_RESULT: ([A-Za-z0-9_.$-]+\.sql)\r?$/m.exec(stdout)?.[1];
-  const abs = name ? await resolveBackupFile(name) : null;
-  const attempt = name && abs ? await readBackupAttempt(backupsDir(), name) : null;
-  if (!name || !abs || attempt?.status !== "COMPLETED") {
+  const prefix = await backupFilePrefix();
+  const dir = backupsDir();
+  const validName = Boolean(name && isBackupSqlName(name) && matchesBackupPrefix(name, prefix));
+  const attempt = validName && name ? await readBackupAttempt(dir, name) : null;
+  if (!validName || !name || attempt?.status !== "COMPLETED") {
     throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
   }
-  const file = await lstat(abs);
-  if (!file.isFile() || file.size < 512) {
-    throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+  const abs = await resolveBackupFile(name);
+  if (abs) {
+    const file = await lstat(abs);
+    if (!file.isFile() || file.size < 512) {
+      throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+    }
+    return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
   }
-  return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
+  const recorded = await resolveRecordedArchive(dir, process.env.BACKUP_OFFSITE_DIR?.trim(), `${name}.gpg`);
+  if (!recorded || recorded.manifest.source.size < 512) {
+    throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  return { name, sizeKb: Math.round(recorded.manifest.source.size / 1024), createdAt: attempt.startedAt };
 }
 
 export function getOnlineMaintenanceBlockReason(): string | null {
@@ -573,13 +913,24 @@ export async function acquireRestoreLock(): Promise<() => Promise<void>> {
     void utimes(RESTORE_LOCK_PATH, now, now).catch(() => {});
   }, RESTORE_LOCK_HEARTBEAT_MS);
   heartbeat.unref();
-  return async () => {
+  const releaseRestore = async () => {
     clearInterval(heartbeat);
     // إن استعاد عامل آخر قفلاً قديماً فلا يحق للمالك القديم حذف القفل الجديد عند انتهائه.
     const currentOwner = (await readFile(RESTORE_LOCK_PATH, "utf8").catch(() => "")).split("\n", 1)[0];
     if (currentOwner !== owner) return;
     await unlink(RESTORE_LOCK_PATH).catch(() => {});
   };
+  // حاجز تزامن مع `.retention.lock` يمنع أي تدوير أو حذف جارٍ من إزالة ملف الاستعادة بعد التحقق منه.
+  const bDir = backupsDir();
+  if ((await lstat(bDir).catch(() => null))?.isDirectory()) {
+    const releaseRetention = await acquireBackupRetentionLock(bDir);
+    if (!releaseRetention) {
+      await releaseRestore();
+      throw new RestoreUploadValidationError("توجد عملية تدوير أو حذف نسخ جارية حالياً؛ انتظر لحظات ثم أعد المحاولة.");
+    }
+    await releaseRetention();
+  }
+  return releaseRestore;
 }
 
 export async function cleanupTmp(p: string): Promise<void> {

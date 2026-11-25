@@ -6,7 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   inspectBackupReadiness, resolveRecordedArchive, summarizeRestoreDrill, writeRestoreDrillAttempt,
 } from "../../lib/backupEvidence";
-import { OnlineMaintenanceBlockedError, resolveStoredRestoreFile, runBackup, runRestore, startRestoreDrill } from "../maintenanceService";
+import {
+  BackupDeleteGuardError,
+  deleteBackup,
+  OnlineMaintenanceBlockedError,
+  resolveStoredRestoreFile,
+  runBackup,
+  runRestore,
+  startRestoreDrill,
+} from "../maintenanceService";
 
 const execBackup = vi.hoisted(() => vi.fn<
   (executable: string, args: string[], options: object) => Promise<{ stdout: string }>
@@ -300,5 +308,92 @@ describe("backup readiness evidence", () => {
     await expect(runRestore(path.join(local, backup))).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
     await expect(startRestoreDrill(backup)).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
     expect(execBackup).not.toHaveBeenCalled();
+  });
+
+  it("isolates hyphenated tenant DB prefixes, accepts +00:00 timestamps, and enforces RPO/owner guards on entry retirement", async () => {
+    const b1 = "erp-2026-11-25T12-00-00-000Z-11111111.sql";
+    const b2 = "erp-2026-11-25T10-00-00-000Z-22222222.sql";
+    const b3 = "erp-2026-11-25T08-00-00-000Z-33333333.sql";
+    const b4Old = "erp-2026-11-24T08-00-00-000Z-44444444.sql";
+    const otherTenant = "erp-baghdad-2026-11-25T12-30-00-000Z-99999999.sql";
+    const failedRow = "erp-2026-11-25T07-00-00-000Z-ffffffff.sql";
+
+    for (const n of [b1, b2, b3, b4Old, otherTenant]) {
+      await writeCopy(local, n);
+      await writeCopy(offsite, n);
+    }
+    await writeAttempt(local, failedRow, "FAILED");
+    await writeFile(path.join(reports, "latest-verified-restore.json"), JSON.stringify({
+      version: 1,
+      name: otherTenant,
+      at: "2026-11-25T11:30:00+00:00",
+      byDatabase: {
+        erp: { name: b4Old, at: "2026-11-24T09:15:00+00:00" },
+        "erp-baghdad": { name: otherTenant, at: "2026-11-25T11:30:00+00:00" },
+      },
+    }));
+
+    const scoped = await inspectBackupReadiness(local, offsite, "erp-");
+    expect(scoped.encryptedCount).toBe(4);
+    expect(scoped.backups.map((r) => r.name)).not.toContain(otherTenant);
+    expect(scoped.latestRestore).toEqual({ name: b4Old, at: "2026-11-24T09:15:00+00:00" });
+
+    // Admin can immediately clean orphan FAILED attempt
+    await expect(deleteBackup(failedRow, { scope: "entry", isOwner: false })).resolves.toBe(true);
+
+    // Non-owner cannot retire a verified encrypted archive
+    await expect(deleteBackup(b4Old, { scope: "entry", isOwner: false, passwordVerified: true }))
+      .rejects.toBeInstanceOf(BackupDeleteGuardError);
+
+    // Even Owner with password cannot retire any of the 3 newest verified encrypted backups
+    await expect(deleteBackup(b1, { scope: "entry", isOwner: true, passwordVerified: true }))
+      .rejects.toBeInstanceOf(BackupDeleteGuardError);
+
+    // Owner WITH password CAN soft-retire the 4th archive; row disappears even though offsite copy remains!
+    await expect(deleteBackup(b4Old, { scope: "entry", isOwner: true, passwordVerified: true, actorId: 1 }))
+      .resolves.toBe(true);
+    const afterRetire = await inspectBackupReadiness(local, offsite, "erp-");
+    expect(afterRetire.backups.map((r) => r.name)).not.toContain(b4Old);
+    expect(afterRetire.encryptedCount).toBe(3);
+
+    // Now only 3 verified archives remain: floor guard blocks retiring any more
+    await expect(deleteBackup(b3, { scope: "entry", isOwner: true, passwordVerified: true }))
+      .rejects.toBeInstanceOf(BackupDeleteGuardError);
+  });
+
+  it("sorts mixed timezone offset timestamps chronologically before computing protectedRecent and delete guards", async () => {
+    const newestUtc = "erp-2026-11-25T10-00-00-000Z-aaaa1111.sql";
+    const secondUtc = "erp-2026-11-25T09-45-00-000Z-aaaa2222.sql";
+    const thirdUtc = "erp-2026-11-25T09-30-00-000Z-aaaa3333.sql";
+    // 12:00:00+03:00 equals 09:00:00Z (older than all three above, even though "12:" > "10:" lexicographically!)
+    const olderPlus3 = "erp-2026-11-25T09-00-00-000Z-aaaa4444.sql";
+
+    for (const n of [newestUtc, secondUtc, thirdUtc, olderPlus3]) {
+      await writeCopy(local, n);
+    }
+    await writeFile(path.join(local, `${newestUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: newestUtc, status: "COMPLETED", startedAt: "2026-11-25T10:00:00Z", finishedAt: "2026-11-25T10:01:00Z",
+    }));
+    await writeFile(path.join(local, `${secondUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: secondUtc, status: "COMPLETED", startedAt: "2026-11-25T09:45:00Z", finishedAt: "2026-11-25T09:46:00Z",
+    }));
+    await writeFile(path.join(local, `${thirdUtc}.attempt.json`), JSON.stringify({
+      version: 1, file: thirdUtc, status: "COMPLETED", startedAt: "2026-11-25T09:30:00Z", finishedAt: "2026-11-25T09:31:00Z",
+    }));
+    await writeFile(path.join(local, `${olderPlus3}.attempt.json`), JSON.stringify({
+      version: 1, file: olderPlus3, status: "COMPLETED", startedAt: "2026-11-25T12:00:00+03:00", finishedAt: "2026-11-25T12:01:00+03:00",
+    }));
+
+    const readiness = await inspectBackupReadiness(local, undefined, "erp-");
+    expect(readiness.backups.map((r) => r.name)).toEqual([newestUtc, secondUtc, thirdUtc, olderPlus3]);
+    expect(readiness.latestAttempt?.file).toBe(newestUtc);
+    expect(readiness.backups.find((r) => r.name === thirdUtc)?.protectedRecent).toBe(true);
+    expect(readiness.backups.find((r) => r.name === olderPlus3)?.protectedRecent).toBe(false);
+
+    // Chronologically third-newest UTC archive is protected, whereas older +03:00 archive can be retired by Owner
+    await expect(deleteBackup(thirdUtc, { scope: "entry", isOwner: true, passwordVerified: true }))
+      .rejects.toBeInstanceOf(BackupDeleteGuardError);
+    await expect(deleteBackup(olderPlus3, { scope: "entry", isOwner: true, passwordVerified: true, actorId: 1 }))
+      .resolves.toBe(true);
   });
 });

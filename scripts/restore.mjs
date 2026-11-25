@@ -437,7 +437,7 @@ if (valueOf("--confirm") !== "RESTORE") {
 
 let releaseMaintenanceLock;
 try {
-  releaseMaintenanceLock = acquireMaintenanceLock();
+  releaseMaintenanceLock = acquireMaintenanceLock(file);
 } catch (error) {
   fail(error?.message ?? String(error));
 }

@@ -34,6 +34,7 @@ type DangerAction =
   | { kind: "restore-server"; name: string }
   | { kind: "restore-production"; name: string }
   | { kind: "restore-upload"; file: File }
+  | { kind: "retire-archive"; name: string }
   | { kind: "reset" };
 
 /** فهرس مراسٍ الصفحة — بترتيب ظهور الأقسام فعلياً. */
@@ -215,8 +216,18 @@ export default function Settings() {
     onSettled: refresh,
   });
   const deleteBackup = trpc.system.deleteBackup.useMutation({
-    onSuccess: async () => { notify.ok("حُذف ملف SQL المحلي"); await refresh(); },
-    onError: (e) => notify.err(e.message || "تعذّر الحذف"),
+    onSuccess: async (_res, vars) => {
+      setDanger((cur) => (cur?.kind === "retire-archive" ? null : cur));
+      notify.ok(
+        vars.scope === "entry"
+          ? vars.password
+            ? "نُقلت النسخة إلى سلة التقاعد المحمية (72 ساعة) وأُخفيت من السجل"
+            : "أُزيل السجل من قائمة النسخ الاحتياطية"
+          : "أُخلي ملف SQL النصي المحلي مع بقاء الأرشيف المشفر",
+      );
+      await refresh();
+    },
+    onError: (e) => notify.err(e.message || "تعذر تنفيذ الحذف"),
   });
 
   const afterDestructive = (msg: string) => {
@@ -286,7 +297,7 @@ export default function Settings() {
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
     onError: (e) => notify.err(e.message || "فشل التصفير"),
   });
-  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || restoreUploadStreaming || resetSystem.isPending || startProductionRestore.isPending;
+  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || restoreUploadStreaming || resetSystem.isPending || startProductionRestore.isPending || deleteBackup.isPending;
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
@@ -376,6 +387,13 @@ export default function Settings() {
         setRestoreUploadStreaming(false);
       }
     }
+    else if (danger.kind === "retire-archive") {
+      if (confirm.trim() !== confirmToken) {
+        notify.err(`رمز التأكيد يجب أن يطابق اسم القاعدة «${confirmToken}»`);
+        return;
+      }
+      deleteBackup.mutate({ name: danger.name, scope: "entry", password });
+    }
     else resetSystem.mutate({ confirm, password, seed });
   }
 
@@ -422,6 +440,7 @@ export default function Settings() {
             <InfoField label="العملاء" value={c ? String(c.customers) : "…"} kind="number" />
             <InfoField label="الفواتير" value={c ? String(c.invoices) : "…"} kind="number" />
             <InfoField label="ملفات SQL المحلية" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
+            <InfoField label="الأرشيفات المشفرة الموثقة" value={backups.data ? String(backups.data.encryptedCount) : "…"} kind="number" />
             <InfoField label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} kind="status" tone={bridge.enabled ? "positive" : "default"} />
           </InfoGrid>
         </CardContent>
@@ -522,7 +541,15 @@ export default function Settings() {
                 <TableBody>
                   {list.slice(0, backupsVisible).map((b) => {
                     const hasSql = b.sqlAvailable !== false;
-                    const hasOwnerArchive = isOwner && (b.encryption?.status === "RECORDED" || b.offsite?.status === "RECORDED");
+                    const hasRecordedArchive = b.encryption?.status === "RECORDED" || b.offsite?.status === "RECORDED";
+                    const hasUnverifiedArchive = !hasRecordedArchive && (b.encryption?.status === "UNVERIFIED" || b.offsite?.status === "UNVERIFIED");
+                    const hasOwnerArchive = isOwner && hasRecordedArchive;
+                    const isRecentStarted = b.attempt?.status === "STARTED" && !hasSql && !hasRecordedArchive && !hasUnverifiedArchive &&
+                      (Date.now() - Date.parse(b.attempt.startedAt) <= 6 * 3600 * 1000);
+                    const canEvictPlainSql = hasSql && hasRecordedArchive;
+                    const canPurgePlainOrOrphan = !hasRecordedArchive && !hasUnverifiedArchive && !isRecentStarted;
+                    const canOwnerRetireArchive = isOwner && (hasRecordedArchive || hasUnverifiedArchive);
+                    const hasAnyRowAction = hasSql || hasOwnerArchive || canPurgePlainOrOrphan || canOwnerRetireArchive;
                     const drill = b.drill;
                     return <TableRow key={b.name}>
                       <TableCell className="font-mono text-xs whitespace-normal break-all" dir="ltr">{b.name}</TableCell>
@@ -535,8 +562,8 @@ export default function Settings() {
                               {BACKUP_ATTEMPT_LABEL[b.attempt.status]}
                             </Badge>
                           )}
-                          <Badge variant={b.sqlAvailable !== false ? "outline" : "secondary"}>
-                            {b.sqlAvailable !== false ? "ملف SQL متوفر" : "ملف SQL غير متوفر محلياً"}
+                          <Badge variant={hasSql || hasRecordedArchive ? "outline" : "secondary"}>
+                            {hasSql ? "ملف SQL متوفر" : hasRecordedArchive ? "مؤرشف ومشفر (أخلي SQL النصي)" : "ملف SQL غير متوفر محلياً"}
                           </Badge>
                           <Badge variant={b.encryption?.at ? "outline" : "secondary"} title={b.encryption?.at ? fmtDateTime(b.encryption.at) : undefined}>
                             {BACKUP_ENCRYPTION_LABEL[b.encryption?.status ?? "MISSING"]}
@@ -578,7 +605,7 @@ export default function Settings() {
                         )}
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        {hasSql || hasOwnerArchive ? <RowActions
+                        {hasAnyRowAction ? <RowActions
                           mode="menu"
                           actions={[
                             ...(hasSql ? [{
@@ -621,19 +648,54 @@ export default function Settings() {
                                 ? { kind: "restore-production", name: b.name }
                                 : { kind: "restore-server", name: `${b.name}.gpg` }),
                             }] : []),
-                            ...(hasSql ? [{
-                              key: "delete",
+                            ...(canEvictPlainSql ? [{
+                              key: "evict-sql",
                               kind: "delete" as const,
-                              label: "حذف SQL المحلي",
+                              label: "إخلاء ملف SQL النصي",
+                              icon: Trash2,
+                              gate: { adminOnly: true },
+                              disabled: deleteBackup.isPending,
+                              disabledReason: "جارٍ إخلاء الملف النصي",
+                              onSelect: async () => {
+                                if (!(await confirmDelete({ description: `إخلاء ملف SQL النصي «${b.name}» لتوفير المساحة مع الإبقاء على الأرشيف المشفر الموثق؟` }))) return;
+                                deleteBackup.mutate({ name: b.name, scope: "sql" });
+                              },
+                            }] : []),
+                            ...(canPurgePlainOrOrphan ? [{
+                              key: "purge-entry",
+                              kind: "delete" as const,
+                              label: hasSql ? "حذف النسخة وسجلها" : "حذف السجل النهائي",
                               icon: Trash2,
                               variant: "destructive" as const,
                               gate: { adminOnly: true },
                               disabled: deleteBackup.isPending,
-                              // سببٌ مخصّص كشقيقه restore أعلاه — يُصيَّر في title على العنصر المعطَّل (RowActions).
-                              disabledReason: "جارٍ حذف النسخة",
+                              disabledReason: "جارٍ حذف السجل",
                               onSelect: async () => {
-                                if (!(await confirmDelete({ description: `حذف ملف SQL المحلي «${b.name}»؟` }))) return;
-                                deleteBackup.mutate({ name: b.name });
+                                const desc = hasSql
+                                  ? `حذف النسخة غير المشفرة «${b.name}» وسجلها نهائياً؟`
+                                  : `إزالة سجل المحاولة غير المكتملة «${b.name}» من الجدول؟`;
+                                if (!(await confirmDelete({ description: desc }))) return;
+                                deleteBackup.mutate({ name: b.name, scope: "entry" });
+                              },
+                            }] : []),
+                            ...(canOwnerRetireArchive ? [{
+                              key: "retire-archive",
+                              kind: "delete" as const,
+                              label: "تقاعد وحذف السجل (72 ساعة)",
+                              icon: Trash2,
+                              variant: "destructive" as const,
+                              gate: { adminOnly: true },
+                              disabled: deleteBackup.isPending || (hasRecordedArchive && b.protectedRecent === true),
+                              disabledReason: hasRecordedArchive && b.protectedRecent === true
+                                ? "محمية تلقائياً ضمن أحدث 3 نسخ مشفرة موثقة لضمان سلامة الاسترداد"
+                                : "جارٍ معالجة الحذف",
+                              onSelect: async () => {
+                                if (hasRecordedArchive) {
+                                  setDanger({ kind: "retire-archive", name: b.name });
+                                  return;
+                                }
+                                if (!(await confirmDelete({ description: `نقل النسخة القديمة غير المتحققة «${b.name}» إلى سلة التقاعد (72 ساعة) وإخفاؤها من الجدول؟` }))) return;
+                                deleteBackup.mutate({ name: b.name, scope: "entry" });
                               },
                             }] : []),
                           ]}
@@ -667,9 +729,14 @@ export default function Settings() {
                 : "اختر ملف SQL أو نسخة مشفّرة (.sql.gpg). يستخدم الخادم عبارة GPG المحفوظة محلياً، ويأخذ نسخة أمان قبل الاستعادة."}
             </p>
             {onlineMaintenanceBlockReason && (
-              <p role="status" className="text-xs text-warning">{productionRestoreAvailable
-                ? "رفع ملفات الاستعادة معطّل في الإنتاج."
-                : onlineMaintenanceBlockReason}</p>
+              <div role="status" className="space-y-1 text-xs text-warning">
+                <p>{productionRestoreAvailable ? "رفع ملفات الاستعادة معطّل في الإنتاج." : onlineMaintenanceBlockReason}</p>
+                {!productionRestoreAvailable && (
+                  <p className="text-muted-foreground">
+                    إيقاف الاستعادة الحية عبر المتصفح يحمي المعاملات الجارية والتزامن المزدوج النشط بين الخادمين من التعارض؛ تُختبر سلامة النسخ دورياً في بيئة معزولة، وتُنفذ استعادة الطوارئ عبر مسار الصيانة المنسق بعد عزل التزامن وعمال الويب.
+                  </p>
+                )}
+              </div>
             )}
             {isOwner && onlineMaintenanceEnabled && encryptedRestoreBlockReason && (
               <p role="status" className="text-xs text-warning">{encryptedRestoreBlockReason}</p>
@@ -906,11 +973,18 @@ export default function Settings() {
       <DangerConfirmDialog
         open={danger != null}
         onOpenChange={(o) => { if (!o) setDanger(null); }}
-        title={danger?.kind === "reset" ? "تصفير النظام" : "استعادة قاعدة البيانات"}
+        title={
+          danger?.kind === "reset"
+            ? "تصفير النظام"
+            : danger?.kind === "retire-archive"
+              ? "تقاعد أرشيف النسخة الاحتياطية"
+              : "استعادة قاعدة البيانات"
+        }
         description={
           danger?.kind === "restore-server" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى النسخة «${danger.name}».`
             : danger?.kind === "restore-production" ? `ستتوقف الكتابة أثناء استبدال قاعدة البيانات بالنسخة «${danger.name}.gpg».`
             : danger?.kind === "restore-upload" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى الملف «${danger.file.name}».`
+            : danger?.kind === "retire-archive" ? `سيُنقل الأرشيف المشفر «${danger.name}» إلى سلة التقاعد المحمية لمدة 72 ساعة ويُخفى فوراً من السجل.`
             : "سيُمسح كل ما أُدخل ويُبقى المستخدمون والفروع فقط."
         }
         warnings={
@@ -918,12 +992,14 @@ export default function Settings() {
             ? ["كل الفواتير والمخزون والعملاء والمنتجات ستُمسح.", "لا يمكن التراجع إلا باستعادة نسخة."]
             : danger?.kind === "restore-production"
               ? ["العمليات التي أُدخلت بعد تاريخ النسخة ستزول من القاعدة المستعادة.", "إذا فشل التطبيق، يحاول الخادم الرجوع إلى نسخة الأمان قبل فتح الكتابة."]
+            : danger?.kind === "retire-archive"
+              ? ["تظل أحدث 3 نسخ مشفرة موثقة محمية دائماً ولا يقبل الخادم حذفها.", "تُحفظ الملفات المنقولة في مجلد .retiring لمدة 72 ساعة قبل الحذف الفيزيائي النهائي."]
               : ["كل البيانات الحالية ستُستبدَل بمحتوى النسخة.", "نفّذها والمتجر مغلق (لا مستخدمين متّصلين)."]
         }
         confirmToken={danger?.kind === "restore-production" ? ownerRestoreConfirmation(danger.name) : confirmToken}
         confirmationLabel={danger?.kind === "restore-production" ? "اكتب عبارة التأكيد" : undefined}
-        passwordLabel={danger?.kind === "restore-production" ? "كلمة مرور المالك" : undefined}
-        actionLabel={danger?.kind === "reset" ? "تصفير الآن" : "استعادة الآن"}
+        passwordLabel={danger?.kind === "restore-production" || danger?.kind === "retire-archive" ? "كلمة مرور المالك" : undefined}
+        actionLabel={danger?.kind === "reset" ? "تصفير الآن" : danger?.kind === "retire-archive" ? "تقاعد وإخفاء السجل" : "استعادة الآن"}
         showSeedToggle={danger?.kind === "reset"}
         pending={dangerPending}
         onConfirm={handleDangerConfirm}
