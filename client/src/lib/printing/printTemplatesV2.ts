@@ -810,7 +810,10 @@ export interface QuotationV2Data {
   settings?: CompanySettings;
 }
 
-export function printQuotationV2(d: QuotationV2Data): boolean {
+export function printQuotationV2(
+  d: QuotationV2Data,
+  options?: PrintWindowOptions,
+): boolean {
   const header = pageHeader({
     title: 'عرض سعر',
     fields: [
@@ -901,7 +904,11 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   })}</div>`;
 
   const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${termsBox}${sigs}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.quoteNumber}` })}`;
-  return openPrintWindow(wrapA4Doc(`عرض سعر ${d.quoteNumber}`, body));
+  return openPrintWindow(
+    wrapA4Doc(`عرض سعر ${d.quoteNumber}`, body),
+    undefined,
+    options,
+  );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

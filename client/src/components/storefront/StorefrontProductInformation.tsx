@@ -1,18 +1,16 @@
 import React from "react";
 import { money, priceLabel } from "@/components/storefront/storefrontCartMath";
 import { CustomizationFieldControl } from "@/components/storefront/storefrontCustomizationModel";
-import type { StorefrontCustomizerStudioHandle } from "@/components/storefront/StorefrontCustomizerStudio";
+import {
+  StorefrontCustomizerStudio,
+  type StorefrontCustomizerStudioHandle,
+} from "@/components/storefront/StorefrontCustomizerStudio";
 import { type CustomizationStudioUploadState } from "@/components/storefront/storefrontCustomizationUpload";
 import { formatQuantity } from "@/lib/money";
 import { ArrowRight, Flame, Star, Store, Tag } from "lucide-react";
 import type { StorefrontProductDialogProps } from "./StorefrontProductDialog";
 import { StorefrontVariantChoices } from "./StorefrontVariantChoices";
 
-const StorefrontCustomizerStudio = React.lazy(() =>
-  import("@/components/storefront/StorefrontCustomizerStudio").then((m) => ({
-    default: m.StorefrontCustomizerStudio,
-  })),
-);
 type Props = Pick<
   StorefrontProductDialogProps,
   | "setProductReviewOpenRequest"
@@ -273,66 +271,58 @@ export function StorefrontProductInformation({
       ) : null}
 
       {product.isCustomizable && Boolean(customizationConfig) && (
-        <React.Suspense
-          fallback={
-            <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-500 dark:bg-slate-800/60 dark:text-slate-300">
-              جارٍ تحميل أستوديو التخصيص…
-            </p>
-          }
-        >
-          <StorefrontCustomizerStudio
-            key={product.productId}
-            studioRef={studioRef}
-            productName={product.productName}
-            baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
-            onAssetsChange={(assets) => {
-              latestLogoAssetKeyRef.current = assets.logoAssetKey;
-              setCustomizationAssets?.(assets);
-              const fileField = visibleCustomizationFields.find(
-                (f) => f.fieldType === "FILE",
-              );
-              if (!fileField) return;
-              const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
-              if (assets.logoAssetKey && !currentFileVal) {
-                autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
-                updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
-              } else if (
-                !assets.logoAssetKey &&
-                currentFileVal &&
-                (currentFileVal === "شعار مرفوع مع الطلب" ||
-                  currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
-                  currentFileVal === autoFilledFileValueRef.current)
-              ) {
-                autoFilledFileValueRef.current = null;
-                updateCustomizationField(fileField, "");
-              }
-            }}
-            onUploadStateChange={setCustomizationUploadState}
-            onApplyCustomization={(customData) => {
-              latestLogoAssetKeyRef.current = customData.logoAssetKey;
-              setCustomizationAssets?.({
-                logoAssetKey: customData.logoAssetKey,
-                previewAssetKey: customData.previewAssetKey,
-              });
-              const primaryField = visibleCustomizationFields.find(
-                (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
-              );
-              if (primaryField && customData.customText) {
-                updateCustomizationField(primaryField, customData.customText);
-              }
-              const fileField = visibleCustomizationFields.find(
-                (f) => f.fieldType === "FILE",
-              );
-              if (fileField && customData.hasLogo) {
-                const nextFileLabel =
-                  customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
-                autoFilledFileValueRef.current = nextFileLabel;
-                updateCustomizationField(fileField, nextFileLabel);
-              }
-            }}
-            className="mt-4"
-          />
-        </React.Suspense>
+        <StorefrontCustomizerStudio
+          key={product.productId}
+          studioRef={studioRef}
+          productName={product.productName}
+          baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
+          onAssetsChange={(assets) => {
+            latestLogoAssetKeyRef.current = assets.logoAssetKey;
+            setCustomizationAssets?.(assets);
+            const fileField = visibleCustomizationFields.find(
+              (f) => f.fieldType === "FILE",
+            );
+            if (!fileField) return;
+            const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
+            if (assets.logoAssetKey && !currentFileVal) {
+              autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
+              updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
+            } else if (
+              !assets.logoAssetKey &&
+              currentFileVal &&
+              (currentFileVal === "شعار مرفوع مع الطلب" ||
+                currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
+                currentFileVal === autoFilledFileValueRef.current)
+            ) {
+              autoFilledFileValueRef.current = null;
+              updateCustomizationField(fileField, "");
+            }
+          }}
+          onUploadStateChange={setCustomizationUploadState}
+          onApplyCustomization={(customData) => {
+            latestLogoAssetKeyRef.current = customData.logoAssetKey;
+            setCustomizationAssets?.({
+              logoAssetKey: customData.logoAssetKey,
+              previewAssetKey: customData.previewAssetKey,
+            });
+            const primaryField = visibleCustomizationFields.find(
+              (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
+            );
+            if (primaryField && customData.customText) {
+              updateCustomizationField(primaryField, customData.customText);
+            }
+            const fileField = visibleCustomizationFields.find(
+              (f) => f.fieldType === "FILE",
+            );
+            if (fileField && customData.hasLogo) {
+              const nextFileLabel =
+                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
+              autoFilledFileValueRef.current = nextFileLabel;
+              updateCustomizationField(fileField, nextFileLabel);
+            }
+          }}
+          className="mt-4"
+        />
       )}
       <div className="mt-3 flex items-baseline gap-2">
         <p className="text-xl font-extrabold text-money-positive">

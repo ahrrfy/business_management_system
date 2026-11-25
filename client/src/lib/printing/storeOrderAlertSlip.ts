@@ -352,3 +352,163 @@ export async function printStoreOrderAlertSilent(
 export function previewOrPrintStoreOrderAlertBrowser(d: StoreOrderAlertData): boolean {
   return openPrintWindow(buildStoreOrderAlertHtml(d), "width=380,height=480");
 }
+
+export interface StoreOrderAlertClaimResult {
+  claimed: boolean;
+  orderNumber?: string | null;
+  total?: string | null;
+  itemCount?: number | null;
+  createdAt?: Date | string | null;
+}
+
+export interface StoreOrderAlertIncomingPayload {
+  orderId: number;
+  orderNumber: string;
+  totalAmount: string | number;
+  itemsCount?: number;
+  createdAt?: string;
+  alertPrintHandoff?: boolean;
+}
+
+/**
+ * منسّق طباعة قصاصة التنبيه عبر عدة محطات:
+ *  - يفصل سجلّ التنبيه الصوتي/البصري (مرة واحدة لكل طلب) عن سجلّ الطباعة المكتملة فعلياً.
+ *  - إذا فازت محطةٌ بالقفل ثم تعثّرت طابعتها، تضع الطلب في تهدئةٍ محلية قصيرة وتحرّر القفل
+ *    لتستلمه محطةٌ بديلة فوراً عبر إعادة البثّ (`alertPrintHandoff`) أو عبر إعادة المحاولة المؤجلة
+ *    للمحطات التي خسرت المنافسة الأولى.
+ */
+export function createStoreOrderAlertCoordinator(deps: {
+  hasPrinter: () => Promise<boolean>;
+  claim: (orderId: number) => Promise<StoreOrderAlertClaimResult | null>;
+  release: (orderId: number) => Promise<unknown>;
+  print: (
+    data: StoreOrderAlertData,
+  ) => Promise<"printed" | "no_printer" | "hardware_error">;
+  onNotify?: (payload: StoreOrderAlertIncomingPayload) => void;
+  now?: () => number;
+  scheduleRetry?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  cancelRetry?: (handle: ReturnType<typeof setTimeout>) => void;
+  contestedRetryDelayMs?: number;
+  failedStationCooldownMs?: number;
+}) {
+  const getNow = deps.now ?? (() => Date.now());
+  const schedule =
+    deps.scheduleRetry ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
+  const cancel =
+    deps.cancelRetry ?? ((handle) => globalThis.clearTimeout(handle));
+  const contestedRetryDelayMs = deps.contestedRetryDelayMs ?? 2_500;
+  const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
+
+  const notifiedOrderIds = new Set<number>();
+  const printedOrderIds = new Set<number>();
+  const inFlightOrderIds = new Set<number>();
+  const contestedRetriedOrderIds = new Set<number>();
+  const failedCooldownUntil = new Map<number, number>();
+  const pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+  const boundSet = (set: Set<number>, keep: number) => {
+    if (set.size > 200) {
+      set.clear();
+      set.add(keep);
+    }
+  };
+
+  const clearPendingTimer = (orderId: number) => {
+    const existing = pendingTimers.get(orderId);
+    if (existing !== undefined) {
+      cancel(existing);
+      pendingTimers.delete(orderId);
+    }
+  };
+
+  const attemptPrint = async (
+    payload: StoreOrderAlertIncomingPayload,
+    isContestedFollowup = false,
+  ): Promise<void> => {
+    const { orderId } = payload;
+    if (printedOrderIds.has(orderId) || inFlightOrderIds.has(orderId)) return;
+    const cooldownUntil = failedCooldownUntil.get(orderId);
+    if (cooldownUntil !== undefined) {
+      if (getNow() < cooldownUntil) return;
+      failedCooldownUntil.delete(orderId);
+    }
+
+    inFlightOrderIds.add(orderId);
+    try {
+      const printerReady = await deps.hasPrinter();
+      if (!printerReady) return;
+
+      let claimRes: StoreOrderAlertClaimResult | null = null;
+      try {
+        claimRes = await deps.claim(orderId);
+      } catch {
+        return;
+      }
+
+      if (!claimRes?.claimed) {
+        // إذا خسرت المحطة السباق الأول ضد محطة أخرى، تجدول محاولة احتياطية واحدة تحسّباً لتعثّر الفائز
+        // حتى لو سقطت حزمة إعادة البثّ عبر الشبكة.
+        if (
+          !isContestedFollowup &&
+          !payload.alertPrintHandoff &&
+          !contestedRetriedOrderIds.has(orderId)
+        ) {
+          contestedRetriedOrderIds.add(orderId);
+          boundSet(contestedRetriedOrderIds, orderId);
+          clearPendingTimer(orderId);
+          const timer = schedule(() => {
+            pendingTimers.delete(orderId);
+            void attemptPrint(payload, true);
+          }, contestedRetryDelayMs);
+          pendingTimers.set(orderId, timer);
+        }
+        return;
+      }
+
+      clearPendingTimer(orderId);
+      const outcome = await deps.print({
+        orderNumber: claimRes.orderNumber ?? payload.orderNumber,
+        createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
+        itemsCount: claimRes.itemCount || payload.itemsCount || 1,
+        totalAmount: claimRes.total ?? payload.totalAmount,
+      });
+
+      if (outcome === "printed") {
+        printedOrderIds.add(orderId);
+        boundSet(printedOrderIds, orderId);
+        failedCooldownUntil.delete(orderId);
+        return;
+      }
+
+      // تعثّرت الطابعة فيزيائياً بعد أخذ القفل: تهدئة قصيرة على هذه المحطة كي تتقدم محطة سليمة عند التحرير.
+      failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+      await deps.release(orderId).catch(() => {});
+    } finally {
+      inFlightOrderIds.delete(orderId);
+    }
+  };
+
+  return {
+    handleEvent(payload: StoreOrderAlertIncomingPayload): Promise<void> {
+      if (
+        !payload ||
+        !Number.isSafeInteger(payload.orderId) ||
+        payload.orderId <= 0
+      ) {
+        return Promise.resolve();
+      }
+      if (!payload.alertPrintHandoff && !notifiedOrderIds.has(payload.orderId)) {
+        notifiedOrderIds.add(payload.orderId);
+        boundSet(notifiedOrderIds, payload.orderId);
+        deps.onNotify?.(payload);
+      }
+      return attemptPrint(payload, false);
+    },
+    dispose(): void {
+      pendingTimers.forEach((timer) => {
+        cancel(timer);
+      });
+      pendingTimers.clear();
+    },
+  };
+}

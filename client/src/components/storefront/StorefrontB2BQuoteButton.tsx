@@ -4,6 +4,29 @@ import { summarizeStorefrontCustomization } from "@/components/storefront/storef
 
 const StorefrontB2BQuoteDialog = lazy(() => import("./StorefrontB2BQuoteDialog"));
 
+function preopenQuotePrintWindow(): Window | null {
+  if (typeof window === "undefined") return null;
+  let opened: Window | null = null;
+  try {
+    opened = window.open("", "_blank", "width=900,height=1100");
+    if (!opened) return null;
+    opened.document.write(
+      '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>جارٍ تجهيز عرض السعر</title></head>' +
+        '<body style="font-family:sans-serif;display:grid;place-items:center;min-height:90vh;color:#555">' +
+        "<p>جارٍ تجهيز قالب عرض السعر المعتمد…</p></body></html>",
+    );
+    opened.document.close();
+    return opened;
+  } catch {
+    try {
+      opened?.close();
+    } catch {
+      /* لا نسرّب نافذة فارغة عند فشل التجهيز */
+    }
+    return null;
+  }
+}
+
 export interface CartLineItem {
   cartKey: string;
   productUnitId: number;
@@ -32,6 +55,7 @@ export function StorefrontB2BQuoteButton({
 }: StorefrontB2BQuoteButtonProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGenerated, setIsGenerated] = useState(false);
+  const [printBlocked, setPrintBlocked] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [hasOpenedDialog, setHasOpenedDialog] = useState(false);
 
@@ -42,6 +66,9 @@ export function StorefrontB2BQuoteButton({
 
   const handleGenerate = async () => {
     if (cartLines.length === 0) return;
+    setPrintBlocked(false);
+    // نحجز نافذة الطباعة متزامناً ضمن نقرة المستخدم قبل انتظار التحميل الكسول حتى لا يحجبها Safari.
+    const reservedWindow = preopenQuotePrintWindow();
     setIsGenerating(true);
 
     try {
@@ -95,23 +122,42 @@ export function StorefrontB2BQuoteButton({
 
       const finalSubtotal = computedSubtotal.toFixed(2);
 
-      printQuotationV2({
-        quoteNumber,
-        quoteDate: today,
-        validUntil: expiryFormatted,
-        customerName: "السادة / شركة أو مؤسسة محترمة",
-        deliveryLocation: "بغداد وكافة المحافظات العراقية",
-        items,
-        subtotal: finalSubtotal,
-        discountAmount: 0,
-        taxAmount: 0,
-        taxRate: 0,
-        total: finalSubtotal,
-        terms: "عرض سعر تقديري صادر من متجر شركة الرؤية العربية للتجارة العامة والمكتبة العربية. مدة صلاحية عروض الشركات وعروض الأسعار 5 أيام كحد أقصى من تاريخ الإصدار، ولا تشمل ورق الاستنساخ أو الأصناف المتداولة يومياً ذات الأسعار المتغيّرة (تُحدَّد بأسعار يوم الشراء). لاعتماد عرض سعر رسمي ومختوم برقم مرجعي للمؤسسات، يرجى تقديم طلب عرض السعر المباشر أو التواصل مع الإدارة.",
-      });
+      const printed = printQuotationV2(
+        {
+          quoteNumber,
+          quoteDate: today,
+          validUntil: expiryFormatted,
+          customerName: "السادة / شركة أو مؤسسة محترمة",
+          deliveryLocation: "بغداد وكافة المحافظات العراقية",
+          items,
+          subtotal: finalSubtotal,
+          discountAmount: 0,
+          taxAmount: 0,
+          taxRate: 0,
+          total: finalSubtotal,
+          terms: "عرض سعر تقديري صادر من متجر شركة الرؤية العربية للتجارة العامة والمكتبة العربية. مدة صلاحية عروض الشركات وعروض الأسعار 5 أيام كحد أقصى من تاريخ الإصدار، ولا تشمل ورق الاستنساخ أو الأصناف المتداولة يومياً ذات الأسعار المتغيّرة (تُحدَّد بأسعار يوم الشراء). لاعتماد عرض سعر رسمي ومختوم برقم مرجعي للمؤسسات، يرجى تقديم طلب عرض السعر المباشر أو التواصل مع الإدارة.",
+        },
+        { into: reservedWindow },
+      );
 
-      setIsGenerated(true);
-      window.setTimeout(() => setIsGenerated(false), 3000);
+      if (printed) {
+        setIsGenerated(true);
+        window.setTimeout(() => setIsGenerated(false), 3000);
+      } else {
+        try {
+          if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+        } catch {
+          /* ignore */
+        }
+        setPrintBlocked(true);
+      }
+    } catch (error) {
+      try {
+        if (reservedWindow && !reservedWindow.closed) reservedWindow.close();
+      } catch {
+        /* ignore */
+      }
+      throw error;
     } finally {
       setIsGenerating(false);
     }
@@ -154,6 +200,12 @@ export function StorefrontB2BQuoteButton({
           </>
         )}
       </button>
+
+      {printBlocked && (
+        <p role="alert" className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+          حجب المتصفح نافذة عرض السعر المنبثقة — اسمح بالنوافذ المنبثقة لهذا الموقع ثم أعد المحاولة.
+        </p>
+      )}
 
       {(dialogOpen || hasOpenedDialog) && (
         <Suspense fallback={null}>

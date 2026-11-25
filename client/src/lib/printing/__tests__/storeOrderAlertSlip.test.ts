@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
-import { buildStoreOrderAlertHtml } from "../storeOrderAlertSlip";
+import {
+  buildStoreOrderAlertHtml,
+  createStoreOrderAlertCoordinator,
+} from "../storeOrderAlertSlip";
 
 describe("isStoreOrderAlertRecipientUser", () => {
   it("matches reception and customer-service roles only", () => {
@@ -77,5 +80,98 @@ describe("buildStoreOrderAlertHtml", () => {
     expect(html).toContain("<svg");
     expect(html).toContain("قيمة الطلب");
     expect(html).toContain("48,000 د.ع");
+  });
+});
+
+describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
+  it("transfers printing to a standby station when the winning station encounters a printer failure and releases the claim", async () => {
+    let dbClaimed = false;
+    let currentTime = 1_000;
+    const broadcasts: Array<{
+      orderId: number;
+      orderNumber: string;
+      totalAmount: string;
+      alertPrintHandoff?: boolean;
+    }> = [];
+
+    const stationANotifications: string[] = [];
+    const stationBNotifications: string[] = [];
+    const stationAPrints = vi.fn().mockResolvedValue("hardware_error" as const);
+    const stationBPrints = vi.fn().mockResolvedValue("printed" as const);
+
+    const claimDb = async () => {
+      if (dbClaimed) return { claimed: false };
+      dbClaimed = true;
+      return {
+        claimed: true,
+        orderNumber: "ORD-FAILOVER-77",
+        total: "25000.00",
+        itemCount: 3,
+      };
+    };
+
+    let stationA!: ReturnType<typeof createStoreOrderAlertCoordinator>;
+    let stationB!: ReturnType<typeof createStoreOrderAlertCoordinator>;
+
+    const releaseDb = async (orderId: number) => {
+      dbClaimed = false;
+      const handoff = {
+        orderId,
+        orderNumber: "ORD-FAILOVER-77",
+        totalAmount: "25000.00",
+        alertPrintHandoff: true,
+      };
+      broadcasts.push(handoff);
+      await Promise.all([
+        stationA.handleEvent(handoff),
+        stationB.handleEvent(handoff),
+      ]);
+    };
+
+    stationA = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      claim: claimDb,
+      release: releaseDb,
+      print: stationAPrints,
+      onNotify: (p) => stationANotifications.push(p.orderNumber),
+      now: () => currentTime,
+      scheduleRetry: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      cancelRetry: () => {},
+    });
+
+    stationB = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      claim: claimDb,
+      release: releaseDb,
+      print: stationBPrints,
+      onNotify: (p) => stationBNotifications.push(p.orderNumber),
+      now: () => currentTime,
+      scheduleRetry: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      cancelRetry: () => {},
+    });
+
+    const initialPayload = {
+      orderId: 77,
+      orderNumber: "ORD-FAILOVER-77",
+      totalAmount: "25000.00",
+      itemsCount: 3,
+    };
+
+    // Station A arrives slightly earlier, claims, fails hardware, releases -> handoff broadcast lets Station B print!
+    const pA = stationA.handleEvent(initialPayload);
+    const pB = stationB.handleEvent(initialPayload);
+    await Promise.all([pA, pB]);
+
+    expect(stationAPrints).toHaveBeenCalledTimes(1);
+    expect(stationBPrints).toHaveBeenCalledTimes(1);
+    expect(broadcasts).toHaveLength(1);
+    // Neither station double-notifies during silent handoff
+    expect(stationANotifications).toEqual(["ORD-FAILOVER-77"]);
+    expect(stationBNotifications).toEqual(["ORD-FAILOVER-77"]);
+
+    // Subsequent duplicate events do not re-print on Station B
+    currentTime += 20_000;
+    await stationB.handleEvent(initialPayload);
+    expect(stationBPrints).toHaveBeenCalledTimes(1);
   });
 });

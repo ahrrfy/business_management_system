@@ -10,7 +10,9 @@ import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { publishRealtimeEvent } from "../../realtime";
 import {
   bundleComponents,
   couponPrograms,
@@ -2716,6 +2718,7 @@ export async function claimOnlineOrderAlertPrint(input: {
         itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
       })
       .from(onlineOrders)
+      .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
       .where(eq(onlineOrders.id, input.id))
       .limit(1)
   )[0];
@@ -2728,21 +2731,65 @@ export async function claimOnlineOrderAlertPrint(input: {
   };
 }
 
-/** يحرر قفل الطباعة فقط إذا تعذّرت الطابعة فيزيائياً بعد المطالبة. */
+/** يحرر قفل الطباعة فقط إذا تعذّرت الطابعة فيزيائياً بعد المطالبة، ويعيد البثّ للمحطات البديلة. */
 export async function releaseOnlineOrderAlertPrint(input: {
   id: number;
   scopedBranchId: number | null;
 }): Promise<{ released: boolean }> {
   const db = getDb();
   if (!db) return { released: false };
-  const conds = [eq(onlineOrders.id, input.id)];
+  const conds = [
+    eq(onlineOrders.id, input.id),
+    isNotNull(onlineOrders.alertPrintedAt),
+  ];
   if (input.scopedBranchId != null) {
     conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
   }
-  await db
+  const res = await db
     .update(onlineOrders)
     .set({ alertPrintedAt: null })
     .where(and(...conds));
+  const affectedRows = Number(
+    (res as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+      (res as unknown as { affectedRows?: number })?.affectedRows ??
+      0,
+  );
+  if (affectedRows !== 1) {
+    return { released: false };
+  }
+  const row = (
+    await db
+      .select({
+        id: onlineOrders.id,
+        branchId: onlineOrders.branchId,
+        orderNumber: onlineOrders.orderNumber,
+        total: onlineOrderAmountDueAtDoor,
+        customerName: customers.name,
+        createdAt: onlineOrders.createdAt,
+        itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
+      })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.id, input.id))
+      .limit(1)
+  )[0];
+  if (row) {
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+      {
+        orderId: row.id,
+        orderNumber: row.orderNumber,
+        branchId: row.branchId,
+        totalAmount: String(row.total),
+        customerName: row.customerName ?? undefined,
+        itemsCount: Number(row.itemCount ?? 1),
+        createdAt: row.createdAt
+          ? new Date(row.createdAt).toISOString()
+          : new Date().toISOString(),
+        alertPrintHandoff: true,
+      },
+      { branchId: row.branchId ?? undefined },
+    );
+  }
   return { released: true };
 }
 

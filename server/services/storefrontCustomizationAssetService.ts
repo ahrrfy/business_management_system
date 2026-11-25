@@ -19,7 +19,7 @@ import {
 } from "../lib/imageStore";
 import { parseImageDimensions } from "../lib/imageValidation";
 import { splitQuoteCustomerNoteAndAssets } from "../lib/quoteRequestCustomizationMeta";
-import { requireDb } from "./tx";
+import { requireDb, withTx } from "./tx";
 
 export const MAX_CUSTOMIZATION_ASSET_BYTES = 2 * 1024 * 1024;
 export const MAX_CUSTOMIZATION_BASE64_CHARS = 2_800_000;
@@ -165,35 +165,66 @@ export async function uploadStorefrontCustomizationAsset(
 
   const db = requireDb();
   const [existingAsset] = await db
-    .select({ id: storefrontCustomizationAssets.id })
+    .select({
+      id: storefrontCustomizationAssets.id,
+      expiresAt: storefrontCustomizationAssets.expiresAt,
+    })
     .from(storefrontCustomizationAssets)
     .where(eq(storefrontCustomizationAssets.assetKey, assetKey))
     .limit(1);
 
-  if (!existingAsset) {
-    // تنظيف انتهازي خفيف للمرفقات المؤقتة المنتهية حتى لا تتراكم في القاعدة والمخزن أو تحسب ضمن النافذة.
-    const expiredRows = await db
-      .select({ id: storefrontCustomizationAssets.id, assetKey: storefrontCustomizationAssets.assetKey })
+  const hadLiveExistingAsset = Boolean(
+    existingAsset &&
+      (existingAsset.expiresAt === null ||
+        existingAsset.expiresAt.getTime() > Date.now()),
+  );
+
+  if (!hadLiveExistingAsset) {
+    // تنظيف انتهازي منسّق بقفل صفّي (`FOR UPDATE`) وهامش أمان زمني يمنع حذف مرفق يُعاد رفعه بالتوازي.
+    const candidateExpired = await db
+      .select({ id: storefrontCustomizationAssets.id })
       .from(storefrontCustomizationAssets)
       .where(
         and(
           isNotNull(storefrontCustomizationAssets.expiresAt),
-          sql`${storefrontCustomizationAssets.expiresAt} < NOW()`,
+          sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+          sql`${storefrontCustomizationAssets.assetKey} <> ${assetKey}`,
         ),
       )
-      .limit(8);
-    if (expiredRows.length > 0) {
-      await Promise.allSettled(
-        expiredRows.map((row) => getImageStore().delete(row.assetKey)),
-      );
-      await db
-        .delete(storefrontCustomizationAssets)
-        .where(
-          sql`${storefrontCustomizationAssets.id} IN (${sql.join(
-            expiredRows.map((r) => sql`${r.id}`),
-            sql`, `,
-          )})`,
-        );
+      .limit(4);
+
+    for (const candidate of candidateExpired) {
+      await withTx(async (tx) => {
+        const [locked] = await tx
+          .select({
+            id: storefrontCustomizationAssets.id,
+            assetKey: storefrontCustomizationAssets.assetKey,
+          })
+          .from(storefrontCustomizationAssets)
+          .where(
+            and(
+              eq(storefrontCustomizationAssets.id, candidate.id),
+              isNotNull(storefrontCustomizationAssets.expiresAt),
+              sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+              sql`${storefrontCustomizationAssets.assetKey} <> ${assetKey}`,
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!locked) return;
+        await getImageStore()
+          .delete(locked.assetKey)
+          .catch(() => {});
+        await tx
+          .delete(storefrontCustomizationAssets)
+          .where(
+            and(
+              eq(storefrontCustomizationAssets.id, locked.id),
+              isNotNull(storefrontCustomizationAssets.expiresAt),
+              sql`${storefrontCustomizationAssets.expiresAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+            ),
+          );
+      }).catch(() => {});
     }
 
     const orphanWindowMax = Number(
@@ -224,22 +255,8 @@ export async function uploadStorefrontCustomizationAsset(
     }
   }
 
-  try {
-    await getImageStore().put(assetKey, bytes, input.mimeType);
-  } catch (error) {
-    if (isImageStoreUnavailableError(error)) {
-      throw new TRPCError({
-        code: "SERVICE_UNAVAILABLE",
-        message: appErrorMessage({
-          what: "خدمة رفع المرفقات غير متاحة مؤقتاً",
-          why: "تعثّر الاتصال بمخزن الملفات الآمن",
-          doThis: "انتظر لحظات ثم أعد رفع الشعار",
-        }),
-      });
-    }
-    throw error;
-  }
-
+  // نثبّت أو نمدّد دورة حياة السجلّ قبل الكتابة في المخزن حتى ينتظر الرفعُ أيّ معاملة تنظيفٍ
+  // ممسكةٍ بالقفل على نفس assetKey، ويمنع أيّ تنظيفٍ لاحق من مطابقة الصفّ المجدَّد.
   const expiresAt = new Date(Date.now() + ORPHAN_ASSET_TTL_MS);
   await db
     .insert(storefrontCustomizationAssets)
@@ -256,6 +273,33 @@ export async function uploadStorefrontCustomizationAsset(
         expiresAt: sql`IF(${storefrontCustomizationAssets.expiresAt} IS NULL, NULL, VALUES(expiresAt))`,
       },
     });
+
+  try {
+    await getImageStore().put(assetKey, bytes, input.mimeType);
+  } catch (error) {
+    if (!hadLiveExistingAsset) {
+      await db
+        .delete(storefrontCustomizationAssets)
+        .where(
+          and(
+            eq(storefrontCustomizationAssets.assetKey, assetKey),
+            isNotNull(storefrontCustomizationAssets.expiresAt),
+          ),
+        )
+        .catch(() => {});
+    }
+    if (isImageStoreUnavailableError(error)) {
+      throw new TRPCError({
+        code: "SERVICE_UNAVAILABLE",
+        message: appErrorMessage({
+          what: "خدمة رفع المرفقات غير متاحة مؤقتاً",
+          why: "تعثّر الاتصال بمخزن الملفات الآمن",
+          doThis: "انتظر لحظات ثم أعد رفع الشعار",
+        }),
+      });
+    }
+    throw error;
+  }
 
   return {
     assetKey,

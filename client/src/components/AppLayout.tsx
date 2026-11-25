@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -15,7 +15,11 @@ import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared
 import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
 import { playAudioFeedback } from "@/lib/audioFeedback";
 import { notify } from "@/lib/notify";
-import { hasConnectedAlertThermalPrinter, printStoreOrderAlertSilent } from "@/lib/printing/storeOrderAlertSlip";
+import {
+  createStoreOrderAlertCoordinator,
+  hasConnectedAlertThermalPrinter,
+  printStoreOrderAlertSilent,
+} from "@/lib/printing/storeOrderAlertSlip";
 import { openSearch } from "@/lib/searchEvents";
 import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -278,46 +282,35 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
   const isStoreAlertRecipient = isStoreOrderAlertRecipientUser(me.data);
-  const claimedAlertOrderIdsRef = useRef(new Set<number>());
   const claimAlertPrintM = trpc.storeAdmin.orders.claimNotificationPrint.useMutation();
   const releaseAlertPrintM = trpc.storeAdmin.orders.releaseNotificationPrint.useMutation();
+  const claimAlertMutateRef = useRef(claimAlertPrintM.mutateAsync);
+  claimAlertMutateRef.current = claimAlertPrintM.mutateAsync;
+  const releaseAlertMutateRef = useRef(releaseAlertPrintM.mutateAsync);
+  releaseAlertMutateRef.current = releaseAlertPrintM.mutateAsync;
+
+  const alertCoordinator = useMemo(
+    () =>
+      createStoreOrderAlertCoordinator({
+        hasPrinter: hasConnectedAlertThermalPrinter,
+        claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
+        release: (orderId) => releaseAlertMutateRef.current({ id: orderId }),
+        print: printStoreOrderAlertSilent,
+        onNotify: (payload) => {
+          playAudioFeedback("notification");
+          notify.info(`وصل طلب متجر جديد: ${payload.orderNumber}`);
+        },
+      }),
+    [],
+  );
+
+  useEffect(() => () => alertCoordinator.dispose(), [alertCoordinator]);
 
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
     REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
     (event) => {
-      if (!isStoreAlertRecipient) return;
-      const payload = event.payload;
-      if (!payload || !Number.isSafeInteger(payload.orderId) || payload.orderId <= 0) return;
-      if (claimedAlertOrderIdsRef.current.has(payload.orderId)) return;
-      claimedAlertOrderIdsRef.current.add(payload.orderId);
-      if (claimedAlertOrderIdsRef.current.size > 100) {
-        claimedAlertOrderIdsRef.current.clear();
-        claimedAlertOrderIdsRef.current.add(payload.orderId);
-      }
-
-      playAudioFeedback("notification");
-      notify.info(`وصل طلب متجر جديد: ${payload.orderNumber}`);
-
-      void (async () => {
-        const hasPrinter = await hasConnectedAlertThermalPrinter();
-        if (!hasPrinter) return;
-        let claimRes: Awaited<ReturnType<typeof claimAlertPrintM.mutateAsync>> | null = null;
-        try {
-          claimRes = await claimAlertPrintM.mutateAsync({ id: payload.orderId });
-        } catch {
-          return;
-        }
-        if (!claimRes?.claimed) return;
-        const printOutcome = await printStoreOrderAlertSilent({
-          orderNumber: claimRes.orderNumber ?? payload.orderNumber,
-          createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
-          itemsCount: claimRes.itemCount || payload.itemsCount || 1,
-          totalAmount: claimRes.total ?? payload.totalAmount,
-        });
-        if (printOutcome !== "printed") {
-          await releaseAlertPrintM.mutateAsync({ id: payload.orderId }).catch(() => {});
-        }
-      })();
+      if (!isStoreAlertRecipient || !event.payload) return;
+      void alertCoordinator.handleEvent(event.payload);
     },
   );
   const logout = trpc.auth.logout.useMutation({

@@ -33,7 +33,6 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.trackRecommendationClick",
   "storefront.trackPushInteraction",
   "storefront.claimFirebaseCustomer",
-  "storefront.submitProductReview",
   "storefront.submitPublicProductReview",
   "storefront.createWishlistShare",
   "storefront.createCartShare",
