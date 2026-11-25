@@ -57,8 +57,8 @@ export function inferSubjectStateFromBanner(input: {
       products: [],
       categoryId: null,
       promotionId: null,
-      specialTarget: "DEALS",
-      ctaUrl: "/store?deals=1",
+      specialTarget: "NONE",
+      ctaUrl: "",
     };
   }
   const catMatch = clean.match(/^\/store\/category\/(\d+)/);
@@ -200,7 +200,7 @@ export function BannerSubjectPicker({ value, onChange }: BannerSubjectPickerProp
           : "/store?deals=1",
       });
     } else {
-      onChange({ ...value, mode, ctaUrl: value.ctaUrl || "/store?deals=1" });
+      onChange({ ...value, mode, ctaUrl: value.ctaUrl });
     }
   }
 

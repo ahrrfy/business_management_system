@@ -193,7 +193,7 @@ export function BannerStudioComposer({
     }
     if (editingBanner) {
       return inferSubjectStateFromBanner({
-        ctaUrl: editingBanner.ctaUrl,
+        ctaUrl: editingBanner.ctaUrl ?? (initialSlides.length === 1 ? (initialSlides[0]?.ctaUrl ?? null) : null),
         hasUploadedImages: hasStoredCreative,
       });
     }
@@ -633,7 +633,7 @@ export function BannerStudioComposer({
               ctaLabel: prevMeta?.ctaLabel ?? null,
               ctaUrl:
                 uploadedDesktop.length === 1
-                  ? (subject.ctaUrl.trim() || prevMeta?.ctaUrl || null)
+                  ? (subject.ctaUrl.trim() || null)
                   : (prevMeta?.ctaUrl ?? (subject.ctaUrl.trim() || null)),
               effectiveFrom: prevMeta?.effectiveFrom ?? null,
               effectiveTo: prevMeta?.effectiveTo ?? null,
@@ -670,7 +670,7 @@ export function BannerStudioComposer({
             title: safeCopy.headline.trim(),
             subtitle: safeCopy.subtitle.trim() || null,
             ctaLabel: null,
-            ctaUrl: subject.ctaUrl.trim() || "/store",
+            ctaUrl: subject.ctaUrl.trim() || (editingBanner ? null : "/store"),
             isActive: true,
             sortOrder: campaignSlides.length,
           }
@@ -698,7 +698,7 @@ export function BannerStudioComposer({
       mobileImageUrl: finalSlides.length === 1 ? (first.mobileUrl ?? null) : null,
       images: finalSlides.map((s, idx) => ({ ...s, sortOrder: idx })),
       ctaLabel: null,
-      ctaUrl: first.ctaUrl ?? (subject.ctaUrl.trim() || "/store"),
+      ctaUrl: first.ctaUrl ?? (subject.ctaUrl.trim() || (editingBanner ? null : "/store")),
       sortOrder: Number(sortOrder) || 0,
       isActive,
       effectiveFrom: effectiveFrom || null,

@@ -244,7 +244,8 @@ async function generateStudioImageAttempt(
       inline_data: { mime_type: params.mimeType || "image/jpeg", data: params.imageBase64 },
     });
   }
-  for (const ref of (params.referenceImages ?? []).slice(0, 4)) {
+  const maxReferenceImages = params.imageBase64 ? 4 : 5;
+  for (const ref of (params.referenceImages ?? []).slice(0, maxReferenceImages)) {
     if (ref?.data) {
       parts.push({
         inline_data: { mime_type: ref.mimeType || "image/jpeg", data: ref.data },

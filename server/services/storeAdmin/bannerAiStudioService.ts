@@ -59,7 +59,7 @@ import {
   evaluateStorefrontUnitEligibility,
   storefrontPublishableCondition,
 } from "../storefrontEligibilityService";
-import { resolveStorefrontBranchId } from "../storefrontService";
+import { resolveStorefrontBranchId, storefrontCatalog } from "../storefrontService";
 
 const GEMINI_CONTENT_BASE = (
   process.env.GEMINI_API_BASE?.trim() || "https://generativelanguage.googleapis.com/v1beta"
@@ -476,8 +476,12 @@ async function resolveBannerSourceFacts(input: GenerateBannerCopyInput): Promise
       }
     }
   } else if (input.targetKind === "DEALS" && candidateProductIds.length === 0) {
-    const topProds = await listBannerCandidateProducts({ limit: 4 });
-    candidateProductIds = topProds.map((p) => p.productId);
+    const dealsPage = await storefrontCatalog({
+      priceFilter: "ON_SALE",
+      availability: "IN_STOCK",
+      limit: 6,
+    });
+    candidateProductIds = dealsPage.items.map((item) => item.productId);
   }
 
   const richProducts = await loadRichProductsByIds(candidateProductIds);
