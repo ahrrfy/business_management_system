@@ -1,299 +1,351 @@
 /**
- * BannerManager — إدارة البنرات الإعلانية للمتجر (لوحة hPanel، تبويب «البنرات»).
- * إضافة/تعديل/تفعيل/حذف بنر بعنوان + صورة + زرّ (CTA) + ترتيب + نافذة تاريخ + **موضع**
- * (رئيسي/جانبي طولي/فاصل بين المنتجات). تظهر فوراً في المتجر.
+ * BannerManager — لوحة البنرات الإعلانية المبسّطة ومركز التصميم الذكي المدمج (تبويب «البنرات»).
+ *
+ * تشمل:
+ * - مساحة عمل موحّدة بدون نوافذ متداخلة لتصميم بنرات مفردة أو حملات متعددة الشرائح.
+ * - أزرار ترتيب أولوية الظهور بنقرة واحدة (↑ ↓) وتفعيل/إيقاف فوري.
+ * - كشف آلي للبنرات المرتبطة بعروض متوقفة أو منتهية الصلاحية (محجوبة تلقائياً عن الزبائن).
  */
-import { useEffect, useState } from "react";
-import { ImagePlus, Loader2, Pencil, Plus, Save, Trash2, X } from "lucide-react";
+
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useSearch } from "wouter";
+import {
+  ArrowDown,
+  ArrowUp,
+  Eye,
+  ImagePlus,
+  Loader2,
+  MousePointerClick,
+  Palette,
+  Pencil,
+  Power,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { AppSelect } from "@/components/ui/AppSelect";
-import { Input } from "@/components/ui/input";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { fmtInt } from "@/lib/money";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  BannerStudioComposer,
+  type BannerPlacementOption,
+  type BannerSavePayload,
+  type EditableBannerRecord,
+} from "@/components/store/BannerStudioComposer";
 
-type Placement = "HERO" | "SIDE" | "INLINE";
-type RenderMode = "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
-
-/** هذه النسب هي مساحة العرض الفعلية في المتجر، وليست مجرد مقاسات إرشادية. */
-const PLACEMENTS: Record<Placement, { label: string; hint: string; mobileHint?: string; badge: string; ratio: number }> = {
-  HERO: {
-    label: "رئيسي — كاروسيل أعلى المتجر",
-    hint: "مساحة العرض الفعلية: 1600×800 بكسل (نسبة 2:1) — صمّم عليها لكي يملأ البنر كاملاً بلا قص أو تمويه",
-    mobileHint: "1200×600 للهاتف (2:1) — نفس نسبة سطح المكتب",
-    badge: "رئيسي",
-    ratio: 2,
-  },
-  SIDE: {
-    label: "جانبي طولي — جوانب الشاشات العريضة",
-    hint: "مساحة العرض الفعلية: 600×1200 بكسل (نسبة 1:2 طولية) — يظهر كبيراً على الشاشات العريضة فقط",
-    badge: "جانبي",
-    ratio: 1 / 2,
-  },
-  INLINE: {
-    label: "فاصل تسويقي — شريط عرضي بين صفوف المنتجات",
-    hint: "مساحة العرض الفعلية: 1500×500 بكسل (نسبة 3:1) — يظهر بين صفوف المنتجات بلا ضغط أو أشرطة جانبية",
-    mobileHint: "1200×400 للهاتف (3:1) — نفس نسبة سطح المكتب",
-    badge: "فاصل",
-    ratio: 3,
-  },
-};
-
-type ImageDimensions = { width: number; height: number };
-
-function useImageDimensions(source: string | undefined) {
-  const [dimensions, setDimensions] = useState<ImageDimensions | null>(null);
-  useEffect(() => {
-    if (!source) { setDimensions(null); return; }
-    setDimensions(null);
-    const image = new Image();
-    image.onload = () => setDimensions({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => setDimensions(null);
-    image.src = source;
-    return () => { image.onload = null; image.onerror = null; };
-  }, [source]);
-  return dimensions;
-}
-
-interface FormState {
-  id: number | null;
-  title: string;
-  subtitle: string;
-  ctaLabel: string;
-  ctaUrl: string;
-  sortOrder: string;
-  isActive: boolean;
-  effectiveFrom: string;
-  effectiveTo: string;
-  images: ImageItem[];
-  imageSettings: Record<string, { effectiveFrom: string; effectiveTo: string; isActive: boolean }>;
-  mobileImages: ImageItem[];
-  placement: Placement;
-  renderMode: RenderMode;
-  focusX: number;
-  focusY: number;
-}
-
-const EMPTY: FormState = {
-  id: null, title: "", subtitle: "", ctaLabel: "", ctaUrl: "", sortOrder: "0",
-  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], imageSettings: {}, mobileImages: [], placement: "HERO", renderMode: "PRESERVE_FULL", focusX: 50, focusY: 50,
+const PLACEMENT_BADGE: Record<BannerPlacementOption, string> = {
+  HERO: "رئيسي — أعلى المتجر",
+  INLINE: "فاصل — بين المنتجات",
+  SIDE: "جانبي محوّل",
 };
 
 export default function BannerManager() {
-  const [form, setForm] = useState<FormState | null>(null);
+  const [loc, navigate] = useLocation();
+  const search = useSearch();
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [editingBanner, setEditingBanner] = useState<EditableBannerRecord | null>(null);
+  const [initialPromoId, setInitialPromoId] = useState<number | null>(null);
+
   const utils = trpc.useUtils();
   const listQ = trpc.storeAdmin.banners.list.useQuery();
+  const metricsQ = trpc.storeAdmin.banners.metrics.useQuery({ days: 30 });
+
+  const metricsByBanner = useMemo(() => {
+    const map = new Map<number, { impressions: number; clicks: number; ctr: number }>();
+    for (const row of metricsQ.data?.byBanner ?? []) {
+      map.set(row.bannerId, row);
+    }
+    return map;
+  }, [metricsQ.data]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    const promoParam = Number(params.get("studioPromo"));
+    if (Number.isInteger(promoParam) && promoParam > 0) {
+      setEditingBanner(null);
+      setInitialPromoId(promoParam);
+      setComposerOpen(true);
+      params.delete("studioPromo");
+      const qs = params.toString();
+      const basePath = loc.split("?")[0] || "/store-admin";
+      navigate(qs ? `${basePath}?${qs}` : basePath, { replace: true });
+    }
+  }, [loc, navigate, search]);
 
   const invalidate = () => {
     void utils.storeAdmin.banners.list.invalidate();
+    void utils.storeAdmin.banners.metrics.invalidate();
   };
-  const createM = trpc.storeAdmin.banners.create.useMutation({ onSuccess: () => { notify.ok("أُضيف البنر"); setForm(null); invalidate(); }, onError: (e) => notify.err(e) });
-  const updateM = trpc.storeAdmin.banners.update.useMutation({ onSuccess: () => { notify.ok("حُفظ البنر"); setForm(null); invalidate(); }, onError: (e) => notify.err(e) });
-  const removeM = trpc.storeAdmin.banners.remove.useMutation({ onSuccess: () => { notify.ok("حُذف البنر"); invalidate(); }, onError: (e) => notify.err(e) });
 
-  const banners = listQ.data ?? [];
-  const saving = createM.isPending || updateM.isPending;
-  const imageSource = form?.images[0]?.dataUrl ?? form?.images[0]?.url;
-  const imageDimensions = useImageDimensions(imageSource);
-  const selectedPlacement = form ? PLACEMENTS[form.placement] : null;
-  const sourceRatio = imageDimensions ? imageDimensions.width / imageDimensions.height : null;
-  const hasRatioMismatch = sourceRatio != null && selectedPlacement != null
-    && Math.abs(Math.log(sourceRatio / selectedPlacement.ratio)) > 0.12;
+  const createM = trpc.storeAdmin.banners.create.useMutation({
+    onSuccess: () => {
+      notify.ok("نُشر البنر في المتجر بنجاح");
+      setComposerOpen(false);
+      setEditingBanner(null);
+      setInitialPromoId(null);
+      invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
-  function edit(b: (typeof banners)[number]) {
-    const storedImages = Array.isArray(b.images) ? b.images as Array<{ url: string; effectiveFrom?: string | null; effectiveTo?: string | null; isActive?: boolean }> : [];
-    const images = storedImages.length
-      ? storedImages.map((image, index) => ({ id: `stored-${index}`, dataUrl: image.url, isPrimary: index === 0 }))
-      : (b.imageUrl ? [{ id: "cur", dataUrl: b.imageUrl, isPrimary: true }] : []);
-    const sourceImages: Array<{ url: string; effectiveFrom?: string | null; effectiveTo?: string | null; isActive?: boolean }> = storedImages.length ? storedImages : images.map((image) => ({ url: image.dataUrl }));
-    const imageSettings = Object.fromEntries(sourceImages.map((image, index) => [`${storedImages.length ? `stored-${index}` : "cur"}`, { effectiveFrom: image.effectiveFrom ?? "", effectiveTo: image.effectiveTo ?? "", isActive: image.isActive !== false }]));
-    setForm({
-      id: b.id,
-      title: b.title,
-      subtitle: b.subtitle ?? "",
-      ctaLabel: b.ctaLabel ?? "",
-      ctaUrl: b.ctaUrl ?? "",
-      sortOrder: String(b.sortOrder ?? 0),
-      isActive: !!b.isActive,
-      effectiveFrom: b.effectiveFrom ?? "",
-      effectiveTo: b.effectiveTo ?? "",
-      images,
-      imageSettings,
-      mobileImages: b.mobileImageUrl ? [{ id: "mobile", dataUrl: b.mobileImageUrl, isPrimary: true }] : [],
-      placement: (b.placement as Placement) ?? "HERO",
-      renderMode: (b.renderMode as RenderMode) ?? "PRESERVE_FULL",
-      focusX: b.focusX ?? 50,
-      focusY: b.focusY ?? 50,
-    });
+  const updateM = trpc.storeAdmin.banners.update.useMutation({
+    onSuccess: () => {
+      notify.ok("حُفظت تعديلات البنر");
+      setComposerOpen(false);
+      setEditingBanner(null);
+      setInitialPromoId(null);
+      invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const removeM = trpc.storeAdmin.banners.remove.useMutation({
+    onSuccess: () => {
+      notify.ok("حُذف البنر");
+      invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  function handleSave(payload: BannerSavePayload) {
+    if (payload.id != null) {
+      updateM.mutate({ ...payload, id: payload.id });
+    } else {
+      const { id: _unused, ...createInput } = payload;
+      createM.mutate(createInput);
+    }
   }
 
-  function save() {
-    if (!form) return;
-    const title = form.title.trim();
-    if (!title) { notify.err("العنوان مطلوب"); return; }
-    const payload = {
-      title,
-      subtitle: form.subtitle.trim() || null,
-      imageUrl: form.images[0]?.dataUrl ?? form.images[0]?.url ?? null,
-      images: form.images.map((image, index) => ({ url: image.dataUrl || image.url || "", ...(form.imageSettings[image.id] ?? { isActive: true }), sortOrder: index })).filter((image) => image.url),
-      mobileImageUrl: form.mobileImages[0]?.dataUrl ?? form.mobileImages[0]?.url ?? null,
-      ctaLabel: form.ctaLabel.trim() || null,
-      ctaUrl: form.ctaUrl.trim() || null,
-      sortOrder: Number(form.sortOrder) || 0,
-      isActive: form.isActive,
-      effectiveFrom: form.effectiveFrom || null,
-      effectiveTo: form.effectiveTo || null,
-      placement: form.placement,
-      renderMode: form.renderMode,
-      focusX: form.focusX,
-      focusY: form.focusY,
-    };
-    if (form.id == null) createM.mutate(payload);
-    else updateM.mutate({ id: form.id, ...payload });
+  async function handleQuickReorder(index: number, delta: -1 | 1) {
+    const list = listQ.data ?? [];
+    const swapIdx = index + delta;
+    if (!list[index] || !list[swapIdx]) return;
+    const reordered = [...list];
+    const tmp = reordered[index]!;
+    reordered[index] = reordered[swapIdx]!;
+    reordered[swapIdx] = tmp;
+
+    const updates = reordered
+      .map((item, pos) => ({ id: item.id, prev: item.sortOrder ?? -1, next: pos }))
+      .filter((u) => u.prev !== u.next);
+    if (updates.length === 0) return;
+    try {
+      await Promise.all(updates.map((u) => updateM.mutateAsync({ id: u.id, sortOrder: u.next })));
+      invalidate();
+    } catch (err) {
+      notify.err(err);
+    }
   }
 
-  async function del(id: number, title: string) {
+  async function handleDelete(id: number, title: string) {
     const ok = await confirm({ title: "حذف البنر؟", description: title });
     if (ok) removeM.mutate({ id });
   }
 
+  const banners = listQ.data ?? [];
+  const saving = createM.isPending || updateM.isPending;
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">البنرات الإعلانية</h2>
-        {!form && (
-          <button onClick={() => setForm({ ...EMPTY })} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground transition hover:opacity-90">
-            <Plus aria-hidden className="size-4" /> بنر جديد
-          </button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-bold">البنرات الإعلانية واستوديو الإخراج الاحترافي</h2>
+          <p className="text-xs text-muted-foreground">
+            اختر منتجاً متوفراً أو قسماً أو عرضاً لإخراج بنره الإعلاني بهوية المتجر المعتمدة لمقاسَي سطح المكتب والهاتف.
+          </p>
+        </div>
+        {!composerOpen && (
+          <Button
+            type="button"
+            onClick={() => {
+              setEditingBanner(null);
+              setInitialPromoId(null);
+              setComposerOpen(true);
+            }}
+            className="gap-2 font-bold"
+          >
+            <Palette aria-hidden className="size-4" />
+            تصميم أو إضافة بنر جديد
+          </Button>
         )}
       </div>
 
-      {/* نموذج الإضافة/التعديل */}
-      {form && (
-        <div className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-muted-foreground">{form.id == null ? "بنر جديد" : "تعديل البنر"}</h3>
-            <button onClick={() => setForm(null)} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent">
-              <X aria-hidden className="size-4" />
-            </button>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm md:col-span-2">
-              <span className="mb-1 block font-medium text-muted-foreground">موضع البنر في المتجر</span>
-              <AppSelect value={form.placement} onValueChange={(value) => setForm({ ...form, placement: value as Placement })}>
-                {(Object.keys(PLACEMENTS) as Placement[]).map((p) => (
-                  <option key={p} value={p}>{PLACEMENTS[p].label}</option>
-                ))}
-              </AppSelect>
-            </label>
-            <label className="text-sm md:col-span-2">
-              <span className="mb-1 block font-medium text-muted-foreground">معالجة الصورة تلقائياً</span>
-              <AppSelect value={form.renderMode} onValueChange={(value) => setForm({ ...form, renderMode: value as RenderMode })}>
-                <option value="PRESERVE_FULL">حفظ التصميم كاملاً — خلفية ممتدة، بلا قص للنص أو الشعار</option>
-                <option value="SMART_CROP">ملء ذكي — للصور التي لا تحتوي نصاً داخلها</option>
-                <option value="LAYERED">تصميم طبقات — الصورة خلفية والنص والزر من حقول المتجر</option>
-              </AppSelect>
-              <span className="mt-1 block text-xs text-muted-foreground">الوضع الآمن الافتراضي يحافظ على الصورة كاملة ويملأ الفراغ من الخلفية نفسها.</span>
-            </label>
-            {form.renderMode !== "PRESERVE_FULL" && <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
-              <label className="text-sm"><span className="mb-1 block font-medium text-muted-foreground">تركيز أفقي: {form.focusX}%</span><input className="w-full" type="range" min="0" max="100" value={form.focusX} onChange={(e) => setForm({ ...form, focusX: Number(e.target.value) })} /></label>
-              <label className="text-sm"><span className="mb-1 block font-medium text-muted-foreground">تركيز عمودي: {form.focusY}%</span><input className="w-full" type="range" min="0" max="100" value={form.focusY} onChange={(e) => setForm({ ...form, focusY: Number(e.target.value) })} /></label>
-            </div>}
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">العنوان *</span>
-              <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">الوصف</span>
-              <input value={form.subtitle} onChange={(e) => setForm({ ...form, subtitle: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">نصّ الزرّ (اختياري)</span>
-              <input value={form.ctaLabel} onChange={(e) => setForm({ ...form, ctaLabel: e.target.value })} placeholder="تسوّق الآن" className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">رابط الزرّ (اختياري)</span>
-              <input value={form.ctaUrl} onChange={(e) => setForm({ ...form, ctaUrl: e.target.value })} dir="ltr" placeholder="/store?category=..." className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left outline-none focus:ring-2 focus:ring-primary/30" />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">الترتيب</span>
-              <input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
-            </label>
-            <label className="flex items-center gap-2 self-end text-sm font-medium">
-              <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} className="size-4" />
-              مفعّل (يظهر في المتجر)
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">فعّال من (اختياري)</span>
-              <Input type="date" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} className="w-full" />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block font-medium text-muted-foreground">فعّال إلى (اختياري)</span>
-              <Input type="date" value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} className="w-full" />
-            </label>
-          </div>
-          <div className="mt-3">
-            <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
-            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={20} singlePrimary={false} hint={`${PLACEMENTS[form.placement].hint} يمكنك رفع حتى 20 صورة.`} />
-            {form.images.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {form.images.map((image, index) => {
-                const settings = form.imageSettings[image.id] ?? { effectiveFrom: "", effectiveTo: "", isActive: true };
-                const updateSettings = (patch: Partial<typeof settings>) => setForm({ ...form, imageSettings: { ...form.imageSettings, [image.id]: { ...settings, ...patch } } });
-                return <div key={image.id} className="rounded-xl border border-border bg-muted/20 p-2">
-                  <div className="mb-2 flex items-center justify-between text-xs font-bold"><span>الصورة {index + 1}</span><label className="flex items-center gap-1"><input type="checkbox" checked={settings.isActive} onChange={(e) => updateSettings({ isActive: e.target.checked })} /> فعالة</label></div>
-                  <div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-muted-foreground">تظهر من<Input type="date" value={settings.effectiveFrom} onChange={(e) => updateSettings({ effectiveFrom: e.target.value })} className="mt-1 h-8 w-full" /></label><label className="text-[11px] text-muted-foreground">تتوقف في<Input type="date" value={settings.effectiveTo} onChange={(e) => updateSettings({ effectiveTo: e.target.value })} className="mt-1 h-8 w-full" /></label></div>
-                </div>;
-              })}
-            </div>}
-            {/* عدم مطابقة النسبة تحذيرٌ (كهرمانيّ) ومطابقتها تأكيدٌ (أخضر) — توكنز دلالية بلا سوابق
-                `dark:`: `--sem-*` تنقلب بنفسها في الوضع الليليّ (tokens.css) فالسابقة تكرارٌ يَنجرف. */}
-            {imageDimensions && selectedPlacement && (
-              <div className={`mt-2 rounded-xl border px-3 py-2 text-xs ${hasRatioMismatch ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"}`}>
-                الصورة المرفوعة: {imageDimensions.width}×{imageDimensions.height} ({sourceRatio!.toFixed(2)}:1). {hasRatioMismatch
-                  ? <>لا تطابق مساحة «{selectedPlacement.badge}» ({selectedPlacement.ratio === 0.5 ? "1:2" : `${selectedPlacement.ratio}:1`})؛ سيُحفظ التصميم كاملاً لكن قد تظهر خلفية ممتدة. لأفضل نتيجة ارفع صورة بالمقاس المقترح أو غيّر الموضع.</>
-                  : <>مطابقة لمساحة «{selectedPlacement.badge}»؛ ستملأ الإطار كاملاً بلا قص أو تمويه.</>}
-              </div>
-            )}
-            {form.placement !== "SIDE" && <div className="mt-3">
-              <span className="mb-1 block text-sm font-medium text-muted-foreground">نسخة الهاتف (اختيارية، موصى بها للحملات النصية)</span>
-              <ImageUploader value={form.mobileImages} onChange={(imgs) => setForm({ ...form, mobileImages: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].mobileHint!} />
-            </div>}
-          </div>
-          <button onClick={save} disabled={saving} className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
-            {saving ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ
-          </button>
+      {metricsQ.data && metricsQ.data.totalImpressions > 0 && (
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          <Card>
+            <CardContent className="flex items-center justify-between px-3.5 py-2.5 text-xs">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Eye aria-hidden className="size-4 text-primary" /> إجمالي مشاهدات البنرات (30 يوماً)
+              </span>
+              <span className="text-base font-bold tabular-nums">{fmtInt(metricsQ.data.totalImpressions)}</span>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="flex items-center justify-between px-3.5 py-2.5 text-xs">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <MousePointerClick aria-hidden className="size-4 text-primary" /> النقرات ومعدل التفاعل CTR
+              </span>
+              <span className="text-base font-bold tabular-nums">
+                {fmtInt(metricsQ.data.totalClicks)} ({(metricsQ.data.overallCtr * 100).toFixed(1)}%)
+              </span>
+            </CardContent>
+          </Card>
         </div>
       )}
 
-      {/* القائمة */}
+      {composerOpen && (
+        <BannerStudioComposer
+          key={editingBanner ? `edit-${editingBanner.id}` : `new-${initialPromoId ?? 0}`}
+          editingBanner={editingBanner}
+          initialPromoId={initialPromoId}
+          saving={saving}
+          onCancel={() => {
+            setComposerOpen(false);
+            setEditingBanner(null);
+            setInitialPromoId(null);
+          }}
+          onSubmit={handleSave}
+        />
+      )}
+
       {listQ.isLoading ? (
-        <div className="flex justify-center py-16 text-muted-foreground"><Loader2 aria-hidden className="size-6 animate-spin" /></div>
+        <div className="flex justify-center py-14 text-muted-foreground">
+          <Loader2 aria-hidden className="size-6 animate-spin" />
+        </div>
       ) : banners.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">لا توجد بنرات — أضف أوّل بنر ترويجي.</div>
+        <Card>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">
+            لا توجد بنرات منشورة حالياً — اضغط «تصميم أو إضافة بنر جديد» للبدء في ثوانٍ.
+          </CardContent>
+        </Card>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {banners.map((b) => (
-            <div key={b.id} className="flex gap-3 rounded-2xl border border-border bg-card p-3">
-              <div className="size-20 shrink-0 overflow-hidden rounded-xl bg-muted">
-                {b.imageUrl ? <img src={b.imageUrl} alt={b.title} className="size-full object-cover" /> : <div className="flex size-full items-center justify-center text-muted-foreground"><ImagePlus aria-hidden className="size-6 opacity-40" /></div>}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-bold">{b.title}</p>
-                  <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">
-                    {PLACEMENTS[(b.placement as Placement) ?? "HERO"]?.badge ?? "رئيسي"}
-                  </span>
-                  {!b.isActive && <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">معطّل</span>}
-                </div>
-                {b.subtitle && <p className="truncate text-xs text-muted-foreground">{b.subtitle}</p>}
-                <p className="mt-0.5 text-[11px] text-muted-foreground">ترتيب: {b.sortOrder}{b.ctaLabel ? ` · زرّ: ${b.ctaLabel}` : ""}</p>
-                <div className="mt-1.5 flex gap-1.5">
-                  <button onClick={() => edit(b)} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-accent"><Pencil aria-hidden className="size-3" /> تعديل</button>
-                  <button onClick={() => del(b.id, b.title)} className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"><Trash2 aria-hidden className="size-3" /> حذف</button>
-                </div>
-              </div>
-            </div>
-          ))}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {banners.map((b, idx) => {
+            const stat = metricsByBanner.get(b.id);
+            const slideCount = Array.isArray(b.images) && b.images.length > 0 ? b.images.length : 1;
+            const missingTarget = Boolean(b.isActive && !b.ctaUrl);
+            const placementKey = (b.placement as BannerPlacementOption) ?? "HERO";
+            return (
+              <Card key={b.id} className="overflow-hidden">
+                <CardContent className="space-y-2.5 p-3">
+                  <div className="relative aspect-[2.5/1] w-full overflow-hidden rounded-xl border border-border bg-muted/40">
+                    {b.imageUrl ? (
+                      <img src={b.imageUrl} alt={b.title} className="size-full object-cover" />
+                    ) : (
+                      <div className="flex size-full items-center justify-center text-muted-foreground">
+                        <ImagePlus aria-hidden className="size-7 opacity-40" />
+                      </div>
+                    )}
+                    <div className="absolute right-2 top-2 flex flex-wrap gap-1">
+                      <span className="rounded-full bg-background/90 px-2.5 py-0.5 text-[10px] font-bold text-foreground shadow-xs">
+                        {PLACEMENT_BADGE[placementKey] ?? PLACEMENT_BADGE.HERO}
+                      </span>
+                      {slideCount > 1 && (
+                        <span className="rounded-full bg-background/90 px-2 py-0.5 text-[10px] font-bold text-muted-foreground shadow-xs">
+                          {slideCount} شرائح
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="truncate text-sm font-bold">{b.title}</p>
+                      {!b.isActive && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
+                          متوقف
+                        </span>
+                      )}
+                      {b.linkedPromoInactive && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
+                          <TriangleAlert aria-hidden className="size-2.5" /> محجوب لانتهاء العرض
+                        </span>
+                      )}
+                      {missingTarget && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
+                          <TriangleAlert aria-hidden className="size-2.5" /> بلا رابط وجهة
+                        </span>
+                      )}
+                    </div>
+                    {b.subtitle && <p className="mt-0.5 truncate text-xs text-muted-foreground">{b.subtitle}</p>}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {stat ? (
+                        <span className="font-semibold text-foreground tabular-nums">
+                          {fmtInt(stat.impressions)} مشاهدة · {fmtInt(stat.clicks)} نقرة ({(stat.ctr * 100).toFixed(1)}%)
+                        </span>
+                      ) : (
+                        <span>جاهز لتتبّع المشاهدات والنقرات</span>
+                      )}
+                      {b.ctaUrl && <code dir="ltr" className="text-[10px] opacity-80">{b.ctaUrl}</code>}
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {banners.length > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickReorder(idx, -1)}
+                            disabled={idx === 0 || updateM.isPending}
+                            title="تقديم البنر في الظهور"
+                            aria-label="تقديم البنر"
+                            className="rounded-lg border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-35"
+                          >
+                            <ArrowUp aria-hidden className="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickReorder(idx, 1)}
+                            disabled={idx === banners.length - 1 || updateM.isPending}
+                            title="تأخير البنر في الظهور"
+                            aria-label="تأخير البنر"
+                            className="rounded-lg border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-35"
+                          >
+                            <ArrowDown aria-hidden className="size-3" />
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => updateM.mutate({ id: b.id, isActive: !b.isActive })}
+                        disabled={updateM.isPending}
+                        className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold transition ${
+                          b.isActive
+                            ? "border-[var(--sem-pos)]/35 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                            : "border-border bg-muted/40 text-muted-foreground hover:bg-accent"
+                        }`}
+                      >
+                        <Power aria-hidden className="size-3" />
+                        {b.isActive ? "مفعّل" : "تفعيل"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingBanner(b);
+                          setInitialPromoId(null);
+                          setComposerOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-foreground hover:bg-accent"
+                      >
+                        <Pencil aria-hidden className="size-3" /> تعديل
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(b.id, b.title)}
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
+                      >
+                        <Trash2 aria-hidden className="size-3" /> حذف
+                      </button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

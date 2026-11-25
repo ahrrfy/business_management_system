@@ -609,6 +609,7 @@ export function isStoreOrderAlertRecipientUser(
         roleLockedByInactiveCustomRole?: boolean;
         customRoleKey?: string | null;
         customRoleLabel?: string | null;
+        jobTitle?: string | null;
         permissionsOverride?: unknown;
       }
     | null
@@ -618,12 +619,14 @@ export function isStoreOrderAlertRecipientUser(
   if (user.role === "admin" || user.role === "manager") return false;
   const key = (user.customRoleKey ?? "").trim().toLowerCase();
   const label = (user.customRoleLabel ?? "").trim();
+  const jobTitle = (user.jobTitle ?? "").trim();
   if (
     key === "reception_clerk" ||
     key === "customer_service" ||
     label.includes("استقبال") ||
     label.includes("خدمة الزبائن") ||
-    label.includes("خدمة العملاء")
+    label.includes("خدمة العملاء") ||
+    label.includes("خدمة عملاء")
   ) {
     return true;
   }
@@ -633,6 +636,15 @@ export function isStoreOrderAlertRecipientUser(
       ? (user.permissionsOverride as PermissionMap)
       : null;
   const perms = resolvePermissions(user.role as RoleKey, override);
+  if (
+    perms.store !== "NONE" &&
+    (jobTitle.includes("استقبال") ||
+      jobTitle.includes("خدمة الزبائن") ||
+      jobTitle.includes("خدمة العملاء") ||
+      jobTitle.includes("خدمة عملاء"))
+  ) {
+    return true;
+  }
   return (
     perms.workorders === "FULL" &&
     perms.store !== "NONE" &&

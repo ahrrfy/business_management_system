@@ -47,7 +47,7 @@ async function withImageServer<T>(fn: (base: string) => Promise<T>): Promise<T> 
 }
 
 beforeEach(async () => {
-  await truncateTables(["storeBanners", "storeSettings", "branches", "users"]);
+  await truncateTables(["storeBanners", "promotions", "storeSettings", "branches", "users"]);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.branches).values({ id: 2, name: "مبيعات", code: "SALES", type: "SALES" });
   await db().insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
@@ -111,6 +111,98 @@ describe("listActiveBanners — رابط لا base64", () => {
     ]);
     // كل فهرس ببصمته (صورتان مختلفتان ⇒ رابطان مختلفان).
     expect(hits[0].imageUrl).not.toBe(hits[1].imageUrl);
+  });
+
+  it("لا يعمّم mobileImageUrl المفرد على بنر متعدّد الشرائح، ويخدم mobile-<i> المخصّص لكل شريحة", async () => {
+    const multi = await createBanner(
+      {
+        title: "عشرون شريحة",
+        mobileImageUrl: JPEG_DATA_URL,
+        images: [
+          { url: PNG_DATA_URL, mobileUrl: JPEG_DATA_URL, ctaUrl: "/store/category/2", sortOrder: 0 },
+          { url: JPEG_DATA_URL, sortOrder: 1 },
+        ],
+      },
+      1,
+    );
+    const slides = (await listActiveBanners()).filter((x) => x.id === multi.id);
+    expect(slides).toHaveLength(2);
+    expect(slides[0].mobileImageUrl).toMatch(/\/mobile-0\?v=/);
+    expect(slides[0].ctaUrl).toBe("/store/category/2");
+    expect(slides[1].mobileImageUrl).toBeNull();
+
+    await withImageServer(async (base) => {
+      expect((await fetch(`${base}/api/img/banner/${multi.id}/mobile-0`)).status).toBe(200);
+      expect((await fetch(`${base}/api/img/banner/${multi.id}/mobile-1`)).status).toBe(404);
+    });
+  });
+
+  it("يحجب شريحة البنر المرتبطة بعرض ترويجي منتهٍ أو مقيد بيوم آخر ويعرض المرتبطة بعرض سارٍ", async () => {
+    const baghdadDow = new Date(Date.now() + 3 * 3600_000).getUTCDay();
+    const otherDow = (baghdadDow + 1) % 7;
+    await db().insert(s.promotions).values([
+      {
+        id: 2,
+        name: "عرض سارٍ",
+        type: "PERCENT",
+        discountPercent: "15",
+        scope: "ALL",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2099-12-31T00:00:00Z"),
+        customerTier: "RETAIL",
+        isActive: true,
+      },
+      {
+        id: 3,
+        name: "عرض منتهٍ",
+        type: "PERCENT",
+        discountPercent: "20",
+        scope: "ALL",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2021-01-01T00:00:00Z"),
+        customerTier: "RETAIL",
+        isActive: true,
+      },
+      {
+        id: 4,
+        name: "عرض ليوم آخر",
+        type: "PERCENT",
+        discountPercent: "25",
+        scope: "ALL",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2099-12-31T00:00:00Z"),
+        activeDays: [otherDow],
+        customerTier: "RETAIL",
+        isActive: true,
+      },
+      {
+        id: 5,
+        name: "عرض كاشير فقط",
+        type: "PERCENT",
+        discountPercent: "30",
+        scope: "ALL",
+        channel: "POS_ONLY",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2099-12-31T00:00:00Z"),
+        customerTier: "RETAIL",
+        isActive: true,
+      },
+    ]);
+    const promoBanner = await createBanner(
+      {
+        title: "حملة مرتبطة بعروض",
+        images: [
+          { url: PNG_DATA_URL, ctaUrl: "/store?promo=2", sortOrder: 0 },
+          { url: JPEG_DATA_URL, ctaUrl: "/store?promo=3", sortOrder: 1 },
+          { url: JPEG_DATA_URL, ctaUrl: "/store?promo=4", sortOrder: 2 },
+          { url: JPEG_DATA_URL, ctaUrl: "/store?promo=5", sortOrder: 3 },
+        ],
+      },
+      1,
+    );
+    const slides = (await listActiveBanners()).filter((x) => x.id === promoBanner.id);
+    expect(slides).toHaveLength(1);
+    expect(slides[0].ctaUrl).toBe("/store?promo=2");
   });
 
   it("رابطٌ جاهز (صفّ قديم/مستورَد) يُمرَّر كما هو — لا يختفي", async () => {

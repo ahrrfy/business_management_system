@@ -2672,6 +2672,53 @@ const ALERT_PRINT_CONFIRMED_CUTOFF_SQL = sql`TIMESTAMP('2020-01-01 00:00:00')`;
 const ALERT_PRINT_LEASE_STAMP_SQL = sql`DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR)`;
 const ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL = sql`DATE_SUB(DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 YEAR), INTERVAL 20 SECOND)`;
 
+/**
+ * يسترجع الطلبات الحديثة (آخر 30 دقيقة بحالة PENDING) التي لم تُطبع قصاصة تنبيهها بعد،
+ * لضمان التقاط الطلبات التي وصلت أثناء إعادة تحميل الصفحة أو تسجيل الدخول أو انقطاع الاتصال اللحظي.
+ */
+export async function listPendingOnlineOrderAlertPrints(input: {
+  scopedBranchId: number | null;
+}): Promise<
+  Array<{
+    orderId: number;
+    orderNumber: string;
+    totalAmount: string;
+    itemsCount: number;
+    createdAt: string;
+  }>
+> {
+  const db = getDb();
+  if (!db) return [];
+  const conds = [
+    eq(onlineOrders.status, "PENDING"),
+    sql`${onlineOrders.createdAt} >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 MINUTE)`,
+    sql`(${onlineOrders.alertPrintedAt} IS NULL OR (${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL} AND ${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_EXPIRED_LEASE_CUTOFF_SQL}))`,
+  ];
+  if (input.scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  const rows = await db
+    .select({
+      id: onlineOrders.id,
+      orderNumber: onlineOrders.orderNumber,
+      total: onlineOrders.total,
+      createdAt: onlineOrders.createdAt,
+      itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
+    })
+    .from(onlineOrders)
+    .where(and(...conds))
+    .orderBy(asc(onlineOrders.id))
+    .limit(5);
+
+  return rows.map((r) => ({
+    orderId: Number(r.id),
+    orderNumber: r.orderNumber,
+    totalAmount: String(r.total ?? "0"),
+    itemsCount: Math.max(1, Number(r.itemCount ?? 1)),
+    createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : new Date().toISOString(),
+  }));
+}
+
 export async function claimOnlineOrderAlertPrint(input: {
   id: number;
   scopedBranchId: number | null;

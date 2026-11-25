@@ -2,6 +2,7 @@ import { matchesStorefrontRefinements as matchesRefinements } from "./storefront
 import {
   storefrontCatalog,
   resolveStorefrontBranchId,
+  resolveStorefrontPromotionScope,
   applyStorefrontPromotions,
   type StorefrontProduct,
 } from "./storefrontService";
@@ -19,9 +20,10 @@ import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefron
 
 export interface StorefrontSearchSuggestionInput extends StorefrontSearchScope {
   query: string;
+  promotionId?: number | null;
   availability?: "IN_STOCK" | "ALL";
   brand?: string;
-  priceFilter?: "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
+  priceFilter?: "ALL" | "ON_SALE" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 }
 export interface StorefrontSearchProductSuggestion {
   productId: number;
@@ -78,6 +80,8 @@ export async function storefrontSearchSuggestions(
     branchId,
     query,
     input.categoryId,
+    input.categoryIds?.slice().sort((a, b) => a - b),
+    input.promotionId,
     input.productIds?.slice().sort((a, b) => a - b),
     input.availability,
     input.brand,
@@ -86,13 +90,27 @@ export async function storefrontSearchSuggestions(
   const load = async () => {
     const db = getDb();
     if (!db) return empty;
+    let scopedInput = input;
+    if (input.promotionId != null) {
+      const promoScope = await resolveStorefrontPromotionScope(branchId, input.promotionId);
+      if (!promoScope.valid) return empty;
+      scopedInput = {
+        ...input,
+        categoryIds: promoScope.categoryIds
+          ? (input.categoryIds ? input.categoryIds.filter((id) => promoScope.categoryIds!.includes(id)) : promoScope.categoryIds)
+          : input.categoryIds,
+        productIds: promoScope.productIds
+          ? (input.productIds ? input.productIds.filter((id) => promoScope.productIds!.includes(id)) : promoScope.productIds)
+          : input.productIds,
+      };
+    }
     const barcode = await resolveBarcodeOwnerResult(db, query, {
       allowNormalizedFallback: true,
     });
     // Barcode aliases must obey the same ambiguity/publication and exact unit contract as the catalog.
     if (barcode.status !== "NOT_FOUND") {
       const page = await storefrontCatalog({
-        ...input,
+        ...scopedInput,
         search: query,
         branchId,
         limit: 6,
@@ -100,13 +118,13 @@ export async function storefrontSearchSuggestions(
       return {
         ...empty,
         products: page.items
-          .filter((p) => matchesRefinements(p, input))
+          .filter((p) => matchesRefinements(p, scopedInput))
           .map(publicSuggestion),
       };
     }
     const matched = (
-      await loadStorefrontSearchMatches(query, input, true)
-    ).filter((row) => !input.brand?.trim() || row.brand?.trim() === input.brand.trim());
+      await loadStorefrontSearchMatches(query, scopedInput, true)
+    ).filter((row) => !scopedInput.brand?.trim() || row.brand?.trim() === scopedInput.brand.trim());
     const availability = await loadVariantAvailability(
       db,
       branchId,

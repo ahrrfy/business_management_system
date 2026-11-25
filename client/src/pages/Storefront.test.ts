@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/trpc", () => ({
   trpc: {
     storefront: {
-      catalog: { useInfiniteQuery: () => ({}) },
+      catalog: { useInfiniteQuery: () => ({}), useQuery: () => ({}) },
       product: { useQuery: () => ({}) },
       searchSuggestions: { useQuery: () => ({}) },
       labelSummary: { useQuery: () => ({}) },

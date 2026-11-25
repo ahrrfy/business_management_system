@@ -12,6 +12,7 @@ import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
 import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import {
+  createClosestRelaxedSearchMatcher,
   createStorefrontSearchMatcher,
   normalizeArabicSearch,
   tokenizeSearchTerms,
@@ -73,6 +74,7 @@ async function readCandidates() {
 }
 export interface StorefrontSearchScope {
   categoryId?: number | null;
+  categoryIds?: number[] | null;
   productIds?: number[] | null;
 }
 export async function loadStorefrontSearchMatches(
@@ -88,12 +90,54 @@ export async function loadStorefrontSearchMatches(
           readCandidates,
         );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);
+  const catIds = scope.categoryIds == null ? null : new Set(scope.categoryIds);
   const match = createStorefrontSearchMatcher(search, allowSimilar);
   const matches = [];
   let deadline = performance.now() + 8;
   for (const row of rows) {
     if (
       (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (catIds == null || (row.categoryId != null && catIds.has(row.categoryId))) &&
+      (ids == null || ids.has(row.productId))
+    ) {
+      const result = match(row);
+      if (result) matches.push({ ...row, match: result });
+    }
+    if (performance.now() >= deadline) {
+      await yieldToRequests();
+      deadline = performance.now() + 8;
+    }
+  }
+  return matches.sort(
+    (a, b) =>
+      b.match.score - a.match.score ||
+      a.productId - b.productId ||
+      a.productUnitId - b.productUnitId,
+  );
+}
+
+/** يسترجع أقرب المنتجات المطابقة دلالياً أو إملائياً عند خلوّ البحث الصارم من النتائج. */
+export async function loadClosestStorefrontSearchMatches(
+  search: string,
+  scope: StorefrontSearchScope = {},
+) {
+  const rows = !storefrontReadCacheEnabled()
+    ? await readCandidates()
+    : await storefrontCacheGet(
+        indexCache,
+        "index",
+        "0",
+        readCandidates,
+      );
+  const ids = scope.productIds == null ? null : new Set(scope.productIds);
+  const catIds = scope.categoryIds == null ? null : new Set(scope.categoryIds);
+  const match = createClosestRelaxedSearchMatcher(search);
+  const matches = [];
+  let deadline = performance.now() + 8;
+  for (const row of rows) {
+    if (
+      (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (catIds == null || (row.categoryId != null && catIds.has(row.categoryId))) &&
       (ids == null || ids.has(row.productId))
     ) {
       const result = match(row);

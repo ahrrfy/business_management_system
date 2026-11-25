@@ -22,11 +22,15 @@ import {
   productUnits,
   productVariants,
   products,
+  promotionTargets,
   promotions,
   storefrontProductReviews,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { loadStorefrontSearchMatches } from "./storefrontSearchIndex";
+import {
+  loadClosestStorefrontSearchMatches,
+  loadStorefrontSearchMatches,
+} from "./storefrontSearchIndex";
 import { matchesStorefrontRefinements, refineStorefrontProductIds, type StorefrontCatalogRefinements } from "./storefrontCatalogRefinements";
 import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
@@ -902,9 +906,67 @@ export async function applyStorefrontPromotions(
 }
 
 /** كتالوج المتجر: منتجات قابلة للاقتناء (بطاقة لكل منتج) + توفّر + سعر عرض. المتوفّر أولاً. */
+export async function resolveStorefrontPromotionScope(
+  branchId: number,
+  promotionId: number,
+): Promise<{
+  valid: boolean;
+  categoryIds?: number[];
+  productIds?: number[];
+}> {
+  const db = getDb();
+  if (!db) return { valid: false };
+  const todayYmd = todayYmdBaghdad();
+  const [promo] = await db
+    .select({
+      id: promotions.id,
+      scope: promotions.scope,
+      activeDays: promotions.activeDays,
+    })
+    .from(promotions)
+    .where(
+      and(
+        eq(promotions.id, promotionId),
+        eq(promotions.isActive, true),
+        eq(promotions.applicationMode, "AUTO"),
+        inArray(promotions.channel, ["ALL", "STORE_ONLY"]),
+        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, RETAIL))!,
+      ),
+    )
+    .limit(1);
+  if (!promo || !isPromotionActiveOnDay(Array.isArray(promo.activeDays) ? promo.activeDays : null, todayYmd)) {
+    return { valid: false };
+  }
+  if (promo.scope === "ALL") {
+    return { valid: true };
+  }
+  const targets = await db
+    .select({
+      categoryId: promotionTargets.categoryId,
+      productId: promotionTargets.productId,
+    })
+    .from(promotionTargets)
+    .where(eq(promotionTargets.promotionId, promotionId));
+  if (promo.scope === "CATEGORIES") {
+    const categoryIds = Array.from(
+      new Set(targets.map((t) => Number(t.categoryId ?? 0)).filter((n) => n > 0)),
+    );
+    return categoryIds.length > 0 ? { valid: true, categoryIds } : { valid: false };
+  }
+  const productIds = Array.from(
+    new Set(targets.map((t) => Number(t.productId ?? 0)).filter((n) => n > 0)),
+  );
+  return productIds.length > 0 ? { valid: true, productIds } : { valid: false };
+}
+
 export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   branchId?: number;
   categoryId?: number | null;
+  categoryIds?: number[] | null;
+  promotionId?: number | null;
   productIds?: number[] | null;
   search?: string | null;
   limit?: number;
@@ -913,23 +975,61 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   availability?: StorefrontAvailability;
   /** بذرة عشوائية حتمية لجلسة الزائر لتغيير تشكيلة المنتجات في كل زيارة أو تحديث للصفحة. */
   seed?: string | null;
+  /** استرجاع أقرب المنتجات المتوفرة دلالياً/إملائياً عندما يعيد البحث الحرفي صفر نتائج. */
+  relaxedFallback?: boolean;
 }): Promise<StorefrontCatalogPage> {
   const db = getDb();
   if (!db) return { items: [], hasMore: false, nextCursor: null };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
   const availabilityFilter = opts.availability ?? "IN_STOCK";
+
+  let effectiveCatIdsInput = opts.categoryIds ?? null;
+  let effectiveProdIdsInput = opts.productIds ?? null;
+  let effectivePriceFilter = opts.priceFilter;
+
+  if (opts.promotionId != null) {
+    const promoScope = await resolveStorefrontPromotionScope(branchId, opts.promotionId);
+    if (!promoScope.valid) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
+    if (promoScope.categoryIds) {
+      effectiveCatIdsInput = effectiveCatIdsInput
+        ? effectiveCatIdsInput.filter((id) => promoScope.categoryIds!.includes(id))
+        : promoScope.categoryIds;
+    }
+    if (promoScope.productIds) {
+      effectiveProdIdsInput = effectiveProdIdsInput
+        ? effectiveProdIdsInput.filter((id) => promoScope.productIds!.includes(id))
+        : promoScope.productIds;
+    }
+  }
+
+  const effectiveSearchScope = {
+    categoryId: opts.categoryId,
+    categoryIds: effectiveCatIdsInput,
+    productIds: effectiveProdIdsInput,
+  };
+
   // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
   const conds: SQL<unknown>[] = [storefrontPublishableCondition()];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
-  if (opts.productIds != null) {
-    if (opts.productIds.length === 0) {
+  if (effectiveCatIdsInput != null) {
+    if (effectiveCatIdsInput.length === 0) {
       return { items: [], hasMore: false, nextCursor: null };
     }
-    conds.push(inArray(products.id, opts.productIds));
+    conds.push(inArray(products.categoryId, effectiveCatIdsInput));
+  }
+  if (effectiveProdIdsInput != null) {
+    if (effectiveProdIdsInput.length === 0) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
+    conds.push(inArray(products.id, effectiveProdIdsInput));
   }
   const s = String(opts.search ?? "").trim();
+  const useRelaxedFallback = Boolean(opts.relaxedFallback && s);
   let resolvedBarcodeUnitId: number | null = null;
+  let closestScoreByProduct: Map<number, number> | null = null;
   if (s) {
     // هوية الباركود تُحسم أولاً بالمساواة المفهرسة على الشكل الخام ومرشّحات UPC/EAN؛
     // لا نمرّرها عبر مطبّع بحث الأسماء الذي يطوي مسافتين داخليتين إلى واحدة.
@@ -942,8 +1042,45 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       conds.push(eq(productUnits.id, barcodeResolution.owner.productUnitId));
     } else if (barcodeResolution.status === "AMBIGUOUS") {
       conds.push(sql`false`);
+    } else if (useRelaxedFallback) {
+      const rawClosest = await loadClosestStorefrontSearchMatches(s, effectiveSearchScope);
+      if (!rawClosest.length) return { items: [], hasMore: false, nextCursor: null };
+      const availabilityMap =
+        availabilityFilter === "ALL"
+          ? null
+          : await loadVariantAvailability(
+              db,
+              branchId,
+              rawClosest.map((row) => row.variantId),
+            );
+      closestScoreByProduct = new Map<number, number>();
+      const selectedUnitIds: number[] = [];
+      for (const row of rawClosest) {
+        if (availabilityMap) {
+          const state = availabilityMap.get(row.variantId);
+          const inStock =
+            state?.isService === true ||
+            evaluateStorefrontUnitEligibility({
+              isActive: true,
+              isStoreSaleUnit: true,
+              retailPrice: row.price,
+              conversionFactor: row.conversionFactor,
+              stockBase: state?.hasStockRow ? state.onHandBase : null,
+              availableBase: state?.availableBase ?? 0,
+            }).available;
+          if (!inStock) continue;
+        }
+        const isNewProduct = !closestScoreByProduct.has(row.productId);
+        if (isNewProduct && closestScoreByProduct.size >= 180) continue;
+        const prev = closestScoreByProduct.get(row.productId) ?? 0;
+        if (row.match.score > prev) closestScoreByProduct.set(row.productId, row.match.score);
+        selectedUnitIds.push(row.productUnitId);
+      }
+      const unitIds = Array.from(new Set(selectedUnitIds));
+      if (!unitIds.length) return { items: [], hasMore: false, nextCursor: null };
+      conds.push(inArray(productUnits.id, unitIds));
     } else {
-      const matches = await loadStorefrontSearchMatches(s, opts);
+      const matches = await loadStorefrontSearchMatches(s, effectiveSearchScope);
       // Per-unit candidates preserve partial barcode-unit selection, too.
       const unitIds = Array.from(new Set(matches.map((row) => row.productUnitId)));
       if (!unitIds.length) return { items: [], hasMore: false, nextCursor: null };
@@ -959,35 +1096,54 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   // وزوّارٌ متزامنون على نفس المرشّحات يدفعونه كلٌّ على حدة. المفتاح يحمل **كلّ** ما يغيّر
   // النتيجة (الشركة/الفرع/الفئة/البحث/مرشّح التوفّر) ولا شيء سواه.
   const seedKey = (opts.seed ?? "").trim();
+  const effectiveCategoryIds =
+    effectiveCatIdsInput?.length
+      ? Array.from(new Set(effectiveCatIdsInput)).sort((a, b) => a - b)
+      : opts.categoryId == null
+        ? null
+        : [opts.categoryId];
   const loadOrderedIds = async (): Promise<CatalogRanking> => {
     let brands: string[] = [];
-    const ids = await loadRankedStorefrontProductIds(
-    db,
-    branchId,
-    conds,
-    {
-      availability: availabilityFilter,
-      categoryIds: opts.categoryId == null ? null : [opts.categoryId],
-      search: s,
-      seed: opts.seed,
-      brand: opts.brand,
-      priceFilter: opts.priceFilter,
-      sort: opts.sort,
-    },
-    false,
-    (value) => { brands = value; },
-  );
+    const baseIds = await loadRankedStorefrontProductIds(
+      db,
+      branchId,
+      conds,
+      {
+        availability: availabilityFilter,
+        categoryIds: effectiveCategoryIds,
+        search: useRelaxedFallback ? undefined : s,
+        seed: opts.seed,
+        brand: opts.brand,
+        priceFilter: effectivePriceFilter,
+        sort: opts.sort,
+      },
+      false,
+      (value) => {
+        brands = value;
+      },
+    );
+    const ids = closestScoreByProduct
+      ? [...baseIds].sort(
+          (a, b) =>
+            (closestScoreByProduct!.get(b) ?? 0) -
+              (closestScoreByProduct!.get(a) ?? 0) || a - b,
+        )
+      : baseIds;
     return { ids, brands };
   };
   // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
-  const searchKey = resolvedBarcodeUnitId == null ? normalizeArabicSearch(s) : `barcode-unit:${resolvedBarcodeUnitId}`;
-  const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
+  const searchKey = resolvedBarcodeUnitId == null
+    ? `${useRelaxedFallback ? "relaxed:" : ""}${normalizeArabicSearch(s)}`
+    : `barcode-unit:${resolvedBarcodeUnitId}`;
+  const categoryScopeKey = effectiveCategoryIds?.length ? effectiveCategoryIds.join(",") : "";
+  const productIdsKey = effectiveProdIdsInput?.length ? [...effectiveProdIdsInput].sort((a, b) => a - b).join(",") : "";
+  const promoKey = opts.promotionId ? `promo:${opts.promotionId}` : "";
   const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
     : await storefrontCacheGet(
-      searchKey || productIdsKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache,
-      searchKey || productIdsKey || seedKey || opts.brand?.trim() ? "search" : "candidates",
-      JSON.stringify([companyScope(), branchId, opts.categoryId ?? "", availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", opts.priceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
+      searchKey || productIdsKey || promoKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache,
+      searchKey || productIdsKey || promoKey || seedKey || opts.brand?.trim() ? "search" : "candidates",
+      JSON.stringify([companyScope(), branchId, categoryScopeKey, promoKey, availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", effectivePriceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
         loadOrderedIds,
       );
   const orderedIds = ranking.ids;
@@ -1414,6 +1570,11 @@ export interface StorefrontOffer {
   discountAmount: string;
   scope: "ALL" | "CATEGORIES" | "PRODUCTS";
   summary?: string;
+  ctaUrl?: string;
+  effectiveTo?: string | null;
+  targetCount?: number;
+  targetCategoryIds?: number[];
+  targetProductIds?: number[];
 }
 
 /** العروض الفعّالة اليوم (للبنرات) — نفس نافذة resolvePromotionForLine. */
@@ -1439,6 +1600,7 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
       bogoGetDiscountPercent: promotions.bogoGetDiscountPercent,
       tieredMode: promotions.tieredMode,
       activeDays: promotions.activeDays,
+      effectiveTo: promotions.effectiveTo,
       scope: promotions.scope,
       priority: promotions.priority,
     })
@@ -1455,17 +1617,61 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
       )
     )
     .orderBy(desc(promotions.priority), desc(promotions.id))
-    .limit(30);
-  return rows
+    .limit(50);
+  const activeRows = rows
     .filter((r) => isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, todayYmd))
-    .slice(0, 10)
-    .map((r) => ({
-      id: Number(r.id),
+    .slice(0, 30);
+
+  const offerIds = activeRows.map((r) => Number(r.id));
+  const targetRows = offerIds.length
+    ? await db
+        .select({
+          promotionId: promotionTargets.promotionId,
+          categoryId: promotionTargets.categoryId,
+          productId: promotionTargets.productId,
+        })
+        .from(promotionTargets)
+        .where(inArray(promotionTargets.promotionId, offerIds))
+    : [];
+
+  const catsByOffer = new Map<number, number[]>();
+  const prodsByOffer = new Map<number, number[]>();
+  for (const t of targetRows) {
+    const pid = Number(t.promotionId);
+    if (t.categoryId != null) {
+      const arr = catsByOffer.get(pid) ?? [];
+      if (!arr.includes(Number(t.categoryId))) arr.push(Number(t.categoryId));
+      catsByOffer.set(pid, arr);
+    }
+    if (t.productId != null) {
+      const arr = prodsByOffer.get(pid) ?? [];
+      if (!arr.includes(Number(t.productId))) arr.push(Number(t.productId));
+      prodsByOffer.set(pid, arr);
+    }
+  }
+
+  return activeRows.map((r) => {
+    const id = Number(r.id);
+    const catIds = catsByOffer.get(id) ?? [];
+    const prodIds = prodsByOffer.get(id) ?? [];
+    const effectiveToYmd =
+      r.effectiveTo instanceof Date
+        ? r.effectiveTo.toISOString().slice(0, 10)
+        : r.effectiveTo
+          ? String(r.effectiveTo).slice(0, 10)
+          : null;
+    return {
+      id,
       name: r.name,
       type: r.type as PromotionType,
       discountPercent: String(r.discountPercent ?? "0"),
       discountAmount: String(r.discountAmount ?? "0"),
       scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
+      ctaUrl: `/store?promo=${id}`,
+      effectiveTo: effectiveToYmd,
+      targetCount: r.scope === "CATEGORIES" ? catIds.length : r.scope === "PRODUCTS" ? prodIds.length : undefined,
+      targetCategoryIds: catIds,
+      targetProductIds: prodIds,
       summary: formatPromotionSummary({
         type: r.type,
         discountPercent: r.discountPercent,
@@ -1480,5 +1686,6 @@ export async function storefrontOffers(branchIdInput?: number): Promise<Storefro
         bogoGetDiscountPercent: r.bogoGetDiscountPercent,
         tieredMode: r.tieredMode,
       }),
-    }));
+    };
+  });
 }

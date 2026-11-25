@@ -17,6 +17,10 @@ import {
   type ThematicCollectionCard,
 } from "@/components/storefront/StorefrontThematicStrip";
 import {
+  StorefrontOffersBar,
+  type LiveStoreOffer,
+} from "@/components/storefront/StorefrontOffersBar";
+import {
   type AvailabilityFilter,
   type CatalogSort,
   type PriceFilter,
@@ -90,6 +94,8 @@ export interface StorefrontCatalogSurfaceProps {
   ) => void;
   searchScope: {
     categoryId: number | null;
+    categoryIds?: number[] | null;
+    promotionId?: number | null;
     availability: AvailabilityFilter;
     brand: string;
     priceFilter: PriceFilter;
@@ -117,6 +123,10 @@ export interface StorefrontCatalogSurfaceProps {
     p: RowProduct,
     event: React.MouseEvent<HTMLButtonElement>,
   ) => boolean;
+  offers?: LiveStoreOffer[];
+  activeOfferId?: number | null;
+  onSelectOffer?: (offer: LiveStoreOffer) => void;
+  onClearOffer?: () => void;
 }
 export function StorefrontCatalogSurface({
   announcement,
@@ -172,7 +182,48 @@ export function StorefrontCatalogSurface({
   catalogLoadMoreRef,
   dealProducts,
   addFeaturedToCart,
+  offers = [],
+  activeOfferId = null,
+  onSelectOffer,
+  onClearOffer,
 }: StorefrontCatalogSurfaceProps) {
+  const contextualCategoryBanners = React.useMemo(() => {
+    if (categoryId == null || search || showWishlist) return [];
+    const targetPath = `/store/category/${categoryId}`;
+    const targetQuery = `category=${categoryId}`;
+    return [...topBanners, ...inlineBanners].filter(
+      (b) => b.ctaUrl === targetPath || (b.ctaUrl?.includes(targetQuery) ?? false),
+    );
+  }, [categoryId, inlineBanners, search, showWishlist, topBanners]);
+
+  const visibleHeroBanners =
+    !search && categoryId == null && !showWishlist
+      ? topBanners
+      : contextualCategoryBanners;
+
+  const isSearching = Boolean(search.trim());
+  const closestFallbackQ = trpc.storefront.catalog.useQuery(
+    {
+      search: search.trim(),
+      availability: "IN_STOCK",
+      relaxedFallback: true,
+      limit: 24,
+    },
+    {
+      enabled:
+        isSearching &&
+        search.trim().length >= 2 &&
+        !catalogQ.isLoading &&
+        filteredItems.length === 0,
+      staleTime: 15_000,
+      refetchOnWindowFocus: false,
+    },
+  );
+  const closestItems = React.useMemo(
+    () => (closestFallbackQ.data?.items ?? []).filter((item) => item.inStock !== false),
+    [closestFallbackQ.data?.items],
+  );
+
   return (
     <main
       id="store-main"
@@ -208,77 +259,99 @@ export function StorefrontCatalogSurface({
         </div>
       )}
 
-      <div className="mb-4">
-        <StorefrontDispatchCountdown />
-      </div>
-
-      <StorefrontMilestoneBar
-        cartSubtotal={cartSubtotal}
-        freeShippingThresholdBaghdad={settings?.freeShippingThreshold}
-        freeShippingThresholdGovernorates={
-          settings?.freeShippingThresholdGovernorates
-        }
-        className="mb-6"
-      />
-
-      {!search &&
-        categoryId == null &&
-        !showWishlist &&
-        topBanners.length > 0 && (
-          <div className="mb-8 w-full min-w-0">
-            <BannerCarousel banners={topBanners} slot={topBannerSlot} />
+      {!isSearching && (
+        <>
+          <div className="mb-4">
+            <StorefrontDispatchCountdown />
           </div>
-        )}
 
-      {cats.length > 0 && (
+          <StorefrontMilestoneBar
+            cartSubtotal={cartSubtotal}
+            freeShippingThresholdBaghdad={settings?.freeShippingThreshold}
+            freeShippingThresholdGovernorates={
+              settings?.freeShippingThresholdGovernorates
+            }
+            className="mb-6"
+          />
+        </>
+      )}
+
+      {!isSearching && visibleHeroBanners.length > 0 && (
+        <div className="mb-6 w-full min-w-0">
+          <BannerCarousel
+            banners={visibleHeroBanners}
+            slot={
+              categoryId != null
+                ? visibleHeroBanners[0]?.placement === "INLINE"
+                  ? "INLINE"
+                  : "HERO"
+                : topBannerSlot
+            }
+          />
+        </div>
+      )}
+
+      {!isSearching && cats.length > 0 && (
         <StorefrontCategories
           id="store-categories"
           categories={cats}
           selectedId={categoryId}
           onSelectCategory={selectCategory}
           categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
-          className="mb-8 scroll-mt-28"
+          className="mb-7 scroll-mt-28"
         />
       )}
 
-      {((!search && categoryId == null && !showWishlist) ||
-        selectedThematicCollection != null) && (
-        <StorefrontThematicStrip
-          activeCollectionId={selectedThematicCollection?.id ?? null}
-          onSelectCollection={handleSelectThematicCollection}
-          onClearCollection={handleClearThematicCollection}
-          className="mb-8"
-        />
-      )}
-
-      {!search &&
-        categoryId == null &&
-        !showWishlist &&
-        dealProducts &&
-        dealProducts.length > 0 &&
-        addFeaturedToCart && (
+      {!isSearching &&
+        ((categoryId == null && !showWishlist) || activeOfferId != null) &&
+        ((dealProducts && dealProducts.length > 0 && addFeaturedToCart) ||
+          (offers.length > 0 && onSelectOffer && onClearOffer)) && (
           <section
             id="store-deals"
-            aria-label="عروض وتخفيضات مختارة"
-            className="mb-8 scroll-mt-28 rounded-2xl bg-white p-3.5 shadow-xs ring-1 ring-slate-200/70 sm:rounded-3xl sm:p-5 dark:bg-slate-900 dark:ring-slate-800"
+            aria-label="عروض وتخفيضات المتجر"
+            className="mb-7 scroll-mt-28 rounded-2xl border border-slate-900/[0.08] bg-white p-4 shadow-2xs sm:rounded-3xl sm:p-6 dark:border-slate-800 dark:bg-slate-900"
           >
-            <CuratedRow
-              title="عروض وتخفيضات مختارة"
-              icon={
-                <BadgePercent
-                  aria-hidden
-                  className="size-4 text-[var(--store-accent)]"
-                />
-              }
-              products={dealProducts}
-              onSelect={openProduct}
-              onAdd={addFeaturedToCart}
-              recentlyAddedId={recentlyAddedProductId}
-              canBeOrdered={storefrontProductCanBeOrdered}
-              getCartQuantity={getProductCartQty}
-              onUpdateQuantity={handleProductQuantityDelta}
-            />
+            {offers.length > 0 && onSelectOffer && onClearOffer && (
+              <StorefrontOffersBar
+                offers={offers}
+                activeOfferId={activeOfferId}
+                onSelectOffer={onSelectOffer}
+                onClearOffer={onClearOffer}
+                embedded={Boolean(dealProducts && dealProducts.length > 0)}
+                className={dealProducts && dealProducts.length > 0 ? "mb-5 border-b border-slate-900/[0.06] pb-4 dark:border-slate-800" : ""}
+              />
+            )}
+            {dealProducts && dealProducts.length > 0 && addFeaturedToCart && (
+              <CuratedRow
+                title="الأصناف المشمولة بالعروض والتخفيضات"
+                subtitle="منتجات متوفرة بالمخزون بسعر مخفّض وجاهزة للشحن الفوري"
+                icon={
+                  <BadgePercent
+                    aria-hidden
+                    className="size-4 text-[var(--store-accent)]"
+                  />
+                }
+                products={dealProducts}
+                onSelect={openProduct}
+                onAdd={addFeaturedToCart}
+                recentlyAddedId={recentlyAddedProductId}
+                canBeOrdered={storefrontProductCanBeOrdered}
+                getCartQuantity={getProductCartQty}
+                onUpdateQuantity={handleProductQuantityDelta}
+              />
+            )}
           </section>
+        )}
+
+      {!isSearching &&
+        ((categoryId == null && !showWishlist) ||
+          selectedThematicCollection != null) && (
+          <StorefrontThematicStrip
+            activeCollectionId={selectedThematicCollection?.id ?? null}
+            onSelectCollection={handleSelectThematicCollection}
+            onClearCollection={handleClearThematicCollection}
+            className="mb-7"
+          />
         )}
 
       <section
@@ -334,36 +407,86 @@ export function StorefrontCatalogSurface({
             </button>
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white py-24 text-center dark:border-slate-800 dark:bg-slate-900">
-            <Package aria-hidden className="size-10 text-slate-400" />
-            <p className="mt-3 text-sm font-black text-slate-900 dark:text-white">
-              {isEmptyCatalog
-                ? "لا توجد منتجات معروضة حالياً"
-                : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}
-            </p>
-            <p className="mt-1 max-w-sm text-xs font-semibold text-slate-500">
-              {isEmptyCatalog
-                ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر."
-                : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}
-            </p>
-            {search && (
-              <StorefrontSearchAlternatives
-                query={search}
-                onSearch={submitStoreSearch}
-                onSelectProduct={openProduct}
-                {...searchScope}
+          isSearching && closestFallbackQ.isLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 text-slate-500">
+              <Loader2
+                aria-hidden
+                className="size-7 animate-spin text-[var(--store-brand)]"
               />
-            )}
-            {!isEmptyCatalog && (
-              <button
-                type="button"
-                onClick={clearCatalogFilters}
-                className="mt-4 rounded-xl bg-[#1d1d1f] px-5 py-2.5 text-xs font-black text-white transition hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
-              >
-                مسح البحث والفلاتر
-              </button>
-            )}
-          </div>
+              <p className="mt-3 text-sm font-bold">جارٍ البحث عن أقرب المنتجات المتوفرة…</p>
+            </div>
+          ) : isSearching && closestItems.length > 0 ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-900/[0.08] bg-[#f5f5f7] px-4 py-3 text-right dark:border-slate-800 dark:bg-slate-800/70">
+                <div>
+                  <p className="text-xs sm:text-sm font-bold text-[#1d1d1f] dark:text-slate-100">
+                    نعرض لك أقرب المنتجات المتوفرة لبحثك «{search}»
+                  </p>
+                  <p className="text-[11px] font-medium text-[#6e6e73] dark:text-slate-400">
+                    {categoryId != null
+                      ? "وسّعنا البحث ليشمل كافة أقسام المتجر المتوفرة بالمخزون"
+                      : "مرتّبة حسب الأقرب للاسم والمنطوق والوصف"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearCatalogFilters}
+                  className="rounded-full border border-slate-900/10 bg-white px-3.5 py-1.5 text-xs font-bold text-[#1d1d1f] transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  عرض كل الكتالوج
+                </button>
+              </div>
+              <StorefrontProductGrid
+                filteredItems={closestItems}
+                wishlistIds={wishlistIds}
+                recentlyAddedProductId={recentlyAddedProductId}
+                heartPulseTarget={heartPulseTarget}
+                heartPulseNonce={heartPulseNonce}
+                sharePulseTarget={sharePulseTarget}
+                sharePulseNonce={sharePulseNonce}
+                openProduct={openProduct}
+                addCatalogProduct={addCatalogProduct}
+                toggleWishlist={toggleWishlist}
+                shareProduct={shareProduct}
+                getProductCartQty={getProductCartQty}
+                handleProductQuantityDelta={handleProductQuantityDelta}
+                search={search}
+                feedStrips={feedStrips}
+                inlineBanners={inlineBanners}
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white py-20 text-center dark:border-slate-800 dark:bg-slate-900">
+              <Package aria-hidden className="size-10 text-slate-400" />
+              <p className="mt-3 text-sm font-black text-slate-900 dark:text-white">
+                {isEmptyCatalog
+                  ? "لا توجد منتجات معروضة حالياً"
+                  : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}
+              </p>
+              <p className="mt-1 max-w-sm text-xs font-semibold text-slate-500">
+                {isEmptyCatalog
+                  ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر."
+                  : "جرّب كلمات أقصر أو مسح البحث لعرض التشكيلة المتوفرة بالمخزون."}
+              </p>
+              {search && (
+                <StorefrontSearchAlternatives
+                  query={search}
+                  onSearch={submitStoreSearch}
+                  onSelectProduct={openProduct}
+                  {...searchScope}
+                />
+              )}
+              {!isEmptyCatalog && (
+                <button
+                  type="button"
+                  onClick={clearCatalogFilters}
+                  className="mt-4 rounded-xl bg-[#1d1d1f] px-5 py-2.5 text-xs font-black text-white transition hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
+                >
+                  مسح البحث والفلاتر
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <StorefrontProductGrid
             filteredItems={filteredItems}

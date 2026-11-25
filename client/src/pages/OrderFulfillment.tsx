@@ -41,7 +41,9 @@ import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
-import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, isStoreOrderAlertRecipientUser, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { StoreOrderAutoPrintBar } from "@/components/store/StoreOrderAutoPrintBar";
+import { printStoreOrderAlertAuto } from "@/lib/printing/storeOrderAlertSlip";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
@@ -185,6 +187,8 @@ export default function OrderFulfillment() {
     "storeAdmin.orders.dispatch",
     !!me.data?.role && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]),
   );
+  const canAutoPrintAlerts = lifecycleActionAllowed(me.data, "storeAdmin.orders.claimNotificationPrint", !!me.data?.role
+    && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL"));
   const canReadDeliveryTimeline = lifecycleActionAllowed(me.data, "delivery.consignmentTimeline", !!me.data?.role
     && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "READ"));
   const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
@@ -629,6 +633,21 @@ export default function OrderFulfillment() {
             }}
             actions={[
               {
+                key: "print-alert-slip",
+                kind: "print",
+                label: "طباعة قصاصة الطلب (10 سم)",
+                icon: Printer,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy || st === "CANCELLED",
+                disabledReason: st === "CANCELLED" ? "لا يمكن الطباعة لطلب ملغى" : "هناك عملية جارية على الطلب",
+                onSelect: () => {
+                  void printStoreOrderAlertAuto(
+                    { orderNumber: o.orderNumber, createdAt: o.createdAt, itemsCount: o.itemCount, totalAmount: o.total },
+                    { allowBrowserFallback: true },
+                  );
+                },
+              },
+              {
                 key: "print-dual",
                 kind: "print",
                 label: printingId === o.id ? "جارٍ الطباعة المزدوجة…" : "طباعة مزدوجة (إيصال + ملصق)",
@@ -824,36 +843,20 @@ export default function OrderFulfillment() {
     setPrintingId(id);
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) {
-        releaseReservedPrintWindow();
-        notify.err("تعذر جلب تفاصيل الطلب");
-        return;
-      }
+      if (!d) { releaseReservedPrintWindow(); notify.err("تعذر جلب تفاصيل الطلب"); return; }
       if (d.status !== "CONFIRMED" && d.status !== "PROCESSING") {
         releaseReservedPrintWindow();
         notify.warn("تغيّرت حالة الطلب", "راجع الحالة الحالية قبل طباعة ورقة التجهيز.");
         return;
       }
-      if (reviewed) {
-        printOnlineOrderPreparationA4(d);
-        return;
-      }
+      if (reviewed) { printOnlineOrderPreparationA4(d); return; }
       let deferred = false;
       const proceeded = await reviewBeforePreparation(id, () => {
-        if (deferred) {
-          void printPreparationA4(id, true);
-          return;
-        }
-        printOnlineOrderPreparationA4(d);
+        if (deferred) void printPreparationA4(id, true);
+        else printOnlineOrderPreparationA4(d);
       });
-      if (!proceeded) {
-        releaseReservedPrintWindow();
-        deferred = true;
-      }
-    } catch (e) {
-      releaseReservedPrintWindow();
-      notify.err(e);
-    }
+      if (!proceeded) { releaseReservedPrintWindow(); deferred = true; }
+    } catch (e) { releaseReservedPrintWindow(); notify.err(e); }
     finally { setPrintingId(null); }
   }
 
@@ -862,17 +865,10 @@ export default function OrderFulfillment() {
     setPrintingId(id);
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) {
-        releaseReservedPrintWindow();
-        notify.err("تعذر جلب تفاصيل الطلب");
-        return;
-      }
+      if (!d) { releaseReservedPrintWindow(); notify.err("تعذر جلب تفاصيل الطلب"); return; }
       await printOnlineOrderInvoiceA4(d);
       notify.ok("فُتحت نافذة طباعة الفاتورة الموحدة A4");
-    } catch (e) {
-      releaseReservedPrintWindow();
-      notify.err(e);
-    }
+    } catch (e) { releaseReservedPrintWindow(); notify.err(e); }
     finally { setPrintingId(null); }
   }
 
@@ -958,6 +954,7 @@ export default function OrderFulfillment() {
         }
       />
 
+      <StoreOrderAutoPrintBar defaultRecipient={isStoreOrderAlertRecipientUser(me.data)} canAutoPrint={canAutoPrintAlerts} />
       <ReceptionCommandAlert />
       {duplicateReview && (
         <section ref={duplicateReviewRef} tabIndex={-1} className="space-y-2" aria-label="مراجعة تشابه الطلب قبل التجهيز">

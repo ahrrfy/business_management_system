@@ -7,6 +7,7 @@ import {
   getStorefrontSearchSuggestions,
   matchStorefrontSearch,
   createStorefrontSearchMatcher,
+  createClosestRelaxedSearchMatcher,
 } from "./storefrontSearchNormalize";
 
 describe("normalizeArabicSearch", () => {
@@ -382,5 +383,93 @@ describe("simple customer search keys", () => {
         "دفتر",
       )[0].productName,
     ).toBe("دفتر");
+  });
+
+  it("bridges Iraqi colloquial terms, loanword spellings, definite article ال, and phonetic typos", () => {
+    expect(
+      matchStorefrontSearch({ productName: "حقيبة لابتوب قماش سميكة" }, "جنطة لابتوب")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "سيت الوان اكرلك 12 لون CLEAR" }, "الوان أكريليك")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "مساحة رصاص ستدلر" }, "محاية")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "مقطاطة معدن" }, "براية")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "باكيت هايلايت 4 لون" }, "قلم فسفوري")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "ملزمة كيمياء ثالث متوسط" }, "الكيمياء الثالث")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "حافظة ورق شفافة" }, "حافظات ورق")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "سبورة مغناطيسية بيضاء" }, "صبورة مغناطسيه", true),
+    ).toMatchObject({ kind: "SIMILAR" });
+    // مطابقة التأنيث والجمع لغير العاقل وكلمات الربط العراقية والماركات الإنجليزية والكلمات الملتصقة
+    expect(
+      matchStorefrontSearch({ productName: "دفتر مدرسي 100 ورقة" }, "دفاتر مدرسية")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "قلم ملون جاف" }, "أقلام ملونة")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "اقلام تلوين خشب" }, "الوان خشبية")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "دفتر مدرسي 100 ورقة" }, "دفتر ابو 100")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "قلم سبورة ازرق" }, "قلم مال صبورة")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "ستكي نوت شفاف CLEAR" }, "ستيكي نوت كلير")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "كابسة kangaro LE-210" }, "كباسة كانغارو")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "ملزمةثالث محمد النوفلي انكليزي المغرب2027" }, "ملزمة ثالث 2027"),
+    ).not.toBeNull();
+    // تقريب الأغلبية (Partial Quorum) عند وجود كلمة وصفية إضافية في بحث ثلاثي أو رباعي الكلمات
+    expect(
+      matchStorefrontSearch(workbook, "ملزمة ثالث انكليزي متميزين", true),
+    ).toMatchObject({ kind: "SIMILAR", correction: "ملزمه ثالث انكليزي" });
+    // الجسور الدلالية الإضافية: «أدوات <-> تجهيزات»، «مصحف شريف -> مصحف»، وتفضيل اسم المنتج على القسم
+    expect(
+      matchStorefrontSearch(
+        { productName: "مسطرة حرف T", category: "التجهيزات الهندسية" },
+        "ادوات هندسية",
+      )?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch(
+        { productName: "المصحف المجزء وسط" },
+        "مصحف شريف",
+      )?.kind,
+    ).toBe("SYNONYM");
+    const schoolBag = matchStorefrontSearch(
+      { productName: "حقيبة مدرسية دبلوماسية", category: "الحقائب المدرسية" },
+      "جنطة مدرسية",
+    )!;
+    const sportBagInSchoolCat = matchStorefrontSearch(
+      { productName: "جنطة رياضية", category: "الحقائب المدرسية" },
+      "جنطة مدرسية",
+    )!;
+    expect(schoolBag.score).toBeGreaterThan(sportBagInSchoolCat.score);
+
+    // محرك الاسترداد التقريبي العميق: يلتقط خطأين إملائيين معاً ويرفض الأرقام/الرموز غير الموجودة
+    const closestMultiTypo = createClosestRelaxedSearchMatcher("ملزمة انكليوي ثالت");
+    expect(closestMultiTypo(workbook)).not.toBeNull();
+    expect(
+      createClosestRelaxedSearchMatcher("ملزمة 2028")(workbook),
+    ).toBeNull();
+    expect(
+      createClosestRelaxedSearchMatcher("سيارة فضائية")(workbook),
+    ).toBeNull();
   });
 });

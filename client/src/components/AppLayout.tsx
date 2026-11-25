@@ -14,11 +14,14 @@ import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
 import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
 import { playAudioFeedback } from "@/lib/audioFeedback";
+import { toast } from "sonner";
 import { notify } from "@/lib/notify";
 import {
   createStoreOrderAlertCoordinator,
   hasConnectedAlertThermalPrinter,
-  printStoreOrderAlertSilent,
+  printStoreOrderAlertAuto,
+  readStoreOrderAutoPrintStationSetting,
+  STORE_ORDER_AUTOPRINT_STATION_EVENT,
 } from "@/lib/printing/storeOrderAlertSlip";
 import { openSearch } from "@/lib/searchEvents";
 import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
@@ -209,6 +212,13 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
       overrideForGate,
       policyForGate,
     );
+  const canAutoPrintStoreOrders = !coldStudio && Boolean(me.data)
+    && canSeeGate(
+      { operations: ["storeAdmin.orders.claimNotificationPrint"], module: "store", level: "FULL" },
+      roleForGate,
+      overrideForGate,
+      policyForGate,
+    );
   const canBranchQueueWorkOrders = canReadWorkOrders
     && canSeeGate(
       { module: "workorders", level: "FULL" },
@@ -282,6 +292,28 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
   const isStoreAlertRecipient = isStoreOrderAlertRecipientUser(me.data);
+  const [stationExplicitSetting, setStationExplicitSetting] = useState<boolean | null>(() =>
+    readStoreOrderAutoPrintStationSetting(),
+  );
+  useEffect(() => {
+    const syncStation = () => setStationExplicitSetting(readStoreOrderAutoPrintStationSetting());
+    window.addEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, syncStation);
+    window.addEventListener("storage", syncStation);
+    return () => {
+      window.removeEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, syncStation);
+      window.removeEventListener("storage", syncStation);
+    };
+  }, []);
+
+  const isAutoPrintStationActive =
+    canAutoPrintStoreOrders &&
+    (stationExplicitSetting !== null ? stationExplicitSetting : isStoreAlertRecipient);
+  const isAutoPrintStationActiveRef = useRef(isAutoPrintStationActive);
+  isAutoPrintStationActiveRef.current = isAutoPrintStationActive;
+  const stationOptIn = stationExplicitSetting === true && !isStoreAlertRecipient;
+  const stationOptInRef = useRef(stationOptIn);
+  stationOptInRef.current = stationOptIn;
+
   const claimAlertPrintM = trpc.storeAdmin.orders.claimNotificationPrint.useMutation();
   const releaseAlertPrintM = trpc.storeAdmin.orders.releaseNotificationPrint.useMutation();
   const claimAlertMutateRef = useRef(claimAlertPrintM.mutateAsync);
@@ -292,15 +324,52 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const alertCoordinator = useMemo(
     () =>
       createStoreOrderAlertCoordinator({
-        hasPrinter: hasConnectedAlertThermalPrinter,
-        claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
+        hasPrinter: async () =>
+          isAutoPrintStationActiveRef.current && (await hasConnectedAlertThermalPrinter()),
+        canBrowserFallback: () =>
+          isAutoPrintStationActiveRef.current && typeof document !== "undefined",
+        claim: (orderId) =>
+          claimAlertMutateRef.current({ id: orderId, stationOptIn: stationOptInRef.current }),
         renew: (orderId, leaseToken) =>
-          releaseAlertMutateRef.current({ id: orderId, leaseToken, renew: true }),
+          releaseAlertMutateRef.current({
+            id: orderId,
+            leaseToken,
+            renew: true,
+            stationOptIn: stationOptInRef.current,
+          }),
         confirm: (orderId, leaseToken) =>
-          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: true }),
+          releaseAlertMutateRef.current({
+            id: orderId,
+            leaseToken,
+            completed: true,
+            stationOptIn: stationOptInRef.current,
+          }),
         release: (orderId, leaseToken) =>
-          releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: false }),
-        print: printStoreOrderAlertSilent,
+          releaseAlertMutateRef.current({
+            id: orderId,
+            leaseToken,
+            completed: false,
+            stationOptIn: stationOptInRef.current,
+          }),
+        print: printStoreOrderAlertAuto,
+        onBrowserDialogOpened: ({ orderNumber, confirmPrinted, retryOrRelease }) => {
+          toast(`تأكيد طباعة قصاصة الطلب ${orderNumber}`, {
+            description: "اضغط تأكيد بعد خروج الورقة، أو إعادة المحاولة إذا أغلقت نافذة الطباعة.",
+            duration: 90_000,
+            action: {
+              label: "تأكيد الطباعة",
+              onClick: () => {
+                void confirmPrinted();
+              },
+            },
+            cancel: {
+              label: "لم تطبع",
+              onClick: () => {
+                void retryOrRelease();
+              },
+            },
+          });
+        },
         onNotify: (payload) => {
           playAudioFeedback("notification");
           notify.info(`وصل طلب متجر جديد: ${payload.orderNumber}`);
@@ -311,10 +380,32 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
 
   useEffect(() => () => alertCoordinator.dispose(), [alertCoordinator]);
 
+  const pendingAlertPrintsQ = trpc.storeAdmin.orders.pendingNotificationPrint.useQuery(
+    { stationOptIn },
+    {
+      enabled: isAutoPrintStationActive && !coldStudio && !isDisconnected(connectivity),
+      refetchOnWindowFocus: true,
+      refetchInterval: 45_000,
+    },
+  );
+
+  useEffect(() => {
+    if (!isAutoPrintStationActive || !pendingAlertPrintsQ.data?.length) return;
+    for (const pending of pendingAlertPrintsQ.data) {
+      void alertCoordinator.handleEvent(pending);
+    }
+  }, [alertCoordinator, isAutoPrintStationActive, pendingAlertPrintsQ.data, pendingAlertPrintsQ.dataUpdatedAt]);
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.CONNECTED, () => {
+    if (isAutoPrintStationActive) {
+      void pendingAlertPrintsQ.refetch();
+    }
+  });
+
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
     REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
     (event) => {
-      if (!isStoreAlertRecipient || !event.payload) return;
+      if ((!isStoreAlertRecipient && !isAutoPrintStationActive) || !event.payload) return;
       void alertCoordinator.handleEvent(event.payload);
     },
   );
