@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
-  company: 1,
   rows: [] as any[],
   indexRead: vi.fn(),
   candidateReads: 0,
@@ -10,9 +9,6 @@ const fixture = vi.hoisted(() => ({
   selected: [1],
   barcode: vi.fn(),
   availability: vi.fn(),
-}));
-vi.mock("../../tenancy/context", () => ({
-  getCurrentCompanyId: () => fixture.company,
 }));
 vi.mock("../../db", () => ({
   getDb: () => ({
@@ -100,7 +96,6 @@ const deferred = () => {
 beforeEach(() => {
   vi.resetModules();
   vi.stubEnv("RUNTIME_LAB_READ_CACHE", "1");
-  fixture.company = 1;
   fixture.rows = [row(1, "Pencil"), row(2, "Notebook"), row(3, "Marker")];
   fixture.stock = new Map([
     [1, 10],
@@ -132,7 +127,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("actual index shares a deferred company load across different terms, isolates companies and expires at 5s", async () => {
+it("actual index shares a deferred load across different terms and expires at 5s", async () => {
   const { loadStorefrontSearchMatches: search } =
     await import("../storefrontSearchIndex");
   const read = deferred();
@@ -146,16 +141,13 @@ it("actual index shares a deferred company load across different terms, isolates
   read.resolve(fixture.rows);
   expect((await pencil).map((r) => r.productId)).toEqual([1]);
   expect((await notebook).map((r) => r.productId)).toEqual([2]);
-  fixture.company = 2;
-  fixture.rows = [row(9, "Privatecompany")];
-  expect(await search("Pencil")).toEqual([]);
-  expect((await search("Privatecompany")).map((r) => r.productId)).toEqual([9]);
-  fixture.company = 1;
+  fixture.rows = [row(9, "Updatedproduct")];
   expect((await search("Pencil")).map((r) => r.productId)).toEqual([1]);
-  expect(fixture.indexRead).toHaveBeenCalledTimes(2);
+  expect(fixture.indexRead).toHaveBeenCalledTimes(1);
   now += 5_001;
   expect(await search("Pencil")).toEqual([]);
-  expect(fixture.indexRead).toHaveBeenCalledTimes(3);
+  expect((await search("Updatedproduct")).map((r) => r.productId)).toEqual([9]);
+  expect(fixture.indexRead).toHaveBeenCalledTimes(2);
 });
 it("actual index rejects all coalesced waiters and retries a failed loader", async () => {
   const { loadStorefrontSearchMatches: search } =
@@ -205,16 +197,14 @@ it("cached catalog ranking preserves product pagination, brands and fresh availa
     fixture.availability.mock.calls.filter((c) => c[2].includes(3)),
   ).toHaveLength(3);
 });
-it("actual catalog cache keeps company, branch, refinement and resolved barcode-unit keys separate", async () => {
+it("actual catalog cache keeps branch, refinement and resolved barcode-unit keys separate", async () => {
   const { storefrontCatalog: catalog } = await import("../storefrontService");
   await catalog({ branchId: 1 });
   await catalog({ branchId: 1 });
   expect(fixture.candidateReads).toBe(1);
-  fixture.company = 2;
-  await catalog({ branchId: 1 });
   await catalog({ branchId: 2 });
   await catalog({ branchId: 2, brand: "Brand" });
-  expect(fixture.candidateReads).toBe(4);
+  expect(fixture.candidateReads).toBe(3);
   fixture.barcode.mockResolvedValueOnce({
     status: "FOUND",
     owner: { productUnitId: 1 },
@@ -225,10 +215,10 @@ it("actual catalog cache keeps company, branch, refinement and resolved barcode-
     owner: { productUnitId: 2 },
   });
   await catalog({ branchId: 2, search: "Scan" });
-  expect(fixture.candidateReads).toBe(6);
+  expect(fixture.candidateReads).toBe(5);
   expect(fixture.indexRead).not.toHaveBeenCalled();
 });
-it("actual suggestion cache uses explicit lab policy, isolates company results and preserves default test freshness", async () => {
+it("actual suggestion cache uses explicit lab policy and preserves default test freshness", async () => {
   const { storefrontSearchSuggestions: suggest } =
     await import("../storefrontSearchService");
   const first = await suggest({ query: "Pencil" });
@@ -236,10 +226,7 @@ it("actual suggestion cache uses explicit lab policy, isolates company results a
   const barcodeReads = fixture.barcode.mock.calls.length;
   expect(await suggest({ query: "Pencil" })).toEqual(first);
   expect(fixture.barcode).toHaveBeenCalledTimes(barcodeReads);
-  fixture.company = 2;
-  fixture.rows = [row(9, "Othercompany")];
-  expect((await suggest({ query: "Pencil" })).products).toEqual([]);
+  fixture.rows = [row(9, "Otherproduct")];
   vi.stubEnv("RUNTIME_LAB_READ_CACHE", "");
-  fixture.company = 1;
   expect((await suggest({ query: "Pencil" })).products).toEqual([]);
 });

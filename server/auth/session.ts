@@ -224,7 +224,6 @@ export type SessionPayload = {
   uid: number;
   iat: number;
   fp?: string;
-  companyId?: number;
   sid?: number;
   /** Explicit reissue watermark matching users.sessionsValidFrom (seconds) on self password change. */
   rvw?: number;
@@ -249,7 +248,7 @@ export async function signSession(
       }
     | null,
   iatSec?: number,
-  companyId?: number,
+  _unusedLegacyCompanyId?: number,
   sid?: number,
   deviceKeyThumbprint?: string,
   nativeClientId?: NativeClientId,
@@ -279,14 +278,6 @@ export async function signSession(
     }
   } else if (nativeClientId != null) {
     throw new Error("Native client identity requires a device-bound session");
-  }
-  // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
-  if (
-    typeof companyId === "number" &&
-    Number.isInteger(companyId) &&
-    companyId > 0
-  ) {
-    claims.companyId = companyId;
   }
   // اختياري — معرّف سطر userSessions (راجع تعليق SessionPayload). الاستدعاءات بلا sid
   // (اختبارات وحدة/مسارات لا تُنشئ سطر جلسة) تُصدر توكناً بلا تتبّع فردي، سلوك legacy.
@@ -347,14 +338,6 @@ export async function verifySession(
     if (iat > nowSec + 60) return null;
 
     const fp = typeof payload.fp === "string" ? payload.fp : undefined;
-    // اختياري — توكنات أُصدرت قبل تعدّد الشركات (أو في نشر أحادي الشركة) لا تحمله؛
-    // getDb() (server/db.ts) يتعامل مع غيابه بسقوط لمسار DATABASE_URL في وضع غير متعدّد.
-    const companyId =
-      typeof payload.companyId === "number" &&
-      Number.isInteger(payload.companyId) &&
-      payload.companyId > 0
-        ? payload.companyId
-        : undefined;
     // اختياري — راجع تعليق SessionPayload.sid. توكنات قبل هذه الميزة تعود بلا sid.
     const sid =
       typeof payload.sid === "number" &&
@@ -398,7 +381,7 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp, companyId, sid, rvw, dpk, dpc };
+    return { uid, iat, fp, sid, rvw, dpk, dpc };
   } catch {
     return null;
   }

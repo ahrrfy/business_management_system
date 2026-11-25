@@ -57,7 +57,6 @@ function caller(role: "admin" | "manager") {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: role === "admin" ? 9 : 8,
       role,

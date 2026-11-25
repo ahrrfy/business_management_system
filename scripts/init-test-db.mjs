@@ -75,22 +75,9 @@ const RAW_URL =
   process.env.TEST_DATABASE_URL ?? defaultTestDatabaseUrl(process.cwd());
 const target = parseAndGuard(RAW_URL, "قاعدة الاختبار");
 
-// إن ضُبطت قاعدة التحكّم، افحصها **الآن** (قبل أيّ فعل) بنفس الحرّاس — bootstrap ينشئ القاعدة
-// وجداولها، و`pnpm test` اللاحق يفرّغها ⇒ رابطٌ غير آمن يجب أن يُرفض قبل لمسه.
-const controlTarget = process.env.TEST_CONTROL_DATABASE_URL
-  ? parseAndGuard(
-      process.env.TEST_CONTROL_DATABASE_URL,
-      "قاعدة التحكّم (TEST_CONTROL_DATABASE_URL)",
-    )
-  : null;
-
 console.log(
   `→ الهدف: ${target.user}@${target.host}:${target.port}/${target.dbName}`,
 );
-if (controlTarget)
-  console.log(
-    `→ قاعدة التحكّم: ${controlTarget.user}@${controlTarget.host}:${controlTarget.port}/${controlTarget.dbName}`,
-  );
 
 // ── ① إسقاط وإعادة إنشاء القاعدة فارغةً (يمحو الانجراف نهائياً) ──────────────────
 // نتّصل بلا قاعدة مُحدَّدة (خادم فقط) كي نستطيع DROP/CREATE.
@@ -171,23 +158,6 @@ run("③ هجرات إضافية (ci-apply-extra-migrations)", "node", [
 run("④ التحقق الفيزيائي من اكتمال المخطط", "node", [
   "scripts/db-verify-schema.mjs",
 ]);
-
-// ── ⑤ (اختياريّ) قاعدة التحكّم لتعدّد الشركات — فقط إن ضُبط TEST_CONTROL_DATABASE_URL (وقد فُحص أعلاه) ──
-if (controlTarget) {
-  run(
-    "⑤ تهيئة قاعدة التحكّم (تعدّد الشركات)",
-    "node",
-    ["scripts/bootstrap-control-db.mjs"],
-    {
-      ...childEnv,
-      CONTROL_DATABASE_URL: process.env.TEST_CONTROL_DATABASE_URL,
-    },
-  );
-} else {
-  console.log(
-    "• ⑤ تُخطّي قاعدة التحكّم (TEST_CONTROL_DATABASE_URL غير مضبوط — غير مطلوب لأغلب الاختبارات).",
-  );
-}
 
 console.log(
   `\n✓ جاهزة: ${target.dbName} مُهيَّأة طازجةً بالمخطّط الحاليّ. شغّل الآن: pnpm test`,

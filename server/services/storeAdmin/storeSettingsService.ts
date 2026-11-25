@@ -7,7 +7,6 @@ import { eq } from "drizzle-orm";
 import { branches, storeSettings } from "../../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../../db";
 import { createTtlCache } from "../../lib/ttlCache";
-import { getCurrentCompanyId } from "../../tenancy/context";
 import { withTx } from "../tx";
 import { hasReadyStorefrontCatalog } from "./storefrontReadinessService";
 import { getPublicStorefrontTurnstileSettings } from "../storefrontTurnstile";
@@ -83,7 +82,7 @@ async function hasReadyCatalogCached(
   if (process.env.NODE_ENV === "test") return hasReadyCatalog(db, branchId);
   const version =
     settingsVersion instanceof Date ? settingsVersion.getTime() : (settingsVersion ?? "0");
-  const key = `${getCurrentCompanyId() ?? 0}:${branchId}:${version}`;
+  const key = `0:${branchId}:${version}`;
   return catalogReadinessCache.get(key, () => hasReadyCatalog(db, branchId));
 }
 

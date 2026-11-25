@@ -36,7 +36,6 @@ function createProbeCaller(user: {
     req: { headers: {} },
     res: {},
     sessionId: "test-session",
-    platformAdmin: null,
     user: {
       id: user.id ?? 1,
       role: user.role ?? "admin",
@@ -57,7 +56,6 @@ function createPeriodLockCaller(user: {
     req: { headers: {} },
     res: {},
     sessionId: "test-session",
-    platformAdmin: null,
     user: {
       id: user.id ?? 1,
       role: user.role ?? "admin",

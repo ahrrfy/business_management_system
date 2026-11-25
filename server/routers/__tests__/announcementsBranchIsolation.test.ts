@@ -72,7 +72,6 @@ function context(user: s.User) {
     res: { cookie() {}, clearCookie() {} },
     user,
     sessionId: null,
-    platformAdmin: null,
   } as any;
 }
 

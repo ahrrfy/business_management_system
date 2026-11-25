@@ -10,7 +10,6 @@ import {
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import {
   createStorefrontSearchMatcher,
@@ -85,7 +84,7 @@ export async function loadStorefrontSearchMatches(
     !storefrontReadCacheEnabled()
       ? await readCandidates()
       : await storefrontCacheGet(indexCache, "index",
-          String(getCurrentCompanyId() ?? 0),
+          "0",
           readCandidates,
         );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);

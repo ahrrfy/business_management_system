@@ -209,7 +209,6 @@ describe("صرف المخزون: الذرّية و CASH", () => {
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: {
         id: 2,
         openId: "expense-stock-cashier",

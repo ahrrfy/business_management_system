@@ -544,7 +544,6 @@ function refundApprovalCaller(
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       ...user,
       branchId,

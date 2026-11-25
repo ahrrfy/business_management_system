@@ -60,7 +60,7 @@ async function readSnapshot(slot: string): Promise<Snapshot | null> {
 function sameOwner(snapshot: Owner, owner: Owner) {
   return (
     snapshot.userId === owner.userId &&
-    snapshot.companyId === owner.companyId &&
+    (snapshot.companyId ?? null) === (owner.companyId ?? null) &&
     snapshot.name === owner.name
   );
 }

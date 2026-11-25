@@ -12,51 +12,31 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Readable } from "node:stream";
 import { SignJWT, jwtVerify } from "jose";
 import { appErrorMessage } from "../../shared/errors";
-import { isMultiTenantModeActive } from "../db";
 import {
   inspectBackupReadiness, isBackupSqlName, matchesBackupPrefix, parseBackupDatabaseName, readBackupAttempt,
   resolveRecordedArchive, summarizeRestoreDrill, writeRestoreDrillAttempt, type RestoreDrillAttempt,
 } from "../lib/backupEvidence";
 import { hasOwnerRestoreFence, ownerRestorePaths } from "../lib/ownerRestoreFiles";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { resolveCompanyById } from "../tenancy/registry";
 
 const execFileP = promisify(execFile);
 
 const scriptsDir = () => path.resolve(process.cwd(), "scripts");
 export const backupsDir = () => path.resolve(process.cwd(), process.env.BACKUP_DIR ?? "backups");
 
-/**
- * بَيانات اتّصال الشَركة الحالية (تَعدّد الشركات) إن وُجِد سِياق `runWithCompany` — و`null`
- * في النَشر الأُحادي (لا `CONTROL_DATABASE_URL`) فَتَستمرّ كل الدَوال أَدناه بِسُلوكها القَديم
- * تَماماً (قِراءة `DATABASE_URL` مُباشَرةً). مُخزَّن مُؤقَّتاً ٣٠ث داخِل registry.ts نَفسها.
- */
-async function currentCompanyInfo() {
-  const companyId = getCurrentCompanyId();
-  if (companyId == null) return null;
-  return resolveCompanyById(companyId);
-}
-
-/** اسم القاعدة الحالية (شركة السِياق الحالي، أو DATABASE_URL في النَشر الأُحادي). */
+/** اسم القاعدة الحالية من DATABASE_URL. */
 export async function currentDbName(): Promise<string> {
-  const company = await currentCompanyInfo();
-  if (company) return company.dbName;
   const m = String(process.env.DATABASE_URL ?? "").match(/\/([^/?]+)(\?.*)?$/);
   return m ? decodeURIComponent(m[1]) : "";
 }
 
 /** مضيف:منفذ القاعدة الحالية (للعرض في لوحة معلومات النظام). */
 export async function currentDbHost(): Promise<string> {
-  const company = await currentCompanyInfo();
-  if (company) return `${company.dbHost}:${company.dbPort}`;
   const m = String(process.env.DATABASE_URL ?? "").match(/@([^:/]+):(\d+)/);
   return m ? `${m[1]}:${m[2]}` : "—";
 }
 
-/** بادِئة اسم ملفّات نَسخ الشَركة الحالية (`<dbName>-...sql`) — `null` = بلا فِلترة (نَشر أُحادي). */
 async function backupFilePrefix(): Promise<string | null> {
-  const company = await currentCompanyInfo();
-  return company ? `${company.dbName}-` : null;
+  return null;
 }
 
 export type BackupFile = { name: string; sizeKb: number; createdAt: string };
@@ -212,16 +192,6 @@ export async function deleteBackup(name: string, options?: DeleteBackupOptions):
   }
 
   const prefix = await backupFilePrefix();
-  if (isMultiTenantModeActive() && !prefix) {
-    throw new BackupDeleteGuardError(
-      "PRECONDITION_FAILED",
-      appErrorMessage({
-        what: "تعذر تحديد الشركة لسجل النسخ",
-        why: "سياق الشركة غير متاح أثناء طلب الحذف.",
-        doThis: "أعد تحميل الصفحة وحاول مجدداً.",
-      }),
-    );
-  }
   if (!matchesBackupPrefix(name, prefix)) return false;
 
   const directory = backupsDir();
@@ -387,9 +357,6 @@ export async function deleteBackup(name: string, options?: DeleteBackupOptions):
 }
 
 function getRestoreDrillUiBlockReason(): string | null {
-  if (isMultiTenantModeActive()) {
-    return "تمرين الاستعادة عبر الويب معطل في وضع تعدد الشركات.";
-  }
   if (process.env.NODE_ENV === "production") {
     return "يُنفذ تمرين الاستعادة المعزول في الإنتاج تلقائياً عبر خدمة التحقق الخلفية المعزولة دون المساس بقاعدة العمل.";
   }
@@ -398,9 +365,6 @@ function getRestoreDrillUiBlockReason(): string | null {
 
 export async function backupReadiness() {
   const prefix = await backupFilePrefix();
-  if (isMultiTenantModeActive() && !prefix) {
-    throw new Error("تعذّر تحديد الشركة لسجل النسخ.");
-  }
   return {
     ...(await inspectBackupReadiness(backupsDir(), process.env.BACKUP_OFFSITE_DIR?.trim(), prefix, await activeRestoreLease())),
     encryptedRestoreBlockReason: getEncryptedRestoreBlockReason(),
@@ -460,13 +424,12 @@ function requestLocalBackupBroker(socketPath: string): Promise<string> {
 
 /** يعود إلى إيصال العملية نفسها حتى عند تزامن النسخ المجدول واليدوي. */
 export async function runBackup(): Promise<BackupFile> {
-  const company = await currentCompanyInfo();
-  const brokerSocket = !company ? process.env.ALROYA_BACKUP_BROKER_SOCKET?.trim() : undefined;
+  const brokerSocket = process.env.ALROYA_BACKUP_BROKER_SOCKET?.trim();
   const stdout = brokerSocket
     ? await requestLocalBackupBroker(brokerSocket)
     : (
         await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs"), "--print-receipt"], {
-          env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
+          env: { ...process.env, BACKUP_TARGET_URL: process.env.DATABASE_URL },
           encoding: "utf8",
           maxBuffer: 1024 * 1024 * 64,
         })
@@ -495,9 +458,6 @@ export async function runBackup(): Promise<BackupFile> {
 }
 
 export function getOnlineMaintenanceBlockReason(): string | null {
-  if (isMultiTenantModeActive()) {
-    return "الصيانة المدمّرة عبر الويب معطّلة في وضع تعدّد الشركات. تواصل مع مسؤول الخادم.";
-  }
   if (process.env.NODE_ENV === "production") {
     return "الاستعادة والتصفير عبر الويب معطّلان في الإنتاج. نفّذ الصيانة من الخادم بعد إيقاف عمال الويب.";
   }

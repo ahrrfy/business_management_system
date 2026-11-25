@@ -321,48 +321,6 @@ vi.mock("../tx", () => ({
 vi.mock("../../db", () => ({
   getDb: () => mockDb,
   requireDb: () => mockDb,
-  isMultiTenantModeActive: () => true,
-  getCurrentTenantDb: () => mockDb,
-}));
-
-const tenancyContextMock = {
-  runWithCompany: async <T>(companyId: number, _db: any, fn: () => Promise<T> | T): Promise<T> => {
-    const prev = activeCompanyContext;
-    activeCompanyContext = companyId;
-    try {
-      return await fn();
-    } finally {
-      activeCompanyContext = prev;
-    }
-  },
-  getCurrentCompanyId: () => activeCompanyContext ?? dbState.currentCompanyId,
-  getCurrentTenantDb: () => mockDb,
-};
-
-vi.mock("../../tenancy/context", () => ({
-  runWithCompany: <T>(companyId: number, db: any, fn: () => Promise<T> | T) =>
-    tenancyContextMock.runWithCompany(companyId, db, fn),
-  getCurrentCompanyId: () => tenancyContextMock.getCurrentCompanyId(),
-  getCurrentTenantDb: () => tenancyContextMock.getCurrentTenantDb(),
-}));
-
-vi.mock("../tenancy/context", () => ({
-  runWithCompany: <T>(companyId: number, db: any, fn: () => Promise<T> | T) =>
-    tenancyContextMock.runWithCompany(companyId, db, fn),
-  getCurrentCompanyId: () => tenancyContextMock.getCurrentCompanyId(),
-  getCurrentTenantDb: () => tenancyContextMock.getCurrentTenantDb(),
-}));
-
-vi.mock("../tenancy/registry", () => ({
-  resolveCompanyById: vi.fn().mockImplementation((id: number) =>
-    Promise.resolve({ id, code: `company_${id}`, name: `Company ${id}` }),
-  ),
-}));
-
-vi.mock("../../tenancy/registry", () => ({
-  resolveCompanyById: vi.fn().mockImplementation((id: number) =>
-    Promise.resolve({ id, code: `company_${id}`, name: `Company ${id}` }),
-  ),
 }));
 
 vi.mock("../../lib/imageStore", () => ({
@@ -932,11 +890,10 @@ describe("Milestone 2: Backend AI, Bulk Approvals, Rejection Loop & Sync", () =>
   });
 
   // =========================================================================
-  // 7. Silent Audit Logging & Multi-Tenant Isolation
+  // 7. Silent Audit Logging on Bulk Approvals
   // =========================================================================
-  describe("7. Silent Audit Logging & Multi-Tenant Isolation", () => {
-    it("strictly isolates bulk approvals between tenants", async () => {
-      // In Tenant 1: Job 801 on Product 101
+  describe("7. Silent Audit Logging on Bulk Approvals", () => {
+    it("records audit logs cleanly on bulk studio approvals", async () => {
       dbState.productImageJobs.push({
         id: 801,
         productId: 101,
@@ -951,23 +908,9 @@ describe("Milestone 2: Backend AI, Bulk Approvals, Rejection Loop & Sync", () =>
         mode: "FLATTEN",
       });
 
-      // Switch context to Tenant 2
-      const tenant2State = tenantDbStates.get(2)!;
-      tenant2State.products.push({ id: 101, name: "منتج شركة ثانية بنفس المعرّف", isActive: true });
-
-      // In Tenant 2, job 801 should NOT exist
-      await tenancyContextMock.runWithCompany(2, mockDb, async () => {
-        const lookup = await quickBarcodeLookup(managerActor, { productId: 101 });
-        expect(lookup.activeJob).toBeNull(); // Tenant 2 cannot see Tenant 1's pending job
-      });
-
-      // Bulk approval in Tenant 1 works cleanly
       const approveRes = await bulkApproveStudioTasks(managerActor, { taskIds: [801] });
       expect(approveRes.approvedCount).toBe(1);
-
-      // Audit log exists only in Tenant 1
       expect(dbState.auditLogs.some((a) => a.action === "productStudio.bulkApprove")).toBe(true);
-      expect(tenant2State.auditLogs.length).toBe(0);
     });
   });
 

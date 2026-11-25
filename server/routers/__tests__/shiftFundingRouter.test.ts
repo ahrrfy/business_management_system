@@ -28,7 +28,6 @@ function context(
       isOwner,
     } as TrpcContext["user"],
     sessionId: null,
-    platformAdmin: null,
   };
 }
 

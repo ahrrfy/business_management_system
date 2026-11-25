@@ -18,7 +18,6 @@ import { createApproval, getActiveApprovalsForCustomer } from "../services/credi
 import { logAudit } from "../services/auditService";
 import { withIdempotency } from "../services/idempotency";
 import { retryOnDup } from "../lib/retryDup";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { money } from "../services/money";
 import { escLike } from "../lib/sqlLike";
 
@@ -53,9 +52,9 @@ export function resolveCreditApprovalBranch(
   return Number(actor.branchId);
 }
 
-/** idempotency معزول بالشركة + المستخدم + الفرع، مع إبقاء العمود ضمن سقف 64 محرفاً. */
+/** idempotency معزول بالمستخدم + الفرع، مع إبقاء العمود ضمن سقف 64 محرفاً. */
 export function scopedCreditApprovalRequestId(args: {
-  companyId: number | null;
+  companyId?: number | null;
   userId: number;
   branchId: number;
   clientRequestId: string;
@@ -87,7 +86,6 @@ export const creditApprovalRouter = router({
         notes: input.notes?.trim() || null,
       };
       const scopedRequestId = scopedCreditApprovalRequestId({
-        companyId: getCurrentCompanyId(),
         userId: ctx.user.id,
         branchId,
         clientRequestId: input.clientRequestId,

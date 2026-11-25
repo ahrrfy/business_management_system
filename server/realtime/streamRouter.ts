@@ -7,7 +7,6 @@ import {
 } from "@shared/realtimeEvents";
 import { authenticateExpressRequest } from "../auth/expressAuth";
 import { canCrossBranches } from "../lib/branchAuthority";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
 import { getBridgeStatus, publishToBridgeConfirmed } from "./bridge";
 import { logger } from "../logger";
@@ -40,7 +39,7 @@ realtimeRouter.post(
           {},
           {
             userId: user.id,
-            companyId: getCurrentCompanyId(),
+            companyId: null,
           },
         ),
       );
@@ -146,7 +145,7 @@ realtimeRouter.get("/stream", async (req: Request, res: Response) => {
       userId: user.id,
       role: user.role,
       scopedBranchId,
-      companyId: getCurrentCompanyId(),
+      companyId: null,
       req,
       res,
     });

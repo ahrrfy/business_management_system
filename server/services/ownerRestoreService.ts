@@ -4,7 +4,6 @@ import { request } from "node:http";
 import type { RequestHandler } from "express";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "../../shared/errors";
-import { isMultiTenantModeActive } from "../db";
 import { resolveRecordedArchive } from "../lib/backupEvidence";
 import { hasOwnerRestoreFence, ownerRestorePaths, ownerRestoreTarget } from "../lib/ownerRestoreFiles";
 import { ownerRestoreStart, ownerRestoreStatus, ownerRestoreTicket } from "../../shared/ownerRestore";
@@ -13,7 +12,7 @@ import { backupsDir } from "./maintenanceService";
 const maintenanceMessage = "النظام في وضع الصيانة أثناء الاستعادة.";
 
 function productionConfiguration() {
-  if (process.env.NODE_ENV !== "production" || isMultiTenantModeActive()) return null;
+  if (process.env.NODE_ENV !== "production") return null;
   const paths = ownerRestorePaths();
   const target = ownerRestoreTarget(process.env.DATABASE_URL);
   return paths && target && target.user !== "root" ? { paths, target } : null;

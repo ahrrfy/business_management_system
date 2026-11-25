@@ -3,8 +3,6 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { branches, channelIntegrations } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { resolveCompanyById } from "../tenancy/registry";
 import { decryptSecret, encryptSecret, isCryptoReady, maskSecret } from "./cryptoService";
 import { withTx } from "./tx";
 
@@ -73,13 +71,6 @@ export interface IntegrationDisplay {
 async function webhookUrlFor(channel: IntegrationChannel): Promise<string> {
   const base = (process.env.APP_URL ?? "").replace(/\/$/, "");
   const channelSegment = channel === "WHATSAPP" ? "whatsapp" : channel === "INSTAGRAM" ? "instagram" : "store";
-  const companyId = getCurrentCompanyId();
-  if (companyId != null) {
-    const company = await resolveCompanyById(companyId);
-    if (company) {
-      return `${base}/api/webhooks/company/${company.code}/${channelSegment}`;
-    }
-  }
   return `${base}/api/webhooks/${channelSegment}`;
 }
 

@@ -144,7 +144,6 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
   return withStorefrontProcedureWork(ctx.req, ctx.res, path, ctx.user != null, async () => {
     if (
       type !== "mutation" ||
-      path.startsWith("platformAdmin.") ||
       PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS.has(path)
     ) {
       return next();
@@ -363,14 +362,6 @@ const requireAdmin = t.middleware(async ({ ctx, next, path }) => {
 });
 
 export const adminProcedure = auditedProcedure.use(requireAdmin);
-
-// ─── مدير المنصّة (تعدّد الشركات) — منفصل تماماً عن أدوار أي شركة ──────────
-const requirePlatformAdmin = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.platformAdmin) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-  return next({ ctx: { ...ctx, platformAdmin: ctx.platformAdmin } });
-});
-
-export const platformAdminProcedure = auditedProcedure.use(requirePlatformAdmin);
 
 // ─── تفويض الأدوار (RBAC) ───────────────────────────────────────────────
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";

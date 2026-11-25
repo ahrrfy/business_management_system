@@ -299,12 +299,8 @@ describe("backup readiness evidence", () => {
     expect(execBackup).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { mode: "production", control: undefined },
-    { mode: "development", control: "mysql://unused@127.0.0.1/control" },
-  ])("blocks the restore executor without starting a subprocess ($mode, $control)", async ({ mode, control }) => {
-    vi.stubEnv("NODE_ENV", mode);
-    vi.stubEnv("CONTROL_DATABASE_URL", control);
+  it("blocks the restore executor in production without starting a subprocess", async () => {
+    vi.stubEnv("NODE_ENV", "production");
     await expect(runRestore(path.join(local, backup))).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
     await expect(startRestoreDrill(backup)).rejects.toBeInstanceOf(OnlineMaintenanceBlockedError);
     expect(execBackup).not.toHaveBeenCalled();

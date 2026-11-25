@@ -321,16 +321,6 @@ vi.mock("../tx", () => ({
 vi.mock("../../db", () => ({
   getDb: () => mockDb,
   requireDb: () => mockDb,
-  isMultiTenantModeActive: () => false,
-  getCurrentTenantDb: () => mockDb,
-}));
-
-vi.mock("../../tenancy/context", () => ({
-  getCurrentCompanyId: () => 1,
-}));
-
-vi.mock("../tenancy/context", () => ({
-  getCurrentCompanyId: () => 1,
 }));
 
 vi.mock("../../lib/imageStore", async (importActual) => {

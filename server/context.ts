@@ -19,8 +19,6 @@ import type { User } from "../drizzle/schema";
 import type { NativeClientId } from "./auth/deviceProof";
 import { getSessionContext } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
-import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
-import type { PlatformAdmin } from "./tenancy/controlSchema";
 import {
   buildOperationPolicyFromLegacy,
   storedOperationPolicySchema,
@@ -66,8 +64,6 @@ export type TrpcContext = {
    * session verifier, never by accepting a client-provided header in a router.
    */
   nativeClientId: NativeClientId | null;
-  /** مدير منصّة (تعدّد الشركات) — منفصل تماماً عن `user` (لا ينتمي لأي شركة). */
-  platformAdmin: PlatformAdmin | null;
 };
 
 /** Normalize the one persisted company owner to the effective admin contract. */
@@ -372,21 +368,11 @@ export async function createContext(
     sessionId = null;
     nativeClientId = null;
   }
-  // مدير المنصّة: كوكي/JWT منفصلان تماماً (platformAuth.ts) — لا علاقة بجلسة الشركة أعلاه.
-  // معظم الطلبات لا تحمل كوكي مدير المنصّة إطلاقاً ⇒ verifyPlatformSession يعود null فوراً
-  // بلا لمس قاعدة التحكّم (تكلفة مهملة على المسار الشائع).
-  let platformAdmin: PlatformAdmin | null = null;
-  try {
-    platformAdmin = await getPlatformAdminFromRequest(opts.req);
-  } catch {
-    platformAdmin = null;
-  }
   return {
     req: opts.req,
     res: opts.res,
     user,
     sessionId,
     nativeClientId,
-    platformAdmin,
   };
 }

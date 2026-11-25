@@ -29,11 +29,6 @@ vi.mock("vite", () => ({
 vi.mock("../../services/storefrontSeoMetaService", () => ({
   injectStorefrontSeoMeta: async (html: string) => html,
 }));
-vi.mock("../../tenancy/expressMiddleware", () => ({
-  companyCodeTenancyMiddleware:
-    () => (_req: unknown, _res: unknown, next: () => void) =>
-      next(),
-}));
 import {
   createResourceAdmission,
   ResourceAdmissionError,
@@ -344,8 +339,6 @@ describe("actual Express/tRPC resource lifecycle", () => {
     const paths = [
       "/product/1/",
       "/Product/1",
-      "/COMPANY/demo/Product/1/",
-      "/company/demo/product/1/",
       "/Banner/1/main/",
       "/Banner/1/main",
       "/banner/1/main",

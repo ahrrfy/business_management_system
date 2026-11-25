@@ -18,7 +18,6 @@ function context(user: typeof s.users.$inferSelect): TrpcContext {
     res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
     user,
     sessionId: null,
-    platformAdmin: null,
   };
 }
 

@@ -319,36 +319,6 @@ vi.mock("../tx", () => ({
 vi.mock("../../db", () => ({
   getDb: () => mockDb,
   requireDb: () => mockDb,
-  isMultiTenantModeActive: () => true,
-  getCurrentTenantDb: () => mockDb,
-}));
-
-const tenancyContextMock = {
-  runWithCompany: async <T>(companyId: number, _db: any, fn: () => Promise<T> | T): Promise<T> => {
-    const prev = activeCompanyContext;
-    activeCompanyContext = companyId;
-    try {
-      return await fn();
-    } finally {
-      activeCompanyContext = prev;
-    }
-  },
-  getCurrentCompanyId: () => activeCompanyContext ?? dbState.currentCompanyId,
-  getCurrentTenantDb: () => mockDb,
-};
-
-vi.mock("../../tenancy/context", () => ({
-  runWithCompany: <T>(companyId: number, db: any, fn: () => Promise<T> | T) =>
-    tenancyContextMock.runWithCompany(companyId, db, fn),
-  getCurrentCompanyId: () => tenancyContextMock.getCurrentCompanyId(),
-  getCurrentTenantDb: () => tenancyContextMock.getCurrentTenantDb(),
-}));
-
-vi.mock("../tenancy/context", () => ({
-  runWithCompany: <T>(companyId: number, db: any, fn: () => Promise<T> | T) =>
-    tenancyContextMock.runWithCompany(companyId, db, fn),
-  getCurrentCompanyId: () => tenancyContextMock.getCurrentCompanyId(),
-  getCurrentTenantDb: () => tenancyContextMock.getCurrentTenantDb(),
 }));
 
 vi.mock("../../lib/imageStore", () => ({
@@ -786,126 +756,20 @@ describe("Milestone 1 — Backend Core: Schema, Ephemeral Lock, Atomic Purge & L
     });
   });
 
-  describe("6. Multi-Tenant Scoping", () => {
-    it("isolates ephemeral photography locks between separate tenants", async () => {
-      const company1Actor: ProductStudioActor = {
-        userId: 2,
-        branchId: 1,
-        role: "cashier",
-        isOwner: false,
-        name: "مصور شركة 1",
-      };
-
-      const company2Actor: ProductStudioActor = {
-        userId: 2, // Same numeric userId in tenant 2's database
-        branchId: 1,
-        role: "cashier",
-        isOwner: false,
-        name: "مصور شركة 2",
-      };
-
-      // Set up Company 2 state with product 700
-      const company2State = createInitialDbState(2);
-      company2State.products.push({
-        id: 700,
-        name: "منتج مشترك الرقم بشركة 2",
-        isActive: true,
-      });
-      tenantDbStates.set(2, company2State);
-
-      // Company 1 also has product 700
-      dbState.products.push({
-        id: 700,
-        name: "منتج مشترك الرقم بشركة 1",
-        isActive: true,
-      });
-
-      // 1. Company 1 acquires lock on product 700
-      const lockRes1 = await acquireOrCheckLock(company1Actor, { productId: 700 });
-      expect(lockRes1.acquired).toBe(true);
-      expect(dbState.productPhotographyLocks).toHaveLength(1);
-      expect(dbState.productPhotographyLocks[0].productId).toBe(700);
-      expect(dbState.productPhotographyLocks[0].userName).toBe("مصور شركة 1");
-
-      // 2. Company 2 checks and acquires lock on product 700 under company 2 context
-      await tenancyContextMock.runWithCompany(2, mockDb, async () => {
-        // Company 2 must NOT see Company 1's lock
-        const lookup2 = await quickBarcodeLookup(company2Actor, { productId: 700 });
-        expect(lookup2.lock?.isLocked).toBe(false);
-
-        // Company 2 can acquire lock on the same product ID without collision
-        const lockRes2 = await acquireOrCheckLock(company2Actor, { productId: 700 });
-        expect(lockRes2.acquired).toBe(true);
-        expect(company2State.productPhotographyLocks).toHaveLength(1);
-        expect(company2State.productPhotographyLocks[0].productId).toBe(700);
-        expect(company2State.productPhotographyLocks[0].userName).toBe("مصور شركة 2");
-      });
-
-      // 3. Back in Company 1 context, Company 1's lock remains active and unchanged
-      const company1OtherActor: ProductStudioActor = {
-        userId: 3,
-        branchId: 1,
-        role: "cashier",
-        isOwner: false,
-        name: "مصور ثان بشركة 1",
-      };
-      const lookup1 = await quickBarcodeLookup(company1OtherActor, { productId: 700 });
-      expect(lookup1.lock?.isLocked).toBe(true);
-      expect(lookup1.lock?.activePhotographerName).toBe("مصور شركة 1");
-      expect(dbState.productPhotographyLocks).toHaveLength(1);
-
-      // 4. Company 2 releases lock; Company 1's lock is unaffected
-      await tenancyContextMock.runWithCompany(2, mockDb, async () => {
-        const relRes2 = await releaseLock(company2Actor, { productId: 700 });
-        expect(relRes2.released).toBe(true);
-        expect(company2State.productPhotographyLocks).toHaveLength(0);
-      });
-
-      // Company 1's lock is still held
-      expect(dbState.productPhotographyLocks).toHaveLength(1);
-      expect(dbState.productPhotographyLocks[0].userName).toBe("مصور شركة 1");
-    });
-
-    it("isolates atomic DB purge so purging one tenant does not touch another tenant's catalog", async () => {
-      const company2State = createInitialDbState(2);
-      company2State.productImages.push(
-        { id: 201, productId: 801, url: "http://tenant2-img", reviewStatus: "APPROVED", publishedStudioJobId: 55 },
-      );
-      company2State.productImageJobs.push(
-        { id: 55, productId: 801, status: "IN_PROGRESS" },
-      );
-      tenantDbStates.set(2, company2State);
-
-      // Seed Company 1 data
+  describe("6. Atomic Legacy Data Purge", () => {
+    it("purges unapproved jobs while preserving APPROVED product images", async () => {
       dbState.productImages.push(
-        { id: 101, productId: 801, url: "http://tenant1-img", reviewStatus: "APPROVED", publishedStudioJobId: 44 },
+        { id: 101, productId: 801, url: "http://img-approved", reviewStatus: "APPROVED", publishedStudioJobId: 44 },
       );
       dbState.productImageJobs.push(
         { id: 44, productId: 801, status: "IN_PROGRESS" },
       );
 
-      // Purge Company 2
-      await tenancyContextMock.runWithCompany(2, mockDb, async () => {
-        const purgeRes = await purgeProductStudioLegacyData(managerActor);
-        expect(purgeRes.success).toBe(true);
-        expect(purgeRes.preservedApprovedImages).toBe(1);
-        expect(company2State.productImageJobs).toHaveLength(0);
-      });
-
-      // Company 1's jobs and images remain untouched!
-      expect(dbState.productImageJobs).toHaveLength(1);
+      const purgeRes = await purgeProductStudioLegacyData(managerActor);
+      expect(purgeRes.success).toBe(true);
+      expect(purgeRes.preservedApprovedImages).toBe(1);
+      expect(dbState.productImageJobs).toHaveLength(0);
       expect(dbState.productImages).toHaveLength(1);
-      expect(dbState.productImages[0].publishedStudioJobId).toBe(44);
-    });
-
-    it("scopes image storage retention namespace by currentCompanyId", async () => {
-      expect(tenancyContextMock.getCurrentCompanyId()).toBe(1);
-
-      await tenancyContextMock.runWithCompany(99, mockDb, async () => {
-        expect(tenancyContextMock.getCurrentCompanyId()).toBe(99);
-      });
-
-      expect(tenancyContextMock.getCurrentCompanyId()).toBe(1);
     });
   });
 

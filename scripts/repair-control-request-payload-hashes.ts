@@ -32,11 +32,8 @@ import {
   salesControlRequests,
   workOrderControlRequests,
 } from "../drizzle/schema";
-import { closeDb, getDb, isMultiTenantModeActive, withTenantDb, type DB } from "../server/db";
+import { closeDb, getDb, type DB } from "../server/db";
 import { idempotencyHash } from "../server/services/idempotency";
-import { runWithCompany } from "../server/tenancy/context";
-import { closeControlDb } from "../server/tenancy/controlDb";
-import { listActiveCompanyConnections } from "../server/tenancy/registry";
 
 const APPLY = process.argv.includes("--apply");
 const FORCE = process.argv.includes("--force");
@@ -183,21 +180,6 @@ async function main(): Promise<number> {
   console.log(
     `→ إعادة ختم بصمات طلبات التحكّم المعلَّقة (${APPLY ? "كتابة" : "معاينة فقط — أضف --apply للكتابة"}${FORCE ? " · --force" : ""})`,
   );
-  if (isMultiTenantModeActive()) {
-    const companies = await listActiveCompanyConnections();
-    if (companies.length === 0) {
-      console.log("• لا شركات فعّالة في قاعدة التحكّم — لا شيء لإصلاحه.");
-      return 0;
-    }
-    let worst = 0;
-    for (const company of companies) {
-      const code = await withTenantDb(company.id, (db) =>
-        runWithCompany(company.id, db, () => repairDatabase(db, company.code)),
-      );
-      worst = Math.max(worst, code);
-    }
-    return worst;
-  }
   const db = getDb();
   if (!db) {
     console.error("⛔ DATABASE_URL غير مضبوط — لا قاعدة لإصلاحها.");
@@ -209,12 +191,10 @@ async function main(): Promise<number> {
 main()
   .then(async (code) => {
     await closeDb();
-    await closeControlDb().catch(() => undefined);
     process.exit(code);
   })
   .catch(async (error) => {
     console.error("✗ فشل إصلاح البصمات:", error);
     await closeDb().catch(() => undefined);
-    await closeControlDb().catch(() => undefined);
     process.exit(1);
   });

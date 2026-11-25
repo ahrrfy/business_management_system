@@ -207,16 +207,12 @@ export function createStorefrontAdmission(
   };
 }
 
-/** Public metadata/storage admission also precedes tenant lookup. */
+/** Public metadata/storage admission precedes downstream handlers. */
 export function createPublicImageAdmission(
   gate = storefrontResourceAdmission(),
 ): RequestHandler {
   return (req, res, next) => {
-    if (
-      !/^\/(?:product\/[^/]+|banner\/[^/]+\/[^/]+|company\/[^/]+\/product\/[^/]+)\/?$/i.test(
-        req.path,
-      )
-    )
+    if (!/^\/(?:product\/[^/]+|banner\/[^/]+\/[^/]+)\/?$/i.test(req.path))
       return next();
     const abort = requestAbort(req, res);
     // Tenancy, staff verification (two reads), then image loading are

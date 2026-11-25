@@ -20,7 +20,6 @@ export function storefrontPublicImageCacheMatcher({ request, url }) {
     [
       /^\/api\/img\/banner\/[^/]+\/[^/]+$/,
       /^\/api\/img\/product\/[^/]+$/,
-      /^\/api\/img\/company\/[^/]+\/product\/[^/]+$/,
     ].some((pattern) => pattern.test(url.pathname))
   );
 }

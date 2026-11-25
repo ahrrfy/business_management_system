@@ -182,7 +182,7 @@ describe("atomic invoice amendment with courier custody", () => {
       if (action === "MULTI_CANCEL") await db().insert(s.shifts).values({ userId: 2, branchId: 1,
         openingBalance: "20000", status: "OPEN", shiftType: "RETAIL", openGuard: "2:1:RETAIL" });
       const api = router({ sales: saleRouter, returns: returnRouter }).createCaller({ user,
-        req: { headers: {} }, res: {}, sessionId: null, nativeClientId: null, platformAdmin: null } as unknown as TrpcContext);
+        req: { headers: {} }, res: {}, sessionId: null, nativeClientId: null } as unknown as TrpcContext);
       const needsReview = action === "CAP" || action === "FUNDS" || action === "NO_DRAWER" || missingPrintChannel || action === "CREDIT_CAP_FULL" || action === "CREDIT_CAP_PARTIAL";
       const targetQuantity = action.startsWith("CREDIT_CAP") || action === "CREDIT_ALLOWED" ? 12 : action === "CREDIT_REDUCE" ? 8 : action === "PRINT_NO_CHANNEL_EQUAL" ? 10 : 2;
       const targetTotal = money(targetQuantity).times(1000);
@@ -249,7 +249,7 @@ describe("atomic invoice amendment with courier custody", () => {
       const [user] = await db().select().from(s.users).where(eq(s.users.id, 2));
       await resolveCustomRole(user as AuthUser);
       return router({ sales: saleRouter, returns: returnRouter }).createCaller({ user, req: { headers: {} }, res: {}, sessionId: null,
-        nativeClientId: null, platformAdmin: null } as unknown as TrpcContext);
+        nativeClientId: null } as unknown as TrpcContext);
     }
     const snapshot = async () => Promise.all([db().select().from(s.invoices), db().select().from(s.branchStock),
       db().select().from(s.deliveryConsignments), db().select().from(s.deliveryLedgerEntries),

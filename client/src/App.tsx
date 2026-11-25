@@ -125,7 +125,6 @@ const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
 const HrPayslip = lazy(() => import("@/pages/HrPayslip"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
 const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
-const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
 const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
@@ -437,7 +436,6 @@ export default function App() {
       {/* بوابة التحقق الرقمي من أصالة المستندات والفواتير عبر QR المشفر — عامة بلا دخول */}
       <Route path="/verify/:id" component={VerifyDocument} />
       <Route path="/verify" component={VerifyDocument} />
-      <Route path="/platform-admin" component={PlatformAdmin} />
       <Route path="/"><RootRoute /></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>

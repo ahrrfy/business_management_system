@@ -20,7 +20,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, eq, or } from "drizzle-orm";
 import { users } from "../../drizzle/schema";
 import { logger } from "../logger";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { runBackgroundJob } from "../lib/backgroundJobRunner";
 import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
@@ -106,10 +106,7 @@ export function startReconcileScheduler(): void {
       if (running) return;
       running = true;
       try {
-        // Codex P1 (٢٥/٨): في وضع multi-tenancy، `getDb()` بلا ALS context يفشل — كل شركةٍ
-        // تحتاج تشغيلاً مستقلاً داخل `runWithCompany`. `runAcrossActiveTenants` يُقصّر
-        // على مسارٍ واحد في الوضع الأحادي (`isMultiTenantModeActive=false`) ⇒ لا انحدار.
-        const summaries = await runAcrossActiveTenants(
+        const summaries = await runBackgroundJob(
           "reconcile_nightly_scan",
           async () => {
             const summary = await runReconcileScanOnce();

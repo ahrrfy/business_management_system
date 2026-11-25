@@ -1,16 +1,9 @@
-import { isMultiTenantModeActive } from "../../db";
-import { getCurrentCompanyId } from "../../tenancy/context";
-
-/** نطاق R2 ثابت لكل شركة؛ غياب سياق شركة في وضع تعدد الشركات خطأ مغلق لا سقوط إلى نطاق مشترك. */
+/** نطاق R2 ثابت للمنشأة الواحدة ("single") لضمان توافق 100% مع مفاتيح الصور الحالية وقواعد Bucket Lock. */
 export function imageStoreTenantPrefix(): string {
-  const companyId = getCurrentCompanyId();
-  if (isMultiTenantModeActive() && companyId == null) {
-    throw new Error("ImageStore: company context is required in multi-tenant mode");
-  }
-  return companyId == null ? "single" : `company-${companyId}`;
+  return "single";
 }
 
-/** جذر Studio هو أيضاً نطاق الاحتفاظ/المرآة؛ يُشتق دائماً من نفس سياق المستأجر. */
+/** جذر Studio هو أيضاً نطاق الاحتفاظ/المرآة. */
 export function studioObjectRoot(): string {
   return `${imageStoreTenantPrefix()}/studio/`;
 }
@@ -19,7 +12,7 @@ export function studioObjectPrefix(kind: "original" | "candidate"): string {
   return `${studioObjectRoot()}${kind}`;
 }
 
-/** لا يسمح مسار HTTP إلا بمشتق المرشّح المنشور داخل نطاق الشركة الحالية. */
+/** لا يسمح مسار HTTP إلا بمشتق المرشّح المنشور داخل نطاق المنشأة. */
 export function isCurrentTenantCandidateKey(key: string): boolean {
   return key.startsWith(`${studioObjectPrefix("candidate")}/`);
 }
@@ -33,7 +26,7 @@ export function customizerObjectPrefix(kind: "logo" | "preview"): string {
   return `${customizerObjectRoot()}${kind}`;
 }
 
-/** يتحقّق أنّ مفتاح مرفق التخصيص يقع داخل نطاق الشركة الحالية ومجلّد logo|preview حصراً. */
+/** يتحقّق أنّ مفتاح مرفق التخصيص يقع داخل نطاق المنشأة ومجلّد logo|preview حصراً. */
 export function isCurrentTenantCustomizerKey(key: string): boolean {
   if (key.includes("..") || key.includes("\\")) return false;
   return (
@@ -41,4 +34,3 @@ export function isCurrentTenantCustomizerKey(key: string): boolean {
     key.startsWith(`${customizerObjectPrefix("preview")}/`)
   );
 }
-

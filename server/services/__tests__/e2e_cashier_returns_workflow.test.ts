@@ -125,7 +125,6 @@ function createCaller(user: {
     user: authUser,
     sessionId: null,
     nativeClientId: null,
-    platformAdmin: null,
   };
 
   return appRouter.createCaller(ctx);

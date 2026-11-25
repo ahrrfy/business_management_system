@@ -31,7 +31,6 @@ import { matchesStorefrontRefinements, refineStorefrontProductIds, type Storefro
 import { createTtlCache } from "../lib/ttlCache";
 import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
 import { storefrontResourceAdmission } from "../lib/resourceAdmission";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 import { decodeDataUrl, productImageUrl, withPublicProductImageWidth } from "../imageRoute";
 import type { PublicProductImageWidth } from "../lib/imageStore";
@@ -396,7 +395,7 @@ export function storefrontCacheResourceMetrics() {
 /** الاختبارات تتحقّق من الكتالوج بعد كتاباتها مباشرةً — الكاش يعمى عنها. */
 const storefrontCacheDisabled = (): boolean => !storefrontReadCacheEnabled();
 
-const companyScope = (): string => String(getCurrentCompanyId() ?? 0);
+const companyScope = (): string => "0";
 
 export { chooseCandidateProductIds };
 

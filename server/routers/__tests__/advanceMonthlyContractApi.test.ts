@@ -21,7 +21,6 @@ function caller() {
     res: {} as TrpcContext["res"],
     sessionId: null,
     nativeClientId: null,
-    platformAdmin: null,
     user: {
       id: USER_ID,
       openId: "advance-monthly-owner",

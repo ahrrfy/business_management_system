@@ -63,7 +63,6 @@ function publicCaller() {
     res: {},
     user: null,
     sessionId: null,
-    platformAdmin: null,
   } as never).storefront;
 }
 

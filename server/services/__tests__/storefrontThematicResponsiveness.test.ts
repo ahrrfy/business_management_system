@@ -24,7 +24,6 @@ vi.mock("../storefrontService", () => ({
 }));
 
 import { storefrontCatalog } from "../storefrontService";
-import { runWithCompany } from "../../tenancy/context";
 
 import {
   computeAlgorithmicThematicCollections,
@@ -163,9 +162,7 @@ describe("thematic rebuild leaves capacity for cashier requests", () => {
     expect(heartbeatBeforeSecondProduct).toBe(true);
   });
 
-  it("isolates cached thematic collections by companyId on the same branchId", async () => {
-    const sharedBranchId = 205;
-
+  it("isolates cached thematic collections by branchId and hits warm cache on repeat reads", async () => {
     resetCatalog();
     catalog.items = [
       {
@@ -173,65 +170,40 @@ describe("thematic rebuild leaves capacity for cashier requests", () => {
         productId: 5001,
         productUnitId: 5001,
         variantId: 5001,
-        productName: "دفتر سلك جامعي للشركة الأولى",
+        productName: "دفتر سلك جامعي للفرع الأول",
         description: "دفاتر ومفكرات للدراسة والجامعة",
         category: "الدفاتر المدرسية",
         categoryId: 21,
       },
     ];
-    const companyOneFirst = await runWithCompany(1, {} as never, () =>
-      computeAlgorithmicThematicCollections(sharedBranchId),
-    );
-    const callsAfterCompanyOne = vi.mocked(storefrontCatalog).mock.calls.length;
+    const branchOneFirst = await computeAlgorithmicThematicCollections(205);
+    const callsAfterBranchOne = vi.mocked(storefrontCatalog).mock.calls.length;
 
-    // الشركة الثانية تملك كتالوجاً مختلفاً تماماً على نفس رقم الفرع (branchId=205)
     catalog.items = [
       {
         ...catalog.items[0]!,
         productId: 9002,
         productUnitId: 9002,
         variantId: 9002,
-        productName: "قلم خط عربي ومحبرة للشركة الثانية",
+        productName: "قلم خط عربي ومحبرة للفرع الثاني",
         description: "أدوات الخط العربي والمحابر والأحبار",
         category: "الخط والرسم",
         categoryId: 99,
       },
     ];
-    const companyTwoResult = await runWithCompany(2, {} as never, () =>
-      computeAlgorithmicThematicCollections(sharedBranchId),
-    );
-    const callsAfterCompanyTwo = vi.mocked(storefrontCatalog).mock.calls.length;
+    const branchTwoResult = await computeAlgorithmicThematicCollections(206);
+    const callsAfterBranchTwo = vi.mocked(storefrontCatalog).mock.calls.length;
 
-    // السياق الافتراضي بلا شركة (companyId=null -> 0) معزول أيضاً عن الشركتين ١ و٢
-    catalog.items = [
-      {
-        ...catalog.items[0]!,
-        productId: 7003,
-        productUnitId: 7003,
-        variantId: 7003,
-        productName: "طقم مكتبي فاخر وحقيبة رجالية",
-        description: "هدايا مكتبية فاخرة للمدراء",
-        category: "تجهيزات مكتبية",
-        categoryId: 88,
-      },
-    ];
-    const defaultTenantResult = await computeAlgorithmicThematicCollections(sharedBranchId);
-
-    // إعادة القراءة للشركة الأولى تصيب الكاش الخاص بها دون إعادة استعلام الكتالوج
     const callsBeforeHit = vi.mocked(storefrontCatalog).mock.calls.length;
-    const companyOneCached = await runWithCompany(1, {} as never, () =>
-      computeAlgorithmicThematicCollections(sharedBranchId),
-    );
+    const branchOneCached = await computeAlgorithmicThematicCollections(205);
     expect(vi.mocked(storefrontCatalog).mock.calls.length).toBe(callsBeforeHit);
 
-    expect(callsAfterCompanyTwo).toBeGreaterThan(callsAfterCompanyOne);
-    expect(companyOneFirst.flatMap((c) => c.productIds)).toContain(5001);
-    expect(companyOneFirst.flatMap((c) => c.productIds)).not.toContain(9002);
-    expect(companyTwoResult.flatMap((c) => c.productIds)).toContain(9002);
-    expect(companyTwoResult.flatMap((c) => c.productIds)).not.toContain(5001);
-    expect(defaultTenantResult.flatMap((c) => c.productIds)).toContain(7003);
-    expect(defaultTenantResult.flatMap((c) => c.productIds)).not.toContain(5001);
-    expect(companyOneCached).toEqual(companyOneFirst);
+    expect(callsAfterBranchTwo).toBeGreaterThan(callsAfterBranchOne);
+    expect(branchOneFirst.flatMap((c) => c.productIds)).toContain(5001);
+    expect(branchOneFirst.flatMap((c) => c.productIds)).not.toContain(9002);
+    expect(branchTwoResult.flatMap((c) => c.productIds)).toContain(9002);
+    expect(branchTwoResult.flatMap((c) => c.productIds)).not.toContain(5001);
+    expect(branchOneCached).toEqual(branchOneFirst);
   });
 });
 

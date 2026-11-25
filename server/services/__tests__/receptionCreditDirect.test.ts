@@ -68,7 +68,6 @@ function callerContext(user: any = null) {
     res: { cookie() {}, clearCookie() {} },
     user,
     sessionId: null,
-    platformAdmin: null,
   } as any;
 }
 

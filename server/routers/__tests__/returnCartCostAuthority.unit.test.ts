@@ -159,7 +159,6 @@ const ctx = {
   res: {},
   sessionId: null,
   nativeClientId: null,
-  platformAdmin: null,
   user: {
     id: 4,
     role: "warehouse",

@@ -14,7 +14,7 @@ function db() {
 }
 function caller(id = 10, owner = true, hr = "FULL") {
   return payrollRouter.createCaller({
-    req: { headers: {} }, res: {}, sessionId: null, platformAdmin: null,
+    req: { headers: {} }, res: {}, sessionId: null,
     user: { id, role: "manager", branchId: 1, isOwner: owner,
       permissionsOverride: { hr }, totpEnabledAt: new Date() },
   } as never);

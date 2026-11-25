@@ -40,12 +40,10 @@ describe("restore upload body parser boundary", () => {
   });
 
   it.each([
-    { env: "production", control: undefined, isOwner: true, reason: "الإنتاج" },
-    { env: "development", control: "mysql://unused@127.0.0.1/control", isOwner: true, reason: "تعدّد الشركات" },
-    { env: "development", control: undefined, isOwner: false, reason: "مالك" },
-  ])("يرفض الرفع عند حارس السياسة قبل التحقق من التصريح أو قراءة الدفق ($reason)", async ({ env, control, isOwner, reason }) => {
+    { env: "production", isOwner: true, reason: "الإنتاج" },
+    { env: "development", isOwner: false, reason: "مالك" },
+  ])("يرفض الرفع عند حارس السياسة قبل التحقق من التصريح أو قراءة الدفق ($reason)", async ({ env, isOwner, reason }) => {
     vi.stubEnv("NODE_ENV", env);
-    vi.stubEnv("CONTROL_DATABASE_URL", control);
     vi.spyOn(authSession, "getSessionContext").mockResolvedValue({
       user: { id: 1, isOwner, role: "admin" } as authSession.SessionContext["user"],
       sessionId: 10,

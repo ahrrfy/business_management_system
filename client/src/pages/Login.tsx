@@ -20,7 +20,6 @@ import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ShieldCheck,
-  Building2,
   Lock,
   User,
   KeyRound,
@@ -33,7 +32,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const LAST_COMPANY_CODE_KEY = "erp.lastCompanyCode";
 const REMEMBER_KEY = "erp.rememberMe";
 const SAVED_IDENTIFIER_KEY = "erp.savedIdentifier";
 
@@ -52,7 +50,6 @@ export default function Login() {
     return "";
   });
   const [password, setPassword] = useState("");
-  const [companyCode, setCompanyCode] = useState("");
   const [remember, setRemember] = useState(() => {
     try {
       return localStorage.getItem(REMEMBER_KEY) === "1";
@@ -111,16 +108,6 @@ export default function Login() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [resetDone, setResetDone] = useState(false);
 
-  const tenancyMode = trpc.auth.tenancyMode.useQuery();
-  const multiTenant = tenancyMode.data?.multiTenant ?? false;
-
-  useEffect(() => {
-    if (multiTenant) {
-      const saved = localStorage.getItem(LAST_COMPANY_CODE_KEY);
-      if (saved) setCompanyCode(saved);
-    }
-  }, [multiTenant]);
-
   // رصد زر Caps Lock لتنبيه المستخدم وتفادي أخطاء الإدخال غير المقصودة
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -145,9 +132,6 @@ export default function Login() {
   };
 
   async function finishLogin(data: { mustChangePassword: boolean }) {
-    if (multiTenant && companyCode.trim()) {
-      localStorage.setItem(LAST_COMPANY_CODE_KEY, companyCode.trim());
-    }
     const freshMe = await utils.client.auth.me.query();
     if (freshMe?.id) {
       await resetSessionForLogin(queryClient, {
@@ -388,33 +372,10 @@ export default function Login() {
                       identifier: identifier.trim(),
                       password,
                       remember,
-                      ...(multiTenant ? { companyCode: companyCode.trim() } : {}),
                     });
                   }}
                   className="space-y-4 relative z-20"
                 >
-                  {multiTenant && (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="companyCode" className="text-xs font-medium text-slate-300 tracking-wide block">
-                        رمز الشركة
-                      </Label>
-                      <div className="relative">
-                        <Building2 className="absolute right-3.5 top-1/2 -translate-y-1/2 size-4 text-slate-400" aria-hidden />
-                        <Input
-                          id="companyCode"
-                          type="text"
-                          dir="ltr"
-                          autoComplete="organization"
-                          value={companyCode}
-                          onChange={(e) => setCompanyCode(e.target.value)}
-                          className="pe-10 ps-4 h-12 text-sm bg-white/[0.04] hover:bg-white/[0.06] focus:bg-white/[0.07] border border-white/[0.1] focus:border-white/30 rounded-2xl text-white placeholder:text-slate-500 shadow-[0_2px_8px_rgba(0,0,0,0.25)_inset] focus:ring-2 focus:ring-white/15 focus:outline-none transition-all duration-200"
-                          placeholder="مثال: alroya"
-                          required
-                        />
-                      </div>
-                    </div>
-                  )}
-
                   <div className="space-y-1.5">
                     <Label htmlFor="identifier" className="text-xs font-medium text-slate-300 tracking-wide block">
                       البريد الإلكتروني أو اسم المستخدم
@@ -528,7 +489,6 @@ export default function Login() {
                     resetPassword.mutate({
                       token: resetToken.trim(),
                       newPassword,
-                      ...(multiTenant ? { companyCode: companyCode.trim() } : {}),
                     });
                   }}
                   className="space-y-4 relative z-20"
@@ -554,24 +514,6 @@ export default function Login() {
                       <p className="text-xs text-slate-400 leading-relaxed font-light">
                         أدخل الرمز الذي سلّمه لك مدير النظام، ثم اختر كلمة مرور قوية وخاصة بك. الرمز صالح 15 دقيقة لمرة واحدة فقط.
                       </p>
-
-                      {multiTenant && (
-                        <div className="space-y-1.5">
-                          <Label htmlFor="resetCompanyCode" className="text-xs font-medium text-slate-300 tracking-wide block">
-                            رمز الشركة
-                          </Label>
-                          <Input
-                            id="resetCompanyCode"
-                            type="text"
-                            dir="ltr"
-                            autoComplete="organization"
-                            value={companyCode}
-                            onChange={(e) => setCompanyCode(e.target.value)}
-                            className="h-12 rounded-2xl text-sm bg-white/[0.04] hover:bg-white/[0.06] focus:bg-white/[0.07] border border-white/[0.1] text-white"
-                            required
-                          />
-                        </div>
-                      )}
 
                       <div className="space-y-1.5">
                         <Label htmlFor="resetToken" className="text-xs font-medium text-slate-300 tracking-wide block">

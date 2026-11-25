@@ -36,7 +36,6 @@ function caller(user: { id: number; role: string; branchId: number | null; isOwn
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: { ...user, totpEnabledAt: new Date() },
   } as never);
 }

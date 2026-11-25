@@ -37,7 +37,7 @@ import {
   startTwoFactorSetup,
 } from "../services/twoFactorService";
 import { recordAccountAuthenticationFailure } from "../services/accountAuthenticationLockout";
-import { getDb, isMultiTenantModeActive, withTenantDb } from "../db";
+import { getDb } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
@@ -49,11 +49,8 @@ import {
   revokeUserSessionRow,
 } from "../services/userService";
 import { withTx } from "../services/tx";
-import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
-import { resolveCompanyByCode } from "../tenancy/registry";
 import {
   consumePasswordResetToken,
-  PASSWORD_RESET_GENERIC_ERROR,
 } from "../services/passwordResetService";
 import {
   adminProcedure,
@@ -192,8 +189,7 @@ export const authRouter = router({
     } catch {
       // safe fallback
     }
-    // معرّف الشركة من AsyncLocalStorage الخادميّ، لا من localStorage/حقل دخول قابل للتلاعب.
-    // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
+    // `companyId: null` ثابت للمنشأة الواحدة للتوافق الخلفي مع IndexedDB وPIN الأوفلاين على المتصفحات.
     return {
       ...safe,
       operationPolicyEnabled: ctx.user.operationPolicyEnabled ?? false,
@@ -205,17 +201,11 @@ export const authRouter = router({
       hasPin,
       hasBadgeBarcode: Boolean((ctx.user as any).badgeBarcode),
       role: safe.isOwner ? "admin" : safe.role,
-      companyId: getCurrentCompanyId(),
+      companyId: null as null,
       mustEnroll2FA,
       mustEnrollTwoFactor: mustEnroll2FA,
     };
   }),
-
-  /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
-   *  — بلا هذا الاستعلام لا مؤشّر للعميل، ونشر أحادي الشركة يبقى بشاشة دخول كما هي تماماً. */
-  tenancyMode: publicProcedure.query(() => ({
-    multiTenant: isMultiTenantModeActive(),
-  })),
 
   /**
    * استعادة عامة بالرمز فقط: لا بريد/اسم مستخدم في الطلب، لذلك لا توجد قناة لتعداد
@@ -230,46 +220,17 @@ export const authRouter = router({
           .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
           .max(128)
           .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
-        companyCode: z.string().min(1).max(40).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const companyCode = input.companyCode?.trim();
-      let companyId: number | undefined;
-      if (isMultiTenantModeActive()) {
-        if (!companyCode) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "رمز الشركة مطلوب.",
-          });
-        }
-        const company = await resolveCompanyByCode(companyCode);
-        if (!company) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: PASSWORD_RESET_GENERIC_ERROR,
-          });
-        }
-        companyId = company.id;
-      }
-
-      const reset = async () => {
-        await consumePasswordResetToken(input.token, input.newPassword, {
-          user: null,
-          req: ctx.req,
-        });
-        // أي كوكي حالية صارت غير صالحة بعد sessionsValidFrom؛ امسحها كي لا تبقى الواجهة
-        // في حالة ملتبسة، ثم يدخل المستخدم بكلمته الجديدة عبر المسار الطبيعي و2FA إن كان مفعلاً.
-        ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
-        return { success: true as const };
-      };
-
-      if (companyId != null) {
-        return withTenantDb(companyId, (db) =>
-          runWithCompany(companyId!, db, reset),
-        );
-      }
-      return reset();
+      await consumePasswordResetToken(input.token, input.newPassword, {
+        user: null,
+        req: ctx.req,
+      });
+      // أي كوكي حالية صارت غير صالحة بعد sessionsValidFrom؛ امسحها كي لا تبقى الواجهة
+      // في حالة ملتبسة، ثم يدخل المستخدم بكلمته الجديدة عبر المسار الطبيعي و2FA إن كان مفعلاً.
+      ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
+      return { success: true as const };
     }),
 
   login: publicProcedure
@@ -281,9 +242,6 @@ export const authRouter = router({
           email: z.string().min(1).max(320).optional(),
           password: z.string().min(1).max(128),
           remember: z.boolean().optional(),
-          // رمز الشركة — إلزامي فقط في وضع تعدّد الشركات (يُتحقَّق منه صراحةً في جسم
-          // الإجراء لا في مخطّط zod، كي لا يُكسَر أي نشر أحادي الشركة لا يرسله إطلاقاً).
-          companyCode: z.string().min(1).max(40).optional(),
         })
         .refine((d) => !!(d.identifier ?? d.email), {
           message: "أدخل البريد الإلكتروني أو اسم المستخدم",
@@ -291,36 +249,8 @@ export const authRouter = router({
         }),
     )
     .mutation(async ({ input, ctx }) => {
-      // تحديد الشركة (وضع تعدّد الشركات فقط) — قبل أي لمسة لقاعدة بيانات، كي يُوجَّه كل
-      // ما يلي (بحث المستخدم، التحقّق، القفل) لقاعدة الشركة الصحيحة عبر runWithCompany.
-      // ⚠️ لا حماية توقيت هنا (خلافاً لبريد/كلمة المرور أدناه عبر DUMMY_STORED) عمداً:
-      // رمز الشركة اسم مستعار تنظيمي (workspace slug) يُوزَّع علناً على كل موظفي الشركة —
-      // معرفته وحدها لا تمنح أي وصول (لا يزال يلزم بيانات اعتماد مستخدم صحيحة داخل قاعدة
-      // تلك الشركة تحديداً)، خلافاً لبريد/اسم مستخدم فرديّ يُعامَل كسرّ شخصي.
-      let companyId: number | undefined;
-      const companyCode = input.companyCode?.trim();
-      if (isMultiTenantModeActive()) {
-        if (!companyCode) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "رمز الشركة مطلوب.",
-          });
-        }
-        const company = await resolveCompanyByCode(companyCode);
-        if (!company) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: "رمز الشركة غير صحيح أو معطّل.",
-          });
-        }
-        companyId = company.id;
-      }
-
-      // مفتاح حدّ المحاولات: (شركة×IP). في وضع أحادي الشركة companyCode فارغ ⇒ مفتاح
-      // ":"+ip فعلياً — حيّز منفصل تماماً عن أي مفتاح آخر، مطابق أثراً لسلوك ما قبل
-      // تعدد الشركات (لم يكن هناك بادئة إطلاقاً؛ الفارق حرف واحد لا يغيّر التفرّد).
       const ip = getClientIp(ctx.req);
-      const rateKey = `${companyCode ?? ""}:${ip}`;
+      const rateKey = `:${ip}`;
 
       const doLogin = async () => {
         const db = getDb();
@@ -447,8 +377,6 @@ export const authRouter = router({
           const ticket = await signTwoFactorTicket(
             {
               uid: user.id,
-              companyCode: companyCode ?? "",
-              companyId,
               remember: !!input.remember,
             },
             ctx.req,
@@ -488,7 +416,7 @@ export const authRouter = router({
           expiry,
           ctx.req,
           undefined,
-          companyId,
+          undefined,
           sessionId,
           nativeDevice?.keyThumbprint,
           nativeDevice?.clientId,
@@ -535,11 +463,6 @@ export const authRouter = router({
         };
       };
 
-      if (companyId != null) {
-        return withTenantDb(companyId, (db) =>
-          runWithCompany(companyId!, db, doLogin),
-        );
-      }
       return doLogin();
     }),
 
@@ -570,8 +493,7 @@ export const authRouter = router({
         });
       }
       const ip = getClientIp(ctx.req);
-      // نفس مفتاح حدّ محاولات login تماماً (شركة×IP) — راجع تعليق rateKey هناك.
-      const rateKey = `${ticket.companyCode}:${ip}`;
+      const rateKey = `:${ip}`;
 
       const doVerify = async () => {
         const db = getDb();
@@ -673,7 +595,7 @@ export const authRouter = router({
           expiry,
           ctx.req,
           undefined,
-          ticket.companyId,
+          undefined,
           sessionId,
           nativeDevice?.keyThumbprint,
           nativeDevice?.clientId,
@@ -735,11 +657,6 @@ export const authRouter = router({
         };
       };
 
-      if (ticket.companyId != null) {
-        return withTenantDb(ticket.companyId, (db) =>
-          runWithCompany(ticket.companyId!, db, doVerify),
-        );
-      }
       return doVerify();
     }),
 
@@ -1007,14 +924,12 @@ export const authRouter = router({
         expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
         createdAt: new Date(reissueIatSec * 1000),
       });
-      // نمرّر companyId الحالي (إن وُجد) ⇒ الكوكي المُعاد إصداره يحمل نفس هوية الشركة، وإلا
-      // فسيَفقد الوسيط في server/index.ts سياق الشركة في الطلب التالي (مراجعة عدائية حسمت هذا).
       const token = await signSession(
         ctx.user.id,
         SESSION_DEFAULT_MS,
         ctx.req,
         reissueIatSec,
-        getCurrentCompanyId() ?? undefined,
+        undefined,
         sessionId,
         nativeDeviceThumbprint ?? undefined,
         nativeClientId,
@@ -1195,7 +1110,7 @@ async function reissueCurrentUserSession(
     SESSION_DEFAULT_MS,
     ctx.req,
     reissueIatSec,
-    getCurrentCompanyId() ?? undefined,
+    undefined,
     sessionId,
     nativeDeviceThumbprint ?? undefined,
     nativeClientId,

@@ -36,7 +36,6 @@ function caller(role: "cashier" | "accountant") {
     } as TrpcContext["user"],
     sessionId: null,
     authenticationError: null,
-    platformAdmin: null,
   } as TrpcContext;
   return appRouter.createCaller(context);
 }
