@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { getSessionContext } from "./session";
+import { getSessionContext, getUserFromRequest } from "./session";
 import {
   normalizeOwnerAuthority,
   resolveCustomRole,
@@ -33,14 +33,22 @@ export async function authenticateExpressRequest(
   req: Request,
   options?: ExpressAuthOptions,
 ): Promise<ExpressAuthResult> {
-  let sessionCtx: Awaited<ReturnType<typeof getSessionContext>>;
+  let sessionCtx: Awaited<ReturnType<typeof getSessionContext>> | undefined;
   try {
     sessionCtx = await getSessionContext(req);
   } catch {
     return { ok: false, status: 401, error: "جلسة غير صالحة أو منتهية الصلاحية." };
   }
 
-  const rawUser = sessionCtx.user;
+  let rawUser = sessionCtx?.user ?? null;
+  const sessionId = sessionCtx?.sessionId ?? null;
+  if (sessionCtx === undefined) {
+    try {
+      rawUser = await getUserFromRequest(req);
+    } catch {
+      return { ok: false, status: 401, error: "جلسة غير صالحة أو منتهية الصلاحية." };
+    }
+  }
   if (!rawUser) {
     return { ok: false, status: 401, error: "يلزم تسجيل الدخول." };
   }
@@ -80,6 +88,6 @@ export async function authenticateExpressRequest(
   return {
     ok: true,
     user,
-    sessionId: sessionCtx.sessionId,
+    sessionId,
   };
 }

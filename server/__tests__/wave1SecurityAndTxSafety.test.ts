@@ -185,6 +185,8 @@ describe("Wave 1 — Transaction Fatal Rethrow, Realtime Bridge HMAC, Badge Cryp
     expect(matchesStoredBadgeBarcode(digest, generated)).toBe(true);
     expect(matchesStoredBadgeBarcode(digest, generated.toLowerCase())).toBe(true);
     expect(matchesStoredBadgeBarcode(digest, "MGR-12-0000000000000000")).toBe(false);
+    // منع تمرير البصمة المسروقة من قاعدة البيانات كرمز باركود خام (pass-the-hash)
+    expect(matchesStoredBadgeBarcode(digest, digest)).toBe(false);
 
     // توافق التراجع للبطاقات الفيزيائية المطبوعة قبل الترقية
     expect(matchesStoredBadgeBarcode("MGR-3-112233", "MGR-3-112233")).toBe(true);

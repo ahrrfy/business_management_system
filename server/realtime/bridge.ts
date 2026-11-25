@@ -77,7 +77,7 @@ export class RealtimeBridgeManager {
   private isConnectedToHub = false;
   private needsResync = false;
   private workerId = `w_${process.pid}_${Math.random().toString(36).slice(2, 6)}`;
-  private pendingOutbound: string[] = [];
+  private pendingOutbound: Array<Record<string, unknown>> = [];
   private static readonly MAX_PENDING_OUTBOUND = 500;
   private expectedWorkerCount: number | null = null;
   private requireSharedBridge = false;
@@ -503,9 +503,9 @@ export class RealtimeBridgeManager {
     const toFlush = [...this.pendingOutbound];
     this.pendingOutbound = [];
     for (let index = 0; index < toFlush.length; index++) {
-      const msg = toFlush[index];
+      const payload = toFlush[index];
       try {
-        this.clientSocket.write(msg);
+        this.clientSocket.write(this.serializeBridgeFrame(payload));
       } catch (err) {
         logger.warn({ err }, "realtime_bridge.client.flush_write_error");
         for (const unsent of toFlush.slice(index)) this.queuePendingMessage(unsent);
@@ -514,13 +514,13 @@ export class RealtimeBridgeManager {
     }
   }
 
-  private queuePendingMessage(msg: string): void {
+  private queuePendingMessage(payload: Record<string, unknown>): void {
     if (
       this.pendingOutbound.length >= RealtimeBridgeManager.MAX_PENDING_OUTBOUND
     ) {
       this.pendingOutbound.shift();
     }
-    this.pendingOutbound.push(msg);
+    this.pendingOutbound.push(payload);
   }
 
   private scheduleClientReconnect(): void {
@@ -541,12 +541,13 @@ export class RealtimeBridgeManager {
     // إرسال محلي فوري
     this.localEmitter.emit("event", event);
 
-    const message = this.serializeBridgeFrame({
+    const payload: Record<string, unknown> = {
       originWorkerId: this.workerId,
       event,
-    });
+    };
 
     if (this.mode === "hub" && this.server) {
+      const message = this.serializeBridgeFrame(payload);
       this.connectedSockets.forEach((socket) => {
         if (!socket.destroyed) {
           try {
@@ -559,13 +560,13 @@ export class RealtimeBridgeManager {
     } else if (this.mode === "client") {
       if (this.clientSocket && this.isConnectedToHub) {
         try {
-          this.clientSocket.write(message);
+          this.clientSocket.write(this.serializeBridgeFrame(payload));
         } catch (err) {
           logger.warn({ err }, "realtime_bridge.client.publish_write_error");
-          this.queuePendingMessage(message);
+          this.queuePendingMessage(payload);
         }
       } else {
-        this.queuePendingMessage(message);
+        this.queuePendingMessage(payload);
       }
     }
   }

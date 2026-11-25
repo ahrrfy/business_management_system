@@ -40,7 +40,9 @@ export function backupRouter(): Router {
   r.get("/download", async (req: Request, res: Response) => {
     const auth = await authenticateExpressRequest(req);
     if (!auth.ok) {
-      return res.status(auth.status).json({ error: auth.error });
+      return res
+        .status(403)
+        .json({ error: auth.status === 401 ? "تنزيل النسخ متاح للمدير فقط." : auth.error });
     }
     const user = auth.user;
     if (user.role !== "admin" && !user.isOwner) {
@@ -99,7 +101,9 @@ export function backupRouter(): Router {
     // ولا يستطيع إجبار Node على تجميع ملف الاستعادة في الذاكرة أو على القرص.
     const auth = await authenticateExpressRequest(req);
     if (!auth.ok) {
-      return res.status(auth.status).json({ error: auth.error });
+      return res
+        .status(403)
+        .json({ error: auth.status === 401 ? "استعادة النسخ متاحة للمالك فقط." : auth.error });
     }
     const session = { user: auth.user, sessionId: auth.sessionId };
     if (session.user?.isOwner !== true) {

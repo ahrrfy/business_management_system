@@ -11,6 +11,7 @@ import {
 import { failOpaque } from "../lib/opaqueFailure";
 import {
   hashBadgeBarcode,
+  isPlaintextManagerBadgeFormat,
   matchesStoredBadgeBarcode,
 } from "../lib/badgeBarcodeCrypto";
 import { canonicalOperationAllowed } from "../operationAuthorization";
@@ -314,13 +315,15 @@ export async function verifyManagerApproval(
       });
     }
 
-    const badgeHash = hashBadgeBarcode(barcode);
-    const candidates = await db
-      .select()
-      .from(users)
-      .where(inArray(users.badgeBarcode, [badgeHash, barcode]))
-      .limit(2);
-    u = candidates.find((row) => matchesStoredBadgeBarcode(row.badgeBarcode, barcode));
+    if (isPlaintextManagerBadgeFormat(barcode)) {
+      const badgeHash = hashBadgeBarcode(barcode);
+      const candidates = await db
+        .select()
+        .from(users)
+        .where(inArray(users.badgeBarcode, [badgeHash, barcode]))
+        .limit(2);
+      u = candidates.find((row) => matchesStoredBadgeBarcode(row.badgeBarcode, barcode));
+    }
     if (u && isAccountAuthenticationLocked(u)) {
       throw new TRPCError({
         code: "TOO_MANY_REQUESTS",

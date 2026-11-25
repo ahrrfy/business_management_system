@@ -2,6 +2,8 @@ import { createHmac, hkdfSync, randomInt, timingSafeEqual } from "node:crypto";
 
 const BADGE_HKDF_INFO = "alroya:badge-barcode:v1";
 const DEV_FALLBACK_SECRET = "alroya-dev-local-badge-secret-v1";
+const LEGACY_PLAINTEXT_BADGE_RE = /^MGR-\d+-\d+$/i;
+const DIGEST_BADGE_RE = /^[0-9a-f]{64}$/;
 
 function resolveBadgeKey(): Buffer {
   const secret = process.env.JWT_SECRET?.trim() || DEV_FALLBACK_SECRET;
@@ -31,21 +33,32 @@ export function generateHighEntropyBadgeCode(userId: number): string {
   return `MGR-${userId}-${digits}`;
 }
 
-/** مقارنة زمن-ثابت تدعم البصمات المشفّرة (`64 hex`) والشارات المطبوعة سابقاً (`MGR-...`) بلا انقطاع. */
+/** هل يطابق النص صيغة رمز شارة مدير ممسوح (`MGR-<userId>-<digits>`)؟ */
+export function isPlaintextManagerBadgeFormat(raw: string): boolean {
+  return LEGACY_PLAINTEXT_BADGE_RE.test(raw.trim());
+}
+
+/** مقارنة زمن-ثابت تدعم البصمات المشفّرة (`64 hex`) والشارات المطبوعة سابقاً (`MGR-...`) دون قبول البصمة كرمز خام. */
 export function matchesStoredBadgeBarcode(
   storedValue: string | null | undefined,
   presentedRawBarcode: string,
 ): boolean {
   if (!storedValue) return false;
   const normalized = normalizeBadgeBarcode(presentedRawBarcode);
-  if (!normalized) return false;
-  const expectedHash = hashBadgeBarcode(normalized);
-  const storedBuf = Buffer.from(storedValue, "utf8");
-  const hashBuf = Buffer.from(expectedHash, "utf8");
-  if (storedBuf.length === hashBuf.length && timingSafeEqual(storedBuf, hashBuf)) {
-    return true;
+  if (!LEGACY_PLAINTEXT_BADGE_RE.test(normalized)) {
+    return false;
   }
-  const legacyBuf = Buffer.from(storedValue.trim().toUpperCase(), "utf8");
-  const normBuf = Buffer.from(normalized, "utf8");
-  return legacyBuf.length === normBuf.length && timingSafeEqual(legacyBuf, normBuf);
+  const trimmedStored = storedValue.trim();
+  if (DIGEST_BADGE_RE.test(trimmedStored)) {
+    const expectedHash = hashBadgeBarcode(normalized);
+    const storedBuf = Buffer.from(trimmedStored, "utf8");
+    const hashBuf = Buffer.from(expectedHash, "utf8");
+    return storedBuf.length === hashBuf.length && timingSafeEqual(storedBuf, hashBuf);
+  }
+  if (LEGACY_PLAINTEXT_BADGE_RE.test(trimmedStored)) {
+    const legacyBuf = Buffer.from(trimmedStored.toUpperCase(), "utf8");
+    const normBuf = Buffer.from(normalized, "utf8");
+    return legacyBuf.length === normBuf.length && timingSafeEqual(legacyBuf, normBuf);
+  }
+  return false;
 }
