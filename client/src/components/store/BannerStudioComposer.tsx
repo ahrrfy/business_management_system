@@ -273,15 +273,6 @@ export function BannerStudioComposer({
   });
 
   const generateSceneM = trpc.storeAdmin.banners.generateImage.useMutation({
-    onSuccess: (res, vars) => {
-      setAiSceneDataUrl(res.sceneDataUrl);
-      setVisualMode(vars.sceneMode === "FULL_SCENE" ? "AI_FULL_SCENE" : "HYBRID_STAGE");
-      notify.ok(
-        vars.sceneMode === "FULL_SCENE"
-          ? "تم توليد المشهد الفوتوغرافي المرجعي بنجاح"
-          : "تم تجهيز منصة الاستوديو السينمائية مع حفظ أصل المنتجات 100%",
-      );
-    },
     onError: (err) => notify.err(err),
   });
 
@@ -300,12 +291,14 @@ export function BannerStudioComposer({
   const latestSubjectSigRef = useRef(subjectSignature);
   latestSubjectSigRef.current = subjectSignature;
   const copyReqSeqRef = useRef(0);
+  const sceneReqSeqRef = useRef(0);
   const initialEditSigRef = useRef<string | null>(editingBanner ? subjectSignature : null);
 
   // منع بقاء أي مشهد قديم عند تغيير الفئة أو المنتجات أو العرض الترويجي، وتجاهل الردود المتأخرة، وحفظ نص البنر المحرّر عند الفتح الأولي
   useEffect(() => {
     if (!subjectSignature) {
       copyReqSeqRef.current += 1;
+      sceneReqSeqRef.current += 1;
       return;
     }
     const isInitialEditFetch =
@@ -314,6 +307,7 @@ export function BannerStudioComposer({
       initialEditSigRef.current = null;
     }
 
+    sceneReqSeqRef.current += 1;
     setAiSceneDataUrl(null);
     setExtraMergedProducts([]);
     setOrderedProductIds([]);
@@ -408,6 +402,8 @@ export function BannerStudioComposer({
     () => combinedCandidateProducts.filter((p) => !excludedProductIds.includes(p.productId)).slice(0, 5),
     [combinedCandidateProducts, excludedProductIds],
   );
+  const activeProductItemsRef = useRef(activeProductItems);
+  activeProductItemsRef.current = activeProductItems;
 
   const activeProductImageUrls = useMemo(
     () =>
@@ -599,7 +595,10 @@ export function BannerStudioComposer({
             const prevMeta = initialSlides.find((s) => s.url === url);
             return {
               url,
-              mobileUrl: prevMeta?.mobileUrl ?? (uploadedDesktop.length === 1 ? singleMob : null),
+              mobileUrl:
+                uploadedDesktop.length === 1
+                  ? singleMob
+                  : (prevMeta?.mobileUrl ?? null),
               title: prevMeta?.title ?? null,
               subtitle: prevMeta?.subtitle ?? null,
               ctaLabel: prevMeta?.ctaLabel ?? null,
@@ -1041,17 +1040,46 @@ export function BannerStudioComposer({
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() =>
-                        generateSceneM.mutate({
-                          presetId,
-                          placement: studioPlacement,
-                          model: DEFAULT_BANNER_SCENE_MODEL,
-                          productIds: activeProductItems.map((p) => p.productId).slice(0, 5),
-                          customHint: sceneHint.trim() || null,
-                          lightingMode,
-                          sceneMode: visualMode === "AI_FULL_SCENE" ? "FULL_SCENE" : "STAGE_BACKDROP",
-                        })
-                      }
+                      onClick={() => {
+                        const reqId = ++sceneReqSeqRef.current;
+                        const reqSig = subjectSignature;
+                        const reqProductIds = activeProductItems.map((p) => p.productId).slice(0, 5);
+                        const reqProductKey = reqProductIds.join(",");
+                        const reqSceneMode = visualMode === "AI_FULL_SCENE" ? "FULL_SCENE" : "STAGE_BACKDROP";
+                        void generateSceneM
+                          .mutateAsync({
+                            presetId,
+                            placement: studioPlacement,
+                            model: DEFAULT_BANNER_SCENE_MODEL,
+                            productIds: reqProductIds,
+                            customHint: sceneHint.trim() || null,
+                            lightingMode,
+                            sceneMode: reqSceneMode,
+                          })
+                          .then((res) => {
+                            const currentProductKey = activeProductItemsRef.current
+                              .map((p) => p.productId)
+                              .slice(0, 5)
+                              .join(",");
+                            if (
+                              reqId !== sceneReqSeqRef.current ||
+                              reqSig !== latestSubjectSigRef.current ||
+                              reqProductKey !== currentProductKey
+                            ) {
+                              return;
+                            }
+                            setAiSceneDataUrl(res.sceneDataUrl);
+                            setVisualMode(reqSceneMode === "FULL_SCENE" ? "AI_FULL_SCENE" : "HYBRID_STAGE");
+                            notify.ok(
+                              reqSceneMode === "FULL_SCENE"
+                                ? "تم توليد المشهد الفوتوغرافي المرجعي بنجاح"
+                                : "تم تجهيز منصة الاستوديو السينمائية مع حفظ أصل المنتجات 100%",
+                            );
+                          })
+                          .catch(() => {
+                            /* onError handles toast */
+                          });
+                      }}
                       disabled={generateSceneM.isPending || !aiConfigQ.data?.aiAvailable}
                       className="h-8 gap-1.5 text-xs font-bold"
                     >

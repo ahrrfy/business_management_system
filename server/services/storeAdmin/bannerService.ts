@@ -11,6 +11,7 @@ import { withTx } from "../tx";
 import { resolveStorefrontBranchId } from "../storefrontService";
 import { normalizeInternalBannerUrl } from "../../lib/bannerSafety";
 import { bannerImageUrl, decodeDataUrl } from "../../imageRoute";
+import { isPromotionActiveOnDay } from "../../../shared/promotionScheduling";
 
 function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -81,7 +82,7 @@ async function resolveLivePromoIds(promoIds: number[], today: string): Promise<S
   const unique = Array.from(new Set(promoIds.filter((n) => n > 0)));
   if (!db || unique.length === 0) return new Set();
   const rows = await db
-    .select({ id: promotions.id })
+    .select({ id: promotions.id, activeDays: promotions.activeDays })
     .from(promotions)
     .where(
       and(
@@ -91,7 +92,11 @@ async function resolveLivePromoIds(promoIds: number[], today: string): Promise<S
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${today})`)!,
       ),
     );
-  return new Set(rows.map((r) => Number(r.id)));
+  return new Set(
+    rows
+      .filter((r) => isPromotionActiveOnDay(Array.isArray(r.activeDays) ? r.activeDays : null, today))
+      .map((r) => Number(r.id)),
+  );
 }
 
 /** كل البنرات (لوحة الإدارة) — مرتّبة بالترتيب ثم الأحدث، مع كشف ارتباط البنر بعرض متوقف أو منتهٍ. */

@@ -137,7 +137,9 @@ describe("listActiveBanners — رابط لا base64", () => {
     });
   });
 
-  it("يحجب شريحة البنر المرتبطة بعرض ترويجي منتهٍ أو غير مفعّل ويعرض المرتبطة بعرض سارٍ", async () => {
+  it("يحجب شريحة البنر المرتبطة بعرض ترويجي منتهٍ أو مقيد بيوم آخر ويعرض المرتبطة بعرض سارٍ", async () => {
+    const baghdadDow = new Date(Date.now() + 3 * 3600_000).getUTCDay();
+    const otherDow = (baghdadDow + 1) % 7;
     await db().insert(s.promotions).values([
       {
         id: 2,
@@ -161,6 +163,18 @@ describe("listActiveBanners — رابط لا base64", () => {
         customerTier: "RETAIL",
         isActive: true,
       },
+      {
+        id: 4,
+        name: "عرض ليوم آخر",
+        type: "PERCENT",
+        discountPercent: "25",
+        scope: "ALL",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: new Date("2099-12-31T00:00:00Z"),
+        activeDays: [otherDow],
+        customerTier: "RETAIL",
+        isActive: true,
+      },
     ]);
     const promoBanner = await createBanner(
       {
@@ -168,6 +182,7 @@ describe("listActiveBanners — رابط لا base64", () => {
         images: [
           { url: PNG_DATA_URL, ctaUrl: "/store?promo=2", sortOrder: 0 },
           { url: JPEG_DATA_URL, ctaUrl: "/store?promo=3", sortOrder: 1 },
+          { url: JPEG_DATA_URL, ctaUrl: "/store?promo=4", sortOrder: 2 },
         ],
       },
       1,
