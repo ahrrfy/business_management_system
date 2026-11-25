@@ -150,7 +150,7 @@ export async function getKpiTrends(
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
       WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
-        AND DATE(r.createdAt) = CURDATE()
+        AND r.createdAt >= CURDATE() AND r.createdAt < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilterR} ${bucketFilterR}
@@ -161,7 +161,7 @@ export async function getKpiTrends(
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
       WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
-        AND DATE(r.createdAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND r.createdAt < CURDATE()
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilterR} ${bucketFilterR}
@@ -201,7 +201,7 @@ export async function getKpiTrends(
       SELECT CAST(COALESCE(SUM(s.countedCash), 0) AS CHAR) AS amount
       FROM shifts s
       WHERE s.shiftStatus = 'CLOSED'
-        AND DATE(s.closedAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        AND s.closedAt >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND s.closedAt < CURDATE()
         ${effectiveBranch != null ? sql`AND s.branchId = ${effectiveBranch}` : sql``}
     `),
   );
@@ -216,7 +216,7 @@ export async function getKpiTrends(
         SELECT CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END), 0) AS CHAR) AS amount
         FROM receipts r
         WHERE r.cashBucket = 'TREASURY' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
-          AND DATE(r.createdAt) < CURDATE()
+          AND r.createdAt < CURDATE()
           ${branchFilterR}
       `),
     );
@@ -229,7 +229,7 @@ export async function getKpiTrends(
     await db.execute(sql`
       SELECT COUNT(*) AS cnt
       FROM shifts s
-      WHERE DATE(s.openedAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+      WHERE s.openedAt >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND s.openedAt < CURDATE()
         ${effectiveBranch != null ? sql`AND s.branchId = ${effectiveBranch}` : sql``}
     `),
   );

@@ -2731,6 +2731,13 @@
       "when": 1788148891000,
       "tag": "0433_exchange_txn_execution_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 434,
+      "version": "5",
+      "when": 1788148892000,
+      "tag": "0434_composite_indexes_hot_paths",
+      "breakpoints": true
     }
   ]
 }

@@ -30,7 +30,12 @@ import { fileURLToPath } from "node:url";
 
 const MIGRATIONS_DIR = "drizzle/migrations";
 const JOURNAL_FILE = path.join(MIGRATIONS_DIR, "meta/_journal.json");
-const SCHEMA_FILE = "drizzle/schema.ts";
+const SCHEMA_FILES = [
+  "drizzle/schema.ts",
+  "drizzle/fulfillmentSchema.ts",
+  "drizzle/digitalSettlementSchema.ts",
+  "drizzle/fulfillmentRightsSchema.ts",
+];
 
 /** المعرّف في SQL: `مُقتبَسٌ` أو عارٍ — الهجرات القديمة تكتبه عارياً (`CREATE TABLE voucherCategories`). */
 const ident = (quoted, plain) => quoted ?? plain;
@@ -330,7 +335,10 @@ function selftest() {
 
 function main() {
   if (process.argv.includes("--selftest")) { selftest(); return; }
-  const schemaSource = fs.readFileSync(SCHEMA_FILE, "utf8");
+  const schemaSource = SCHEMA_FILES
+    .filter((f) => fs.existsSync(f))
+    .map((f) => fs.readFileSync(f, "utf8"))
+    .join("\n");
   const schemaColumns = parseSchemaColumns(schemaSource);
   const schemaTables = parseSchemaTables(schemaSource);
   const files = orderedMigrationFiles().map((f) => fs.readFileSync(f, "utf8"));

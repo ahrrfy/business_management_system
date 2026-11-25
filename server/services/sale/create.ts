@@ -770,6 +770,16 @@ async function createSaleInTxInner(
       .limit(1);
     if (!c[0])
       throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    if (!input.offlineCapture && (c[0].deletedAt != null || c[0].isActive === false)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار الفاتورة لهذا العميل",
+          why: "حساب العميل معطّل أو محذوف في النظام",
+          doThis: "فعّل حساب العميل أولاً من شاشة العملاء أو اختر عميلاً فعّالاً",
+        }),
+      });
+    }
     customerTier = c[0].defaultPriceTier as PriceTier;
   }
   const tier = resolveTier({ override: input.priceTier ?? null, customerTier });

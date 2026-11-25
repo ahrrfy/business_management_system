@@ -31,6 +31,7 @@ import {
   users,
   workOrders,
 } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { logAuditTx } from "./auditService";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
 import { requireDb, withTx, type Actor, type MaybeScopedActor } from "./tx";
@@ -129,10 +130,13 @@ export async function analyzeFeedbackSentimentAndGuidance(params: {
 }`;
 
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: { responseMimeType: "application/json" },
@@ -295,8 +299,43 @@ export async function recordCustomerFeedback(
   input: CreateCustomerFeedbackInput,
   actor: Actor | MaybeScopedActor,
 ) {
+  const rating = Math.max(1, Math.min(5, Math.round(input.rating)));
+  const defaultStatus: IssueStatus =
+    input.issueStatus ??
+    (rating <= 2 ? "NEW" : rating === 3 ? "IN_PROGRESS" : "RESOLVED");
+
+  // قراءة تمهيدية سريعة خارج المعاملة حتى لا يحتجز نداء Gemini الخارجي (حتى 3.5 ثانية) اتصالاً أو أقفالاً في MySQL
+  const preDb = getDb();
+  let preCustomerName: string | undefined;
+  if (preDb) {
+    const [preCustomer] = await preDb
+      .select({ id: customers.id, name: customers.name })
+      .from(customers)
+      .where(eq(customers.id, input.customerId))
+      .limit(1);
+    if (!preCustomer) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذر تسجيل التقييم",
+          why: "الزبون غير موجود في النظام",
+          doThis: "تحقق من اختيار الزبون الصحيح أولاً",
+        }),
+      });
+    }
+    preCustomerName = preCustomer.name;
+  }
+
+  const { sentiment, smartGuidance } =
+    await analyzeFeedbackSentimentAndGuidance({
+      rating,
+      category: input.category,
+      comment: input.comment,
+      customerName: preCustomerName,
+    });
+
   return withTx(async (tx) => {
-    // التحقق من وجود العميل
+    // التحقق الذري من وجود العميل والروابط داخل المعاملة لحظة الإدراج
     const [customer] = await tx
       .select({ id: customers.id, name: customers.name })
       .from(customers)
@@ -353,23 +392,6 @@ export async function recordCustomerFeedback(
         });
       }
     }
-
-    // التحقق من رقم التقييم
-    const rating = Math.max(1, Math.min(5, Math.round(input.rating)));
-
-    // تحديد حالة المشكلة تلقائياً
-    const defaultStatus: IssueStatus =
-      input.issueStatus ??
-      (rating <= 2 ? "NEW" : rating === 3 ? "IN_PROGRESS" : "RESOLVED");
-
-    // تحليل المشاعر والإرشاد
-    const { sentiment, smartGuidance } =
-      await analyzeFeedbackSentimentAndGuidance({
-        rating,
-        category: input.category,
-        comment: input.comment,
-        customerName: customer.name,
-      });
 
     const now = new Date();
 

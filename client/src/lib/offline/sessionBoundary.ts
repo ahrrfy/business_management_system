@@ -91,6 +91,25 @@ function isMissingIndexedDbError(err: unknown): boolean {
   );
 }
 
+export function purgeLogoutBrowserArtifacts(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage?.clear?.();
+  } catch {}
+  if (typeof localStorage === "undefined") return;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        (key.startsWith("alroya.posTabs.v2") || key === "barcodeLabels.queue.v1")
+      ) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {}
+}
+
 /** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
 export async function resetSessionForLogout(
   queryClient: QueryClient,
@@ -100,6 +119,7 @@ export async function resetSessionForLogout(
   void clearNotificationBadge();
   lockOfflineSession();
   purgeRecipeClipboard();
+  purgeLogoutBrowserArtifacts();
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   try {

@@ -410,8 +410,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     },
   );
   const logout = trpc.auth.logout.useMutation({
-    onSuccess: async () => {
-      await resetSessionForLogout(queryClient);
+    onSettled: async () => {
+      await resetSessionForLogout(queryClient).catch(() => undefined);
       window.location.replace("/login");
     },
   });

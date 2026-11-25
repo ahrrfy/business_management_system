@@ -1405,6 +1405,20 @@ export async function isPreflightIntentCleared(clientRequestId: string): Promise
   }
 }
 
+async function purgeExpiredPreflightTombstoneFromStores(clientRequestId: string): Promise<void> {
+  if (!clientRequestId) return;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(`${PREFLIGHT_INTENT_LS_KEY_PREFIX}${clientRequestId}`);
+    }
+  } catch {}
+  try {
+    if (offlineDb.meta && typeof offlineDb.meta.delete === "function") {
+      await offlineDb.meta.delete(`${PREFLIGHT_INTENT_IDB_KEY_PREFIX}${clientRequestId}`);
+    }
+  } catch {}
+}
+
 export async function listRecoverablePreflightSaleIntents(opts?: {
   branchId?: number | null;
   viewerUserId?: number | null;
@@ -1420,6 +1434,12 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
   for (const id of ids) {
     const rec = await readMergedSinglePreflightIntent(id);
     if (!rec || rec.status === "CLEARED") {
+      if (rec?.status === "CLEARED") {
+        const clearedTs = Number(rec.clearedAtMs ?? rec.updatedAtMs ?? 0);
+        if (clearedTs > 0 && nowMs - clearedTs > PREFLIGHT_TOMBSTONE_RETENTION_MS) {
+          await purgeExpiredPreflightTombstoneFromStores(id);
+        }
+      }
       continue;
     }
     try {
