@@ -3,6 +3,7 @@ import { loadRefundCaps } from "../returns/refundCaps";
 import {
   applyCustomerHistoricalCreditTx,
   applyCustomerReceiptCreditTx,
+  computeCustomerBranchScopeTx,
   customerReceiptCreditTotalTx,
 } from "../customerReceiptSettlement";
 import { consumeRetainedSupplierBookExcessTx } from "../purchase/supplierBookSettlement";
@@ -304,9 +305,21 @@ export async function autoSettleCustomerAccountTx(
   const accountCredit = Decimal.max(totalOpenInvoiceRemaining.minus(currentCustBalance), 0);
 
   // Proven advances retain their branch and original receipt; only the legacy
-  // remainder may use the historical balance-derived reconciliation.
+  // remainder (excluding any unapplied hold deposits) may use historical reconciliation.
   const trackedCredit = await customerReceiptCreditTotalTx(tx, customerId);
-  let legacyCredit = Decimal.max(0, accountCredit.minus(trackedCredit));
+  const allBranchScopes = await computeCustomerBranchScopeTx(tx, {
+    customerIds: [customerId],
+  });
+  let verifiedHistoricalPool = money(0);
+  for (const sc of Array.from(allBranchScopes.values())) {
+    verifiedHistoricalPool = verifiedHistoricalPool.plus(
+      sc.sameBranchAdditionalHistorical,
+    );
+  }
+  let legacyCredit = Decimal.min(
+    Decimal.max(0, accountCredit.minus(trackedCredit)),
+    verifiedHistoricalPool,
+  );
   const deliveryBlocked = await activeDeliveryInvoiceIdsTx(tx, openInvoices.map(inv => inv.id));
   if (accountCredit.gt(0) || trackedCredit.gt(0)) {
     for (const inv of openInvoices) {
@@ -323,42 +336,29 @@ export async function autoSettleCustomerAccountTx(
         ? await applyCustomerHistoricalCreditTx(tx, inv.id, histCap, actor, "autoSettle")
         : money(0);
       legacyCredit = legacyCredit.minus(hist);
-      const allocate = tracked.plus(hist);
+      const crossBranchLegacy = Decimal.min(
+        legacyCredit,
+        Decimal.max(0, needed.minus(tracked).minus(hist)),
+      );
+      legacyCredit = legacyCredit.minus(crossBranchLegacy);
+      const allocate = tracked.plus(hist).plus(crossBranchLegacy);
       if (allocate.lte(0)) continue;
       const newPaid = currentPaid.plus(allocate);
       totalSettled = totalSettled.plus(allocate);
 
-      // NOTE: Both `applyCustomerReceiptCreditTx` and `applyCustomerHistoricalCreditTx` execute
-      // `allocateVoucherToInvoiceTx(tx, ...)` which persists `invoices.paidAmount`, `invoices.status`,
-      // and `invoices.paymentDate` directly in MySQL inside this transaction. Re-read and verify the
-      // persisted invoice row so the in-memory summary always matches MySQL 100%.
-      const [persistedInv] = await tx
-        .select({
-          paidAmount: invoices.paidAmount,
-          status: invoices.status,
-        })
-        .from(invoices)
-        .where(eq(invoices.id, inv.id))
-        .limit(1);
-      const expectedStatus = computeInvoiceStatus(
+      const newStatus = computeInvoiceStatus(
         inv.total,
         toDbMoney(newPaid),
         inv.returnedTotal ?? "0",
       );
-      if (
-        !persistedInv ||
-        !money(persistedInv.paidAmount).eq(newPaid)
-      ) {
-        await tx
-          .update(invoices)
-          .set({
-            paidAmount: toDbMoney(newPaid),
-            status: expectedStatus,
-            paymentDate: new Date(),
-          })
-          .where(eq(invoices.id, inv.id));
-      }
-      const newStatus = persistedInv?.status ?? expectedStatus;
+      await tx
+        .update(invoices)
+        .set({
+          paidAmount: toDbMoney(newPaid),
+          status: newStatus,
+          paymentDate: new Date(),
+        })
+        .where(eq(invoices.id, inv.id));
       inv.paidAmount = toDbMoney(newPaid);
       inv.status = newStatus;
 

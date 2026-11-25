@@ -3120,13 +3120,23 @@ export const returnRouter = router({
             matchedActualPayout = (input.settlement.method === "CASH" || input.settlement.method === "CARD")
               ? actualRefundPayoutDec : money(0);
 
-            if ((input.settlement.method === "CASH" || input.settlement.method === "CARD" || input.settlement.method === "STORE_CREDIT") && (actualRefundPayoutDec.lte(0) || actualRefundPayoutDec.gt(lockedRefundCaps.pool))) {
+            if ((input.settlement.method === "CASH" || input.settlement.method === "CARD") && (actualRefundPayoutDec.lte(0) || actualRefundPayoutDec.gt(lockedRefundCaps.pool))) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: appErrorMessage({
                   what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
                   why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)${paidAmount.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ" : ""}`,
                   doThis: "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
+                }),
+              });
+            }
+            if (input.settlement.method === "STORE_CREDIT" && (returnTotalDec.lte(0) || returnTotalDec.gt(paidAmount))) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ رصيد المتجر يتجاوز المدفوع الفعلي للفاتورة",
+                  why: `المبلغ المطلوب تحويله لرصيد متجر (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)`,
+                  doThis: "لا يمكن إصدار رصيد متجر يفوق ما قبضه المحل فعلياً؛ استخدم معادلة الذمة للجزء الآجل أو العهدة غير الموردة",
                 }),
               });
             }

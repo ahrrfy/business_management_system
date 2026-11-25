@@ -221,7 +221,7 @@ async function loadSettlementLines(
   for (const { r, cod, collected, remaining } of candidates) {
     const id = Number(r.id);
     let ownFee = money(0);
-    if (r.sourceType !== "AFTERCARE_EXECUTION" && r.feeCollection === "SHOP") {
+    if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
       const due = money(r.feeDue);
       const quotedCash = quoteFee(due, money(r.orderTotal));
       const projected = detached.projectedFromSource.get(id) ?? money(0);

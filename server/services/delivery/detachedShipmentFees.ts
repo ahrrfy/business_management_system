@@ -116,7 +116,7 @@ export async function planDetachedShipmentFees(
         return [id, round2(Decimal.max(0, input.capacityOverrides.get(id) ?? money(0)))] as const;
       }
       const balance = feeBalances.get(id);
-      const ownDue = row.cn.sourceType !== "AFTERCARE_EXECUTION" && row.cn.feeCollection === "SHOP"
+      const ownDue = row.cn.sourceType === "ONLINE_ORDER" && row.cn.feeCollection === "SHOP"
         ? (balance?.active ? balance.due : input.includePending && !row.cn.feeSettledAt ? money(row.cn.deliveryFee) : money(0))
         : money(0);
       const ownFee = quoteFee(ownDue, orderTotalFor(row.cn));
