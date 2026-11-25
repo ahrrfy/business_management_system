@@ -344,10 +344,16 @@ async function inspectBackup(
   };
 }
 
+const latestRestoreEntrySchema = z.object({
+  name: z.string(),
+  at: timestamp,
+});
+
 const latestRestoreSummarySchema = z.object({
   version: z.literal(1),
   name: z.string(),
   at: timestamp,
+  byDatabase: z.record(z.string(), latestRestoreEntrySchema).optional(),
 });
 
 const MIN_PROTECTED_ENCRYPTED_BACKUPS = 3;
@@ -427,12 +433,20 @@ export async function inspectBackupReadiness(
     const parsedSummary = latestRestoreSummarySchema.safeParse(
       await smallJson(summaryFile, await ordinaryFile(summaryFile)),
     );
-    if (
-      parsedSummary.success &&
-      matchesBackupPrefix(parsedSummary.data.name, prefix) &&
-      (!latestRestore || isNewerTimestamp(parsedSummary.data.at, latestRestore.at))
-    ) {
-      latestRestore = { name: parsedSummary.data.name, at: parsedSummary.data.at };
+    if (parsedSummary.success) {
+      const summaryCandidates = [
+        { name: parsedSummary.data.name, at: parsedSummary.data.at },
+        ...Object.values(parsedSummary.data.byDatabase ?? {}),
+      ];
+      for (const candidate of summaryCandidates) {
+        if (
+          isBackupSqlName(candidate.name) &&
+          matchesBackupPrefix(candidate.name, prefix) &&
+          (!latestRestore || isNewerTimestamp(candidate.at, latestRestore.at))
+        ) {
+          latestRestore = { name: candidate.name, at: candidate.at };
+        }
+      }
     }
   }
 
