@@ -101,8 +101,9 @@ export function BannerCarousel({ banners, slot = "HERO", className = "" }: Banne
     if (!g.swiping) {
       if (Math.abs(dx) < 10) return;
       if (Math.abs(dy) > Math.abs(dx)) {
-        // تمرير عمودي للصفحة — لا نعترضه
+        // تمرير عمودي للصفحة — لا نعترضه ونعيد تفعيل التبديل التلقائي
         g.pointerId = null;
+        setInteractionPaused(false);
         return;
       }
       g.swiping = true;

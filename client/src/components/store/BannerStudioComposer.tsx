@@ -178,7 +178,7 @@ export function BannerStudioComposer({
   onSubmit,
 }: BannerStudioComposerProps) {
   const initialSlides = useMemo(() => parseStoredSlides(editingBanner), [editingBanner]);
-  const isLegacyMultiUpload = initialSlides.length > 1 && !initialSlides[0]?.mobileUrl;
+  const hasStoredCreative = initialSlides.length > 0;
 
   const [subject, setSubject] = useState<BannerSubjectState>(() => {
     if (initialPromoId) {
@@ -194,15 +194,13 @@ export function BannerStudioComposer({
     if (editingBanner) {
       return inferSubjectStateFromBanner({
         ctaUrl: editingBanner.ctaUrl,
-        hasUploadedImages: isLegacyMultiUpload,
+        hasUploadedImages: hasStoredCreative,
       });
     }
     return { mode: "PRODUCTS", products: [], categoryId: null, promotionId: null, specialTarget: "NONE", ctaUrl: "/store" };
   });
 
-  const [campaignSlides, setCampaignSlides] = useState<StoredBannerSlide[]>(() =>
-    editingBanner && !isLegacyMultiUpload && initialSlides.length > 1 ? initialSlides : [],
-  );
+  const [campaignSlides, setCampaignSlides] = useState<StoredBannerSlide[]>([]);
   const [placement, setPlacement] = useState<BannerPlacementOption>(
     (editingBanner?.placement as BannerPlacementOption) ?? "HERO",
   );
@@ -246,9 +244,11 @@ export function BannerStudioComposer({
   const [uploadedDesktop, setUploadedDesktop] = useState<ImageItem[]>(() =>
     initialSlides.map((s, idx) => ({ id: `s-${idx}`, dataUrl: s.url, isPrimary: idx === 0 })),
   );
-  const [uploadedMobile, setUploadedMobile] = useState<ImageItem[]>(() =>
-    editingBanner?.mobileImageUrl ? [{ id: "mob", dataUrl: editingBanner.mobileImageUrl, isPrimary: true }] : [],
-  );
+  const [uploadedMobile, setUploadedMobile] = useState<ImageItem[]>(() => {
+    const initialMob =
+      editingBanner?.mobileImageUrl ?? (initialSlides.length === 1 ? (initialSlides[0]?.mobileUrl ?? null) : null);
+    return initialMob ? [{ id: "mob", dataUrl: initialMob, isPrimary: true }] : [];
+  });
   const [sortOrder, setSortOrder] = useState(String(editingBanner?.sortOrder ?? 0));
   const [effectiveFrom, setEffectiveFrom] = useState(editingBanner?.effectiveFrom ?? "");
   const [effectiveTo, setEffectiveTo] = useState(editingBanner?.effectiveTo ?? "");
@@ -268,22 +268,6 @@ export function BannerStudioComposer({
   presetLockRef.current = presetLockedByUser;
 
   const generateCopyM = trpc.storeAdmin.banners.generateCopy.useMutation({
-    onSuccess: (res) => {
-      setFacts(res.facts);
-      setNatureLabelAr(res.natureLabelAr);
-      setVariants(res.variants);
-      setPulledProducts(res.products);
-      setOrderedProductIds(res.products.map((p) => p.productId));
-      setExcludedProductIds([]);
-      if (!presetLockRef.current) setPresetId(res.recommendedPresetId);
-      if (res.variants[0]) setCopy(res.variants[0]);
-      if (res.facts.ctaUrl) {
-        setSubject((prev) => (prev.ctaUrl === res.facts.ctaUrl ? prev : { ...prev, ctaUrl: res.facts.ctaUrl }));
-      }
-      if (res.facts.effectiveTo && !effectiveTo) {
-        setEffectiveTo(res.facts.effectiveTo);
-      }
-    },
     onError: (err) => notify.err(err),
   });
 
@@ -312,9 +296,23 @@ export function BannerStudioComposer({
     return subject.promotionId ? `PROMOTION:${subject.promotionId}` : "";
   }, [subject.mode, subject.products, subject.categoryId, subject.promotionId, subject.specialTarget]);
 
-  // منع بقاء أي مشهد قديم عند تغيير الفئة أو المنتجات أو العرض الترويجي (إصلاح فوري للتلوث البصري)
+  const latestSubjectSigRef = useRef(subjectSignature);
+  latestSubjectSigRef.current = subjectSignature;
+  const copyReqSeqRef = useRef(0);
+  const initialEditSigRef = useRef<string | null>(editingBanner ? subjectSignature : null);
+
+  // منع بقاء أي مشهد قديم عند تغيير الفئة أو المنتجات أو العرض الترويجي، وتجاهل الردود المتأخرة، وحفظ نص البنر المحرّر عند الفتح الأولي
   useEffect(() => {
-    if (!subjectSignature) return;
+    if (!subjectSignature) {
+      copyReqSeqRef.current += 1;
+      return;
+    }
+    const isInitialEditFetch =
+      initialEditSigRef.current !== null && initialEditSigRef.current === subjectSignature;
+    if (!isInitialEditFetch) {
+      initialEditSigRef.current = null;
+    }
+
     setAiSceneDataUrl(null);
     setExtraMergedProducts([]);
     setOrderedProductIds([]);
@@ -322,6 +320,9 @@ export function BannerStudioComposer({
     if (visualMode === "AI_FULL_SCENE") {
       setVisualMode("HYBRID_STAGE");
     }
+
+    const reqId = ++copyReqSeqRef.current;
+    const reqSig = subjectSignature;
 
     const timer = window.setTimeout(() => {
       const targetKind: BannerTargetKind =
@@ -335,12 +336,39 @@ export function BannerStudioComposer({
                 ? "DEALS"
                 : "PROMOTION";
 
-      generateCopyM.mutate({
-        targetKind,
-        promotionId: targetKind === "PROMOTION" ? subject.promotionId : null,
-        categoryId: targetKind === "CATEGORY" ? subject.categoryId : null,
-        productIds: targetKind === "PRODUCTS" ? subject.products.map((p) => p.productId) : undefined,
-      });
+      void generateCopyM
+        .mutateAsync({
+          targetKind,
+          promotionId: targetKind === "PROMOTION" ? subject.promotionId : null,
+          categoryId: targetKind === "CATEGORY" ? subject.categoryId : null,
+          productIds: targetKind === "PRODUCTS" ? subject.products.map((p) => p.productId) : undefined,
+        })
+        .then((res) => {
+          if (reqId !== copyReqSeqRef.current || reqSig !== latestSubjectSigRef.current) {
+            return;
+          }
+          setFacts(res.facts);
+          setNatureLabelAr(res.natureLabelAr);
+          setVariants(res.variants);
+          setPulledProducts(res.products);
+          setOrderedProductIds(res.products.map((p) => p.productId));
+          setExcludedProductIds([]);
+          if (!presetLockRef.current) setPresetId(res.recommendedPresetId);
+          if (!isInitialEditFetch) {
+            if (res.variants[0]) setCopy(res.variants[0]);
+            if (res.facts.ctaUrl) {
+              setSubject((prev) =>
+                prev.ctaUrl === res.facts.ctaUrl ? prev : { ...prev, ctaUrl: res.facts.ctaUrl },
+              );
+            }
+          }
+          if (res.facts.effectiveTo) {
+            setEffectiveTo((prev) => prev || res.facts.effectiveTo || "");
+          }
+        })
+        .catch(() => {
+          /* onError handles toast */
+        });
     }, 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -357,12 +357,16 @@ function StorefrontContent() {
     (activeOffer?.scope === "CATEGORIES" && activeOffer.targetCategoryIds?.length === 1
       ? activeOffer.targetCategoryIds[0]!
       : null);
+  const effectiveCategoryIds =
+    categoryId == null && activeOffer?.scope === "CATEGORIES"
+      ? (activeOffer.targetCategoryIds ?? [])
+      : null;
   const effectivePriceFilter: PriceFilter =
     activeOffer?.scope === "ALL" && priceFilter === "ALL" ? "ON_SALE" : priceFilter;
   const scopedIds =
     bannerProductIds ??
-    (activeOffer?.scope === "PRODUCTS" && activeOffer.targetProductIds?.length
-      ? activeOffer.targetProductIds
+    (activeOffer?.scope === "PRODUCTS"
+      ? (activeOffer.targetProductIds ?? [])
       : selectedThematicCollection?.productIds);
   const searchProductIds = useMemo(
     () => storefrontCatalogProductScope(showWishlist, wishlistIds, scopedIds),
@@ -370,6 +374,7 @@ function StorefrontContent() {
   );
   const catalogInput = {
     categoryId: effectiveCategoryId,
+    categoryIds: effectiveCategoryIds,
     productIds: searchProductIds,
     brand: brand || undefined,
     priceFilter: effectivePriceFilter,
@@ -400,6 +405,9 @@ function StorefrontContent() {
       setSelectedThematicCollection(null);
       setActivePromoId(null);
       setPriceFilter("ON_SALE");
+    },
+    onDeactivateDeals: () => {
+      setPriceFilter((prev) => (prev === "ON_SALE" ? "ALL" : prev));
     },
     onSelectProductGroup: (ids) => {
       setSelectedThematicCollection(null);
@@ -850,7 +858,7 @@ function StorefrontContent() {
     }
   };
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null || activePromoId != null || bannerProductIds != null;
-  const searchScope = { categoryId: effectiveCategoryId, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
+  const searchScope = { categoryId: effectiveCategoryId, categoryIds: effectiveCategoryIds, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
   function submitStoreSearch(query: string, selectedCategory?: number) {
     setRawSearch(query);
     setSearch(query.trim());

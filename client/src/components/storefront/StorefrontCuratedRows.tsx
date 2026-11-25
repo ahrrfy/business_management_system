@@ -227,6 +227,7 @@ export function CuratedRow({
   getCartQuantity,
   onUpdateQuantity,
 }: CuratedRowProps) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const seg0Ref = useRef<HTMLDivElement | null>(null);
   const seg1Ref = useRef<HTMLDivElement | null>(null);
@@ -237,6 +238,20 @@ export function CuratedRow({
   const isFocusedRef = useRef(false);
   const dragRef = useRef({ active: false, pointerId: -1, startX: 0, startOffset: 0, moved: false });
   const [autoPlayPaused, setAutoPlayPaused] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mq.matches);
+    const onChange = (ev: MediaQueryListEvent) => setPrefersReducedMotion(ev.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
 
   // حماية صارمة: لا نعرض في مساحة العروض إلا الأصناف المتوفرة فعلاً بالمخزون
   const displayProducts = useMemo(
@@ -251,19 +266,26 @@ export function CuratedRow({
     [products],
   );
 
-  const shouldLoopMarquee = displayProducts.length >= 4;
+  const hasMultipleCards = displayProducts.length >= 4;
+  const shouldLoopMarquee = hasMultipleCards && !prefersReducedMotion;
   const repeatCount = !shouldLoopMarquee ? 1 : displayProducts.length < 7 ? 3 : 2;
 
-  const moveRow = useCallback((direction: -1 | 1) => {
-    targetNudgeRef.current += direction * 280;
-  }, []);
+  const moveRow = useCallback(
+    (direction: -1 | 1) => {
+      if (!shouldLoopMarquee) {
+        scrollContainerRef.current?.scrollBy({ left: -direction * 280, behavior: "auto" });
+        return;
+      }
+      targetNudgeRef.current += direction * 280;
+    },
+    [shouldLoopMarquee],
+  );
 
   useEffect(() => {
-    if (typeof window === "undefined" || !shouldLoopMarquee) return;
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) return;
+    if (typeof window === "undefined" || !shouldLoopMarquee) {
+      if (trackRef.current) trackRef.current.style.transform = "";
+      return;
+    }
 
     let rafId = 0;
     let lastTime = performance.now();
@@ -335,17 +357,19 @@ export function CuratedRow({
             )}
           </div>
         </div>
-        {shouldLoopMarquee && (
+        {hasMultipleCards && (
           <div className="flex items-center gap-1.5" aria-label={`تنقل ${title}`}>
-            <button
-              type="button"
-              onClick={() => setAutoPlayPaused((v) => !v)}
-              className="flex size-8 items-center justify-center rounded-full border border-slate-900/10 bg-[#f5f5f7] text-[#1d1d1f] transition-transform hover:bg-slate-200/70 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              aria-label={autoPlayPaused ? `تشغيل الحركة التلقائية في ${title}` : `إيقاف الحركة التلقائية في ${title}`}
-              aria-pressed={autoPlayPaused}
-            >
-              {autoPlayPaused ? <Play aria-hidden className="size-3.5" /> : <Pause aria-hidden className="size-3.5" />}
-            </button>
+            {shouldLoopMarquee && (
+              <button
+                type="button"
+                onClick={() => setAutoPlayPaused((v) => !v)}
+                className="flex size-8 items-center justify-center rounded-full border border-slate-900/10 bg-[#f5f5f7] text-[#1d1d1f] transition-transform hover:bg-slate-200/70 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                aria-label={autoPlayPaused ? `تشغيل الحركة التلقائية في ${title}` : `إيقاف الحركة التلقائية في ${title}`}
+                aria-pressed={autoPlayPaused}
+              >
+                {autoPlayPaused ? <Play aria-hidden className="size-3.5" /> : <Pause aria-hidden className="size-3.5" />}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => moveRow(1)}
@@ -367,8 +391,9 @@ export function CuratedRow({
       </div>
 
       <div
+        ref={scrollContainerRef}
         dir="rtl"
-        className={`relative overflow-hidden pb-1.5 ${shouldLoopMarquee ? "mask-gradient-x cursor-grab active:cursor-grabbing" : "overflow-x-auto"}`}
+        className={`relative pb-1.5 ${shouldLoopMarquee ? "overflow-hidden mask-gradient-x cursor-grab active:cursor-grabbing" : "overflow-x-auto"}`}
         onMouseEnter={() => {
           isHoveredRef.current = true;
         }}
@@ -432,7 +457,7 @@ export function CuratedRow({
       >
         <div
           ref={trackRef}
-          className={`flex items-stretch gap-3 select-none ${shouldLoopMarquee ? "w-max will-change-transform motion-reduce:!transform-none motion-reduce:flex-wrap" : ""}`}
+          className={`flex items-stretch gap-3 select-none ${shouldLoopMarquee ? "w-max will-change-transform" : "w-max"}`}
         >
           {Array.from({ length: repeatCount }).map((_, copyIdx) => (
             <div

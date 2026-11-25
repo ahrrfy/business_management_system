@@ -101,6 +101,7 @@ async function loadRichProductsByIds(productIds: number[]): Promise<
   const cleanIds = Array.from(new Set(productIds.filter((id) => Number.isInteger(id) && id > 0))).slice(0, 8);
   if (!db || cleanIds.length === 0) return [];
 
+  const branchId = await resolveStorefrontBranchId();
   const [prodRows, imgRows, priceRows] = await Promise.all([
     db
       .select({
@@ -130,11 +131,23 @@ async function loadRichProductsByIds(productIds: number[]): Promise<
     db
       .select({
         productId: productVariants.productId,
+        variantId: productVariants.id,
+        conversionFactor: productUnits.conversionFactor,
         price: productPrices.price,
       })
       .from(productPrices)
-      .innerJoin(productUnits, eq(productPrices.productUnitId, productUnits.id))
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(
+        productUnits,
+        and(
+          eq(productPrices.productUnitId, productUnits.id),
+          eq(productUnits.isActive, true),
+          eq(productUnits.isStoreSaleUnit, true),
+        ),
+      )
+      .innerJoin(
+        productVariants,
+        and(eq(productUnits.variantId, productVariants.id), eq(productVariants.isActive, true)),
+      )
       .where(and(inArray(productVariants.productId, cleanIds), eq(productPrices.priceTier, "RETAIL"))),
   ]);
 
@@ -152,20 +165,44 @@ async function loadRichProductsByIds(productIds: number[]): Promise<
     );
   }
 
-  const minPriceByProduct = new Map<number, number>();
+  const availability = await loadVariantAvailability(
+    db,
+    branchId,
+    priceRows.map((pr) => Number(pr.variantId)),
+  );
+  const inStockMinPriceByProduct = new Map<number, number>();
+  const fallbackEligibleMinPriceByProduct = new Map<number, number>();
   for (const pr of priceRows) {
     const pid = Number(pr.productId);
     const val = Number(pr.price ?? 0);
     if (val <= 0) continue;
-    const prev = minPriceByProduct.get(pid);
-    if (prev == null || val < prev) minPriceByProduct.set(pid, val);
+    const state = availability.get(Number(pr.variantId));
+    const eligibility = evaluateStorefrontUnitEligibility({
+      isActive: true,
+      isStoreSaleUnit: true,
+      retailPrice: pr.price,
+      conversionFactor: pr.conversionFactor,
+      stockBase: state?.hasStockRow ? state.onHandBase : null,
+      availableBase: state?.availableBase ?? 0,
+    });
+    if (!eligibility.publishable) continue;
+    const prevFallback = fallbackEligibleMinPriceByProduct.get(pid);
+    if (prevFallback == null || val < prevFallback) {
+      fallbackEligibleMinPriceByProduct.set(pid, val);
+    }
+    if (state?.isService === true || eligibility.available) {
+      const prevInStock = inStockMinPriceByProduct.get(pid);
+      if (prevInStock == null || val < prevInStock) {
+        inStockMinPriceByProduct.set(pid, val);
+      }
+    }
   }
 
   const byId = new Map(prodRows.map((p) => [Number(p.id), p]));
   return cleanIds.flatMap((pid) => {
     const p = byId.get(pid);
     if (!p) return [];
-    const minP = minPriceByProduct.get(pid) ?? null;
+    const minP = inStockMinPriceByProduct.get(pid) ?? fallbackEligibleMinPriceByProduct.get(pid) ?? null;
     return [
       {
         productId: pid,

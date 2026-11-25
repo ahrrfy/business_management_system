@@ -94,6 +94,7 @@ export interface StorefrontCatalogSurfaceProps {
   ) => void;
   searchScope: {
     categoryId: number | null;
+    categoryIds?: number[] | null;
     availability: AvailabilityFilter;
     brand: string;
     priceFilter: PriceFilter;

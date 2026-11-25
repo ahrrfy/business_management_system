@@ -910,6 +910,7 @@ export async function applyStorefrontPromotions(
 export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   branchId?: number;
   categoryId?: number | null;
+  categoryIds?: number[] | null;
   productIds?: number[] | null;
   search?: string | null;
   limit?: number;
@@ -929,6 +930,12 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
   const conds: SQL<unknown>[] = [storefrontPublishableCondition()];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
+  if (opts.categoryIds != null) {
+    if (opts.categoryIds.length === 0) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
+    conds.push(inArray(products.categoryId, opts.categoryIds));
+  }
   if (opts.productIds != null) {
     if (opts.productIds.length === 0) {
       return { items: [], hasMore: false, nextCursor: null };
@@ -978,6 +985,12 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   // وزوّارٌ متزامنون على نفس المرشّحات يدفعونه كلٌّ على حدة. المفتاح يحمل **كلّ** ما يغيّر
   // النتيجة (الشركة/الفرع/الفئة/البحث/مرشّح التوفّر) ولا شيء سواه.
   const seedKey = (opts.seed ?? "").trim();
+  const effectiveCategoryIds =
+    opts.categoryIds?.length
+      ? Array.from(new Set(opts.categoryIds)).sort((a, b) => a - b)
+      : opts.categoryId == null
+        ? null
+        : [opts.categoryId];
   const loadOrderedIds = async (): Promise<CatalogRanking> => {
     let brands: string[] = [];
     const baseIds = await loadRankedStorefrontProductIds(
@@ -986,7 +999,7 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       conds,
       {
         availability: availabilityFilter,
-        categoryIds: opts.categoryId == null ? null : [opts.categoryId],
+        categoryIds: effectiveCategoryIds,
         search: useRelaxedFallback ? undefined : s,
         seed: opts.seed,
         brand: opts.brand,
@@ -1011,13 +1024,14 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   const searchKey = resolvedBarcodeUnitId == null
     ? `${useRelaxedFallback ? "relaxed:" : ""}${normalizeArabicSearch(s)}`
     : `barcode-unit:${resolvedBarcodeUnitId}`;
+  const categoryScopeKey = effectiveCategoryIds?.length ? effectiveCategoryIds.join(",") : "";
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
     : await storefrontCacheGet(
       searchKey || productIdsKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache,
       searchKey || productIdsKey || seedKey || opts.brand?.trim() ? "search" : "candidates",
-      JSON.stringify([companyScope(), branchId, opts.categoryId ?? "", availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", opts.priceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
+      JSON.stringify([companyScope(), branchId, categoryScopeKey, availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", opts.priceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
         loadOrderedIds,
       );
   const orderedIds = ranking.ids;

@@ -104,14 +104,28 @@ function CategoryMarqueeRow({
     moved: false,
   });
 
-  const repeatCount = items.length < 5 ? 4 : items.length < 9 ? 3 : 2;
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
 
   useEffect(() => {
-    if (typeof window === "undefined" || items.length === 0) return;
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) return;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mq.matches);
+    const onChange = (ev: MediaQueryListEvent) => setPrefersReducedMotion(ev.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+
+  const repeatCount = prefersReducedMotion ? 1 : items.length < 5 ? 4 : items.length < 9 ? 3 : 2;
+
+  useEffect(() => {
+    if (typeof window === "undefined" || items.length === 0 || prefersReducedMotion) {
+      if (trackRef.current) trackRef.current.style.transform = "";
+      return;
+    }
 
     let rafId = 0;
     let lastTime = performance.now();
@@ -153,7 +167,7 @@ function CategoryMarqueeRow({
 
   return (
     <div
-      className="relative overflow-hidden py-0.5 mask-gradient-x"
+      className={`relative py-0.5 ${prefersReducedMotion ? "overflow-x-auto" : "overflow-hidden mask-gradient-x"}`}
       onMouseEnter={() => {
         isHoveredRef.current = true;
       }}
@@ -169,7 +183,7 @@ function CategoryMarqueeRow({
         }
       }}
       onPointerDown={(e) => {
-        if (e.pointerType === "mouse" && e.button !== 0) return;
+        if (prefersReducedMotion || (e.pointerType === "mouse" && e.button !== 0)) return;
         dragRef.current = {
           active: true,
           pointerId: e.pointerId,
@@ -215,7 +229,7 @@ function CategoryMarqueeRow({
     >
       <div
         ref={trackRef}
-        className="flex w-max items-stretch gap-2.5 select-none will-change-transform motion-reduce:!transform-none motion-reduce:flex-wrap"
+        className={`flex w-max items-stretch gap-2.5 select-none ${prefersReducedMotion ? "" : "will-change-transform"}`}
       >
         {Array.from({ length: repeatCount }).map((_, copyIdx) => (
           <div

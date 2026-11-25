@@ -7,6 +7,7 @@ import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 
 type Scope = {
   categoryId: number | null;
+  categoryIds?: number[] | null;
   availability: "IN_STOCK" | "ALL";
   brand: string;
   priceFilter: "ALL" | "ON_SALE" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
@@ -283,6 +284,7 @@ export function StorefrontSearchAlternatives({
     !result.data?.products.length &&
     !result.data?.similar.length &&
     (scope.categoryId != null ||
+      Boolean(scope.categoryIds?.length) ||
       Boolean(scope.brand) ||
       scope.priceFilter !== "ALL" ||
       Boolean(scope.productIds?.length));
@@ -320,7 +322,7 @@ export function StorefrontSearchAlternatives({
       className="mt-4 w-full max-w-xl rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-right shadow-2xs"
       aria-label="اقتراحات بديلة للبحث"
     >
-      {scope.categoryId != null && globalHits.length > 0 && (
+      {(scope.categoryId != null || Boolean(scope.categoryIds?.length)) && globalHits.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/30 bg-sky-50 px-3.5 py-2.5">
           <span className="text-xs font-bold text-slate-800">
             البحث مقيّد بالقسم الحالي — وجدنا نتائج في أقسام المتجر الأخرى:

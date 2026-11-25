@@ -79,6 +79,7 @@ export async function storefrontSearchSuggestions(
     branchId,
     query,
     input.categoryId,
+    input.categoryIds?.slice().sort((a, b) => a - b),
     input.productIds?.slice().sort((a, b) => a - b),
     input.availability,
     input.brand,

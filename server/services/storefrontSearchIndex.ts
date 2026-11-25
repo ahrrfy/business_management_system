@@ -75,6 +75,7 @@ async function readCandidates() {
 }
 export interface StorefrontSearchScope {
   categoryId?: number | null;
+  categoryIds?: number[] | null;
   productIds?: number[] | null;
 }
 export async function loadStorefrontSearchMatches(
@@ -90,12 +91,14 @@ export async function loadStorefrontSearchMatches(
           readCandidates,
         );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);
+  const catIds = scope.categoryIds == null ? null : new Set(scope.categoryIds);
   const match = createStorefrontSearchMatcher(search, allowSimilar);
   const matches = [];
   let deadline = performance.now() + 8;
   for (const row of rows) {
     if (
       (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (catIds == null || (row.categoryId != null && catIds.has(row.categoryId))) &&
       (ids == null || ids.has(row.productId))
     ) {
       const result = match(row);
@@ -128,12 +131,14 @@ export async function loadClosestStorefrontSearchMatches(
         readCandidates,
       );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);
+  const catIds = scope.categoryIds == null ? null : new Set(scope.categoryIds);
   const match = createClosestRelaxedSearchMatcher(search);
   const matches = [];
   let deadline = performance.now() + 8;
   for (const row of rows) {
     if (
       (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (catIds == null || (row.categoryId != null && catIds.has(row.categoryId))) &&
       (ids == null || ids.has(row.productId))
     ) {
       const result = match(row);

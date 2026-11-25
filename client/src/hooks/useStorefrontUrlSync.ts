@@ -10,6 +10,7 @@ interface StorefrontUrlSyncOptions {
   setCategoryId: (id: number | null) => void;
   onSelectPromoId?: (promoId: number | null) => void;
   onActivateDeals?: () => void;
+  onDeactivateDeals?: () => void;
   onSelectProductGroup?: (productIds: number[] | null) => void;
   onApplySearch?: (query: string) => void;
   onOpenCartPanel?: () => void;
@@ -106,6 +107,7 @@ export function useStorefrontUrlSync({
   setCategoryId,
   onSelectPromoId,
   onActivateDeals,
+  onDeactivateDeals,
   onSelectProductGroup,
   onApplySearch,
   onOpenCartPanel,
@@ -119,6 +121,7 @@ export function useStorefrontUrlSync({
     setCategoryId,
     onSelectPromoId,
     onActivateDeals,
+    onDeactivateDeals,
     onSelectProductGroup,
     onApplySearch,
     onOpenCartPanel,
@@ -129,6 +132,7 @@ export function useStorefrontUrlSync({
     setCategoryId,
     onSelectPromoId,
     onActivateDeals,
+    onDeactivateDeals,
     onSelectProductGroup,
     onApplySearch,
     onOpenCartPanel,
@@ -145,6 +149,8 @@ export function useStorefrontUrlSync({
     if (dest.categoryId) {
       cb.onSelectPromoId?.(null);
       cb.onSelectProductGroup?.(null);
+      cb.onDeactivateDeals?.();
+      cb.onApplySearch?.("");
       cb.setCategoryId(dest.categoryId);
       if (scroll) cb.onScrollToResults?.();
       return;
@@ -152,6 +158,8 @@ export function useStorefrontUrlSync({
     if (dest.promoId) {
       cb.setCategoryId(null);
       cb.onSelectProductGroup?.(null);
+      cb.onDeactivateDeals?.();
+      cb.onApplySearch?.("");
       cb.onSelectPromoId?.(dest.promoId);
       if (scroll) cb.onScrollToResults?.();
       return;
@@ -159,6 +167,8 @@ export function useStorefrontUrlSync({
     if (dest.productIds?.length) {
       cb.setCategoryId(null);
       cb.onSelectPromoId?.(null);
+      cb.onDeactivateDeals?.();
+      cb.onApplySearch?.("");
       cb.onSelectProductGroup?.(dest.productIds);
       if (scroll) cb.onScrollToResults?.();
       return;
@@ -167,13 +177,16 @@ export function useStorefrontUrlSync({
       cb.setCategoryId(null);
       cb.onSelectPromoId?.(null);
       cb.onSelectProductGroup?.(null);
+      cb.onApplySearch?.("");
       cb.onActivateDeals?.();
       if (scroll) cb.onScrollToResults?.();
       return;
     }
     if (dest.search) {
+      cb.setCategoryId(null);
       cb.onSelectPromoId?.(null);
       cb.onSelectProductGroup?.(null);
+      cb.onDeactivateDeals?.();
       cb.onApplySearch?.(dest.search);
       if (scroll) cb.onScrollToResults?.();
       return;
@@ -185,6 +198,8 @@ export function useStorefrontUrlSync({
     cb.setCategoryId(null);
     cb.onSelectPromoId?.(null);
     cb.onSelectProductGroup?.(null);
+    cb.onDeactivateDeals?.();
+    cb.onApplySearch?.("");
   }
 
   // 1. مزامنة أولية عند تحميل الصفحة (المسارات الصريحة + جميع معاملات البنرات الترويجية)
