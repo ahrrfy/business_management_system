@@ -22,7 +22,7 @@ import {
   stripRecipeSelectionMeta,
   type RecipeLineSelectionWithMeta,
 } from "@shared/recipeVariantSelection";
-import type { PrintCartLine } from "@/components/printPos/PrintCartList";
+import type { PrintCartLine } from "@/components/print-pos/PrintCartList";
 
 export function toPrintSaleLines(cart: ReadonlyArray<PrintCartLine>) {
   return cart.map((c) => {

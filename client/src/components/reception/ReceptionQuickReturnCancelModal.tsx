@@ -16,8 +16,8 @@ import {
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
-import { WorkOrderQuickCancelDialog } from "@/components/workorder/WorkOrderQuickCancelDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
+import { WorkOrderQuickCancelDialog } from "@/components/workOrders/WorkOrderQuickCancelDialog";
 import { receptionInvoiceActions, receptionOperationAllowed } from "@/lib/receptionOperationAccess";
 import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";

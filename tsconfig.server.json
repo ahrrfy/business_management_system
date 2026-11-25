@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": ["shared/**/*", "drizzle/**/*", "server/**/*"],
+  "exclude": ["node_modules", "build", "dist", "_legacy", "**/*.test.ts", "**/*.test.tsx"],
+  "compilerOptions": {
+    "lib": ["esnext", "dom"],
+    "types": ["node"],
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo.server"
+  }
+}

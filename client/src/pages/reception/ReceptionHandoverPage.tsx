@@ -44,8 +44,8 @@ import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
-import { WorkOrderQuickCancelDialog } from "@/components/workorder/WorkOrderQuickCancelDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import { WorkOrderQuickCancelDialog } from "@/components/workOrders/WorkOrderQuickCancelDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 import { workOrderDetailOperationAccess } from "@/lib/workOrderDetailOperationAccess";
 import { workOrderStatusLabel } from "@shared/workOrderStatus";
 

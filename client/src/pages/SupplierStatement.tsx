@@ -7,7 +7,7 @@ import { BatchInvoicePrintDialog, PartyCommandBar, StatementPeriodDetailBar, typ
 import { SupplierDossierDrawer } from "@/components/suppliers/SupplierDossierDrawer";
 import { QuickVoucherSheet } from "@/components/vouchers/QuickVoucherSheet";
 import { VoucherDetailDrawer } from "@/components/vouchers/VoucherDetailDrawer";
-import SupplierPicker from "@/components/voucher/SupplierPicker";
+import SupplierPicker from "@/components/vouchers/SupplierPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";

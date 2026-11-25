@@ -27,7 +27,7 @@ export interface ReceptionSubmissionInput {
   activeDraftRef: React.RefObject<{ id: number; version: number } | null>;
   activeDraft: { id: number; version: number } | null;
   couponCode: string | null;
-  phoneResolution: import("@/components/customer/customerByPhoneMachine").PhoneResolution;
+  phoneResolution: import("@/components/customers/customerByPhoneMachine").PhoneResolution;
   phoneCustomer: { isPending: boolean };
   couponPreview: { isPending: boolean };
   method: import("@/components/reception/cartMath").PayMethod;
@@ -55,7 +55,7 @@ export interface ReceptionSubmissionInput {
   effectiveGrandD: import("decimal.js").Decimal;
   mixedDeltaD: import("decimal.js").Decimal;
   cashRoundActive: boolean;
-  customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
+  customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer;
   receptionPhone: string;
   customerSectionRef: React.RefObject<HTMLDivElement | null>;
   canCreateCustomer: boolean;

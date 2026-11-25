@@ -5,7 +5,7 @@ import {
   onCustomerLinked,
   onCustomerReset,
   onPhoneChanged,
-} from "@/components/customer/customerByPhoneMachine";
+} from "@/components/customers/customerByPhoneMachine";
 
 const readReception = () =>
   readFileSync(new URL("../../pages/Reception.tsx", import.meta.url), "utf8");
@@ -14,7 +14,7 @@ const readReceptionHeader = () =>
 const readCustomerSection = () =>
   readFileSync(new URL("./ReceptionCustomerSection.tsx", import.meta.url), "utf8");
 const readCustomerByPhone = () =>
-  readFileSync(new URL("../customer/CustomerByPhone.tsx", import.meta.url), "utf8");
+  readFileSync(new URL("../customers/CustomerByPhone.tsx", import.meta.url), "utf8");
 const readSelectionDialog = () =>
   readFileSync(new URL("../pos/CustomerSelectionDialog.tsx", import.meta.url), "utf8");
 

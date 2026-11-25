@@ -8,13 +8,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Users, Sparkles } from "lucide-react";
-import { CustomerByPhone } from "@/components/customer/CustomerByPhone";
-import type { CustomerByPhoneApi } from "@/components/customer/useCustomerByPhone";
+import { CustomerByPhone } from "@/components/customers/CustomerByPhone";
+import type { CustomerByPhoneApi } from "@/components/customers/useCustomerByPhone";
 import { CustomerSelectionDialog } from "@/components/pos/CustomerSelectionDialog";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { Tier } from "@/components/pos/posShared";
-import type { PhoneCustomerTier } from "@/components/customer/customerByPhoneMachine";
+import type { PhoneCustomerTier } from "@/components/customers/customerByPhoneMachine";
 import {
   isValidIqMobile,
   toLocalIqMobileDigits,

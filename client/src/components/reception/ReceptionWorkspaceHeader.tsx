@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ReceptionCustomerSection } from "@/components/reception/ReceptionCustomerSection";
-import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
+import { useCustomerByPhone } from "@/components/customers/useCustomerByPhone";
 
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";

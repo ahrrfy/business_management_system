@@ -32,7 +32,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import SupplierPicker from "@/components/voucher/SupplierPicker";
+import SupplierPicker from "@/components/vouchers/SupplierPicker";
 import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";

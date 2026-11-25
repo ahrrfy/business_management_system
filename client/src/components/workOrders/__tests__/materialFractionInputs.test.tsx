@@ -93,7 +93,7 @@ import {
 import CancelWorkOrderDialog, {
   CancelWorkOrderDialogById,
   type CancelMaterialRow,
-} from "../../workorder/CancelWorkOrderDialog";
+} from "../CancelWorkOrderDialog";
 Object.assign(globalThis, { React, IS_REACT_ACT_ENVIRONMENT: true });
 
 describe("fractional work order material inputs", () => {

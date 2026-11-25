@@ -247,13 +247,13 @@ vi.mock("@/components/CustomerPicker", () => ({
       "data-customer-picker": String(customerId ?? ""),
     }),
 }));
-vi.mock("@/components/voucher/SupplierPicker", () => ({
+vi.mock("@/components/vouchers/SupplierPicker", () => ({
   default: ({ supplierId }: { supplierId: number | null }) =>
     React.createElement("div", {
       "data-supplier-picker": String(supplierId ?? ""),
     }),
 }));
-vi.mock("@/components/voucher/DeliveryPartyPicker", () => ({
+vi.mock("@/components/vouchers/DeliveryPartyPicker", () => ({
   default: () => null,
 }));
 vi.mock("@/lib/printing/brand", async (original) => ({

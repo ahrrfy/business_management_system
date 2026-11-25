@@ -186,13 +186,9 @@ const sortedCurrent = Object.fromEntries(
   Object.entries(current).sort(([a], [b]) => a.localeCompare(b)),
 );
 
-if (UPDATE) {
-  writeFileSync(BASELINE_PATH, JSON.stringify(sortedCurrent, null, 2) + "\n", "utf8");
-  const total = Object.values(sortedCurrent).reduce((s, n) => s + n, 0);
-  console.log(
-    `✓ حُدِّث خطّ الأساس: ${Object.keys(sortedCurrent).length} صفحة فوق ${PAGE_SIZE_THRESHOLD} سطر · مجموع ${total}.`,
-  );
-  process.exit(0);
+if (Object.keys(baseline).length > 0 || UPDATE) {
+  console.error("✗ خطّ الأساس scripts/page-size-baseline.json مُقفَل نهائياً عند الصفر ({}) — لا يُسمح بإعادة فتحه.");
+  process.exit(1);
 }
 
 if (REPORT_ONLY) {

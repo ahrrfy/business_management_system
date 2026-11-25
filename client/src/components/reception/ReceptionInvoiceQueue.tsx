@@ -27,7 +27,7 @@ import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDial
 import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
 import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";

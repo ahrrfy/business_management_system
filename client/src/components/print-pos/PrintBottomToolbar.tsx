@@ -15,7 +15,7 @@ import { METHOD_LABEL } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
-import type { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import type { PrintCartLine as CartLine } from "@/components/print-pos/PrintCartList";
 import type { PaymentMethod, EditingInvoiceInfo } from "./PrintPosCheckout";
 
 export interface PrintBottomToolbarProps {

@@ -611,12 +611,7 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
             // so erp-routes stays cleanly under the 500KB chunk budget without affecting storefront.
             if (
               !storefront &&
-              (id.includes("/client/src/lib/offline/outbox.ts") ||
-                id.includes("/client/src/lib/offline/catalogSync.ts") ||
-                id.includes("/client/src/lib/offline/pinLock.ts") ||
-                id.includes("/client/src/lib/offline/outboxIdentity.ts") ||
-                id.includes("/client/src/lib/offline/crypto.ts") ||
-                id.includes("/client/src/lib/offline/db.ts") ||
+              (id.includes("/client/src/lib/offline/") ||
                 id.includes("/shared/offlineCaptureProof.ts"))
             )
               return "erp-offline";
@@ -670,7 +665,6 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
               id.includes("/node_modules/@radix-ui/") ||
               id.includes("/node_modules/@floating-ui/") ||
               id.includes("/node_modules/cmdk/") ||
-              id.includes("/node_modules/vaul/") ||
               id.includes("/node_modules/tailwind-merge/") ||
               id.includes("/node_modules/clsx/") ||
               id.includes("/node_modules/sonner/") ||

@@ -87,7 +87,7 @@ vi.mock("@/components/list", () => ({
 vi.mock("@/components/reception/ReceptionCommandAlert", () => ({
   ReceptionCommandAlert: () => null,
 }));
-vi.mock("@/components/commission/LiveCelebrationOverlay", () => ({
+vi.mock("@/components/commissions/LiveCelebrationOverlay", () => ({
   LiveCelebrationOverlay: () => null,
 }));
 vi.mock("@/components/delivery/DispatchDialog", () => ({
@@ -99,7 +99,7 @@ vi.mock("@/components/delivery/DeliveryDepartureOverlay", () => ({
 vi.mock("@/components/delivery/MarkPickedUpDialog", () => ({
   MarkPickedUpDialog: () => null,
 }));
-vi.mock("@/components/workorder/ReclassifyDeliveryDialog", () => ({
+vi.mock("@/components/workOrders/ReclassifyDeliveryDialog", () => ({
   ReclassifyDeliveryDialog: () => null,
 }));
 vi.mock("@/components/reception/ManagerApprovalDialog", () => ({

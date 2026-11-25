@@ -14,13 +14,13 @@ export interface useReceptionScannerInput {
   effectiveTier: import("@/components/reception/cartMath").Tier;
   branchId: number;
   utils: ReturnType<typeof trpc.useUtils>;
-  customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
+  customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer;
   addRow: (row: import("@/components/reception/cartMath").PosRow) => void;
   draftPromotionFlightRef: React.RefObject<boolean>;
   draftTransitionPending: boolean;
   setSearch: React.Dispatch<React.SetStateAction<string>>;
   setCustomer: (
-    customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer,
+    customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer,
   ) => void;
   paymentEditorOpen?: boolean;
   depositOpen: boolean;

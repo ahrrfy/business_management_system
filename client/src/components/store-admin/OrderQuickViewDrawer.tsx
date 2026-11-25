@@ -18,12 +18,12 @@ import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
-import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
+import { OrderLifecycleStatus } from "@/components/store-admin/OrderLifecycleStatus";
 import {
   OrderCustomizationAssets,
   formatOrderGovernorate,
   resolveOrderShippingAddressAndNotes,
-} from "@/components/store/OrderCustomizationAssets";
+} from "@/components/store-admin/OrderCustomizationAssets";
 
 const ConsignmentTimelineDrawer = lazy(() => import("@/components/delivery/ConsignmentTimelineDrawer")
   .then(module => ({ default: module.ConsignmentTimelineDrawer })));

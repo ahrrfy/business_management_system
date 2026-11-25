@@ -284,12 +284,9 @@ const currentObj = Object.fromEntries(
 const currentTotal = [...current.values()].reduce((s, n) => s + n, 0);
 const baselineTotal = Object.values(BASELINE).reduce((s, n) => s + (Number(n) || 0), 0);
 
-if (UPDATE) {
-  writeFileSync(BASELINE_PATH, JSON.stringify(currentObj, null, 2) + "\n", "utf8");
-  console.log(
-    `✓ حُدِّث خطّ أساس المفردات: ${current.size} ملفّاً · ${currentTotal} قاموساً محلّياً مجمَّداً.`,
-  );
-  process.exit(0);
+if (Object.keys(BASELINE).length > 0 || UPDATE) {
+  console.error("✗ خطّ الأساس scripts/vocabulary-baseline.json مُقفَل نهائياً عند الصفر ({}) — لا يُسمح بإعادة فتحه.");
+  process.exit(1);
 }
 
 // ١) انتهاكاتٌ جديدة: ملفٌّ ليس في خطّ الأساس ولا يستورد من المصدر الموحّد.
