@@ -37,6 +37,7 @@ import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import { cancelContractsByInvoiceItems } from "./subscriptionService";
 import type { DigitalCardRefundControl, DigitalRefundTender } from "../../../shared/digitalPaymentSettlement";
 import { completeDigitalReturnItems, controlDigitalCardRefund, digitalRefundReplay, executeDigitalRefund, invoiceDigitalRefundContext, type DigitalRefundContext } from "./refundPayments";
@@ -81,7 +82,8 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort
   }
 }

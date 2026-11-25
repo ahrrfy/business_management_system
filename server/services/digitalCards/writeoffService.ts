@@ -36,6 +36,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import { resolveApprovalActor } from "../approval/ownerGate";
 import { releaseIntentInventory } from "./inventoryReservationService";
 import { assertCaptureResolvedBeforeClosure } from "./captureDisposition";
@@ -50,7 +51,8 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort — نفس اصطلاح بقية خدمات الوحدة (لا يُسقِط عمليةً مالية لأجل سطر تدقيق).
   }
 }

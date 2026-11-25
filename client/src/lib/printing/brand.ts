@@ -4,6 +4,7 @@ import Decimal from "decimal.js";
 import {
   COMPANY_IDENTITY,
   resolveCompanyIdentity,
+  sanitizeCompanyLogoUrl,
   type CompanyIdentityData,
   type CompanyIdentityPhone,
 } from "@shared/companyIdentity";
@@ -195,18 +196,8 @@ export function logoUrl(): string {
     typeof window !== "undefined" && /^https?:\/\//i.test(window.location?.origin ?? "")
       ? `${window.location.origin}/logo.png`
       : "/logo.png";
-  const dynamicLogo = getCompanyIdentity().logoUrl;
-  if (dynamicLogo) {
-    const u = dynamicLogo.trim();
-    if (
-      (u.startsWith("/") && !u.startsWith("//")) ||
-      /^https?:\/\//i.test(u) ||
-      /^data:image\//i.test(u)
-    ) {
-      return u;
-    }
-  }
-  return fallback;
+  const safeDynamic = sanitizeCompanyLogoUrl(getCompanyIdentity().logoUrl);
+  return safeDynamic ?? fallback;
 }
 
 /** Open a print window with given HTML. يعيد false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */

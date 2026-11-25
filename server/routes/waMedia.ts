@@ -9,8 +9,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { getUserFromRequest } from "../auth/session";
-import { resolveCustomRole } from "../context";
+import { authenticateExpressRequest } from "../auth/expressAuth";
 import { logger } from "../logger";
 import { getMediaForServing } from "../services/whatsapp/mediaService";
 import { canCrossBranches } from "../lib/branchAuthority";
@@ -48,20 +47,11 @@ export function waMediaRouter(): Router {
   const r = Router();
 
   r.get("/:messageId", async (req: Request, res: Response) => {
-    let user;
-    try {
-      user = await getUserFromRequest(req);
-    } catch {
-      user = null; // جلسة تالفة/منتهية ⇒ يسقط للرفض أدناه (نفس نمط printRoute.ts/requireAuth).
+    const auth = await authenticateExpressRequest(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ error: auth.error });
     }
-    if (!user) return res.status(401).json({ error: "يلزم تسجيل الدخول." });
-
-    // تفويض (تدقيق ٣/٨): كان أي مستخدم مصادَق مهما كان دوره يعدّ messageId التسلسلي فيسحب كل
-    // وسائط محادثات واتساب داخل الشركة (PII عملاء) — IDOR أفقي. نطابق الآن بوّابة الـinbox في
-    // conversationRouter بالضبط: وحدة «channels» READ + عزل الفرع على conversations.branchId.
-    // resolveCustomRole يحلّ الدور المخصّص (getUserFromRequest يعيد صفّ users الخام بلا حلّ).
-    const authUser = user as typeof user & { customRoleLabel?: string | null };
-    await resolveCustomRole(authUser);
+    const authUser = auth.user;
     const role = authUser.role as string;
     // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران وسائط الفروع. هذا المسار REST لا
     // يُطبِّع المالك (لا normalizeOwnerAuthority) ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 Codex).
@@ -96,9 +86,8 @@ export function waMediaRouter(): Router {
         // اسمٌ ثابتٌ آمن — لا مدخلات خارجية (اسم ملف واتساب الأصلي) داخل الترويسة.
         res.setHeader("Content-Disposition", `attachment; filename="media-${messageId}"`);
       }
-      // خاص لكل مستخدم مصادَق (يعتمد على الجلسة) — لا كاش مشترك؛ ٢٤ ساعة كافية لصورة محادثة
-      // لا تتغيّر بعد وصولها (نمط أبسط من immutable+ETag في imageRoute.ts — لا رابط بصمة محتوى هنا).
-      res.setHeader("Cache-Control", "private, max-age=86400");
+      // منع تخزين وسائط محادثات العملاء في كاش المتصفح المشترك بعد تسجيل الخروج.
+      res.setHeader("Cache-Control", "private, no-store");
       return res.end(bytes);
     } catch (e) {
       logger.error({ err: e, messageId }, "wa-media: فشل تقديم الوسائط");

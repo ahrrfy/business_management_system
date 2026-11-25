@@ -10,6 +10,7 @@
  * وأُعيد تشكيلها لتُخرج التصميم الجديد نفسه، فتلتقط شاشات التقارير القديمة اللمسة الجديدة تلقائياً.
  */
 import { BRAND as B, CO, esc, logoUrl, CAIRO_FONT, FONT_ORIGIN } from "./brand";
+import { sanitizeCompanyLogoUrl } from "@shared/companyIdentity";
 import { code128Svg } from "./barcode";
 import { docBarcode } from "@shared/documentNumber";
 import { formatPaymentMethodPrintHtml, isCardPaymentMethod } from "./cardBrandLogos";
@@ -482,7 +483,7 @@ export interface DocHeaderMeta {
  */
 export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
   const c = coFrom(cs);
-  const logo = cs?.logoUrl || logoUrl();
+  const logo = sanitizeCompanyLogoUrl(cs?.logoUrl) ?? logoUrl();
   const badgeColor = meta.badge?.color ?? B.orange;
 
   const rawBarcode = meta.barcode;
@@ -562,7 +563,7 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
 
   return `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
   <div style="display:flex;gap:16px;align-items:flex-start">
-    <img src="${logo}" alt="شعار ${esc(c.sub)}" style="width:96px;height:96px;object-fit:contain;border:1.5px solid ${B.borderLogo};border-radius:6px;padding:6px;flex-shrink:0" onerror="this.style.display='none'" />
+    <img src="${esc(logo)}" alt="شعار ${esc(c.sub)}" style="width:96px;height:96px;object-fit:contain;border:1.5px solid ${B.borderLogo};border-radius:6px;padding:6px;flex-shrink:0" onerror="this.style.display='none'" />
     <div>
       <div style="font-size:17.5px;font-weight:800;color:${B.ink};line-height:1.3">${esc(c.sub)}</div>
       <div style="font-size:11.75px;font-weight:700;color:${B.green};margin-top:2px">${esc(c.name)}</div>

@@ -32,6 +32,7 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import {
   createSystemPaymentRequestTx,
   finalizeOwnerSystemVoucherTx,
@@ -58,7 +59,8 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort
   }
 }

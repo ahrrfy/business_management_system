@@ -34,9 +34,18 @@ import {
 } from "@shared/operationPermissions";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, like, ne, or, sql } from "drizzle-orm";
 import { randomInt } from "node:crypto";
 import { nanoid } from "nanoid";
+import {
+  generateHighEntropyBadgeCode,
+  hashBadgeBarcode,
+  matchesStoredBadgeBarcode,
+} from "../lib/badgeBarcodeCrypto";
+import {
+  isAccountAuthenticationLocked,
+  recordAccountAuthenticationFailure,
+} from "./accountAuthenticationLockout";
 import {
   passwordResetTokens,
   roles,
@@ -169,7 +178,7 @@ const SAFE_COLUMNS = {
   mustChangePassword: users.mustChangePassword,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
-  badgeBarcode: users.badgeBarcode,
+  hasBadgeBarcode: sql<boolean>`CASE WHEN ${users.badgeBarcode} IS NOT NULL THEN TRUE ELSE FALSE END`,
   hasPin: sql<boolean>`CASE WHEN ${users.pinHash} IS NOT NULL THEN TRUE ELSE FALSE END`,
 } as const;
 
@@ -1387,14 +1396,22 @@ export async function generateUserBadgeBarcode(
   }
 
   let barcode = "";
+  let badgeHash = "";
   for (let attempt = 0; attempt < 5; attempt++) {
-    barcode = `MGR-${userId}-${randomInt(100000, 999999)}`;
-    if (barcode !== target.badgeBarcode) {
-      const existing = (await db.select({ id: users.id }).from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+    barcode = generateHighEntropyBadgeCode(userId);
+    badgeHash = hashBadgeBarcode(barcode);
+    if (!matchesStoredBadgeBarcode(target.badgeBarcode, barcode)) {
+      const existing = (
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(inArray(users.badgeBarcode, [badgeHash, barcode]))
+          .limit(1)
+      )[0];
       if (!existing) break;
     }
   }
-  await db.update(users).set({ badgeBarcode: barcode }).where(eq(users.id, userId));
+  await db.update(users).set({ badgeBarcode: badgeHash }).where(eq(users.id, userId));
 
   return { barcode };
 }
@@ -1433,7 +1450,7 @@ export async function clearUserBadgeBarcode(
 export async function changeMyPin(
   userId: number,
   pin: string,
-  currentPassword?: string,
+  currentPassword: string,
 ): Promise<{ success: boolean }> {
   if (!/^\d{4,8}$/.test(pin)) {
     throw new TRPCError({
@@ -1442,6 +1459,16 @@ export async function changeMyPin(
         what: "رمز PIN غير صالح",
         why: "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام عددية",
         doThis: "أدخل رمز PIN مكوّناً من 4 إلى 8 أرقام",
+      }),
+    });
+  }
+  if (!currentPassword || !currentPassword.trim()) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر تغيير رمز PIN",
+        why: "كلمة المرور الحالية مطلوبة للتحقق من الهوية",
+        doThis: "أدخل كلمة المرور الحالية بدقة ثم أعد المحاولة",
       }),
     });
   }
@@ -1472,18 +1499,39 @@ export async function changeMyPin(
     });
   }
 
-  if (target.passwordHash && currentPassword) {
-    const valid = await verifyPassword(currentPassword, target.passwordHash);
-    if (!valid) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: appErrorMessage({
-          what: "تعذّر تغيير رمز PIN",
-          why: "كلمة المرور الحالية غير صحيحة",
-          doThis: "تأكد من كتابة كلمة المرور الحالية بدقة",
-        }),
-      });
-    }
+  if (isAccountAuthenticationLocked(target)) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: appErrorMessage({
+        what: "تعذّر تغيير رمز PIN",
+        why: "الحساب مقفل مؤقتاً بسبب تكرار المحاولات الخاطئة",
+        doThis: "انتظر انتهاء فترة القفل المؤقت أو راجع مسؤول النظام",
+      }),
+    });
+  }
+
+  if (!target.passwordHash) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر تغيير رمز PIN",
+        why: "لا توجد كلمة مرور مفعّلة لهذا الحساب للتحقق من الهوية",
+        doThis: "اضبط كلمة مرور للحساب أولاً ثم أعد المحاولة",
+      }),
+    });
+  }
+
+  const valid = await verifyPassword(currentPassword, target.passwordHash);
+  if (!valid) {
+    await recordAccountAuthenticationFailure(target.id);
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر تغيير رمز PIN",
+        why: "كلمة المرور الحالية غير صحيحة",
+        doThis: "تأكد من كتابة كلمة المرور الحالية بدقة",
+      }),
+    });
   }
 
   const pinHash = await hashPassword(pin);
@@ -1524,14 +1572,22 @@ export async function generateMyBadgeBarcode(
   }
 
   let barcode = "";
+  let badgeHash = "";
   for (let attempt = 0; attempt < 5; attempt++) {
-    barcode = `MGR-${userId}-${randomInt(100000, 999999)}`;
-    if (barcode !== target.badgeBarcode) {
-      const existing = (await db.select({ id: users.id }).from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+    barcode = generateHighEntropyBadgeCode(userId);
+    badgeHash = hashBadgeBarcode(barcode);
+    if (!matchesStoredBadgeBarcode(target.badgeBarcode, barcode)) {
+      const existing = (
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(inArray(users.badgeBarcode, [badgeHash, barcode]))
+          .limit(1)
+      )[0];
       if (!existing) break;
     }
   }
-  await db.update(users).set({ badgeBarcode: barcode }).where(eq(users.id, userId));
+  await db.update(users).set({ badgeBarcode: badgeHash }).where(eq(users.id, userId));
   return { barcode };
 }
 

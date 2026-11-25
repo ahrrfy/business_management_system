@@ -1,6 +1,6 @@
 import net from "node:net";
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHmac, hkdfSync, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   REALTIME_BRIDGE_HOST,
   REALTIME_BRIDGE_PORT,
@@ -27,6 +27,8 @@ export interface BridgeOptions {
   isMultiWorker?: boolean;
   workerId?: string;
   expectedWorkerCount?: number;
+  /** سر مصادقة HMAC للإطارات الداخلية (يُشتق تلقائياً من JWT_SECRET خارج بيئة الاختبار الخام). */
+  secret?: string;
 }
 
 type ReleaseFrame = {
@@ -79,6 +81,11 @@ export class RealtimeBridgeManager {
   private static readonly MAX_PENDING_OUTBOUND = 500;
   private expectedWorkerCount: number | null = null;
   private requireSharedBridge = false;
+  private authKey: Buffer | null = null;
+  private seenNonces = new Map<string, number>();
+  private static readonly MAX_SEEN_NONCES = 4096;
+  private static readonly MAX_FRAME_DRIFT_MS = 60_000;
+  private static readonly UNAUTH_SOCKET_TIMEOUT_MS = 3_000;
   private drainAcks = new Map<string, { socket: net.Socket; resolve: () => void }>();
   private drainCapableSockets = new WeakSet<net.Socket>();
   private releaseHandler: ReleaseHandler | null = null;
@@ -116,6 +123,19 @@ export class RealtimeBridgeManager {
     }
     this.host = options?.host ?? REALTIME_BRIDGE_HOST;
     this.port = options?.port ?? REALTIME_BRIDGE_PORT;
+    const rawSecret =
+      options?.secret !== undefined
+        ? options.secret.trim()
+        : process.env.NODE_ENV === "test"
+          ? ""
+          : process.env.REALTIME_BRIDGE_SECRET?.trim() ||
+            process.env.INTERNAL_PROXY_SECRET?.trim() ||
+            process.env.JWT_SECRET?.trim() ||
+            "";
+    this.authKey = rawSecret
+      ? Buffer.from(hkdfSync("sha256", rawSecret, "", "alroya:realtime-bridge:v1", 32))
+      : null;
+    this.seenNonces.clear();
     if (options?.workerId) {
       this.workerId = options.workerId;
     } else {
@@ -156,17 +176,105 @@ export class RealtimeBridgeManager {
     }
   }
 
+  private serializeBridgeFrame(payload: Record<string, unknown>): string {
+    const { _ts: _ignoreTs, _nonce: _ignoreNonce, _sig: _ignoreSig, ...clean } = payload;
+    if (!this.authKey) {
+      return JSON.stringify(clean) + "\n";
+    }
+    const coreJson = JSON.stringify(clean);
+    const _ts = Date.now();
+    const _nonce = randomUUID();
+    const _sig = createHmac("sha256", this.authKey)
+      .update(`${_ts}:${_nonce}:${coreJson}`)
+      .digest("hex");
+    return JSON.stringify({ ...clean, _ts, _nonce, _sig }) + "\n";
+  }
+
+  private verifyAndUnwrapBridgeFrame(
+    parsed: unknown,
+  ): (Partial<ReleaseFrame> & { originWorkerId?: string }) | null {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const raw = parsed as Record<string, unknown>;
+    const { _ts, _nonce, _sig, ...clean } = raw;
+    if (!this.authKey) {
+      return clean as Partial<ReleaseFrame> & { originWorkerId?: string };
+    }
+    if (
+      typeof _ts !== "number" ||
+      !Number.isFinite(_ts) ||
+      Math.abs(Date.now() - _ts) > RealtimeBridgeManager.MAX_FRAME_DRIFT_MS ||
+      typeof _nonce !== "string" ||
+      _nonce.length < 8 ||
+      _nonce.length > 128 ||
+      typeof _sig !== "string" ||
+      _sig.length !== 64
+    ) {
+      return null;
+    }
+    const now = Date.now();
+    const prevSeen = this.seenNonces.get(_nonce);
+    if (prevSeen !== undefined && now - prevSeen <= RealtimeBridgeManager.MAX_FRAME_DRIFT_MS) {
+      return null;
+    }
+    const coreJson = JSON.stringify(clean);
+    const expectedSig = createHmac("sha256", this.authKey)
+      .update(`${_ts}:${_nonce}:${coreJson}`)
+      .digest("hex");
+    const sigBuf = Buffer.from(_sig, "utf8");
+    const expBuf = Buffer.from(expectedSig, "utf8");
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+    if (this.seenNonces.size >= RealtimeBridgeManager.MAX_SEEN_NONCES) {
+      const oldestKey = this.seenNonces.keys().next().value;
+      if (oldestKey !== undefined) this.seenNonces.delete(oldestKey);
+    }
+    this.seenNonces.set(_nonce, now);
+    return clean as Partial<ReleaseFrame> & { originWorkerId?: string };
+  }
+
   private startHub(): Promise<BridgeMode> {
     return new Promise((resolve, reject) => {
       const srv = net.createServer((socket) => {
-        // تغير العضوية أثناء الحاجز يلغي الإثبات بدلاً من إسقاط العامل الجديد بصمت.
-        for (const id of Array.from(this.releaseBarriers.keys()))
-          this.finishReleaseBarrier(id, false);
-        this.connectedSockets.add(socket);
+        let authenticated = this.authKey === null;
+        let authTimer: NodeJS.Timeout | null = null;
+
+        const admitAuthenticatedSocket = () => {
+          if (authenticated) return;
+          authenticated = true;
+          if (authTimer) {
+            clearTimeout(authTimer);
+            authTimer = null;
+          }
+          // تغير العضوية أثناء الحاجز يلغي الإثبات بدلاً من إسقاط العامل الجديد بصمت.
+          for (const id of Array.from(this.releaseBarriers.keys()))
+            this.finishReleaseBarrier(id, false);
+          this.connectedSockets.add(socket);
+        };
+
+        if (authenticated) {
+          for (const id of Array.from(this.releaseBarriers.keys()))
+            this.finishReleaseBarrier(id, false);
+          this.connectedSockets.add(socket);
+        } else {
+          authTimer = setTimeout(() => {
+            if (!authenticated && !socket.destroyed) {
+              logger.warn("realtime_bridge.hub.unauthenticated_socket_timeout");
+              socket.destroy();
+            }
+          }, RealtimeBridgeManager.UNAUTH_SOCKET_TIMEOUT_MS);
+          if (typeof authTimer.unref === "function") authTimer.unref();
+        }
+
         let buffer = "";
 
         socket.on("data", (chunk) => {
           buffer += chunk.toString("utf8");
+          if (!authenticated && buffer.length > 65_536) {
+            logger.warn("realtime_bridge.hub.unauthenticated_buffer_overflow");
+            socket.destroy();
+            return;
+          }
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
 
@@ -174,9 +282,14 @@ export class RealtimeBridgeManager {
             const trimmed = line.trim();
             if (!trimmed) continue;
             try {
-              const msg = JSON.parse(trimmed) as Partial<ReleaseFrame> & {
-                originWorkerId?: string;
-              };
+              const rawParsed = JSON.parse(trimmed);
+              const msg = this.verifyAndUnwrapBridgeFrame(rawParsed);
+              if (!msg) {
+                logger.warn("realtime_bridge.hub.unauthorized_frame_rejected");
+                socket.destroy();
+                return;
+              }
+              admitAuthenticatedSocket();
               if (this.handleDrainFrame(msg, socket)) continue;
               if (this.handleReleaseFrame(msg, socket, false)) continue;
               if (msg && msg.event) {
@@ -184,7 +297,7 @@ export class RealtimeBridgeManager {
                 this.localEmitter.emit("event", msg.event);
 
                 // إعادة توجيه لكافة العمال المتصلين الآخرين (باستثناء المصدر)
-                const payloadStr = JSON.stringify(msg) + "\n";
+                const payloadStr = this.serializeBridgeFrame(msg as Record<string, unknown>);
                 this.connectedSockets.forEach((client) => {
                   if (client !== socket && !client.destroyed) {
                     try {
@@ -200,21 +313,37 @@ export class RealtimeBridgeManager {
               }
             } catch (err) {
               logger.warn({ err }, "realtime_bridge.hub.malformed_payload");
+              if (!authenticated) {
+                socket.destroy();
+                return;
+              }
             }
           }
         });
 
         socket.on("error", (err) => {
+          if (authTimer) {
+            clearTimeout(authTimer);
+            authTimer = null;
+          }
           logger.warn({ err: err.message }, "realtime_bridge.hub.socket_error");
-          this.connectedSockets.delete(socket);
-          this.socketWorkerIds.delete(socket);
-          this.invalidateReleaseMember(socket);
+          if (authenticated) {
+            this.connectedSockets.delete(socket);
+            this.socketWorkerIds.delete(socket);
+            this.invalidateReleaseMember(socket);
+          }
         });
 
         socket.on("close", () => {
-          this.connectedSockets.delete(socket);
-          this.socketWorkerIds.delete(socket);
-          this.invalidateReleaseMember(socket);
+          if (authTimer) {
+            clearTimeout(authTimer);
+            authTimer = null;
+          }
+          if (authenticated) {
+            this.connectedSockets.delete(socket);
+            this.socketWorkerIds.delete(socket);
+            this.invalidateReleaseMember(socket);
+          }
         });
       });
 
@@ -320,9 +449,13 @@ export class RealtimeBridgeManager {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const msg = JSON.parse(trimmed) as Partial<ReleaseFrame> & {
-            originWorkerId?: string;
-          };
+          const rawParsed = JSON.parse(trimmed);
+          const msg = this.verifyAndUnwrapBridgeFrame(rawParsed);
+          if (!msg) {
+            logger.warn("realtime_bridge.client.unauthorized_frame_rejected");
+            socket.destroy();
+            return;
+          }
           if (this.handleDrainFrame(msg, socket)) continue;
           if (this.handleReleaseFrame(msg, socket, true)) continue;
           if (msg && msg.event) {
@@ -408,8 +541,10 @@ export class RealtimeBridgeManager {
     // إرسال محلي فوري
     this.localEmitter.emit("event", event);
 
-    const message =
-      JSON.stringify({ originWorkerId: this.workerId, event }) + "\n";
+    const message = this.serializeBridgeFrame({
+      originWorkerId: this.workerId,
+      event,
+    });
 
     if (this.mode === "hub" && this.server) {
       this.connectedSockets.forEach((socket) => {
@@ -502,7 +637,7 @@ export class RealtimeBridgeManager {
   private sendReleaseFrame(socket: net.Socket, frame: ReleaseFrame): boolean {
     if (socket.destroyed || !socket.writable) return false;
     try {
-      socket.write(JSON.stringify(frame) + "\n");
+      socket.write(this.serializeBridgeFrame(frame as unknown as Record<string, unknown>));
       return true;
     } catch {
       return false;
@@ -753,7 +888,7 @@ export class RealtimeBridgeManager {
   private handleDrainFrame(frame: Partial<ReleaseFrame>, socket: net.Socket): boolean {
     if (frame.kind === "work-drain-request" && typeof frame.id === "string") {
       // TCP order means preceding events already reached this peer's listeners.
-      socket.write(JSON.stringify({ kind: "work-drain-ack", id: frame.id }) + "\n");
+      socket.write(this.serializeBridgeFrame({ kind: "work-drain-ack", id: frame.id }));
       return true;
     }
     if (frame.kind === "work-drain-ack" && typeof frame.id === "string") {
@@ -771,8 +906,12 @@ export class RealtimeBridgeManager {
    */
   async drain(timeoutMs = 5_000): Promise<void> {
     if (this.mode === "in_memory") return;
-    if (this.mode === "client" && (!this.clientSocket || !this.isConnectedToHub))
+    if (this.mode === "client" && (!this.clientSocket || !this.isConnectedToHub)) {
+      if (this.isStopping && !this.requireSharedBridge && this.pendingOutbound.length === 0) {
+        return;
+      }
       throw new Error("Realtime bridge drain unavailable: client disconnected");
+    }
     this.flushPendingOutbound();
     if (this.pendingOutbound.length) throw new Error("Realtime bridge drain has unsent events");
     const sockets = this.mode === "client" ? [this.clientSocket!] : Array.from(this.connectedSockets);
@@ -798,7 +937,7 @@ export class RealtimeBridgeManager {
       socket.once("close", closed); socket.once("error", failed);
       if (socket.destroyed) { finish(new Error("Realtime bridge drain disconnected")); return; }
       if (requireAck)
-        socket.write(JSON.stringify({ kind: "work-drain-request", id }) + "\n", error => { if (error) failed(); });
+        socket.write(this.serializeBridgeFrame({ kind: "work-drain-request", id }), error => { if (error) failed(); });
       else
         socket.end();
     })));

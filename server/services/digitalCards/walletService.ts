@@ -17,6 +17,7 @@ import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import { money } from "../money";
 
 /* ────────── Types ────────── */
@@ -57,7 +58,8 @@ async function auditLog(
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort
   }
 }
