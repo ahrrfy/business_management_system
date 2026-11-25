@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { _clearAllMgrAttempts } from "../../routers/saleRouter";
 import { hashPassword } from "../../auth/password";
+import { hashBadgeBarcode } from "../../lib/badgeBarcodeCrypto";
 
 const TABLES = [
   "auditLogs",
@@ -479,11 +480,12 @@ describe("اعتماد المدير الشامل — باركود الشارة،
 
       // تجديد الشارة
       const genRes = await adminCaller.users.generateBadgeBarcode({ userId: 3 });
-      expect(genRes.barcode).toMatch(/^MGR-3-\d+$/);
+      expect(genRes.barcode).toMatch(/^MGR-3-\d{16}$/);
       expect(genRes.barcode).not.toBe(oldBarcode);
 
       const uAfterGen = await userById(3);
-      expect(uAfterGen?.badgeBarcode).toBe(genRes.barcode);
+      expect(uAfterGen?.badgeBarcode).toBe(hashBadgeBarcode(genRes.barcode));
+      expect(uAfterGen?.badgeBarcode).not.toBe(genRes.barcode);
 
       // الباركود القديم صار باطلاً ومرفوضاً الآن
       await expect(
@@ -557,19 +559,30 @@ describe("اعتماد المدير الشامل — باركود الشارة،
       ).rejects.toThrow(/شارة الاعتماد مخصصة للمديرين/);
     });
 
-    it("الخدمة الذاتية: يسمح للمدير بتغيير رمز PIN الخاص به وإدارة شارته", async () => {
+    it("الخدمة الذاتية: يلزم كلمة المرور الحالية لتغيير PIN ويحفظ الشارة مشفّرة", async () => {
       const mgr1 = await userById(3);
       const caller = appRouter.createCaller(makeCtx(mgr1));
 
-      // تغيير PIN الذاتي
+      // رفض تغيير PIN بكلمة مرور خاطئة مع تسجيل فشل مصادقة
+      await expect(
+        caller.users.changeMyPin({
+          pin: "7890",
+          currentPassword: "WrongPassword999!",
+        }),
+      ).rejects.toThrow(/كلمة المرور الحالية غير صحيحة/);
+
+      // تغيير PIN الذاتي بكلمة المرور الصحيحة
       const changeRes = await caller.users.changeMyPin({
         pin: "7890",
+        currentPassword: "ManagerPass123!",
       });
       expect(changeRes.success).toBe(true);
 
       // توليد شارة ذاتياً
       const genRes = await caller.users.generateMyBadgeBarcode();
-      expect(genRes.barcode).toMatch(/^MGR-3-\d+$/);
+      expect(genRes.barcode).toMatch(/^MGR-3-\d{16}$/);
+      const freshAfterGen = await userById(3);
+      expect(freshAfterGen?.badgeBarcode).toBe(hashBadgeBarcode(genRes.barcode));
 
       // إلغاء الشارة ذاتياً
       const clearRes = await caller.users.clearMyBadgeBarcode();

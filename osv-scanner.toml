@@ -1,4 +1,4 @@
-# Assessed 2026-11-01: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides.
+# Assessed 2026-11-25: all minimatch >=9 consumers are upgraded to 11.0.1 via pnpm overrides.
 # The advisory mechanism (firstPhasePreProcess with optimizationLevel >=2) is absent from the
 # remaining v3/v5 CJS implementations. Their exact build/lint consumers are allowlisted below,
 # accept repository-owned patterns only, and cannot be major-overridden without breaking the
@@ -6,10 +6,10 @@
 # Exact consumers are enforced by dependencySecurityWorkflow.test.ts.
 [[IgnoredVulns]]
 id = "GHSA-g3hv-75wg-m249"
-ignoreUntil = 2026-11-30
+ignoreUntil = 2027-02-28
 reason = "the reported globparts amplification code is absent from the remaining legacy CJS v3/v5 build-tool consumers; all modern consumers are pinned to 11.0.1 and no runtime path accepts untrusted glob patterns"
 
 [[IgnoredVulns]]
 id = "GHSA-fc5q-39xc-vjpf"
-ignoreUntil = 2026-11-30
+ignoreUntil = 2027-02-28
 reason = "picomatch 4.0.7 is currently the latest version on npm with no upstream patch yet; all consumers in this repo are dev/build-time tools (vite, vitest, typescript-eslint, @tailwindcss/vite, vite-plugin-pwa) and no runtime path passes untrusted input to picomatch"

@@ -11,6 +11,7 @@ import {
   storefrontFirstOrderCouponClaims,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "../../shared/errors";
+import { isDupEntry } from "../../shared/errorMap.ar";
 import { formatActiveDays, isDayActive, type PromotionDesignMeta } from "../../shared/promotionScheduling";
 import { extractInsertId } from "../lib/insertId";
 import { hashCouponCode } from "./couponService";
@@ -196,7 +197,7 @@ export async function requestStorefrontFirstOrderCoupon(
           validTo: program.validTo ?? null,
         };
       } catch (error) {
-        if (attempt === 4) throw error;
+        if (!isDupEntry(error) || attempt === 4) throw error;
       }
     }
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: appErrorMessage({ what: "تعذر إصدار رمز كوبون فريد", why: "تكرر تعارض نادر في توليد الرمز", doThis: "أعد المحاولة، وإن استمر الأمر تواصل مع المتجر" }) });

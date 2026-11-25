@@ -3,7 +3,7 @@
 import { Router, type Request, type Response } from "express";
 import compression from "compression";
 import path from "node:path";
-import { getSessionContext, getUserFromRequest } from "./auth/session";
+import { authenticateExpressRequest } from "./auth/expressAuth";
 import {
   acquireRestoreLock,
   backupsDir,
@@ -38,8 +38,14 @@ export function backupRouter(): Router {
   }));
 
   r.get("/download", async (req: Request, res: Response) => {
-    const user = await getUserFromRequest(req).catch(() => null);
-    if (!user || (user.role !== "admin" && !user.isOwner)) {
+    const auth = await authenticateExpressRequest(req);
+    if (!auth.ok) {
+      return res
+        .status(403)
+        .json({ error: auth.status === 401 ? "تنزيل النسخ متاح للمدير فقط." : auth.error });
+    }
+    const user = auth.user;
+    if (user.role !== "admin" && !user.isOwner) {
       return res.status(403).json({ error: "تنزيل النسخ متاح للمدير فقط." });
     }
     const name = String(req.query.name ?? "");
@@ -93,7 +99,13 @@ export function backupRouter(): Router {
   r.post("/restore-upload", async (req: Request, res: Response) => {
     // التحقّق يحدث قبل تركيب أي body parser/مستهلك للدفق. الطلب المجهول يُرفض فوراً
     // ولا يستطيع إجبار Node على تجميع ملف الاستعادة في الذاكرة أو على القرص.
-    const session = await getSessionContext(req).catch(() => ({ user: null, sessionId: null }));
+    const auth = await authenticateExpressRequest(req);
+    if (!auth.ok) {
+      return res
+        .status(403)
+        .json({ error: auth.status === 401 ? "استعادة النسخ متاحة للمالك فقط." : auth.error });
+    }
+    const session = { user: auth.user, sessionId: auth.sessionId };
     if (session.user?.isOwner !== true) {
       return res.status(403).json({ error: "استعادة النسخ متاحة للمالك فقط." });
     }

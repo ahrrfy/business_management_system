@@ -71,11 +71,33 @@ export function workflowEventDocument(snapshot: WorkflowDocumentSnapshot): Print
   };
 }
 
+function sanitizePrintPackDocument(doc: Document): void {
+  doc
+    .querySelectorAll("script, iframe, object, embed, base, meta[http-equiv], link[rel='import']")
+    .forEach((node) => node.remove());
+  doc.querySelectorAll("*").forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const val = attr.value.trim();
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (
+        (name === "src" || name === "href" || name === "xlink:href" || name === "formaction") &&
+        /^(?:javascript|vbscript|data:(?!image\/(?:png|jpe?g|webp|gif);base64,))/i.test(val)
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+}
+
 /** One browser preview for the documents which did NOT reach a silent printer. */
 export function workflowPrintPackHtml(documents: Array<{ title: string; html: string }>): string {
   if (!documents.length) throw new Error("حزمة الطباعة فارغة");
   const parsed = documents.map((item) => ({ title: item.title, doc: new DOMParser().parseFromString(item.html, "text/html") }));
-  for (const { doc } of parsed) doc.querySelectorAll("script").forEach((script) => script.remove());
+  for (const { doc } of parsed) sanitizePrintPackDocument(doc);
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>حزمة مستندات سير العمل — 80 مم</title>${parsed.map(({ doc }) => doc.head.innerHTML).join("")}<style>
   .workflow-pack-toolbar{position:sticky;top:0;background:#fff;color:#000;border-bottom:1px solid #777;padding:10px;font:700 14px Arial;z-index:20;width:100%}.workflow-pack-toolbar button{padding:8px 14px;margin:3px;border:1px solid #777;background:#fff;color:#000;cursor:pointer}.workflow-pack-item{break-after:page;margin-bottom:8mm}.workflow-pack-item:last-child{break-after:auto}.workflow-pack-title{font:700 11px Arial;border-bottom:1px solid #000;margin-bottom:3mm;padding:2mm}
   @media print{.workflow-pack-toolbar{display:none!important}.workflow-pack-item{margin:0}body{width:80mm!important;margin:0!important}}

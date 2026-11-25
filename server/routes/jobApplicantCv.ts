@@ -1,12 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { TRPCError } from "@trpc/server";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { getUserFromRequest } from "../auth/session";
-import {
-  normalizeOwnerAuthority,
-  resolveCustomRole,
-  type AuthUser,
-} from "../context";
+import { authenticateExpressRequest } from "../auth/expressAuth";
 import { logger } from "../logger";
 import { companyBranchScope } from "../services/companyBranchScope";
 import {
@@ -23,12 +18,11 @@ export function jobApplicantCvRouter(): Router {
 
   router.get("/:publicKey", async (req: Request, res: Response) => {
     try {
-      const rawUser = await getUserFromRequest(req);
-      if (!rawUser) return res.status(401).json({ error: "يلزم تسجيل الدخول" });
-
-      const user = rawUser as AuthUser;
-      if (user.isOwner) normalizeOwnerAuthority(user);
-      else await resolveCustomRole(user);
+      const auth = await authenticateExpressRequest(req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ error: auth.error });
+      }
+      const user = auth.user;
 
       const permissions = resolvePermissions(
         user.role as RoleKey,

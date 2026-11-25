@@ -45,7 +45,7 @@ describe("dependency security coverage", () => {
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-g3hv-75wg-m249"');
     expect(osvConfig).toContain('id = "GHSA-fc5q-39xc-vjpf"');
-    expect(osvConfig).toContain("ignoreUntil = 2026-11-30");
+    expect(osvConfig).toContain("ignoreUntil = 2027-02-28");
     expect(osvConfig.match(/\[\[IgnoredVulns\]\]/g)).toHaveLength(2);
     for (const retiredIgnore of [
       "GHSA-86w9-cpqp-85rv",

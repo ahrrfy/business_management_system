@@ -425,7 +425,7 @@ export const userRouter = router({
         action: "user.generateBadgeBarcode",
         entityType: "user",
         entityId: input.userId,
-        newValue: { barcode: res.barcode },
+        newValue: { issued: true },
       });
       return res;
     }),
@@ -453,7 +453,7 @@ export const userRouter = router({
     .input(
       z.object({
         pin: z.string().regex(/^\d{4,8}$/, "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام"),
-        currentPassword: z.string().optional(),
+        currentPassword: z.string().min(1, "كلمة المرور الحالية مطلوبة للتأكيد").max(128),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -474,7 +474,7 @@ export const userRouter = router({
         action: "user.generateMyBadgeBarcode",
         entityType: "user",
         entityId: ctx.user.id,
-        newValue: { barcode: res.barcode },
+        newValue: { issued: true },
       });
       return res;
     }),

@@ -269,6 +269,9 @@ const MAX_AUDIT_STRING_CHARS = 1024;
  */
 const MAX_AUDIT_DEPTH = 32;
 const DATA_URL_RE = /^data:[a-z0-9.+/-]+;base64,/i;
+const MANAGER_BADGE_VALUE_RE = /^MGR-\d+-[A-Z0-9]{6,}$/i;
+const SENSITIVE_AUDIT_KEY_RE =
+  /^(?:password|newPassword|currentPassword|oldPassword|passwordHash|pin|pinHash|badgeBarcode|totpSecret|totpSecretEncrypted|grantToken|accessToken|refreshToken|apiKey|privateKey|webhookSecret|clientSecret)$/i;
 
 /**
  * `ancestors` = مسار الأجداد الحاليّ لا «كل ما زُرِف»: الدورة وحدها تُوقف الغوص. مجموعةُ
@@ -278,6 +281,9 @@ function redactDeep(value: unknown, depth: number, ancestors: Set<object>): unkn
   if (typeof value === "string") {
     if (DATA_URL_RE.test(value.trimStart())) {
       return `<صورة ${Math.round(value.length / 1024)} ك.ب — محجوبة عن سجلّ التدقيق>`;
+    }
+    if (MANAGER_BADGE_VALUE_RE.test(value.trim())) {
+      return "[REDACTED]";
     }
     return value.length > MAX_AUDIT_STRING_CHARS
       ? `${value.slice(0, MAX_AUDIT_STRING_CHARS)}…<اقتُطع ${value.length - MAX_AUDIT_STRING_CHARS} حرفاً>`
@@ -309,7 +315,11 @@ function redactDeep(value: unknown, depth: number, ancestors: Set<object>): unkn
     }
     if (Array.isArray(value)) return value.map((v) => redactDeep(v, depth + 1, ancestors));
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactDeep(v, depth + 1, ancestors);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE_AUDIT_KEY_RE.test(k)
+        ? "[REDACTED]"
+        : redactDeep(v, depth + 1, ancestors);
+    }
     return out;
   } finally {
     ancestors.delete(value);

@@ -16,6 +16,7 @@ import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import {
   digitalProviderLogoUrl,
   normalizeAndValidateImageDataUrl,
@@ -83,7 +84,8 @@ async function auditLog(
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort: audit failure must not break the business operation
   }
 }

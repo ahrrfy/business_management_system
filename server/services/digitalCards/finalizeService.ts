@@ -51,6 +51,7 @@ import {
   type DigitalIntentActor,
 } from "./intentOperationScope";
 import { redactAuditValue } from "../auditService";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 import { checkoutSnapshotToSaleLines } from "./mixedCartService";
 import { digitalPaymentChannel, parseReceptionSource, receptionIntentTotal } from "./receptionSource";
@@ -139,7 +140,8 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
       entityId: String(entityId),
       newValue: redactAuditValue(details),
     });
-  } catch {
+  } catch (err) {
+    rethrowIfTransactionFatal(err);
     // best-effort
   }
 }

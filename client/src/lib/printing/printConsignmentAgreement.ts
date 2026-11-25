@@ -74,7 +74,7 @@ ${CAIRO_FONT}
 </style></head>
 <body><div class="page">
   <div class="hd">
-    <img src="${logoUrl()}" alt="">
+    <img src="${esc(logoUrl())}" alt="">
     <div class="co">${esc(CO.name)}<small>${esc(CO.sub)}</small></div>
   </div>
   <div class="title"><span class="band">اتفاقية إيداع بضاعة برسم البيع</span></div>

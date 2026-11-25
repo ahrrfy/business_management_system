@@ -26,10 +26,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: gemini-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   gemini-review:
     name: gemini-review
@@ -43,6 +39,9 @@ jobs:
         startsWith(github.event.comment.body, '@gemini review')) &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
       github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: gemini-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
