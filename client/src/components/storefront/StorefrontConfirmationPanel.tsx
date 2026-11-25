@@ -32,7 +32,7 @@ export function StorefrontConfirmationPanel({
       onClose={() => setPanel(null)}
     >
       <div className="flex flex-col items-center py-6 text-center">
-        <div className="flex size-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
+        <div className="flex size-20 items-center justify-center rounded-full bg-[var(--store-brand)]/10 text-[var(--store-brand)]">
           <Check aria-hidden className="size-10" />
         </div>
         <h3 className="mt-4 text-lg font-extrabold text-slate-900 dark:text-white">
@@ -48,7 +48,7 @@ export function StorefrontConfirmationPanel({
           )}
           ؛ بعد ذلك يلزم إعادة الطلب حسب التوفر.
         </p>
-        <div className="mt-5 w-full rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+        <div className="mt-5 w-full rounded-xl bg-white p-4 ring-1 ring-slate-900/[0.06] dark:bg-slate-900 dark:ring-slate-800">
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">رقم الطلب</span>
             <span className="font-extrabold tracking-wider text-slate-900 dark:text-white">
@@ -57,7 +57,7 @@ export function StorefrontConfirmationPanel({
           </div>
           <div className="mt-2 flex justify-between text-sm">
             <span className="text-slate-500">الإجمالي (يُدفع للمندوب)</span>
-            <span className="font-extrabold tabular-nums text-emerald-600 dark:text-emerald-400">
+            <span className="font-extrabold tabular-nums text-[var(--store-brand)]">
               {money(confirmation.total)} د.ع
             </span>
           </div>
@@ -67,13 +67,13 @@ export function StorefrontConfirmationPanel({
             setPanel(null);
             setConfirmation(null);
           }}
-          className="mt-6 w-full rounded-xl bg-emerald-700 py-4 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-emerald-800"
+          className="mt-6 w-full rounded-xl bg-[#1d1d1f] py-4 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
         >
           متابعة التسوّق
         </button>
         <button
           onClick={() => openTrack(confirmation.orderNumber)}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white py-3.5 text-sm font-extrabold text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-50 dark:bg-slate-900 dark:text-emerald-400 dark:ring-slate-700"
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white py-3.5 text-sm font-extrabold text-[var(--store-brand)] ring-1 ring-slate-200 transition hover:bg-slate-50 dark:bg-slate-900 dark:ring-slate-700"
         >
           <Package aria-hidden className="size-4" /> تتبّع هذا الطلب
         </button>

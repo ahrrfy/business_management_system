@@ -413,6 +413,11 @@ select {
   /* التنفّس على مستوى الحقل نفسه — لا يمسّ الـpopup لكن يجعل السهم بعيداً عن نصّ الخيار المحدَّد. */
   padding-inline: 0.5rem;
 }
+.storefront select.appearance-none {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: none;
+}
 option {
   /* حشوة عموديّة/أفقيّة لكل خيار في popup الـ<select> — الفارق البصريّ الأكبر: من «متلاصق ومقتطع»
      إلى «مقروء ومريح». Chromium/Firefox يحترمانها؛ Safari يتجاهلها لكن لا يكسر شيئاً. */
@@ -486,7 +491,8 @@ input[type="month"]::-webkit-calendar-picker-indicator {
 }
 
 @layer components {
-  /* Storefront only: a joyful stationery palette anchored by a calm navy. */
+  /* Storefront palette tokens exported at :root too so Radix Portals (dialogs, popovers, sheets) resolve them reliably. */
+  :root,
   .storefront {
     --store-brand: #1e3a8a;
     --store-brand-strong: #172554;
@@ -496,17 +502,40 @@ input[type="month"]::-webkit-calendar-picker-indicator {
     --store-mint: #10b981;
     --store-lilac: #8b5cf6;
     --store-peach: #ffedd5;
-    --store-canvas: #f8fafc;
-    --store-ink: #0f172a;
-    --store-muted: #64748b;
+    --store-canvas: #f5f5f7;
+    --store-surface-glass: rgba(255, 255, 255, 0.82);
+    --store-surface-glass-strong: rgba(255, 255, 255, 0.94);
+    --store-hairline: rgba(15, 23, 42, 0.08);
+    --store-ink: #1d1d1f;
+    --store-muted: #6e6e73;
     --store-sale: #ef4444;
+  }
+
+  .dark:root,
+  .dark .storefront {
+    --store-canvas: #16181d;
+    --store-surface-glass: rgba(24, 27, 34, 0.84);
+    --store-surface-glass-strong: rgba(22, 24, 29, 0.94);
+    --store-hairline: rgba(255, 255, 255, 0.1);
+    --store-ink: #f5f5f7;
+    --store-brand: #60a5fa;
+    --store-brand-strong: #3b82f6;
+    --store-muted: #a1a1a6;
+  }
+
+  /* Storefront only: clean Apple-inspired studio surface anchored by calm navy & high-contrast ink. */
+  .storefront {
     background-color: var(--store-canvas);
     color: var(--store-ink);
     background-image:
-      radial-gradient(ellipse 65% 45% at 50% 0%, rgba(30, 58, 138, 0.05) 0%, transparent 80%),
-      radial-gradient(circle at 12px 12px, rgba(30, 58, 138, 0.035) 1px, transparent 1.5px);
-    background-size: 100% 650px, 24px 24px;
-    background-repeat: no-repeat, repeat;
+      radial-gradient(ellipse 75% 45% at 50% -5%, rgba(30, 58, 138, 0.045) 0%, transparent 75%);
+    background-repeat: no-repeat;
+  }
+
+  .storefront .store-display-title {
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    font-optical-sizing: auto;
   }
 
   .storefront :where(a, button, input, select, textarea, [tabindex]):focus-visible,
@@ -516,18 +545,19 @@ input[type="month"]::-webkit-calendar-picker-indicator {
     outline-offset: 2px;
   }
 
+  /* Composite-only transform transitions so scrolling/hovering stays within the 8ms 120Hz budget. */
   .storefront .store-product-card {
-    border: 1px solid #e2e8f0;
-    box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.05), 0 2px 6px -1px rgba(15, 23, 42, 0.02);
+    border: 1px solid var(--store-hairline);
+    box-shadow: 0 2px 10px -2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.03);
     border-radius: 1.25rem;
-    transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1), border-color 240ms ease;
+    transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .storefront .store-category-grid > button {
     position: relative;
     overflow: hidden;
     border-radius: 1.25rem;
-    transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .storefront .store-category-grid > button::after {
@@ -544,15 +574,21 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   .storefront .store-category-grid > button:nth-child(3n + 1) { background: #eff6ff; border-color: #bfdbfe; }
   .storefront .store-category-grid > button:nth-child(3n + 2) { background: #ecfdf5; border-color: #a7f3d0; }
   .storefront .store-category-grid > button:nth-child(3n) { background: #faf5ff; border-color: #e9d5ff; }
-  .storefront .store-category-grid > button:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -3px rgba(30, 58, 138, 0.08); }
+  .storefront .store-category-grid > button:hover { transform: translateY(-2px); box-shadow: 0 10px 24px -6px rgba(15, 23, 42, 0.09); }
+  .storefront .store-category-grid > button:active { transform: scale(0.97); transition-duration: 100ms; }
   .storefront .store-category-grid > button:nth-child(3n + 1) > span:first-child { background: #3b82f6; color: #ffffff; }
   .storefront .store-category-grid > button:nth-child(3n + 2) > span:first-child { background: #10b981; color: #ffffff; }
   .storefront .store-category-grid > button:nth-child(3n) > span:first-child { background: #8b5cf6; color: #ffffff; }
 
   .storefront .store-product-card:hover {
-    border-color: rgba(30, 58, 138, 0.35);
-    box-shadow: 0 16px 36px -4px rgba(30, 58, 138, 0.12), 0 6px 16px -2px rgba(15, 23, 42, 0.06);
-    transform: translateY(-3px);
+    border-color: rgba(30, 58, 138, 0.24);
+    box-shadow: 0 16px 32px -8px rgba(15, 23, 42, 0.1), 0 4px 12px -2px rgba(15, 23, 42, 0.05);
+    transform: translateY(-2px);
+  }
+
+  .storefront .store-product-card:active {
+    transform: scale(0.99);
+    transition-duration: 100ms;
   }
 
   /* صور المنتجات والبكجات على سطح أبيض موحّد؛ لا نلوّن الحاوية حسب ترتيب البطاقة. */
@@ -561,11 +597,11 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   }
 
   .storefront .store-product-image {
-    transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .storefront .store-product-card:hover .store-product-image {
-    transform: scale(1.06);
+    transform: scale(1.045);
   }
 
   .storefront .store-product-image-placeholder {
@@ -574,15 +610,14 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   }
 
   .storefront .store-primary-action {
-    background-color: var(--store-accent);
+    background-color: var(--store-brand);
     color: #fff;
-    box-shadow: 0 4px 14px 0 rgba(249, 115, 22, 0.32);
-    transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+    box-shadow: 0 4px 12px -2px rgba(30, 58, 138, 0.22);
+    transition: transform 100ms ease-out, background-color 150ms ease;
   }
 
   .storefront .store-primary-action:hover:not(:disabled) {
-    background-color: var(--store-accent-strong);
-    box-shadow: 0 6px 20px 0 rgba(234, 88, 12, 0.42);
+    background-color: var(--store-brand-strong);
     transform: translateY(-1px);
   }
 
@@ -595,18 +630,26 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   }
 
   .storefront .store-badge-glow {
-    box-shadow: 0 0 12px rgba(249, 115, 22, 0.35);
+    box-shadow: 0 2px 8px rgba(180, 61, 49, 0.18);
   }
 
   .storefront .store-badge-emerald-glow {
-    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.18);
   }
 
   .storefront .store-glass-card {
-    background: rgba(255, 255, 255, 0.94);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(226, 232, 240, 0.85);
-    box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.05);
+    background: var(--store-surface-glass);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+
+  .storefront .store-translucent-chrome {
+    background: var(--store-surface-glass-strong);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border-color: var(--store-hairline);
   }
 
   @keyframes storefront-shimmer-sweep {
@@ -730,7 +773,9 @@ input[type="month"]::-webkit-calendar-picker-indicator {
 
   @media (prefers-reduced-motion: reduce) {
     .storefront .store-product-card,
-    .storefront .store-product-image {
+    .storefront .store-category-grid > button,
+    .storefront .store-product-image,
+    .storefront .store-primary-action {
       transition: none;
       transform: none;
     }
@@ -742,10 +787,39 @@ input[type="month"]::-webkit-calendar-picker-indicator {
     }
   }
 
+  @media (prefers-reduced-transparency: reduce) {
+    .storefront .store-glass-card,
+    .storefront .store-translucent-chrome {
+      background: #ffffff !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    .dark .storefront .store-glass-card,
+    .dark .storefront .store-translucent-chrome {
+      background: #0f172a !important;
+    }
+  }
+
+  @media (prefers-contrast: more) {
+    .storefront .store-glass-card,
+    .storefront .store-translucent-chrome,
+    .storefront .store-product-card {
+      border-color: rgba(15, 23, 42, 0.35) !important;
+      background: #ffffff !important;
+    }
+
+    .dark .storefront .store-glass-card,
+    .dark .storefront .store-translucent-chrome,
+    .dark .storefront .store-product-card {
+      border-color: rgba(255, 255, 255, 0.32) !important;
+    }
+  }
+
   .storefront .bg-emerald-600 { background-color: var(--store-brand) !important; }
   .storefront .hover\:bg-emerald-700:hover { background-color: var(--store-brand-strong) !important; }
   .storefront .bg-emerald-50 { background-color: #eff6ff !important; }
-  .storefront .text-emerald-600, .storefront .text-emerald-700, .storefront .text-emerald-500 { color: var(--store-brand) !important; }
+  .storefront .text-emerald-600, .storefront .text-emerald-700 { color: var(--store-brand) !important; }
   .storefront .bg-amber-500 { background-color: var(--store-accent) !important; }
   .storefront .hover\:bg-amber-600:hover { background-color: var(--store-accent-strong) !important; }
   .storefront .bg-amber-100 { background-color: #ffedd5 !important; }
@@ -755,9 +829,7 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   .storefront .focus\:ring-emerald-400:focus { --tw-ring-color: var(--store-accent) !important; }
 
   .dark .storefront {
-    --store-canvas: #202532;
-    --store-ink: #fbf8f2;
-    background-image: radial-gradient(circle at 10px 10px, rgb(255 255 255 / 6%) 1.25px, transparent 1.5px);
+    background-image: none;
   }
 
   .dark .storefront .store-product-card {

@@ -5,7 +5,16 @@ import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShe
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { money } from "@/components/storefront/storefrontCartMath";
 import { type Panel } from "@/components/storefront/storefrontCatalogModel";
-import { type CheckoutForm } from "@/components/storefront/storefrontPersistence";
+import {
+  type CheckoutForm,
+} from "@/components/storefront/storefrontPersistence";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { type RouterOutputs } from "@/lib/trpc";
 import { GOVERNORATES } from "@shared/governorates";
 import {
@@ -115,28 +124,28 @@ export function StorefrontCheckoutPanel({
         }}
         className="flex flex-col gap-3"
       >
-        <div className="rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3.5">
+        <div className="rounded-2xl border border-slate-200/80 bg-[#f5f5f7] p-3.5 dark:border-slate-800 dark:bg-slate-900/70">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#9a7427]">
+              <p className="text-[11px] font-bold tracking-wide text-slate-500 dark:text-slate-400">
                 الخطوة الأخيرة
               </p>
-              <p className="mt-1 text-sm font-black text-[#25406f]">
+              <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">
                 أكمل بياناتك وسنؤكد الطلب قبل التوصيل
               </p>
             </div>
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[#f4c84d] text-sm font-black text-[#25406f]">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[#1d1d1f] text-sm font-black text-white dark:bg-white dark:text-[#1d1d1f]">
               {cartCount}
             </span>
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center text-[10px] font-black">
-            <span className="rounded-lg bg-[#25406f] px-2 py-1.5 text-white">
+          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center text-[10px] font-bold">
+            <span className="rounded-lg bg-[#1d1d1f] px-2 py-1.5 text-white dark:bg-white dark:text-[#1d1d1f]">
               بياناتك
             </span>
-            <span className="rounded-lg bg-white/80 px-2 py-1.5 text-[#6d5524]">
+            <span className="rounded-lg bg-white px-2 py-1.5 text-slate-600 ring-1 ring-slate-200/70 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
               التوصيل
             </span>
-            <span className="rounded-lg bg-white/80 px-2 py-1.5 text-[#6d5524]">
+            <span className="rounded-lg bg-white px-2 py-1.5 text-slate-600 ring-1 ring-slate-200/70 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
               التأكيد
             </span>
           </div>
@@ -189,30 +198,31 @@ export function StorefrontCheckoutPanel({
           required
           error={checkoutErrors.governorate}
         >
-          <select
-            id="storefront-checkout-governorate"
-            value={form.governorate}
-            onChange={(e) => updateCheckoutField("governorate", e.target.value)}
-            required
-            aria-invalid={Boolean(checkoutErrors.governorate)}
-            aria-describedby={
-              checkoutErrors.governorate
-                ? "storefront-checkout-governorate-error"
-                : undefined
-            }
-            className="w-full bg-transparent text-sm outline-none"
+          <Select
+            dir="rtl"
+            value={form.governorate || undefined}
+            onValueChange={(value) => updateCheckoutField("governorate", value)}
           >
-            <option value="">اختر المحافظة</option>
-            {GOVERNORATES.map((g) => (
-              <option
-                key={g.id}
-                value={g.id}
-                className="bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100"
-              >
-                {g.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              id="storefront-checkout-governorate"
+              aria-invalid={Boolean(checkoutErrors.governorate)}
+              aria-describedby={
+                checkoutErrors.governorate
+                  ? "storefront-checkout-governorate-error"
+                  : undefined
+              }
+              className="w-full !h-9 border-0 bg-transparent px-0 text-sm font-semibold text-slate-900 shadow-none focus-visible:ring-0 dark:text-slate-100"
+            >
+              <SelectValue placeholder="اختر المحافظة" />
+            </SelectTrigger>
+            <SelectContent dir="rtl" align="start">
+              {GOVERNORATES.map((g) => (
+                <SelectItem key={g.id} value={g.id}>
+                  {g.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
         <Field
           icon={<Package aria-hidden className="size-4" />}
@@ -279,7 +289,7 @@ export function StorefrontCheckoutPanel({
           couponFeedback={couponFeedback}
           setPanel={setPanel}
         />
-        <div className="rounded-2xl border border-[#ead8c8] bg-[#fffdf9] p-3.5 text-sm ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-800">
+        <div className="rounded-2xl border border-slate-200/80 bg-[#f5f5f7] p-3.5 text-sm ring-1 ring-slate-900/[0.04] dark:border-slate-800 dark:bg-slate-900 dark:ring-slate-800">
           <div className="flex justify-between text-slate-500">
             <span>المجموع الفرعي</span>
             <span className="tabular-nums text-slate-800 dark:text-slate-100">
@@ -291,7 +301,7 @@ export function StorefrontCheckoutPanel({
               <Truck aria-hidden className="size-3.5" /> أجرة التوصيل (تقديري)
             </span>
             {quotedDeliveryFree ? (
-              <span className="font-bold text-emerald-600 dark:text-emerald-400">
+              <span className="font-bold text-[var(--store-brand)]">
                 مجاني
               </span>
             ) : (
@@ -301,16 +311,16 @@ export function StorefrontCheckoutPanel({
             )}
           </div>
           {Number(quotedCouponDiscount) > 0 && (
-            <div className="mt-1.5 flex justify-between text-emerald-700 dark:text-emerald-400">
+            <div className="mt-1.5 flex justify-between text-[var(--store-brand)]">
               <span>خصم الكوبون</span>
-              <span className="tabular-nums">
+              <span className="tabular-nums" dir="ltr">
                 − {money(quotedCouponDiscount)} د.ع
               </span>
             </div>
           )}
-          <div className="mt-2 flex justify-between border-t border-slate-100 pt-2 text-base font-extrabold dark:border-slate-800">
+          <div className="mt-2 flex justify-between border-t border-slate-200/80 pt-2 text-base font-extrabold dark:border-slate-800">
             <span>الإجمالي</span>
-            <span className="tabular-nums text-emerald-600 dark:text-emerald-400">
+            <span className="tabular-nums text-[var(--store-brand)]">
               {money(quotedTotal)} د.ع
             </span>
           </div>
@@ -348,7 +358,7 @@ export function StorefrontCheckoutPanel({
         <button
           type="submit"
           disabled={orderPending}
-          className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+          className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--store-brand)] py-4 text-sm font-extrabold text-white shadow-xs transition motion-safe:active:scale-[0.98] hover:bg-[var(--store-brand-strong)] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
         >
           {orderPending ? (
             <Loader2 aria-hidden className="size-4 animate-spin" />

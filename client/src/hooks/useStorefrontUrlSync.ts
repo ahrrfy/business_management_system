@@ -9,7 +9,7 @@ interface StorefrontUrlSyncOptions {
   setCategoryId: (id: number | null) => void;
 }
 
-const DEFAULT_STORE_TITLE = "المكتبة العربية | قرطاسية وطباعة وتوصيل في العراق";
+const DEFAULT_STORE_TITLE = "متجر المكتبة العربية | قرطاسية وطباعة وتوصيل في العراق";
 
 export function useStorefrontUrlSync({
   selectedId,
@@ -63,7 +63,7 @@ export function useStorefrontUrlSync({
         window.history.pushState({ productId: selectedId }, "", targetPath);
       }
       if (selectedProductTitle) {
-        document.title = `${selectedProductTitle} | المكتبة العربية`;
+        document.title = `${selectedProductTitle} | متجر المكتبة العربية`;
       }
     } else {
       if (window.location.pathname.startsWith("/store/product/")) {
@@ -93,13 +93,16 @@ export function useStorefrontUrlSync({
       if (catMatch) {
         const cid = Number(catMatch[1]);
         if (Number.isInteger(cid) && cid > 0) {
+          setSelectedId(null);
           setCategoryId(cid);
+          return;
         }
       }
 
-      // إذا رجع الزائر إلى /store يغلق حوار المنتج
+      // إذا رجع الزائر إلى /store يغلق حوار المنتج ويعيد تعيين القسم
       if (path === "/store" || path === "/store/") {
         setSelectedId(null);
+        setCategoryId(null);
       }
     };
 

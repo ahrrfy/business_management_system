@@ -213,8 +213,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     document.body.appendChild(container);
     root = createRoot(container);
 
-    const sessionToken = "s".repeat(48);
-
     await act(async () => {
       root!.render(
         <StorefrontB2BQuoteButton
@@ -222,7 +220,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
           cartSubtotal={205000}
           orderingEnabled={true}
           turnstileSiteKey="site-key"
-          customerSessionToken={sessionToken}
         />,
       );
     });
@@ -267,7 +264,6 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
     const payload = createQuoteMutateMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(payload).toMatchObject({
-      customerSessionToken: sessionToken,
       customerName: "حيدر الكاظمي",
       customerPhone: "+9647701234567",
       companyName: "شركة الأفق للمقاولات",

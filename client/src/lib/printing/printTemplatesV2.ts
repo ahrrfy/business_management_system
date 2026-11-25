@@ -885,7 +885,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     grandTotal: { label: 'الإجمالي', value: fmtIQD(d.total) },
   });
 
-  const termsText = d.terms ?? 'العرض صالح حتى التاريخ الموضح أعلاه · الأسعار قابلة للتعديل بعد انتهاء الصلاحية · يبدأ التنفيذ بعد اعتماد العرض وفق شروط الدفع المتفق عليها.';
+  const termsText = d.terms ?? 'مدة صلاحية عروض الشركات وعروض الأسعار 5 أيام كحد أقصى من تاريخ الإصدار (ما لم يُنص على تاريخ أقصر أعلاه)، ولا تشمل ورق الاستنساخ أو الأصناف المتداولة يومياً ذات الأسعار المتغيّرة · يبدأ التنفيذ بعد اعتماد العرض وفق شروط الدفع المتفق عليها.';
   const termsBox = `<div style="margin-top:14px;padding:10px 14px;border:1px solid ${B.border};border-inline-start:3px solid ${B.ink};border-radius:4px;background:${B.bgWarm}">
     <div style="font-size:10.25px;font-weight:800;color:${B.ink};margin-bottom:4px">الشروط والأحكام</div>
     <div style="font-size:10.75px;color:#000;line-height:1.7">${esc(termsText)}</div>

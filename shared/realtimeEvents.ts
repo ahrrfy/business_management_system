@@ -228,6 +228,7 @@ export interface StorefrontOrderPlacedPayload {
   totalAmount: string;
   customerName?: string;
   itemsCount?: number;
+  createdAt?: string;
 }
 
 /**

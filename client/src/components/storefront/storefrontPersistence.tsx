@@ -96,11 +96,12 @@ export type StorefrontCheckoutAttempt = {
 };
 
 export function loadCart(
-  storage: Pick<Storage, "getItem"> = localStorage,
+  storage?: Pick<Storage, "getItem">,
 ): Map<string, CartLine> {
   const m = new Map<string, CartLine>();
   try {
-    const raw = storage.getItem(CART_STORAGE_KEY);
+    const target = storage ?? localStorage;
+    const raw = target.getItem(CART_STORAGE_KEY);
     if (!raw) return m;
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return m;
@@ -169,12 +170,13 @@ export type StorefrontReadStorage = Pick<Storage, "getItem" | "removeItem">;
 
 export function saveCart(
   cart: Map<string, CartLine>,
-  storage: StorefrontStorage = localStorage,
+  storage?: StorefrontStorage,
 ): boolean {
   try {
+    const target = storage ?? localStorage;
     const arr = Array.from(cart.values());
-    if (arr.length === 0) storage.removeItem(CART_STORAGE_KEY);
-    else storage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+    if (arr.length === 0) target.removeItem(CART_STORAGE_KEY);
+    else target.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
     return true;
   } catch {
     return false;
@@ -183,6 +185,8 @@ export function saveCart(
 
 export function loadForm(): CheckoutForm {
   try {
+    // المتجر يعمل بدون حسابات؛ نمسح أي رمز جلسة قديم متبقٍ في المتصفح.
+    localStorage.removeItem("alroya-store-customer-session-v1");
     const raw = localStorage.getItem(CHECKOUT_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_FORM };
     const f = JSON.parse(raw) as Partial<CheckoutForm>;
@@ -212,10 +216,11 @@ export function loadForm(): CheckoutForm {
 
 export function saveForm(
   form: CheckoutForm,
-  storage: StorefrontStorage = localStorage,
+  storage?: StorefrontStorage,
 ): boolean {
   try {
-    storage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+    const target = storage ?? localStorage;
+    target.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
     return true;
   } catch {
     return false;
@@ -223,10 +228,11 @@ export function saveForm(
 }
 
 export function loadCheckoutAttempt(
-  storage: StorefrontReadStorage = localStorage,
+  storage?: StorefrontReadStorage,
 ): StorefrontCheckoutAttempt | null {
   try {
-    const raw = storage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    const target = storage ?? localStorage;
+    const raw = target.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<StorefrontCheckoutAttempt>;
     if (
@@ -237,7 +243,7 @@ export function loadCheckoutAttempt(
       typeof value.expectedGrandTotal !== "string" ||
       typeof value.createdAt !== "number"
     ) {
-      storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+      target.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
       return null;
     }
     return value as StorefrontCheckoutAttempt;
@@ -248,12 +254,13 @@ export function loadCheckoutAttempt(
 
 export function saveCheckoutAttempt(
   attempt: StorefrontCheckoutAttempt | null,
-  storage: StorefrontStorage = localStorage,
+  storage?: StorefrontStorage,
 ): boolean {
   try {
+    const target = storage ?? localStorage;
     if (attempt)
-      storage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));
-    else storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+      target.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));
+    else target.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
     return true;
   } catch {
     return false;
@@ -290,7 +297,7 @@ export function storefrontCheckoutFingerprint(
 export function saveStorefrontSnapshot(
   cart: Map<string, CartLine>,
   form: CheckoutForm,
-  storage: StorefrontStorage = localStorage,
+  storage?: StorefrontStorage,
   attempt: StorefrontCheckoutAttempt | null = null,
 ): boolean {
   // لا تستخدم short-circuit: يجب محاولة حفظ الجزأين كي يحصل الزبون على أفضل فرصة للاسترداد.

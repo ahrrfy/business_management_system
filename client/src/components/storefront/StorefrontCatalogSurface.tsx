@@ -1,9 +1,16 @@
 import { BannerCarousel } from "@/components/store/BannerCarousel";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import {
+  CuratedRow,
+  type RowProduct,
+} from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
 import { type BannerItem } from "@/components/storefront/StorefrontInlineStrip";
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
-import { type StorefrontProductForCartAction } from "@/components/storefront/StorefrontRecommendations";
+import {
+  type StorefrontProductForCartAction,
+  storefrontProductCanBeOrdered,
+} from "@/components/storefront/StorefrontRecommendations";
 import { StorefrontSearchAlternatives } from "@/components/storefront/StorefrontSearch";
 import {
   StorefrontThematicStrip,
@@ -105,6 +112,11 @@ export interface StorefrontCatalogSurfaceProps {
   feedStrips: BannerItem[];
   inlineBanners: BannerItem[];
   catalogLoadMoreRef: React.RefObject<HTMLDivElement | null>;
+  dealProducts?: RowProduct[];
+  addFeaturedToCart?: (
+    p: RowProduct,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => boolean;
 }
 export function StorefrontCatalogSurface({
   announcement,
@@ -158,6 +170,8 @@ export function StorefrontCatalogSurface({
   feedStrips,
   inlineBanners,
   catalogLoadMoreRef,
+  dealProducts,
+  addFeaturedToCart,
 }: StorefrontCatalogSurfaceProps) {
   return (
     <main
@@ -165,9 +179,9 @@ export function StorefrontCatalogSurface({
       tabIndex={-1}
       className="mx-auto w-full max-w-[1500px] overflow-x-clip px-2.5 py-4 pb-28 outline-none sm:px-4 sm:py-6 lg:px-8"
     >
-      <h1 className="sr-only">مكتبة العربية للتسوق والتوصيل في العراق</h1>
+      <h1 className="sr-only">متجر المكتبة العربية — متجر مكتبه العربية للقرطاسية والطباعة والتوصيل في العراق</h1>
       {announcement && (
-        <div className="mb-5 flex items-center gap-2 border border-[#ead8c8] bg-[#fff8f2] px-4 py-3 text-sm font-bold text-[#754f2c]">
+        <div className="mb-5 flex items-center gap-2 rounded-2xl border border-slate-200/90 bg-white px-4 py-3 text-sm font-bold text-slate-800 shadow-2xs dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100">
           <BadgePercent aria-hidden className="size-4 shrink-0" />
           <span>{announcement}</span>
         </div>
@@ -175,7 +189,7 @@ export function StorefrontCatalogSurface({
       {shareFeedback && (
         <div
           role={shareFeedback.tone === "err" ? "alert" : "status"}
-          className={`animate__animated animate__fadeIn mb-5 border px-4 py-3 text-center text-xs font-bold ${SHARE_FEEDBACK_TONE_CLASS[shareFeedback.tone]}`}
+          className={`mb-5 rounded-xl border px-4 py-3 text-center text-xs font-bold transition-opacity duration-200 ${SHARE_FEEDBACK_TONE_CLASS[shareFeedback.tone]}`}
         >
           {shareFeedback.text}
         </div>
@@ -237,6 +251,36 @@ export function StorefrontCatalogSurface({
         />
       )}
 
+      {!search &&
+        categoryId == null &&
+        !showWishlist &&
+        dealProducts &&
+        dealProducts.length > 0 &&
+        addFeaturedToCart && (
+          <section
+            id="store-deals"
+            aria-label="عروض وتخفيضات مختارة"
+            className="mb-8 scroll-mt-28 rounded-2xl bg-white p-3.5 shadow-xs ring-1 ring-slate-200/70 sm:rounded-3xl sm:p-5 dark:bg-slate-900 dark:ring-slate-800"
+          >
+            <CuratedRow
+              title="عروض وتخفيضات مختارة"
+              icon={
+                <BadgePercent
+                  aria-hidden
+                  className="size-4 text-[var(--store-accent)]"
+                />
+              }
+              products={dealProducts}
+              onSelect={openProduct}
+              onAdd={addFeaturedToCart}
+              recentlyAddedId={recentlyAddedProductId}
+              canBeOrdered={storefrontProductCanBeOrdered}
+              getCartQuantity={getProductCartQty}
+              onUpdateQuantity={handleProductQuantityDelta}
+            />
+          </section>
+        )}
+
       <section
         id="store-results"
         className="mt-4 sm:mt-6 scroll-mt-36 rounded-2xl sm:rounded-3xl bg-white p-3 sm:p-5 lg:p-7 shadow-xs ring-1 ring-slate-200/70 dark:bg-slate-900 dark:ring-slate-800"
@@ -262,42 +306,42 @@ export function StorefrontCatalogSurface({
           clearCatalogFilters={clearCatalogFilters}
         />
         {catalogQ.isLoading ? (
-          <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]">
+          <div className="flex flex-col items-center justify-center py-24 text-slate-500">
             <Loader2
               aria-hidden
-              className="size-8 animate-spin text-[#1e4a63]"
+              className="size-8 animate-spin text-[var(--store-brand)]"
             />
             <p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p>
           </div>
         ) : catalogInitialError ? (
           <div
-            className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"
+            className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white py-24 text-center dark:border-slate-800 dark:bg-slate-900"
             role="alert"
           >
-            <AlertTriangle aria-hidden className="size-10 text-[#b87835]" />
-            <p className="mt-3 text-sm font-black text-[#30383e]">
+            <AlertTriangle aria-hidden className="size-10 text-[var(--sem-warn)]" />
+            <p className="mt-3 text-sm font-black text-slate-900 dark:text-white">
               تعذّر تحميل المنتجات
             </p>
-            <p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">
+            <p className="mt-1 max-w-sm text-xs font-semibold text-slate-500">
               تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.
             </p>
             <button
               type="button"
               onClick={() => void catalogQ.refetch()}
-              className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white"
+              className="store-primary-action mt-4 rounded-xl bg-[var(--store-brand)] px-5 py-2.5 text-xs font-black text-white transition hover:bg-[var(--store-brand-strong)]"
             >
               إعادة المحاولة
             </button>
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center">
-            <Package aria-hidden className="size-10 text-[#7a817f]" />
-            <p className="mt-3 text-sm font-black text-[#30383e]">
+          <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white py-24 text-center dark:border-slate-800 dark:bg-slate-900">
+            <Package aria-hidden className="size-10 text-slate-400" />
+            <p className="mt-3 text-sm font-black text-slate-900 dark:text-white">
               {isEmptyCatalog
                 ? "لا توجد منتجات معروضة حالياً"
                 : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}
             </p>
-            <p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">
+            <p className="mt-1 max-w-sm text-xs font-semibold text-slate-500">
               {isEmptyCatalog
                 ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر."
                 : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}
@@ -314,7 +358,7 @@ export function StorefrontCatalogSurface({
               <button
                 type="button"
                 onClick={clearCatalogFilters}
-                className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white"
+                className="mt-4 rounded-xl bg-[#1d1d1f] px-5 py-2.5 text-xs font-black text-white transition hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
               >
                 مسح البحث والفلاتر
               </button>
@@ -347,12 +391,12 @@ export function StorefrontCatalogSurface({
             aria-live="polite"
           >
             {catalogQ.isFetchingNextPage ? (
-              <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]">
+              <span className="flex items-center gap-2 text-xs font-bold text-[var(--store-brand)]">
                 <Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ
                 تحميل منتجات إضافية…
               </span>
             ) : (
-              <span className="text-[11px] font-bold text-[#8b9395]">
+              <span className="text-[11px] font-bold text-slate-400">
                 نحمّل المزيد تلقائياً عند الاقتراب
               </span>
             )}
@@ -370,7 +414,7 @@ export function StorefrontCatalogSurface({
               type="button"
               onClick={() => void catalogQ.fetchNextPage()}
               disabled={catalogQ.isFetchingNextPage}
-              className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50"
+              className="text-xs font-black text-[var(--store-brand)] underline disabled:opacity-50"
             >
               إعادة المحاولة
             </button>

@@ -171,9 +171,34 @@ export async function uploadStorefrontCustomizationAsset(
     .limit(1);
 
   if (!existingAsset) {
+    // تنظيف انتهازي خفيف للمرفقات المؤقتة المنتهية حتى لا تتراكم في القاعدة والمخزن أو تحسب ضمن النافذة.
+    const expiredRows = await db
+      .select({ id: storefrontCustomizationAssets.id, assetKey: storefrontCustomizationAssets.assetKey })
+      .from(storefrontCustomizationAssets)
+      .where(
+        and(
+          isNotNull(storefrontCustomizationAssets.expiresAt),
+          sql`${storefrontCustomizationAssets.expiresAt} < NOW()`,
+        ),
+      )
+      .limit(8);
+    if (expiredRows.length > 0) {
+      await Promise.allSettled(
+        expiredRows.map((row) => getImageStore().delete(row.assetKey)),
+      );
+      await db
+        .delete(storefrontCustomizationAssets)
+        .where(
+          sql`${storefrontCustomizationAssets.id} IN (${sql.join(
+            expiredRows.map((r) => sql`${r.id}`),
+            sql`, `,
+          )})`,
+        );
+    }
+
     const orphanWindowMax = Number(
       process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX ??
-        DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX,
+        Math.max(DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX, 300),
     );
     if (Number.isFinite(orphanWindowMax) && orphanWindowMax > 0) {
       const [recentOrphans] = await db
@@ -182,6 +207,7 @@ export async function uploadStorefrontCustomizationAsset(
         .where(
           and(
             isNotNull(storefrontCustomizationAssets.expiresAt),
+            sql`${storefrontCustomizationAssets.expiresAt} >= NOW()`,
             sql`${storefrontCustomizationAssets.createdAt} >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)`,
           ),
         );

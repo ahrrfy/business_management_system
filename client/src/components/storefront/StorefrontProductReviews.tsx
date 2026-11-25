@@ -126,7 +126,7 @@ export function StorefrontProductReviews({
       {/* الترويسة الرئيسية للمراجعات مع زر إضافة التقييم */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-3 dark:border-slate-800">
         <div className="flex items-center gap-2">
-          <div className="flex size-7 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:bg-amber-400/20 dark:text-amber-400">
+          <div className="flex size-7 items-center justify-center rounded-lg bg-[#eff6ff] text-[var(--store-brand)] dark:bg-blue-950/50 dark:text-blue-400">
             <Star aria-hidden className="size-4 fill-current" />
           </div>
           <div>
@@ -138,7 +138,7 @@ export function StorefrontProductReviews({
         <div className="flex items-center gap-2">
           {summary.count > 0 ? (
             <div className="flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200/80 dark:bg-slate-800 dark:ring-slate-700">
-              <span className="font-mono text-xs font-black text-amber-600 dark:text-amber-400">
+              <span className="font-mono text-xs font-black text-[var(--store-ink)] dark:text-white">
                 {summary.average.toFixed(1)}
               </span>
               <div className="flex items-center gap-0.5" aria-label={`متوسط التقييم ${summary.average.toFixed(1)} من 5`}>
@@ -171,7 +171,7 @@ export function StorefrontProductReviews({
               setSubmittedMessage(null);
               setFormError(null);
             }}
-            className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 text-[11px] font-black text-white shadow-xs transition hover:bg-amber-600 active:scale-95"
+            className="inline-flex items-center gap-1 rounded-xl bg-[#1d1d1f] px-3 py-1.5 text-[11px] font-black text-white shadow-xs transition hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-[#1d1d1f]"
             aria-expanded={showForm}
           >
             {showForm ? (
@@ -188,18 +188,18 @@ export function StorefrontProductReviews({
 
       {/* إشعار النجاح بعد إرسال التقييم */}
       {submittedMessage && (
-        <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-300" role="status">
-          <CheckCircle2 aria-hidden className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+        <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-[#f5f5f7] p-3 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200" role="status">
+          <CheckCircle2 aria-hidden className="size-4 shrink-0 text-[var(--store-brand)] mt-0.5" />
           <div className="flex-1 font-bold leading-relaxed">{submittedMessage}</div>
         </div>
       )}
 
       {/* نموذج كتابة وإرسال التقييم التفاعلي */}
       {showForm && (
-        <form onSubmit={handleSubmit} className="mt-3 rounded-xl border border-amber-200/80 bg-white p-3.5 shadow-xs dark:border-slate-700 dark:bg-slate-800/90">
+        <form onSubmit={handleSubmit} className="mt-3 rounded-xl border border-slate-200/90 bg-white p-3.5 shadow-xs dark:border-slate-700 dark:bg-slate-800/90">
           <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 dark:border-slate-700">
             <span className="text-xs font-black text-slate-800 dark:text-slate-100">اكتب تقييمك للمنتج</span>
-            <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+            <span className="text-[11px] font-bold text-[var(--store-brand)]">
               {RATING_DESCRIPTIONS[effectiveRating] ?? ""}
             </span>
           </div>
@@ -244,7 +244,7 @@ export function StorefrontProductReviews({
                 placeholder="اسمك أو اسم مستعار"
                 maxLength={80}
                 required
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-[var(--store-brand)] focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
             </div>
             <div>
@@ -254,11 +254,12 @@ export function StorefrontProductReviews({
               <input
                 id="rev-phone"
                 type="tel"
+                dir="ltr"
                 value={reviewerPhone}
                 onChange={(e) => setReviewerPhone(e.target.value)}
-                placeholder="+964 7... للتحقق"
+                placeholder="+964 7..."
                 maxLength={32}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-left text-xs font-semibold text-slate-800 outline-none transition focus:border-[var(--store-brand)] focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
             </div>
             <div>
@@ -268,11 +269,12 @@ export function StorefrontProductReviews({
               <input
                 id="rev-order"
                 type="text"
+                dir="ltr"
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
                 placeholder="ORD-..."
                 maxLength={40}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-left text-xs font-semibold text-slate-800 outline-none transition focus:border-[var(--store-brand)] focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
             </div>
           </div>
@@ -299,7 +301,7 @@ export function StorefrontProductReviews({
               placeholder="اكتب تجربتك وملاحظاتك حول جودة المنتج، دقة الوصف، سرعة التوصيل، والتغليف..."
               maxLength={1000}
               required
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 p-2.5 text-xs font-semibold leading-relaxed text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 p-2.5 text-xs font-semibold leading-relaxed text-slate-800 outline-none transition focus:border-[var(--store-brand)] focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
             />
           </div>
 
@@ -332,7 +334,7 @@ export function StorefrontProductReviews({
             <button
               type="submit"
               disabled={submitReviewM.isPending}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-1.5 text-xs font-black text-white shadow-sm transition hover:bg-amber-600 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--store-brand)] px-4 py-1.5 text-xs font-black text-white shadow-xs transition hover:bg-[var(--store-brand-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Send aria-hidden className="size-3" />
               <span>{submitReviewM.isPending ? "جارٍ إرسال التقييم…" : "إرسال التقييم"}</span>
@@ -346,7 +348,7 @@ export function StorefrontProductReviews({
         <div className="py-4 text-center text-xs text-slate-400 font-medium">جارٍ تحميل التقييمات…</div>
       ) : items.length === 0 ? (
         <div className="py-5 text-center">
-          <div className="mx-auto flex size-9 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400">
+          <div className="mx-auto flex size-9 items-center justify-center rounded-full bg-[#eff6ff] text-[var(--store-brand)] dark:bg-blue-950/50 dark:text-blue-400">
             <ThumbsUp aria-hidden className="size-4" />
           </div>
           <p className="mt-2 text-xs font-bold text-slate-700 dark:text-slate-300">كن أول من يشارك تجربته مع هذا المنتج!</p>
@@ -357,9 +359,9 @@ export function StorefrontProductReviews({
             <button
               type="button"
               onClick={() => setShowForm(true)}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-50 px-3.5 py-1.5 text-xs font-black text-amber-800 shadow-xs transition hover:bg-amber-100 active:scale-95 dark:border-amber-400/30 dark:bg-amber-950/30 dark:text-amber-300"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-xs font-bold text-[#1d1d1f] shadow-2xs transition hover:bg-slate-50 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             >
-              <Star aria-hidden className="size-3.5 fill-current text-amber-500" />
+              <Star aria-hidden className="size-3.5 fill-amber-400 text-amber-400" />
               <span>أضف أول تقييم للمنتج</span>
             </button>
           )}
@@ -387,7 +389,7 @@ export function StorefrontProductReviews({
                     {rev.reviewerName ?? "مشتري موثّق"}
                   </span>
                   {rev.isVerifiedPurchase ? (
-                    <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100/80 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-[#eff6ff] px-1.5 py-0.5 text-[9px] font-bold text-[var(--store-brand)] dark:bg-blue-950/50 dark:text-blue-300">
                       <ShieldCheck aria-hidden className="size-2.5" />
                       <span>شراء موثّق</span>
                     </span>

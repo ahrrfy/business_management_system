@@ -10,7 +10,7 @@
  *    مستوحاة من ZATCA (Saudi e-invoice) TLV وEU e-invoicing compact format.
  */
 
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import Decimal from "decimal.js";
 import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 import { money, round2 } from "./money";
@@ -66,8 +66,11 @@ export function onlineOrderLabelToken(orderNumber: string): string {
 }
 
 export function verifyOnlineOrderLabelToken(orderNumber: string, token: string): boolean {
-  if (!orderNumber.trim() || !/^[a-f0-9]{12}$/i.test(token.trim())) return false;
-  return onlineOrderLabelToken(orderNumber) === token.trim().toLowerCase();
+  const cleanToken = token.trim().toLowerCase();
+  if (!orderNumber.trim() || !/^[a-f0-9]{12}$/.test(cleanToken)) return false;
+  const expected = Buffer.from(onlineOrderLabelToken(orderNumber), "utf8");
+  const provided = Buffer.from(cleanToken, "utf8");
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
 }
 
 /**

@@ -33,6 +33,7 @@ const HEAVY_PATHS = new Set([
   "storefront.related",
   "storefront.cartRecommendations",
   "storefront.shelfLookup",
+  "storefront.labelSummary",
   "storefront.thematicCollections",
   "storefront.createWishlistShare",
   "storefront.getWishlistShare",
@@ -48,6 +49,7 @@ const FOUR_WAY_PATHS = new Set([
   "storefront.createWishlistShare",
   "storefront.getWishlistShare",
   "storefront.getCartShare",
+  "storefront.resolveLocationUrl",
 ]);
 export function publicBatchCost(
   procedures: readonly string[],

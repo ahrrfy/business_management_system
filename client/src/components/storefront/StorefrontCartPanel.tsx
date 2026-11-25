@@ -111,7 +111,7 @@ export function StorefrontCartPanel({
                       </p>
                     )}
                     <div className="mt-1 flex items-center justify-between sm:justify-start sm:gap-3">
-                      <p className="text-sm font-extrabold text-emerald-600 whitespace-nowrap dark:text-emerald-400">
+                      <p className="text-sm font-extrabold text-[var(--store-brand)] whitespace-nowrap">
                         {money(l.price)} د.ع
                       </p>
                       <p className="text-[11px] sm:text-xs font-bold text-[#59636a] whitespace-nowrap">
@@ -140,7 +140,7 @@ export function StorefrontCartPanel({
                       onClick={() => setQty(l.cartKey, l.qty + 1)}
                       disabled={l.stockLimit != null && l.qty >= l.stockLimit}
                       aria-label={`زيادة كمية ${l.name}`}
-                      className="flex size-11 items-center justify-center rounded-full bg-emerald-700 text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                      className="flex size-11 items-center justify-center rounded-full bg-[#1d1d1f] text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 dark:bg-white dark:text-[#1d1d1f]"
                     >
                       <Plus aria-hidden className="size-3.5" />
                     </button>
@@ -159,10 +159,10 @@ export function StorefrontCartPanel({
             ))}
           </div>
           {cartRecommendations && cartRecommendations.length > 0 && (
-            <div className="mt-5 rounded-2xl border border-amber-200/70 bg-amber-50/60 p-3.5 dark:border-slate-800 dark:bg-slate-900/60">
+            <div className="mt-5 rounded-xl border border-slate-900/[0.08] bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900/60">
               <CuratedRow
                 title="أكمل تجهيزك"
-                icon={<Tag aria-hidden className="size-4 text-orange-600" />}
+                icon={<Tag aria-hidden className="size-4 text-[var(--store-brand)]" />}
                 products={cartRecommendations}
                 onSelect={setSelectedId}
                 onAdd={addFeaturedToCart}
@@ -192,7 +192,7 @@ export function StorefrontCartPanel({
                 setShowWishlist(false);
                 scrollToResults();
               }}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1e4a63]/30 bg-[#f5f8fa] py-3 text-xs font-black text-[#1e4a63] transition hover:bg-[#eaf1f4]"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-[#f5f5f7] py-3 text-xs font-bold text-slate-800 transition hover:bg-slate-200/70 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             >
               <Plus aria-hidden className="size-4" /> أضف المزيد
             </button>
@@ -205,12 +205,12 @@ export function StorefrontCartPanel({
                   ? "رابط السلة لا ينقل تفاصيل التخصيص"
                   : undefined
               }
-              className={`store-action-button flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7] disabled:cursor-not-allowed disabled:opacity-50 ${sharePulseTarget === "cart" ? "store-action-button--active" : ""}`}
+              className={`store-action-button flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white py-3 text-xs font-bold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 ${sharePulseTarget === "cart" ? "store-action-button--active" : ""}`}
             >
               <Share2
                 key={`share-cart-${sharePulseNonce}`}
                 aria-hidden
-                className={`size-4 ${sharePulseTarget === "cart" ? "animate__animated animate__pulse animate__faster" : ""}`}
+                className="size-4"
               />{" "}
               مشاركة السلة
             </button>
@@ -218,7 +218,7 @@ export function StorefrontCartPanel({
           <button
             onClick={openCheckout}
             disabled={!storeOpen || !orderingEnabled}
-            className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+            className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--store-brand)] py-4 text-sm font-extrabold text-white shadow-xs transition motion-safe:active:scale-[0.98] hover:bg-[var(--store-brand-strong)] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
           >
             {storeOpen && orderingEnabled ? (
               <>
@@ -252,9 +252,9 @@ export function StorefrontCartPanel({
                   ),
                 )
               }
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500 bg-emerald-50 py-3 text-sm font-bold text-emerald-700 transition motion-safe:active:scale-[0.98] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-3 text-sm font-bold text-slate-800 transition motion-safe:active:scale-[0.98] hover:border-emerald-500 hover:bg-emerald-50/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
             >
-              <MessageCircle aria-hidden className="size-4" /> أو أرسل سلّتك عبر
+              <MessageCircle aria-hidden className="size-4 text-emerald-500" /> أو أرسل سلّتك عبر
               واتساب
             </button>
           )}

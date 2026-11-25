@@ -599,3 +599,44 @@ export function accessLabel(a: AccessLevel): string {
 
 /** قائمة الأدوار المصرَّح بها (للتحقق في الخادم). */
 export const ALL_ROLES: RoleKey[] = ROLES.map((r) => r.key);
+
+/** هل المستخدم ينتمي حصرياً لدور الاستقبال أو خدمة الزبائن لتلقي وطباعة قصاصات تنبيه طلبات المتجر؟ */
+export function isStoreOrderAlertRecipientUser(
+  user:
+    | {
+        role?: string | null;
+        isOwner?: boolean;
+        roleLockedByInactiveCustomRole?: boolean;
+        customRoleKey?: string | null;
+        customRoleLabel?: string | null;
+        permissionsOverride?: unknown;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!user || user.roleLockedByInactiveCustomRole || user.isOwner) return false;
+  if (user.role === "admin" || user.role === "manager") return false;
+  const key = (user.customRoleKey ?? "").trim().toLowerCase();
+  const label = (user.customRoleLabel ?? "").trim();
+  if (
+    key === "reception_clerk" ||
+    key === "customer_service" ||
+    label.includes("استقبال") ||
+    label.includes("خدمة الزبائن") ||
+    label.includes("خدمة العملاء")
+  ) {
+    return true;
+  }
+  if (!user.role) return false;
+  const override =
+    user.permissionsOverride && typeof user.permissionsOverride === "object"
+      ? (user.permissionsOverride as PermissionMap)
+      : null;
+  const perms = resolvePermissions(user.role as RoleKey, override);
+  return (
+    perms.workorders === "FULL" &&
+    perms.store !== "NONE" &&
+    perms.pos === "NONE" &&
+    perms.sales !== "FULL"
+  );
+}

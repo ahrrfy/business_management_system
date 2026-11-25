@@ -382,10 +382,10 @@ export async function verifyStorefrontCustomerSession(token: string): Promise<{ 
       .where(eq(customers.id, decodedClaims.customerId))
       .limit(1);
     if (
-      customer &&
-      (customer.isActive === false ||
-        customer.deletedAt != null ||
-        Number(customer.sessionVersion ?? 0) !== decodedClaims.tokenSv)
+      !customer ||
+      customer.isActive === false ||
+      customer.deletedAt != null ||
+      Number(customer.sessionVersion ?? 0) !== decodedClaims.tokenSv
     ) {
       throw new TRPCError({
         code: "UNAUTHORIZED",

@@ -687,9 +687,31 @@ async function startServer() {
       limit: Number(process.env.STOREFRONT_TRACK_RATE_LIMIT_MAX ?? 20),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      skip: (req) => !req.path.includes("storefront.trackOrder"),
+      skip: (req) =>
+        !req.path.includes("storefront.trackOrder") &&
+        !req.path.includes("storefront.labelSummary"),
       handler: rateLimitHandler(
         "محاولات تتبّع كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
+  );
+
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_SENSITIVE_ACTION_RATE_LIMIT_MAX ?? 20),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) =>
+        !req.path.includes("storefront.submitPublicProductReview") &&
+        !req.path.includes("storefront.submitProductReview") &&
+        !req.path.includes("storefront.resolveLocationUrl") &&
+        !req.path.includes("storefront.claimFirebaseCustomer") &&
+        !req.path.includes("storefront.redeemLoyaltyPoints") &&
+        !req.path.includes("storefront.requestFirstOrderCoupon"),
+      handler: rateLimitHandler(
+        "طلبات حسّاسة كثيرة خلال فترة قصيرة، انتظر قليلاً ثم أعد المحاولة.",
       ),
     }),
   );

@@ -28,7 +28,12 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.cancelOrderByToken",
   // كتابات/قراءات عامة تُضخَّم ×20 بالدفعة: كل نداء قد يكتب صفاً أو يكشف سعراً ومخزوناً.
   "storefront.shelfLookup",
+  "storefront.labelSummary",
+  "storefront.resolveLocationUrl",
+  "storefront.trackRecommendationClick",
+  "storefront.trackPushInteraction",
   "storefront.claimFirebaseCustomer",
+  "storefront.submitProductReview",
   "storefront.submitPublicProductReview",
   "storefront.createWishlistShare",
   "storefront.createCartShare",

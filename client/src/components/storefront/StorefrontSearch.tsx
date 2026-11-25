@@ -88,7 +88,7 @@ export function StorefrontSearch({
       options.push({
         key: `product-${product.productId}`,
         label: product.productName,
-        detail: `${(product.salePrice ?? product.price) ? `${fmtInt(product.salePrice ?? product.price!)} د.ع` : "اسأل الموظّف"} · ${product.inStock ? "متوفر" : "غير متوفر"}`,
+        detail: `${(product.salePrice ?? product.price) ? `${fmtInt(product.salePrice ?? product.price!)} د.ع` : "تواصل معنا للسعر"} · ${product.inStock ? "متوفر" : "غير متوفر"}`,
         group: "منتجات مطابقة",
         run: () => chooseProduct(product.productId),
       }),

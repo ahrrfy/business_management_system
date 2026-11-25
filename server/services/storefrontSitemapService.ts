@@ -101,17 +101,19 @@ export async function generateStorefrontSitemapXml(customOrigin?: string): Promi
     <priority>1.0</priority>
     <image:image>
       <image:loc>${escapeXml(`${baseOrigin}/icon-512.png`)}</image:loc>
-      <image:title>المكتبة العربية للقرطاسية والطباعة في العراق</image:title>
-      <image:caption>المتجر الإلكتروني الرسمي للمكتبة العربية في العراق</image:caption>
+      <image:title>متجر المكتبة العربية — متجر مكتبة العربية للقرطاسية والطباعة في العراق</image:title>
+      <image:caption>المتجر الإلكتروني الرسمي للمكتبة العربية (متجر مكتبه العربية) في العراق</image:caption>
     </image:image>
   </url>`);
 
-    // 2. التقديم على الوظائف
-    urls.push(`  <url>
-    <loc>${escapeXml(`${baseOrigin}/apply`)}</loc>
+    // 2. التقديم على الوظائف والصفحات القانونية العامة
+    for (const staticPath of ["/apply", "/legal/privacy", "/legal/terms", "/legal/returns"]) {
+      urls.push(`  <url>
+    <loc>${escapeXml(`${baseOrigin}${staticPath}`)}</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>`);
+    }
 
     // 3. تصنيفات المتجر
     for (const cat of catRows) {
@@ -175,9 +177,29 @@ function buildFallbackSitemap(baseOrigin: string): string {
     <loc>${escapeXml(`${baseOrigin}/store`)}</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
+    <image:image>
+      <image:loc>${escapeXml(`${baseOrigin}/icon-512.png`)}</image:loc>
+      <image:title>متجر المكتبة العربية — متجر مكتبة العربية للقرطاسية والطباعة في العراق</image:title>
+      <image:caption>المتجر الإلكتروني الرسمي للمكتبة العربية (متجر مكتبه العربية) في العراق</image:caption>
+    </image:image>
   </url>
   <url>
     <loc>${escapeXml(`${baseOrigin}/apply`)}</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>${escapeXml(`${baseOrigin}/legal/privacy`)}</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>${escapeXml(`${baseOrigin}/legal/terms`)}</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>${escapeXml(`${baseOrigin}/legal/returns`)}</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>

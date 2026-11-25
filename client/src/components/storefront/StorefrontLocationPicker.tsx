@@ -241,11 +241,11 @@ export function StorefrontLocationPicker({
     <div className="rounded-2xl border border-slate-200 bg-[#fbfdfc] p-3 text-xs dark:border-slate-800 dark:bg-slate-900/50">
       <div className="mb-2 flex items-center justify-between">
         <span className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-slate-200">
-          <MapPin className="size-4 text-emerald-600" />
+          <MapPin className="size-4 text-[var(--store-brand)]" />
           موقع التوصيل على الخريطة
         </span>
         {hasCoordinates && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+          <span className="inline-flex items-center gap-1 rounded-full bg-[#eff6ff] px-2 py-0.5 text-[11px] font-bold text-[var(--store-brand)] dark:bg-blue-950 dark:text-blue-300">
             <Check className="size-3" />
             محدد بدقة
           </span>
@@ -253,9 +253,9 @@ export function StorefrontLocationPicker({
       </div>
 
       {hasCoordinates ? (
-        <div className="space-y-2 rounded-xl border border-emerald-300 bg-emerald-50/80 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/40">
+        <div className="space-y-2 rounded-xl border border-slate-200 bg-[#f5f5f7] p-2.5 dark:border-slate-700 dark:bg-slate-800">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-emerald-900 dark:text-emerald-200" dir="ltr">
+            <span className="font-bold text-slate-800 dark:text-slate-200" dir="ltr">
               GPS: {latitude}, {longitude}
             </span>
             <button
@@ -266,7 +266,7 @@ export function StorefrontLocationPicker({
                 setLocationFeedback(null);
               }}
               disabled={disabled}
-              className="font-bold text-red-600 hover:underline disabled:opacity-50"
+              className="font-bold text-rose-600 hover:underline disabled:opacity-50"
             >
               إلغاء الموقع
             </button>
@@ -277,7 +277,7 @@ export function StorefrontLocationPicker({
                 href={previewUrl}
                 target="_blank"
                 rel="noreferrer"
-                className={`font-bold text-emerald-700 underline dark:text-emerald-400 ${disabled ? "pointer-events-none opacity-50" : ""}`}
+                className={`font-bold text-[var(--store-brand)] underline ${disabled ? "pointer-events-none opacity-50" : ""}`}
               >
                 معاينة على خرائط Google
               </a>
@@ -302,7 +302,7 @@ export function StorefrontLocationPicker({
               type="button"
               onClick={handleGetGpsLocation}
               disabled={locating || disabled}
-              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl bg-[#1d1d1f] px-3.5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800 disabled:opacity-50 dark:bg-white dark:text-[#1d1d1f]"
             >
               {locating ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />}
               <span>{locating ? "جارٍ تحديد موقعك…" : "موقعي الحالي (GPS)"}</span>
@@ -330,19 +330,29 @@ export function StorefrontLocationPicker({
       )}
 
       {showMapModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl">
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4"
+          dir="rtl"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="store-location-modal-title"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setShowMapModal(false);
+          }}
+        >
           <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
             <div className="flex items-center justify-between border-b pb-3 dark:border-slate-800">
-              <h3 className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-slate-100">
-                <MapPin className="size-4 text-emerald-600" />
+              <h3 id="store-location-modal-title" className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-slate-100">
+                <MapPin className="size-4 text-[var(--store-brand)]" />
                 تحديد موقع التوصيل على الخريطة
               </h3>
               <button
                 type="button"
+                aria-label="إغلاق نافذة الخريطة"
                 onClick={() => setShowMapModal(false)}
                 className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
-                <X className="size-4" />
+                <X aria-hidden className="size-4" />
               </button>
             </div>
 
@@ -357,7 +367,7 @@ export function StorefrontLocationPicker({
                     className="h-56 w-full overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700"
                   />
                   {draftPin && (
-                    <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400" dir="ltr">
+                    <p className="text-[11px] font-bold text-[var(--store-brand)]" dir="ltr">
                       الدبوس المحدد: {draftPin.lat}, {draftPin.lng}
                     </p>
                   )}
@@ -373,11 +383,11 @@ export function StorefrontLocationPicker({
                 onChange={(e) => setManualMapUrl(e.target.value)}
                 placeholder="مثال: https://maps.app.goo.gl/... أو 33.315241, 44.366067"
                 dir="ltr"
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs outline-none focus:border-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
 
               {locationFeedback && (
-                <p className="rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                <p className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
                   {locationFeedback}
                 </p>
               )}
@@ -394,7 +404,7 @@ export function StorefrontLocationPicker({
                   type="button"
                   onClick={() => void handleApplyManualLocation()}
                   disabled={resolveUrlM.isPending || (!manualMapUrl.trim() && !draftPin)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--store-brand)] px-4 py-1.5 text-xs font-bold text-white transition hover:bg-[var(--store-brand-strong)] disabled:opacity-50"
                 >
                   {resolveUrlM.isPending && <Loader2 className="size-3.5 animate-spin" />}
                   <span>{resolveUrlM.isPending ? "جارٍ فك الرابط…" : "تثبيت الموقع"}</span>

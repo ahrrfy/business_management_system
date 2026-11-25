@@ -2661,4 +2661,89 @@ export async function autoAssignRoundRobinOnlineOrders(
   });
 }
 
+/**
+ * قفل طباعة ذرّي لمرة واحدة لقصاصة تنبيه وصول طلب المتجر (10 سم).
+ * يعيد claimed=true لمحطة الاستقبال/خدمة الزبائن الأولى فقط حتى لا تتكرر القصاصة.
+ */
+export async function claimOnlineOrderAlertPrint(input: {
+  id: number;
+  scopedBranchId: number | null;
+}): Promise<{
+  claimed: boolean;
+  orderNumber: string | null;
+  total: string | null;
+  itemCount: number;
+  createdAt: Date | null;
+}> {
+  const db = getDb();
+  if (!db) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير متاحة.",
+    });
+  }
+  const conds = [
+    eq(onlineOrders.id, input.id),
+    isNull(onlineOrders.alertPrintedAt),
+  ];
+  if (input.scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  const res = await db
+    .update(onlineOrders)
+    .set({ alertPrintedAt: sql`CURRENT_TIMESTAMP(3)` })
+    .where(and(...conds));
+  const affectedRows = Number(
+    (res as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+      (res as unknown as { affectedRows?: number })?.affectedRows ??
+      0,
+  );
+  if (affectedRows !== 1) {
+    return {
+      claimed: false,
+      orderNumber: null,
+      total: null,
+      itemCount: 0,
+      createdAt: null,
+    };
+  }
+  const row = (
+    await db
+      .select({
+        orderNumber: onlineOrders.orderNumber,
+        total: onlineOrders.total,
+        createdAt: onlineOrders.createdAt,
+        itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
+      })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.id, input.id))
+      .limit(1)
+  )[0];
+  return {
+    claimed: true,
+    orderNumber: row?.orderNumber ?? null,
+    total: row?.total != null ? String(row.total) : null,
+    itemCount: Number(row?.itemCount ?? 0),
+    createdAt: row?.createdAt ? new Date(row.createdAt) : null,
+  };
+}
+
+/** يحرر قفل الطباعة فقط إذا تعذّرت الطابعة فيزيائياً بعد المطالبة. */
+export async function releaseOnlineOrderAlertPrint(input: {
+  id: number;
+  scopedBranchId: number | null;
+}): Promise<{ released: boolean }> {
+  const db = getDb();
+  if (!db) return { released: false };
+  const conds = [eq(onlineOrders.id, input.id)];
+  if (input.scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+  }
+  await db
+    .update(onlineOrders)
+    .set({ alertPrintedAt: null })
+    .where(and(...conds));
+  return { released: true };
+}
+
 

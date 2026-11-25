@@ -514,7 +514,15 @@ export const storefrontRouter = router({
         couponCode: z.string().trim().max(64).nullish(),
         customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
         customerName: z.string().trim().min(1).max(255),
-        customerPhone: z.string().trim().min(5).max(20),
+        customerPhone: z
+          .string()
+          .trim()
+          .min(7)
+          .max(20)
+          .refine((val) => {
+            const digits = val.replace(/\D/g, "");
+            return digits.length >= 7 && digits.length <= 15;
+          }, "رقم الهاتف غير صالح"),
         governorate: z.string().trim().min(1).max(40),
         addressText: z.string().trim().min(3).max(1000),
         latitude: z.number().min(-90).max(90).nullish(),
@@ -567,7 +575,15 @@ export const storefrontRouter = router({
       z.object({
         customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
         customerName: z.string().trim().min(1).max(255),
-        customerPhone: z.string().trim().min(5).max(20),
+        customerPhone: z
+          .string()
+          .trim()
+          .min(7)
+          .max(20)
+          .refine((val) => {
+            const digits = val.replace(/\D/g, "");
+            return digits.length >= 7 && digits.length <= 15;
+          }, "رقم الهاتف غير صالح"),
         companyName: z.string().trim().max(255).nullish(),
         governorate: z.string().trim().max(40).nullish(),
         contactPreference: z.enum(["PHONE", "WHATSAPP"]),

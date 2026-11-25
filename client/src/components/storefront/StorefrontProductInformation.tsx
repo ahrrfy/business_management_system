@@ -1,16 +1,18 @@
 import React from "react";
 import { money, priceLabel } from "@/components/storefront/storefrontCartMath";
 import { CustomizationFieldControl } from "@/components/storefront/storefrontCustomizationModel";
-import {
-  StorefrontCustomizerStudio,
-  type StorefrontCustomizerStudioHandle,
-} from "@/components/storefront/StorefrontCustomizerStudio";
+import type { StorefrontCustomizerStudioHandle } from "@/components/storefront/StorefrontCustomizerStudio";
 import { type CustomizationStudioUploadState } from "@/components/storefront/storefrontCustomizationUpload";
-import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { formatQuantity } from "@/lib/money";
 import { ArrowRight, Flame, Star, Store, Tag } from "lucide-react";
 import type { StorefrontProductDialogProps } from "./StorefrontProductDialog";
 import { StorefrontVariantChoices } from "./StorefrontVariantChoices";
+
+const StorefrontCustomizerStudio = React.lazy(() =>
+  import("@/components/storefront/StorefrontCustomizerStudio").then((m) => ({
+    default: m.StorefrontCustomizerStudio,
+  })),
+);
 type Props = Pick<
   StorefrontProductDialogProps,
   | "setProductReviewOpenRequest"
@@ -80,23 +82,28 @@ export function StorefrontProductInformation({
                 key={s}
                 aria-hidden
                 className={`size-3.5 ${
-                  s <= Math.round(Number(product?.ratingAverage ?? 5))
+                  product?.reviewsCount &&
+                  s <= Math.round(Number(product?.ratingAverage ?? 0))
                     ? "fill-current text-amber-400"
                     : "text-slate-300 dark:text-slate-600"
                 }`}
               />
             ))}
           </div>
-          <span className="font-mono text-xs font-black text-slate-800 dark:text-slate-100">
-            {product?.ratingAverage
-              ? Number(product.ratingAverage).toFixed(1)
-              : "5.0"}
-          </span>
-          <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-            {product?.reviewsCount
-              ? `(${formatQuantity(product.reviewsCount)} تقييم معتمد)`
-              : "(كن أول من يقيّم المنتج)"}
-          </span>
+          {product?.reviewsCount ? (
+            <>
+              <span className="font-mono text-xs font-black text-slate-800 dark:text-slate-100">
+                {Number(product.ratingAverage ?? 0).toFixed(1)}
+              </span>
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                {`(${formatQuantity(product.reviewsCount)} تقييم معتمد)`}
+              </span>
+            </>
+          ) : (
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+              لا توجد تقييمات بعد — كن أول من يقيّم المنتج
+            </span>
+          )}
         </div>
 
         <button
@@ -110,25 +117,15 @@ export function StorefrontProductInformation({
               .getElementById("storefront-product-reviews")
               ?.scrollIntoView({ behavior: "smooth" });
           }}
-          className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-black text-white shadow-xs transition hover:bg-amber-600 active:scale-95"
+          className="inline-flex items-center gap-1 rounded-lg bg-[#1d1d1f] px-2.5 py-1 text-[11px] font-black text-white shadow-xs transition hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-[#1d1d1f]"
         >
           <Star aria-hidden className="size-3 fill-current" />
           <span>اكتب تقييمك</span>
         </button>
       </div>
 
-      {/* وسوم السمات الإرشادية السريعة (Category Heuristics Badges) */}
-      <StorefrontHeuristicsBadges
-        productName={product.productName}
-        category={product.category}
-        description={product.description}
-        isCustomizable={product.isCustomizable}
-        isBundle={product.isBundle}
-        limit={3}
-        className="mt-2.5"
-      />
       {product.description && (
-        <p className="mt-2 whitespace-pre-line text-xs leading-6 text-slate-600 dark:text-slate-300">
+        <p className="mt-3 whitespace-pre-line text-xs leading-6 text-slate-600 dark:text-slate-300">
           {product.description}
         </p>
       )}
@@ -142,7 +139,7 @@ export function StorefrontProductInformation({
             setSelectedId(null);
             selectCategory(product!.categoryId!);
           }}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#c5e8dc] bg-[#e9f7f2] px-3 py-1.5 text-[11px] font-black text-[#276c5d] transition hover:border-[#1e4a63] hover:bg-[#d9f1e8]"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-[#f5f5f7] px-3 py-1.5 text-[11px] font-bold text-slate-800 transition hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
           aria-label={`تصفح منتجات فئة ${product.category}`}
         >
           <Store aria-hidden className="size-3.5" /> تصفح منتجات «
@@ -171,20 +168,20 @@ export function StorefrontProductInformation({
         </div>
       ) : customizationConfig ? (
         <section
-          className="mt-3 rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3"
+          className="mt-3 rounded-2xl border border-slate-200/90 bg-[#f5f5f7] p-3.5 dark:border-slate-800 dark:bg-slate-900/70"
           aria-label="خيارات تخصيص المنتج"
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-black text-[#25406f]">
+              <p className="text-xs font-bold text-slate-900 dark:text-white">
                 {customizationConfig.title}
               </p>
-              <p className="mt-1 text-[11px] leading-relaxed text-[#806b3a]">
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
                 {customizationConfig.description ??
                   "أكمل الحقول المطلوبة قبل إضافة المنتج للسلة."}
               </p>
             </div>
-            <Tag aria-hidden className="size-4 shrink-0 text-[#d39c27]" />
+            <Tag aria-hidden className="size-4 shrink-0 text-[var(--store-brand)]" />
           </div>
           <div className="mt-3 space-y-2.5">
             {visibleCustomizationFields.map((field) => {
@@ -203,7 +200,7 @@ export function StorefrontProductInformation({
               return (
                 <div
                   key={field.id}
-                  className="block text-xs font-black text-[#25406f]"
+                  className="block text-xs font-bold text-slate-900 dark:text-slate-100"
                 >
                   <label
                     id={labelId}
@@ -254,7 +251,7 @@ export function StorefrontProductInformation({
                   {field.fieldType === "FILE" && (
                     <span
                       id={hintId}
-                      className="mt-1 block text-xs font-medium text-[#6c5a3f]"
+                      className="mt-1 block text-xs font-medium text-slate-500 dark:text-slate-400"
                     >
                       ارفع الشعار من استوديو المعاينة الحية أدناه ليُحفظ مع الطلب أو اكتب مرجع التصميم.
                     </span>
@@ -276,58 +273,66 @@ export function StorefrontProductInformation({
       ) : null}
 
       {product.isCustomizable && Boolean(customizationConfig) && (
-        <StorefrontCustomizerStudio
-          key={product.productId}
-          studioRef={studioRef}
-          productName={product.productName}
-          baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
-          onAssetsChange={(assets) => {
-            latestLogoAssetKeyRef.current = assets.logoAssetKey;
-            setCustomizationAssets?.(assets);
-            const fileField = visibleCustomizationFields.find(
-              (f) => f.fieldType === "FILE",
-            );
-            if (!fileField) return;
-            const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
-            if (assets.logoAssetKey && !currentFileVal) {
-              autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
-              updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
-            } else if (
-              !assets.logoAssetKey &&
-              currentFileVal &&
-              (currentFileVal === "شعار مرفوع مع الطلب" ||
-                currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
-                currentFileVal === autoFilledFileValueRef.current)
-            ) {
-              autoFilledFileValueRef.current = null;
-              updateCustomizationField(fileField, "");
-            }
-          }}
-          onUploadStateChange={setCustomizationUploadState}
-          onApplyCustomization={(customData) => {
-            latestLogoAssetKeyRef.current = customData.logoAssetKey;
-            setCustomizationAssets?.({
-              logoAssetKey: customData.logoAssetKey,
-              previewAssetKey: customData.previewAssetKey,
-            });
-            const primaryField = visibleCustomizationFields.find(
-              (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
-            );
-            if (primaryField && customData.customText) {
-              updateCustomizationField(primaryField, customData.customText);
-            }
-            const fileField = visibleCustomizationFields.find(
-              (f) => f.fieldType === "FILE",
-            );
-            if (fileField && customData.hasLogo) {
-              const nextFileLabel =
-                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
-              autoFilledFileValueRef.current = nextFileLabel;
-              updateCustomizationField(fileField, nextFileLabel);
-            }
-          }}
-          className="mt-4"
-        />
+        <React.Suspense
+          fallback={
+            <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-500 dark:bg-slate-800/60 dark:text-slate-300">
+              جارٍ تحميل أستوديو التخصيص…
+            </p>
+          }
+        >
+          <StorefrontCustomizerStudio
+            key={product.productId}
+            studioRef={studioRef}
+            productName={product.productName}
+            baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
+            onAssetsChange={(assets) => {
+              latestLogoAssetKeyRef.current = assets.logoAssetKey;
+              setCustomizationAssets?.(assets);
+              const fileField = visibleCustomizationFields.find(
+                (f) => f.fieldType === "FILE",
+              );
+              if (!fileField) return;
+              const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
+              if (assets.logoAssetKey && !currentFileVal) {
+                autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
+                updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
+              } else if (
+                !assets.logoAssetKey &&
+                currentFileVal &&
+                (currentFileVal === "شعار مرفوع مع الطلب" ||
+                  currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
+                  currentFileVal === autoFilledFileValueRef.current)
+              ) {
+                autoFilledFileValueRef.current = null;
+                updateCustomizationField(fileField, "");
+              }
+            }}
+            onUploadStateChange={setCustomizationUploadState}
+            onApplyCustomization={(customData) => {
+              latestLogoAssetKeyRef.current = customData.logoAssetKey;
+              setCustomizationAssets?.({
+                logoAssetKey: customData.logoAssetKey,
+                previewAssetKey: customData.previewAssetKey,
+              });
+              const primaryField = visibleCustomizationFields.find(
+                (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
+              );
+              if (primaryField && customData.customText) {
+                updateCustomizationField(primaryField, customData.customText);
+              }
+              const fileField = visibleCustomizationFields.find(
+                (f) => f.fieldType === "FILE",
+              );
+              if (fileField && customData.hasLogo) {
+                const nextFileLabel =
+                  customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
+                autoFilledFileValueRef.current = nextFileLabel;
+                updateCustomizationField(fileField, nextFileLabel);
+              }
+            }}
+            className="mt-4"
+          />
+        </React.Suspense>
       )}
       <div className="mt-3 flex items-baseline gap-2">
         <p className="text-xl font-extrabold text-money-positive">

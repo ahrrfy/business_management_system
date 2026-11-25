@@ -26,49 +26,37 @@ export function StorefrontShippingBar({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-3.5 shadow-sm transition-all duration-300 dark:border-slate-800 dark:bg-slate-900 ${className}`}
+      className={`rounded-xl border border-slate-900/[0.08] bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900 ${className}`}
       role="region"
       aria-label="شريط تقدم الشحن المجاني"
     >
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div
-            className={`flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors duration-300 ${
-              qualifies
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "bg-blue-600 text-white shadow-sm"
-            }`}
-          >
-            {qualifies ? (
-              <CheckCircle2 aria-hidden className="size-4 animate-in zoom-in duration-200" />
-            ) : (
-              <Truck aria-hidden className="size-4" />
-            )}
-          </div>
+          {qualifies ? (
+            <CheckCircle2 aria-hidden className="size-4 shrink-0 text-[var(--store-brand)]" />
+          ) : (
+            <Truck aria-hidden className="size-4 shrink-0 text-slate-500 dark:text-slate-400" />
+          )}
           <div className="text-right">
             {qualifies ? (
-              <p className="flex items-center gap-1.5 text-xs font-black text-emerald-700 dark:text-emerald-400">
-                <CheckCircle2 aria-hidden className="size-3.5 text-emerald-600" />
-                مبارك! طلبك مؤهل الآن للشحن المجاني بالكامل
+              <p className="text-xs font-semibold text-[var(--store-brand)]">
+                الطلب مؤهل الآن للشحن المجاني
               </p>
             ) : cartSubtotal === 0 ? (
-              <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                توصيل مجاني للطلبات بقيمة{" "}
-                <span className="font-black text-blue-700 dark:text-blue-400">
+              <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                شحن مجاني للطلبات من{" "}
+                <span className="font-bold text-slate-900 tabular-nums dark:text-white">
                   {fmtInt(freeShippingThreshold)} د.ع
                 </span>{" "}
                 أو أكثر
               </p>
             ) : (
-              <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
                 أضف{" "}
-                <span className="font-black text-orange-600 dark:text-orange-400">
+                <span className="font-bold text-slate-900 tabular-nums dark:text-white">
                   {fmtInt(remaining)} د.ع
                 </span>{" "}
-                فقط لتحصل على{" "}
-                <span className="font-black text-emerald-700 dark:text-emerald-400">
-                  توصيل مجاني
-                </span>
+                للحصول على شحن مجاني
               </p>
             )}
           </div>
@@ -78,29 +66,20 @@ export function StorefrontShippingBar({
           <button
             type="button"
             onClick={onOpenCart}
-            className="text-[11px] font-black text-blue-700 underline underline-offset-4 transition hover:text-orange-600 dark:text-blue-400 self-end sm:self-auto"
+            className="text-[11px] font-semibold text-[var(--store-brand)] hover:underline dark:text-blue-400"
           >
-            عرض السلة ({fmtInt(cartSubtotal)} د.ع)
+            عرض السلة
           </button>
         )}
       </div>
 
-      {/* شريط التقدم التفاعلي المتدرج */}
-      <div className="mt-2.5">
-        <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-700">
-          <div
-            className={`store-shimmer-bar h-full rounded-full transition-all duration-500 ease-out ${
-              qualifies
-                ? "bg-gradient-to-r from-emerald-500 to-teal-400"
-                : "bg-gradient-to-r from-blue-600 via-indigo-500 to-orange-500"
-            }`}
-            style={{ width: `${progressPercent}%` }}
-            role="progressbar"
-            aria-valuenow={progressPercent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          />
-        </div>
+      <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-[width,background-color] duration-300 ease-out ${
+            qualifies ? "bg-[#1d1d1f] dark:bg-white" : "bg-[var(--store-brand)]"
+          }`}
+          style={{ width: `${progressPercent}%` }}
+        />
       </div>
     </div>
   );

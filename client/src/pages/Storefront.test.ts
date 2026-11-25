@@ -48,6 +48,7 @@ import {
   storefrontMediaUrls,
   storefrontVariantMedia,
   clampStorefrontZoomPoint,
+  computeStorefrontZoomLensGeometry,
   getStorefrontSearchSuggestions,
   recommendationActionLabel,
   shouldAutoLoadStorefrontNextPage,
@@ -228,6 +229,39 @@ describe("storefront zoom lens", () => {
     const narrow = clampStorefrontZoomPoint({ x: 100, y: 0 }, 320, 480);
     expect(narrow.x).toBeCloseTo(60, 4);
     expect(narrow.y).toBeCloseTo(26.6667, 4);
+  });
+
+  it("reaches all 4 edges and corners of portrait object-contain images without circular clipping", () => {
+    // غلاف ملزمة طولي (3:4) داخل مربع 400×400: العرض الفعلي 300px مع هامش 50px يميناً ويساراً
+    const topRightCorner = computeStorefrontZoomLensGeometry({
+      cursorPx: { x: 350, y: 0 },
+      container: { width: 400, height: 400 },
+      natural: { width: 900, height: 1200 },
+    });
+    expect(topRightCorner.u).toBe(1);
+    expect(topRightCorner.v).toBe(0);
+    // تحافظ الصورة المكبّرة على نسبة 3:4 الحقيقية بلا مطّ مربّع
+    expect(topRightCorner.zoomedWidthPx / topRightCorner.zoomedHeightPx).toBeCloseTo(0.75, 4);
+    // تبقى حلقة العدسة داخل الإطار بهامش أمان كامل دون قصّ من overflow-hidden
+    const radius = topRightCorner.lensSizePx / 2;
+    expect(topRightCorner.lensTopPx - radius).toBeGreaterThanOrEqual(6);
+    expect(400 - (topRightCorner.lensLeftPx + radius)).toBeGreaterThanOrEqual(6);
+    // تقع الزاوية العليا اليمنى للغلاف داخل نصف قطر الدائرة فعلياً (لا تُقتطع بقوس rounded-full)
+    const cornerInLensX = topRightCorner.imageOffsetXPx + topRightCorner.zoomedWidthPx;
+    const cornerInLensY = topRightCorner.imageOffsetYPx;
+    const distFromCenter = Math.hypot(cornerInLensX - radius, cornerInLensY - radius);
+    expect(distFromCenter).toBeLessThan(radius - 20);
+
+    const bottomLeftCorner = computeStorefrontZoomLensGeometry({
+      cursorPx: { x: 50, y: 400 },
+      container: { width: 400, height: 400 },
+      natural: { width: 900, height: 1200 },
+    });
+    expect(bottomLeftCorner.u).toBe(0);
+    expect(bottomLeftCorner.v).toBe(1);
+    const blCornerX = bottomLeftCorner.imageOffsetXPx;
+    const blCornerY = bottomLeftCorner.imageOffsetYPx + bottomLeftCorner.zoomedHeightPx;
+    expect(Math.hypot(blCornerX - radius, blCornerY - radius)).toBeLessThan(radius - 20);
   });
 });
 

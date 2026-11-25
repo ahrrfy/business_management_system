@@ -1,5 +1,5 @@
 import React from "react";
-import { Truck, Gift, PackageCheck, CheckCircle2 } from "lucide-react";
+import { Truck, PackageCheck, CheckCircle2 } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 
 export interface StorefrontMilestoneBarProps {
@@ -26,12 +26,10 @@ export function StorefrontMilestoneBar({
       ? Math.round(Number(freeShippingThresholdGovernorates))
       : null;
 
-  // إذا كانت العتبتان معطلتين تماماً، لا نعرض شيئاً (صفر وعود كاذبة)
   if (!numBaghdad && !numGov) {
     return null;
   }
 
-  // الحالة 1: عتبتان نشطتان ومختلفتان (مثال: بغداد 35 ألف، المحافظات 60 ألف)
   if (numBaghdad && numGov && numBaghdad !== numGov) {
     const tierLower = Math.min(numBaghdad, numGov);
     const tierHigher = Math.max(numBaghdad, numGov);
@@ -46,15 +44,15 @@ export function StorefrontMilestoneBar({
 
     let statusText = "";
     if (cartSubtotal <= 0) {
-      statusText = `شحن مجاني داخل بغداد عند ${fmtInt(numBaghdad)} د.ع، ولكافة المحافظات عند ${fmtInt(numGov)} د.ع`;
+      statusText = `التوصيل المجاني داخل بغداد من ${fmtInt(numBaghdad)} د.ع وللمحافظات من ${fmtInt(numGov)} د.ع`;
     } else if (!lowerUnlocked) {
       const diff = tierLower - cartSubtotal;
-      statusText = `تبقى لك ${fmtInt(diff)} د.ع للحصول على شحن مجاني داخل ${lowerName}`;
+      statusText = `أضف ${fmtInt(diff)} د.ع للتوصيل المجاني داخل ${lowerName}`;
     } else if (!higherUnlocked) {
       const diff = tierHigher - cartSubtotal;
-      statusText = `حققت شحن ${lowerName} المجاني! أضف ${fmtInt(diff)} د.ع لشحن مجاني لـ ${higherName}`;
+      statusText = `تم بلوغ توصيل ${lowerName} المجاني — أضف ${fmtInt(diff)} د.ع لـ ${higherName}`;
     } else {
-      statusText = "تهانينا! طلبيتك مؤهلة للشحن السريع المجاني والتغليف الفاخر لكافة المحافظات";
+      statusText = "الطلب مؤهل للتوصيل المجاني لكافة المحافظات";
     }
 
     const markerPct = Math.round((tierLower / tierHigher) * 100);
@@ -62,20 +60,20 @@ export function StorefrontMilestoneBar({
     if (compact) {
       return (
         <div className={`flex flex-col gap-1.5 ${className}`}>
-          <div className="flex items-center justify-between text-[11px] font-black">
-            <span className="flex items-center gap-1 text-slate-200">
+          <div className="flex items-center justify-between text-[11px] font-semibold">
+            <span className="flex items-center gap-1.5 text-slate-200">
               {higherUnlocked ? (
-                <PackageCheck aria-hidden className="size-3.5 text-emerald-400" />
+                <PackageCheck aria-hidden className="size-3.5 text-white" />
               ) : (
-                <Truck aria-hidden className="size-3.5 text-orange-400" />
+                <Truck aria-hidden className="size-3.5 text-slate-300" />
               )}
               <span className="truncate">{statusText}</span>
             </span>
-            <span className="shrink-0 text-emerald-400 tabular-nums">{progressPct}٪</span>
+            <span className="shrink-0 text-slate-200 tabular-nums">{progressPct}%</span>
           </div>
           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-orange-500 to-emerald-400 transition-all duration-500 ease-out"
+              className="h-full rounded-full bg-white transition-[width] duration-300 ease-out"
               style={{ width: `${progressPct}%` }}
             />
           </div>
@@ -85,111 +83,82 @@ export function StorefrontMilestoneBar({
 
     return (
       <aside
-        aria-label="محفز الشحن المجاني"
-        className={`relative overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-r from-amber-50/70 via-white to-orange-50/70 p-3.5 shadow-xs transition dark:border-slate-800 dark:from-slate-900 dark:via-slate-900/90 dark:to-slate-800 ${className}`}
+        aria-label="تفاصيل التوصيل المجاني"
+        className={`rounded-xl border border-slate-900/[0.08] bg-white px-3.5 py-3 dark:border-slate-800 dark:bg-slate-900 ${className}`}
       >
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div
-              className={`flex size-8 shrink-0 items-center justify-center rounded-xl transition ${
-                higherUnlocked
-                  ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/20"
-                  : lowerUnlocked
-                  ? "bg-orange-500 text-white shadow-sm shadow-orange-500/20"
-                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-              }`}
-            >
-              {higherUnlocked ? (
-                <PackageCheck aria-hidden className="size-4" />
-              ) : (
-                <Truck aria-hidden className="size-4" />
-              )}
-            </div>
-            <p className="text-xs font-black text-slate-800 dark:text-slate-100 leading-snug line-clamp-2 sm:line-clamp-1">
+          <div className="flex items-center gap-2 min-w-0">
+            {higherUnlocked ? (
+              <PackageCheck aria-hidden className="size-4 shrink-0 text-[var(--store-brand)]" />
+            ) : (
+              <Truck aria-hidden className="size-4 shrink-0 text-slate-500 dark:text-slate-400" />
+            )}
+            <p className="text-xs font-semibold text-slate-800 dark:text-slate-100 leading-snug line-clamp-2 sm:line-clamp-1">
               {statusText}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-black text-slate-500 dark:text-slate-400">
-            <div className="flex items-center gap-1">
-              {lowerUnlocked ? (
-                <CheckCircle2 aria-hidden className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              ) : (
-                <span className="size-2 rounded-full bg-slate-300 dark:bg-slate-700" />
-              )}
-              <span className={lowerUnlocked ? "text-emerald-700 dark:text-emerald-400" : ""}>
-                {lowerName} ({fmtInt(tierLower)})
-              </span>
-            </div>
-            <span className="text-slate-300 dark:text-slate-700">|</span>
-            <div className="flex items-center gap-1">
-              {higherUnlocked ? (
-                <CheckCircle2 aria-hidden className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              ) : (
-                <Gift aria-hidden className="size-3.5 text-slate-400" />
-              )}
-              <span className={higherUnlocked ? "text-emerald-700 dark:text-emerald-400" : ""}>
-                {higherName} ({fmtInt(tierHigher)})
-              </span>
-            </div>
+          <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-medium text-slate-500 tabular-nums dark:text-slate-400">
+            <span className={lowerUnlocked ? "inline-flex items-center gap-1 text-[var(--store-brand)] font-semibold" : "inline-flex items-center gap-1"}>
+              {lowerUnlocked && <CheckCircle2 aria-hidden className="size-3.5" />}
+              {lowerName}: {fmtInt(tierLower)}
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
+            <span className={higherUnlocked ? "inline-flex items-center gap-1 text-[var(--store-brand)] font-semibold" : "inline-flex items-center gap-1"}>
+              {higherUnlocked && <CheckCircle2 aria-hidden className="size-3.5" />}
+              {higherName}: {fmtInt(tierHigher)}
+            </span>
           </div>
         </div>
 
-        <div className="relative mt-2.5 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+        <div className="relative mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-emerald-500 transition-all duration-700 ease-out"
+            className="h-full rounded-full bg-[var(--store-brand)] transition-[width] duration-300 ease-out"
             style={{ width: `${progressPct}%` }}
           />
-          {/* علامة محطة المرحلة الأولى */}
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-white/80 dark:bg-slate-900"
+            className="absolute top-0 bottom-0 w-px bg-white/90 dark:bg-slate-950"
             style={{ left: `${markerPct}%` }}
-            title={`مرحلة شحن ${lowerName} المجاني`}
           />
         </div>
       </aside>
     );
   }
 
-  // الحالة 2: عتبة وحيدة نشطة (بغداد فقط، أو المحافظات فقط، أو كلاهما بنفس القيمة)
   const singleTier = (numBaghdad || numGov)!;
   const regionLabel =
     numBaghdad && numGov
       ? "لكافة المحافظات"
       : numBaghdad
-      ? "داخل بغداد"
-      : "لكافة المحافظات";
+        ? "داخل بغداد"
+        : "لكافة المحافظات";
 
   const progressPct = Math.min(100, Math.round((cartSubtotal / singleTier) * 100));
   const isUnlocked = cartSubtotal >= singleTier;
 
   let statusText = "";
   if (cartSubtotal <= 0) {
-    statusText = `شحن مجاني ${regionLabel} عند ${fmtInt(singleTier)} د.ع`;
+    statusText = `توصيل مجاني ${regionLabel} للطلبات من ${fmtInt(singleTier)} د.ع`;
   } else if (!isUnlocked) {
     const diff = singleTier - cartSubtotal;
-    statusText = `تبقى لك ${fmtInt(diff)} د.ع للحصول على شحن مجاني ${regionLabel}`;
+    statusText = `أضف ${fmtInt(diff)} د.ع للتوصيل المجاني ${regionLabel}`;
   } else {
-    statusText = `تهانينا! طلبيتك مؤهلة للشحن المجاني ${regionLabel}`;
+    statusText = `الطلب مؤهل للتوصيل المجاني ${regionLabel}`;
   }
 
   if (compact) {
     return (
       <div className={`flex flex-col gap-1.5 ${className}`}>
-        <div className="flex items-center justify-between text-[11px] font-black">
-          <span className="flex items-center gap-1 text-slate-200">
-            {isUnlocked ? (
-              <PackageCheck aria-hidden className="size-3.5 text-emerald-400" />
-            ) : (
-              <Truck aria-hidden className="size-3.5 text-orange-400" />
-            )}
+        <div className="flex items-center justify-between text-[11px] font-semibold">
+          <span className="flex items-center gap-1.5 text-slate-200">
+            <Truck aria-hidden className="size-3.5 text-slate-300" />
             <span className="truncate">{statusText}</span>
           </span>
-          <span className="shrink-0 text-emerald-400 tabular-nums">{progressPct}٪</span>
+          <span className="shrink-0 text-slate-200 tabular-nums">{progressPct}%</span>
         </div>
         <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-orange-500 to-emerald-400 transition-all duration-500 ease-out"
+            className="h-full rounded-full bg-white transition-[width] duration-300 ease-out"
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -199,46 +168,24 @@ export function StorefrontMilestoneBar({
 
   return (
     <aside
-      aria-label="محفز الشحن المجاني"
-      className={`relative overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-r from-amber-50/70 via-white to-orange-50/70 p-3.5 shadow-xs transition dark:border-slate-800 dark:from-slate-900 dark:via-slate-900/90 dark:to-slate-800 ${className}`}
+      aria-label="تفاصيل التوصيل المجاني"
+      className={`rounded-xl border border-slate-900/[0.08] bg-white px-3.5 py-3 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div
-            className={`flex size-8 shrink-0 items-center justify-center rounded-xl transition ${
-              isUnlocked
-                ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/20"
-                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-            }`}
-          >
-            {isUnlocked ? (
-              <PackageCheck aria-hidden className="size-4" />
-            ) : (
-              <Truck aria-hidden className="size-4" />
-            )}
-          </div>
-          <p className="truncate text-xs font-black text-slate-800 dark:text-slate-100">
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <Truck aria-hidden className="size-4 shrink-0 text-slate-500 dark:text-slate-400" />
+          <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
             {statusText}
           </p>
         </div>
-
-        <div className="flex items-center gap-2 text-[11px] font-black text-slate-500 dark:text-slate-400">
-          <div className="flex items-center gap-1">
-            {isUnlocked ? (
-              <CheckCircle2 aria-hidden className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-            ) : (
-              <span className="size-2 rounded-full bg-slate-300 dark:bg-slate-700" />
-            )}
-            <span className={isUnlocked ? "text-emerald-700 dark:text-emerald-400" : ""}>
-              {regionLabel} ({fmtInt(singleTier)})
-            </span>
-          </div>
-        </div>
+        <span className="text-[11px] font-medium text-slate-500 tabular-nums dark:text-slate-400">
+          {regionLabel} ({fmtInt(singleTier)})
+        </span>
       </div>
 
-      <div className="relative mt-2.5 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+      <div className="relative mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-emerald-500 transition-all duration-700 ease-out"
+          className="h-full rounded-full bg-[var(--store-brand)] transition-[width] duration-300 ease-out"
           style={{ width: `${progressPct}%` }}
         />
       </div>

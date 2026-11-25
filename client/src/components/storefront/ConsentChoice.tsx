@@ -87,6 +87,10 @@ export function useStorefrontConsent(): ConsentContextValue {
   return context;
 }
 
+export function useOptionalStorefrontConsent(): ConsentContextValue | null {
+  return useContext(ConsentContext);
+}
+
 function PreferencePanel() {
   const { consent, preferencesOpen, closePreferences, saveConsent } = useStorefrontConsent();
   const [analytics, setAnalytics] = useState(consent?.analytics === true);
@@ -113,16 +117,16 @@ function PreferencePanel() {
               <button ref={closeButtonRef} type="button" aria-label="إغلاق تفضيلات الخصوصية" className="flex size-11 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"><X aria-hidden className="size-5" /></button>
             </DialogPrimitive.Close>
             <div>
-              <DialogPrimitive.Title className="text-base font-black text-[#1e4a63]">تفضيلات الخصوصية</DialogPrimitive.Title>
+              <DialogPrimitive.Title className="text-base font-black text-[#1d1d1f]">تفضيلات الخصوصية</DialogPrimitive.Title>
               <p id="storefront-privacy-description" className="mt-1 text-xs font-semibold leading-6 text-slate-600">الشراء والتصفح الأساسيان لا يحتاجان إلى تحليلات أو تسويق.</p>
             </div>
           </div>
           <div className="mt-5 space-y-3">
-            <label className="flex min-h-11 items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked disabled className="mt-1 size-5 accent-[#1e4a63]" /><span><strong className="block text-sm font-black text-slate-700">ضرورية</strong><span className="text-xs font-semibold leading-5 text-slate-600">السلة، المفضلة، وتفضيل الخصوصية فقط.</span></span></label>
-            <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked={analytics} onChange={(event) => setAnalytics(event.target.checked)} className="mt-1 size-5 accent-[#1e4a63]" /><span><strong className="block text-sm font-black text-slate-700">تحليلات اختيارية</strong><span className="text-xs font-semibold leading-5 text-slate-600">عدادات مجمّعة ومجهّلة مثل نقرات التوصيات، بلا IP أو جلسة.</span></span></label>
-            <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked={marketing} onChange={(event) => setMarketing(event.target.checked)} className="mt-1 size-5 accent-[#1e4a63]" /><span><strong className="block text-sm font-black text-slate-700">تسويق اختياري</strong><span className="text-xs font-semibold leading-5 text-slate-600">يُستخدم فقط إذا أضيفت حملات موافق عليها لاحقاً؛ لا يتفعّل تلقائياً.</span></span></label>
+            <label className="flex min-h-11 items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked disabled className="mt-1 size-5 accent-[var(--store-brand)]" /><span><strong className="block text-sm font-black text-slate-700">ضرورية</strong><span className="text-xs font-semibold leading-5 text-slate-600">السلة، المفضلة، وتفضيل الخصوصية فقط.</span></span></label>
+            <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked={analytics} onChange={(event) => setAnalytics(event.target.checked)} className="mt-1 size-5 accent-[var(--store-brand)]" /><span><strong className="block text-sm font-black text-slate-700">تحليلات اختيارية</strong><span className="text-xs font-semibold leading-5 text-slate-600">عدادات مجمّعة ومجهّلة مثل نقرات التوصيات، بلا IP أو جلسة.</span></span></label>
+            <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked={marketing} onChange={(event) => setMarketing(event.target.checked)} className="mt-1 size-5 accent-[var(--store-brand)]" /><span><strong className="block text-sm font-black text-slate-700">تسويق اختياري</strong><span className="text-xs font-semibold leading-5 text-slate-600">يُستخدم فقط إذا أضيفت حملات موافق عليها لاحقاً؛ لا يتفعّل تلقائياً.</span></span></label>
           </div>
-          <button type="button" onClick={() => saveConsent({ analytics, marketing })} className="mt-5 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#1e4a63] py-3 text-sm font-black text-white hover:bg-[#16394d]"><Check aria-hidden className="size-4" /> حفظ الاختيارات</button>
+          <button type="button" onClick={() => saveConsent({ analytics, marketing })} className="mt-5 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[var(--store-brand)] py-3 text-sm font-black text-white hover:bg-[var(--store-brand-strong)]"><Check aria-hidden className="size-4" /> حفظ الاختيارات</button>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -130,21 +134,5 @@ function PreferencePanel() {
 }
 
 export function ConsentChoice() {
-  const { consent, preferencesOpen, openPreferences, allowNecessaryOnly, allowAll } = useStorefrontConsent();
-  return (
-    <>
-      {!consent && !preferencesOpen && (
-        <aside className="storefront-consent fixed inset-x-3 z-[70] mx-auto max-w-3xl rounded-2xl border border-[#ead8c8] bg-white p-4 text-right shadow-xl" style={{ bottom: "max(.75rem, env(safe-area-inset-bottom))" }} aria-labelledby="storefront-consent-title">
-          <div className="flex items-start gap-3"><ShieldCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-[#1e4a63]" /><div><h2 id="storefront-consent-title" className="text-sm font-black text-[#1e4a63]">نحترم خصوصيتك</h2><p className="mt-1 text-xs font-semibold leading-6 text-slate-500">نستخدم الضروري فقط افتراضياً. التحليلات والتسويق اختياريان ويمكن تغييرهما في أي وقت.</p></div></div>
-          <div className="mt-3 flex flex-col-reverse sm:flex-row justify-end gap-2">
-            <button type="button" onClick={openPreferences} className="flex min-h-11 items-center justify-center gap-1 rounded-lg border border-[#1e4a63]/30 px-3 py-2 text-xs font-black text-[#1e4a63] hover:bg-slate-50"><Settings2 aria-hidden className="size-3.5" /> تخصيص</button>
-            <button type="button" onClick={allowNecessaryOnly} className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">الضرورية فقط</button>
-            <button type="button" onClick={allowAll} className="min-h-11 rounded-lg bg-[#b43d31] px-3 py-2 text-xs font-black text-white hover:bg-[#922f28]">السماح بالاختيارات</button>
-          </div>
-        </aside>
-      )}
-      {consent && <button type="button" onClick={openPreferences} className="storefront-consent fixed left-3 z-[60] min-h-11 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-black text-[#1e4a63] shadow-md hover:bg-slate-50" style={{ bottom: "max(.75rem, env(safe-area-inset-bottom))" }}>الخصوصية</button>}
-      <PreferencePanel />
-    </>
-  );
+  return <PreferencePanel />;
 }

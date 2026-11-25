@@ -243,18 +243,22 @@ export default function ShelfPriceLookup() {
   return (
     <div
       dir="rtl"
-      className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans select-none"
+      className="min-h-screen bg-[#f5f5f7] dark:bg-slate-950 text-[#1d1d1f] dark:text-slate-100 flex flex-col font-sans select-none"
     >
       {/* ── شريط الرأس العصري للهواتف (App Bar) ── */}
-      <header className="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center justify-between shadow-xs">
+      <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-slate-900/[0.08] dark:border-slate-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="size-9 rounded-xl bg-gradient-to-tr from-primary to-primary/80 flex items-center justify-center text-white shadow-xs">
+          <div className="size-9 rounded-xl bg-[#1d1d1f] dark:bg-white flex items-center justify-center text-white dark:text-[#1d1d1f] shadow-xs">
             <ScanLine className="size-5" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-black text-sm tracking-tight text-slate-900 dark:text-white">
-                الرؤية العربية
+              <span
+                role="heading"
+                aria-level={1}
+                className="font-black text-sm tracking-tight text-slate-900 dark:text-white"
+              >
+                المكتبة العربية
               </span>
               <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-primary/10 text-primary">
                 استعلام الرف
@@ -532,9 +536,10 @@ export default function ShelfPriceLookup() {
 
                 <div className="flex gap-2.5 overflow-x-auto pb-2 pt-1 -mx-4 px-4 scrollbar-none">
                   {product.relatedProducts.map((rel) => (
-                    <div
+                    <button
                       key={rel.productId}
-                      className="w-36 shrink-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 flex flex-col justify-between shadow-2xs hover:border-primary/50 transition-colors cursor-pointer"
+                      type="button"
+                      className="w-36 shrink-0 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 flex flex-col justify-between text-right shadow-2xs hover:border-primary/50 transition-colors cursor-pointer"
                       onClick={() => setLocation(`/store/product/${rel.productId}`)}
                     >
                       <div className="aspect-square w-full rounded-xl bg-slate-50 dark:bg-slate-800 overflow-hidden mb-2 flex items-center justify-center">
@@ -552,10 +557,10 @@ export default function ShelfPriceLookup() {
                       <h4 className="text-[11px] font-bold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight">
                         {rel.productName}
                       </h4>
-                      <div className="mt-1.5 text-xs font-black text-primary font-mono">
+                      <div className="mt-1.5 text-xs font-black text-primary font-mono" dir="ltr">
                         {formatIqd(rel.salePrice ?? rel.price)}
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -575,7 +580,7 @@ export default function ShelfPriceLookup() {
               <button
                 type="button"
                 onClick={() => setLocation(`/store/product/${product.productId}`)}
-                className="w-full h-11 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-850 transition-colors"
+                className="w-full h-11 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
               >
                 <ShoppingBag className="size-4 text-primary" />
                 <span>عرض في المتجر الإلكتروني</span>
@@ -626,21 +631,26 @@ export default function ShelfPriceLookup() {
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
           role="dialog"
           aria-modal="true"
+          aria-labelledby="manual-barcode-dialog-title"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setManualInputOpen(false);
+          }}
         >
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-5 w-full max-w-sm shadow-xl">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <Barcode className="size-5 text-primary" />
-                <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                <h3 id="manual-barcode-dialog-title" className="text-sm font-extrabold text-slate-900 dark:text-white">
                   إدخال الباركود يدوياً
                 </h3>
               </div>
               <button
                 type="button"
+                aria-label="إغلاق نافذة إدخال الباركود"
                 onClick={() => setManualInputOpen(false)}
                 className="size-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
-                <X className="size-4" />
+                <X aria-hidden className="size-4" />
               </button>
             </div>
 

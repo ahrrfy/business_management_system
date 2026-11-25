@@ -175,7 +175,7 @@ export function CategoryChipStrip({
         type="button"
         onClick={() => move(1)}
         aria-label="مرر الأقسام إلى اليمين"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200/90 bg-white text-slate-700 shadow-xs transition-[transform,border-color,color] duration-150 ease-out hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
         <ChevronRight aria-hidden className="size-4" />
       </button>
@@ -219,8 +219,8 @@ export function CategoryChipStrip({
                 const isSelected = chip.id == null ? selectedId == null : selectedId === chip.id;
                 const activeClass =
                   chip.id == null
-                    ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
-                    : "border-[#0E806A] bg-[#0E806A] text-white shadow-xs";
+                    ? "border-[#1d1d1f] bg-[#1d1d1f] text-white shadow-xs dark:border-white dark:bg-white dark:text-[#1d1d1f]"
+                    : "border-[var(--store-brand)] bg-[var(--store-brand)] text-white shadow-xs";
                 const inactiveClass =
                   "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
 
@@ -239,7 +239,7 @@ export function CategoryChipStrip({
                       pauseAutoSlideTemporarily(3500);
                       onPick(chip.id);
                     }}
-                    className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0E806A] ${
+                    className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-bold transition-[transform,background-color,border-color,color] duration-150 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--store-brand)] ${
                       isSelected ? activeClass : inactiveClass
                     }`}
                   >
@@ -256,7 +256,7 @@ export function CategoryChipStrip({
         type="button"
         onClick={() => move(-1)}
         aria-label="مرر الأقسام إلى اليسار"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200/90 bg-white text-slate-700 shadow-xs transition-[transform,border-color,color] duration-150 ease-out hover:border-[var(--store-brand)] hover:text-[var(--store-brand)] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
         <ChevronLeft aria-hidden className="size-4" />
       </button>
