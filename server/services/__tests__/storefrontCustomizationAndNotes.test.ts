@@ -1,6 +1,6 @@
 import express from "express";
 import { eq } from "drizzle-orm";
-import fs, { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1060,13 +1060,14 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
   it("preserves shared customization asset row when a concurrent upload fails put(), rejects standalone failed uploads, and publishes alert handoff with joined tables", async () => {
     const caller = publicCaller();
     const realStore = imageStoreModule.getImageStore();
+    const origPut = realStore.put.bind(realStore);
     let putCalls = 0;
-    const putSpy = vi.spyOn(realStore, "put").mockImplementation(async (key) => {
+    const putSpy = vi.spyOn(realStore, "put").mockImplementation(async (key, buf, contentType) => {
       putCalls += 1;
       if (putCalls === 1) {
         throw new Error("transient storage write error");
       }
-      await realStore.get(key);
+      return origPut(key, buf, contentType);
     });
 
     try {
@@ -1099,14 +1100,13 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
       let pngCall = 0;
-      putSpy.mockImplementation(async (key, buf) => {
+      putSpy.mockImplementation(async (key, buf, contentType) => {
         pngCall += 1;
         if (pngCall === 1) {
           await new Promise((r) => setTimeout(r, 25));
           throw new Error("concurrent storage failure");
         }
-        await fs.promises.mkdir(path.dirname(path.join(tempImageDir, key)), { recursive: true });
-        await fs.promises.writeFile(path.join(tempImageDir, key), buf);
+        return origPut(key, buf, contentType);
       });
 
       const [firstOutcome, secondOutcome] = await Promise.allSettled([
