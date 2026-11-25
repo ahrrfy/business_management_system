@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } 
 import path from "node:path";
 import { z } from "zod";
 
-const timestamp = z.string().datetime();
+const timestamp = z.string().datetime({ offset: true });
 const fingerprint = z.object({
   size: z.number().int().positive(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -87,6 +87,20 @@ export type RestoreDrillAttempt = z.infer<typeof drillAttemptSchema>;
 
 export function isBackupSqlName(name: string) {
   return /^[A-Za-z0-9_.$-]+\.sql$/.test(name) && !name.includes("..");
+}
+
+export function parseBackupDatabaseName(name: string): string | null {
+  if (!isBackupSqlName(name)) return null;
+  const match = /^([A-Za-z0-9_$-]+)-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{3}Z-[a-f0-9]{8})?\.sql$/i.exec(name);
+  return match ? match[1] : null;
+}
+
+export function matchesBackupPrefix(name: string, prefix: string | null): boolean {
+  if (!isBackupSqlName(name)) return false;
+  if (!prefix) return true;
+  const expectedDb = prefix.endsWith("-") ? prefix.slice(0, -1) : prefix;
+  const parsedDb = parseBackupDatabaseName(name);
+  return parsedDb !== null ? parsedDb === expectedDb : name.startsWith(prefix);
 }
 
 type Attempt = z.infer<typeof attemptSchema>;
@@ -310,11 +324,28 @@ async function inspectBackup(
   };
 }
 
-export async function inspectBackupReadiness(directory: string, offsitePath: string | undefined, prefix: string | null, activeLease?: string) {
+const latestRestoreSummarySchema = z.object({
+  version: z.literal(1),
+  name: z.string(),
+  at: timestamp,
+});
+
+const MIN_PROTECTED_ENCRYPTED_BACKUPS = 3;
+const MAX_BARE_FAILED_ROWS_IN_SLICE = 10;
+
+export async function inspectBackupReadiness(
+  directory: string,
+  offsitePath: string | undefined,
+  prefix: string | null,
+  activeLease?: string,
+  { limit = 50 }: { limit?: number | null } = {},
+) {
   const reportDirectory = path.join(directory, "restore-reports");
-  const [localNames, reportNames, localRealPath, externalRealPath] = await Promise.all([
+  const retiringDirectory = path.join(directory, ".retiring");
+  const [localNames, reportNames, retiringNames, localRealPath, externalRealPath] = await Promise.all([
     namesIn(directory),
     namesIn(reportDirectory),
+    namesIn(retiringDirectory),
     realpath(directory).catch(() => directory),
     offsitePath ? realpath(offsitePath).catch(() => null) : null,
   ]);
@@ -325,10 +356,12 @@ export async function inspectBackupReadiness(directory: string, offsitePath: str
   const candidates = new Set<string>();
   for (const name of Array.from(localNames).concat(Array.from(offsiteNames))) {
     const base = name.replace(/(?:\.attempt\.json|\.gpg(?:\.manifest\.json)?)$/, "");
-    if (isBackupSqlName(base) && (!prefix || base.startsWith(prefix))) candidates.add(base);
+    if (!matchesBackupPrefix(base, prefix)) continue;
+    if (retiringNames.has(`${base}.retired.json`)) continue;
+    candidates.add(base);
   }
 
-  const rows: NonNullable<Awaited<ReturnType<typeof inspectBackup>>>[] = [];
+  const rows: Array<NonNullable<Awaited<ReturnType<typeof inspectBackup>>> & { protectedRecent?: boolean }> = [];
   const names = Array.from(candidates);
   for (let i = 0; i < names.length; i += 16) {
     const group = await Promise.all(names.slice(i, i + 16).map((name) =>
@@ -338,6 +371,28 @@ export async function inspectBackupReadiness(directory: string, offsitePath: str
   }
   rows.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.name.localeCompare(a.name));
 
+  const verifiedRows = rows.filter(
+    (row) => row.encryption.status === "RECORDED" || row.offsite.status === "RECORDED",
+  );
+  const encryptedCount = verifiedRows.length;
+  const protectedNames = new Set<string>();
+  const verifiedByDb = new Map<string, typeof verifiedRows>();
+  for (const row of verifiedRows) {
+    const dbKey = parseBackupDatabaseName(row.name) ?? "";
+    const bucket = verifiedByDb.get(dbKey) ?? [];
+    bucket.push(row);
+    verifiedByDb.set(dbKey, bucket);
+  }
+  for (const bucket of Array.from(verifiedByDb.values())) {
+    const guarded = bucket.length <= MIN_PROTECTED_ENCRYPTED_BACKUPS
+      ? bucket
+      : bucket.slice(0, MIN_PROTECTED_ENCRYPTED_BACKUPS);
+    for (const row of guarded) protectedNames.add(row.name);
+  }
+  for (const row of rows) {
+    row.protectedRecent = protectedNames.has(row.name);
+  }
+
   let latestAttempt: Attempt | null = null;
   let latestOffsite: { name: string; at: string } | null = null;
   let latestRestore: { name: string; at: string } | null = null;
@@ -346,5 +401,39 @@ export async function inspectBackupReadiness(directory: string, offsitePath: str
     if (row.offsite.at && (!latestOffsite || row.offsite.at > latestOffsite.at)) latestOffsite = { name: row.name, at: row.offsite.at };
     if (row.restoredAt && (!latestRestore || row.restoredAt > latestRestore.at)) latestRestore = { name: row.name, at: row.restoredAt };
   }
-  return { backups: rows.slice(0, 50), latestAttempt, latestOffsite, latestRestore };
+
+  if (reportNames.has("latest-verified-restore.json")) {
+    const summaryFile = path.join(reportDirectory, "latest-verified-restore.json");
+    const parsedSummary = latestRestoreSummarySchema.safeParse(
+      await smallJson(summaryFile, await ordinaryFile(summaryFile)),
+    );
+    if (
+      parsedSummary.success &&
+      matchesBackupPrefix(parsedSummary.data.name, prefix) &&
+      (!latestRestore || parsedSummary.data.at > latestRestore.at)
+    ) {
+      latestRestore = { name: parsedSummary.data.name, at: parsedSummary.data.at };
+    }
+  }
+
+  let visibleRows = rows;
+  if (limit !== null) {
+    let bareFailedSeen = 0;
+    visibleRows = [];
+    for (const row of rows) {
+      const isBareFailed =
+        !row.sqlAvailable &&
+        row.encryption.status === "MISSING" &&
+        row.offsite.status === "MISSING" &&
+        row.attempt?.status === "FAILED";
+      if (isBareFailed) {
+        if (bareFailedSeen >= MAX_BARE_FAILED_ROWS_IN_SLICE) continue;
+        bareFailedSeen += 1;
+      }
+      visibleRows.push(row);
+      if (visibleRows.length >= limit) break;
+    }
+  }
+
+  return { backups: visibleRows, encryptedCount, latestAttempt, latestOffsite, latestRestore };
 }
