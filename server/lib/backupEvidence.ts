@@ -250,13 +250,33 @@ export async function writeRestoreDrillAttempt(directory: string, attempt: Resto
   }
 }
 
+function timestampEpochMs(value: string | null | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+}
+
+function compareTimestampsDesc(a: string | null | undefined, b: string | null | undefined): number {
+  const diff = timestampEpochMs(b) - timestampEpochMs(a);
+  if (diff !== 0) return diff;
+  return (b ?? "").localeCompare(a ?? "");
+}
+
+function isNewerTimestamp(candidate: string, existing: string): boolean {
+  return compareTimestampsDesc(candidate, existing) < 0;
+}
+
+function isNewerOrEqualTimestamp(candidate: string, existing: string): boolean {
+  return compareTimestampsDesc(candidate, existing) <= 0;
+}
+
 async function readRestoreDrill(directory: string, name: string, manifest: Manifest, activeLease?: string) {
   const marker = path.join(directory, `${name}.drill.json`);
   const parsed = drillAttemptSchema.safeParse(await smallJson(marker, await ordinaryFile(marker)));
   if (!parsed.success) return null;
   const attempt = parsed.data;
   if (attempt.file !== name || !sameFile(attempt.source, manifest)) return null;
-  if (attempt.finishedAt && attempt.result && attempt.finishedAt >= attempt.startedAt) {
+  if (attempt.finishedAt && attempt.result && isNewerOrEqualTimestamp(attempt.finishedAt, attempt.startedAt)) {
     return { ...attempt.result, at: attempt.finishedAt };
   }
   if (!attempt.finishedAt && !attempt.result) {
@@ -306,7 +326,7 @@ async function inspectBackup(
     manifest && reportNames.has(`${name}.restore.json`) ? readRestoreEvidence(reportDirectory, name, manifest) : null,
     manifest && reportNames.has(`${name}.drill.json`) ? readRestoreDrill(reportDirectory, name, manifest, activeLease) : null,
   ]);
-  const verifiedDrill = drill && "attachmentCheck" in drill && (!restore?.restoredAt || drill.at >= restore.restoredAt) ? drill : null;
+  const verifiedDrill = drill && "attachmentCheck" in drill && (!restore?.restoredAt || isNewerOrEqualTimestamp(drill.at, restore.restoredAt)) ? drill : null;
   if (!sql && !attempt && local.evidence.status === "MISSING" && offsite.evidence.status === "MISSING") return null;
   const sqlAvailable = !!sql && sql.size > 0;
   return {
@@ -369,7 +389,7 @@ export async function inspectBackupReadiness(
     ));
     for (const row of group) if (row) rows.push(row);
   }
-  rows.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.name.localeCompare(a.name));
+  rows.sort((a, b) => compareTimestampsDesc(a.createdAt, b.createdAt) || b.name.localeCompare(a.name));
 
   const verifiedRows = rows.filter(
     (row) => row.encryption.status === "RECORDED" || row.offsite.status === "RECORDED",
@@ -397,9 +417,9 @@ export async function inspectBackupReadiness(
   let latestOffsite: { name: string; at: string } | null = null;
   let latestRestore: { name: string; at: string } | null = null;
   for (const row of rows) {
-    if (row.attempt && (!latestAttempt || row.attempt.startedAt > latestAttempt.startedAt)) latestAttempt = row.attempt;
-    if (row.offsite.at && (!latestOffsite || row.offsite.at > latestOffsite.at)) latestOffsite = { name: row.name, at: row.offsite.at };
-    if (row.restoredAt && (!latestRestore || row.restoredAt > latestRestore.at)) latestRestore = { name: row.name, at: row.restoredAt };
+    if (row.attempt && (!latestAttempt || isNewerTimestamp(row.attempt.startedAt, latestAttempt.startedAt))) latestAttempt = row.attempt;
+    if (row.offsite.at && (!latestOffsite || isNewerTimestamp(row.offsite.at, latestOffsite.at))) latestOffsite = { name: row.name, at: row.offsite.at };
+    if (row.restoredAt && (!latestRestore || isNewerTimestamp(row.restoredAt, latestRestore.at))) latestRestore = { name: row.name, at: row.restoredAt };
   }
 
   if (reportNames.has("latest-verified-restore.json")) {
@@ -410,7 +430,7 @@ export async function inspectBackupReadiness(
     if (
       parsedSummary.success &&
       matchesBackupPrefix(parsedSummary.data.name, prefix) &&
-      (!latestRestore || parsedSummary.data.at > latestRestore.at)
+      (!latestRestore || isNewerTimestamp(parsedSummary.data.at, latestRestore.at))
     ) {
       latestRestore = { name: parsedSummary.data.name, at: parsedSummary.data.at };
     }
