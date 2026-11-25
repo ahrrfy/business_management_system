@@ -29,6 +29,7 @@ import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryRetu
 import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "./shopFeeAutoOffset";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
 import { requestNoncashWorkOrderFeeRefundTx } from "../workOrder/deliveryFeeRefund";
@@ -556,6 +557,12 @@ export async function returnConsignment(
 
       const { feeAlreadyPaidToCourier, pendingFeeRefundReceiptId, feeRefunded } =
         await refundHeldDeliveryFeeForReturnTx(tx, cn, actor, prelockedReturnShift);
+      await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+        consignmentId,
+        actor,
+        operationKey: `delivery.returnToReady:${actor.clientRequestId ?? consignmentId}`,
+        reason: actor.returnReason ?? null,
+      });
 
       assertConsignmentStatusTransition(cn.status, "RETURNED");
       const returnedAt = new Date();
@@ -1111,6 +1118,12 @@ export async function returnConsignment(
     // ما دُفع للمندوب فعلاً ثم أراد المالك ردّه للزبون = **مصروفٌ على المكتبة** بسند صرفٍ
     // صريح، لا تحريرٌ ثانٍ لنفس الأمانة. (يُعلَن للواجهة بـ`feeAlreadyPaidToCourier`.)
     const { feeAlreadyPaidToCourier,pendingFeeRefundReceiptId } = await refundHeldDeliveryFeeForReturnTx(tx, cn, actor, prelockedReturnShift);
+    await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+      consignmentId,
+      actor,
+      operationKey: `delivery.return:${actor.clientRequestId ?? consignmentId}`,
+      reason: actor.returnReason ?? null,
+    });
 
     assertConsignmentStatusTransition(cn.status, "RETURNED");
     const returnedAt = new Date();

@@ -124,7 +124,7 @@ export async function planDetachedShipmentFees(
     }));
     if (input.includeTargetOverflow !== false) {
       for (const source of targets) {
-        if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP") continue;
+        if (source.cn.sourceType === "AFTERCARE_EXECUTION" || source.cn.feeCollection !== "SHOP") continue;
         const sourceId = Number(source.cn.id);
         const balance = feeBalances.get(sourceId);
         const ownDue = balance?.active
@@ -164,7 +164,7 @@ export async function planDetachedShipmentFees(
       }
     }
     for (const source of group) {
-      if (source.cn.sourceType !== "ONLINE_ORDER" || source.cn.feeCollection !== "SHOP" ||
+      if (source.cn.sourceType === "AFTERCARE_EXECUTION" || source.cn.feeCollection !== "SHOP" ||
           targets.some((row) => Number(row.cn.id) === Number(source.cn.id))) continue;
       const balance = feeBalances.get(Number(source.cn.id));
       const earned = balance?.due ?? money(0);

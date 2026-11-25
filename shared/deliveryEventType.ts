@@ -90,6 +90,8 @@ export const DELIVERY_EVENT_TYPES = [
   "AFTERCARE_RETURNED",
   "AFTERCARE_FAILED",
   "AUTO_FAILED_SLA",
+  "SHOP_FEE_AUTO_OFFSET",
+  "SHOP_FEE_AUTO_OFFSET_REVERSED",
 ] as const;
 
 export type DeliveryEventType = (typeof DELIVERY_EVENT_TYPES)[number];
@@ -139,6 +141,8 @@ export const DELIVERY_EVENT_LABEL: Readonly<Record<DeliveryEventType, string>> =
   AFTERCARE_RETURNED: "أعيدت دفعة المعالجة للفرع",
   AFTERCARE_FAILED: "تعذر تسليم دفعة المعالجة",
   AUTO_FAILED_SLA: "تعذر آلي لانقضاء مهلة التوصيل",
+  SHOP_FEE_AUTO_OFFSET: "تسوية تلقائية لأجرة التوصيل على المكتبة من ذمة الجهة",
+  SHOP_FEE_AUTO_OFFSET_REVERSED: "عكس التسوية التلقائية لأجرة التوصيل على المكتبة",
 });
 
 export function isDeliveryEventType(v: unknown): v is DeliveryEventType {

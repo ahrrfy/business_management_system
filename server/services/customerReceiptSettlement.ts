@@ -148,6 +148,7 @@ function customerEntryArNetExprSql() {
             OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%'
             OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CREDIT:%'
             OR ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_OUT:%'
+            OR ${accountingEntries.dedupeKey} LIKE 'NO-RECEIPT-CREDIT:%'
           ) THEN ${accountingEntries.amount}
           WHEN ${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.dedupeKey} LIKE 'CUSTOMER_INTERBRANCH_IN:%' THEN -${accountingEntries.amount}
           WHEN ${accountingEntries.entryType} = 'DELIVERY_REMIT' AND ${accountingEntries.dedupeKey} LIKE 'INVOICE_AMEND_CUSTODY:%' THEN ${accountingEntries.amount}

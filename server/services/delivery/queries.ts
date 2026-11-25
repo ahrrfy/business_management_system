@@ -356,7 +356,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     includePending: true, allowBlockedPreview: true, feePolicy });
   const enriched = rows.map((r) => {
     const id = Number(r.id);
-    const potentialDue = r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
+    const potentialDue = r.sourceType !== "AFTERCARE_EXECUTION" && r.feeCollection === "SHOP"
       ? money(r.parcelStatus === "DELIVERED" ? r.feeDue : r.feeSettledAt ? "0" : r.deliveryFee) : money(0);
     const ownQuoted = quoteFee(potentialDue, money(r.orderTotal ?? "0"));
     const projected = detached.projectedFromSource.get(id) ?? money(0);

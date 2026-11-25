@@ -66,20 +66,27 @@ export function deliveryDispatchMemoIntent(): PostingIntent {
   return createPostingIntent("DELIVERY_DISPATCH_COD", "DELIVERY_DISPATCH", []);
 }
 
-/** Courier remitted cash: courier custody becomes drawer or treasury cash. */
+/** Courier remitted cash: courier custody becomes drawer or treasury cash (signed for reversal). */
 export function deliveryRemitIntent(
-  amount: Decimal,
+  signedAmount: Decimal,
   cashBucket: Exclude<CashBucket, null | undefined>,
 ): PostingIntent {
   const destination = paymentAccountRole("CASH", cashBucket, "IN");
+  const abs = signedAmount.abs();
+  const components = signedAmount.isNegative()
+    ? {
+        roleDebits: { DELIVERY_FLOAT: abs },
+        roleCredits: { [destination]: abs },
+      }
+    : {
+        roleDebits: { [destination]: abs },
+        roleCredits: { DELIVERY_FLOAT: abs },
+      };
   return createPostingIntent(
     "DELIVERY_REMIT_COD",
     "DELIVERY_REMIT",
-    [debitLine(destination, amount), creditLine("DELIVERY_FLOAT", amount)],
-    {
-      roleDebits: { [destination]: amount },
-      roleCredits: { DELIVERY_FLOAT: amount },
-    },
+    signedPostingLines(destination, "DELIVERY_FLOAT", signedAmount),
+    components,
   );
 }
 
@@ -96,28 +103,36 @@ export function deliveryCustodyReturnIntent(amount: Decimal): PostingIntent {
   );
 }
 
-/** The business incurs the courier fee when delivery succeeds, before cash is paid. */
-export function deliveryFeeAccrualIntent(amount: Decimal): PostingIntent {
-  return createPostingIntent("DELIVERY_FEE_ACCRUAL", "DELIVERY_FEE", [
-    debitLine("DELIVERY_EXPENSE", amount),
-    creditLine("COURIER_PAYABLE", amount),
-  ]);
+/** The business incurs the courier fee (signed so pre-delivery cancellation reverses the accrual). */
+export function deliveryFeeAccrualIntent(signedAmount: Decimal): PostingIntent {
+  return createPostingIntent(
+    "DELIVERY_FEE_ACCRUAL",
+    "DELIVERY_FEE",
+    signedPostingLines("DELIVERY_EXPENSE", "COURIER_PAYABLE", signedAmount),
+  );
 }
 
-/** Paying an already accrued SHOP fee clears the courier liability; it is not a second expense. */
+/** Paying an already accrued SHOP fee clears the courier liability (signed for reversal). */
 export function deliveryFeeSettlementIntent(
-  amount: Decimal,
+  signedAmount: Decimal,
   cashBucket: Exclude<CashBucket, null | undefined>,
 ): PostingIntent {
   const paidFrom = paymentAccountRole("CASH", cashBucket, "OUT");
+  const abs = signedAmount.abs();
+  const components = signedAmount.isNegative()
+    ? {
+        roleDebits: { [paidFrom]: abs },
+        roleCredits: { COURIER_PAYABLE: abs },
+      }
+    : {
+        roleDebits: { COURIER_PAYABLE: abs },
+        roleCredits: { [paidFrom]: abs },
+      };
   return createPostingIntent(
     "DELIVERY_FEE_SETTLEMENT",
     "DELIVERY_FEE",
-    [debitLine("COURIER_PAYABLE", amount), creditLine(paidFrom, amount)],
-    {
-      roleDebits: { COURIER_PAYABLE: amount },
-      roleCredits: { [paidFrom]: amount },
-    },
+    signedPostingLines("COURIER_PAYABLE", paidFrom, signedAmount),
+    components,
   );
 }
 

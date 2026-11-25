@@ -2305,7 +2305,7 @@ export const returnRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+      if (ctx.user.branchId == null) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -2315,114 +2315,17 @@ export const returnRouter = router({
           }),
         });
       }
-      const actorBranchId = Number(ctx.user.branchId ?? 1);
-
-      return withTx(
-        async (tx) => {
-          await assertPeriodOpen(tx, new Date());
-
-          const now = new Date();
-          const randSuffix = Math.floor(1000 + Math.random() * 9000);
-          const voucherCode =
-            input.mode === "DIRECT_EXCHANGE"
-              ? `EX-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`
-              : `SC-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
-
-          const customerName = input.customer?.name?.trim() || "زبون عابر";
-          const customerPhone = input.customer?.phone?.trim() || null;
-          const returnReason =
-            input.reason?.trim() ||
-            (input.mode === "DIRECT_EXCHANGE"
-              ? "استبدال مباشر بضاعة"
-              : "إرجاع بضاعة بدون فاتورة");
-
-          // ١) حركات المخزون للمرتجع (زيادة المخزون إذا كان RESTOCK) بالوحدة الأساس
-          for (const itm of input.returnItems) {
-            if (itm.disposition === "RESTOCK") {
-              const { baseQuantity: effectiveBaseQty } =
-                await resolveReturnBaseQuantity(tx, itm);
-              await applyMovement(tx, {
-                variantId: itm.variantId,
-                branchId: actorBranchId,
-                baseQuantity: effectiveBaseQty,
-                movementType: "RETURN",
-                referenceType:
-                  input.mode === "DIRECT_EXCHANGE"
-                    ? "EXCHANGE_RETURN"
-                    : "NO_RECEIPT_RETURN",
-                documentNumber: voucherCode,
-                notes: `${input.mode === "DIRECT_EXCHANGE" ? "استبدال بضاعة" : "مرتجع استثنائي بدون وصل"} [${voucherCode}] — ${returnReason} (${customerName})`,
-                createdBy: ctx.user.id,
-              });
-            }
-          }
-
-          // ٢) حركات المخزون للبديل الجديد (خصم المخزون OUT) بالوحدة الأساس في حالة الاستبدال المباشر
-          if (
-            input.mode === "DIRECT_EXCHANGE" &&
-            input.exchangeItems &&
-            input.exchangeItems.length > 0
-          ) {
-            for (const itm of input.exchangeItems) {
-              const { baseQuantity: effectiveBaseQty } =
-                await resolveReturnBaseQuantity(tx, itm);
-              await applyMovement(tx, {
-                variantId: itm.variantId,
-                branchId: actorBranchId,
-                baseQuantity: effectiveBaseQty,
-                movementType: "OUT",
-                referenceType: "EXCHANGE_ISSUE",
-                documentNumber: voucherCode,
-                notes: `صرف بضاعة بديلة مقابل استبدال [${voucherCode}] — ${returnReason} (${customerName})`,
-                createdBy: ctx.user.id,
-              });
-            }
-          }
-
-          // ٣) توثيق التدقيق الرقابي
-          await logAudit(ctx, {
-            action:
-              input.mode === "DIRECT_EXCHANGE"
-                ? "return.direct_exchange"
-                : "return.no_receipt_voucher",
-            entityType: "voucher",
-            entityId: null,
-            newValue: {
-              voucherCode,
-              mode: input.mode,
-              customerName,
-              customerPhone,
-              reason: returnReason,
-              returnTotal: input.settlement.returnTotal,
-              exchangeTotal: input.settlement.exchangeTotal ?? "0",
-              differenceAmount: input.settlement.differenceAmount,
-              returnLinesCount: input.returnItems.length,
-              exchangeLinesCount: input.exchangeItems?.length ?? 0,
-              dispositions: input.returnItems.map((i) => ({
-                name: i.productName,
-                disp: i.disposition,
-                qty: i.quantity,
-              })),
-            },
-          });
-
-          return {
-            ok: true as const,
-            voucherCode,
-            mode: input.mode,
-            returnTotal: input.settlement.returnTotal,
-            exchangeTotal: input.settlement.exchangeTotal ?? "0",
-            differenceAmount: input.settlement.differenceAmount,
-            customerName,
-            customerPhone,
-            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }),
-          };
+      const { executeNoReceiptOrExchangeService } = await import(
+        "../services/returns/noReceiptExchangeService"
+      );
+      return executeNoReceiptOrExchangeService(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId),
+          role: ctx.user.role,
         },
-        { gate: "FINANCIAL_WRITER" },
+        ctx,
       );
     }),
 
@@ -3224,6 +3127,16 @@ export const returnRouter = router({
                   what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
                   why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)${paidAmount.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ" : ""}`,
                   doThis: "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
+                }),
+              });
+            }
+            if (input.settlement.method === "STORE_CREDIT" && (returnTotalDec.lte(0) || returnTotalDec.gt(paidAmount))) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ رصيد المتجر يتجاوز المدفوع الفعلي للفاتورة",
+                  why: `المبلغ المطلوب تحويله لرصيد متجر (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)`,
+                  doThis: "لا يمكن إصدار رصيد متجر يفوق ما قبضه المحل فعلياً؛ استخدم معادلة الذمة للجزء الآجل أو العهدة غير الموردة",
                 }),
               });
             }

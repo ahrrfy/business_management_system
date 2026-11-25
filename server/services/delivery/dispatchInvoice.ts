@@ -27,6 +27,7 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
+import { autoOffsetShopDeliveryFeeOnDispatchTx } from "./shopFeeAutoOffset";
 import type { DeliveryTxActor } from "./types";
 import {
   appendDeliveryEvent,
@@ -943,6 +944,13 @@ export async function dispatchInvoiceInTx(
         },
       });
     }
+
+    await autoOffsetShopDeliveryFeeOnDispatchTx(tx, {
+      consignmentId,
+      actor,
+      operationKey:
+        input.clientRequestId ?? `delivery.dispatchInvoice:${consignmentId}`,
+    });
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(

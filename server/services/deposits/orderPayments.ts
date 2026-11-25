@@ -209,29 +209,115 @@ export async function appliedCollectionsForWorkOrder(tx: Tx, workOrderId: number
     .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "APPLICATION")))
     .groupBy(orderPayments.parentPaymentId);
   const countOf = new Map(appCounts.map((r) => [Number(r.parentPaymentId), Number(r.n)]));
-  // ردود الأمّهات — القبض المردود جزئياً لا يُختم إيصالُه أبداً (مبلغه الكامل يكذب على سقف المرتجع).
-  const refundSums = await tx
-    .select({ parentPaymentId: orderPayments.parentPaymentId, v: sql<string>`COALESCE(SUM(${orderPayments.amount}), 0)` })
+  // ردود الأمّهات — نفصل الردّ الموسوم بأمر الشغل نفسه عن ردود أوامر الشغل الأخرى وعن الردود العامّة غير الموسومة
+  // كي لا يستهلك ردُّ أمر الشغل الأوّل حصّةَ أمر الشغل الثاني المموَّل من نفس قبض الاستقبال.
+  const refundRows = await tx
+    .select({
+      parentPaymentId: orderPayments.parentPaymentId,
+      appliedKind: orderPayments.appliedKind,
+      appliedId: orderPayments.appliedId,
+      amount: orderPayments.amount,
+    })
     .from(orderPayments)
     .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "REFUND")))
-    .groupBy(orderPayments.parentPaymentId);
-  const refundOf = new Map(refundSums.map((r) => [Number(r.parentPaymentId), String(r.v)]));
-  return apps.map((a) => {
-    const parent = parentOf.get(Number(a.parentPaymentId));
-    return {
+    .for("update");
+  const totalParentRefund = new Map<number, ReturnType<typeof money>>();
+  const targetedWoRefund = new Map<number, ReturnType<typeof money>>();
+  const unattributedParentRefund = new Map<number, ReturnType<typeof money>>();
+  for (const r of refundRows) {
+    const pid = Number(r.parentPaymentId);
+    const amt = round2(money(r.amount));
+    totalParentRefund.set(pid, round2((totalParentRefund.get(pid) ?? money(0)).plus(amt)));
+    if (r.appliedKind === "WORKORDER" && Number(r.appliedId) === workOrderId) {
+      targetedWoRefund.set(pid, round2((targetedWoRefund.get(pid) ?? money(0)).plus(amt)));
+    } else if (r.appliedKind == null && r.appliedId == null) {
+      unattributedParentRefund.set(
+        pid,
+        round2((unattributedParentRefund.get(pid) ?? money(0)).plus(amt)),
+      );
+    }
+  }
+  const allAppsByParent = await tx
+    .select({
+      parentPaymentId: orderPayments.parentPaymentId,
+      appliedKind: orderPayments.appliedKind,
+      appliedId: orderPayments.appliedId,
+      amount: orderPayments.amount,
+    })
+    .from(orderPayments)
+    .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "APPLICATION")));
+  const otherAppsSumByParent = new Map<number, ReturnType<typeof money>>();
+  for (const row of allAppsByParent) {
+    const pid = Number(row.parentPaymentId);
+    const isCurrentWo = row.appliedKind === "WORKORDER" && Number(row.appliedId) === workOrderId;
+    if (!isCurrentWo) {
+      otherAppsSumByParent.set(
+        pid,
+        round2((otherAppsSumByParent.get(pid) ?? money(0)).plus(money(row.amount))),
+      );
+    }
+  }
+  const remainingRefundByParent = new Map<number, ReturnType<typeof money>>();
+  for (const pid of parentIds) {
+    const targeted = targetedWoRefund.get(pid) ?? money(0);
+    const unattr = unattributedParentRefund.get(pid) ?? money(0);
+    const parentAmt = round2(money(parentOf.get(pid)?.amount ?? "0"));
+    const otherApps = otherAppsSumByParent.get(pid) ?? money(0);
+    // الردود غير الموسومة على مستوى القبض تُستوعب أولاً من غير المُخصَّص أو الطلبات الأخرى، ولا تقتطع من هذا الأمر إلا الفائض.
+    const nonThisWoCapacity = round2(
+      parentAmt.gt(otherApps) ? parentAmt.minus(otherApps) : money(0),
+    );
+    const thisWoTotalApps = apps
+      .filter((a) => Number(a.parentPaymentId) === pid)
+      .reduce((s, a) => round2(s.plus(money(a.amount))), money(0));
+    const freeBufferBeforeThisWo = round2(
+      nonThisWoCapacity.gt(thisWoTotalApps)
+        ? nonThisWoCapacity.minus(thisWoTotalApps)
+        : money(0),
+    );
+    const spillFromUnattributed = round2(
+      unattr.gt(freeBufferBeforeThisWo.plus(otherApps))
+        ? unattr.minus(freeBufferBeforeThisWo.plus(otherApps))
+        : money(0),
+    );
+    remainingRefundByParent.set(pid, round2(targeted.plus(spillFromUnattributed)));
+  }
+  const out: Array<{
+    applicationId: number;
+    collectionId: number;
+    amount: string;
+    method: DepositMethod;
+    receiptId: number | null;
+    draftId: number | null;
+    customerId: number | null;
+    soleTarget: boolean;
+  }> = [];
+  for (const a of apps) {
+    const parentId = Number(a.parentPaymentId);
+    const parent = parentOf.get(parentId);
+    const appAmt = round2(money(a.amount));
+    const remRefund = remainingRefundByParent.get(parentId) ?? money(0);
+    const deducted = remRefund.gt(0) ? (remRefund.gte(appAmt) ? appAmt : remRefund) : money(0);
+    if (deducted.gt(0)) {
+      remainingRefundByParent.set(parentId, round2(remRefund.minus(deducted)));
+    }
+    const netAmt = round2(appAmt.minus(deducted));
+    if (netAmt.lte(0)) continue;
+    out.push({
       applicationId: Number(a.applicationId),
-      collectionId: Number(a.parentPaymentId),
-      amount: String(a.amount),
+      collectionId: parentId,
+      amount: toDbMoney(netAmt),
       method: (parent?.method ?? "CASH") as DepositMethod,
       receiptId: parent?.receiptId != null ? Number(parent.receiptId) : null,
       draftId: parent != null ? Number(parent.draftId) : null,
       /** عميل القبض لحظته — ساقا الردّ تُكتبان به لا بعميل المسوّدة الحاليّ (قابلٍ للتغيّر). */
       customerId: parent?.customerId != null ? Number(parent.customerId) : null,
       soleTarget:
-        (countOf.get(Number(a.parentPaymentId)) ?? 0) === 1 &&
-        !money(refundOf.get(Number(a.parentPaymentId)) ?? "0").gt(0),
-    };
-  });
+        (countOf.get(parentId) ?? 0) === 1 &&
+        !(totalParentRefund.get(parentId) ?? money(0)).gt(0),
+    });
+  }
+  return out;
 }
 
 /** ربط إيصالات P أحاديّة الهدف بفاتورة تسليم أمر الشغل (نمط deliver.ts:161-185 حرفياً). */

@@ -703,6 +703,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     "exchange/withdraw.ts", // نقد عائد من محفظة الصيرفة
     "printSaleService.ts", // قبض بيع
     "purchaseReturnsService.ts", // رد مورد داخل
+    "returns/noReceiptExchangeService.ts", // تحصيل فرق استبدال مباشر داخل فقط
     "sale/create.ts", // قبض بيع
     "sale/payment.ts", // دفعة عميل داخلة
     "treasuryFundingService.ts", // تمويل خزينة داخل

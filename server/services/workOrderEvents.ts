@@ -12,7 +12,7 @@
  */
 import { workOrderEvents } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   buildWorkOrderEventKey,
@@ -81,6 +81,39 @@ export async function recordWorkOrderEvent(
           === (input.branchId == null ? null : Number(input.branchId))
         && idempotencyHash(existing.payload ?? null) === idempotencyHash(input.payload ?? null);
       if (!exactReplay) {
+        if (
+          input.seq == null &&
+          (input.eventType === "CLAIMED" ||
+            input.eventType === "MARKED_READY" ||
+            input.eventType === "STARTED")
+        ) {
+          const [cntRow] = await tx
+            .select({ n: sql<number>`COUNT(*)` })
+            .from(workOrderEvents)
+            .where(
+              and(
+                eq(workOrderEvents.workOrderId, input.workOrderId),
+                eq(workOrderEvents.eventType, input.eventType),
+              ),
+            );
+          const nextSeq = Number(cntRow?.n ?? 1) + 1;
+          const nextKey = buildWorkOrderEventKey(
+            input.workOrderId,
+            input.eventType,
+            nextSeq,
+          );
+          await tx.insert(workOrderEvents).values({
+            eventKey: nextKey,
+            workOrderId: input.workOrderId,
+            eventType: input.eventType,
+            fromStatus: input.fromStatus ?? null,
+            toStatus: input.toStatus ?? null,
+            payload: (input.payload as never) ?? null,
+            actorUserId: input.actorUserId ?? null,
+            branchId: input.branchId ?? null,
+          });
+          return;
+        }
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح حدث أمر الشغل مستخدم لحمولة مختلفة — حدّث الطلب واستعمل مفتاحاً جديداً",

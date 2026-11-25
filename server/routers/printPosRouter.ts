@@ -236,7 +236,8 @@ export const printPosRouter = router({
       // (كان يُستدعى بلا branchId ⇒ IDOR اعتماد عبر الفروع على قناة الطباعة — كان مُصلَحاً في saleRouter فقط).
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
       // SALES-01/02: سلطة البيع تحت التكلفة (مدير/أدمن ذاتياً، الكاشير بموافقة مدير مُتحقَّقة).
-      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
+      const managerial = elevated || ctx.user.role === "manager";
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (managerial ? ctx.user.id : null);
       // B5: مرّر managerOverrideByUserId مع creditApproved ⇒ printSaleService ينشئ approval ذرّياً.
       const effectiveInput = {
         ...saleInput,
