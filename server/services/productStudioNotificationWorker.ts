@@ -1,8 +1,6 @@
 import cron, { type ScheduledTask } from "node-cron";
-import { isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
-import { getCurrentCompanyId } from "../tenancy/context";
+import { isBackgroundOperationActive, runBackgroundJob } from "../lib/backgroundJobRunner";
 import {
   reconcileStudioAssignmentNotifications,
   reconcileStudioCampaignTransitionNotifications,
@@ -23,8 +21,8 @@ const SYSTEM_ACTOR: ProductStudioActor = {
 export async function sweepProductStudioNotificationsOnce(
   now = new Date(),
 ): Promise<{ createdCount: number }> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
-    const results: Array<{ createdCount: number }> = await runAcrossActiveTenants(
+  if (!isBackgroundOperationActive("product_studio_due_notifications")) {
+    const results: Array<{ createdCount: number }> = await runBackgroundJob(
       "product_studio_due_notifications",
       () => sweepProductStudioNotificationsOnce(now),
     );

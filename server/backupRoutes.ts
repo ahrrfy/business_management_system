@@ -22,7 +22,6 @@ import {
 } from "./services/maintenanceService";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
-import { getCurrentCompanyId } from "./tenancy/context";
 import { BackupDownloadError, getBackupDownload } from "./services/backupDownloadService";
 
 export function backupRouter(): Router {
@@ -56,7 +55,7 @@ export function backupRouter(): Router {
         return res
           .status(400)
           .json({ error: "اسم نسخة غير صالح أو غير موجود." });
-      const file = await getBackupDownload({ directory: backupsDir(), sourcePath: abs ?? undefined, name, userId: user.id, companyId: getCurrentCompanyId(), downloadId: downloadId || undefined });
+      const file = await getBackupDownload({ directory: backupsDir(), sourcePath: abs ?? undefined, name, userId: user.id, companyId: null, downloadId: downloadId || undefined });
       // The final URL pins native browser retries as well as streamed saves.
       if (!downloadId) {
         res.setHeader("Cache-Control", "no-store");

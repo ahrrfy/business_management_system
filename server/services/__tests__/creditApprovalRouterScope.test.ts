@@ -48,7 +48,6 @@ async function caller(userId: number) {
     req: { headers: {} },
     res: { cookie() {}, clearCookie() {} },
     sessionId: null,
-    platformAdmin: null,
     user,
   } as unknown as TrpcContext;
   return appRouter.createCaller(context);

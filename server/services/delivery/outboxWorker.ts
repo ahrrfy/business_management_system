@@ -5,7 +5,7 @@ import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryParties, 
 import { formatDeliveryNotificationText } from "@shared/deliveryNotificationLabels";
 import { getDb } from "../../db";
 import { logger } from "../../logger";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../../lib/backgroundJobRunner";
 import { createAppNotification } from "../appNotificationService";
 import { withTx } from "../tx";
 import { STALE_ESCALATED_EVENT, sweepStaleConsignments } from "./staleSweep";
@@ -182,7 +182,7 @@ async function processRow(id: number): Promise<void> {
 
 export async function sweepDeliveryOutboxOnce(): Promise<{ claimed: number }> {
   if (!isBackgroundOperationActive("delivery_outbox")) {
-    const runs = await runAcrossActiveTenants("delivery_outbox", sweepDeliveryOutboxOnce);
+    const runs = await runBackgroundJob("delivery_outbox", sweepDeliveryOutboxOnce);
     return { claimed: runs.reduce((sum, r) => sum + r.claimed, 0) };
   }
   const ids = await claimBatch();

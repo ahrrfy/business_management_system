@@ -48,7 +48,6 @@ function blockedCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 91,
       role: "cashier",
@@ -64,7 +63,6 @@ function nonOwnerHrFullCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 92,
       role: "manager",
@@ -81,7 +79,6 @@ function nonOwnerWithoutBranchCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 95,
       role: "manager",
@@ -98,7 +95,6 @@ function ownerHrReadCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 93,
       role: "manager",
@@ -115,7 +111,6 @@ function ownerHrFullCaller() {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 94,
       role: "manager",

@@ -56,7 +56,6 @@ function caller(user: { id: number; role: string; branchId: number | null } | nu
     req: { headers: {} },
     res: {},
     sessionId: user ? "test-session" : null,
-    platformAdmin: null,
     user: user ? { ...user, totpEnabledAt: new Date() } : null,
   } as never);
 }

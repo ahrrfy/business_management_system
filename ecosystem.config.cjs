@@ -12,31 +12,11 @@
 //   docker start erp-mysql  (يدوياً عند الحاجة)
 //   أو شغّل scripts\docker-watchdog.mjs كمهمة ساعية في Task Scheduler.
 //
-// ⚠️ erp-provision-worker (تعدّد الشركات فقط — لا يُفعَّل بلا CONTROL_DATABASE_URL):
-// عملية **منفصلة تماماً** عن erp-server، بصلاحيات مرتفعة (docker exec + كلمة سرّ MySQL
-// الجذر) لا يملكها خادم الويب أبداً — راجع تعليق companyProvisionRequests في
-// server/tenancy/controlSchema.ts. **لا تنسخ متغيّرات env هذا التطبيق إلى erp-server أبداً**
-// (يُلغي كامل الفصل الأمني الذي بُني من أجله). يتطلّب DB_CONTAINER/DB_ROOT_PW/
-// INTEGRATIONS_ENCRYPTION_KEY في `.env` (أو env هذا القسم مباشرة) — غير مضبوطة افتراضياً.
-
 const path = require("node:path");
 const dotenv = require("dotenv");
-const provisionRuntimePolicy = require("./scripts/provision-worker-runtime-policy.cjs");
 const artifactSmoke = process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
 dotenv.config({ quiet: true });
 
-// PM2 merges the ecosystem loader's process.env into every app. Merely omitting
-// privileged keys from erp-server.env is therefore insufficient: dotenv has
-// already populated them before PM2 reads this file. Snapshot the two values
-// needed by the isolated provision worker, then remove all bootstrap/root-only
-// values from the loader environment before exporting the web definition.
-const provisionPrivilegedEnvironment = Object.freeze({
-  DB_CONTAINER: process.env.DB_CONTAINER,
-  DB_ROOT_PW: process.env.DB_ROOT_PW,
-});
-const provisionWorkerEnvironment = Object.freeze(
-  provisionRuntimePolicy.buildWorkerEnvironment(process.env),
-);
 /**
  * مفاتيح الضبط التشغيليّ لعامل الويب — تُصرَّح في كتلة `env` كي يلتقطها
  * `pm2 reload … --update-env` عند كل نشر. **لا تُدرَج غير الموجودة**: مفتاحٌ بقيمة
@@ -44,8 +24,7 @@ const provisionWorkerEnvironment = Object.freeze(
  */
 const webTunableKeys = Object.freeze([
   "PUBLIC_DB_POOL_LIMIT", "ADMIN_DB_POOL_LIMIT", "DB_WEB_CONNECTION_BUDGET",
-  "DB_AUX_CONNECTION_BUDGET", "DB_RUNTIME_EXTRA_WORKERS", "DB_MAX_TENANT_POOLS_PER_WORKER",
-  "DB_TENANT_POOL_IDLE_MS", "CONTROL_DB_POOL_LIMIT",
+  "DB_AUX_CONNECTION_BUDGET", "DB_RUNTIME_EXTRA_WORKERS",
   "STOREFRONT_RESOURCE_MODE", "STOREFRONT_RESOURCE_ACTIVE_COST", "STOREFRONT_RESOURCE_PUBLIC_COST",
   "STOREFRONT_RESOURCE_READ_COST", "STOREFRONT_RESOURCE_ORDER_COST", "STOREFRONT_RESOURCE_QUEUE",
   "STOREFRONT_RESOURCE_QUEUE_COST", "STOREFRONT_RESOURCE_WAIT_MS", "STOREFRONT_RESOURCE_READ_QUEUE",
@@ -230,7 +209,6 @@ module.exports = {
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         STOREFRONT_JWT_SECRET: process.env.STOREFRONT_JWT_SECRET ?? "",
-        // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
       },
       // التقاط السجلّات إلى ملفات دوّارة (يحتاج pm2-logrotate).
       log_date_format: "YYYY-MM-DD HH:mm:ss",
@@ -239,35 +217,6 @@ module.exports = {
       merge_logs: true,
     },
     ...(artifactSmokeBridgeApp ? [artifactSmokeBridgeApp] : []),
-    {
-      name: "erp-provision-worker",
-      script: "scripts/company-provision-worker.mjs",
-      interpreter: process.execPath,
-      cwd: __dirname,
-      instances: 1,
-      exec_mode: "fork",
-      watch: false,
-      // single-shot: يعالج كل الطلبات المعلَّقة ثم يخرج — لا daemon مستمرّ. cron_restart
-      // يُعيد تشغيله دورياً بدل حلقة داخلية (أبسط: لا حالة معلّقة بين التشغيلات).
-      autorestart: false,
-      cron_restart: "*/2 * * * *", // كل دقيقتين — التوفير عملية نادرة، لا حاجة لأسرع.
-      // PM2 يدمج بيئة daemon/CLI افتراضياً. قائمةً تحوي سلسلة فارغة تحذف كل الموروث،
-      // ثم env تعيد فقط allowlist الموجبة. العامل نفسه يعيد التنقية عند الإقلاع أيضاً كي
-      // تبقى الحماية فعّالة قبل إعادة إنشاء تعريف PM2 القديم في الإنتاج.
-      filter_env: [""],
-      env: {
-        ...provisionWorkerEnvironment,
-        NODE_ENV: "production",
-        TZ: "UTC",
-        DB_CONTAINER:
-          provisionPrivilegedEnvironment.DB_CONTAINER || "erp-mysql",
-        DB_ROOT_PW: provisionPrivilegedEnvironment.DB_ROOT_PW,
-      },
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-      error_file: "logs/provision-worker-error.log",
-      out_file: "logs/provision-worker-out.log",
-      merge_logs: true,
-    },
   ],
 };
 

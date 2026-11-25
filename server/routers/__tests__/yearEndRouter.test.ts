@@ -72,7 +72,6 @@ function caller(role: TestRole) {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 41,
       role,

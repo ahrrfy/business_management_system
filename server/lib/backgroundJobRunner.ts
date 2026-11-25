@@ -1,19 +1,18 @@
-import { runtimeWorkDrain } from "../lib/workDrain";
-import { getCurrentCompanyId, runWithCompany } from "./context";
-import { isMultiTenantModeActive, withTenantDb } from "../db";
-import { logger } from "../logger";
-import { listActiveCompanyConnections } from "./registry";
-import { logAudit } from "../services/auditService";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { runtimeWorkDrain } from "./workDrain";
+import { logAudit } from "../services/auditService";
 
 const backgroundOperationScope = new AsyncLocalStorage<ReadonlySet<string>>();
 
-/** يمنع الاستدعاء الذاتي عند إدخال الدالة المصدّرة نفسها إلى مشغّل الشركات. */
+/** يمنع الاستدعاء الذاتي عند إدخال الدالة المصدّرة نفسها إلى مشغّل الوظائف الخلفية. */
 export function isBackgroundOperationActive(job: string): boolean {
   return backgroundOperationScope.getStore()?.has(job) === true;
 }
 
-function runInBackgroundOperationScope<T>(job: string, operation: () => Promise<T>): Promise<T> {
+function runInBackgroundOperationScope<T>(
+  job: string,
+  operation: () => Promise<T>,
+): Promise<T> {
   const jobs = new Set(backgroundOperationScope.getStore() ?? []);
   jobs.add(job);
   return backgroundOperationScope.run(jobs, operation);
@@ -43,8 +42,12 @@ const EFFECT_KEYS = new Set([
 
 /** يحوّل نتائج العمال المختلفة إلى رقم أثر واحد من دون حفظ تفاصيل قد تكون حساسة. */
 export function backgroundOperationEffectCount(value: unknown): number {
-  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + backgroundOperationEffectCount(item), 0);
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + backgroundOperationEffectCount(item), 0);
+  }
   if (value === null || typeof value !== "object") return 0;
   let count = 0;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
@@ -84,21 +87,15 @@ async function auditBackgroundFailure(job: string): Promise<void> {
 }
 
 /**
- * يشغّل دورة خلفية مرة لكل شركة فعّالة. التنفيذ تسلسلي عمداً كي لا تُفتح تجمعات كل
- * الشركات دفعة واحدة، ويحمل كل تشغيل lease وسياق ALS كاملين حتى نهايته.
+ * يشغّل دورة عامل خلفي داخل بوابة التفريغ الرشيق (`runtimeWorkDrain`) مع تسجيل أثر التدقيق
+ * المركزي `system.job.<job>`. يُعيد `[result]` عند التنفيذ و`[]` عند رفض بدء دورة جديدة أثناء الإغلاق.
  */
-export async function runAcrossActiveTenants<T>(
+export async function runBackgroundJob<T>(
   job: string,
   operation: () => Promise<T>,
 ): Promise<T[]> {
-  // New ticks stop at the boundary; descendants of accepted jobs retain their
-  // scope through awaits and can finish post-commit notification/audit work.
   if (!runtimeWorkDrain.isAccepting && !runtimeWorkDrain.hasActiveParent) return [];
-  return runtimeWorkDrain.run(() => runAcrossActiveTenantsWork(job, operation));
-}
-
-async function runAcrossActiveTenantsWork<T>(job: string, operation: () => Promise<T>): Promise<T[]> {
-  if (!isMultiTenantModeActive() || getCurrentCompanyId() != null) {
+  return runtimeWorkDrain.run(async () => {
     try {
       const result = await runInBackgroundOperationScope(job, operation);
       await auditBackgroundResult(job, result);
@@ -107,28 +104,5 @@ async function runAcrossActiveTenantsWork<T>(job: string, operation: () => Promi
       await auditBackgroundFailure(job);
       throw error;
     }
-  }
-
-  const companies = await listActiveCompanyConnections();
-  const results: T[] = [];
-  for (const company of companies) {
-    try {
-      const result = await withTenantDb(company.id, (db) =>
-        runWithCompany(company.id, db, async () => {
-          try {
-            const value = await runInBackgroundOperationScope(job, operation);
-            await auditBackgroundResult(job, value);
-            return value;
-          } catch (error) {
-            await auditBackgroundFailure(job);
-            throw error;
-          }
-        }),
-      );
-      results.push(result);
-    } catch (error) {
-      logger.error({ err: error, companyId: company.id, job }, "tenant.background_job.failed");
-    }
-  }
-  return results;
+  });
 }

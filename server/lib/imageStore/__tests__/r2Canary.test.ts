@@ -321,20 +321,6 @@ describe("R2 production canary", () => {
     })).rejects.toMatchObject({ code: "CANARY_BUCKET_LOCK_MISSING" });
   });
 
-  it("يفشل إذا لم يغط Bucket Lock مسارات company-*/studio مدة 90 يوماً", async () => {
-    await expect(verifyR2BucketPrivacyConfiguration({
-      ...privateConfiguration(),
-      fetchCloudflareApi: async (url: string) => url.endsWith("/lock")
-        ? cloudflareResponse({ rules: [{
-          id: "single-only",
-          enabled: true,
-          prefix: "single/studio/",
-          condition: { type: "Age", maxAgeSeconds: 90 * 24 * 60 * 60 },
-        }] })
-        : privateCloudflareFetch()(url),
-    })).rejects.toMatchObject({ code: "CANARY_BUCKET_LOCK_MISSING" });
-  });
-
   it("يفشل إذا غطّى Bucket Lock مسار canary ومنع تنظيفه", async () => {
     await expect(verifyR2BucketPrivacyConfiguration({
       ...privateConfiguration(),
@@ -445,7 +431,7 @@ describe("R2 production canary", () => {
       managedR2DevEnabled: false,
       customDomainCount: 0,
       lifecycleDeleteRuleCount: 0,
-      protectedPrefixes: ["single/studio/", "company-"],
+      protectedPrefixes: ["single/studio/"],
     });
   });
 });

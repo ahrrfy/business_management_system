@@ -323,7 +323,6 @@ export function checkRouterProcedureGating(routerContent, filename = "") {
     "publicStoreRouter.ts",
     "countPortalRouter.ts",
     "kioskRouter.ts",
-    "platformAdminRouter.ts",
   ];
   if (allowedPublicRouterFiles.some((allow) => filename.endsWith(allow))) {
     return {

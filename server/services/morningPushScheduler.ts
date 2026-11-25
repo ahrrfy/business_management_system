@@ -11,7 +11,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { branches, payrollObligations, users } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runBackgroundJob } from "../lib/backgroundJobRunner";
 import { getDashboardMetrics } from "./reports/dashboard";
 import { createAppNotification } from "./appNotificationService";
 import { baghdadToday } from "./businessDay";
@@ -110,7 +110,7 @@ export interface MorningPushRunResult {
  */
 export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
   if (!isBackgroundOperationActive("morning_push")) {
-    const runs = await runAcrossActiveTenants("morning_push", runMorningBriefPush);
+    const runs = await runBackgroundJob("morning_push", runMorningBriefPush);
     return runs.reduce<MorningPushRunResult>(
       (sum, run) => ({
         candidates: sum.candidates + run.candidates,

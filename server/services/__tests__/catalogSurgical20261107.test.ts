@@ -378,7 +378,6 @@ describe("CATALOG-SURGICAL-20261107 — عزل قنوات stockUsage وجاهز�
       req: { headers: {} },
       res: {},
       sessionId: null,
-      platformAdmin: null,
       user: {
         id: 1,
         openId: "catalog-manager-1",

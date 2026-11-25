@@ -18,7 +18,6 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { auditLogs, productImages, productVariants } from "../../drizzle/schema";
 import { inventoryProductImageUrl } from "../imageRoute";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { requireDb, withTx } from "./tx";
 import { logger } from "../logger";
 import { invalidateProductStudioCaches } from "./productStudioCache";
@@ -106,7 +105,7 @@ export async function deleteProductImage(
   assertStudioOperationBinding(actor, "productStudio.deleteImage");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const reason = input.reason?.trim() ?? null;
-  const companyId = getCurrentCompanyId() ?? 1;
+  const companyId = 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.deleteImage");
     const [image] = await tx
@@ -168,7 +167,7 @@ export async function deleteProductImage(
 export async function setPrimaryProductImage(actor: ProductStudioActor, imageId: number) {
   assertStudioOperationBinding(actor, "productStudio.setImagePrimary");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  const companyId = getCurrentCompanyId() ?? 1;
+  const companyId = 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.setImagePrimary");
     const [image] = await tx
@@ -249,7 +248,7 @@ export async function reorderProductImages(
       }),
     });
   }
-  const companyId = getCurrentCompanyId() ?? 1;
+  const companyId = 1;
   return withTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.reorderImages");
     const belonging = await tx

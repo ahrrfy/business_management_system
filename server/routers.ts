@@ -66,7 +66,6 @@ import { exchangeRouter } from "./routers/exchangeRouter";
 import { bundlesRouter } from "./routers/bundlesRouter";
 import { priceWavesRouter } from "./routers/priceWavesRouter";
 import { promotionsV2Router } from "./routers/promotionsV2Router";
-import { platformAdminRouter } from "./routers/platformAdminRouter";
 import { storefrontRouter } from "./routers/storefrontRouter";
 import { storeAdminRouter } from "./routers/storeAdminRouter";
 import { shelfAnalyticsRouter } from "./routers/shelfAnalyticsRouter";
@@ -207,8 +206,6 @@ export const appRouter = router({
   salesPromotions: promotionsV2Router,
   // CRM هو نقطة الملكية الموحدة للحملات والعروض والكوبونات؛ الوحدات الأخرى مستهلكة للأحداث فقط.
   crm: crmRouter,
-  // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
-  platformAdmin: platformAdminRouter,
   // بنك جهات الاتصال (S3، T3.2): بحث موحّد + بطاقة ٣٦٠° + أشخاص اتصال B2B + كشف ازدواج.
   // مفتاح صلاحيات «crm» القائم يُعاد استخدامه (لا مفتاح جديد) — لا علاقة بـ`crm:` أعلاه
   // (ذاك مفتاح راوتر حملات/كوبونات تاريخي على وحدة «campaigns» رغم الاسم).

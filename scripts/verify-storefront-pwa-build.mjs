@@ -210,7 +210,7 @@ export function assertStorefrontImageRuntimePolicy(swSource) {
     }
   }
 
-  for (const marker of ["banner", "product", "company", "CacheFirst"]) {
+  for (const marker of ["banner", "product", "CacheFirst"]) {
     if (!publicRoute.source.includes(marker)) {
       throw new Error(`STOREFRONT_SW_PUBLIC_IMAGE_POLICY_INVALID:${marker}`);
     }

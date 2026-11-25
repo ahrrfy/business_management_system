@@ -21,7 +21,7 @@ function matches(pathname, method = "GET") {
 
 assert.equal(matches("/api/img/banner/12/main-0?v=abc"), true);
 assert.equal(matches("/api/img/product/42?v=abc&w=1200"), true);
-assert.equal(matches("/api/img/company/baghdad/product/42?v=abc"), true);
+assert.equal(matches("/api/img/company/baghdad/product/42?v=abc"), false);
 assert.equal(matches("/api/img/inventory-product/42?v=abc"), false);
 assert.equal(matches("/api/img/count-product/session-code/42?v=abc"), false);
 assert.equal(matches("/api/img/kiosk-product/42?v=abc"), false);
@@ -291,7 +291,7 @@ assert.throws(
 
 const runtimePolicy = [
   'registerRoute(privateMatcher,new NetworkOnly({cacheName:"private-images-no-cache",inventory:"inventory-product",count:"count-product",kiosk:"kiosk-product"}))',
-  'registerRoute(publicMatcher,new CacheFirst({cacheName:"store-images",banner:"banner",product:"product",company:"company"}))',
+  'registerRoute(publicMatcher,new CacheFirst({cacheName:"store-images",banner:"banner",product:"product"}))',
   'registerRoute(apiMatcher,new NetworkOnly({cacheName:"api-no-cache"}))',
 ].join(";");
 assert.doesNotThrow(() => assertStorefrontImageRuntimePolicy(runtimePolicy));
@@ -302,7 +302,7 @@ const unminifiedRuntimePolicy = [
     new NetworkOnly({ "cacheName": "private-images-no-cache" }),
   )`,
   `registerRoute(
-    ({ url }) => ["banner", "product", "company"].some((part) => url.pathname.includes(part)),
+    ({ url }) => ["banner", "product"].some((part) => url.pathname.includes(part)),
     new CacheFirst({ "cacheName": "store-images" }),
   )`,
   `registerRoute(

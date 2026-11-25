@@ -299,7 +299,7 @@ describe("2FA — تحصين التذكرة (مراجعة Codex)", () => {
   it("P1: تذكرة التحدّي لا تصلح جلسةً — verifySession/getUserFromRequest يرفضانها (purpose)", async () => {
     await seedAdmin();
     const req = { headers: { "user-agent": "vitest-UA" } } as any;
-    const ticket = await signTwoFactorTicket({ uid: 1, companyCode: "", remember: false }, req);
+    const ticket = await signTwoFactorTicket({ uid: 1, remember: false }, req);
     // لو قُبلت كجلسة لالتفّ المهاجم على التحقّق الثاني بمجرّد كلمة المرور.
     expect(await verifySession(ticket, req)).toBeNull();
     const cookieReq = { headers: { cookie: `app_session_id=${ticket}`, "user-agent": "vitest-UA" } } as any;

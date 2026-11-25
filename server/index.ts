@@ -36,8 +36,7 @@ import { createContext } from "./context";
 import {
   getDb,
   closeDb,
-  isMultiTenantModeActive,
-  validateTenantConnectionBudget,
+  validateDbConnectionBudget,
 } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
@@ -84,15 +83,10 @@ import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
 import { isLoopbackHost, resolveListenHost } from "./config/listenHost";
 import { assertStorefrontProductionReadiness } from "./config/storefrontProductionReadiness";
-import {
-  channelWebhooksRouter,
-  companyChannelWebhooksRouter,
-} from "./routes/channelWebhooks";
+import { channelWebhooksRouter } from "./routes/channelWebhooks";
 import { waMediaRouter } from "./routes/waMedia";
 import { jobApplicantCvRouter } from "./routes/jobApplicantCv";
 import { studioExportRouter } from "./routes/studioExportRouter";
-import { tenancyMiddleware } from "./tenancy/expressMiddleware";
-import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 import { selfHealDivergedProductChannelLabels } from "./services/catalog/productChannelSyncSelfHeal";
@@ -157,8 +151,8 @@ async function startServer() {
   });
   if (runtimeTopology.split && !isLoopbackHost(host)) throw new Error("Split runtime requires loopback listeners");
 
-  // Validate the complete tenant/control connection budget before opening the HTTP port.
-  if (isMultiTenantModeActive() || runtimeTopology.split) validateTenantConnectionBudget();
+  // Validate the connection budget before opening the HTTP port in split topology.
+  if (runtimeTopology.split) validateDbConnectionBudget();
   await awaitInventoryActivationRelease({
     name: "erp-server",
     bundle: fileURLToPath(import.meta.url),
@@ -473,10 +467,7 @@ async function startServer() {
   // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب.
   app.get("/healthz", async (_req, res) => {
     try {
-      // لا توجد شركة في طلب health العام. في وضع تعدد الشركات نفحص قاعدة التحكّم
-      // الثابتة؛ فحص قواعد الشركات يجري ضمن طلباتها/وظائفها ذات السياق ولا يجوز اختيار
-      // شركة افتراضية قد تخفي تعطل غيرها.
-      const db = isMultiTenantModeActive() ? getControlDb() : getDb();
+      const db = getDb();
       if (!db) return res.status(503).json({ ok: false, db: "unconfigured" });
       await db.execute(sql`SELECT 1`);
       const mem = process.memoryUsage();
@@ -610,21 +601,6 @@ async function startServer() {
       handler: rateLimitHandler(
         "محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة.",
       ),
-    }),
-  );
-
-  // حدّ صارم على دخول مدير المنصّة (تعدد الشركات) — إجراء مُميَّز (تفعيل/تعطيل أي شركة)
-  // كان بلا أي حدّ خاص (مراجعة عدائية حسمت هذا — الحدّ العام ١٠٠٠/١٥د فقط لا يكفي لصدّ
-  // credential stuffing على نقطة دخول مُميَّزة).
-  app.use(
-    "/api/trpc",
-    rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: Number(process.env.PLATFORM_ADMIN_RATE_LIMIT_MAX ?? 10),
-      standardHeaders: "draft-7",
-      legacyHeaders: false,
-      skip: (req) => !req.path.includes("platformAdmin.login"),
-      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة."),
     }),
   );
 
@@ -788,19 +764,16 @@ async function startServer() {
     }
     next();
   });
-  // تحديد الشركة الحالية (تعدّد الشركات) — قبل إنشاء سياق tRPC/معالجة الطباعة/النسخ
-  // الاحتياطية. يفكّ الجلسة (JWT فقط، بلا فحص بصمة — يحدث لاحقاً بالكامل داخل
-  // getUserFromRequest) لاستخراج companyId مبكراً، يُحضّر اتصال قاعدة تلك الشركة ثم يُغلّف
-  // بقية معالجة الطلب بسياقها — فيُوجَّه كل getDb() لاحق تلقائياً لقاعدتها الصحيحة بلا أي
-  // تعديل في تلك الطبقات. مُشترَك (server/tenancy/expressMiddleware.ts) بين الأسطح الثلاثة
-  // المصادَق عليها بنفس كوكي جلسة الشركة. بلا CONTROL_DATABASE_URL: تمريرة شفّافة تماماً.
-  const tenantMiddleware = tenancyMiddleware();
-  const tenancy: ReturnType<typeof tenancyMiddleware> = (req, res, next) =>
-    runtimeWorkDrain.run(async () => { await tenantMiddleware(req, res, next); });
+  const withWorkDrain: express.RequestHandler = (_req, _res, next) =>
+    runtimeWorkDrain.run(async () => {
+      next();
+    });
 
   app.use("/api/trpc", createStorefrontAdmission());
   app.use("/api/trpc", (req, res, next) => {
-    void withStorefrontContextWork(req, async () => { await tenancy(req, res, next); }).catch(next);
+    void withStorefrontContextWork(req, async () => {
+      await withWorkDrain(req, res, next);
+    }).catch(next);
   });
   // الاستعلامات تُنقل بـPOST لتفادي حد عنوان Nginx؛ وmaxBatchSize يحدّ سطح هجوم batch إلى 20.
   // هذا يغيّر وسيلة نقل query فقط؛ نوع الإجراء وصلاحياته لا يتغيّران.
@@ -816,19 +789,16 @@ async function startServer() {
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
   // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
-  app.use("/api/print", tenancy, csrfGuard, printRouter());
+  app.use("/api/print", withWorkDrain, csrfGuard, printRouter());
 
   // صور المتجر كموارد HTTP مستقلّة (لا داخل JSON) — راجع رأس imageRoute.ts للقياس والسبب.
-  // ⚠️ **بلا csrfGuard وبلا مصادقة عمداً:** قراءة GET محضة لصورٍ علنية أصلاً (البنرات تُعرض لكل
-  // زائر عبر storefront.banners بلا كوكي) ⇒ اشتراط كوكي/Origin هنا يكسر المتجر العلني ولا يحمي
-  // شيئاً. `tenancy` يبقى ليُوجَّه الطلب لقاعدة الشركة الصحيحة في وضع تعدّد الشركات.
   app.use("/api/img", createPublicImageAdmission(), (req, res, next) => {
-    void withStorefrontContextWork(req, async () => { await tenancy(req, res, next); }).catch(next);
+    void withStorefrontContextWork(req, async () => {
+      await withWorkDrain(req, res, next);
+    }).catch(next);
   }, createAdminPublicHttpBoundary(), imageRouter());
 
-  // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن). في وضع تعدد
-  // الشركات: backupRoutes.ts/systemRouter.ts يُقيَّدان لملفات الشركة الحالية فقط (بادئة اسم
-  // قاعدتها) — راجع server/services/maintenanceService.ts.
+  // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن).
   app.use(
     "/api/backups/restore-upload",
     rateLimit({
@@ -841,32 +811,22 @@ async function startServer() {
       ),
     }),
   );
-  app.use("/api/backups", tenancy, csrfGuard, backupRouter());
+  app.use("/api/backups", withWorkDrain, csrfGuard, backupRouter());
 
   // وسائط واتساب الواردة (GET stream، خارج tRPC — نفس فلسفة /api/backups أعلاه): محمي بنفس
   // آلية المصادقة (كوكي الجلسة عبر getUserFromRequest داخل waMediaRouter نفسها، وإلا 401).
-  app.use("/api/wa/media", tenancy, waMediaRouter());
+  app.use("/api/wa/media", withWorkDrain, waMediaRouter());
 
   // CVs are private binary documents: authenticated HR permission + vacancy
   // branch scope are rechecked on every GET, and the response is attachment-only.
-  app.use("/api/hr/applicant-cv", tenancy, jobApplicantCvRouter());
+  app.use("/api/hr/applicant-cv", withWorkDrain, jobApplicantCvRouter());
 
   // تصدير صور استوديو المنتجات — GET يبثّ ZIP للمدير المصادَق. خارج tRPC كي يقبله زرّ
   // التنزيل في المتصفح مباشرةً بلا JS إضافيّ. المصدر: `productImages` المعتمدة (APPROVED)
   // فقط — لا الأصل. كل صورةٍ باسم المنتج (وبديله عند وجوده). سقفٌ صارم ٢٠٠٠ صورة/نداء.
-  app.use("/api/studio", tenancy, studioExportRouter());
+  app.use("/api/studio", withWorkDrain, studioExportRouter());
 
   // Webhooks خارِجية لِلقَنوات (شَريحة #5): WhatsApp/Instagram/Store.
-  // ⚠️ لا csrfGuard هُنا — webhooks تَأتي مِن مُزوّدين خارِجيين بَلا كوكي/Origin، ولا
-  // tenancyMiddleware (لا كوكي جلسة إطلاقاً) — الأَمان يُطبَّق عبر HMAC verify داخل كل route.
-  // نشر أحادي الشركة: كما كان تماماً على /api/webhooks. تعدد الشركات: مسار إضافي بادئته
-  // رمز الشركة صراحةً في الرابط نفسه (لا كوكي ليُستخرَج منه) — راجع channelWebhooks.ts.
-  // حدّ معدّل مستقلّ على webhooks (تدقيق ٣/٨): كان الحدّ العام يتخطّى /api/webhooks كلياً بلا
-  // بديل ⇒ كل طلب POST مجهول (بترويسة توقيع بأي قيمة) يُشغّل جولة DB + فكّ AES + HMAC، و
-  // `GET ?hub.verify_token=` يُشغّل SELECT + SHA-256 لكل صفّ قناة — بلا أي سقف. سطح استنزاف
-  // CPU/DB مجهول الهوية. الحدّ سخيٌّ جداً (لا يحجب Meta الشرعية بحجمها المعتاد لعملٍ صغير) لكنه
-  // يقفل الإغراق. nginx `alroya_webhooks` هو السقف المشترك قبل كل العمال؛ MemoryStore هنا
-  // دفاع ثانوي. الأمان الأساسي يبقى HMAC (ثابت الزمن، fail-closed) — هذا حماية بنية فقط.
   app.use(
     "/api/webhooks",
     rateLimit({
@@ -879,8 +839,7 @@ async function startServer() {
   );
 
   app.use("/api/webhooks", channelWebhooksRouter());
-  app.use("/api/webhooks/company/:companyCode", companyChannelWebhooksRouter());
-  app.use("/api/realtime", tenancy, realtimeRouter);
+  app.use("/api/realtime", withWorkDrain, realtimeRouter);
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   // HOST حُسم وفُحص قبل إنشاء التطبيق؛ في الإنتاج لا يمرّ غيابه أو ربط غير loopback بلا opt-in.
@@ -998,13 +957,13 @@ async function startServer() {
     // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
     if (process.env.NODE_ENV !== "test") {
       const { sweepExpiredDrafts } = await import("./services/reception");
-      const { runAcrossActiveTenants } = await import("./tenancy/backgroundTenants");
+      const { runBackgroundJob } = await import("./lib/backgroundJobRunner");
       const cron = (await import("node-cron")).default;
-      void runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
+      void runBackgroundJob("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
         /* الكنّاس لا يُسقط الإقلاع */
       });
       cron.schedule("15 1 * * *", () => {
-        void runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
+        void runBackgroundJob("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
           /* دورة قادمة */
         });
       });
@@ -1014,8 +973,8 @@ async function startServer() {
     // عقود CH القديمة المعلّقة كي تختفي خطوة «عدّ واستلام» من الواقع لا من الواجهة فقط.
     if (process.env.NODE_ENV !== "test") {
       const { settlePendingShiftCloseHandovers } = await import("./services/cashHandoverService");
-      const { runAcrossActiveTenants } = await import("./tenancy/backgroundTenants");
-      void runAcrossActiveTenants(
+      const { runBackgroundJob } = await import("./lib/backgroundJobRunner");
+      void runBackgroundJob(
         "shift_close_auto_settlement",
         settlePendingShiftCloseHandovers,
       ).catch((err) => {
@@ -1102,7 +1061,6 @@ async function startServer() {
       // Split requires peer ACK; legacy pre-ACK peers use a flushed TCP close only.
       await stopRealtimeBridge({ drain: true, timeoutMs: Math.max(1, deadline - Date.now()) });
       await closeDb();
-      await closeControlDb();
       clearTimeout(force);
       logger.info("أُغلق الخادم والقاعدة بسلام.");
       process.exit(0);
@@ -1120,7 +1078,7 @@ async function startServer() {
   const adminPublicHttpBoundary = createAdminPublicHttpBoundary();
   app.use((req, res, next) => {
     if (webRuntimeRole() !== "admin" || !isPublicHttpWork(req)) return next();
-    void tenancy(req, res, () => adminPublicHttpBoundary(req, res, next)).catch(next);
+    void withWorkDrain(req, res, () => adminPublicHttpBoundary(req, res, next));
   });
   registerStorefrontWishlistFallback(app);
   app.use(sitemapRouter);

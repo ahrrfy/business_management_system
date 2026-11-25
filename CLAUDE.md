@@ -16,15 +16,15 @@
 - **مسار الطلب — اقرأه مرّةً، يُغنيك عن تتبّع عشرات الملفات:**
 
 ```
-client/src/pages (٢٧٢ صفحة، wouter + TanStack Query)
-   └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٧ راوتراً)
+client/src/pages (٢٧١ صفحة، wouter + TanStack Query)
+   └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٦ راوتراً)
         └─ server/routers/*  : تحقّق zod + اختيار الإجراء المُبوَّب (بلا منطق أعمال)
              └─ server/services/*  : منطق الأعمال داخل withTx (٨٠٣ ملفاً/حزمة)
                   └─ drizzle/schema.ts (٣٥٥ جدولاً، ١٩٥١٥ سطراً) ──▶ MySQL 8
 ```
 
 - **قاعدة الطبقات:** الراوتر بلا منطق أعمال، والخدمة **لا تقرأ `ctx`** — تستقبل `Actor { userId, branchId, role }` (`server/services/tx.ts`). كسرُ هذا يُعمي حرّاس الصلاحيات ويجعل الخدمة غير قابلة لإعادة الاستعمال من قناةٍ أخرى (أوفلاين/أندرويد/استيراد).
-- **مفردات التفويض = `server/trpc.ts`** (١١٢ إجراءً مُصدَّراً جاهزاً): **لا تكتب فحص صلاحيةٍ جديداً — اختر الإجراء المناسب.** الاصطلاح `query ⇒ READ` و`mutation ⇒ FULL`؛ `moduleProcedure(roles, moduleKey, level)` = بوّابة وحدة + إلزام فرعٍ مُسنَد؛ و`branchScopedProcedure` يحقن `scopedBranchId` (عزل الفرع) و`scopedOwnerId` (عزل سجلّات الموظف: يرى ما أنشأه فقط). الخريطة المشتركة مع الواجهة في `shared/permissions.ts` — والإنفاذ النهائيّ **خادميّ دائماً**.
+- **مفردات التفويض = `server/trpc.ts`** (١١١ إجراءً مُصدَّراً جاهزاً): **لا تكتب فحص صلاحيةٍ جديداً — اختر الإجراء المناسب.** الاصطلاح `query ⇒ READ` و`mutation ⇒ FULL`؛ `moduleProcedure(roles, moduleKey, level)` = بوّابة وحدة + إلزام فرعٍ مُسنَد؛ و`branchScopedProcedure` يحقن `scopedBranchId` (عزل الفرع) و`scopedOwnerId` (عزل سجلّات الموظف: يرى ما أنشأه فقط). الخريطة المشتركة مع الواجهة في `shared/permissions.ts` — والإنفاذ النهائيّ **خادميّ دائماً**.
 - **المسارات المختصرة:** `@/*` ⇐ `client/src/*` و`@shared/*` ⇐ `shared/*` (مضبوطة في `tsconfig.json` + `vite.config.ts` + كلا ملفَّي vitest).
 
 ## ٣. التشغيل (Windows + PowerShell)
@@ -40,8 +40,8 @@ pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
 pnpm check:guards                 # حزمة الحرّاس (٤٩ حارساً) — بوّابة ما قبل الدفع (§٣.١)
 pnpm test:db:init                 # تهيئة قاعدة اختبار هذه الشجرة طازجةً (بعد تغيّر المخطط)
-pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٦١٨ ملف اختبار)
-pnpm test:unit                    # ٦٩٥ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
+pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٦١٠ ملف اختبار)
+pnpm test:unit                    # ٦٩٠ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
 pnpm build && pnpm start          # بناء الإنتاج (vite + esbuild) ثم تشغيله من dist/
 pnpm format                       # prettier — ⚠️ **بلا نطاق**: يُعيد تنسيق المستودع كلّه (~٢٥٩٦ ملفاً)
                                   #   فينتفخ فرقُك ويصير مغناطيسَ تعارض. `pre-commit` لا يستدعيه أصلاً.
@@ -141,7 +141,7 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 3. **الدمج والنشر الآلي (Automated Merge & Deploy):**
    - بعد اجتياز جميع الفحوصات بنجاح تام وتحولها للأخضر، يتم دمج الفرع مع `main` وتنفيذ إجراءات النشر المعتمدة.
 
-## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٦١٨ ملف اختبار + حرّاس §٣.١)
+## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٦١٠ ملف اختبار + حرّاس §٣.١)
 - **الذرّية:** كل عملية أعمال داخل `withTx(tx => …)` (server/services/tx.ts)؛ أي throw ⇒ ROLLBACK كامل.
 - **المخزون:** بالوحدة الأساس `decimal(15,4)` لكل (variant × branch) في `branchStock`؛ مواد الوصفات تقبل الكسر حتى أربع منازل بلا تقريب، وحساب الكميات عبر `shared/quantity.ts` وDecimal. كل تغيير عبر `inventoryService.applyMovement` (حركة + رصيد تحت قفل `.for("update")`). كمية المنتج النهائي المباعة تبقى صحيحة بالأساس؛ التحويل الكسري متاح فقط في سياق المواد الصريح. يربط `drizzle/quantityColumn.ts` التخزين النصي العشري بعقود القراءة الرقمية المتحققة.
 - **الأموال:** كلها عبر `decimal.js` + `money.ts` (round2 HALF_UP، toDbMoney نصاً). **ممنوع** `parseFloat`/`Number` على الأموال.

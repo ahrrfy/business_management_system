@@ -1,5 +1,4 @@
 import type { Tx } from "../db";
-import { getCurrentCompanyId } from "../tenancy/context";
 import { enqueuePostCommit } from "../services/tx";
 import { publishRealtimeEvent } from "./index";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
@@ -7,50 +6,47 @@ import type { FinancialDataChangedPayload } from "@shared/financialRealtime";
 import { logger } from "../logger";
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const pending = new Map<number | null, Set<number> | null>();
+let pendingBranches: Set<number> | null | undefined = undefined;
 const queuedTransactions = new WeakMap<Tx, Set<number> | null>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 const mutationRefresh = new AsyncLocalStorage<{ scheduled: boolean }>();
 
 /** A generic RPC fallback must not broaden the current operation's committed branch hints. */
-export async function withFinancialRefreshScope<T>(work: () => Promise<T>): Promise<{ value: T; scheduled: boolean }> {
+export async function withFinancialRefreshScope<T>(
+  work: () => Promise<T>,
+): Promise<{ value: T; scheduled: boolean }> {
   const scope = { scheduled: false };
   const value = await mutationRefresh.run(scope, work);
   return { value, scheduled: scope.scheduled };
 }
 
-/** No SQL, no monetary payload; bursts share a single message per company/worker. */
+/** No SQL, no monetary payload; bursts share a single message per worker. */
 export function scheduleFinancialRefresh(branchId: number | null = null): void {
-  const companyId = getCurrentCompanyId();
-  // A tenant-less background job must not broadcast into other tenant sessions.
-  if (process.env.CONTROL_DATABASE_URL && companyId == null) return;
   const scope = mutationRefresh.getStore();
   if (scope) scope.scheduled = true;
-  const previous = pending.get(companyId);
-  if (branchId == null || previous === null) pending.set(companyId, null);
-  else {
-    const branches = previous ?? new Set<number>();
+  if (branchId == null || pendingBranches === null) {
+    pendingBranches = null;
+  } else {
+    const branches = pendingBranches ?? new Set<number>();
     branches.add(branchId);
-    pending.set(companyId, branches);
+    pendingBranches = branches;
   }
   if (timer) return;
   timer = setTimeout(() => {
     timer = null;
-    const batch = Array.from(pending);
-    pending.clear();
-    for (const [companyId, branches] of batch) {
-      const branchIds = branches ? Array.from(branches) : null;
-      try {
-        publishRealtimeEvent<FinancialDataChangedPayload>(
-          REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
-          { branchIds },
-          // Explicit companyId prevents the timer's first ALS context leaking to other batches.
-          { companyId, branchId: branchIds?.length === 1 ? branchIds[0] : null },
-        );
-      } catch (error) {
-        // A notification failure cannot crash the process after money has already committed.
-        logger.warn({ err: error, companyId }, "realtime_financial.publish_failed");
-      }
+    const branches = pendingBranches;
+    pendingBranches = undefined;
+    if (branches === undefined) return;
+    const branchIds = branches ? Array.from(branches) : null;
+    try {
+      publishRealtimeEvent<FinancialDataChangedPayload>(
+        REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+        { branchIds },
+        { branchId: branchIds?.length === 1 ? branchIds[0] : null },
+      );
+    } catch (error) {
+      // A notification failure cannot crash the process after money has already committed.
+      logger.warn({ err: error }, "realtime_financial.publish_failed");
     }
   }, 400);
   timer.unref?.();
@@ -58,17 +54,17 @@ export function scheduleFinancialRefresh(branchId: number | null = null): void {
 
 /** One hook per transaction; rollback discards the hook through withTx. */
 export function enqueueFinancialRefresh(tx: Tx, branchId: number | null): void {
-  if (queuedTransactions.has(tx)) {
-    const branches = queuedTransactions.get(tx);
-    if (branchId == null) queuedTransactions.set(tx, null);
-    else branches?.add(branchId);
+  if (!queuedTransactions.has(tx)) {
+    queuedTransactions.set(tx, branchId == null ? null : new Set([branchId]));
+    enqueuePostCommit(tx, () => {
+      const branches = queuedTransactions.get(tx);
+      if (!branches) scheduleFinancialRefresh(null);
+      else for (const id of Array.from(branches)) scheduleFinancialRefresh(id);
+    });
     return;
   }
-  queuedTransactions.set(tx, branchId == null ? null : new Set([branchId]));
-  enqueuePostCommit(tx, () => {
-    const branches = queuedTransactions.get(tx);
-    queuedTransactions.delete(tx);
-    if (branches == null) scheduleFinancialRefresh();
-    else branches.forEach((id) => scheduleFinancialRefresh(id));
-  });
+  const existing = queuedTransactions.get(tx);
+  if (existing === null) return;
+  if (branchId == null) queuedTransactions.set(tx, null);
+  else existing?.add(branchId);
 }

@@ -75,7 +75,6 @@ function context(): TrpcContext {
   return {
     sessionId: null,
     nativeClientId: null,
-    platformAdmin: null,
     req: { headers: {} } as TrpcContext["req"],
     res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
     user: {

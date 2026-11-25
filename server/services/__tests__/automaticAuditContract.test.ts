@@ -5,7 +5,7 @@ import {
   automaticActorForProcedure,
   buildAutomaticAuditData,
 } from "../auditService";
-import { backgroundOperationEffectCount } from "../../tenancy/backgroundTenants";
+import { backgroundOperationEffectCount } from "../../lib/backgroundJobRunner";
 
 describe("العقد العام لتتبّع الحركات", () => {
   it("ينسب الحركة إلى هدف النتيجة قبل معرّفات الأطراف في الإدخال", () => {
@@ -78,7 +78,7 @@ describe("العقد العام لتتبّع الحركات", () => {
   it("يجعل auditedProcedure الجذر الوحيد لكل إجراءات tRPC", () => {
     const source = readFileSync("server/trpc.ts", "utf8");
     const auditSource = readFileSync("server/services/auditService.ts", "utf8");
-    const backgroundSource = readFileSync("server/tenancy/backgroundTenants.ts", "utf8");
+    const backgroundSource = readFileSync("server/lib/backgroundJobRunner.ts", "utf8");
     expect(source.match(/t\.procedure/g)).toHaveLength(1);
     expect(source).toContain("t.procedure.use(auditMutationOperation)");
     expect(source).toContain("withMutationAuditScope(() => next())");

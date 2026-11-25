@@ -176,16 +176,14 @@ describe("بيان منفّذ العملية", () => {
     expect(broadcasts).toContain("operation={operation}");
   });
 
-  it("يوصل سجل الشاشة إلى كل المسارات المحمية ويعرض سجل المنصّة المستقل", () => {
+  it("يوصل سجل الشاشة إلى كل المسارات المحمية", () => {
     const app = readFileSync("client/src/App.tsx", "utf8");
     const launcher = readFileSync("client/src/components/audit/OperationAuditAccess.tsx", "utf8");
     const audit = readFileSync("client/src/pages/AuditLogs.tsx", "utf8");
-    const platform = readFileSync("client/src/pages/PlatformAdmin.tsx", "utf8");
     expect(app).toContain("<OperationAuditAccess />");
     expect(app).toContain('path="/audit"');
     expect(launcher).toContain("screenPath=");
     expect(audit).toContain("auditOperationMeta");
-    expect(platform).toContain("<PlatformAuditTable />");
   });
 });
 

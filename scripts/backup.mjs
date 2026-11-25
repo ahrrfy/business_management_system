@@ -51,47 +51,6 @@ if (process.env.BACKUP_REQUIRE_MOUNTPOINT) {
   }
 }
 
-// ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
-if (process.argv.includes("--all-companies")) {
-  const thisScript = fileURLToPath(import.meta.url);
-  const passthroughArgs = process.argv.slice(2).filter((a) => a !== "--all-companies");
-
-  let companies;
-  try {
-    const out = execFileSync("pnpm", ["exec", "tsx", "server/tenancy/cli/listCompanyConnections.ts"], {
-      encoding: "utf8",
-      shell: process.platform === "win32",
-    });
-    const lastLine = out.trim().split("\n").filter(Boolean).pop();
-    companies = JSON.parse(lastLine);
-  } catch (e) {
-    console.error("✗ فشل جلب قائمة الشركات من erp_control:", e?.message ?? e);
-    process.exit(1);
-  }
-
-  if (companies.length === 0) {
-    console.log("• لا شركات فعّالة في erp_control — لا نسخ لتنفيذها.");
-    process.exit(0);
-  }
-
-  let failedCodes = [];
-  for (const company of companies) {
-    console.log(`\n— نسخة الشركة «${company.code}» —`);
-    const result = spawnSync(process.execPath, [thisScript, ...passthroughArgs], {
-      stdio: "inherit",
-      env: { ...process.env, BACKUP_TARGET_URL: company.connectionUrl },
-    });
-    if (result.status !== 0) failedCodes.push(company.code);
-  }
-
-  if (failedCodes.length > 0) {
-    console.error(`\n✗ فشلت نسخة ${failedCodes.length} شركة/شركات: ${failedCodes.join(", ")}`);
-    process.exit(1);
-  }
-  console.log(`\n✓ نسخ احتياطي لكل الشركات الفعّالة (${companies.length}) اكتمل بنجاح.`);
-  process.exit(0);
-}
-
 const container = process.env.DB_CONTAINER ?? "erp-mysql";
 const backupDir = process.env.BACKUP_DIR ?? "backups";
 const noRotate = process.argv.includes("--no-rotate");

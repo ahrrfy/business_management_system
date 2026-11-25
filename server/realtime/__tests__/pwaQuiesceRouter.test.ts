@@ -21,14 +21,10 @@ import {
 } from "@shared/realtimeEvents";
 
 const auth = vi.hoisted(() => ({
-  companyId: 1 as number | null,
   getSession: vi.fn(),
 }));
 vi.mock("../../auth/session", () => ({
   getSessionContext: (...args: unknown[]) => auth.getSession(...args),
-}));
-vi.mock("../../tenancy/context", () => ({
-  getCurrentCompanyId: () => auth.companyId,
 }));
 vi.mock("../../logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -62,7 +58,6 @@ describe("POST realtime PWA quiescence", () => {
         return publishConfirmed(event, timeoutMs);
       },
     );
-    auth.companyId = 1;
     received.length = 0;
     auth.getSession
       .mockReset()
@@ -104,10 +99,9 @@ describe("POST realtime PWA quiescence", () => {
     return res;
   };
 
-  it("authenticates cookie and derives the actor/company scope while ignoring attacker body IDs", async () => {
-    const own = register("own", 10, 1);
-    const otherUser = register("other-user", 11, 1);
-    const otherCompany = register("other-company", 10, 2);
+  it("authenticates cookie and derives the actor scope while ignoring attacker body IDs", async () => {
+    const own = register("own", 10, null);
+    const otherUser = register("other-user", 11, null);
     const response = await post({ Cookie: `${COOKIE_NAME}=valid-session` });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -117,33 +111,28 @@ describe("POST realtime PWA quiescence", () => {
     expect(published[0]).toMatchObject({
       type: "PWA_SSE_QUIESCE",
       payload: {},
-      scope: { userId: 10, companyId: 1 },
+      scope: { userId: 10, companyId: null },
     });
     expect(own.end).toHaveBeenCalledOnce();
     expect(otherUser.end).not.toHaveBeenCalled();
-    expect(otherCompany.end).not.toHaveBeenCalled();
     expect(own.write).not.toHaveBeenCalled();
     expect(otherUser.write).not.toHaveBeenCalled();
-    expect(otherCompany.write).not.toHaveBeenCalled();
     sseManager.broadcast(
       createRealtimeEvent(
         "FINANCIAL_DATA_CHANGED",
         {},
-        { userId: 11, companyId: 1 },
+        { userId: 11 },
       ),
     );
     expect(otherUser.write).toHaveBeenCalledOnce();
   });
 
-  it("publishes an explicit null scope for the primary single-tenant context", async () => {
-    auth.companyId = null;
+  it("publishes an explicit null scope for the single-company context", async () => {
     const own = register("primary", 10, null);
-    const tenant = register("tenant", 10, 1);
     const response = await post({ Cookie: `${COOKIE_NAME}=valid-session` });
     expect(response.status).toBe(200);
     expect(published[0].scope).toEqual({ userId: 10, companyId: null });
     expect(own.end).toHaveBeenCalledOnce();
-    expect(tenant.end).not.toHaveBeenCalled();
   });
 
   it.each<{ headers: Record<string, string>; query: string }>([
@@ -165,7 +154,7 @@ describe("POST realtime PWA quiescence", () => {
   });
 
   it("rejects a cross-origin request before authentication or any stream closure", async () => {
-    const own = register("own", 10, 1);
+    const own = register("own", 10, null);
     const response = await post({
       Cookie: `${COOKIE_NAME}=valid-session`,
       Origin: "https://other.invalid",
@@ -205,7 +194,7 @@ describe("POST realtime PWA quiescence", () => {
   });
 
   it("returns a retriable failure instead of claiming release when all-worker delivery is unproven", async () => {
-    const own = register("own", 10, 1);
+    const own = register("own", 10, null);
     await realtimeBridge.init({
       inMemoryOnly: true,
       isMultiWorker: true,

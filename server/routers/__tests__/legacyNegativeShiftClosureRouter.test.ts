@@ -24,7 +24,6 @@ function context(userId: number, isOwner: boolean): TrpcContext {
       isOwner,
     } as TrpcContext["user"],
     sessionId: null,
-    platformAdmin: null,
   };
 }
 

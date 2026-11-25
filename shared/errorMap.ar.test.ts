@@ -236,9 +236,6 @@ describe("السلوك القائم محفوظ (انحدار)", () => {
 });
 
 describe("حارس المزامنة: سجلّ UNIQUE_AR يطابق قيود الهجرات الحيّة", () => {
-  // قيود خارج هجرات الشركة (قاعدة التحكّم erp_control تُنشأ من scripts/control-bootstrap).
-  const CONTROL_ONLY = new Set(["uq_provision_active_code"]);
-
   function liveUniqueKeys(): Set<string> {
     const dir = path.resolve(process.cwd(), "drizzle", "migrations");
     const files = (readdirSync(dir, { recursive: true }) as string[])
@@ -268,7 +265,7 @@ describe("حارس المزامنة: سجلّ UNIQUE_AR يطابق قيود ال
     const missing = [...live].filter((k) => !(k in UNIQUE_AR));
     expect(missing, `قيود UNIQUE بلا مدخل في UNIQUE_AR (أضِفها في shared/errorMap.ar.ts): ${missing.join(", ")}`).toEqual([]);
 
-    const stale = Object.keys(UNIQUE_AR).filter((k) => !live.has(k) && !CONTROL_ONLY.has(k));
+    const stale = Object.keys(UNIQUE_AR).filter((k) => !live.has(k));
     expect(stale, `مدخلات UNIQUE_AR لقيود غير موجودة/محذوفة: ${stale.join(", ")}`).toEqual([]);
   });
 });

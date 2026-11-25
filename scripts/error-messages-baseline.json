@@ -40,7 +40,6 @@
   "server/routers/offlineRouter.ts": 4,
   "server/routers/payrollRouter.ts": 4,
   "server/routers/periodLockRouter.ts": 1,
-  "server/routers/platformAdminRouter.ts": 1,
   "server/routers/printPosRouter.ts": 4,
   "server/routers/productionRouter.ts": 5,
   "server/routers/promotionsV2Router.ts": 16,
@@ -328,6 +327,5 @@
   "server/services/workOrder/update.ts": 11,
   "server/services/workOrderEvents.ts": 1,
   "server/services/yearEndService.ts": 41,
-  "server/tenancy/provisionRequests.ts": 4,
   "server/trpc.ts": 16
 }

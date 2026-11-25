@@ -33,9 +33,6 @@ export {
 import { hashPassword } from "../auth/password";
 import { logger } from "../logger";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { isMultiTenantModeActive } from "../db";
-import { resolveCompanyById } from "../tenancy/registry";
 import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMode } from "../lib/imageStore/r2RetentionPolicy";
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 import { canCrossBranches } from "../lib/branchAuthority";
@@ -175,28 +172,7 @@ function productContentHash(value: { name: string; description: string | null })
 }
 
 async function publishedImageUrl(imageId: number, hash: string): Promise<string> {
-  if (!isMultiTenantModeActive()) return `/api/img/product/${imageId}?v=${shortHash(hash)}`;
-  const companyId = getCurrentCompanyId();
-  if (companyId == null)
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: appErrorMessage({
-        what: "تعذّر نشر الصورة بعد اعتمادها",
-        why: "الجلسة بلا سياق شركةٍ في وضع تعدّد الشركات، ورابط الصورة العامّ يُبنى برمز الشركة",
-        doThis: "سجّل الخروج وادخل من رابط شركتك، ثمّ أعد اعتماد المهمّة",
-      }),
-    });
-  const company = await resolveCompanyById(companyId);
-  if (!company)
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: appErrorMessage({
-        what: "تعذّر نشر الصورة بعد اعتمادها",
-        why: "سجلّ الشركة المرتبط بجلستك غير مقروء، ومنه يُشتقّ رمزها في رابط الصورة العامّ",
-        doThis: "أبلغ الدعم الفنّي بتعذّر قراءة سجلّ شركتك، وأعد الاعتماد بعد إصلاحه",
-      }),
-    });
-  return `/api/img/company/${encodeURIComponent(company.code)}/product/${imageId}?v=${shortHash(hash)}`;
+  return `/api/img/product/${imageId}?v=${shortHash(hash)}`;
 }
 
 function auditValues(actor: ProductStudioActor, action: string, taskId: number, value: unknown) {
@@ -6146,7 +6122,7 @@ export async function approveStudioTask(
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
-    invalidateProductStudioCaches(getCurrentCompanyId() ?? 1, [Number(task.productId)]);
+    invalidateProductStudioCaches(1, [Number(task.productId)]);
     // إشعار الاعتماد للمصوّر — دورةٌ مغلقةٌ لسلسلة الإشعارات (أُسنِد/رُفض/اعتُمد).
     // قبله كان المصوّر يعرف الاعتماد بتحديث «السجلّ» يدوياً — احتكاكٌ مجانيّ لصمت الخادم.
     const assigneeRole = task.assignedTo == null
@@ -7701,7 +7677,7 @@ export async function quickSaveBarcodeProductImage(
           barcode: input.barcode?.slice(0, 64) ?? null,
         }),
       );
-      invalidateProductStudioCaches(getCurrentCompanyId() ?? 1, [input.productId]);
+      invalidateProductStudioCaches(1, [input.productId]);
 
       if (clientRequestId) {
         await recordIdempotencyKey(
@@ -8483,7 +8459,7 @@ export async function setProductImagePrimaryStatus(
       }),
     });
   }
-  const companyId = getCurrentCompanyId() ?? 1;
+  const companyId = 1;
 
   return await withStudioTx(async (tx) => {
     await assertStudioOperationTx(tx, actor, "productStudio.setProductImagePrimary");
@@ -8614,7 +8590,7 @@ export async function bulkApproveStudioTasks(
     return { approvedCount: 0, taskIds: [] };
   }
 
-  const companyId = getCurrentCompanyId() ?? 1;
+  const companyId = 1;
 
   return await withStudioTx(async (tx) => {
     const tasks = await tx

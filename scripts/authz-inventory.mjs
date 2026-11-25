@@ -150,13 +150,6 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
-  platformAdminProcedure: {
-    authority: "platform",
-    module: null,
-    level: null,
-    roles: ["platformAdmin"],
-    branch: false,
-  },
   managerProcedure: {
     authority: "raw-role",
     module: null,
@@ -846,7 +839,6 @@ const ROUTER_DOMAIN = {
   authRouter: "iam",
   userRouter: "iam",
   roleRouter: "iam",
-  platformAdminRouter: "platform",
   auditRouter: "audit",
   systemRouter: "admin",
   periodLockRouter: "accounting",

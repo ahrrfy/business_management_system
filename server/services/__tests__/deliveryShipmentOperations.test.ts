@@ -204,7 +204,7 @@ describe("one physical shipment with independent invoice accounting", () => {
     const view = { expectedConsignmentIds: currentView.consignmentIds!, expectedClaimAmount: currentView.codDue,
       expectedConsignmentClaims: currentView.consignmentClaims!.map(({ consignmentId, amount }) => ({ consignmentId, amount })) };
     const caller = courierRouter.createCaller({
-      req: { headers: {}, ip: "127.0.0.1", method: "POST" }, res: {}, sessionId: null, platformAdmin: null,
+      req: { headers: {}, ip: "127.0.0.1", method: "POST" }, res: {}, sessionId: null,
       user: { id: 2, role: "courier", branchId: 1, permissionsOverride: null, totpEnabledAt: new Date(), isActive: true },
     } as never);
     const beforeAck = await snapshot();

@@ -224,7 +224,6 @@ export type SessionPayload = {
   uid: number;
   iat: number;
   fp?: string;
-  companyId?: number;
   sid?: number;
   /** Explicit reissue watermark matching users.sessionsValidFrom (seconds) on self password change. */
   rvw?: number;
@@ -249,7 +248,7 @@ export async function signSession(
       }
     | null,
   iatSec?: number,
-  companyId?: number,
+  _unusedLegacyCompanyId?: number,
   sid?: number,
   deviceKeyThumbprint?: string,
   nativeClientId?: NativeClientId,
@@ -279,14 +278,6 @@ export async function signSession(
     }
   } else if (nativeClientId != null) {
     throw new Error("Native client identity requires a device-bound session");
-  }
-  // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
-  if (
-    typeof companyId === "number" &&
-    Number.isInteger(companyId) &&
-    companyId > 0
-  ) {
-    claims.companyId = companyId;
   }
   // اختياري — معرّف سطر userSessions (راجع تعليق SessionPayload). الاستدعاءات بلا sid
   // (اختبارات وحدة/مسارات لا تُنشئ سطر جلسة) تُصدر توكناً بلا تتبّع فردي، سلوك legacy.
@@ -338,6 +329,15 @@ export async function verifySession(
     // تحمل `purpose` صريحاً. جلسة signSession لا تحمل purpose إطلاقاً ⇒ رفض أي توكن يحمله يمنع
     // استعمال تذكرة 2FA كوكيَ جلسة (تجاوز التحقّق الثاني عند تسريب كلمة المرور — P1، مراجعة Codex).
     if (payload.purpose != null) return null;
+    // Reject legacy multi-tenant tokens minted for an isolated company DB so their
+    // local `uid`/`sid` values can never authenticate against `DATABASE_URL`.
+    if (payload.companyId != null) return null;
+    if (
+      typeof payload.companyCode === "string" &&
+      payload.companyCode.trim() !== ""
+    ) {
+      return null;
+    }
     const uid = Number(payload.uid);
     const iat = Number(payload.iat);
     if (!Number.isInteger(uid) || uid <= 0) return null;
@@ -347,14 +347,6 @@ export async function verifySession(
     if (iat > nowSec + 60) return null;
 
     const fp = typeof payload.fp === "string" ? payload.fp : undefined;
-    // اختياري — توكنات أُصدرت قبل تعدّد الشركات (أو في نشر أحادي الشركة) لا تحمله؛
-    // getDb() (server/db.ts) يتعامل مع غيابه بسقوط لمسار DATABASE_URL في وضع غير متعدّد.
-    const companyId =
-      typeof payload.companyId === "number" &&
-      Number.isInteger(payload.companyId) &&
-      payload.companyId > 0
-        ? payload.companyId
-        : undefined;
     // اختياري — راجع تعليق SessionPayload.sid. توكنات قبل هذه الميزة تعود بلا sid.
     const sid =
       typeof payload.sid === "number" &&
@@ -398,7 +390,7 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp, companyId, sid, rvw, dpk, dpc };
+    return { uid, iat, fp, sid, rvw, dpk, dpc };
   } catch {
     return null;
   }

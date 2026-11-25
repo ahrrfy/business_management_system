@@ -44,7 +44,6 @@ function caller(role: "admin" | "cashier") {
     } as TrpcContext["user"],
     sessionId: null,
     authenticationError: null,
-    platformAdmin: null,
   } as TrpcContext;
   return { sales: salesRouter.createCaller(context), userId, shiftId: userId };
 }

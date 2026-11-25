@@ -18,7 +18,6 @@
   "server/routers/kioskRouter.ts": 2,
   "server/routers/payrollRouter.ts": 1,
   "server/routers/periodLockRouter.ts": 1,
-  "server/routers/platformAdminRouter.ts": 2,
   "server/routers/priceWavesRouter.ts": 1,
   "server/routers/printPosRouter.ts": 2,
   "server/routers/productionRouter.ts": 2,

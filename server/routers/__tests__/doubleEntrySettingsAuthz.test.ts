@@ -26,7 +26,6 @@ function caller(role: ProbeRole) {
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 41,
       role,
@@ -45,7 +44,6 @@ function actualReportsCaller(
     req: { headers: {} },
     res: {},
     sessionId: null,
-    platformAdmin: null,
     user: {
       id: 41,
       role,
