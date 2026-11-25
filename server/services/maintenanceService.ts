@@ -142,7 +142,13 @@ async function acquireBackupRetentionLock(directory: string): Promise<(() => Pro
       const handle = await open(lockPath, "wx", 0o600);
       await handle.writeFile(`${owner}\n${new Date().toISOString()}\n`);
       await handle.close();
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void utimes(lockPath, now, now).catch(() => {});
+      }, 60_000);
+      heartbeat.unref();
       return async () => {
+        clearInterval(heartbeat);
         const cur = (await readFile(lockPath, "utf8").catch(() => "")).split("\n", 1)[0];
         if (cur === owner) await unlink(lockPath).catch(() => {});
       };
@@ -150,8 +156,9 @@ async function acquireBackupRetentionLock(directory: string): Promise<(() => Pro
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const st = await lstat(lockPath).catch(() => null);
       if (st && Date.now() - st.mtimeMs > RETENTION_LOCK_STALE_MS) {
-        await unlink(lockPath).catch(() => {});
-        continue;
+        // نفشل مغلقين بدلاً من unlink بلا CAS حتى لا يحذف طلبان متزامنان قفل المالك البديل.
+        console.error(`Stale backup retention lock requires operator review: ${lockPath}`);
+        return null;
       }
       if (i < 11) await delay(150);
     }
@@ -456,16 +463,26 @@ export async function runBackup(): Promise<BackupFile> {
         })
       ).stdout;
   const name = /^ERP_BACKUP_RESULT: ([A-Za-z0-9_.$-]+\.sql)\r?$/m.exec(stdout)?.[1];
-  const abs = name ? await resolveBackupFile(name) : null;
-  const attempt = name && abs ? await readBackupAttempt(backupsDir(), name) : null;
-  if (!name || !abs || attempt?.status !== "COMPLETED") {
+  const prefix = await backupFilePrefix();
+  const dir = backupsDir();
+  const validName = Boolean(name && isBackupSqlName(name) && matchesBackupPrefix(name, prefix));
+  const attempt = validName && name ? await readBackupAttempt(dir, name) : null;
+  if (!validName || !name || attempt?.status !== "COMPLETED") {
     throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
   }
-  const file = await lstat(abs);
-  if (!file.isFile() || file.size < 512) {
-    throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+  const abs = await resolveBackupFile(name);
+  if (abs) {
+    const file = await lstat(abs);
+    if (!file.isFile() || file.size < 512) {
+      throw new Error("ملف النسخة المطلوبة ناقص. راجع سجل النسخ قبل إعادة المحاولة.");
+    }
+    return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
   }
-  return { name, sizeKb: Math.round(file.size / 1024), createdAt: attempt.startedAt };
+  const recorded = await resolveRecordedArchive(dir, process.env.BACKUP_OFFSITE_DIR?.trim(), `${name}.gpg`);
+  if (!recorded || recorded.manifest.source.size < 512) {
+    throw new Error("تعذّر إثبات ملف النسخة التي طلبتها. راجع سجل النسخ قبل إعادة المحاولة.");
+  }
+  return { name, sizeKb: Math.round(recorded.manifest.source.size / 1024), createdAt: attempt.startedAt };
 }
 
 export function getOnlineMaintenanceBlockReason(): string | null {
