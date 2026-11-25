@@ -2762,9 +2762,57 @@ export async function releaseOnlineOrderAlertPrint(input: {
   scopedBranchId: number | null;
   leaseToken?: string | null;
   completed?: boolean;
-}): Promise<{ released: boolean; completed: boolean }> {
+  renew?: boolean;
+}): Promise<{
+  released: boolean;
+  completed: boolean;
+  renewed?: boolean;
+  leaseToken?: string | null;
+}> {
   const db = getDb();
-  if (!db) return { released: false, completed: false };
+  if (!db) return { released: false, completed: false, renewed: false, leaseToken: null };
+  if (input.renew === true) {
+    const renewToken = input.leaseToken?.trim();
+    if (!renewToken) {
+      return { released: false, completed: false, renewed: false, leaseToken: null };
+    }
+    const renewConds = [
+      eq(onlineOrders.id, input.id),
+      isNotNull(onlineOrders.alertPrintedAt),
+      sql`${onlineOrders.alertPrintedAt} < ${ALERT_PRINT_CONFIRMED_CUTOFF_SQL}`,
+      sql`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f') = ${renewToken}`,
+    ];
+    if (input.scopedBranchId != null) {
+      renewConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+    const renewRes = await db
+      .update(onlineOrders)
+      .set({ alertPrintedAt: ALERT_PRINT_LEASE_STAMP_SQL })
+      .where(and(...renewConds));
+    const renewedRows = Number(
+      (renewRes as unknown as Array<{ affectedRows?: number }>)[0]?.affectedRows ??
+        (renewRes as unknown as { affectedRows?: number })?.affectedRows ??
+        0,
+    );
+    if (renewedRows !== 1) {
+      return { released: false, completed: false, renewed: false, leaseToken: null };
+    }
+    const renewedRow = (
+      await db
+        .select({
+          leaseToken: sql<string | null>`DATE_FORMAT(${onlineOrders.alertPrintedAt}, '%Y-%m-%d %H:%i:%s.%f')`,
+        })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .limit(1)
+    )[0];
+    return {
+      released: false,
+      completed: false,
+      renewed: true,
+      leaseToken: renewedRow?.leaseToken ?? renewToken,
+    };
+  }
   if (input.completed === true) {
     const confirmConds = [
       eq(onlineOrders.id, input.id),

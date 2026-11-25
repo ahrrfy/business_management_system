@@ -294,6 +294,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
       createStoreOrderAlertCoordinator({
         hasPrinter: hasConnectedAlertThermalPrinter,
         claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
+        renew: (orderId, leaseToken) =>
+          releaseAlertMutateRef.current({ id: orderId, leaseToken, renew: true }),
         confirm: (orderId, leaseToken) =>
           releaseAlertMutateRef.current({ id: orderId, leaseToken, completed: true }),
         release: (orderId, leaseToken) =>

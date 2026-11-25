@@ -189,7 +189,12 @@ export async function renderStoreOrderAlertRaster(
 ): Promise<Raster | null> {
   if (typeof document === "undefined") return null;
   try {
-    await document.fonts?.ready;
+    if (document.fonts?.ready) {
+      await Promise.race([
+        document.fonts.ready,
+        new Promise<void>((resolve) => globalThis.setTimeout(resolve, 2_500)),
+      ]);
+    }
   } catch {
     /* المتصفح يرسم بالخط الاحتياطي عند تعذّر تحميل الخطوط */
   }
@@ -316,12 +321,17 @@ export async function hasConnectedAlertThermalPrinter(): Promise<boolean> {
 
 export async function printStoreOrderAlertSilent(
   d: StoreOrderAlertData,
-): Promise<"printed" | "no_printer" | "hardware_error"> {
+  options?: { signal?: AbortSignal },
+): Promise<"printed" | "no_printer" | "hardware_error" | "lease_lost"> {
+  const signal = options?.signal;
+  if (signal?.aborted) return "lease_lost";
   const raster = await renderStoreOrderAlertRaster(d);
   if (!raster) return "hardware_error";
+  if (signal?.aborted) return "lease_lost";
   const bytes = new EscPos().init().raster(raster).feed(2).cut().bytes();
 
   if (await isServerBridgeEnabled()) {
+    if (signal?.aborted) return "lease_lost";
     try {
       await sendRawToServer(bytes);
       return "printed";
@@ -330,6 +340,7 @@ export async function printStoreOrderAlertSilent(
     }
   }
 
+  if (signal?.aborted) return "lease_lost";
   if (!isPaired("receipt") && isWebUsbSupported()) {
     try {
       await tryReconnectPrinter("receipt");
@@ -338,6 +349,7 @@ export async function printStoreOrderAlertSilent(
     }
   }
 
+  if (signal?.aborted) return "lease_lost";
   if (!isPaired("receipt")) return "no_printer";
 
   try {
@@ -382,11 +394,16 @@ export interface StoreOrderAlertIncomingPayload {
 export function createStoreOrderAlertCoordinator(deps: {
   hasPrinter: () => Promise<boolean>;
   claim: (orderId: number) => Promise<StoreOrderAlertClaimResult | null>;
+  renew?: (
+    orderId: number,
+    leaseToken?: string | null,
+  ) => Promise<{ renewed?: boolean; leaseToken?: string | null } | null>;
   confirm?: (orderId: number, leaseToken?: string | null) => Promise<unknown>;
   release: (orderId: number, leaseToken?: string | null) => Promise<unknown>;
   print: (
     data: StoreOrderAlertData,
-  ) => Promise<"printed" | "no_printer" | "hardware_error">;
+    options?: { signal?: AbortSignal },
+  ) => Promise<"printed" | "no_printer" | "hardware_error" | "lease_lost">;
   onNotify?: (payload: StoreOrderAlertIncomingPayload) => void;
   now?: () => number;
   scheduleRetry?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -394,17 +411,22 @@ export function createStoreOrderAlertCoordinator(deps: {
   contestedRetryDelayMs?: number;
   recoveryRetryDelaysMs?: readonly number[];
   failedStationCooldownMs?: number;
+  leaseDurationMs?: number;
+  leaseRenewIntervalMs?: number;
 }) {
   const getNow = deps.now ?? (() => Date.now());
   const schedule =
     deps.scheduleRetry ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
   const cancel =
     deps.cancelRetry ?? ((handle) => globalThis.clearTimeout(handle));
+  const leaseDurationMs = deps.leaseDurationMs ?? 20_000;
+  const leaseRenewIntervalMs =
+    deps.leaseRenewIntervalMs ?? Math.max(2_000, Math.floor(leaseDurationMs * 0.4));
   const recoveryDelays =
     deps.recoveryRetryDelaysMs ??
     (deps.contestedRetryDelayMs !== undefined
-      ? [deps.contestedRetryDelayMs, 21_500]
-      : [2_500, 21_500]);
+      ? [deps.contestedRetryDelayMs, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]
+      : [2_500, leaseDurationMs + 1_500, leaseDurationMs * 2 + 3_000]);
   const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
 
   const notifiedOrderIds = new Set<number>();
@@ -413,7 +435,8 @@ export function createStoreOrderAlertCoordinator(deps: {
   const recoveryStepByOrder = new Map<number, number>();
   const failedCooldownUntil = new Map<number, number>();
   const pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
-  const confirmRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+  const auxTimers = new Set<ReturnType<typeof setTimeout>>();
+  const activePrintAborts = new Set<AbortController>();
 
   const boundSet = (set: Set<number>, keep: number) => {
     if (set.size > 200) {
@@ -475,7 +498,6 @@ export function createStoreOrderAlertCoordinator(deps: {
       try {
         claimRes = await deps.claim(orderId);
       } catch {
-        // إذا فُقدت استجابة المطالبة بعد التزامها على الخادم أو حدث انقطاع عابر، نجدول استرداداً بعد انتهاء الإيجار.
         scheduleNextRecovery(payload);
         return;
       }
@@ -490,20 +512,99 @@ export function createStoreOrderAlertCoordinator(deps: {
       }
 
       if (!claimRes?.claimed) {
-        // محطة أخرى تحمل إيجاراً نشطاً: نجدول محاولات استرداد تحسّباً لإغلاق نافذتها أو تعثّر شبكتها قبل الإقرار.
         scheduleNextRecovery(payload);
         return;
       }
 
       clearPendingTimer(orderId);
-      const outcome = await deps
-        .print({
-          orderNumber: claimRes.orderNumber ?? payload.orderNumber,
-          createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
-          itemsCount: claimRes.itemCount || payload.itemsCount || 1,
-          totalAmount: claimRes.total ?? payload.totalAmount,
-        })
-        .catch(() => "hardware_error" as const);
+      let activeLeaseToken = claimRes.leaseToken ?? null;
+      let localLeaseDeadline = getNow() + leaseDurationMs;
+      let printDone = false;
+      const abortController = new AbortController();
+      activePrintAborts.add(abortController);
+      let renewTimer: ReturnType<typeof setTimeout> | null = null;
+      let expiryGuardTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const stopLeaseTimers = () => {
+        if (renewTimer !== null) {
+          cancel(renewTimer);
+          auxTimers.delete(renewTimer);
+          renewTimer = null;
+        }
+        if (expiryGuardTimer !== null) {
+          cancel(expiryGuardTimer);
+          auxTimers.delete(expiryGuardTimer);
+          expiryGuardTimer = null;
+        }
+      };
+
+      const armExpiryGuard = () => {
+        if (expiryGuardTimer !== null) {
+          cancel(expiryGuardTimer);
+          auxTimers.delete(expiryGuardTimer);
+        }
+        const guardDelay = Math.max(250, localLeaseDeadline - getNow() - 1_000);
+        expiryGuardTimer = schedule(() => {
+          auxTimers.delete(expiryGuardTimer!);
+          expiryGuardTimer = null;
+          if (!printDone && getNow() >= localLeaseDeadline - 1_000) {
+            abortController.abort();
+          }
+        }, guardDelay);
+        auxTimers.add(expiryGuardTimer);
+      };
+
+      const scheduleLeaseRenewal = () => {
+        if (printDone || !deps.renew) return;
+        renewTimer = schedule(async () => {
+          auxTimers.delete(renewTimer!);
+          renewTimer = null;
+          if (printDone || abortController.signal.aborted) return;
+          try {
+            const renewed = await deps.renew!(orderId, activeLeaseToken);
+            if (printDone) return;
+            if (renewed?.renewed) {
+              activeLeaseToken = renewed.leaseToken ?? activeLeaseToken;
+              localLeaseDeadline = getNow() + leaseDurationMs;
+              armExpiryGuard();
+              scheduleLeaseRenewal();
+              return;
+            }
+            if (renewed && renewed.renewed === false) {
+              abortController.abort();
+              return;
+            }
+          } catch {
+            // retry renewal while within local lease window
+          }
+          if (!printDone && !abortController.signal.aborted) {
+            scheduleLeaseRenewal();
+          }
+        }, leaseRenewIntervalMs);
+        auxTimers.add(renewTimer);
+      };
+
+      armExpiryGuard();
+      scheduleLeaseRenewal();
+
+      let outcome: "printed" | "no_printer" | "hardware_error" | "lease_lost" = "hardware_error";
+      try {
+        outcome = await deps
+          .print(
+            {
+              orderNumber: claimRes.orderNumber ?? payload.orderNumber,
+              createdAt: claimRes.createdAt ?? payload.createdAt ?? new Date(),
+              itemsCount: claimRes.itemCount || payload.itemsCount || 1,
+              totalAmount: claimRes.total ?? payload.totalAmount,
+            },
+            { signal: abortController.signal },
+          )
+          .catch(() => "hardware_error" as const);
+      } finally {
+        printDone = true;
+        stopLeaseTimers();
+        activePrintAborts.delete(abortController);
+      }
 
       if (outcome === "printed") {
         printedOrderIds.add(orderId);
@@ -511,24 +612,29 @@ export function createStoreOrderAlertCoordinator(deps: {
         recoveryStepByOrder.delete(orderId);
         failedCooldownUntil.delete(orderId);
         if (deps.confirm) {
+          const tokenToConfirm = activeLeaseToken;
           try {
-            await deps.confirm(orderId, claimRes.leaseToken ?? null);
+            await deps.confirm(orderId, tokenToConfirm);
           } catch {
             const retryHandle = schedule(() => {
-              confirmRetryTimers.delete(retryHandle);
-              void deps.confirm?.(orderId, claimRes?.leaseToken ?? null).catch(() => {});
+              auxTimers.delete(retryHandle);
+              void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
             }, 2_000);
-            confirmRetryTimers.add(retryHandle);
+            auxTimers.add(retryHandle);
           }
         }
         return;
       }
 
-      // تعثّرت الطابعة فيزيائياً بعد أخذ الإيجار: تهدئة قصيرة على هذه المحطة وتحرير الإيجار،
-      // وإن تعذّر التحرير شبكياً تضمن جدولة الاسترداد إعادة المحاولة بعد انتهاء الإيجار.
+      if (outcome === "lease_lost" || abortController.signal.aborted) {
+        failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
+        scheduleNextRecovery(payload);
+        return;
+      }
+
       failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
       try {
-        await deps.release(orderId, claimRes.leaseToken ?? null);
+        await deps.release(orderId, activeLeaseToken);
       } catch {
         scheduleNextRecovery(payload);
       }
@@ -554,14 +660,18 @@ export function createStoreOrderAlertCoordinator(deps: {
       return attemptPrint(payload);
     },
     dispose(): void {
+      activePrintAborts.forEach((ctrl) => {
+        ctrl.abort();
+      });
+      activePrintAborts.clear();
       pendingTimers.forEach((timer) => {
         cancel(timer);
       });
       pendingTimers.clear();
-      confirmRetryTimers.forEach((timer) => {
+      auxTimers.forEach((timer) => {
         cancel(timer);
       });
-      confirmRetryTimers.clear();
+      auxTimers.clear();
     },
   };
 }

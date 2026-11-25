@@ -485,13 +485,13 @@ const ordersRouter = router({
       };
     }),
 
-  /** إقرار اكتمال طباعة الإشعار أو تحرير حجزه المؤقت إذا تعذّر الإرسال الفيزيائي للطابعة */
+  /** إقرار اكتمال طباعة الإشعار أو تجديد/تحرير حجزه المؤقت إذا تعذّر الإرسال الفيزيائي للطابعة */
   releaseNotificationPrint: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional() }))
+    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user)) return { released: false, completed: false };
+      if (!isStoreOrderAlertRecipientUser(ctx.user)) return { released: false, completed: false, renewed: false, leaseToken: null };
       return releaseOnlineOrderAlertPrint({
-        id: input.id,
+        id: input.id, renew: input.renew === true,
         scopedBranchId: actorScopedBranch(ctx.user),
         leaseToken: input.leaseToken ?? null,
         completed: input.completed === true,

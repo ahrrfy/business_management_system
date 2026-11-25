@@ -812,7 +812,8 @@ input[type="month"]::-webkit-calendar-picker-indicator {
     .dark .storefront .store-glass-card,
     .dark .storefront .store-translucent-chrome,
     .dark .storefront .store-product-card {
-      border-color: rgba(255, 255, 255, 0.32) !important;
+      border-color: rgba(255, 255, 255, 0.45) !important;
+      background: #0f172a !important;
     }
   }
 
