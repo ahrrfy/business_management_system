@@ -798,9 +798,22 @@ export async function generateBannerSceneBackdrop(
   }
 
   const isStageOnly = input.sceneMode === "STAGE_BACKDROP";
+  const requestedProductIds = Array.from(
+    new Set((input.productIds ?? []).filter((id) => Number.isInteger(id) && id > 0)),
+  ).slice(0, 5);
   const { refs, names } = isStageOnly
     ? { refs: [] as Array<{ data: string; mimeType: string }>, names: [] as string[] }
-    : await loadProductReferenceImages(input.productIds ?? []);
+    : await loadProductReferenceImages(requestedProductIds);
+  if (!isStageOnly && (requestedProductIds.length === 0 || refs.length < requestedProductIds.length)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر توليد المشهد المرجعي الكامل",
+        why: "يجب توفّر صورة معتمدة وقابلة للقراءة لكل منتج مختار في المشهد الكامل لضمان عدم حذف أي صنف",
+        doThis: "استخدم وضع «هجين أمين 100%» أو اختر منتجات تملك صوراً معتمدة مكتملة",
+      }),
+    });
+  }
   const prompt = buildAiBannerScenePrompt({
     presetId: input.presetId,
     placement: input.placement,
