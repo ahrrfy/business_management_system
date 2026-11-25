@@ -329,6 +329,15 @@ export async function verifySession(
     // تحمل `purpose` صريحاً. جلسة signSession لا تحمل purpose إطلاقاً ⇒ رفض أي توكن يحمله يمنع
     // استعمال تذكرة 2FA كوكيَ جلسة (تجاوز التحقّق الثاني عند تسريب كلمة المرور — P1، مراجعة Codex).
     if (payload.purpose != null) return null;
+    // Reject legacy multi-tenant tokens minted for an isolated company DB so their
+    // local `uid`/`sid` values can never authenticate against `DATABASE_URL`.
+    if (payload.companyId != null) return null;
+    if (
+      typeof payload.companyCode === "string" &&
+      payload.companyCode.trim() !== ""
+    ) {
+      return null;
+    }
     const uid = Number(payload.uid);
     const iat = Number(payload.iat);
     if (!Number.isInteger(uid) || uid <= 0) return null;

@@ -59,6 +59,13 @@ export async function verifyTwoFactorTicket(
       clockTolerance: 60,
     });
     if (payload.purpose !== "2fa") return null;
+    if (payload.companyId != null) return null;
+    if (
+      typeof payload.companyCode === "string" &&
+      payload.companyCode.trim() !== ""
+    ) {
+      return null;
+    }
     const uid = Number(payload.uid);
     if (!Number.isInteger(uid) || uid <= 0) return null;
     const fp = typeof payload.fp === "string" ? payload.fp : "";
