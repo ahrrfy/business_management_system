@@ -51,6 +51,37 @@ export interface CompanyIdentityData {
   logoUrl?: string | null;
 }
 
+const UNSAFE_LOGO_URL_CHARS_RE = /[<>"'`\\\s\u0000-\u001f\u007f]/;
+const SAFE_RASTER_DATA_IMAGE_RE =
+  /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/i;
+
+/**
+ * يتحقّق من سلامة رابط الشعار ويمنع محارف كسر السمات (`"`, `<`, `>`) أو بروتوكولات التنفيذ (`javascript:` / `data:image/svg+xml`).
+ */
+export function sanitizeCompanyLogoUrl(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const u = raw.trim();
+  if (!u) return null;
+  if (UNSAFE_LOGO_URL_CHARS_RE.test(u)) return null;
+  if (u.startsWith("/") && !u.startsWith("//")) {
+    return u;
+  }
+  if (SAFE_RASTER_DATA_IMAGE_RE.test(u)) {
+    return u;
+  }
+  if (/^https?:\/\//i.test(u)) {
+    try {
+      const parsed = new URL(u);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        return parsed.toString() === u || parsed.href ? u : null;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * يدمج بيانات الشركة الديناميكية مع القيم الافتراضية المرجعية.
  * تمنح الأولوية للبيانات المخصصة المحفوظة، مع الحفاظ على قيم الطوارئ الافتراضية.
@@ -74,7 +105,7 @@ export function resolveCompanyIdentity(override?: Partial<CompanyIdentityData> |
     (address && defaultFirstTwoPhones
       ? `${address} · ${defaultFirstTwoPhones}`
       : (address ? address : COMPANY_IDENTITY.footerLine));
-  const logoUrl = override.logoUrl?.trim() || null;
+  const logoUrl = sanitizeCompanyLogoUrl(override.logoUrl);
 
   return {
     name,

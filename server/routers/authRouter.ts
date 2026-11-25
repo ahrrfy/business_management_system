@@ -203,7 +203,7 @@ export const authRouter = router({
         ctx.user.inheritedOperationPolicyRevision ?? 0,
       photoUrl,
       hasPin,
-      badgeBarcode: (ctx.user as any).badgeBarcode ?? null,
+      hasBadgeBarcode: Boolean((ctx.user as any).badgeBarcode),
       role: safe.isOwner ? "admin" : safe.role,
       companyId: getCurrentCompanyId(),
       mustEnroll2FA,

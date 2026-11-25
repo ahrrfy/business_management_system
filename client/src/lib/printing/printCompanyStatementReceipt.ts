@@ -133,7 +133,7 @@ export function renderCompanyStatementReceiptHtml(
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
-    ${logo ? `<img src="${logo}" style="height:44px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ""}
+    ${logo ? `<img src="${esc(logo)}" style="height:44px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ""}
     <div style="font-size:15px;font-weight:900;color:#000;">${esc(CO.name)}</div>
     <div style="font-size:11px;font-weight:800;color:#000;">${esc(CO.sub)}</div>
   </div>

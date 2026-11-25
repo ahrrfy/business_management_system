@@ -39,7 +39,7 @@ export async function printAssetLabel(a: AssetLabelData): Promise<void> {
     .divider{width:100%;border-top:1px dashed #999;margin:1.5mm 0;}
   </style></head>
   <body>
-    <div class="brand"><img src="${logo}" alt="" onerror="this.style.display='none'"><span>${esc(CO.sub)}</span></div>
+    <div class="brand"><img src="${esc(logo)}" alt="" onerror="this.style.display='none'"><span>${esc(CO.sub)}</span></div>
     <div class="divider"></div>
     <div class="name">${esc(a.name)}</div>
     <div class="qr">${qrSvg}</div>

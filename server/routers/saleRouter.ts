@@ -9,6 +9,11 @@ import {
   listCheckoutChargeOptions,
 } from "../services/checkoutCharges";
 import { failOpaque } from "../lib/opaqueFailure";
+import {
+  hashBadgeBarcode,
+  isPlaintextManagerBadgeFormat,
+  matchesStoredBadgeBarcode,
+} from "../lib/badgeBarcodeCrypto";
 import { canonicalOperationAllowed } from "../operationAuthorization";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
@@ -296,7 +301,7 @@ export async function verifyManagerApproval(
         outcome: "FAILURE",
         newValue: {
           method,
-          barcode,
+          targetMgrKey: targetMgrKey ?? null,
           attempts: mgrApprovalAttempts.get(attemptKey)?.length ?? 0,
         },
       });
@@ -310,13 +315,15 @@ export async function verifyManagerApproval(
       });
     }
 
-    u = (
-      await db
+    if (isPlaintextManagerBadgeFormat(barcode)) {
+      const badgeHash = hashBadgeBarcode(barcode);
+      const candidates = await db
         .select()
         .from(users)
-        .where(eq(users.badgeBarcode, barcode))
-        .limit(1)
-    )[0];
+        .where(inArray(users.badgeBarcode, [badgeHash, barcode]))
+        .limit(2);
+      u = candidates.find((row) => matchesStoredBadgeBarcode(row.badgeBarcode, barcode));
+    }
     if (u && isAccountAuthenticationLocked(u)) {
       throw new TRPCError({
         code: "TOO_MANY_REQUESTS",

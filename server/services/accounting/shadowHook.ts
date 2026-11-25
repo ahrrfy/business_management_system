@@ -16,6 +16,7 @@ import {
 } from "./journalStore";
 import { postingLinesFor } from "./postingEngine";
 import type { Tx } from "../../db";
+import { rethrowIfTransactionFatal } from "../../lib/txFatalError";
 
 /**
  * يكتب القيد المزدوج ظلّاً لحدثٍ ماليٍّ أُدرِج للتوّ. آمنٌ للاستدعاء من أيّ مسار كتابةٍ ماليّ.
@@ -61,7 +62,8 @@ export async function shadowPost(
         cycleId,
         postingProfile,
       });
-    } catch {
+    } catch (gapErr) {
+      rethrowIfTransactionFatal(gapErr);
       // SHADOW أفضل جهد: ستظهر محاولة الفجوة الفاشلة كقيد مفقود في المطابقة.
     }
   };
@@ -110,6 +112,7 @@ export async function shadowPost(
       postingProfile: e.postingIntent.profile,
     });
   } catch (err) {
+    rethrowIfTransactionFatal(err);
     if (mode === "ACTIVE") throw err;
     await gapOrThrow(
       err instanceof Error

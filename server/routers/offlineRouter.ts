@@ -508,7 +508,7 @@ export const offlineRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { effectiveBranchId, actor, canApprove } = scopeActor(
+      const { effectiveBranchId, actor } = scopeActor(
         ctx,
         input.branchId,
       );
@@ -521,8 +521,7 @@ export const offlineRouter = router({
           effectiveBranchId,
         );
       }
-      const priceOverrideApproved =
-        (approvedBy ?? (canApprove ? ctx.user.id : null)) != null;
+      const priceOverrideApproved = approvedBy != null;
       return runReplay(
         () =>
           replayOfflinePrintSale(
@@ -617,7 +616,7 @@ export const offlineRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { effectiveBranchId, actor, canApprove } = scopeActor(
+      const { effectiveBranchId, actor } = scopeActor(
         ctx,
         input.branchId,
       );
@@ -630,8 +629,7 @@ export const offlineRouter = router({
           effectiveBranchId,
         );
       }
-      const priceOverrideApproved =
-        (approvedBy ?? (canApprove ? ctx.user.id : null)) != null;
+      const priceOverrideApproved = approvedBy != null;
       return runReplay(
         () =>
           replayOfflineReception(

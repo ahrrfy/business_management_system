@@ -85,7 +85,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
   @media print{body{background:#fff}.page{margin:0}@page{size:A4;margin:0}}
 </style></head>
 <body><div class="page">
-  <div class="hd"><img src="${logoUrl()}" alt=""><div class="co">${esc(CO.name)}<small>${esc(CO.sub)}</small></div></div>
+  <div class="hd"><img src="${esc(logoUrl())}" alt=""><div class="co">${esc(CO.name)}<small>${esc(CO.sub)}</small></div></div>
   <div class="title"><span class="band">سند ${esc(TYPE_AR[note.noteType])}</span></div>
   <div class="meta">
     <div class="box"><b>المودِع:</b> ${esc(note.consignorName)}${note.consignorPhone ? ` — ${esc(note.consignorPhone)}` : ""}</div>

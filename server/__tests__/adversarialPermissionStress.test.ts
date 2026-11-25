@@ -594,20 +594,22 @@ describe("Adversarial Stress & Property Checks: Milestone 2 Persistence (R3)", (
         "id", "name", "email", "username", "phone", "role", "customRoleId",
         "branchId", "isActive", "isOwner", "jobTitle", "hiredAt",
         "permissionsOverride", "atomicPermissions", "operationalCaps",
-        "mustChangePassword", "lastSignedIn", "createdAt", "badgeBarcode", "hasPin",
+        "mustChangePassword", "lastSignedIn", "createdAt", "hasBadgeBarcode", "hasPin",
       ];
 
       const projectedUser: Record<string, any> = {};
       for (const k of safeKeys) {
         if (k === "hasPin") {
           projectedUser[k] = rawDbRow.pinHash !== null;
+        } else if (k === "hasBadgeBarcode") {
+          projectedUser[k] = rawDbRow.badgeBarcode !== null;
         } else {
           projectedUser[k] = (rawDbRow as any)[k];
         }
       }
 
       // Assert that none of the sensitive fields exist on projectedUser
-      for (const secretField of SENSITIVE_FIELDS) {
+      for (const secretField of [...SENSITIVE_FIELDS, "badgeBarcode"]) {
         expect(projectedUser[secretField]).toBeUndefined();
       }
 

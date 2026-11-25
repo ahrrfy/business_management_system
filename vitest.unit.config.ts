@@ -726,6 +726,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/lib/printing/__tests__/storeOrderAlertSlip.test.ts",
       "server/services/accounting/custodyRecoveryPosting.test.ts",
       "server/services/__tests__/reconcileEmployeeAdvances.unit.test.ts",
+      "server/__tests__/wave1SecurityAndTxSafety.test.ts",
 ];
 
 export default defineConfig({

@@ -5,7 +5,7 @@ import {
   REALTIME_EVENT_TYPES,
   createRealtimeEvent,
 } from "@shared/realtimeEvents";
-import { getSessionContext } from "../auth/session";
+import { authenticateExpressRequest } from "../auth/expressAuth";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
@@ -26,11 +26,14 @@ realtimeRouter.post(
         res.status(401).json({ error: "UNAUTHORIZED" });
         return;
       }
-      const { user } = await getSessionContext(req);
-      if (!user) {
-        res.status(401).json({ error: "UNAUTHORIZED" });
+      const auth = await authenticateExpressRequest(req, {
+        allowPendingOnboarding: true,
+      });
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: "UNAUTHORIZED" });
         return;
       }
+      const user = auth.user;
       const released = await publishToBridgeConfirmed(
         createRealtimeEvent(
           PWA_SSE_QUIESCE_EVENT,
@@ -66,16 +69,23 @@ realtimeRouter.post(
  */
 realtimeRouter.get("/stream", async (req: Request, res: Response) => {
   try {
-    // 1. استخراج التوكن من الكوكي أو query أو Authorization
+    // 1. استخراج التوكن من الكوكي أو ترويسة Authorization فقط (حُذف query token لمنع تسريبه في السجلات)
     const cookies = parseCookie(req.headers.cookie ?? "");
     const cookieToken = cookies[COOKIE_NAME];
-    const queryToken = typeof req.query.token === "string" ? req.query.token : undefined;
     const authHeader = req.headers.authorization;
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice(7).trim()
       : undefined;
 
-    const token = cookieToken ?? queryToken ?? bearerToken;
+    if (typeof req.query.token === "string" && req.query.token.trim() !== "") {
+      res.status(400).json({
+        error: "QUERY_TOKEN_FORBIDDEN",
+        message: "لا يُسمح بتمرير رمز الجلسة في رابط الاستعلام؛ استخدم الكوكي أو ترويسة Authorization.",
+      });
+      return;
+    }
+
+    const token = cookieToken ?? bearerToken;
     if (!token) {
       res.status(401).json({
         error: "UNAUTHORIZED",
@@ -84,28 +94,27 @@ realtimeRouter.get("/stream", async (req: Request, res: Response) => {
       return;
     }
 
-    // إذا وُجد التوكن في query أو header ولم يكن في الكوكي، نغذيه للطلب مع الحفاظ على بقية الكوكيز
+    // إذا وُجد التوكن في ترويسة Authorization ولم يكن في الكوكي، نغذيه للطلب مع الحفاظ على بقية الكوكيز
     if (!cookieToken && token) {
       req.headers.cookie = req.headers.cookie
         ? `${req.headers.cookie}; ${COOKIE_NAME}=${token}`
         : `${COOKIE_NAME}=${token}`;
     }
 
-    // 2. التحقق الخاطف لمرة واحدة من الجلسة (Handshake) — يُغلق استعلام DB فوراً
-    const sessionCtx = await getSessionContext(req);
-    const user = sessionCtx.user;
-
-    if (!user) {
-      res.status(401).json({
-        error: "UNAUTHORIZED",
-        message: "جلسة غير صالحة أو منتهية الصلاحية.",
+    // 2. التحقق الخاطف لمرة واحدة من الجلسة + 2FA + الدور المخصص — يُغلق استعلام DB فوراً
+    const auth = await authenticateExpressRequest(req);
+    if (!auth.ok) {
+      res.status(auth.status).json({
+        error: auth.status === 401 ? "UNAUTHORIZED" : "FORBIDDEN",
+        message: auth.error,
       });
       return;
     }
+    const user = auth.user;
 
     // 3. تحديد الفرع المعزول وفق سلطة الفاعل (Branch Authority)
     let scopedBranchId: number | null = null;
-    const userCanCross = canCrossBranches({ role: user.role });
+    const userCanCross = canCrossBranches(user);
 
     if (userCanCross) {
       // الأدمن والمدير العام: إمكانية اختيار فرع محدد للمراقبة أو استلام أحداث كافة الفروع
@@ -171,7 +180,17 @@ realtimeRouter.get("/stream", async (req: Request, res: Response) => {
 /**
  * نقطة فحص حالة خادم اللحظية والمقاييس: GET /api/realtime/health & /healthz
  */
-const healthHandler = (_req: Request, res: Response) => {
+const healthHandler = async (req: Request, res: Response) => {
+  res.setHeader("Cache-Control", "no-store");
+  const auth = await authenticateExpressRequest(req).catch(() => ({ ok: false as const }));
+  if (!auth.ok || (auth.user.role !== "admin" && !auth.user.isOwner)) {
+    res.json({
+      status: "healthy",
+      timestamp: Date.now(),
+    });
+    return;
+  }
+
   const sseStats = sseManager.getStats();
   const bridgeStatus = getBridgeStatus();
   const mem = process.memoryUsage();

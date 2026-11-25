@@ -955,7 +955,7 @@ function defaultRollbackPreflightOperations(snapshot, environment) {
             PORT: String(port),
             ALLOW_PUBLIC_BIND: "0",
             NODE_APP_INSTANCE: "rollback-preflight",
-            WEB_INSTANCES: "2",
+            WEB_INSTANCES: "1",
           },
           stdio: "ignore",
         },

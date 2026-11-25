@@ -37,23 +37,32 @@ jobs:
     timeout-minutes: 15
     env:
       PR_HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.inputs.ref }}
-      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_CHECKOUT_REF: ${{ github.event.pull_request.head.sha || github.event.inputs.ref }}
       BASE_REF: ${{ github.event.pull_request.base.ref || github.event.inputs.base_ref || 'main' }}
     steps:
+      - name: Guard against protected main branch target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${PR_HEAD_REF}" ] || [ "${PR_HEAD_REF}" = "main" ] || [ "${PR_HEAD_REF}" = "refs/heads/main" ]; then
+            echo "::error::لا يُسمح بتشغيل ci-autofix مباشرة على الفرع المحمي main."
+            exit 1
+          fi
+
       - name: Checkout the requested same-repository branch
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.PR_HEAD_SHA }}
+          ref: ${{ env.PR_CHECKOUT_REF }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Determine changed source files
         id: changed
@@ -61,13 +70,13 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin "${BASE_REF}" --depth=1
-          git diff --name-only "origin/${BASE_REF}...HEAD" -- \
+          git diff --name-only -z "origin/${BASE_REF}...HEAD" -- \
             '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' \
             ':!dist/**' ':!node_modules/**' \
-            > /tmp/ci-autofix-files.txt
-          if [ -s /tmp/ci-autofix-files.txt ]; then
+            > /tmp/ci-autofix-files.bin
+          if [ -s /tmp/ci-autofix-files.bin ]; then
             echo "has_files=true" >> "$GITHUB_OUTPUT"
-            cat /tmp/ci-autofix-files.txt
+            tr '\0' '\n' < /tmp/ci-autofix-files.bin
           else
             echo "has_files=false" >> "$GITHUB_OUTPUT"
             echo "لا توجد ملفات مصدر قابلة للإصلاح التلقائي."
@@ -75,7 +84,7 @@ jobs:
 
       - name: Apply formatting-only fixes
         if: steps.changed.outputs.has_files == 'true'
-        run: xargs -r pnpm exec prettier --write < /tmp/ci-autofix-files.txt
+        run: xargs -0 -r pnpm exec prettier --write -- < /tmp/ci-autofix-files.bin
 
       - name: Verify the generated patch
         if: steps.changed.outputs.has_files == 'true'
@@ -93,6 +102,8 @@ jobs:
       - name: Commit and push to the Pull Request branch only
         if: steps.changed.outputs.has_files == 'true'
         shell: bash
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if git diff --quiet; then exit 0; fi
@@ -100,4 +111,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'
           git commit -m "chore(ci): apply deterministic formatting fixes"
-          git push origin "HEAD:refs/heads/${PR_HEAD_REF}"
+          AUTH_B64="$(printf 'x-access-token:%s' "${GH_PUSH_TOKEN}" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${AUTH_B64}" \
+            push origin "HEAD:refs/heads/${PR_HEAD_REF}"

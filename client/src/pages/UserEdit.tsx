@@ -1019,6 +1019,10 @@ function UserManagerBadgeCard({
 }) {
   const utils = trpc.useUtils();
   const [pinInput, setPinInput] = useState("");
+  const [issuedBarcode, setIssuedBarcode] = useState<string | null>(null);
+  useEffect(() => {
+    setIssuedBarcode(null);
+  }, [userId]);
   const setPinMut = trpc.users.setPin.useMutation({
     onSuccess: async () => {
       await utils.users.get.invalidate({ userId });
@@ -1037,15 +1041,17 @@ function UserManagerBadgeCard({
   });
 
   const genBadgeMut = trpc.users.generateBadgeBarcode.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      setIssuedBarcode(res.barcode);
       await utils.users.get.invalidate({ userId });
-      notify.ok("تم توليد شارة الباركود بنجاح");
+      notify.ok("تم توليد شارة الباركود بنجاح — اطبعها الآن إذ لا يُعرض الرمز لاحقاً");
     },
     onError: (err) => notify.err(err.message || "فشل توليد شارة الباركود"),
   });
 
   const clearBadgeMut = trpc.users.clearBadgeBarcode.useMutation({
     onSuccess: async () => {
+      setIssuedBarcode(null);
       await utils.users.get.invalidate({ userId });
       notify.ok("تم إلغاء شارة الباركود بنجاح");
     },
@@ -1053,6 +1059,7 @@ function UserManagerBadgeCard({
   });
 
   if (!user) return null;
+  const hasBadge = Boolean(user.hasBadgeBarcode || issuedBarcode);
 
   return (
     <Card>
@@ -1137,9 +1144,14 @@ function UserManagerBadgeCard({
               <ScanLine className="size-4 text-primary" aria-hidden />
               شارة الاعتماد الممسوحة (باركود مباشر)
             </span>
-            {user.badgeBarcode ? (
+            {issuedBarcode ? (
               <span className="text-xs font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded" dir="ltr">
-                {user.badgeBarcode}
+                {issuedBarcode}
+              </span>
+            ) : hasBadge ? (
+              <span className="text-xs font-medium text-money-positive bg-money-positive/10 px-2 py-0.5 rounded flex items-center gap-1">
+                <ShieldCheck className="size-3.5" aria-hidden />
+                صادرة ومحمية بتشفير أحادي الاتجاه
               </span>
             ) : (
               <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
@@ -1148,63 +1160,72 @@ function UserManagerBadgeCard({
             )}
           </div>
 
-          {user.badgeBarcode ? (
+          {hasBadge ? (
             <div className="space-y-3">
+              {!issuedBarcode && (
+                <p className="text-xs text-muted-foreground">
+                  لأسباب أمنية لا يُخزَّن نص الشارة قابلاً للقراءة بعد إصدارها. لإعادة الطباعة اضغط «تجديد الباركود» ثم اطبع الشارة الجديدة فوراً.
+                </p>
+              )}
               <div className="flex gap-2 flex-wrap items-center">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const branch = branches?.find((b) => b.id === user.branchId);
-                    printManagerBadge({
-                      userName: user.name ?? "",
-                      userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
-                      userIdentifier: user.username ?? user.email ?? "",
-                      branchName: branch?.name,
-                      badgeBarcode: user.badgeBarcode,
-                    }, "card");
-                  }}
-                >
-                  <Printer className="size-3.5 ml-1" aria-hidden />
-                  طباعة شارة (بطاقة هوية)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const branch = branches?.find((b) => b.id === user.branchId);
-                    printManagerBadge({
-                      userName: user.name ?? "",
-                      userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
-                      userIdentifier: user.username ?? user.email ?? "",
-                      branchName: branch?.name,
-                      badgeBarcode: user.badgeBarcode,
-                    }, "thermal");
-                  }}
-                >
-                  <Printer className="size-3.5 ml-1" aria-hidden />
-                  طباعة شارة (طابعة إيصالات 80مم)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const branch = branches?.find((b) => b.id === user.branchId);
-                    printManagerBadge({
-                      userName: user.name ?? "",
-                      userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
-                      userIdentifier: user.username ?? user.email ?? "",
-                      branchName: branch?.name,
-                      badgeBarcode: user.badgeBarcode,
-                    }, "thermal-58");
-                  }}
-                >
-                  <Printer className="size-3.5 ml-1" aria-hidden />
-                  طباعة شارة (طابعة إيصالات 58مم)
-                </Button>
+                {issuedBarcode && (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const branch = branches?.find((b) => b.id === user.branchId);
+                        printManagerBadge({
+                          userName: user.name ?? "",
+                          userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
+                          userIdentifier: user.username ?? user.email ?? "",
+                          branchName: branch?.name,
+                          badgeBarcode: issuedBarcode,
+                        }, "card");
+                      }}
+                    >
+                      <Printer className="size-3.5 ml-1" aria-hidden />
+                      طباعة شارة (بطاقة هوية)
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const branch = branches?.find((b) => b.id === user.branchId);
+                        printManagerBadge({
+                          userName: user.name ?? "",
+                          userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
+                          userIdentifier: user.username ?? user.email ?? "",
+                          branchName: branch?.name,
+                          badgeBarcode: issuedBarcode,
+                        }, "thermal");
+                      }}
+                    >
+                      <Printer className="size-3.5 ml-1" aria-hidden />
+                      طباعة شارة (طابعة إيصالات 80مم)
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const branch = branches?.find((b) => b.id === user.branchId);
+                        printManagerBadge({
+                          userName: user.name ?? "",
+                          userRole: ROLE_LABEL[user.role as RoleKey] ?? user.role ?? "مدير",
+                          userIdentifier: user.username ?? user.email ?? "",
+                          branchName: branch?.name,
+                          badgeBarcode: issuedBarcode,
+                        }, "thermal-58");
+                      }}
+                    >
+                      <Printer className="size-3.5 ml-1" aria-hidden />
+                      طباعة شارة (طابعة إيصالات 58مم)
+                    </Button>
+                  </>
+                )}
                 <Button
                   type="button"
                   variant="outline"

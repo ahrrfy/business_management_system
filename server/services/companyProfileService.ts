@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { companyProfile, taxSettings } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
-import { COMPANY_IDENTITY } from "@shared/companyIdentity";
+import { COMPANY_IDENTITY, sanitizeCompanyLogoUrl } from "@shared/companyIdentity";
 
 export interface CompanyPhoneItem {
   label: string;
@@ -177,7 +177,18 @@ export async function updateCompanyProfile(
   const chamberLicense = input.chamberLicense?.trim() || null;
   const address = input.address?.trim() || null;
   const footerText = input.footerText?.trim() || null;
-  const logoUrl = input.logoUrl?.trim() || null;
+  const rawLogo = input.logoUrl?.trim() || null;
+  const logoUrl = rawLogo ? sanitizeCompanyLogoUrl(rawLogo) : null;
+  if (rawLogo && !logoUrl) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "رابط شعار المنشأة غير صالح",
+        why: "يجب أن يكون الشعار رابط https/http صالحاً أو مساراً محلياً يبدأ بـ / أو صورة نقطية آمنة دون محارف خاصة",
+        doThis: "تحقق من صيغة رابط الشعار وأعد المحاولة",
+      }),
+    });
+  }
 
   const phones = input.phones !== undefined
     ? input.phones.map((p) => ({ label: p.label.trim(), number: p.number.trim() })).filter((p) => p.number.length > 0)
