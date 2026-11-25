@@ -239,6 +239,7 @@ export function BannerStudioComposer({
   );
   const [aiSceneDataUrl, setAiSceneDataUrl] = useState<string | null>(null);
   const [composed, setComposed] = useState<ComposedBannerPair | null>(null);
+  const [composedSnapshotKey, setComposedSnapshotKey] = useState<string>("");
   const [composing, setComposing] = useState(false);
 
   const [uploadedDesktop, setUploadedDesktop] = useState<ImageItem[]>(() =>
@@ -442,12 +443,46 @@ export function BannerStudioComposer({
 
   const studioPlacement: StudioBannerPlacement = placement === "INLINE" ? "INLINE" : "HERO";
 
+  const effectiveVisualMode: StudioVisualRenderMode =
+    visualMode !== "LOCAL_STUDIO" && aiSceneDataUrl ? visualMode : "LOCAL_STUDIO";
+  const compositionSnapshotKey = useMemo(
+    () =>
+      JSON.stringify([
+        presetId,
+        studioPlacement,
+        effectiveVisualMode,
+        effectiveVisualMode !== "LOCAL_STUDIO" ? aiSceneDataUrl : null,
+        activeProductImageUrls,
+        lightingMode,
+        compositionStyle,
+        productScale,
+        effects,
+        copy,
+      ]),
+    [
+      presetId,
+      studioPlacement,
+      effectiveVisualMode,
+      aiSceneDataUrl,
+      activeProductImageUrls,
+      lightingMode,
+      compositionStyle,
+      productScale,
+      effects,
+      copy,
+    ],
+  );
+  const isCompositionFresh =
+    Boolean(composed?.desktopDataUrl && composed?.mobileDataUrl) &&
+    composedSnapshotKey === compositionSnapshotKey &&
+    !composing &&
+    !generateCopyM.isPending;
+
   useEffect(() => {
     if (subject.mode === "UPLOAD") return;
     let cancelled = false;
     setComposing(true);
-    const effectiveVisualMode: StudioVisualRenderMode =
-      visualMode !== "LOCAL_STUDIO" && aiSceneDataUrl ? visualMode : "LOCAL_STUDIO";
+    const targetSnapshotKey = compositionSnapshotKey;
 
     const timer = window.setTimeout(() => {
       void composeStudioBannerPair({
@@ -463,7 +498,10 @@ export function BannerStudioComposer({
         copy,
       })
         .then((pair) => {
-          if (!cancelled) setComposed(pair);
+          if (!cancelled) {
+            setComposed(pair);
+            setComposedSnapshotKey(targetSnapshotKey);
+          }
         })
         .finally(() => {
           if (!cancelled) setComposing(false);
@@ -475,9 +513,10 @@ export function BannerStudioComposer({
     };
   }, [
     subject.mode,
+    compositionSnapshotKey,
     presetId,
     studioPlacement,
-    visualMode,
+    effectiveVisualMode,
     aiSceneDataUrl,
     activeProductImageUrls,
     lightingMode,
@@ -502,7 +541,10 @@ export function BannerStudioComposer({
   }
 
   function stageCurrentSlideIntoTray() {
-    if (!composed?.desktopDataUrl || !composed.mobileDataUrl) return;
+    if (!isCompositionFresh || !composed?.desktopDataUrl || !composed.mobileDataUrl) {
+      notify.err("انتظر لحظة حتى تكتمل المعاينة الحالية للبنر قبل تثبيت الشريحة.");
+      return;
+    }
     if (!copyCheck.ok) {
       notify.err("حارس أمانة المنتج والنص منع تثبيت الشريحة: عالج تنبيه النص أولاً أو اضغط «استعادة الصياغة الموثّقة».");
       return;
@@ -561,7 +603,10 @@ export function BannerStudioComposer({
               title: prevMeta?.title ?? null,
               subtitle: prevMeta?.subtitle ?? null,
               ctaLabel: prevMeta?.ctaLabel ?? null,
-              ctaUrl: prevMeta?.ctaUrl ?? (subject.ctaUrl || null),
+              ctaUrl:
+                uploadedDesktop.length === 1
+                  ? (subject.ctaUrl.trim() || prevMeta?.ctaUrl || null)
+                  : (prevMeta?.ctaUrl ?? (subject.ctaUrl.trim() || null)),
               effectiveFrom: prevMeta?.effectiveFrom ?? null,
               effectiveTo: prevMeta?.effectiveTo ?? null,
               isActive: prevMeta?.isActive !== false,
@@ -583,24 +628,25 @@ export function BannerStudioComposer({
       return;
     }
 
-    if (!composed?.desktopDataUrl && campaignSlides.length === 0) {
-      notify.err("انتظر لحظة حتى تكتمل معاينة البنر.");
+    if (!isCompositionFresh && campaignSlides.length === 0) {
+      notify.err("انتظر لحظة حتى تكتمل المعاينة المحدثة للبنر.");
       return;
     }
 
     const safeCopy = copyCheck.sanitized;
-    const currentStudioSlide: StoredBannerSlide | null = composed
-      ? {
-          url: composed.desktopDataUrl,
-          mobileUrl: composed.mobileDataUrl,
-          title: safeCopy.headline.trim(),
-          subtitle: safeCopy.subtitle.trim() || null,
-          ctaLabel: null,
-          ctaUrl: subject.ctaUrl.trim() || "/store",
-          isActive: true,
-          sortOrder: campaignSlides.length,
-        }
-      : null;
+    const currentStudioSlide: StoredBannerSlide | null =
+      isCompositionFresh && composed
+        ? {
+            url: composed.desktopDataUrl,
+            mobileUrl: composed.mobileDataUrl,
+            title: safeCopy.headline.trim(),
+            subtitle: safeCopy.subtitle.trim() || null,
+            ctaLabel: null,
+            ctaUrl: subject.ctaUrl.trim() || "/store",
+            isActive: true,
+            sortOrder: campaignSlides.length,
+          }
+        : null;
 
     const finalSlides =
       campaignSlides.length > 0
@@ -1357,7 +1403,8 @@ export function BannerStudioComposer({
                 onClick={handlePublish}
                 disabled={
                   saving ||
-                  (subject.mode !== "UPLOAD" && (!copyCheck.ok || (!composed && campaignSlides.length === 0)))
+                  (subject.mode !== "UPLOAD" &&
+                    (!copyCheck.ok || composing || generateCopyM.isPending || (!isCompositionFresh && campaignSlides.length === 0)))
                 }
                 className="flex-1 gap-2 font-bold"
               >

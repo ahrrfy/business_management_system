@@ -118,16 +118,25 @@ export default function BannerManager() {
     }
   }
 
-  function handleQuickReorder(index: number, delta: -1 | 1) {
+  async function handleQuickReorder(index: number, delta: -1 | 1) {
     const list = listQ.data ?? [];
-    const target = list[index];
-    const neighbor = list[index + delta];
-    if (!target || !neighbor) return;
-    const targetOrder = target.sortOrder ?? 0;
-    const neighborOrder = neighbor.sortOrder ?? 0;
-    const nextOrder =
-      targetOrder === neighborOrder ? neighborOrder + delta : neighborOrder;
-    updateM.mutate({ id: target.id, sortOrder: nextOrder });
+    const swapIdx = index + delta;
+    if (!list[index] || !list[swapIdx]) return;
+    const reordered = [...list];
+    const tmp = reordered[index]!;
+    reordered[index] = reordered[swapIdx]!;
+    reordered[swapIdx] = tmp;
+
+    const updates = reordered
+      .map((item, pos) => ({ id: item.id, prev: item.sortOrder ?? -1, next: pos }))
+      .filter((u) => u.prev !== u.next);
+    if (updates.length === 0) return;
+    try {
+      await Promise.all(updates.map((u) => updateM.mutateAsync({ id: u.id, sortOrder: u.next })));
+      invalidate();
+    } catch (err) {
+      notify.err(err);
+    }
   }
 
   async function handleDelete(id: number, title: string) {

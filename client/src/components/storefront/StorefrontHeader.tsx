@@ -39,6 +39,7 @@ interface Props {
   searchScope: {
     categoryId: number | null;
     categoryIds?: number[] | null;
+    promotionId?: number | null;
     availability: AvailabilityFilter;
     brand: string;
     priceFilter: PriceFilter;

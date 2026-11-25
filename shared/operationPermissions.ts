@@ -668,6 +668,42 @@ export function resolveOperationPolicy(
         "reception.confirmExternalPayment",
         ["workOrders.receptionCheckout", "reception.draftCommit"],
       ],
+      [
+        "storeAdmin.orders.pendingNotificationPrint",
+        [
+          "storeAdmin.orders.list",
+          "storeAdmin.orders.claim",
+          "storeAdmin.orders.counts",
+          "storeAdmin.orders.detail",
+          "storeAdmin.orders.update",
+          "storeAdmin.orders.setStatus",
+          "storeAdmin.orders.markPrepared",
+        ],
+      ],
+      [
+        "storeAdmin.orders.claimNotificationPrint",
+        [
+          "storeAdmin.orders.list",
+          "storeAdmin.orders.claim",
+          "storeAdmin.orders.counts",
+          "storeAdmin.orders.detail",
+          "storeAdmin.orders.update",
+          "storeAdmin.orders.setStatus",
+          "storeAdmin.orders.markPrepared",
+        ],
+      ],
+      [
+        "storeAdmin.orders.releaseNotificationPrint",
+        [
+          "storeAdmin.orders.list",
+          "storeAdmin.orders.claim",
+          "storeAdmin.orders.counts",
+          "storeAdmin.orders.detail",
+          "storeAdmin.orders.update",
+          "storeAdmin.orders.setStatus",
+          "storeAdmin.orders.markPrepared",
+        ],
+      ],
     ];
   for (const [path, nativePaths] of stationCompanions) {
     const operation = getOperationPermission(path);

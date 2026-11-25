@@ -10,10 +10,15 @@ export type LiveStoreOffer = RouterOutputs["storefront"]["offers"][number];
 
 function computeUrgencyBadge(effectiveTo?: string | null): string | null {
   if (!effectiveTo) return null;
-  const endMs = Date.parse(`${effectiveTo.slice(0, 10)}T23:59:59+03:00`);
-  if (!Number.isFinite(endMs)) return null;
-  const diffDays = Math.ceil((endMs - Date.now()) / 86_400_000);
-  if (diffDays <= 0) return "اليوم الأخير";
+  const endYmd = effectiveTo.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endYmd)) return null;
+  const endDayUtc = Date.parse(`${endYmd}T00:00:00Z`);
+  if (!Number.isFinite(endDayUtc)) return null;
+  const baghdadTodayYmd = new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+  const todayDayUtc = Date.parse(`${baghdadTodayYmd}T00:00:00Z`);
+  const diffDays = Math.round((endDayUtc - todayDayUtc) / 86_400_000);
+  if (diffDays < 0) return null;
+  if (diffDays === 0) return "اليوم الأخير";
   if (diffDays === 1) return "ينتهي غداً";
   if (diffDays <= 7) return `ينتهي خلال ${diffDays} أيام`;
   return null;
@@ -36,7 +41,8 @@ export function StorefrontOffersBar({
   embedded = false,
   className = "",
 }: StorefrontOffersBarProps) {
-  if (offers.length === 0) return null;
+  const visibleOffers = offers.slice(0, 10);
+  if (visibleOffers.length === 0) return null;
 
   return (
     <div
@@ -77,7 +83,7 @@ export function StorefrontOffersBar({
       )}
 
       <div className="flex flex-wrap items-stretch gap-2.5">
-        {offers.slice(0, 6).map((offer) => {
+        {visibleOffers.map((offer) => {
           const isSelected = activeOfferId === offer.id;
           const badge =
             offer.summary ||

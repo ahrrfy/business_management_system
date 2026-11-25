@@ -21,6 +21,7 @@ import {
   getOnlineOrder,
   getOnlineOrderLeaderboard,
   listOnlineOrders,
+  listPendingOnlineOrderAlertPrints,
   markOnlineOrderPrepared,
   onlineOrderStatusCounts,
   releaseOnlineOrderAlertPrint,
@@ -472,11 +473,23 @@ const ordersRouter = router({
       return res;
     }),
 
-  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن فقط */
+  /** استرجاع طلبات المتجر الحديثة غير المطبوعة (آخر 30 دقيقة) عند اتصال محطة الاستقبال أو استعادة الشبكة */
+  pendingNotificationPrint: storeFulfillProcedure
+    .input(z.object({ stationOptIn: z.boolean().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input?.stationOptIn !== true) {
+        return [];
+      }
+      return listPendingOnlineOrderAlertPrints({
+        scopedBranchId: actorScopedBranch(ctx.user),
+      });
+    }),
+
+  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن أو محطة مفعّلة صراحةً */
   claimNotificationPrint: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive() }))
+    .input(z.object({ id: z.number().int().positive(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user)) {
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
         return {
           claimed: false, alreadyPrinted: false, leaseToken: null,
           eligible: false,
@@ -498,9 +511,11 @@ const ordersRouter = router({
 
   /** إقرار اكتمال طباعة الإشعار أو تجديد/تحرير حجزه المؤقت إذا تعذّر الإرسال الفيزيائي للطابعة */
   releaseNotificationPrint: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional() }))
+    .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user)) return { released: false, completed: false, renewed: false, leaseToken: null };
+      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
+        return { released: false, completed: false, renewed: false, leaseToken: null };
+      }
       return releaseOnlineOrderAlertPrint({
         id: input.id, renew: input.renew === true,
         scopedBranchId: actorScopedBranch(ctx.user),

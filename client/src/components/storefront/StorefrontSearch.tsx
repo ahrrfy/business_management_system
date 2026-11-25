@@ -8,6 +8,7 @@ import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 type Scope = {
   categoryId: number | null;
   categoryIds?: number[] | null;
+  promotionId?: number | null;
   availability: "IN_STOCK" | "ALL";
   brand: string;
   priceFilter: "ALL" | "ON_SALE" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";

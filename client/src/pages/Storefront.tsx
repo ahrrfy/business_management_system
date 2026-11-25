@@ -375,6 +375,7 @@ function StorefrontContent() {
   const catalogInput = {
     categoryId: effectiveCategoryId,
     categoryIds: effectiveCategoryIds,
+    promotionId: activePromoId,
     productIds: searchProductIds,
     brand: brand || undefined,
     priceFilter: effectivePriceFilter,
@@ -858,7 +859,7 @@ function StorefrontContent() {
     }
   };
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null || activePromoId != null || bannerProductIds != null;
-  const searchScope = { categoryId: effectiveCategoryId, categoryIds: effectiveCategoryIds, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
+  const searchScope = { categoryId: effectiveCategoryId, categoryIds: effectiveCategoryIds, promotionId: activePromoId, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
   function submitStoreSearch(query: string, selectedCategory?: number) {
     setRawSearch(query);
     setSearch(query.trim());

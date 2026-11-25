@@ -275,6 +275,7 @@ export const storefrontRouter = router({
       z.object({
         categoryId: z.number().int().positive().nullish(),
         categoryIds: z.array(z.number().int().positive()).max(100).nullish(),
+        promotionId: z.number().int().positive().nullish(),
         productIds: z.array(z.number().int().positive()).max(500).nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
@@ -294,6 +295,7 @@ export const storefrontRouter = router({
       storefrontCatalog({
         categoryId: input.categoryId ?? null,
         categoryIds: input.categoryIds ?? null,
+        promotionId: input.promotionId ?? null,
         productIds: input.productIds ?? null,
         search: input.search,
         limit: input.limit,
@@ -313,6 +315,7 @@ export const storefrontRouter = router({
       query: z.string().max(64),
       categoryId: z.number().int().positive().nullish(),
       categoryIds: z.array(z.number().int().positive()).max(100).nullish(),
+      promotionId: z.number().int().positive().nullish(),
       productIds: z.array(z.number().int().positive()).max(500).nullish(),
       availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       brand: z.string().max(120).optional(),
