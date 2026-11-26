@@ -234,9 +234,13 @@ export default function ReverseDeliveryRequestDialog({
 
   const eligiblePreflight = preflight?.eligible ? preflight : null;
   const isReadyInvoiced = eligiblePreflight?.status === "READY";
-  const heldFeeCashRefund = useMemo(
+  const heldFeeTotal = useMemo(
     () => (!reopen ? D(eligiblePreflight?.heldDeliveryFee ?? "0") : D(0)),
     [eligiblePreflight?.heldDeliveryFee, reopen],
+  );
+  const heldFeeCashRefund = useMemo(
+    () => (!reopen ? D(eligiblePreflight?.heldCashDeliveryFee ?? "0") : D(0)),
+    [eligiblePreflight?.heldCashDeliveryFee, reopen],
   );
   const cashRefundRequired =
     (eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false) ||
@@ -244,9 +248,9 @@ export default function ReverseDeliveryRequestDialog({
   const plannedRefundTotal = useMemo(
     () =>
       (eligiblePreflight?.refundSources.reduce((sum, source) => sum.plus(D(source.amount)), D(0)) ?? D(0))
-        .plus(heldFeeCashRefund)
+        .plus(heldFeeTotal)
         .toFixed(2),
-    [eligiblePreflight, heldFeeCashRefund],
+    [eligiblePreflight, heldFeeTotal],
   );
   const liveConsignment = eligiblePreflight ? !consignmentReadyForReverse(eligiblePreflight) : false;
   const unsupportedRefundSource = eligiblePreflight?.refundSources.some((source) => !isRequestableReverseRefundSource(source)) ?? false;

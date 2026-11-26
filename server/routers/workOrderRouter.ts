@@ -82,7 +82,7 @@ import { money, round2 } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
-import { workOrderFeeHeldNet } from "../services/workOrder/deliveryFeeRefund";
+import { workOrderFeeHeldCashNet, workOrderFeeHeldNet } from "../services/workOrder/deliveryFeeRefund";
 import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 import { upsertConversation } from "../services/conversationService";
@@ -2181,7 +2181,8 @@ export const workOrderRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
         }
         const net = await workOrderFeeHeldNet(tx, input.workOrderId);
-        const openShifts = net.gt(0)
+        const cashNet = net.gt(0) ? await workOrderFeeHeldCashNet(tx, input.workOrderId) : money(0);
+        const openShifts = cashNet.gt(0)
           ? (
               await tx
                 .select({ shiftId: shifts.id, userName: users.name })
@@ -2191,7 +2192,6 @@ export const workOrderRouter = router({
                   and(
                     eq(shifts.branchId, Number(wo.branchId)),
                     eq(shifts.status, "OPEN"),
-                    eq(shifts.shiftType, "RECEPTION"),
                   ),
                 )
             ).map((s) => ({
@@ -2199,7 +2199,7 @@ export const workOrderRouter = router({
               userName: s.userName ?? `وردية #${s.shiftId}`,
             }))
           : [];
-        return { net: net.toFixed(2), branchId: Number(wo.branchId), openShifts };
+        return { net: net.toFixed(2), cashNet: cashNet.toFixed(2), branchId: Number(wo.branchId), openShifts };
       });
     }),
 

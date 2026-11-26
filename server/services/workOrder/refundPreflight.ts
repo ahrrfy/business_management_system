@@ -15,7 +15,7 @@ import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUSES, computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { appliedCollectionsForWorkOrder } from "../deposits";
-import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
+import { workOrderFeeHeldCashNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
 import { loadShipmentMembersTx } from "../delivery/shipments";
 import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
@@ -113,8 +113,8 @@ async function cancelCashOut(tx: Tx, order: { id: number; branchId: number; depo
     }
   }
 
-  // ③ أمانةُ أجرة التوصيل — نقداً دائماً، خارج الحارس كذلك.
-  const feeHeld = await workOrderFeeHeldNet(tx, workOrderId);
+  // ③ أمانةُ أجرة التوصيل النقدية — غيرُ النقد يُردّ بسند معلّق بلا سحب درج.
+  const feeHeld = await workOrderFeeHeldCashNet(tx, workOrderId);
   total = total.plus(feeHeld);
   if (feeHeld.gt(0)) hasCashOnlyPortion = true;
 
@@ -199,7 +199,7 @@ export async function workOrderRefundPreflight(
     ? money(0)
     : await reverseCashOut(tx, workOrderId, wo.invoiceId == null ? null : Number(wo.invoiceId));
   const reverseHeldFee = cancel == null && opts.workOrderDisposition !== "RETURN_TO_READY"
-    ? await workOrderFeeHeldNet(tx, workOrderId)
+    ? await workOrderFeeHeldCashNet(tx, workOrderId)
     : money(0);
   const cashOut = cancel != null
     ? cancel.total

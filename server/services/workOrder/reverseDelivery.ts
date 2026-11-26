@@ -38,6 +38,7 @@ import { reverseAutoOffsetShopDeliveryFeeTx } from "../delivery/shopFeeAutoOffse
 import { detachWorkOrderFromOpenFulfillmentRequestsTx } from "../fulfillment/itemLifecycle";
 import {
   refundWorkOrderDeliveryFeeHeld,
+  workOrderFeeHeldCashNet,
   workOrderFeeHeldNet,
 } from "./deliveryFeeRefund";
 
@@ -377,6 +378,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       ineligibleReason: "أمر الشغل ليس مفوتراً في حالة قابلة للعكس",
       netPaid: "0.00",
       heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -401,6 +403,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       ineligibleReason: "فاتورة أمر الشغل غير موجودة أو معكوسة/ملغاة سلفاً",
       netPaid: "0.00",
       heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -422,6 +425,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       ineligibleReason: err instanceof Error ? err.message : "الفترة المحاسبية للفاتورة مقفلة",
       netPaid: "0.00",
       heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -431,6 +435,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
   }
   const evidence = await reverseEvidence(tx, { workOrderId, invoiceId, deposit: wo.deposit, lock: false });
   const heldDeliveryFee = (await workOrderFeeHeldNet(tx, workOrderId)).toFixed(2);
+  const heldCashDeliveryFee = (await workOrderFeeHeldCashNet(tx, workOrderId)).toFixed(2);
   const openReceptionShifts = await tx
     .select({ id: shifts.id, userId: shifts.userId, userName: users.name, expectedCash: shifts.expectedCash })
     .from(shifts)
@@ -481,6 +486,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       ineligibleReason: "يتضمن المقبوض سند صيرفة EXCHANGE لا يملك قناة رد عميل موثقة؛ سوِّ السند أولاً",
       netPaid: evidence.netPaid.toFixed(2),
       heldDeliveryFee,
+      heldCashDeliveryFee,
       priorCompletedOut: evidence.completedOut.toFixed(2),
       priorPendingOut: evidence.pendingOut.toFixed(2),
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -497,6 +503,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     invoiceId,
     netPaid: evidence.netPaid.toFixed(2),
     heldDeliveryFee,
+    heldCashDeliveryFee,
     priorCompletedOut: evidence.completedOut.toFixed(2),
     priorPendingOut: evidence.pendingOut.toFixed(2),
     refundSources: evidence.plans,
@@ -595,7 +602,7 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
   if (!hint) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
   const hasCashFeeRefund =
     input.reopen !== true &&
-    (await workOrderFeeHeldNet(tx, Number(input.workOrderId))).gt(0);
+    (await workOrderFeeHeldCashNet(tx, Number(input.workOrderId))).gt(0);
   const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH") || hasCashFeeRefund
     ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor, input.forceTreasury === true)
     : null;

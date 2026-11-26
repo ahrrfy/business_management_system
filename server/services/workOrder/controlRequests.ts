@@ -253,7 +253,7 @@ export async function requestWorkOrderControl(
       }
       const cashRequired =
         preflight.refundSources.some((source) => source.refundMethod === "CASH") ||
-        (payload.reopen !== true && money(preflight.heldDeliveryFee ?? "0").gt(0));
+        (payload.reopen !== true && money(preflight.heldCashDeliveryFee ?? "0").gt(0));
       const selectedShift = payload.refundShiftId ?? null;
       if (cashRequired && preflight.openReceptionShifts.length > 1 && selectedShift == null) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "توجد عدة ورديات استقبال؛ اختر درج الرد النقدي" });

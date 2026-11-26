@@ -5,7 +5,7 @@ import { money } from "../money";
 
 const state = vi.hoisted(() => ({ applied: vi.fn(), fee: vi.fn(), drawer: vi.fn(), treasury: vi.fn() }));
 vi.mock("../deposits", () => ({ appliedCollectionsForWorkOrder: state.applied }));
-vi.mock("../workOrder/deliveryFeeRefund", () => ({ workOrderFeeHeldNet: state.fee }));
+vi.mock("../workOrder/deliveryFeeRefund", () => ({ workOrderFeeHeldNet: state.fee, workOrderFeeHeldCashNet: state.fee }));
 vi.mock("../cash/cashAvailability", () => ({ MATERIALIZED_RECEIPT_STATUSES: ["COMPLETED", "REVERSED"], computeDrawerCashBalance: state.drawer, computeTreasuryCashBalance: state.treasury }));
 vi.mock("../delivery/shipments", () => ({ loadShipmentMembersTx: vi.fn() }));
 

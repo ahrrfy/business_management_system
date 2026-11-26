@@ -59,6 +59,29 @@ export async function workOrderFeeHeldNet(tx: Tx, workOrderId: number): Promise<
   return round2(money(row?.v ?? "0"));
 }
 
+/** صافي أمانة الأجرة المحتجزة **النقديّة وحدها** (المقبوضة بـCASH)؛ غيرُ النقد يُردّ بسند معلّق بلا سحب درج. */
+export async function workOrderFeeHeldCashNet(tx: Tx, workOrderId: number): Promise<ReturnType<typeof money>> {
+  const net = await workOrderFeeHeldNet(tx, workOrderId);
+  if (!net.gt(0)) return money(0);
+  const collReceipt = (
+    await tx
+      .select({ paymentMethod: receipts.paymentMethod })
+      .from(receipts)
+      .where(
+        and(
+          eq(receipts.workOrderId, workOrderId),
+          eq(receipts.referenceNumber, `DLV-FEE-WO-${workOrderId}`),
+          eq(receipts.direction, "IN"),
+          eq(receipts.status, "COMPLETED"),
+        ),
+      )
+      .orderBy(asc(receipts.id))
+      .limit(1)
+  )[0];
+  if (collReceipt && collReceipt.paymentMethod !== "CASH") return money(0);
+  return net;
+}
+
 /** Noncash refunds remain liabilities until the existing owner approval confirms real execution. */
 export async function requestNoncashWorkOrderFeeRefundTx(
   tx: Tx,

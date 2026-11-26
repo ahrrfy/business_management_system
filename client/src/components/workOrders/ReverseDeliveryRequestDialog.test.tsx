@@ -18,6 +18,7 @@ function preflight(): BuildArgs["preflight"] {
     invoiceId: 991,
     netPaid: "140000.00",
     heldDeliveryFee: "0.00",
+    heldCashDeliveryFee: "0.00",
     priorCompletedOut: "10000.00",
     priorPendingOut: "5000.00",
     refundSources: [
