@@ -31,6 +31,7 @@ import {
   releaseFulfillmentRequest,
 } from "../fulfillment/requests";
 import { dispatchToDelivery } from "../delivery/dispatch";
+import { syncConsignmentSourceDeliveredTx } from "../delivery/courier";
 import { cancelShipmentAssignment } from "../delivery/shipmentOperations";
 import { consignmentFeeDueSql } from "../delivery/fees";
 import { verifiedConsignmentLedgerRows } from "../delivery/legacyLedger";
@@ -617,14 +618,45 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       ADMIN,
     );
 
-    // Attach a general customer receipt allocation to the invoice to verify release on reverse
+    const [custodyAfterCancel] = await d
+      .select()
+      .from(deliveryCustodyItems)
+      .where(
+        and(
+          eq(deliveryCustodyItems.consignmentId, dispatched.consignmentId),
+          eq(deliveryCustodyItems.itemKind, "WORK_ORDER_OUTPUT"),
+        ),
+      );
+    expect(Number(custodyAfterCancel?.preparedHeldBaseQuantity ?? 0)).toBe(5);
+    expect(Number(custodyAfterCancel?.carrierCustodyBaseQuantity ?? 0)).toBe(0);
+
+    // Held delivery fee collected in cashier shift 1 (maker/checker refund on non-reopen reverse)
+    await d.insert(s.receipts).values({
+      voucherNumber: "RCV-FEE-HELD-1",
+      branchId: 1,
+      customerId: 1,
+      workOrderId: woId,
+      direction: "IN",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      approvalStatus: "APPROVED",
+      referenceNumber: `DLV-FEE-WO-${woId}`,
+      amount: "5000.00",
+      status: "COMPLETED",
+      shiftId: 1,
+      createdBy: 2,
+    } as never);
+
+    // Attach a general customer receipt allocation (invoiceId = null on receipt) to verify release on reverse
     const [rcptRes] = await d.insert(s.receipts).values({
       voucherNumber: "RCV-ALLOC-1",
       branchId: 1,
       customerId: 1,
-      invoiceId: dispatched.invoiceId,
+      invoiceId: null,
       direction: "IN",
       paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      approvalStatus: "APPROVED",
       amount: "15000.00",
       status: "COMPLETED",
       shiftId: 1,
@@ -664,6 +696,7 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
     expect(preflight.eligible).toBe(true);
     if (!preflight.eligible) throw new Error("Expected eligible preflight");
     expect(preflight.status).toBe("READY");
+    expect(preflight.heldDeliveryFee).toBe("5000.00");
 
     const reqRes = await requestWorkOrderControl(
       {
@@ -694,7 +727,19 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       .from(s.workOrders)
       .where(eq(s.workOrders.id, woId));
     expect(woAfter?.status).toBe("CANCELLED");
-    expect(woAfter?.invoiceId).toBeNull();
+
+    const feeRefundReceipts = await d
+      .select()
+      .from(s.receipts)
+      .where(
+        and(
+          eq(s.receipts.workOrderId, woId),
+          eq(s.receipts.direction, "OUT"),
+          eq(s.receipts.referenceNumber, `DLV-FEE-WO-REFUND-${woId}`),
+        ),
+      );
+    expect(feeRefundReceipts).toHaveLength(1);
+    expect(feeRefundReceipts[0]?.approvedBy).toBe(3);
 
     const codReleasedRows = await d
       .select()
@@ -712,6 +757,11 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       .from(s.customerReceiptAllocations)
       .where(eq(s.customerReceiptAllocations.settlementId, settlementId));
     expect(Number(allocAfter?.amount ?? 0)).toBe(0);
+    const [stlAfter] = await d
+      .select()
+      .from(s.customerReceiptSettlements)
+      .where(eq(s.customerReceiptSettlements.id, settlementId));
+    expect(stlAfter?.unallocatedAmount).toBe("15000.00");
   });
 
   it("isolates Z-Report shiftId during shelfAuditDeliverWorkOrders, consumes externalPaymentAttemptId once, enforces baseCode siblings, and routes unique INV- barcodes", async () => {
@@ -864,6 +914,8 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       workOrderId: 701,
       direction: "IN",
       paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      approvalStatus: "APPROVED",
       amount: "10000.00",
       status: "COMPLETED",
       shiftId: 1,
@@ -887,19 +939,33 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
     );
     expect(confirmedPartial.invoiceId).toBeGreaterThan(0);
 
-    // 4) INV-... barcode routes to unique owning workOrder in getByNumber
-    await d.insert(s.invoices).values({
-      id: 880,
-      invoiceNumber: "INV-88001",
-      branchId: 1,
-      customerId: 1,
-      sourceType: "WORKORDER",
-      subtotal: "12000.00",
-      total: "12000.00",
-      paidAmount: "0.00",
-      status: "UNPAID",
-      createdBy: 2,
-    } as never);
+    // 4) INV-... barcode routes to unique owning workOrder in getByNumber, and reused consignment records distinct DELIVERED cycles per invoiceId
+    await d.insert(s.invoices).values([
+      {
+        id: 880,
+        invoiceNumber: "INV-88001",
+        branchId: 1,
+        customerId: 1,
+        sourceType: "WORKORDER",
+        subtotal: "12000.00",
+        total: "12000.00",
+        paidAmount: "0.00",
+        status: "PENDING",
+        createdBy: 2,
+      },
+      {
+        id: 882,
+        invoiceNumber: "INV-88002",
+        branchId: 1,
+        customerId: 1,
+        sourceType: "WORKORDER",
+        subtotal: "12000.00",
+        total: "12000.00",
+        paidAmount: "0.00",
+        status: "PENDING",
+        createdBy: 2,
+      },
+    ] as never);
     await d.insert(s.workOrders).values({
       id: 881,
       orderNumber: "WO-88001",
@@ -920,5 +986,50 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
     });
     expect(lookedUp?.kind).toBe("workOrder");
     expect(lookedUp?.id).toBe(881);
+
+    await withTx(async (tx) => {
+      await syncConsignmentSourceDeliveredTx(
+        tx,
+        {
+          id: 9901,
+          branchId: 1,
+          workOrderId: 881,
+          invoiceId: 880,
+          sourceType: "WORKORDER",
+          sourceId: 881,
+        },
+        { userId: 1 },
+        new Date(),
+      );
+    });
+    await d
+      .update(s.workOrders)
+      .set({ status: "READY", invoiceId: 882, deliveredAt: null })
+      .where(eq(s.workOrders.id, 881));
+    await withTx(async (tx) => {
+      await syncConsignmentSourceDeliveredTx(
+        tx,
+        {
+          id: 9901,
+          branchId: 1,
+          workOrderId: 881,
+          invoiceId: 882,
+          sourceType: "WORKORDER",
+          sourceId: 881,
+        },
+        { userId: 1 },
+        new Date(),
+      );
+    });
+    const deliveredEvents = await d
+      .select()
+      .from(s.workOrderEvents)
+      .where(
+        and(
+          eq(s.workOrderEvents.workOrderId, 881),
+          eq(s.workOrderEvents.eventType, "DELIVERED"),
+        ),
+      );
+    expect(deliveredEvents).toHaveLength(2);
   });
 });

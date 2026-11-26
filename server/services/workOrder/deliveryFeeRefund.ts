@@ -24,7 +24,11 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { resolveBranchCashShiftTx } from "../shiftService";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  assertNonPhysicalOutReceipt,
+  assertTreasuryOutException,
+} from "../cash/cashAvailability";
 import type { Actor } from "../tx";
 
 export interface RefundWorkOrderFeeHeldOpts {
@@ -33,6 +37,8 @@ export interface RefundWorkOrderFeeHeldOpts {
   actor: Actor & { role?: string };
   /** درج ردّ الأمانة — يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع. */
   refundShiftId?: number | null;
+  /** دلو الصرف النقدي عند اعتماد الرد من الخزينة الإدارية بلا وردية استقبال مفتوحة. */
+  cashBucket?: "DRAWER" | "TREASURY" | null;
   /** هوية مدير ثانٍ تحقق الراوتر من بياناته — تُخزّن على سند الرد ولا يجوز أن تساوي المنفذ. */
   approvedByManagerId?: number | null;
   reason: string;
@@ -185,7 +191,7 @@ export async function refundWorkOrderDeliveryFeeHeld(
     Number(collShift.userId) === opts.actor.userId;
   const approvedByManagerId =
     opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
-  if (!sameOpenShift) {
+  if (!sameOpenShift && !opts.actor.isOwner) {
     if (!Number.isInteger(approvedByManagerId) || approvedByManagerId! <= 0 || approvedByManagerId === opts.actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -194,22 +200,30 @@ export async function refundWorkOrderDeliveryFeeHeld(
     }
   }
 
-  const resolved = await resolveBranchCashShiftTx(tx, opts.branchId, opts.refundShiftId ?? null);
+  const targetBucket = opts.cashBucket === "TREASURY" ? "TREASURY" : "DRAWER";
+  if (targetBucket === "TREASURY") {
+    assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
+  }
+  const targetShiftId =
+    targetBucket === "TREASURY"
+      ? null
+      : (await resolveBranchCashShiftTx(tx, opts.branchId, opts.refundShiftId ?? null)).shiftId;
   await assertCashOutAvailable(tx, {
-    branchId: opts.branchId, cashBucket: "DRAWER", shiftId: resolved.shiftId,
+    branchId: opts.branchId, cashBucket: targetBucket, shiftId: targetShiftId,
     amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
   });
   const feeOut = await tx.insert(receipts).values({
-    branchId: opts.branchId, shiftId: resolved.shiftId, workOrderId: opts.workOrderId,
-    direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+    branchId: opts.branchId, shiftId: targetShiftId, workOrderId: opts.workOrderId,
+    direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: targetBucket,
     status: "COMPLETED", partyType: "OTHER",
     approvalStatus: "APPROVED",
-    approvedBy: sameOpenShift ? null : approvedByManagerId,
+    approvedBy: sameOpenShift ? null : (approvedByManagerId ?? opts.actor.userId),
     approvedAt: sameOpenShift ? null : new Date(),
     referenceNumber: `DLV-FEE-WO-${opts.workOrderId}`,
     description: `${opts.reason} — طلب #${opts.workOrderId}`,
     createdBy: opts.actor.userId,
   });
+  const creditRole = targetBucket === "TREASURY" ? "TREASURY_CASH" : "CASH";
   await postEntry(tx, {
     entryType: "DELIVERY_FEE_HELD",
     dedupeKey: `DELIVERY_FEE_HELD_REFUND:WO:${opts.workOrderId}`,
@@ -219,11 +233,11 @@ export async function refundWorkOrderDeliveryFeeHeld(
     notes: `${opts.reason} — طلب #${opts.workOrderId}`,
     postingSourceComponents: {
       roleDebits: { COURIER_PAYABLE: feeHeldNet },
-      roleCredits: { CASH: feeHeldNet },
+      roleCredits: { [creditRole]: feeHeldNet },
     },
-    postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine("CASH", feeHeldNet)], {
+    postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine(creditRole, feeHeldNet)], {
       roleDebits: { COURIER_PAYABLE: feeHeldNet },
-      roleCredits: { CASH: feeHeldNet },
+      roleCredits: { [creditRole]: feeHeldNet },
     }),
   });
   return { refunded: feeHeldNet.toFixed(2) };

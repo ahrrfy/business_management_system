@@ -1241,7 +1241,10 @@ export async function syncConsignmentSourceDeliveredTx(
           },
           actorUserId: actor.userId,
           branchId: Number(prevWo.branchId),
-          seq: Number(cn.id),
+          seq:
+            cn.invoiceId != null
+              ? `${Number(cn.id)}:${Number(cn.invoiceId)}`
+              : Number(cn.id),
         });
       }
     }

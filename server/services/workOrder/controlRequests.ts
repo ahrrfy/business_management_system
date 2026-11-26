@@ -251,7 +251,9 @@ export async function requestWorkOrderControl(
       if (idempotencyHash(payload.refundSources) !== idempotencyHash(preflight.refundSources)) {
         throw new TRPCError({ code: "CONFLICT", message: "خطة مصادر الرد لا تطابق المقبوضات الحالية؛ أعد المعاينة" });
       }
-      const cashRequired = preflight.refundSources.some((source) => source.refundMethod === "CASH");
+      const cashRequired =
+        preflight.refundSources.some((source) => source.refundMethod === "CASH") ||
+        (payload.reopen !== true && money(preflight.heldDeliveryFee ?? "0").gt(0));
       const selectedShift = payload.refundShiftId ?? null;
       if (cashRequired && preflight.openReceptionShifts.length > 1 && selectedShift == null) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "توجد عدة ورديات استقبال؛ اختر درج الرد النقدي" });
@@ -521,7 +523,10 @@ export async function approveWorkOrderControlRequest(
 
     // التحقّقُ من الرافد البديل بعد معرفة نوع الطلب وقبل أيّ كتابة.
     const override = normalizedRefundOverride(refundOverride, request.requestType);
-    const control = { approvedControlRequestId: id };
+    const control = {
+      approvedControlRequestId: id,
+      requestedByUserId: Number(request.requestedBy),
+    };
     if (request.requestType === "COMMERCIAL_EDIT") {
       await updateWorkOrderInTx(tx, {
         ...(request.payload as CommercialEditPayload),

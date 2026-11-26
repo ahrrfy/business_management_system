@@ -66,6 +66,7 @@ export interface ReverseWorkOrderDeliveryInput {
 
 export interface ApprovedReverseDeliveryControl {
   approvedControlRequestId: number;
+  requestedByUserId?: number | null;
 }
 
 interface CollectionSource {
@@ -375,6 +376,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       invoiceId: wo.invoiceId == null ? null : Number(wo.invoiceId),
       ineligibleReason: "أمر الشغل ليس مفوتراً في حالة قابلة للعكس",
       netPaid: "0.00",
+      heldDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -398,6 +400,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       invoiceId,
       ineligibleReason: "فاتورة أمر الشغل غير موجودة أو معكوسة/ملغاة سلفاً",
       netPaid: "0.00",
+      heldDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -418,6 +421,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       invoiceId,
       ineligibleReason: err instanceof Error ? err.message : "الفترة المحاسبية للفاتورة مقفلة",
       netPaid: "0.00",
+      heldDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -426,6 +430,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     };
   }
   const evidence = await reverseEvidence(tx, { workOrderId, invoiceId, deposit: wo.deposit, lock: false });
+  const heldDeliveryFee = (await workOrderFeeHeldNet(tx, workOrderId)).toFixed(2);
   const openReceptionShifts = await tx
     .select({ id: shifts.id, userId: shifts.userId, userName: users.name, expectedCash: shifts.expectedCash })
     .from(shifts)
@@ -475,6 +480,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       invoiceId,
       ineligibleReason: "يتضمن المقبوض سند صيرفة EXCHANGE لا يملك قناة رد عميل موثقة؛ سوِّ السند أولاً",
       netPaid: evidence.netPaid.toFixed(2),
+      heldDeliveryFee,
       priorCompletedOut: evidence.completedOut.toFixed(2),
       priorPendingOut: evidence.pendingOut.toFixed(2),
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -490,6 +496,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     version: Number(wo.version),
     invoiceId,
     netPaid: evidence.netPaid.toFixed(2),
+    heldDeliveryFee,
     priorCompletedOut: evidence.completedOut.toFixed(2),
     priorPendingOut: evidence.pendingOut.toFixed(2),
     refundSources: evidence.plans,
@@ -586,7 +593,10 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
   const hint = (await tx.select({ branchId: workOrders.branchId, invoiceId: workOrders.invoiceId })
     .from(workOrders).where(eq(workOrders.id, Number(input.workOrderId))).limit(1))[0];
   if (!hint) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-  const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH")
+  const hasCashFeeRefund =
+    input.reopen !== true &&
+    (await workOrderFeeHeldNet(tx, Number(input.workOrderId))).gt(0);
+  const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH") || hasCashFeeRefund
     ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor, input.forceTreasury === true)
     : null;
   if (hint.invoiceId != null) {
@@ -833,11 +843,18 @@ export async function reverseWorkOrderDeliveryInTx(
   if (input.reopen !== true) {
     const heldFee = await workOrderFeeHeldNet(tx, workOrderId);
     if (heldFee.gt(0)) {
+      const makerId =
+        control.requestedByUserId != null &&
+        Number(control.requestedByUserId) > 0 &&
+        Number(control.requestedByUserId) !== actor.userId
+          ? Number(control.requestedByUserId)
+          : actor.userId;
       await refundWorkOrderDeliveryFeeHeld(tx, {
         workOrderId,
         branchId: Number(wo.branchId),
-        actor,
+        actor: makerId === actor.userId ? actor : { ...actor, userId: makerId, isOwner: false },
         refundShiftId: cashShiftId,
+        cashBucket,
         approvedByManagerId: actor.userId,
         reason: `رد أمانة أجرة توصيل بعد عكس وإلغاء أمر الشغل #${wo.orderNumber}`,
       });

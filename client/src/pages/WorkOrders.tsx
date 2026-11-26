@@ -91,9 +91,7 @@ export default function WorkOrders() {
   const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", legacyExec);
   const canReadOrders = canLifecycleOperation(me.data, "workOrders.list", true);
   const canReadCounts = canLifecycleOperation(me.data, "workOrders.counts", true);
-  const canShelfAudit =
-    (me.data?.role === "admin" || me.data?.role === "manager") &&
-    me.data?.operationPolicy?.grants?.["operation.workOrders.autoClearReady"] !== false;
+  const canShelfAudit = me.data?.role === "admin" || me.data?.role === "manager";
   const canReadCustomerContext = !!me.data?.role &&
     hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل

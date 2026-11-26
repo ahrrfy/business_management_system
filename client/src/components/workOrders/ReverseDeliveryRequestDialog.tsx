@@ -234,10 +234,19 @@ export default function ReverseDeliveryRequestDialog({
 
   const eligiblePreflight = preflight?.eligible ? preflight : null;
   const isReadyInvoiced = eligiblePreflight?.status === "READY";
-  const cashRefundRequired = eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false;
+  const heldFeeCashRefund = useMemo(
+    () => (!reopen ? D(eligiblePreflight?.heldDeliveryFee ?? "0") : D(0)),
+    [eligiblePreflight?.heldDeliveryFee, reopen],
+  );
+  const cashRefundRequired =
+    (eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false) ||
+    heldFeeCashRefund.gt(0);
   const plannedRefundTotal = useMemo(
-    () => eligiblePreflight?.refundSources.reduce((sum, source) => sum.plus(D(source.amount)), D(0)).toFixed(2) ?? "0.00",
-    [eligiblePreflight],
+    () =>
+      (eligiblePreflight?.refundSources.reduce((sum, source) => sum.plus(D(source.amount)), D(0)) ?? D(0))
+        .plus(heldFeeCashRefund)
+        .toFixed(2),
+    [eligiblePreflight, heldFeeCashRefund],
   );
   const liveConsignment = eligiblePreflight ? !consignmentReadyForReverse(eligiblePreflight) : false;
   const unsupportedRefundSource = eligiblePreflight?.refundSources.some((source) => !isRequestableReverseRefundSource(source)) ?? false;
@@ -358,7 +367,11 @@ export default function ReverseDeliveryRequestDialog({
                 <div className="space-y-2 rounded-md border p-3">
                   <Label className="text-xs font-bold">وردية الاسترداد النقدي</Label>
                   <RefundRailPicker
-                    context={{ sourceDocType: "WORKORDER_REVERSE_DELIVERY", sourceDocId: workOrderId }}
+                    context={{
+                      sourceDocType: "WORKORDER_REVERSE_DELIVERY",
+                      sourceDocId: workOrderId,
+                      workOrderDisposition: reopen ? "RETURN_TO_READY" : "CANCEL_FINAL",
+                    }}
                     mode="embedded"
                     onStateChange={(next) => {
                       setRail(next);

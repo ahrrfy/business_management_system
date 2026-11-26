@@ -1099,7 +1099,6 @@ async function applyCustodyLifecycleRuleTx(
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
-    if (original.itemKind === "WORK_ORDER_OUTPUT") continue;
     if (await deliveryCustodyEventAppliedTx(tx, Number(original.id), input))
       continue;
     let row = original;

@@ -180,7 +180,7 @@ export async function workOrderRefundPreflight(
   tx: Tx,
   workOrderId: number,
   operation: WorkOrderRefundOperation,
-  opts: { exposeCash: boolean },
+  opts: { exposeCash: boolean; workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL" },
 ): Promise<RefundPreflight | null> {
   const wo = (
     await tx
@@ -195,9 +195,15 @@ export async function workOrderRefundPreflight(
   const cancel = operation === "CANCEL"
     ? await cancelCashOut(tx, wo)
     : null;
+  const reverseBaseCash = cancel != null
+    ? money(0)
+    : await reverseCashOut(tx, workOrderId, wo.invoiceId == null ? null : Number(wo.invoiceId));
+  const reverseHeldFee = cancel == null && opts.workOrderDisposition !== "RETURN_TO_READY"
+    ? await workOrderFeeHeldNet(tx, workOrderId)
+    : money(0);
   const cashOut = cancel != null
     ? cancel.total
-    : await reverseCashOut(tx, workOrderId, wo.invoiceId == null ? null : Number(wo.invoiceId));
+    : round2(reverseBaseCash.plus(reverseHeldFee));
   const needsCashDrawer = cashOut.gt(0);
   return {
     needsCashDrawer,
