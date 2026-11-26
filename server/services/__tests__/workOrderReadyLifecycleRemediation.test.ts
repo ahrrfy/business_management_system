@@ -373,14 +373,26 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
     expect(healedWo?.status).toBe("DELIVERED");
 
     // Verify FEE_OFFSET suppresses BACKFILL:CN:<id>:FEE_PAID (#588/#780/#821/#1907 pattern)
+    await d.insert(s.invoices).values({
+      id: 1907,
+      invoiceNumber: "INV-LEGACY-1907",
+      branchId: 1,
+      customerId: 1,
+      sourceType: "POS",
+      subtotal: "25000.00",
+      total: "25000.00",
+      paidAmount: "25000.00",
+      status: "PAID",
+      createdBy: 2,
+    } as never);
     await d.insert(s.deliveryConsignments).values({
       id: 1907,
       consignmentNumber: "CN-1907",
       branchId: 1,
       partyId: 1,
-      invoiceId: 58,
+      invoiceId: 1907,
       sourceType: "INVOICE",
-      sourceId: 58,
+      sourceId: 1907,
       codAmount: "0.00",
       collectedAmount: "0.00",
       deliveryFee: "5000.00",
