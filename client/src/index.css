@@ -21,7 +21,8 @@
 @source "./components/pos/useSmartScanInput.ts";
 @source "./components/scan";
 @source "./components/search";
-@source "./components/store";
+@source "./components/store-admin/BannerCarousel.tsx";
+@source "./components/store-admin/BannerFrame.tsx";
 @source "./components/storefront";
 @source "./components/ui/AppSelect.tsx";
 @source "./components/ui/alert-dialog.tsx";
