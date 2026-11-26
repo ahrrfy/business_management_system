@@ -8,7 +8,7 @@ import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
-import { nextTxnNumber, toDbRate } from "./helpers";
+import { nextExchangeExecutionSeq, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface CreateExchangeInput {
   name: string;
@@ -58,6 +58,8 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       await adjustExchangeBalanceIqd(tx, id, openIqd);
 
       const txnNumber = await nextTxnNumber(tx, actor.branchId ?? null);
+      const executionSeq = await nextExchangeExecutionSeq(tx);
+      const executedAt = new Date();
       await tx.insert(exchangeTransactions).values({
         txnNumber,
         exchangeHouseId: id,
@@ -70,6 +72,8 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
         balanceIqdAfter: toDbMoney(openIqd),
         balanceUsdAfter: toDbMoney(openUsd),
         status: "ACTIVE",
+        executionSeq,
+        executedAt,
         notes: "رصيد افتتاحي",
         createdBy: actor.userId,
       });

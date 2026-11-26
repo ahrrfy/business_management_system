@@ -42,6 +42,7 @@ export const UNIT_TEST_FILES: string[] = [
       "server/services/__tests__/storefrontMobilePushRetirement.unit.test.ts",
       "client/src/components/installments/installmentDisclosure.test.tsx",
       "server/auth/sessionResourceSettlement.test.ts",
+      "server/__tests__/wave4TreasuryFxPayrollAssetsFixes.test.ts",
       "server/lib/__tests__/resourceAdmission.test.ts",
       "server/middleware/__tests__/storefrontAdmission.test.ts",
       "server/middleware/__tests__/storefrontAdmission.integration.test.ts",
@@ -55,7 +56,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/auditCommerceUi.test.tsx",
       "server/services/decisions/decisionsRemediation.unit.test.ts",
       "client/src/components/workOrders/editorBaseline.test.tsx",
-      "client/src/components/store/EditOnlineOrderBaseline.test.tsx",
+      "client/src/components/store-admin/EditOnlineOrderBaseline.test.tsx",
       "client/src/pages/__tests__/salesReportNetProfit.test.tsx",
       "server/services/__tests__/inventoryProjectionActivationScript.unit.test.ts",
       "server/services/__tests__/inventoryActivationFenceScript.unit.test.ts",
@@ -424,14 +425,14 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "client/src/pages/__tests__/workOrderOperationalUx.test.ts",
       "client/src/components/workOrders/WorkOrderControlApprovals.test.ts",
-      "client/src/components/workorder/DesignFileCard.test.tsx",
-      "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
+      "client/src/components/workOrders/DesignFileCard.test.tsx",
+      "client/src/components/workOrders/ReverseDeliveryRequestDialog.test.tsx",
       "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
       "client/src/components/pos/digitalBasket.test.ts",
       "client/src/components/invoice/__tests__/reducer.test.ts",
       // م١-عميل PR-B (٥/٩/٢٦) — آلتا حالة وضع «توصيل» و«العميل بالهاتف» (منطقٌ نقيٌّ بلا قاعدة).
       "client/src/components/pos/deliveryMode.test.ts",
-      "client/src/components/customer/customerByPhoneMachine.test.ts",
+      "client/src/components/customers/customerByPhoneMachine.test.ts",
       "client/src/components/reception/receptionCustomerSelection.test.ts",
       "client/src/pages/__tests__/workOrderReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceReverseDeliveryUi.test.tsx",
@@ -727,6 +728,8 @@ export const UNIT_TEST_FILES: string[] = [
       "server/services/accounting/custodyRecoveryPosting.test.ts",
       "server/services/__tests__/reconcileEmployeeAdvances.unit.test.ts",
       "server/__tests__/wave1SecurityAndTxSafety.test.ts",
+      "server/__tests__/wave5HotPathsAndSchemaGuards.test.ts",
+      "server/__tests__/wave6CleanupAndModularization.test.ts",
 ];
 
 export default defineConfig({

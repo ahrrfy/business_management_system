@@ -2718,12 +2718,26 @@
 			"tag": "0431_recipe_variant_choice_and_digital_images",
 			"breakpoints": true
 		},
-		{
-			"idx": 432,
-			"version": "5",
-			"when": 1788148890000,
-			"tag": "0432_online_order_alert_printed",
-			"breakpoints": true
-		}
-	]
+    {
+      "idx": 432,
+      "version": "5",
+      "when": 1788148890000,
+      "tag": "0432_online_order_alert_printed",
+      "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "5",
+      "when": 1788148891000,
+      "tag": "0433_exchange_txn_execution_seq",
+      "breakpoints": true
+    },
+    {
+      "idx": 434,
+      "version": "5",
+      "when": 1788148892000,
+      "tag": "0434_composite_indexes_hot_paths",
+      "breakpoints": true
+    }
+  ]
 }

@@ -49,7 +49,7 @@ import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCar
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams, useSearch } from "wouter";
 import {

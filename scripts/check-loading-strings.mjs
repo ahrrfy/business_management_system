@@ -26,6 +26,10 @@ const UPDATE = process.argv.includes("--update-baseline");
 const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
+if (Object.keys(BASELINE).length > 0 || UPDATE) {
+  console.error("✗ خطّ الأساس scripts/loading-strings-baseline.json مُقفَل نهائياً عند الصفر ({}) — لا يُسمح بإعادة فتحه.");
+  process.exit(1);
+}
 
 /*
  * ⭐ **الأنماطُ تُشتقّ من `ACTION_LABELS` لا تُكتَب هنا** (مراجعة Codex على PR #953).

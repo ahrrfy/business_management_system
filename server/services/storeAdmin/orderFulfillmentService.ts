@@ -2014,6 +2014,20 @@ export async function reviveAndConfirmOnlineOrder(
       });
     }
 
+    if (
+      order.status === "CANCELLED" &&
+      !String(order.cancelReason ?? "").includes("انتهت مهلة حجز")
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن إحياء الطلب الملغى يدوياً",
+          why: "هذا الطلب أُلغي يدوياً بطلب الزبون أو الموظف وليس بسبب انتهاء مهلة الحجز التلقائي",
+          doThis: "أنشئ طلباً جديداً للزبون بدلاً من إحياء الطلب الملغى",
+        }),
+      });
+    }
+
     if (order.invoiceId != null) {
       throw new TRPCError({
         code: "BAD_REQUEST",

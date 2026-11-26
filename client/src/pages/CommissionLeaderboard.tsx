@@ -19,7 +19,7 @@ import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Crown, FileDown, Target, TrendingDown, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { LeaderboardPodium } from "@/components/commission/LeaderboardPodium";
+import { LeaderboardPodium } from "@/components/commissions/LeaderboardPodium";
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (

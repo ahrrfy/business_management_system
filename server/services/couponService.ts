@@ -220,6 +220,29 @@ export async function lockCouponForSale(
     }
 
     const designMeta = (row.program.designJson ?? {}) as PromotionDesignMeta;
+    if (
+      designMeta.bounceBackValidityDays &&
+      designMeta.bounceBackValidityDays > 0 &&
+      row.coupon.issuedAt
+    ) {
+      const bounceValidUntilYmd = new Date(
+        new Date(row.coupon.issuedAt).getTime() +
+          designMeta.bounceBackValidityDays * 24 * 60 * 60 * 1000 +
+          3 * 60 * 60 * 1000,
+      )
+        .toISOString()
+        .slice(0, 10);
+      if (input.todayYmd > bounceValidUntilYmd) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "انتهت صلاحية قسيمة الزيارة القادمة",
+            why: `كانت القسيمة صالحة لغاية ${bounceValidUntilYmd} (${designMeta.bounceBackValidityDays} يوماً من الإصدار)`,
+            doThis: "اطلب من العميل استخدام قسيمة سارية الصلاحية أو أتمم البيع بدون القسيمة المنتهية",
+          }),
+        });
+      }
+    }
     if (!isDayActive(input.todayYmd, designMeta.activeDays)) {
       const allowedDaysText = formatActiveDays(designMeta.activeDays);
       throw new TRPCError({

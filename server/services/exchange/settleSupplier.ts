@@ -12,7 +12,7 @@ import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
-import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { lockHouse, nextExchangeExecutionSeq, nextTxnNumber, toDbRate } from "./helpers";
 import { calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
 import { assertPurchaseBranch } from "../purchase/internal";
@@ -272,6 +272,8 @@ export async function settleSupplierViaExchange(
     const after = (await tx.select().from(exchangeHouses).where(eq(exchangeHouses.id, input.exchangeHouseId)).limit(1))[0];
 
     const txnNumber = await nextTxnNumber(tx, input.branchId);
+    const executionSeq = await nextExchangeExecutionSeq(tx);
+    const executedAt = new Date();
     const txRes = await tx.insert(exchangeTransactions).values({
       txnNumber,
       exchangeHouseId: input.exchangeHouseId,
@@ -293,6 +295,8 @@ export async function settleSupplierViaExchange(
       balanceIqdAfter: after ? toDbMoney(money(after.balanceIqd)) : "0.00",
       balanceUsdAfter: after ? toDbMoney(money(after.balanceUsd)) : "0.00",
       status: "ACTIVE",
+      executionSeq,
+      executedAt,
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });

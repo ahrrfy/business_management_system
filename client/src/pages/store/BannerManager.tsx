@@ -33,7 +33,7 @@ import {
   type BannerPlacementOption,
   type BannerSavePayload,
   type EditableBannerRecord,
-} from "@/components/store/BannerStudioComposer";
+} from "@/components/store-admin/BannerStudioComposer";
 
 const PLACEMENT_BADGE: Record<BannerPlacementOption, string> = {
   HERO: "رئيسي — أعلى المتجر",

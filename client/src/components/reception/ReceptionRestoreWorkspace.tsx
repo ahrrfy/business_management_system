@@ -59,7 +59,7 @@ export interface ReceptionRestoreWorkspaceInput {
   setSelKey: React.Dispatch<React.SetStateAction<string | null>>;
   setReceptionPhone: (digits: string) => void;
   setCustomer: (
-    customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer,
+    customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer,
   ) => void;
   setCustomerCreditLimit: (raw: string) => void;
   setTierOverride: React.Dispatch<

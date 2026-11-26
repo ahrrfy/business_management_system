@@ -9,9 +9,9 @@ import {
   Smartphone,
 } from "lucide-react";
 import { PhoneDigitsInput } from "@/components/form/PhoneDigitsInput";
-import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
-import { canSubmitNewCustomer } from "@/components/customer/customerByPhoneMachine";
-import { PrintCustomerCombo } from "@/components/printPos/PrintCustomerCombo";
+import { useCustomerByPhone } from "@/components/customers/useCustomerByPhone";
+import { canSubmitNewCustomer } from "@/components/customers/customerByPhoneMachine";
+import { PrintCustomerCombo } from "@/components/print-pos/PrintCustomerCombo";
 import { trpc } from "@/lib/trpc";
 
 export interface PrintCustomerPhoneSectionProps {

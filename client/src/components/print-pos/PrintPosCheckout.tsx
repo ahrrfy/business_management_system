@@ -2,7 +2,7 @@ import React from "react";
 import { Pencil, Percent, Undo2, X } from "lucide-react";
 import { D, round2 } from "@/lib/money";
 import { CASHIER_INVOICE_DISCOUNT_MAX_PCT, computeInvoiceDiscount } from "@/components/pos/posShared";
-import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import { PrintCartList, type PrintCartLine as CartLine } from "@/components/print-pos/PrintCartList";
 import type { RecipeLineSelectionWithMeta } from "@shared/recipeVariantSelection";
 
 export function mapHeldOrderToPrintTabPatch(

@@ -41,7 +41,7 @@ export async function reclassifyAssetToOpening(assetId: number, actor: Actor) {
 
   await withTx(async (tx) => {
     const asset = await loadForUpdate(tx, assetId, scope);
-    if (asset.status === "disposed") {
+    if (asset.status === "disposed" || asset.status === "retired") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({

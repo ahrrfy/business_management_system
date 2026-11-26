@@ -7,7 +7,7 @@ import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
-import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
+import { OrderLifecycleStatus } from "@/components/store-admin/OrderLifecycleStatus";
 
 export default function StoreDashboard() {
   const countsQ = trpc.storeAdmin.orders.counts.useQuery();

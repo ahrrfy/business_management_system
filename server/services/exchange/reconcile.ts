@@ -1,6 +1,6 @@
 // مطابقة أرصدة: رصيدنا الدفتري (حتى تاريخ قطع اختياري) مقابل رصيد كشف الصيرفة الخارجي — قراءة فقط.
 import Decimal from "decimal.js";
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2, toDbMoney } from "../money";
@@ -27,6 +27,8 @@ export async function reconcileExchange(input: ReconcileInput) {
   if (input.asOfDate) {
     // توحيد حدّ القطع مع كشف حساب الصيرفة (توقيت بغداد +03:00) واستثناء العمليات الملغاة (REVERSED).
     const cutoff = new Date(`${input.asOfDate}T23:59:59.999+03:00`);
+    const effectiveAtExpr = sql<Date>`COALESCE(${exchangeTransactions.executedAt}, ${exchangeTransactions.createdAt})`;
+    const effectiveSeqExpr = sql<number>`COALESCE(${exchangeTransactions.executionSeq}, ${exchangeTransactions.id})`;
     // الرصيد حتى تاريخ القطع = لقطة آخر عملية نشطة ≤ القطع (balanceAfter).
     const asOfTxn = (
       await db
@@ -36,16 +38,17 @@ export async function reconcileExchange(input: ReconcileInput) {
           and(
             eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId),
             eq(exchangeTransactions.status, "ACTIVE"),
-            lte(exchangeTransactions.createdAt, cutoff),
+            sql`${effectiveAtExpr} <= ${cutoff}`,
           ),
         )
-        .orderBy(desc(exchangeTransactions.createdAt), desc(exchangeTransactions.id))
+        .orderBy(sql`${effectiveSeqExpr} DESC`, desc(exchangeTransactions.id))
         .limit(1)
     )[0];
     ourIqd = asOfTxn ? money(asOfTxn.balanceIqdAfter) : new Decimal(0);
     ourUsd = asOfTxn ? money(asOfTxn.balanceUsdAfter) : new Decimal(0);
 
     // البنود المعلّقة = عمليات نشطة بعد تاريخ القطع (تفسّر فروق التوقيت — لا تُسوّى).
+    const afterStart = new Date(`${input.asOfDate}T00:00:00.000+03:00`);
     const after = await db
       .select()
       .from(exchangeTransactions)
@@ -53,10 +56,10 @@ export async function reconcileExchange(input: ReconcileInput) {
         and(
           eq(exchangeTransactions.exchangeHouseId, input.exchangeHouseId),
           eq(exchangeTransactions.status, "ACTIVE"),
-          gte(exchangeTransactions.createdAt, new Date(`${input.asOfDate}T00:00:00.000+03:00`)),
+          sql`${effectiveAtExpr} >= ${afterStart}`,
         ),
       )
-      .orderBy(exchangeTransactions.createdAt);
+      .orderBy(sql`${effectiveSeqExpr} ASC`, exchangeTransactions.id);
     pending = after
       .filter((t) => new Date(t.createdAt as Date) > cutoff)
       .map((t) => ({

@@ -11,7 +11,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
-import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { lockHouse, nextExchangeExecutionSeq, nextTxnNumber, toDbRate } from "./helpers";
 import { calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
 
@@ -65,6 +65,8 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
     const balUsdAfter = movement.balanceUsd;
 
     const txnNumber = await nextTxnNumber(tx, input.branchId);
+    const executionSeq = await nextExchangeExecutionSeq(tx);
+    const executedAt = new Date();
     const txRes = await tx.insert(exchangeTransactions).values({
       txnNumber,
       exchangeHouseId: input.exchangeHouseId,
@@ -78,6 +80,8 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
       balanceIqdAfter: toDbMoney(balIqdAfter),
       balanceUsdAfter: toDbMoney(balUsdAfter),
       status: "ACTIVE",
+      executionSeq,
+      executedAt,
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });

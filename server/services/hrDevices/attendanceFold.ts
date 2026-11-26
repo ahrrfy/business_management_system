@@ -138,7 +138,7 @@ async function canMutateAttendanceDate(date: string): Promise<boolean> {
   const [lockedRun] = await db
     .select({ id: payrollRuns.id })
     .from(payrollRuns)
-    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["draft", "approved", "paid"])))
     .limit(1);
   if (lockedRun) return false;
   try {
@@ -377,6 +377,16 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         needsReview: day.needsReview,
         reviewReason: day.reviewReason,
       });
+      if ("preservedManual" in savedAttendance && savedAttendance.preservedManual) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        parked++;
+        continue;
+      }
 
       // لا نوسم البصمات الخام معالَجة قبل أن يُحفظ إشعار الموظف وصندوق FCM. إذا تعذّر
       // الحفظ يبقى الصف معلّقاً؛ وإعادة الطيّ آمنة لأن recordAttendance وeventKey كلاهما
@@ -671,34 +681,60 @@ export async function refoldMonthFingerprintAttendance(
     a.employeeId !== b.employeeId ? a.employeeId - b.employeeId : a.date.localeCompare(b.date),
   );
 
+  // جلب مجمّع لجدول دوام الموظفين وأيام التعديل اليدوي لتفادي عاصفة N+1 في إعادة طي الشهر
+  const distinctEmpIds = Array.from(new Set(sortedGroups.map((g) => g.employeeId)));
+  const empSchedulesMap = new Map<number, Record<string, { hours?: number } | number>>();
+  if (distinctEmpIds.length > 0) {
+    const empRows = await db
+      .select({ id: employees.id, workSchedule: employees.workSchedule })
+      .from(employees)
+      .where(inArray(employees.id, distinctEmpIds));
+    for (const r of empRows) {
+      empSchedulesMap.set(
+        Number(r.id),
+        (r.workSchedule && typeof r.workSchedule === "object"
+          ? r.workSchedule
+          : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>,
+      );
+    }
+  }
+
+  const manualKeys = new Set<string>();
+  if (distinctEmpIds.length > 0) {
+    const manualRows = await db
+      .select({ employeeId: attendance.employeeId, attendanceDate: attendance.attendanceDate })
+      .from(attendance)
+      .where(
+        and(
+          inArray(attendance.employeeId, distinctEmpIds),
+          sql`${attendance.attendanceDate} LIKE ${`${p}%`}`,
+          ne(attendance.source, "fingerprint"),
+        ),
+      );
+    for (const mr of manualRows) {
+      manualKeys.add(`${Number(mr.employeeId)}|${String(mr.attendanceDate).slice(0, 10)}`);
+    }
+  }
+
+  const canMutateDateCache = new Map<string, boolean>();
+  const canMutateCached = async (date: string): Promise<boolean> => {
+    const existing = canMutateDateCache.get(date);
+    if (existing !== undefined) return existing;
+    const ok = await canMutateAttendanceDate(date);
+    canMutateDateCache.set(date, ok);
+    return ok;
+  };
+
   let refoldedDays = 0;
   let cleanedGhostDays = 0;
 
   for (const g of sortedGroups) {
-    const [manual] = await db
-      .select({ id: attendance.id })
-      .from(attendance)
-      .where(
-        and(
-          eq(attendance.employeeId, g.employeeId),
-          eq(attendance.attendanceDate, g.date),
-          ne(attendance.source, "fingerprint"),
-        ),
-      )
-      .limit(1);
-    if (manual) continue;
+    if (manualKeys.has(`${g.employeeId}|${g.date}`)) continue;
 
     const times = await punchTimesOf(g.employeeId, g.date);
     if (times.length === 0) continue;
 
-    const [empRow] = await db
-      .select({ workSchedule: employees.workSchedule })
-      .from(employees)
-      .where(eq(employees.id, g.employeeId))
-      .limit(1);
-    const sched = (empRow?.workSchedule && typeof empRow.workSchedule === "object"
-      ? empRow.workSchedule
-      : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
+    const sched = empSchedulesMap.get(g.employeeId) ?? (DEFAULT_WORK_SCHEDULE as Record<string, { hours?: number } | number>);
     const schedHours = hoursForDay(sched as never, g.date).toNumber();
 
     const hasDawnPunch = !night.enabled && times.some((t) => punchHourOf(t) < SMART_DAWN_CUTOFF_HOUR);
@@ -715,7 +751,7 @@ export async function refoldMonthFingerprintAttendance(
     });
 
     if (day.usedCount === 0) {
-      if (!(await canMutateAttendanceDate(g.date))) continue;
+      if (!(await canMutateCached(g.date))) continue;
       await db
         .delete(attendance)
         .where(
@@ -736,7 +772,7 @@ export async function refoldMonthFingerprintAttendance(
     }
 
     try {
-      await recordAttendance({
+      const savedRefold = await recordAttendance({
         employeeId: g.employeeId,
         attendanceDate: g.date,
         hours: day.hours,
@@ -749,6 +785,15 @@ export async function refoldMonthFingerprintAttendance(
         needsReview: day.needsReview,
         reviewReason: day.reviewReason,
       });
+      if ("preservedManual" in savedRefold && savedRefold.preservedManual) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        continue;
+      }
       if (g.ids.length > 0) {
         await db
           .update(hrAttendancePunches)

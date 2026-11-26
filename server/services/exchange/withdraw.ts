@@ -10,7 +10,7 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
-import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { lockHouse, nextExchangeExecutionSeq, nextTxnNumber, toDbRate } from "./helpers";
 import { allocateCarryingIqd, calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
 
@@ -67,6 +67,8 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       await persistSignedUsdControl(tx, input.exchangeHouseId, movement);
 
       const txnNumber = await nextTxnNumber(tx, input.branchId);
+      const executionSeq = await nextExchangeExecutionSeq(tx);
+      const executedAt = new Date();
       const txRes = await tx.insert(exchangeTransactions).values({
         txnNumber,
         exchangeHouseId: input.exchangeHouseId,
@@ -79,6 +81,8 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
         balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
         balanceUsdAfter: toDbMoney(movement.balanceUsd),
         status: "ACTIVE",
+        executionSeq,
+        executedAt,
         notes: input.notes ?? null,
         createdBy: actor.userId,
       });
@@ -147,6 +151,8 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     const balUsdAfter = money(house.balanceUsd);
 
     const txnNumber = await nextTxnNumber(tx, input.branchId);
+    const executionSeq = await nextExchangeExecutionSeq(tx);
+    const executedAt = new Date();
     const txRes = await tx.insert(exchangeTransactions).values({
       txnNumber,
       exchangeHouseId: input.exchangeHouseId,
@@ -158,6 +164,8 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       balanceUsdAfter: toDbMoney(balUsdAfter),
       receiptId,
       status: "ACTIVE",
+      executionSeq,
+      executedAt,
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });

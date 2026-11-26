@@ -1342,6 +1342,22 @@ export async function rejectCashVarianceCase(
         }
       },
     });
+    if (
+      row.sourceType === "DAILY_TREASURY" &&
+      row.dailyReconciliationId != null
+    ) {
+      await tx
+        .update(cashDailyReconciliations)
+        .set({
+          version: sql`${cashDailyReconciliations.version} + 1`,
+        })
+        .where(
+          and(
+            eq(cashDailyReconciliations.id, Number(row.dailyReconciliationId)),
+            eq(cashDailyReconciliations.version, Number(row.sourceVersion)),
+          ),
+        );
+    }
     const version = Number(latest.version) + 1;
     await tx.insert(cashVarianceCaseEvents).values({
       caseId: input.caseId,

@@ -530,6 +530,33 @@ export async function closeShift(
       // وفي الحالتين، يُعاد النقد المعدود بالكامل إلى الخزينة عبر settleShiftReturnTx ويصبح رصيد الدرج 0.00 تماماً.
       if (variance.isNegative()) {
         const shortageAmount = variance.abs();
+        const [responsibleEmp] = await tx
+          .select({
+            id: employees.id,
+            isActive: employees.isActive,
+            employmentStatus: employees.employmentStatus,
+          })
+          .from(employees)
+          .where(
+            and(
+              eq(employees.userId, Number(sh.userId)),
+              eq(employees.isActive, true),
+              sql`${employees.employmentStatus} <> 'terminated'`,
+            ),
+          )
+          .orderBy(desc(employees.id))
+          .for("update")
+          .limit(1);
+        if (!responsibleEmp) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر تحميل عجز الوردية كذمة موظف",
+              why: `حساب صاحب الوردية #${input.shiftId} (المستخدم #${sh.userId}) غير مربوط بسجل موظف نشط في الموارد البشرية`,
+              doThis: "اربط حساب المستخدم بسجل موظف نشط أولاً كي لا يُرحّل قيد ذمة موظف يتيم بلا استرداد",
+            }),
+          });
+        }
         await assertCashOutAvailable(tx, {
           branchId: Number(sh.branchId),
           cashBucket: "DRAWER",
@@ -580,28 +607,20 @@ export async function closeShift(
 
         // ربط عجز الوردية بسجل سلفة فعلي (employeeAdvances) لصاحب الوردية ليُستقطع من مسير الرواتب
         // ولا يبقى قيد EMPLOYEE_ADVANCES يتيماً في الدفتر بلا استرداد.
-        const [responsibleEmp] = await tx
-          .select({ id: employees.id })
-          .from(employees)
-          .where(eq(employees.userId, Number(sh.userId)))
-          .orderBy(sql`${employees.isActive} DESC`, desc(employees.id))
-          .limit(1);
-        if (responsibleEmp) {
-          await tx.insert(employeeAdvances).values({
-            employeeId: Number(responsibleEmp.id),
-            branchId: Number(sh.branchId),
-            amount: toDbMoney(shortageAmount),
-            remaining: toDbMoney(shortageAmount),
-            monthlyDeduction: null,
-            sourceType: "OTHER_DEDUCTION",
-            payrollPeriod: null,
-            status: "ACTIVE",
-            receiptId: outReceiptId,
-            note: `ذمة عجز وردية #${input.shiftId} — معتمد (${reasonCode}: ${reason})`.slice(0, 255),
-            createdBy: actor.userId,
-            grantedAt: new Date(),
-          });
-        }
+        await tx.insert(employeeAdvances).values({
+          employeeId: Number(responsibleEmp.id),
+          branchId: Number(sh.branchId),
+          amount: toDbMoney(shortageAmount),
+          remaining: toDbMoney(shortageAmount),
+          monthlyDeduction: null,
+          sourceType: "OTHER_DEDUCTION",
+          payrollPeriod: null,
+          status: "ACTIVE",
+          receiptId: outReceiptId,
+          note: `ذمة عجز وردية #${input.shiftId} — معتمد (${reasonCode}: ${reason})`.slice(0, 255),
+          createdBy: actor.userId,
+          grantedAt: new Date(),
+        });
       } else if (variance.isPositive()) {
         const surplusAmount = variance;
         const inRes = await tx.insert(receipts).values({

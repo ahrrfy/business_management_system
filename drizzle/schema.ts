@@ -2168,6 +2168,12 @@ export const shifts = mysqlTable(
     branchIdx: index("idx_shift_branch").on(table.branchId),
     userIdx: index("idx_shift_user").on(table.userId),
     statusIdx: index("idx_shift_status").on(table.status),
+    branchStatusTypeUserIdx: index("idx_shift_branch_status_type_user").on(
+      table.branchId,
+      table.status,
+      table.shiftType,
+      table.userId,
+    ),
   }),
 );
 
@@ -4513,6 +4519,11 @@ export const expenses = mysqlTable(
   (table) => ({
     branchIdx: index("idx_expense_branch").on(table.branchId),
     dateIdx: index("idx_expense_date").on(table.expenseDate),
+    branchStatusDateIdx: index("idx_expense_branch_status_date").on(
+      table.branchId,
+      table.status,
+      table.expenseDate,
+    ),
     categoryIdx: index("idx_expense_category").on(table.category),
     managedCategoryIdx: index("idx_expense_managed_category").on(
       table.expenseCategoryId,
@@ -4818,6 +4829,11 @@ export const workOrders = mysqlTable(
   (table) => ({
     numberIdx: index("idx_wo_number").on(table.orderNumber),
     branchIdx: index("idx_wo_branch").on(table.branchId),
+    branchStatusIdIdx: index("idx_wo_branch_status_id").on(
+      table.branchId,
+      table.status,
+      table.id,
+    ),
     customerIdx: index("idx_wo_customer").on(table.customerId),
     statusIdx: index("idx_wo_status").on(table.status),
     // الموجة ١ (0292): KPIs العمود تجمع `count + sum + late` مقسّمةً على (status, kanbanState).
@@ -8899,6 +8915,12 @@ export const onlineOrders = mysqlTable(
     deliveryPartyIdx: index("idx_order_delivery_party").on(
       table.deliveryPartyId,
     ),
+    branchStatusIdIdx: index("idx_online_orders_branch_status_id").on(
+      table.branchId,
+      table.status,
+      table.id,
+    ),
+    invoiceIdx: index("idx_online_orders_invoice").on(table.invoiceId),
     freeShippingPromoIdx: index("idx_online_order_free_shipping_promo").on(
       table.freeShippingPromotionId,
     ),
@@ -9668,6 +9690,10 @@ export const idempotencyKeys = mysqlTable(
     opKeyUq: unique("uq_idempotency_op_key").on(
       table.operation,
       table.clientRequestId,
+    ),
+    opCreatedIdx: index("idx_idem_op_created").on(
+      table.operation,
+      table.createdAt,
     ),
   }),
 );
@@ -13849,6 +13875,8 @@ export const exchangeTransactions = mysqlTable(
     ])
       .default("ACTIVE")
       .notNull(),
+    executionSeq: bigint("executionSeq", { mode: "number" }),
+    executedAt: timestamp("executedAt"),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

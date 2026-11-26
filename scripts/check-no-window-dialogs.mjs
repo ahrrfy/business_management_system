@@ -31,6 +31,10 @@ const UPDATE = process.argv.includes("--update-baseline");
 const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
+if (Object.keys(BASELINE).length > 0 || UPDATE) {
+  console.error("✗ خطّ الأساس scripts/window-dialogs-baseline.json مُقفَل نهائياً عند الصفر ({}) — لا يُسمح بإعادة فتحه.");
+  process.exit(1);
+}
 
 // أنماط الرفض — window.confirm/prompt/alert مع open paren.
 const DIALOG_RE = /\bwindow\.(confirm|prompt|alert)\s*\(/g;

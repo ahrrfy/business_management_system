@@ -6,6 +6,7 @@ import { appErrorMessage } from "@shared/errors";
 import { assertAdvanceOriginalCancellationTx, restoreSupplierAdvanceRefundTx, prepareSupplierAdvanceRefundTx } from "../purchase/advanceRefund";
 import { readAdvanceRefundEvidence } from "../purchase/advanceRefundEvidence";
 import { logAuditTx } from "../auditService";
+import { nextExchangeExecutionSeq } from "../exchange/helpers";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { pendingInstallmentTargetTx } from "../installment/receiptClaims";
 import { assertInstallmentReceiptNotReversedTx } from "../installment/receiptAllocations";
@@ -2248,10 +2249,14 @@ export async function approveVoucherTx(
       .update(exchangeHouses)
       .set({ balanceIqd: toDbMoney(nextIqd) })
       .where(eq(exchangeHouses.id, systemRequest.exchangeHouseId));
+    const executionSeq = await nextExchangeExecutionSeq(tx);
+    const executedAt = new Date();
     await tx
       .update(exchangeTransactions)
       .set({
         status: "ACTIVE",
+        executionSeq,
+        executedAt,
         balanceIqdAfter: toDbMoney(nextIqd),
         balanceUsdAfter: toDbMoney(money(prelockedExchangeHouse.balanceUsd)),
       })

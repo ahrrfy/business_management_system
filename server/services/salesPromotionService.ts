@@ -47,8 +47,10 @@ import {
   type TierRule,
 } from "../../shared/promotionEngine";
 import { isPromotionActiveOnDay } from "../../shared/promotionScheduling";
-import type { Tx } from "../db";
+import type { getDb, Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+
+type PromotionQueryDb = Tx | NonNullable<ReturnType<typeof getDb>>;
 import { loadBundleUnitCosts } from "./bundleService";
 import { DecimalInput, money, round2, toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -1250,7 +1252,7 @@ function formatDateYmd(value: unknown, fallback: string): string {
  * تدعم `specificPromotionId` للكوبونات و`lockForUpdate` بترتيب مفاتيح تصاعدي لتثبيت الطلب بلا N+1.
  */
 export async function loadPromotionRuleSnapshot(
-  tx: Tx,
+  tx: PromotionQueryDb,
   input: PromotionRuleSnapshotInput,
 ): Promise<PromotionRuleSnapshot> {
   const evalChannel: "POS" | "STORE" =
@@ -1833,7 +1835,7 @@ export function allocateCouponDiscountAcrossLines<T extends LineForCouponAllocat
  *  - `hasContractPrice=true` ⇒ يعود null فوراً (السعر التعاقدي يفوز — قرار المالك).
  *  - أسبقية عند التعارض حتميّة: أعلى priority ⇒ أعلى discountForUnit ⇒ أصغر id.
  */
-export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): Promise<ResolvedPromotion | null> {
+export async function resolvePromotionForLine(tx: PromotionQueryDb, input: ResolveLineInput): Promise<ResolvedPromotion | null> {
   if (input.hasContractPrice) return null;
 
   const unitPrice = money(input.unitPrice);
@@ -2595,7 +2597,7 @@ export async function searchPromotionProducts(
   });
 }
 
-export async function getProductCategoryIds(tx: Tx, productIds: number[]): Promise<Map<number, number | null>> {
+export async function getProductCategoryIds(tx: PromotionQueryDb, productIds: number[]): Promise<Map<number, number | null>> {
   const map = new Map<number, number | null>();
   if (!productIds.length) return map;
   const rows = await tx

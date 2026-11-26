@@ -165,7 +165,7 @@ export async function getDashboard(
       WHERE direction = 'IN'
         AND receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND receiptApprovalStatus = 'APPROVED'
-        AND DATE(createdAt) = CURDATE()
+        AND createdAt >= CURDATE() AND createdAt < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
         AND COALESCE(referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         AND NOT (
           COALESCE(receipts.referenceNumber, '') LIKE 'STF-%'

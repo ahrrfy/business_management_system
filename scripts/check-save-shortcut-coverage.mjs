@@ -27,6 +27,10 @@ const UPDATE = process.argv.includes("--update-baseline");
 const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
+if (Object.keys(BASELINE).length > 0 || UPDATE) {
+  console.error("✗ خطّ الأساس scripts/save-shortcut-coverage-baseline.json مُقفَل نهائياً عند الصفر ({}) — لا يُسمح بإعادة فتحه.");
+  process.exit(1);
+}
 
 function* walkTsx(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

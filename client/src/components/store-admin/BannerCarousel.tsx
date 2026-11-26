@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
-import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
+import { BannerFrame, type StoreBannerCreative } from "@/components/store-admin/BannerFrame";
 
 export interface BannerCarouselProps {
   banners: StoreBannerCreative[];

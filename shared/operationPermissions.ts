@@ -1,4 +1,3 @@
-import { createMongoAbility } from "@casl/ability";
 import { z } from "zod";
 import {
   ALL_PERMISSION_MODULE_KEYS,
@@ -997,11 +996,7 @@ export function operationDecision(
         : hasOperationPolicy(user)
           ? "policy"
           : "legacy";
-  let allowed = createMongoAbility(
-    policy.grants[operation.key] === true
-      ? [{ action: "execute", subject: operation.key }]
-      : [],
-  ).can("execute", operation.key);
+  let allowed = policy.grants[operation.key] === true;
   const hiddenCost =
     hasOperationPolicy(user) &&
     operation.requiresCostVisibility === true &&

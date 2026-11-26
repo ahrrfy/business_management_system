@@ -1,6 +1,6 @@
 import { toWorkOrderChannel } from "@shared/receptionChannel";
 import { toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
-import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
+import { useCustomerByPhone } from "@/components/customers/useCustomerByPhone";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -23,7 +23,7 @@ export interface ReceptionResumeDraftInput {
   branchId: number;
   offline: boolean;
   activeDraftRef: React.RefObject<{ id: number; version: number } | null>;
-  phoneResolution: import("@/components/customer/customerByPhoneMachine").PhoneResolution;
+  phoneResolution: import("@/components/customers/customerByPhoneMachine").PhoneResolution;
   phoneCustomer: ReturnType<typeof useCustomerByPhone>;
   couponPreview: { isPending: boolean };
   draftResumeEpochRef: React.RefObject<number>;
@@ -71,7 +71,7 @@ export interface ReceptionResumeDraftInput {
   setReceptionPhone: (digits: string) => void;
   prevCustomerIdRef: React.RefObject<number | null>;
   setCustomer: (
-    customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer,
+    customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer,
   ) => void;
   setTierOverride: React.Dispatch<
     React.SetStateAction<import("@/components/reception/cartMath").Tier | null>

@@ -48,7 +48,7 @@ export function computeDepreciation(
   const cost = money(a.purchaseValue);
   const openingDep = a.openingDepreciation ? money(a.openingDepreciation) : new Decimal(0);
   const storedAccum = a.accumulatedDepreciation ? money(a.accumulatedDepreciation) : new Decimal(0);
-  const baselineOpening = Decimal.max(openingDep, storedAccum);
+  const baselineOpening = openingDep;
 
   if (a.usefulLifeYears === 0) {
     const stop = a.disposalDate ? new Date(a.disposalDate) : null;

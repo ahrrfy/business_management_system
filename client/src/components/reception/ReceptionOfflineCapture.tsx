@@ -39,7 +39,7 @@ export interface ReceptionOfflineCaptureInput {
   payInput: string;
   grandTotalD: import("decimal.js").Decimal;
   branchId: number;
-  customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
+  customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer;
   effectiveTier: import("@/components/reception/cartMath").Tier;
   invoiceDiscountAmountD: import("decimal.js").Decimal;
   reqIdRef: React.RefObject<string>;

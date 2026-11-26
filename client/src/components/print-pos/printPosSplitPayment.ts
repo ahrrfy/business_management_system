@@ -3,7 +3,7 @@ import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { type PosPaymentLegDraft, type Receipt } from "@/components/pos/posShared";
 import { isSplitLegExternalConfirmed, parsePosLegAmountD } from "@/components/pos/posTotals";
 import type { PaymentMethod } from "./PrintPosCheckout";
-import type { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import type { PrintCartLine as CartLine } from "@/components/print-pos/PrintCartList";
 
 export function computePrintPosSplitMetrics(params: {
   splitMode?: boolean;

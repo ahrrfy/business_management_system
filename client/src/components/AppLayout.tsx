@@ -411,8 +411,15 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   );
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
-      await resetSessionForLogout(queryClient);
+      await resetSessionForLogout(queryClient).catch(() => undefined);
       window.location.replace("/login");
+    },
+    onError: async () => {
+      await resetSessionForLogout(queryClient).catch(() => undefined);
+      void queryClient.invalidateQueries();
+      toast.error(
+        "تعذّر إنهاء الجلسة على الخادم — ما زالت الجلسة نشطة، تحقق من الاتصال وأعد المحاولة قبل ترك الجهاز.",
+      );
     },
   });
 

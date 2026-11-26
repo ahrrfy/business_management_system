@@ -84,13 +84,14 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
         continue;
       }
       const remainingValue = currentQty.times(currentCost.get(variantId) ?? new Decimal(0)).minus(produced.value);
-      if (remainingValue.lt(0)) {
+      const roundingTolerance = new Decimal("0.005").times(produced.qty);
+      if (remainingValue.lt(roundingTolerance.neg())) {
         throw new TRPCError({
           code: "CONFLICT",
           message: `لا يمكن فك متوسط تكلفة الصنف #${variantId} بأمان — راجع حركات التكلفة اللاحقة`,
         });
       }
-      restoredCosts.set(variantId, round2(remainingValue.div(remainingQty)));
+      restoredCosts.set(variantId, round2(Decimal.max(0, remainingValue).div(remainingQty)));
     }
 
     // اعكس المخرجات أولاً (سحب المنتَج) — قد يرمي CONFLICT إن بِيع/استُهلك ⇒ يمنع الإلغاء بحقّ.

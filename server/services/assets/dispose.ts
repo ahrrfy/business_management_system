@@ -1,5 +1,6 @@
 // إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, eq, isNull } from "drizzle-orm";
 import {
@@ -183,7 +184,16 @@ export async function disposeAsset(
         message: "تغيّر فرع الأصل أثناء قفل مصدر النقد؛ أعد المحاولة",
       });
     }
-    if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
+    if (a.status === "disposed" || a.status === "retired") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر استبعاد الأصل",
+          why: "الأصل مُستبعَد أو خارج الخدمة مسبقاً",
+          doThis: "تحقق من حالة الأصل في سجل الأصول الثابتة؛ لا يمكن إخراج أصل مستبعد أو مشطوب مرة ثانية",
+        }),
+      });
+    }
     await tx
       .update(assetCustodyLog)
       .set({ toDate: input.date })

@@ -495,8 +495,26 @@ export async function setEmploymentStatus(
      * عمداً: قبل 0207 كان القطع نهائياً فيلزم ربطٌ يدويّ جديد، والآن الصفّ حيٌّ فيلزم رفعُ حدّه.
      */
     if (status !== "terminated") {
-      if (e.userId) {
-        await tx.update(users).set({ isActive: true }).where(eq(users.id, e.userId));
+      if (status === "active" && e.userId) {
+        const [u] = await tx
+          .select({ id: users.id, customRoleId: users.customRoleId })
+          .from(users)
+          .where(eq(users.id, e.userId))
+          .limit(1);
+        let roleAllowsActivation = true;
+        if (u?.customRoleId != null) {
+          const [cr] = await tx
+            .select({ isActive: roles.isActive })
+            .from(roles)
+            .where(eq(roles.id, u.customRoleId))
+            .limit(1);
+          if (!cr || cr.isActive === false) {
+            roleAllowsActivation = false;
+          }
+        }
+        if (roleAllowsActivation) {
+          await tx.update(users).set({ isActive: true }).where(eq(users.id, e.userId));
+        }
       }
       const restored = await tx
         .update(hrDeviceUsers)

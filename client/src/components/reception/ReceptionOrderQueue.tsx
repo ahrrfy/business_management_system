@@ -23,10 +23,10 @@ import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/componen
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
-import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationOverlay";
-import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
-import { WorkOrderQuickCancelDialog } from "@/components/workorder/WorkOrderQuickCancelDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import { LiveCelebrationOverlay } from "@/components/commissions/LiveCelebrationOverlay";
+import { ReclassifyDeliveryDialog } from "@/components/workOrders/ReclassifyDeliveryDialog";
+import { WorkOrderQuickCancelDialog } from "@/components/workOrders/WorkOrderQuickCancelDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 import { workOrderDetailOperationAccess } from "@/lib/workOrderDetailOperationAccess";
 import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
