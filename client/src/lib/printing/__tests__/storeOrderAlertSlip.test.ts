@@ -656,6 +656,48 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
     expect(hiddenTabPrint).toHaveBeenCalledTimes(1);
     hiddenDashboardTab.dispose();
   });
+
+  it("defers lease release until an in-flight physical print settles so committed USB/bridge prints confirm instead of double-printing", async () => {
+    const confirmFn = vi.fn(async () => {});
+    const releaseFn = vi.fn(async () => {});
+    let resolveInFlightUsbTransfer!: (res: "printed" | "lease_lost") => void;
+
+    const station = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      claim: async () => ({
+        claimed: true,
+        leaseToken: "lease-usb-inflight",
+        orderNumber: "ORD-INFLIGHT-301",
+        total: "29000",
+        itemCount: 2,
+      }),
+      confirm: confirmFn,
+      release: releaseFn,
+      print: () =>
+        new Promise<"printed" | "lease_lost">((resolve) => {
+          resolveInFlightUsbTransfer = resolve;
+        }),
+    });
+
+    const handlePromise = station.handleEvent({
+      orderId: 301,
+      orderNumber: "ORD-INFLIGHT-301",
+      totalAmount: "29000",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Navigating to a public route (/price-checker) calls dispose() while USB transferOut is already in-flight
+    station.dispose();
+    // Must NOT release the lease while physical USB bytes are still transmitting!
+    expect(releaseFn).not.toHaveBeenCalled();
+
+    // Physical USB transmission completes -> confirms completion, zero duplicate print handoff!
+    resolveInFlightUsbTransfer("printed");
+    await handlePromise;
+    expect(confirmFn).toHaveBeenCalledWith(301, "lease-usb-inflight");
+    expect(releaseFn).not.toHaveBeenCalled();
+  });
 });
 
 describe("Global Store Order Auto-Print — route coverage & root architecture", () => {

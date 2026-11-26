@@ -761,9 +761,6 @@ export function createStoreOrderAlertCoordinator(deps: {
 
       clearPendingTimer(orderId);
       let activeLeaseToken = claimRes.leaseToken ?? null;
-      activeLeaseReleases.set(orderId, () => {
-        void deps.release(orderId, activeLeaseToken).catch(() => {});
-      });
       let localLeaseDeadline = getNow() + leaseDurationMs;
       let printDone = false;
       const abortController = new AbortController();
@@ -863,18 +860,20 @@ export function createStoreOrderAlertCoordinator(deps: {
           try {
             await deps.confirm(orderId, tokenToConfirm);
           } catch {
-            const retryHandle = schedule(() => {
-              auxTimers.delete(retryHandle);
-              void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
-            }, 2_000);
-            auxTimers.add(retryHandle);
+            if (!disposed) {
+              const retryHandle = schedule(() => {
+                auxTimers.delete(retryHandle);
+                void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
+              }, 2_000);
+              auxTimers.add(retryHandle);
+            }
           }
         }
         return;
       }
 
       if (outcome === "dialog_opened") {
-        if (!deps.onBrowserDialogOpened) {
+        if (disposed || !deps.onBrowserDialogOpened) {
           activeLeaseReleases.delete(orderId);
           failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
           try {
