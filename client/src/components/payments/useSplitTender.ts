@@ -70,10 +70,9 @@ export function useSplitTender(input: {
     if (readyScope === scope) storeTender(draftKey, parts);
   }, [parts, scope, readyScope]);
   const fingerprintFor=(part:TenderPart,index:number)=>tenderFingerprint(input.branchId,input.channel,part,index===0?input.additionalFirstPaymentAmount:"0");
-  const salesStart = trpc.sales.initiateExternalPayment.useMutation();
-  const salesFinish = trpc.sales.confirmExternalPayment.useMutation();
-  const receptionStart = trpc.reception.initiateExternalPayment.useMutation();
-  const receptionFinish = trpc.reception.confirmExternalPayment.useMutation();
+  const router = input.channel === "POS" ? trpc.sales : trpc.reception;
+  const start = router.initiateExternalPayment.useMutation();
+  const finish = router.confirmExternalPayment.useMutation();
   function update(
     id: string,
     patch: Partial<Pick<TenderPart, "method" | "amount" | "reference">>,
@@ -154,10 +153,13 @@ export function useSplitTender(input: {
           requestId,
           deviceId,
         };
-        const result =
-          input.channel === "POS"
-            ? await salesStart.mutateAsync({ ...args, channel: "POS" })
-            : await receptionStart.mutateAsync(args);
+        const startMutate = start.mutateAsync as (
+          payload: typeof args & { channel?: "POS" },
+        ) => Promise<{ attemptId: number }>;
+        const result = await startMutate({
+          ...args,
+          ...(input.channel === "POS" ? { channel: "POS" as const } : {}),
+        });
         proof = {
           attemptId: result.attemptId,
           requestId,
@@ -172,20 +174,18 @@ export function useSplitTender(input: {
       if (attemptId == null)
         throw new Error("تعذر استعادة محاولة الدفع؛ أعد التحقق بنفس العملية.");
       if (!proof.confirmed) {
-        if (input.channel === "POS") {
-          await salesFinish.mutateAsync({
-            branchId: input.branchId,
-            attemptId,
-            deviceId,
-            channel: "POS",
-          });
-        } else {
-          await receptionFinish.mutateAsync({
-            branchId: input.branchId,
-            attemptId,
-            deviceId,
-          });
-        }
+        const finishMutate = finish.mutateAsync as (payload: {
+          branchId: number;
+          attemptId: number;
+          deviceId: string;
+          channel?: "POS";
+        }) => Promise<unknown>;
+        await finishMutate({
+          branchId: input.branchId,
+          attemptId,
+          deviceId,
+          ...(input.channel === "POS" ? { channel: "POS" as const } : {}),
+        });
         proof = { ...proof, confirmed: true };
         remember(proof, epoch);
       }
