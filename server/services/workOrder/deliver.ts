@@ -20,6 +20,8 @@ import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { closeWorkOrderDirectHandoverCustodyTx } from "../delivery/custody";
+import { detachWorkOrderFromOpenFulfillmentRequestsTx } from "../fulfillment/itemLifecycle";
+import { consumeConfirmedExternalPaymentAttemptTx } from "../posExternalPayment";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
@@ -40,7 +42,13 @@ import {
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
-  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  payment?: {
+    amount: string;
+    method: PaymentMethod;
+    reference?: string | null;
+    externalPaymentAttemptId?: number | null;
+    externalPaymentDeviceId?: string | null;
+  } | null;
   clientRequestId?: string | null;
   /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
@@ -50,6 +58,8 @@ export interface DeliverWorkOrderInput {
   managerOverrideByUserId?: number | null;
   /** فرض التحقق من اعتماد الدين (إلزامي في راوتر التسليم والواجهات) */
   enforceDebtApproval?: boolean;
+  /** عزل تقارير الوردية اليومية (Z-Report) عند جرد الرفّ لطلبات مسدّدة تاريخياً */
+  skipShiftAttribution?: boolean;
 }
 
 export type DeliverWorkOrderTxResult = {
@@ -68,7 +78,38 @@ export async function deliverWorkOrderInTx(
   actor: Actor & { role?: string },
 ): Promise<DeliverWorkOrderTxResult> {
   // دفعة التسليم قبضٌ ذاتي من الموظف؛ نرفض غير النقدي قبل فحص idempotency وقفل الأمر.
-  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+  if (input.payment) {
+    assertPosPaymentMethodEnabled(input.payment.method);
+    if (input.payment.method === "CASH") {
+      if (
+        input.payment.externalPaymentAttemptId != null ||
+        input.payment.externalPaymentDeviceId?.trim()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل دفعة التسليم النقدية",
+            why: "الطلب يحمل محاولة دفع خارجية بينما الطريقة المختارة نقداً",
+            doThis: "أزل ربط الجهاز عند الدفع النقدي أو اختر وسيلة الدفع غير النقدية المطابقة",
+          }),
+        });
+      }
+    } else if (
+      (input.payment.externalPaymentAttemptId != null ||
+        Boolean(input.payment.externalPaymentDeviceId?.trim())) &&
+      (!input.payment.externalPaymentAttemptId ||
+        !input.payment.externalPaymentDeviceId?.trim())
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "أكّد الدفع الخارجي على هذا الجهاز قبل تسجيل الدفعة",
+          why: "بيانات محاولة الدفع الخارجي غير مكتملة (معرّف المحاولة أو الجهاز مفقود)",
+          doThis: "أكّد العملية على جهاز الدفع ثم أعد إتمام التسليم",
+        }),
+      });
+    }
+  }
   {
     const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
@@ -110,6 +151,8 @@ export async function deliverWorkOrderInTx(
     // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
     await assertSiblingsReady(tx, {
       draftId: wo.draftId,
+      branchId: Number(wo.branchId),
+      orderNumber: wo.orderNumber,
       excludeWorkOrderId: input.workOrderId,
       confirmed: input.partialDispatchConfirmed === true,
       action: "deliver",
@@ -123,13 +166,20 @@ export async function deliverWorkOrderInTx(
         message: "هذا الطلب مخصّص للتوصيل — أسنده من «إدارة التوصيل» ولا تستخدم التسليم المباشر",
       });
     }
-    await assertNoLiveConsignment(tx, Number(wo.id), "deliver");
+    await assertNoLiveConsignment(tx, Number(wo.id), "deliver", wo.invoiceId);
+    await detachWorkOrderFromOpenFulfillmentRequestsTx(tx, {
+      workOrderId: Number(wo.id),
+      invoiceId: wo.invoiceId == null ? null : Number(wo.invoiceId),
+      actorUserId: actor.userId,
+      reason: "تسليم مباشر لأمر الشغل بالفرع",
+    });
 
     // معالجة التسليم المباشر لأمر شغل سبق إصدار فاتورته عند الإسناد للتوصيل ثم أُلغي الإسناد
     // أو أُعيد الطرد إلى READY دون عكس البيع: نسوّي الفاتورة القائمة دون إنشاء فاتورة أو SALE ثانٍ.
+    // الترتيب القياسي الصارم للأقفال: workOrders -> shifts -> cashSource -> customers -> invoices.
     if (wo.invoiceId != null) {
       const paidNow = money(input.payment?.amount ?? "0");
-      const paymentReference = input.payment?.reference?.trim() || null;
+      let paymentReference = input.payment?.reference?.trim() || null;
       if (paidNow.lt(0)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -140,7 +190,12 @@ export async function deliverWorkOrderInTx(
           }),
         });
       }
-      if (paidNow.gt(0) && input.payment?.method !== "CASH" && !paymentReference) {
+      if (
+        paidNow.gt(0) &&
+        input.payment?.method !== "CASH" &&
+        !paymentReference &&
+        input.payment?.externalPaymentAttemptId == null
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -149,6 +204,108 @@ export async function deliverWorkOrderInTx(
             doThis: "أدخل رقم مرجع عملية البطاقة أو التحويل ثم أعد المحاولة",
           }),
         });
+      }
+
+      const [invPreview] = await tx
+        .select({
+          id: invoices.id,
+          customerId: invoices.customerId,
+          total: invoices.total,
+          returnedTotal: invoices.returnedTotal,
+          paidAmount: invoices.paidAmount,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, Number(wo.invoiceId)))
+        .limit(1);
+      if (!invPreview) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسليم الطلب — الفاتورة المرتبطة غير موجودة",
+            why: `أمر الشغل مرتبط بمعرّف فاتورة (${Number(wo.invoiceId)}) غير موجود في السجلات`,
+            doThis: "راجع سجل الفواتير المرتبطة بالطلب مع المدير قبل إعادة المحاولة",
+          }),
+        });
+      }
+
+      const receptionShiftRow =
+        input.skipShiftAttribution && paidNow.isZero()
+          ? undefined
+          : (
+              await tx
+                .select({ id: shifts.id })
+                .from(shifts)
+                .where(
+                  and(
+                    eq(shifts.userId, actor.userId),
+                    eq(shifts.branchId, Number(wo.branchId)),
+                    eq(shifts.status, "OPEN"),
+                    eq(shifts.shiftType, "RECEPTION"),
+                  ),
+                )
+                .for("update")
+                .limit(1)
+            )[0];
+      const deliveryShiftId = receptionShiftRow ? Number(receptionShiftRow.id) : null;
+      if (input.payment?.method === "CASH" && paidNow.gt(0) && deliveryShiftId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر قبض دفعة التسليم نقداً بلا وردية استقبال مفتوحة",
+            why: "لا يجوز إدخال نقد في درج الاستقبال (DRAWER) دون وردية RECEPTION مفتوحة للمستخدم الحالي",
+            doThis: "افتح وردية RECEPTION أولاً ثم أعد تنفيذ التسليم والتحصيل",
+          }),
+        });
+      }
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: Number(wo.branchId),
+        shiftId: deliveryShiftId,
+        cashBucket: input.payment?.method === "CASH" && paidNow.gt(0) ? "DRAWER" : null,
+        paymentMethod: input.payment?.method ?? "CASH",
+        status: paidNow.gt(0) ? "COMPLETED" : "PENDING",
+        approvalStatus: "APPROVED",
+      });
+
+      const previewEffectiveCustomerId =
+        invPreview.customerId != null
+          ? Number(invPreview.customerId)
+          : wo.customerId != null
+            ? Number(wo.customerId)
+            : null;
+      const previewRemainingAfterPay = round2(
+        money(invPreview.total)
+          .minus(money(invPreview.returnedTotal ?? "0"))
+          .minus(money(invPreview.paidAmount ?? "0"))
+          .minus(paidNow),
+      );
+      const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
+      const isElevated = actor.role === "manager" || actor.role === "admin";
+      if (
+        invPreview.customerId == null &&
+        previewEffectiveCustomerId != null &&
+        previewRemainingAfterPay.gt(0) &&
+        !(await readOpeningWindowState(tx)).active
+      ) {
+        const hasCreditOverride = Boolean(
+          input.addToCustomerDebt && (isElevated || input.managerOverrideByUserId != null),
+        );
+        if (!hasCreditOverride) {
+          await assertCreditLimit(
+            tx,
+            previewEffectiveCustomerId,
+            previewRemainingAfterPay,
+            Number(wo.branchId),
+            woPaymentMode,
+          );
+        }
+      }
+      if (previewEffectiveCustomerId != null) {
+        await tx
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.id, previewEffectiveCustomerId))
+          .for("update")
+          .limit(1);
       }
 
       const [existingInv] = await tx
@@ -195,14 +352,23 @@ export async function deliverWorkOrderInTx(
       }
 
       const remainingAfterPay = round2(existingRemaining.minus(paidNow));
-      const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
-      const isElevated = actor.role === "manager" || actor.role === "admin";
       const effectiveCustomerId =
         existingInv.customerId != null
           ? Number(existingInv.customerId)
           : wo.customerId != null
             ? Number(wo.customerId)
             : null;
+      if (
+        effectiveCustomerId != null &&
+        effectiveCustomerId !== previewEffectiveCustomerId
+      ) {
+        await tx
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.id, effectiveCustomerId))
+          .for("update")
+          .limit(1);
+      }
 
       if (remainingAfterPay.gt(0)) {
         if (!input.addToCustomerDebt) {
@@ -243,70 +409,6 @@ export async function deliverWorkOrderInTx(
         }
       }
 
-      const receptionShiftRow = (
-        await tx
-          .select({ id: shifts.id })
-          .from(shifts)
-          .where(
-            and(
-              eq(shifts.userId, actor.userId),
-              eq(shifts.branchId, Number(wo.branchId)),
-              eq(shifts.status, "OPEN"),
-              eq(shifts.shiftType, "RECEPTION"),
-            ),
-          )
-          .for("update")
-          .limit(1)
-      )[0];
-      const deliveryShiftId = receptionShiftRow ? Number(receptionShiftRow.id) : null;
-      if (input.payment?.method === "CASH" && paidNow.gt(0) && deliveryShiftId == null) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: "تعذّر قبض دفعة التسليم نقداً بلا وردية استقبال مفتوحة",
-            why: "لا يجوز إدخال نقد في درج الاستقبال (DRAWER) دون وردية RECEPTION مفتوحة للمستخدم الحالي",
-            doThis: "افتح وردية RECEPTION أولاً ثم أعد تنفيذ التسليم والتحصيل",
-          }),
-        });
-      }
-      await lockMaterializedCashReceiptSourceForWrite(tx, {
-        branchId: Number(wo.branchId),
-        shiftId: deliveryShiftId,
-        cashBucket: input.payment?.method === "CASH" && paidNow.gt(0) ? "DRAWER" : null,
-        paymentMethod: input.payment?.method ?? "CASH",
-        status: paidNow.gt(0) ? "COMPLETED" : "PENDING",
-        approvalStatus: "APPROVED",
-      });
-
-      if (
-        existingInv.customerId == null &&
-        effectiveCustomerId != null &&
-        remainingAfterPay.gt(0) &&
-        !(await readOpeningWindowState(tx)).active
-      ) {
-        const hasCreditOverride = Boolean(
-          input.addToCustomerDebt && (isElevated || input.managerOverrideByUserId != null),
-        );
-        if (!hasCreditOverride) {
-          await assertCreditLimit(
-            tx,
-            effectiveCustomerId,
-            remainingAfterPay,
-            Number(wo.branchId),
-            woPaymentMode,
-          );
-        }
-      }
-
-      if (effectiveCustomerId != null) {
-        await tx
-          .select({ id: customers.id })
-          .from(customers)
-          .where(eq(customers.id, effectiveCustomerId))
-          .for("update")
-          .limit(1);
-      }
-
       const nextPaidAmount = round2(money(existingInv.paidAmount ?? "0").plus(paidNow));
       const nextInvStatus = computeInvoiceStatus(
         String(existingInv.total),
@@ -315,20 +417,47 @@ export async function deliverWorkOrderInTx(
       );
 
       if (paidNow.gt(0)) {
-        const rRes = await tx.insert(receipts).values({
-          branchId: Number(wo.branchId),
-          shiftId: deliveryShiftId,
-          direction: "IN",
-          amount: toDbMoney(paidNow),
-          paymentMethod: input.payment!.method,
-          cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
-          status: "COMPLETED",
-          approvalStatus: "APPROVED",
-          referenceNumber: paymentReference,
-          invoiceId: Number(existingInv.id),
-          createdBy: actor.userId,
-        });
-        const receiptId = extractInsertId(rRes);
+        const writePriorInvoiceReceipt = async (resolvedRef: string | null) => {
+          const rRes = await tx.insert(receipts).values({
+            branchId: Number(wo.branchId),
+            shiftId: input.payment!.method === "CASH" ? deliveryShiftId : null,
+            direction: "IN",
+            amount: toDbMoney(paidNow),
+            paymentMethod: input.payment!.method,
+            cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
+            status: "COMPLETED",
+            approvalStatus: "APPROVED",
+            referenceNumber: resolvedRef,
+            invoiceId: Number(existingInv.id),
+            createdBy: actor.userId,
+          });
+          return extractInsertId(rRes);
+        };
+        const receiptId =
+          input.payment!.method !== "CASH" &&
+          input.payment!.externalPaymentAttemptId != null
+            ? await consumeConfirmedExternalPaymentAttemptTx(
+                tx,
+                {
+                  branchId: Number(wo.branchId),
+                  channel: "SALES_COLLECTION",
+                  method: input.payment!.method,
+                  amount: toDbMoney(paidNow),
+                  attemptId: input.payment!.externalPaymentAttemptId,
+                  deviceId: input.payment!.externalPaymentDeviceId ?? null,
+                },
+                actor,
+                async (attempt) => {
+                  paymentReference = attempt.externalReference;
+                  const id = await writePriorInvoiceReceipt(attempt.externalReference);
+                  return {
+                    invoiceId: Number(existingInv.id),
+                    receiptId: id,
+                    value: id,
+                  };
+                },
+              )
+            : await writePriorInvoiceReceipt(paymentReference);
         const paymentRole = paymentAssetRole(
           input.payment!.method,
           input.payment!.method === "CASH" ? "DRAWER" : null,
@@ -556,8 +685,13 @@ export async function deliverWorkOrderInTx(
 
     // Credit-sale guard. العربون المقبوض سابقاً (receipt+PAYMENT_IN عند الإنشاء) يُضمّ لمدفوع الفاتورة.
     const paidNow = money(input.payment?.amount ?? "0");
-    const paymentReference = input.payment?.reference?.trim() || null;
-    if (paidNow.gt(0) && input.payment?.method !== "CASH" && !paymentReference) {
+    let paymentReference = input.payment?.reference?.trim() || null;
+    if (
+      paidNow.gt(0) &&
+      input.payment?.method !== "CASH" &&
+      !paymentReference &&
+      input.payment?.externalPaymentAttemptId == null
+    ) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
     }
     const depositPaid = round2(money(wo.deposit ?? "0"));
@@ -686,19 +820,22 @@ export async function deliverWorkOrderInTx(
     // الترتيب القانوني الوحيد: **وردية ← عميل ← عدّاد**، فيسبق هذا القفلُ كلَّ ما يمسّ العميل.
     // (أثرٌ جانبيّ مقصود: من لا وردية استقبالٍ له ويتجاوز سقف الائتمان معاً يرى رسالة الوردية
     // أوّلاً بدل رسالة الائتمان — كلتاهما حاجزٌ مشروع ولا أثر ماليّ للترتيب بينهما.)
-    const receptionShiftRow = (
-      await tx
-        .select({ id: shifts.id })
-        .from(shifts)
-        .where(and(
-          eq(shifts.userId, actor.userId),
-          eq(shifts.branchId, Number(wo.branchId)),
-          eq(shifts.status, "OPEN"),
-          eq(shifts.shiftType, "RECEPTION"),
-        ))
-        .for("update")
-        .limit(1)
-    )[0];
+    const receptionShiftRow =
+      input.skipShiftAttribution && paidNow.isZero()
+        ? undefined
+        : (
+            await tx
+              .select({ id: shifts.id })
+              .from(shifts)
+              .where(and(
+                eq(shifts.userId, actor.userId),
+                eq(shifts.branchId, Number(wo.branchId)),
+                eq(shifts.status, "OPEN"),
+                eq(shifts.shiftType, "RECEPTION"),
+              ))
+              .for("update")
+              .limit(1)
+          )[0];
     const deliveryShiftId = receptionShiftRow ? Number(receptionShiftRow.id) : null;
     if (input.payment?.method === "CASH" && paidNow.gt(0) && deliveryShiftId == null) {
       throw new TRPCError({
@@ -772,7 +909,7 @@ export async function deliverWorkOrderInTx(
       // التجاريّ يجب أن يتّفقا على «كيف حُصِّل الرصيد».
       paymentMode: woPaymentMode,
       paymentDate: totalPaid.gt(0) ? new Date() : null,
-      notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
+      notes: `أمر شغل ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,
       createdBy: sellerUserId,
     });
@@ -847,24 +984,44 @@ export async function deliverWorkOrderInTx(
 
     // Optional payment receipt + PAYMENT_IN entry.
     if (paidNow.gt(0)) {
-      // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report) — تفضيل وردية الاستقبال.
-    // الدفعة النقدية لا تدخل إلا درج RECEPTION المقفول نفسه الذي خُتمت به الفاتورة.
-      const shiftId = deliveryShiftId;
-      const rRes = await tx.insert(receipts).values({
-        branchId: Number(wo.branchId),
-        shiftId,
-        direction: "IN",
-        amount: toDbMoney(paidNow),
-        paymentMethod: input.payment!.method,
-        // cashBucket='DRAWER' للنقد ⇒ يَدخل تسوية الدرج/Z-report (مرآة createSale/processPayment).
-        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
-        status: "COMPLETED",
-        approvalStatus: "APPROVED",
-        referenceNumber: paymentReference,
-        invoiceId,
-        createdBy: actor.userId,
-      });
-      const receiptId = extractInsertId(rRes);
+      const shiftId = input.payment!.method === "CASH" ? deliveryShiftId : null;
+      const writeNewInvoiceReceipt = async (resolvedRef: string | null) => {
+        const rRes = await tx.insert(receipts).values({
+          branchId: Number(wo.branchId),
+          shiftId,
+          direction: "IN",
+          amount: toDbMoney(paidNow),
+          paymentMethod: input.payment!.method,
+          cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          referenceNumber: resolvedRef,
+          invoiceId,
+          createdBy: actor.userId,
+        });
+        return extractInsertId(rRes);
+      };
+      const receiptId =
+        input.payment!.method !== "CASH" &&
+        input.payment!.externalPaymentAttemptId != null
+          ? await consumeConfirmedExternalPaymentAttemptTx(
+              tx,
+              {
+                branchId: Number(wo.branchId),
+                channel: "SALES_COLLECTION",
+                method: input.payment!.method,
+                amount: toDbMoney(paidNow),
+                attemptId: input.payment!.externalPaymentAttemptId,
+                deviceId: input.payment!.externalPaymentDeviceId ?? null,
+              },
+              actor,
+              async (attempt) => {
+                paymentReference = attempt.externalReference;
+                const id = await writeNewInvoiceReceipt(attempt.externalReference);
+                return { invoiceId, receiptId: id, value: id };
+              },
+            )
+          : await writeNewInvoiceReceipt(paymentReference);
       const paymentRole = paymentAssetRole(input.payment!.method, input.payment!.method === "CASH" ? "DRAWER" : null, "IN");
       const paymentPostingSource = {
         roleDebits: { [paymentRole]: paidNow },
@@ -883,6 +1040,7 @@ export async function deliverWorkOrderInTx(
       });
     }
 
+    const deliveredAt = new Date();
     await tx
       .update(workOrders)
       .set({
@@ -890,9 +1048,34 @@ export async function deliverWorkOrderInTx(
         kanbanState: "NORMAL",
         blockedReason: null,
         invoiceId,
-        deliveredAt: new Date(),
+        deliveredAt,
       })
       .where(eq(workOrders.id, Number(wo.id)));
+
+    await recordWorkOrderEvent(tx, {
+      workOrderId: Number(wo.id),
+      eventType: "DELIVERED",
+      fromStatus: wo.status,
+      toStatus: "DELIVERED",
+      payload: {
+        invoiceId,
+        invoiceNumber,
+        paidNow: toDbMoney(paidNow),
+      },
+      actorUserId: actor.userId,
+      branchId: Number(wo.branchId),
+      seq: invoiceId,
+    });
+
+    await closeWorkOrderDirectHandoverCustodyTx(tx, {
+      workOrderId: Number(wo.id),
+      branchId: Number(wo.branchId),
+      invoiceId,
+      actorUserId: actor.userId,
+      operationId:
+        input.clientRequestId ??
+        `workOrder.deliver:${wo.id}:v${Number(wo.version ?? 0)}`,
+    });
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "workOrder.deliver", input.clientRequestId, invoiceId, requestFingerprint);
@@ -942,7 +1125,38 @@ export function publishWorkOrderDeliveredRealtime(
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
 export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
-  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+  if (input.payment) {
+    assertPosPaymentMethodEnabled(input.payment.method);
+    if (input.payment.method === "CASH") {
+      if (
+        input.payment.externalPaymentAttemptId != null ||
+        input.payment.externalPaymentDeviceId?.trim()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل دفعة التسليم النقدية",
+            why: "الطلب يحمل محاولة دفع خارجية بينما الطريقة المختارة نقداً",
+            doThis: "أزل ربط الجهاز عند الدفع النقدي أو اختر وسيلة الدفع غير النقدية المطابقة",
+          }),
+        });
+      }
+    } else if (
+      (input.payment.externalPaymentAttemptId != null ||
+        Boolean(input.payment.externalPaymentDeviceId?.trim())) &&
+      (!input.payment.externalPaymentAttemptId ||
+        !input.payment.externalPaymentDeviceId?.trim())
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "أكّد الدفع الخارجي على هذا الجهاز قبل تسجيل الدفعة",
+          why: "بيانات محاولة الدفع الخارجي غير مكتملة (معرّف المحاولة أو الجهاز مفقود)",
+          doThis: "أكّد العملية على جهاز الدفع ثم أعد إتمام التسليم",
+        }),
+      });
+    }
+  }
   const result = await withTx((tx) => deliverWorkOrderInTx(tx, input, actor));
   publishWorkOrderDeliveredRealtime(result, actor.userId);
 

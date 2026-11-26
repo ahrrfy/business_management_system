@@ -43,6 +43,7 @@ import { withTx } from "../tx";
 import { partyCashInHandTx } from "./cashSource";
 import { consignmentBackedBalance } from "./guards";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "../fulfillment/itemLifecycle";
 
 async function openPartyShortfallTx(tx: Tx, partyId: number): Promise<Decimal> {
   const row = (
@@ -883,6 +884,7 @@ export async function writeOffDeliveryShortfallInTx(
         settledAt: new Date(),
       })
       .where(eq(deliveryConsignments.id, Number(cn.id)));
+    await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
     // **الخسارة الحقيقية = ما كان مالاً فعلاً** (٢٢/٨ — كان القيد يمرّر cost=amount كاملاً
     // فيضخّم P&L بالجزء الوهمي، وسقفُ recoverDeliveryWriteOff — المبنيُّ على Σcost — يسمح
     // تبعاً باسترداد نقدٍ لم يوجد). مكوّناها:

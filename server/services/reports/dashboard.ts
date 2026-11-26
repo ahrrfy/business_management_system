@@ -256,10 +256,20 @@ async function fetchSharedDashboardMetrics(
     WHERE wo.workOrderStatus NOT IN ('DELIVERED', 'CANCELLED')
       AND NOT (
         wo.workOrderStatus = 'READY'
-        AND EXISTS (
-          SELECT 1 FROM deliveryConsignments dc
-          WHERE dc.workOrderId = wo.id
-            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+        AND (
+          EXISTS (
+            SELECT 1 FROM deliveryConsignments dc_wo
+            WHERE dc_wo.workOrderId = wo.id
+              AND dc_wo.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+          )
+          OR (
+            wo.invoiceId IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM deliveryConsignments dc_inv
+              WHERE dc_inv.invoiceId = wo.invoiceId
+                AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+            )
+          )
         )
       )
       AND wo.dueDate IS NOT NULL

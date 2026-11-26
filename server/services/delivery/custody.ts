@@ -390,10 +390,7 @@ async function sourceDraftsTx(
   tx: Tx,
   consignment: typeof deliveryConsignments.$inferSelect,
 ): Promise<CustodyDraft[]> {
-  if (
-    consignment.sourceType === "WORK_ORDER" &&
-    consignment.workOrderId != null
-  )
+  if (consignment.workOrderId != null)
     return [await workOrderDraftTx(tx, Number(consignment.workOrderId))];
   if (
     consignment.sourceType === "AFTERCARE_EXECUTION" &&
@@ -449,19 +446,22 @@ async function sourceDraftsTx(
             fulfillmentRequestItems.requestId,
             Number(consignment.fulfillmentRequestId),
           ),
-          eq(fulfillmentRequestItems.isActive, true),
+          or(
+            eq(fulfillmentRequestItems.isActive, true),
+            eq(fulfillmentRequestItems.consignmentId, Number(consignment.id)),
+          ),
         ),
       );
     const drafts: CustodyDraft[] = [];
     for (const member of members) {
       const prefix = `FRI:${member.id}:`;
       const invoiceId = member.invoiceId ?? member.materializedInvoiceId;
-      if (invoiceId != null)
-        drafts.push(...(await invoiceDraftsTx(tx, Number(invoiceId), prefix)));
-      else if (member.workOrderId != null)
+      if (member.workOrderId != null)
         drafts.push(
           await workOrderDraftTx(tx, Number(member.workOrderId), prefix),
         );
+      else if (invoiceId != null)
+        drafts.push(...(await invoiceDraftsTx(tx, Number(invoiceId), prefix)));
     }
     return drafts;
   }
@@ -823,6 +823,56 @@ async function reconcileCommercialReturnCustodyTx(
     actorUserId,
     operationId: `delivery.event:${input.eventId}`,
   });
+  let transitioned = 0;
+  const workOrderDisposition =
+    input.payload?.workOrderDisposition === "RETURN_TO_READY"
+      ? "PREPARED_HELD"
+      : "DAMAGED_CLOSED";
+  for (const original of [...rows]
+    .filter((r) => r.itemKind === "WORK_ORDER_OUTPUT")
+    .sort((a, b) => Number(a.id) - Number(b.id))) {
+    if (await deliveryCustodyEventAppliedTx(tx, Number(original.id), input))
+      continue;
+    let row = original;
+    const fromCandidates: DeliveryCustodyState[] =
+      workOrderDisposition === "PREPARED_HELD"
+        ? [
+            "CUSTOMER_DELIVERED",
+            "RETURNED_PENDING_INSPECTION",
+            "CUSTOMER_OWNED_HELD",
+            "CARRIER_CUSTODY",
+          ]
+        : COMMERCIAL_RETURN_SOURCE_STATES;
+    for (const fromState of fromCandidates) {
+      const available = quantities(row)[fromState];
+      if (available <= 0) continue;
+      const result = await transitionDeliveryCustodyTx(tx, {
+        custodyItemId: Number(row.id),
+        expectedVersion: Number(row.version),
+        fromState,
+        toState: workOrderDisposition,
+        baseQuantity: available,
+        operationId: `delivery.event:${input.eventId}`,
+        eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:${fromState}:${workOrderDisposition}`,
+        eventType: `DELIVERY_${input.eventType}`,
+        evidence: {
+          ...(input.payload ?? {}),
+          deliveryEventId: input.eventId,
+          deliveryEventKey: input.eventKey,
+          sourceLineKey: row.sourceLineKey,
+        },
+        actorUserId,
+      });
+      row = result.item;
+      transitioned += result.replay ? 0 : 1;
+    }
+    await markDeliveryCustodyEventAppliedTx(
+      tx,
+      row,
+      input,
+      workOrderDisposition,
+    );
+  }
   const itemIds = Array.from(
     new Set(
       rows
@@ -832,8 +882,9 @@ async function reconcileCommercialReturnCustodyTx(
   );
   if (!itemIds.length) {
     for (const row of rows)
-      await markDeliveryCustodyEventAppliedTx(tx, row, input, "DAMAGED_CLOSED");
-    return { initialized: rows.length, transitioned: 0 };
+      if (row.itemKind !== "WORK_ORDER_OUTPUT")
+        await markDeliveryCustodyEventAppliedTx(tx, row, input, "DAMAGED_CLOSED");
+    return { initialized: rows.length, transitioned };
   }
   const counters = await tx
     .select({
@@ -860,10 +911,10 @@ async function reconcileCommercialReturnCustodyTx(
         .for("share")
     ).map((row) => Number(row.invoiceItemId)),
   );
-  let transitioned = 0;
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
+    if (original.itemKind === "WORK_ORDER_OUTPUT") continue;
     if (await deliveryCustodyEventAppliedTx(tx, Number(original.id), input))
       continue;
     if (
@@ -1045,7 +1096,7 @@ async function applyCustodyLifecycleRuleTx(
     actorUserId,
     operationId: `delivery.event:${input.eventId}`,
   });
-  let transitioned = 0;
+    let transitioned = 0;
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
@@ -1240,6 +1291,7 @@ export async function applyDeliveryCustodyEventTx(
   ) {
     return applyCustodyLifecycleRuleTx(tx, input, {
       fromStates: [
+        "CUSTOMER_DELIVERED",
         "CARRIER_CUSTODY",
         "RETURNED_PENDING_INSPECTION",
         "CUSTOMER_OWNED_HELD",
@@ -1328,7 +1380,7 @@ export async function closeWorkOrderDirectHandoverCustodyTx(
     operationId: string;
   },
 ) {
-  const cns = await tx
+  const cnsByWo = await tx
     .select({ id: deliveryConsignments.id })
     .from(deliveryConsignments)
     .where(
@@ -1338,7 +1390,22 @@ export async function closeWorkOrderDirectHandoverCustodyTx(
       ),
     )
     .for("share");
-  const cnIds = cns.map((c) => Number(c.id));
+  const cnsByInv =
+    input.invoiceId > 0
+      ? await tx
+          .select({ id: deliveryConsignments.id })
+          .from(deliveryConsignments)
+          .where(
+            and(
+              eq(deliveryConsignments.invoiceId, input.invoiceId),
+              eq(deliveryConsignments.branchId, input.branchId),
+            ),
+          )
+          .for("share")
+      : [];
+  const cnIds = Array.from(
+    new Set([...cnsByWo, ...cnsByInv].map((c) => Number(c.id))),
+  );
   const rows = await tx
     .select()
     .from(deliveryCustodyItems)

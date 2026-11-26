@@ -86,6 +86,8 @@ import {
 } from "./posting";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "../fulfillment/itemLifecycle";
+import { recordWorkOrderEvent } from "../workOrderEvents";
 import {
   isShortfallReason,
   SHORTFALL_REASONS,
@@ -1078,7 +1080,7 @@ export interface ConfirmConsignmentResult {
 }
 
 /** Recognize one physical shipment fee on its original invoice and receipt source. */
-async function recognizeDeliveredShipmentFeeTx(
+export async function recognizeDeliveredShipmentFeeTx(
   tx: Tx,
   consignmentId: number,
   actor: { userId: number },
@@ -1180,6 +1182,124 @@ async function recognizeDeliveredShipmentFeeTx(
  * بأسطر مستقلة ولا يسدّد العميل مرةً ثانية. COD=0 يغيّر الحالة التشغيلية وحدها. الصفوف
  * المرحّلة الموسومة custodyRecognizedAt لا تضاعف العهدة القديمة. العملية idempotent بمفتاح إلزامي.
  */
+export async function syncConsignmentSourceDeliveredTx(
+  tx: Tx,
+  cn: {
+    id: number;
+    branchId: number;
+    workOrderId?: number | null;
+    invoiceId?: number | null;
+    fulfillmentRequestId?: number | null;
+    sourceType: string;
+    sourceId: number;
+  },
+  actor: { userId: number },
+  deliveredAt: Date,
+): Promise<void> {
+  await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
+  let targetWorkOrderId =
+    cn.workOrderId != null ? Number(cn.workOrderId) : null;
+  if (targetWorkOrderId == null && cn.invoiceId != null) {
+    const [linkedWo] = await tx
+      .select({ id: workOrders.id })
+      .from(workOrders)
+      .where(eq(workOrders.invoiceId, Number(cn.invoiceId)))
+      .limit(1);
+    if (linkedWo) targetWorkOrderId = Number(linkedWo.id);
+  }
+  if (targetWorkOrderId != null) {
+    const [prevWo] = await tx
+      .select({
+        id: workOrders.id,
+        status: workOrders.status,
+        branchId: workOrders.branchId,
+      })
+      .from(workOrders)
+      .where(eq(workOrders.id, targetWorkOrderId))
+      .for("update")
+      .limit(1);
+    if (prevWo && prevWo.status !== "CANCELLED") {
+      await tx
+        .update(workOrders)
+        .set({
+          status: "DELIVERED",
+          deliveredAt,
+          kanbanState: "NORMAL",
+          blockedReason: null,
+          ...(cn.invoiceId != null ? { invoiceId: Number(cn.invoiceId) } : {}),
+        })
+        .where(eq(workOrders.id, targetWorkOrderId));
+      if (prevWo.status !== "DELIVERED") {
+        await recordWorkOrderEvent(tx, {
+          workOrderId: targetWorkOrderId,
+          eventType: "DELIVERED",
+          fromStatus: prevWo.status,
+          toStatus: "DELIVERED",
+          payload: {
+            consignmentId: Number(cn.id),
+            invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
+          },
+          actorUserId: actor.userId,
+          branchId: Number(prevWo.branchId),
+          seq:
+            cn.invoiceId != null
+              ? `${Number(cn.id)}:${Number(cn.invoiceId)}`
+              : Number(cn.id),
+        });
+      }
+    }
+  }
+  if (
+    cn.sourceType === "ONLINE_ORDER" ||
+    (cn.sourceType === "INVOICE" && cn.invoiceId != null)
+  ) {
+    const prevOnline = (
+      await tx
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          customerId: onlineOrders.customerId,
+          total: onlineOrders.total,
+          status: onlineOrders.status,
+        })
+        .from(onlineOrders)
+        .where(
+          and(
+            eq(onlineOrders.branchId, Number(cn.branchId)),
+            cn.sourceType === "ONLINE_ORDER"
+              ? eq(onlineOrders.id, Number(cn.sourceId))
+              : eq(onlineOrders.invoiceId, Number(cn.invoiceId)),
+            inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    if (prevOnline) {
+      await tx
+        .update(onlineOrders)
+        .set({ status: "DELIVERED" })
+        .where(eq(onlineOrders.id, Number(prevOnline.id)));
+    }
+    if (prevOnline && prevOnline.status !== "DELIVERED") {
+      if (prevOnline.customerId != null) {
+        await awardDeliveredOnlineOrderPoints(tx, {
+          onlineOrderId: Number(prevOnline.id),
+          customerId: Number(prevOnline.customerId),
+          total: String(prevOnline.total ?? "0"),
+        });
+      }
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: Number(prevOnline.id),
+        orderNumber: prevOnline.orderNumber,
+        customerId:
+          prevOnline.customerId == null ? null : Number(prevOnline.customerId),
+        status: "DELIVERED",
+      });
+    }
+  }
+}
+
 export async function confirmConsignmentDelivery(
   input: {
     consignmentId: number;
@@ -2085,64 +2205,7 @@ export async function confirmConsignmentDelivery(
       deliveredAt,
     );
 
-    if (cn.workOrderId != null) {
-      await tx
-        .update(workOrders)
-        .set({
-          status: "DELIVERED",
-          deliveredAt,
-          invoiceId: Number(cn.invoiceId),
-        })
-        .where(eq(workOrders.id, Number(cn.workOrderId)));
-    }
-    if (cn.sourceType === "ONLINE_ORDER" || cn.sourceType === "INVOICE") {
-      const prevOnline = (
-        await tx
-          .select({
-            id: onlineOrders.id,
-            orderNumber: onlineOrders.orderNumber,
-            customerId: onlineOrders.customerId,
-            total: onlineOrders.total,
-            status: onlineOrders.status,
-          })
-          .from(onlineOrders)
-          .where(
-            and(
-              eq(onlineOrders.branchId, Number(cn.branchId)),
-              cn.sourceType === "ONLINE_ORDER"
-                ? eq(onlineOrders.id, Number(cn.sourceId))
-                : eq(onlineOrders.invoiceId, Number(cn.invoiceId)),
-              inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
-            ),
-          )
-          .for("update")
-          .limit(1)
-      )[0];
-      if (prevOnline) {
-        await tx
-          .update(onlineOrders)
-          .set({ status: "DELIVERED" })
-          .where(eq(onlineOrders.id, Number(prevOnline.id)));
-      }
-      if (prevOnline && prevOnline.status !== "DELIVERED") {
-        if (prevOnline.customerId != null) {
-          await awardDeliveredOnlineOrderPoints(tx, {
-            onlineOrderId: Number(prevOnline.id),
-            customerId: Number(prevOnline.customerId),
-            total: String(prevOnline.total ?? "0"),
-          });
-        }
-        await enqueueStorefrontOrderStatusPush(tx, {
-          orderId: Number(prevOnline.id),
-          orderNumber: prevOnline.orderNumber,
-          customerId:
-            prevOnline.customerId == null
-              ? null
-              : Number(prevOnline.customerId),
-          status: "DELIVERED",
-        });
-      }
-    }
+    await syncConsignmentSourceDeliveredTx(tx, cn, actor, deliveredAt);
 
     await recordIdempotencyKey(
       tx,

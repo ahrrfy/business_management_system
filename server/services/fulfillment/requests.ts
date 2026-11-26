@@ -1,5 +1,6 @@
 import { preservedCreditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
+import { reactivateFulfillmentItemsForReassignTx } from "./itemLifecycle";
 import {
   fulfillmentRequestItems,
   fulfillmentCharges,
@@ -953,7 +954,10 @@ export async function reassignFulfillmentRequestInTx(
       .where(
         and(
           eq(fulfillmentRequestItems.requestId, request.id),
-          eq(fulfillmentRequestItems.isActive, true),
+          or(
+            eq(fulfillmentRequestItems.isActive, true),
+            eq(fulfillmentRequestItems.consignmentId, input.consignmentId),
+          ),
         ),
       )
       .for("update");
@@ -1053,6 +1057,11 @@ export async function reassignFulfillmentRequestInTx(
   const invoiceIds = members.flatMap((c) =>
     c.invoiceId != null ? [c.invoiceId] : [],
   );
+  await reactivateFulfillmentItemsForReassignTx(tx, {
+    requestId: request.id,
+    leaderConsignmentId: leader.id,
+    invoiceIds,
+  });
   if (invoiceIds.length) {
     const linkedItems = await tx
       .select()

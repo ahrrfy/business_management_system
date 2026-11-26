@@ -30,6 +30,17 @@ import { reverseWorkOrderDeliveryEffectsInTx } from "../reversal/workOrderDelive
 import { type Actor, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import {
+  releaseHistoricalCreditOnInvoiceCancelTx,
+  transferCustomerReceiptAllocationsTx,
+} from "../customerReceiptSettlement";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "../delivery/shopFeeAutoOffset";
+import { detachWorkOrderFromOpenFulfillmentRequestsTx } from "../fulfillment/itemLifecycle";
+import {
+  refundWorkOrderDeliveryFeeHeld,
+  workOrderFeeHeldCashNet,
+  workOrderFeeHeldNet,
+} from "./deliveryFeeRefund";
 
 type ReceiptMethod = typeof receipts.$inferSelect["paymentMethod"];
 type RefundMethod = Exclude<ReceiptMethod, "EXCHANGE" | "TELECOM">;
@@ -56,6 +67,7 @@ export interface ReverseWorkOrderDeliveryInput {
 
 export interface ApprovedReverseDeliveryControl {
   approvedControlRequestId: number;
+  requestedByUserId?: number | null;
 }
 
 interface CollectionSource {
@@ -355,7 +367,7 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
   const wo = (await tx.select().from(workOrders).where(eq(workOrders.id, workOrderId)).limit(1))[0];
   if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
   assertWorkOrderBranch(wo, actor);
-  if (wo.status !== "DELIVERED" || wo.invoiceId == null) {
+  if ((wo.status !== "DELIVERED" && wo.status !== "READY") || wo.invoiceId == null) {
     return {
       eligible: false as const,
       workOrderId,
@@ -363,8 +375,10 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       status: wo.status,
       version: Number(wo.version),
       invoiceId: wo.invoiceId == null ? null : Number(wo.invoiceId),
-      ineligibleReason: "أمر الشغل ليس في حالة تسليم قابلة للعكس",
+      ineligibleReason: "أمر الشغل ليس مفوتراً في حالة قابلة للعكس",
       netPaid: "0.00",
+      heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
       priorCompletedOut: "0.00",
       priorPendingOut: "0.00",
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -373,13 +387,61 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     };
   }
   const invoiceId = Number(wo.invoiceId);
+  const [invRow] = await tx
+    .select({ invoiceDate: invoices.invoiceDate, status: invoices.status })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  if (!invRow || invRow.status === "RETURNED" || invRow.status === "CANCELLED" || invRow.status === "SUPERSEDED") {
+    return {
+      eligible: false as const,
+      workOrderId,
+      branchId: Number(wo.branchId),
+      status: wo.status,
+      version: Number(wo.version),
+      invoiceId,
+      ineligibleReason: "فاتورة أمر الشغل غير موجودة أو معكوسة/ملغاة سلفاً",
+      netPaid: "0.00",
+      heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
+      priorCompletedOut: "0.00",
+      priorPendingOut: "0.00",
+      refundSources: [] as WorkOrderRefundSourcePlan[],
+      openReceptionShifts: [],
+      consignment: null,
+    };
+  }
+  try {
+    await assertPeriodOpen(tx, invRow.invoiceDate);
+    if (wo.deliveredAt) await assertPeriodOpen(tx, wo.deliveredAt);
+  } catch (err) {
+    return {
+      eligible: false as const,
+      workOrderId,
+      branchId: Number(wo.branchId),
+      status: wo.status,
+      version: Number(wo.version),
+      invoiceId,
+      ineligibleReason: err instanceof Error ? err.message : "الفترة المحاسبية للفاتورة مقفلة",
+      netPaid: "0.00",
+      heldDeliveryFee: "0.00",
+      heldCashDeliveryFee: "0.00",
+      priorCompletedOut: "0.00",
+      priorPendingOut: "0.00",
+      refundSources: [] as WorkOrderRefundSourcePlan[],
+      openReceptionShifts: [],
+      consignment: null,
+    };
+  }
   const evidence = await reverseEvidence(tx, { workOrderId, invoiceId, deposit: wo.deposit, lock: false });
+  const heldDeliveryFee = (await workOrderFeeHeldNet(tx, workOrderId)).toFixed(2);
+  const heldCashDeliveryFee = (await workOrderFeeHeldCashNet(tx, workOrderId)).toFixed(2);
   const openReceptionShifts = await tx
     .select({ id: shifts.id, userId: shifts.userId, userName: users.name, expectedCash: shifts.expectedCash })
     .from(shifts)
     .innerJoin(users, eq(users.id, shifts.userId))
     .where(and(eq(shifts.branchId, Number(wo.branchId)), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
-  const consignmentRows = await tx.select({
+  let consignmentRows = await tx.select({
     id: deliveryConsignments.id,
     number: deliveryConsignments.consignmentNumber,
     status: deliveryConsignments.status,
@@ -390,6 +452,19 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     .where(eq(deliveryConsignments.workOrderId, workOrderId))
     .orderBy(desc(deliveryConsignments.id))
     .limit(1);
+  if (!consignmentRows.length) {
+    consignmentRows = await tx.select({
+      id: deliveryConsignments.id,
+      number: deliveryConsignments.consignmentNumber,
+      status: deliveryConsignments.status,
+      parcelStatus: deliveryConsignments.parcelStatus,
+      moneyStatus: deliveryConsignments.moneyStatus,
+      invoiceId: deliveryConsignments.invoiceId,
+    }).from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, invoiceId))
+      .orderBy(desc(deliveryConsignments.id))
+      .limit(1);
+  }
   const consignment = consignmentRows.length > 0 ? consignmentRows[0]! : null;
   const mappedShifts = openReceptionShifts.map((shift) => ({
     id: Number(shift.id), userId: Number(shift.userId), userName: shift.userName,
@@ -410,6 +485,8 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
       invoiceId,
       ineligibleReason: "يتضمن المقبوض سند صيرفة EXCHANGE لا يملك قناة رد عميل موثقة؛ سوِّ السند أولاً",
       netPaid: evidence.netPaid.toFixed(2),
+      heldDeliveryFee,
+      heldCashDeliveryFee,
       priorCompletedOut: evidence.completedOut.toFixed(2),
       priorPendingOut: evidence.pendingOut.toFixed(2),
       refundSources: [] as WorkOrderRefundSourcePlan[],
@@ -425,6 +502,8 @@ export async function getWorkOrderReverseDeliveryPreflightInTx(
     version: Number(wo.version),
     invoiceId,
     netPaid: evidence.netPaid.toFixed(2),
+    heldDeliveryFee,
+    heldCashDeliveryFee,
     priorCompletedOut: evidence.completedOut.toFixed(2),
     priorPendingOut: evidence.pendingOut.toFixed(2),
     refundSources: evidence.plans,
@@ -521,7 +600,10 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
   const hint = (await tx.select({ branchId: workOrders.branchId, invoiceId: workOrders.invoiceId })
     .from(workOrders).where(eq(workOrders.id, Number(input.workOrderId))).limit(1))[0];
   if (!hint) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-  const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH")
+  const hasCashFeeRefund =
+    input.reopen !== true &&
+    (await workOrderFeeHeldCashNet(tx, Number(input.workOrderId))).gt(0);
+  const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH") || hasCashFeeRefund
     ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor, input.forceTreasury === true)
     : null;
   if (hint.invoiceId != null) {
@@ -540,6 +622,15 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
 function assertSettledConsignmentOrNone(consignment: typeof deliveryConsignments.$inferSelect | undefined): void {
   if (!consignment) return;
   if (consignment.status === "CANCELLED" && consignment.parcelStatus === "CANCELLED") return;
+  if (
+    consignment.status === "RETURNED" &&
+    consignment.parcelStatus === "RETURNED" &&
+    (consignment.moneyStatus === "CANCELLED" ||
+      consignment.moneyStatus === "SETTLED" ||
+      consignment.moneyStatus === "NOT_APPLICABLE")
+  ) {
+    return;
+  }
   const settled = consignment.status === "DELIVERED"
     && consignment.parcelStatus === "DELIVERED"
     && (consignment.moneyStatus === "SETTLED" || consignment.moneyStatus === "NOT_APPLICABLE");
@@ -607,8 +698,8 @@ export async function reverseWorkOrderDeliveryInTx(
   if (Number(wo.version) !== expectedVersion) {
     throw new TRPCError({ code: "CONFLICT", message: "تغيّرت نسخة أمر الشغل قبل اعتماد العكس" });
   }
-  if (wo.status !== "DELIVERED" || wo.invoiceId == null) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "العكس لأمرٍ مُسلَّم ذي فاتورة فقط" });
+  if ((wo.status !== "DELIVERED" && wo.status !== "READY") || wo.invoiceId == null) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "العكس لأمرٍ مفوتر (مُسلَّم أو جاهز للتسليم) فقط" });
   }
   const invoiceId = Number(wo.invoiceId);
   const inv = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for("update").limit(1))[0];
@@ -635,10 +726,16 @@ export async function reverseWorkOrderDeliveryInTx(
     throw new TRPCError({ code: "CONFLICT", message: "تغيّرت مصادر الرد أو مبالغها بعد الطلب؛ افتح طلب عكس جديداً" });
   }
 
-  const consignment = (await tx.select().from(deliveryConsignments)
+  let consignment = (await tx.select().from(deliveryConsignments)
     .where(eq(deliveryConsignments.workOrderId, workOrderId))
     .orderBy(desc(deliveryConsignments.id))
     .for("update").limit(1))[0];
+  if (!consignment) {
+    consignment = (await tx.select().from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, invoiceId))
+      .orderBy(desc(deliveryConsignments.id))
+      .for("update").limit(1))[0];
+  }
   assertSettledConsignmentOrNone(consignment);
   if (consignment && Number(consignment.invoiceId) !== invoiceId) {
     throw new TRPCError({ code: "CONFLICT", message: "الإرسالية المستقرة لا ترتبط بفاتورة أمر الشغل الحالية" });
@@ -684,15 +781,45 @@ export async function reverseWorkOrderDeliveryInTx(
     returnedBaseQuantity: sql`${invoiceItems.baseQuantity}`,
     returnedRestockedBaseQuantity: 0,
   }).where(eq(invoiceItems.invoiceId, invoiceId));
+  await transferCustomerReceiptAllocationsTx(tx, invoiceId, invoiceId, money(0), {
+    actor,
+    requestKey: clientRequestId,
+    unwindInterbranchReleased: true,
+  });
+  await releaseHistoricalCreditOnInvoiceCancelTx(tx, {
+    invoiceId,
+    customerId: inv.customerId == null ? null : Number(inv.customerId),
+    branchId: Number(inv.branchId),
+    actor,
+    requestKey: clientRequestId,
+  });
 
   const reversedAt = new Date();
   if (consignment) {
+    const wasDelivered = consignment.status === "DELIVERED";
+    if (!wasDelivered) {
+      await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+        consignmentId: Number(consignment.id),
+        actor: {
+          userId: actor.userId,
+          branchId: Number(consignment.branchId ?? wo.branchId),
+          role: actor.role ?? "admin",
+        },
+        operationKey: `workOrder.reverseDelivery:${clientRequestId}`,
+        reason,
+      });
+    }
     await tx.update(deliveryConsignments).set({
       status: "RETURNED", parcelStatus: "RETURNED", moneyStatus: "CANCELLED",
       returnedAt: reversedAt, settledAt: reversedAt,
       returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null,
     }).where(eq(deliveryConsignments.id, Number(consignment.id)));
-    if (consignment.partyId != null && consignment.moneyStatus !== "SETTLED" && money(consignment.codAmount ?? "0").gt(0)) {
+    if (
+      wasDelivered &&
+      consignment.partyId != null &&
+      consignment.moneyStatus !== "SETTLED" &&
+      money(consignment.codAmount ?? "0").gt(0)
+    ) {
       await appendDeliveryLedgerEntry(tx, {
         eventKey: `CN:${Number(consignment.id)}:COD_RELEASED:WO_REVERSED:${invoiceId}`,
         partyId: Number(consignment.partyId),
@@ -711,8 +838,41 @@ export async function reverseWorkOrderDeliveryInTx(
       fromParcelStatus: consignment.parcelStatus, toParcelStatus: "RETURNED",
       fromMoneyStatus: consignment.moneyStatus, toMoneyStatus: "CANCELLED",
       actorUserId: actor.userId,
-      payload: { invoiceId, workOrderId, reason, approvedControlRequestId: control.approvedControlRequestId },
+      payload: {
+        invoiceId,
+        workOrderId,
+        workOrderDisposition:
+          input.reopen === true ? "RETURN_TO_READY" : "CANCEL_FINAL",
+        reason,
+        approvedControlRequestId: control.approvedControlRequestId,
+      },
     });
+  }
+  await detachWorkOrderFromOpenFulfillmentRequestsTx(tx, {
+    workOrderId,
+    invoiceId,
+    actorUserId: actor.userId,
+    reason: `عكس فاتورة أمر الشغل: ${reason}`,
+  });
+  if (input.reopen !== true) {
+    const heldFee = await workOrderFeeHeldNet(tx, workOrderId);
+    if (heldFee.gt(0)) {
+      const makerId =
+        control.requestedByUserId != null &&
+        Number(control.requestedByUserId) > 0 &&
+        Number(control.requestedByUserId) !== actor.userId
+          ? Number(control.requestedByUserId)
+          : actor.userId;
+      await refundWorkOrderDeliveryFeeHeld(tx, {
+        workOrderId,
+        branchId: Number(wo.branchId),
+        actor: makerId === actor.userId ? actor : { ...actor, userId: makerId, isOwner: false },
+        refundShiftId: cashShiftId,
+        cashBucket,
+        approvedByManagerId: actor.userId,
+        reason: `رد أمانة أجرة توصيل بعد عكس وإلغاء أمر الشغل #${wo.orderNumber}`,
+      });
+    }
   }
   await tx.update(workOrders).set(input.reopen === true ? {
     status: "READY", invoiceId: null, deliveredAt: null,

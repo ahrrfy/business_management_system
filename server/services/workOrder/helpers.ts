@@ -96,9 +96,17 @@ async function workOrderOperationScopeTx(
 async function assertNoLiveConsignment(
   tx: any,
   workOrderId: number,
-  action: "cancel" | "reclassify" | "deliver" | "reverse",
+  action:
+    | "cancel"
+    | "reclassify"
+    | "deliver"
+    | "reverse"
+    | "design"
+    | "reassign"
+    | "kanban",
+  invoiceId?: number | null,
 ) {
-  const rows = await tx
+  let rows = await tx
     .select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber })
     .from(deliveryConsignments)
     .where(
@@ -108,6 +116,29 @@ async function assertNoLiveConsignment(
       ),
     )
     .limit(1);
+  if (!rows[0]) {
+    let resolvedInvoiceId = invoiceId;
+    if (resolvedInvoiceId === undefined) {
+      const [woRow] = await tx
+        .select({ invoiceId: workOrders.invoiceId })
+        .from(workOrders)
+        .where(eq(workOrders.id, workOrderId))
+        .limit(1);
+      resolvedInvoiceId = woRow?.invoiceId ?? null;
+    }
+    if (resolvedInvoiceId != null) {
+      rows = await tx
+        .select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber })
+        .from(deliveryConsignments)
+        .where(
+          and(
+            eq(deliveryConsignments.invoiceId, Number(resolvedInvoiceId)),
+            notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+          ),
+        )
+        .limit(1);
+    }
+  }
   const live = rows[0];
   if (!live) return;
   const what = action === "cancel"
@@ -117,7 +148,13 @@ async function assertNoLiveConsignment(
       : action === "reverse"
         // العكسُ يُسقط الذمّة بينما عهدةُ المندوب وتحصيلُه قائمان ⇒ نقدٌ بلا مالك.
         ? "لا يُسترجَع أمرٌ ما زال مع مندوب"
-        : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
+        : action === "design"
+          ? "لا يُعدَّل تصميم أمرٍ خرج مع مندوب"
+          : action === "reassign"
+            ? "لا يُنقل فنيُّ أمرٍ خرج مع مندوب"
+            : action === "kanban"
+              ? "لا تُعدَّل إشارة كانبان لأمرٍ خرج مع مندوب"
+              : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
   throw new TRPCError({
     code: "PRECONDITION_FAILED",
     message: `${what} (الإرسالية ${live.number ?? live.id}) — استرجع الإرسالية أولاً من إدارة التوصيل، وهي تعكس البيع والمخزون والعربون معاً.`,

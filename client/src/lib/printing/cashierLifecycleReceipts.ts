@@ -107,11 +107,28 @@ export interface ShortfallSettlementVoucherData {
   createdAt?: Date | string | null;
 }
 
+const SHORTFALL_ACTION_LABEL_AR: Record<string, string> = {
+  CASH: "سداد نقدي مباشر",
+  CARD: "سداد ببطاقة الدفع",
+  TRANSFER: "سداد بتحويل مالي",
+  PAYROLL: "استقطاع من الراتب",
+  PAYROLL_DEDUCT: "استقطاع من الراتب",
+  PAYROLL_DEDUCTION: "استقطاع من الراتب",
+  DEDUCT_FROM_FEES: "خصم من أجور مستحقة",
+  FEE_OFFSET: "مقاصة من الأجور",
+  SETTLE_SHORTFALL: "تسوية عجز تحصيل",
+  RECOVER_WRITEOFF: "تحصيل دين معدوم مسترد",
+  WRITE_OFF: "شطب إداري معتمد",
+};
+
 export function buildShortfallSettlementDoc(data: ShortfallSettlementVoucherData): PrintDoc {
   const amt = D(data.amount ?? 0).toFixed(2);
   const isRecover = data.kind === "RECOVER_WRITEOFF";
   const hasPaidNow = D(amt).gt(0);
   const ref = data.voucherNumber?.trim() || null;
+  const actionLabel = data.actionType
+    ? (SHORTFALL_ACTION_LABEL_AR[data.actionType.trim().toUpperCase()] ?? data.actionType)
+    : "";
   return {
     kind: "receipt",
     includeBrandHeader: true,
@@ -120,7 +137,7 @@ export function buildShortfallSettlementDoc(data: ShortfallSettlementVoucherData
     meta: [
       ref ? `رقم السند: ${ref}` : "",
       `جهة التوصيل: ${data.partyName}`,
-      data.actionType ? `نوع التسوية: ${data.actionType}` : "",
+      actionLabel ? `نوع التسوية: ${actionLabel}` : "",
       hasPaidNow && data.paymentMethod ? `طريقة الدفع: ${paymentMethodLabel(data.paymentMethod)}` : "",
       data.branchName ? `الفرع: ${data.branchName}` : "",
       data.shiftId != null ? `الوردية: ${data.shiftId}` : "",
@@ -330,7 +347,7 @@ export function buildOrderCancellationDoc(data: OrderCancellationReceiptData): P
   const orig = data.originalTotal != null ? D(data.originalTotal).toFixed(2) : null;
   const kindLabel =
     data.orderKind === "WORK_ORDER"
-      ? "أمر عمل"
+      ? "أمر شغل"
       : data.orderKind === "ONLINE_ORDER"
         ? "طلب متجر إلكتروني"
         : "فاتورة مبيعات";

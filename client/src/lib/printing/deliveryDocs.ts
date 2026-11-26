@@ -167,10 +167,10 @@ export function buildDeliveryManifestDoc(
         p.recipientPhone ? `هاتف ${p.recipientPhone}` : null,
         p.address ? `عنوان ${p.address}` : null,
       ].filter(Boolean).join(" · ") || "بيانات الاتصال غير متاحة",
-      total: `COD ${fmt(p.codAmount ?? "0")} · أجرة ${fmt(p.deliveryFee ?? "0")}`,
+      total: `تحصيل البضاعة ${fmt(p.codAmount ?? "0")} · أجرة ${fmt(p.deliveryFee ?? "0")}`,
     })),
     totals: [
-      { label: "مجموع COD المتوقَّع", value: `${fmt(totalCod.toFixed(2))} د.ع` },
+      { label: "إجمالي التحصيل المطلوب", value: `${fmt(totalCod.toFixed(2))} د.ع` },
       { label: "مجموع الأجور", value: `${fmt(totalFee.toFixed(2))} د.ع` },
     ],
     footer:

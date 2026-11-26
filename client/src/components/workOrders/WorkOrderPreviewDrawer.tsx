@@ -18,8 +18,6 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { ChannelBadge } from "@/components/ChannelBadge";
-import { printWorkOrder } from "@/lib/printing/printTemplates";
-import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -46,7 +44,9 @@ import {
   progressOf,
   workOrderCardLabel,
   workOrderContactMessage,
+  printWoFromCard,
   printWoShippingLabel,
+  printWoThermalFromCard,
 } from "./workOrderTypes";
 
 export function WorkOrderPreviewDrawer({
@@ -298,36 +298,13 @@ export function WorkOrderPreviewDrawer({
                   deliveryDate: d.dueDate,
                 })}
               />
-              <button className="wob-btn wob-btn-ghost" onClick={() => printWorkOrder({
-                woNumber: d.orderNumber,
-                woDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
-                dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
-                status: d.status,
-                employeeName: d.createdByName?.trim() || "موظف الخدمة",
-                customerName: d.customerName,
-                customerPhone: d.customerPhone,
-                jobType: d.title,
-                specs: d.customizationText,
-                items: [{ name: `${d.title} (${formatQuantity(d.quantity)} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
-                subtotal: d.salePrice,
-                total: d.salePrice,
-              })}><Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> طباعة A4</button>
+              <button className="wob-btn wob-btn-ghost" onClick={() => printWoFromCard(d)}>
+                <Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> طباعة A4
+              </button>
               <button
                 className="wob-btn wob-btn-ghost"
                 title="إيصال طلب خدمة حراري 80مم — جسر الخادم/WebUSB/متصفّح"
-                onClick={() => void printWorkOrderReceipt({
-                  orderNumber: d.orderNumber,
-                  orderDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
-                  dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
-                  status: d.status,
-                  employeeName: d.createdByName?.trim() || "موظف الخدمة",
-                  customerName: d.customerName ?? undefined,
-                  customerPhone: d.customerPhone ?? undefined,
-                  jobTitle: d.title,
-                  quantity: d.quantity ? `${formatQuantity(d.quantity)} نسخة` : undefined,
-                  specs: d.customizationText ?? undefined,
-                  total: d.salePrice,
-                })}
+                onClick={() => printWoThermalFromCard(d)}
               ><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حراري 80مم</button>
               <button
                 className="wob-btn wob-btn-ghost"

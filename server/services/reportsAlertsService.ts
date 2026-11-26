@@ -225,10 +225,20 @@ async function computeManagementAlerts(opts: {
   // (الإرسالية الحيّة هي الحقيقة — نفس استبعاد `listReadyForDispatch` في delivery/queries.ts):
   // كان التنبيه يأمر الموظّف «اتّصل بالعميل ليحضر» لطردٍ في الطريق إليه. الاستبعاد بالإرسالية
   // **الحيّة** وحدها (لا CANCELLED/RETURNED) كي يعود الملغى إسنادُه إلى التنبيه لا يختفي منه.
-  const woLiveCn = sql`NOT EXISTS (
-              SELECT 1 FROM deliveryConsignments dc
-              WHERE dc.workOrderId = wo.id
-                AND dc.consignmentStatus NOT IN ('CANCELLED','RETURNED')
+  const woLiveCn = sql`(
+              NOT EXISTS (
+                SELECT 1 FROM deliveryConsignments dc_wo
+                WHERE dc_wo.workOrderId = wo.id
+                  AND dc_wo.consignmentStatus NOT IN ('CANCELLED','RETURNED')
+              )
+              AND (
+                wo.invoiceId IS NULL
+                OR NOT EXISTS (
+                  SELECT 1 FROM deliveryConsignments dc_inv
+                  WHERE dc_inv.invoiceId = wo.invoiceId
+                    AND dc_inv.consignmentStatus NOT IN ('CANCELLED','RETURNED')
+                )
+              )
             )`;
   const woP = safe(
     "workOrders",

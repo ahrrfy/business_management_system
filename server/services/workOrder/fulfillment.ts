@@ -10,6 +10,7 @@ import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { refundWorkOrderDeliveryFeeHeld, workOrderFeeHeldNet } from "./deliveryFeeRefund";
+import { detachWorkOrderFromOpenFulfillmentRequestsTx } from "../fulfillment/itemLifecycle";
 
 export interface UpdateWorkOrderDeliveryMethodInput {
   workOrderId: number;
@@ -65,6 +66,12 @@ export async function updateWorkOrderDeliveryMethod(
     let refundedFee = "0.00";
     let pendingFeeRefundRequested = false;
     if (!input.hasDelivery) {
+      await detachWorkOrderFromOpenFulfillmentRequestsTx(tx, {
+        workOrderId: Number(wo.id),
+        invoiceId: wo.invoiceId == null ? null : Number(wo.invoiceId),
+        actorUserId: actor.userId,
+        reason: "تحويل أمر الشغل إلى استلام مباشر بالفرع",
+      });
       const feeHeldNet = await workOrderFeeHeldNet(tx, Number(wo.id));
       if (feeHeldNet.gt(0)) {
         if (input.confirmFeeRefund !== true) {

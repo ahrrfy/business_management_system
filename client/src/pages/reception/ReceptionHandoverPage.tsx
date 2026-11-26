@@ -46,8 +46,10 @@ import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { QuickCancelInvoiceDialog } from "@/components/invoice/QuickCancelInvoiceDialog";
 import { WorkOrderQuickCancelDialog } from "@/components/workOrders/WorkOrderQuickCancelDialog";
 import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
+import { ReclassifyDeliveryDialog } from "@/components/workOrders/ReclassifyDeliveryDialog";
 import { workOrderDetailOperationAccess } from "@/lib/workOrderDetailOperationAccess";
 import { workOrderStatusLabel } from "@shared/workOrderStatus";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 
 const PAYMENT_METHODS = [
   { v: "CASH", label: "نقدي", icon: Banknote },
@@ -76,6 +78,10 @@ interface ScannedOrder {
   nonReadyStatus?: string;
   linkedInvoiceId?: number | null;
   sourceType?: string | null;
+  hasDelivery?: boolean;
+  deliveryAddress?: string | null;
+  deliveryPhone?: string | null;
+  deliveryCost?: string | null;
   orderNumber: string;
   title: string | null;
   customerName: string | null;
@@ -88,6 +94,7 @@ function siblingToScanned(item: SiblingWorkOrder, fallbackCustomer?: { name?: st
   return {
     id: item.id,
     kind: "workOrder",
+    hasDelivery: item.hasDelivery,
     orderNumber: item.orderNumber,
     title: item.title,
     customerName: item.customerName ?? fallbackCustomer?.name ?? null,
@@ -130,6 +137,12 @@ export default function ReceptionHandoverPage() {
   const [cancelInvoiceId, setCancelInvoiceId] = useState<number | null>(null);
   const [cancelWorkOrderId, setCancelWorkOrderId] = useState<number | null>(null);
   const [reverseWorkOrder, setReverseWorkOrder] = useState<{ id: number; orderNumber: string; title: string | null } | null>(null);
+  const [showReclassify, setShowReclassify] = useState(false);
+  const setDeliveryMethodMut = trpc.workOrders.setDeliveryMethod.useMutation();
+  const feeHeldQ = trpc.workOrders.deliveryFeeHeld.useQuery(
+    { workOrderId: scanned?.kind === "workOrder" ? scanned.id : 0 },
+    { enabled: Boolean(scanned?.kind === "workOrder" && scanned.hasDelivery && !scanned.alreadyCompleted && !scanned.nonReadyStatus), staleTime: 0 },
+  );
   const deliverPrintRef = useRef<{
     win: Window | null;
     order: ScannedOrder;
@@ -151,8 +164,8 @@ export default function ReceptionHandoverPage() {
   );
   const shift = shiftQ.data ?? null;
 
-  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
-  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+  const initiateExternal = trpc.reception.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.reception.confirmExternalPayment.useMutation();
 
   const resetPaymentFields = useCallback(() => {
     setMethod("CASH");
@@ -233,7 +246,7 @@ export default function ReceptionHandoverPage() {
           if (wo.status !== "READY") {
             if (readyPickupSiblings.length > 0) {
               const firstReady = readyPickupSiblings[0]!;
-              notify.info(`البند #${wo.orderNumber} حالته ${wo.status} — فُتح البند الجاهز #${firstReady.orderNumber} ضمن نفس الوصل.`);
+              notify.info(`البند #${wo.orderNumber} حالته «${workOrderStatusLabel(wo.status)}» — فُتح البند الجاهز #${firstReady.orderNumber} ضمن نفس الوصل.`);
               setSiblingOrders(readyPickupSiblings);
               setScanned(siblingToScanned(firstReady, { name: wo.customerName, phone: wo.customerPhone }));
               setManualInput("");
@@ -275,6 +288,11 @@ export default function ReceptionHandoverPage() {
           setScanned({
             id: wo.id,
             kind: "workOrder",
+            linkedInvoiceId: wo.linkedInvoice?.id ?? (wo as { invoiceId?: number | null }).invoiceId ?? null,
+            hasDelivery: selfAsSibling.hasDelivery,
+            deliveryAddress: (wo as { deliveryAddress?: string | null }).deliveryAddress ?? null,
+            deliveryPhone: (wo as { deliveryPhone?: string | null }).deliveryPhone ?? null,
+            deliveryCost: (wo as { deliveryCost?: string | null }).deliveryCost ?? null,
             orderNumber: wo.orderNumber,
             title: wo.title,
             customerName: wo.customerName,
@@ -425,9 +443,28 @@ export default function ReceptionHandoverPage() {
         "تمّ تسليم طلب #" + deliveredOrderNumber,
       );
     },
-    onError: (e) => {
+    onError: async (e, vars) => {
       try { deliverPrintRef.current?.win?.close(); } catch { /* noop */ }
       deliverPrintRef.current = null;
+      if (isPartialDispatchRejection(e) && !vars.partialDispatchConfirmed && scanned) {
+        const confirmPartial = await confirm({
+          variant: "warning",
+          title: "تأكيد تسليم بند قبل اكتمال بقية الوصل",
+          description: `${e.message}\n\nهل تريد تسليم هذا البند الجاهز الآن وبقاء البنود الأخرى قيد التحضير؟`,
+          confirmText: "تأكيد التسليم الجزئي",
+        });
+        if (confirmPartial) {
+          deliverPrintRef.current = {
+            win: preopenDocumentWindow(),
+            order: scanned,
+            amountPaid: vars.payment?.amount ?? "0.00",
+            method: vars.payment?.method ?? "CASH",
+            reference: vars.payment?.reference ?? null,
+          };
+          deliverMut.mutate({ ...vars, partialDispatchConfirmed: true });
+        }
+        return;
+      }
       notify.err(e, "تعذّر التسليم");
     },
   });
@@ -549,10 +586,16 @@ export default function ReceptionHandoverPage() {
         notify.err("مرجع العملية مطلوب لدفعة غير نقدية");
         return;
       }
-      if (scanned.kind === "invoice" && !externalConfirmed) {
+      if (!externalConfirmed) {
         notify.err("يجب تأكيد الدفع الخارجي أولاً قبل التسليم");
         return;
       }
+    }
+
+    const needsAutoPickupConversion = scanned.kind === "workOrder" && Boolean(scanned.hasDelivery);
+    if (needsAutoPickupConversion && Number(feeHeldQ.data?.net ?? "0") > 0) {
+      setShowReclassify(true);
+      return;
     }
 
     const ok = await confirm({
@@ -560,6 +603,7 @@ export default function ReceptionHandoverPage() {
       description: [
         `${docLabel}: #${scanned.orderNumber}`,
         "العميل: " + (scanned.customerName ?? scanned.customerPhone ?? "غير محدد"),
+        needsAutoPickupConversion ? "سيُحوَّل الطلب تلقائياً من «توصيل» إلى «استلام مباشر بالفرع»." : "",
         remainingVal.gt(0)
           ? `يُحصَّل الآن: ${fmt(remainingVal.toFixed(2))} د.ع ${payLabel}`
           : "مدفوع بالكامل مسبقاً",
@@ -596,13 +640,24 @@ export default function ReceptionHandoverPage() {
       } else {
         const win = preopenDocumentWindow();
         void printHandoverInvoice(scanned.id, canReprint, win);
-        advanceOrClearAfterHandover(null, "الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
+        advanceOrClearAfterHandover(null, "الفاتورة مسدّدة مسبقاً — تمت طباعة نسخة الوصل");
       }
     } else if (scanned.kind === "onlineOrder") {
       notify.err("طلبات المتجر تُسلَّم عبر مسار التوصيل لا التسليم المباشر");
     } else {
+      const win = preopenDocumentWindow();
+      if (needsAutoPickupConversion) {
+        try {
+          await setDeliveryMethodMut.mutateAsync({ workOrderId: scanned.id, hasDelivery: false });
+          setScanned((prev) => (prev ? { ...prev, hasDelivery: false } : prev));
+        } catch (err) {
+          try { win?.close(); } catch { /* noop */ }
+          notify.err(err, "تعذّر تحويل الطلب لاستلام مباشر");
+          return;
+        }
+      }
       deliverPrintRef.current = {
-        win: preopenDocumentWindow(),
+        win,
         order: scanned,
         amountPaid: remainingVal.gt(0) ? remainingVal.toFixed(2) : "0.00",
         method,
@@ -615,6 +670,12 @@ export default function ReceptionHandoverPage() {
               amount: remainingVal.toFixed(2),
               method,
               reference: method !== "CASH" ? reference.trim() : undefined,
+              ...(method === "CASH"
+                ? {}
+                : {
+                    externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
+                    externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
+                  }),
             }
           : undefined,
         clientRequestId: crypto.randomUUID(),
@@ -977,12 +1038,13 @@ export default function ReceptionHandoverPage() {
                   disabled={
                     deliverMut.isPending ||
                     collectInvoiceMut.isPending ||
+                    setDeliveryMethodMut.isPending ||
                     (needsShift && !shift) ||
-                    Boolean(remainingDue && method !== "CASH" && scanned.kind === "invoice" && !externalConfirmed) ||
+                    Boolean(remainingDue && method !== "CASH" && !externalConfirmed) ||
                     Boolean(remainingDue && method !== "CASH" && !reference.trim())
                   }
                 >
-                  {deliverMut.isPending || collectInvoiceMut.isPending
+                  {deliverMut.isPending || collectInvoiceMut.isPending || setDeliveryMethodMut.isPending
                     ? "جارٍ التسليم والتحصيل…"
                     : needsShift && !shift
                     ? "افتح وردية استقبال أولاً"
@@ -992,9 +1054,14 @@ export default function ReceptionHandoverPage() {
                 </Button>
 
                   <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
-                    {scanned.kind === "workOrder" && canCancelWorkOrder && (
+                    {scanned.kind === "workOrder" && !scanned.linkedInvoiceId && canCancelWorkOrder && (
                       <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelWorkOrderId(scanned.id)}>
                         <FileWarning aria-hidden className="me-1 size-3.5" /> إلغاء الطلب
+                      </Button>
+                    )}
+                    {scanned.kind === "workOrder" && Boolean(scanned.linkedInvoiceId) && canReverseWorkOrder && (
+                      <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setReverseWorkOrder({ id: scanned.id, orderNumber: scanned.orderNumber, title: scanned.title })}>
+                        <RotateCcw aria-hidden className="me-1 size-3.5" /> عكس الفاتورة وإعادة فتح / إلغاء
                       </Button>
                     )}
                     {scanned.kind === "invoice" && scanned.sourceType !== "WORKORDER" && canReturnInvoice && (
@@ -1082,6 +1149,30 @@ export default function ReceptionHandoverPage() {
                 onRequested={() => { setReverseWorkOrder(null); setScanned(null); setSiblingOrders([]); resetPaymentFields(); }}
               />
             )}
+            <ReclassifyDeliveryDialog
+              order={showReclassify && scanned?.kind === "workOrder" ? {
+                id: scanned.id,
+                orderNumber: scanned.orderNumber,
+                title: scanned.title ?? "",
+                hasDelivery: scanned.hasDelivery,
+                deliveryAddress: scanned.deliveryAddress,
+                deliveryPhone: scanned.deliveryPhone,
+                deliveryCost: scanned.deliveryCost,
+                customerPhone: scanned.customerPhone,
+              } : null}
+              pending={setDeliveryMethodMut.isPending}
+              onClose={() => setShowReclassify(false)}
+              onConfirm={async (payload) => {
+                try {
+                  await setDeliveryMethodMut.mutateAsync({ workOrderId: scanned.id, ...payload });
+                  setShowReclassify(false);
+                  setScanned((prev) => (prev ? { ...prev, hasDelivery: payload.hasDelivery } : prev));
+                  notify.ok("تم تحديث طريقة التسليم إلى استلام مباشر — يمكنك إتمام التسليم الآن");
+                } catch (err) {
+                  notify.err(err, "تعذّر تحديث طريقة التسليم");
+                }
+              }}
+            />
             {showDebtApproval && remainingDue && (
               <ManagerApprovalDialog
                 zIndexClass="z-[110]"

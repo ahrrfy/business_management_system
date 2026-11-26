@@ -478,6 +478,16 @@ export async function createWorkOrderInTx(
       qty,
       "كمية الصنف الأساس",
     );
+    if (!Number.isSafeInteger(baseBaseQuantity) || baseBaseQuantity <= 0) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر حفظ كمية الصنف الأساس لأمر الشغل",
+          why: `حاصل تحويل الوحدة للكمية الأساسية (${baseBaseQuantity}) ليس عدداً صحيحاً موجباً، وبنود الفواتير تقبل أعداداً صحيحة فقط للوحدة الأساسية`,
+          doThis: "اختر وحدة أو كمية ينتج عنها عدد صحيح موجب للوحدة الأساسية، أو اترك الصنف الأساس خدمة بدون ربط بند مخزني كسري",
+        }),
+      });
+    }
   }
 
   if (!baseIsService) {

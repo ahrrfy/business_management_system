@@ -40,6 +40,7 @@ export async function getWIPReport(opts: { branchId?: number; limit?: number } =
     FROM workOrders wo
     LEFT JOIN customers c ON c.id = wo.customerId
     WHERE wo.workOrderStatus IN ('IN_PROGRESS', 'READY')
+      AND wo.invoiceId IS NULL
     ${branchFilter}
     ORDER BY wo.id DESC
     LIMIT ${limit}
@@ -52,6 +53,7 @@ export async function getWIPReport(opts: { branchId?: number; limit?: number } =
       COALESCE(SUM(COALESCE(wo.materialsCost, 0)), 0) AS totalMaterialsCost
     FROM workOrders wo
     WHERE wo.workOrderStatus IN ('IN_PROGRESS', 'READY')
+      AND wo.invoiceId IS NULL
     ${branchFilter}
   `);
   const summaryRows = ((summaryResult as any)[0] ?? summaryResult) as Array<any>;

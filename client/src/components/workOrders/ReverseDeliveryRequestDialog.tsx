@@ -103,6 +103,13 @@ function isStoredAttempt(value: unknown, workOrderId: number): value is PendingR
 function consignmentReadyForReverse(preflight: EligibleReversePreflight): boolean {
   const consignment = preflight.consignment;
   if (!consignment) return true;
+  if (
+    (consignment.status === "CANCELLED" || consignment.status === "RETURNED") &&
+    (consignment.parcelStatus === "CANCELLED" || consignment.parcelStatus === "RETURNED") &&
+    (consignment.moneyStatus === "CANCELLED" || consignment.moneyStatus === "SETTLED" || consignment.moneyStatus === "NOT_APPLICABLE")
+  ) {
+    return true;
+  }
   return consignment.status === "DELIVERED"
     && consignment.parcelStatus === "DELIVERED"
     && (consignment.moneyStatus === "SETTLED" || consignment.moneyStatus === "NOT_APPLICABLE");
@@ -181,14 +188,14 @@ export default function ReverseDeliveryRequestDialog({
   const request = trpc.workOrders.requestControl.useMutation({
     onSuccess: async (result) => {
       const message = result.status === "APPROVED"
-        ? "تم اعتماد الطلب مسبقاً وتحديث بياناته."
+        ? "اعتُمِد الطلب ونُفِّذت المعالجة فوراً."
         : result.status === "REJECTED"
           ? "تم رفض هذا الطلب مسبقاً."
           : result.status === "STALE"
             ? "تغيّرت بيانات الطلب؛ حدّث الصفحة وحاول مجدداً."
             : result.replayed
-              ? "طلب المرتجع مسجّل مسبقاً وبانتظار موافقة المدير."
-              : "أُرسل طلب المرتجع وعكس التسليم لموافقة المدير.";
+              ? "طلب المعالجة مسجّل مسبقاً وبانتظار موافقة المدير."
+              : "أُرسل الطلب لموافقة المدير.";
       forgetAttempt();
       setSubmitError("");
       updateOpen(false);
@@ -226,10 +233,24 @@ export default function ReverseDeliveryRequestDialog({
   }, [open, workOrderId]);
 
   const eligiblePreflight = preflight?.eligible ? preflight : null;
-  const cashRefundRequired = eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false;
+  const isReadyInvoiced = eligiblePreflight?.status === "READY";
+  const heldFeeTotal = useMemo(
+    () => (!reopen ? D(eligiblePreflight?.heldDeliveryFee ?? "0") : D(0)),
+    [eligiblePreflight?.heldDeliveryFee, reopen],
+  );
+  const heldFeeCashRefund = useMemo(
+    () => (!reopen ? D(eligiblePreflight?.heldCashDeliveryFee ?? "0") : D(0)),
+    [eligiblePreflight?.heldCashDeliveryFee, reopen],
+  );
+  const cashRefundRequired =
+    (eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false) ||
+    heldFeeCashRefund.gt(0);
   const plannedRefundTotal = useMemo(
-    () => eligiblePreflight?.refundSources.reduce((sum, source) => sum.plus(D(source.amount)), D(0)).toFixed(2) ?? "0.00",
-    [eligiblePreflight],
+    () =>
+      (eligiblePreflight?.refundSources.reduce((sum, source) => sum.plus(D(source.amount)), D(0)) ?? D(0))
+        .plus(heldFeeTotal)
+        .toFixed(2),
+    [eligiblePreflight, heldFeeTotal],
   );
   const liveConsignment = eligiblePreflight ? !consignmentReadyForReverse(eligiblePreflight) : false;
   const unsupportedRefundSource = eligiblePreflight?.refundSources.some((source) => !isRequestableReverseRefundSource(source)) ?? false;
@@ -287,7 +308,9 @@ export default function ReverseDeliveryRequestDialog({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <RotateCcw aria-hidden className="size-4" />
-              مرتجع / عكس تسليم الطلب
+              {isReadyInvoiced
+                ? "إلغاء فاتورة التوصيل وإعادة فتح / إلغاء الأمر"
+                : "مرتجع وعكس تسليم أمر الشغل"}
             </DialogTitle>
             <DialogDescription>
               {[title ? `«${title}»` : null, orderNumber ? `الطلب ${orderNumber}` : null].filter(Boolean).join(" — ")}
@@ -348,7 +371,11 @@ export default function ReverseDeliveryRequestDialog({
                 <div className="space-y-2 rounded-md border p-3">
                   <Label className="text-xs font-bold">وردية الاسترداد النقدي</Label>
                   <RefundRailPicker
-                    context={{ sourceDocType: "WORKORDER_REVERSE_DELIVERY", sourceDocId: workOrderId }}
+                    context={{
+                      sourceDocType: "WORKORDER_REVERSE_DELIVERY",
+                      sourceDocId: workOrderId,
+                      workOrderDisposition: reopen ? "RETURN_TO_READY" : "CANCEL_FINAL",
+                    }}
                     mode="embedded"
                     onStateChange={(next) => {
                       setRail(next);
@@ -424,7 +451,9 @@ export default function ReverseDeliveryRequestDialog({
                   disabled={attempt != null || request.isPending}
                 />
                 <Label htmlFor={`reverse-reopen-${workOrderId}`} className="cursor-pointer text-xs font-normal leading-5">
-                  إعادة الطلب إلى «جاهز للتسليم» بعد الموافقة (بدلاً من إلغائه نهائياً)
+                  {isReadyInvoiced
+                    ? "إبقاء الأمر «جاهز للتسليم» بدون فاتورة (لتسليمه حضورياً أو تعديل تصميمه/خاماته بدلاً من إلغائه نهائياً)"
+                    : "إعادة الطلب إلى «جاهز للتسليم» بعد الموافقة (بدلاً من إلغائه نهائياً)"}
                 </Label>
               </div>
 
@@ -469,7 +498,7 @@ export default function ReverseDeliveryRequestDialog({
             >
               {request.isPending ? (
                 <><Loader2 aria-hidden className="me-1 size-4 animate-spin" /> {ACTION_LABELS.sending}</>
-              ) : attempt ? "إعادة الإرسال" : "تأكيد طلب المرتجع"}
+              ) : attempt ? "إعادة الإرسال" : isReadyInvoiced ? "تأكيد عكس الفاتورة" : "تأكيد طلب المرتجع"}
             </Button>
           </DialogFooter>
         </DialogContent>

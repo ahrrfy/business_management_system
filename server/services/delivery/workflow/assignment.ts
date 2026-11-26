@@ -1,5 +1,6 @@
 import { preservedCreditCollectionChoiceTx } from "../creditCollectionTerms";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "../shopFeeAutoOffset";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import {
   aftercareExecutions,
@@ -340,8 +341,18 @@ export async function mutateWorkflowAssignment(
                 physicalHeldConfirmed: true,
               },
               auth.actor,
-              { shipmentMember: true },
+              { shipmentMember: true, preserveFulfillmentItems: true },
             );
+        }
+        if (heldReturnReissue) {
+          for (const member of members) {
+            await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+              consignmentId: Number(member.id),
+              actor: auth.actor,
+              operationKey: `workflow.reassign.heldReturn:${input.clientRequestId}:${member.id}`,
+              reason: input.reason,
+            });
+          }
         }
         if (
           leader.status === "CANCELLED" ||
@@ -370,7 +381,10 @@ export async function mutateWorkflowAssignment(
                 .where(
                   and(
                     eq(fulfillmentRequestItems.requestId, request.id),
-                    eq(fulfillmentRequestItems.isActive, true),
+                    or(
+                      eq(fulfillmentRequestItems.isActive, true),
+                      eq(fulfillmentRequestItems.consignmentId, consignmentId),
+                    ),
                   ),
                 )
                 .for("update");

@@ -269,6 +269,15 @@ export async function cancelWorkOrderInTx(
         }),
       });
     }
+    const { detachWorkOrderFromOpenFulfillmentRequestsTx } = await import(
+      "../fulfillment/itemLifecycle"
+    );
+    await detachWorkOrderFromOpenFulfillmentRequestsTx(tx, {
+      workOrderId,
+      invoiceId: null,
+      actorUserId: actor.userId,
+      reason: "إلغاء أمر الشغل قبل الفوترة",
+    });
     const existingMaterials = await tx
       .select({ id: workOrderMaterials.id })
       .from(workOrderMaterials)

@@ -24,7 +24,11 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { resolveBranchCashShiftTx } from "../shiftService";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  assertNonPhysicalOutReceipt,
+  assertTreasuryOutException,
+} from "../cash/cashAvailability";
 import type { Actor } from "../tx";
 
 export interface RefundWorkOrderFeeHeldOpts {
@@ -33,6 +37,8 @@ export interface RefundWorkOrderFeeHeldOpts {
   actor: Actor & { role?: string };
   /** درج ردّ الأمانة — يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع. */
   refundShiftId?: number | null;
+  /** دلو الصرف النقدي عند اعتماد الرد من الخزينة الإدارية بلا وردية استقبال مفتوحة. */
+  cashBucket?: "DRAWER" | "TREASURY" | null;
   /** هوية مدير ثانٍ تحقق الراوتر من بياناته — تُخزّن على سند الرد ولا يجوز أن تساوي المنفذ. */
   approvedByManagerId?: number | null;
   reason: string;
@@ -51,6 +57,29 @@ export async function workOrderFeeHeldNet(tx: Tx, workOrderId: number): Promise<
       ))
   )[0];
   return round2(money(row?.v ?? "0"));
+}
+
+/** صافي أمانة الأجرة المحتجزة **النقديّة وحدها** (المقبوضة بـCASH)؛ غيرُ النقد يُردّ بسند معلّق بلا سحب درج. */
+export async function workOrderFeeHeldCashNet(tx: Tx, workOrderId: number): Promise<ReturnType<typeof money>> {
+  const net = await workOrderFeeHeldNet(tx, workOrderId);
+  if (!net.gt(0)) return money(0);
+  const collReceipt = (
+    await tx
+      .select({ paymentMethod: receipts.paymentMethod })
+      .from(receipts)
+      .where(
+        and(
+          eq(receipts.workOrderId, workOrderId),
+          eq(receipts.referenceNumber, `DLV-FEE-WO-${workOrderId}`),
+          eq(receipts.direction, "IN"),
+          eq(receipts.status, "COMPLETED"),
+        ),
+      )
+      .orderBy(asc(receipts.id))
+      .limit(1)
+  )[0];
+  if (collReceipt && collReceipt.paymentMethod !== "CASH") return money(0);
+  return net;
 }
 
 /** Noncash refunds remain liabilities until the existing owner approval confirms real execution. */
@@ -186,7 +215,11 @@ export async function refundWorkOrderDeliveryFeeHeld(
   const approvedByManagerId =
     opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
   if (!sameOpenShift) {
-    if (!Number.isInteger(approvedByManagerId) || approvedByManagerId! <= 0 || approvedByManagerId === opts.actor.userId) {
+    if (
+      !Number.isInteger(approvedByManagerId) ||
+      approvedByManagerId! <= 0 ||
+      (!opts.actor.isOwner && approvedByManagerId === opts.actor.userId)
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: `ردّ أمانة أجرة توصيلٍ نقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير ثانٍ مختلف — المال عاد إلى الخزينة عند الإغلاق.`,
@@ -194,14 +227,21 @@ export async function refundWorkOrderDeliveryFeeHeld(
     }
   }
 
-  const resolved = await resolveBranchCashShiftTx(tx, opts.branchId, opts.refundShiftId ?? null);
+  const targetBucket = opts.cashBucket === "TREASURY" ? "TREASURY" : "DRAWER";
+  if (targetBucket === "TREASURY") {
+    assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
+  }
+  const targetShiftId =
+    targetBucket === "TREASURY"
+      ? null
+      : (await resolveBranchCashShiftTx(tx, opts.branchId, opts.refundShiftId ?? null)).shiftId;
   await assertCashOutAvailable(tx, {
-    branchId: opts.branchId, cashBucket: "DRAWER", shiftId: resolved.shiftId,
+    branchId: opts.branchId, cashBucket: targetBucket, shiftId: targetShiftId,
     amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
   });
   const feeOut = await tx.insert(receipts).values({
-    branchId: opts.branchId, shiftId: resolved.shiftId, workOrderId: opts.workOrderId,
-    direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+    branchId: opts.branchId, shiftId: targetShiftId, workOrderId: opts.workOrderId,
+    direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: targetBucket,
     status: "COMPLETED", partyType: "OTHER",
     approvalStatus: "APPROVED",
     approvedBy: sameOpenShift ? null : approvedByManagerId,
@@ -210,6 +250,7 @@ export async function refundWorkOrderDeliveryFeeHeld(
     description: `${opts.reason} — طلب #${opts.workOrderId}`,
     createdBy: opts.actor.userId,
   });
+  const creditRole = targetBucket === "TREASURY" ? "TREASURY_CASH" : "CASH";
   await postEntry(tx, {
     entryType: "DELIVERY_FEE_HELD",
     dedupeKey: `DELIVERY_FEE_HELD_REFUND:WO:${opts.workOrderId}`,
@@ -219,11 +260,11 @@ export async function refundWorkOrderDeliveryFeeHeld(
     notes: `${opts.reason} — طلب #${opts.workOrderId}`,
     postingSourceComponents: {
       roleDebits: { COURIER_PAYABLE: feeHeldNet },
-      roleCredits: { CASH: feeHeldNet },
+      roleCredits: { [creditRole]: feeHeldNet },
     },
-    postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine("CASH", feeHeldNet)], {
+    postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine(creditRole, feeHeldNet)], {
       roleDebits: { COURIER_PAYABLE: feeHeldNet },
-      roleCredits: { CASH: feeHeldNet },
+      roleCredits: { [creditRole]: feeHeldNet },
     }),
   });
   return { refunded: feeHeldNet.toFixed(2) };

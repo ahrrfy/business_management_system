@@ -226,7 +226,10 @@ const DISPATCHERS = {
   WORKORDER_CANCEL: (tx, ctx, exposeCash) =>
     workOrderRefundPreflight(tx, ctx.sourceDocId, "CANCEL", { exposeCash }),
   WORKORDER_REVERSE_DELIVERY: (tx, ctx, exposeCash) =>
-    workOrderRefundPreflight(tx, ctx.sourceDocId, "REVERSE_DELIVERY", { exposeCash }),
+    workOrderRefundPreflight(tx, ctx.sourceDocId, "REVERSE_DELIVERY", {
+      exposeCash,
+      workOrderDisposition: ctx.workOrderDisposition,
+    }),
   CONSIGNMENT_RETURN: (tx, ctx, exposeCash) =>
     consignmentReturnPreflight(tx, ctx.sourceDocId, {
       exposeCash,

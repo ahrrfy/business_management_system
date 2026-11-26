@@ -5,6 +5,8 @@
  * وهي **ليست** لوحة الإنتاج (`/work-orders`): تلك كانبانُ المراحل لمن ينفّذ، وهذه طابورُ
  * المخرَج لمن يسلّم. اسمان مختلفان لأنّهما عملان مختلفان — وخلطُهما كان أصل «التكرار».
  */
+import { useMemo } from "react";
+import { useSearch } from "wouter";
 import { ClipboardList } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
@@ -12,7 +14,15 @@ import StationPageHeader from "@/components/StationPageHeader";
 
 export default function ReceptionOrdersPage() {
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId != null ? Number(me.data.branchId) : null;
+  const searchStr = useSearch();
+  const params = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
+  const shelfAudit = params.get("shelfAudit") === "1";
+  const urlBranchRaw = Number(params.get("branchId"));
+  const adminBranchId =
+    me.data?.role === "admin" && Number.isSafeInteger(urlBranchRaw) && urlBranchRaw > 0
+      ? urlBranchRaw
+      : null;
+  const branchId = adminBranchId ?? (me.data?.branchId != null ? Number(me.data.branchId) : null);
   // Polling كل ٢٠ث لبقاء الشارة عند العنوان مطابقةً للطابور — مرآةً لـReceptionOrderQueue (١٥ث)
   // مع تخفيفٍ للتقليل من ازدواج الاستعلامات. refetchOnWindowFocus لاصطياد الفنيّ الذي عاد للتبويب.
   const counts = trpc.workOrders.counts.useQuery(
@@ -29,7 +39,11 @@ export default function ReceptionOrdersPage() {
         count={counts.data?.ready ?? 0}
         countLabel="جاهز بانتظار العميل"
       />
-      {branchId == null ? <NoBranchNotice /> : <ReceptionOrderQueue branchId={branchId} />}
+      {branchId == null ? (
+        <NoBranchNotice />
+      ) : (
+        <ReceptionOrderQueue branchId={branchId} initialShelfAuditMode={shelfAudit} />
+      )}
     </div>
   );
 }

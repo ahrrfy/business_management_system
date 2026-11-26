@@ -95,7 +95,7 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
     FEE_EARNED: -1,
     FEE_PAID: 1,
     FEE_OFFSET: 1,
-    FEE_REFUNDED: -1,
+    FEE_REFUNDED: 1,
   });
 
 /**

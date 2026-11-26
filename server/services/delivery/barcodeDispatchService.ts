@@ -124,7 +124,7 @@ export async function dispatchByBarcode(
           .select({
             id: onlineOrders.id,
             invoiceId: onlineOrders.invoiceId,
-            matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100 ELSE 10 END`,
+            matchRank: sql<number>`100`,
           })
           .from(onlineOrders)
           .where(and(
@@ -134,7 +134,6 @@ export async function dispatchByBarcode(
                 ? or(
                     eq(onlineOrders.orderNumber, cleanCode),
                     eq(onlineOrders.orderNumber, `ORD-${cleanCode}`),
-                    numericId != null ? eq(onlineOrders.id, numericId) : sql`0=1`,
                   )
                 : eq(onlineOrders.orderNumber, cleanCode),
             scopedBranch != null ? eq(onlineOrders.branchId, scopedBranch) : sql`1=1`,
@@ -147,7 +146,7 @@ export async function dispatchByBarcode(
           .select({
             id: workOrders.id,
             invoiceId: workOrders.invoiceId,
-            matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`WO-${cleanCode}`}) THEN 100 ELSE 10 END`,
+            matchRank: sql<number>`100`,
           })
           .from(workOrders)
           .where(and(
@@ -157,7 +156,6 @@ export async function dispatchByBarcode(
                 ? or(
                     eq(workOrders.orderNumber, cleanCode),
                     eq(workOrders.orderNumber, `WO-${cleanCode}`),
-                    numericId != null ? eq(workOrders.id, numericId) : sql`0=1`,
                   )
                 : eq(workOrders.orderNumber, cleanCode),
             scopedBranch != null ? eq(workOrders.branchId, scopedBranch) : sql`1=1`,
@@ -172,7 +170,7 @@ export async function dispatchByBarcode(
             sourceType: invoices.sourceType,
             sourceId: invoices.sourceId,
             correctedByInvoiceId: invoices.correctedByInvoiceId,
-            matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
+            matchRank: sql<number>`100`,
           })
           .from(invoices)
           .where(and(
@@ -182,7 +180,6 @@ export async function dispatchByBarcode(
                 ? or(
                     eq(invoices.invoiceNumber, cleanCode),
                     eq(invoices.invoiceNumber, `INV-${cleanCode}`),
-                    numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
                   )
                 : eq(invoices.invoiceNumber, cleanCode),
             scopedBranch != null ? eq(invoices.branchId, scopedBranch) : sql`1=1`,
@@ -201,8 +198,7 @@ export async function dispatchByBarcode(
             matchRank: sql<number>`CASE
               WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}) THEN CASE WHEN ${isActiveCnSql} THEN 100 ELSE 80 END
               WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN CASE WHEN ${isActiveCnSql} THEN 50 ELSE 35 END
-              WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN CASE WHEN ${isActiveCnSql} THEN 40 ELSE 25 END
-              ELSE CASE WHEN ${isActiveCnSql} THEN 10 ELSE 5 END END`,
+              ELSE CASE WHEN ${isActiveCnSql} THEN 40 ELSE 25 END END`,
           })
           .from(deliveryConsignments)
           .where(and(
@@ -213,8 +209,8 @@ export async function dispatchByBarcode(
                 )
               : namespace === "NUMERIC"
                 ? or(
-                    numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
                     eq(deliveryConsignments.consignmentNumber, cleanCode),
+                    eq(deliveryConsignments.consignmentNumber, `CN-${cleanCode}`),
                     trackingCode
                       ? and(
                           eq(deliveryConsignments.partyId, Number(input.partyId)),
@@ -401,6 +397,7 @@ export async function dispatchByBarcode(
       id: workOrders.id,
       orderNumber: workOrders.orderNumber,
       branchId: workOrders.branchId,
+      invoiceId: workOrders.invoiceId,
       status: workOrders.status,
       hasDelivery: workOrders.hasDelivery,
       title: workOrders.title,
@@ -437,7 +434,7 @@ export async function dispatchByBarcode(
       });
     }
 
-    const [activeCn] = await db
+    const [activeCnByWo] = await db
       .select({ consignmentNumber: deliveryConsignments.consignmentNumber })
       .from(deliveryConsignments)
       .where(
@@ -447,6 +444,22 @@ export async function dispatchByBarcode(
         ),
       )
       .limit(1);
+    const activeCn =
+      activeCnByWo ??
+      (workOrder.invoiceId != null
+        ? (
+            await db
+              .select({ consignmentNumber: deliveryConsignments.consignmentNumber })
+              .from(deliveryConsignments)
+              .where(
+                and(
+                  eq(deliveryConsignments.invoiceId, Number(workOrder.invoiceId)),
+                  sql`${deliveryConsignments.status} NOT IN ('CANCELLED', 'RETURNED')`,
+                ),
+              )
+              .limit(1)
+          )[0]
+        : undefined);
     if (activeCn) {
       throw new TRPCError({
         code: "CONFLICT",

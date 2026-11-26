@@ -1,5 +1,6 @@
 /** حفظ ملف تصميم أمر الشغل كنسخٍ غير قابلة للمحو، مستقلة عن عدد الصور. */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, eq } from "drizzle-orm";
 import { workOrderImages, workOrders } from "../../../drizzle/schema";
 import { assertValidImageDataUrl } from "../../lib/imageValidation";
@@ -13,7 +14,11 @@ import {
   supersedePendingDesignApprovalsTx,
   workOrderDesignContentHash,
 } from "./designApproval";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import {
+  assertNoLiveConsignment,
+  assertWorkOrderBranch,
+  loadWorkOrder,
+} from "./helpers";
 
 const MAX_IMAGES = 10;
 
@@ -53,6 +58,17 @@ export async function setWorkOrderDesign(
           code: "PRECONDITION_FAILED",
           message:
             "لا يُعدَّل تصميم أمرٍ مُسلَّم أو ملغى — أنشئ أمراً جديداً أو اعكس التسليم أولاً",
+        });
+      }
+      await assertNoLiveConsignment(tx, input.workOrderId, "design", wo.invoiceId);
+      if (wo.invoiceId != null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تعديل تصميم أمر شغل مفوتر",
+            why: "صدرت فاتورة مسبقة لهذا الأمر ورحّلت خاماته محاسبياً",
+            doThis: "استعمل «عكس الفاتورة مع إعادة فتح الأمر» أولاً لإعادته إلى دورة المطبعة ثم عدّل التصميم",
+          }),
         });
       }
 

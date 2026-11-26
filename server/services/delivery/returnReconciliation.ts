@@ -35,6 +35,8 @@ import { money, round2, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "./shopFeeAutoOffset";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "../fulfillment/itemLifecycle";
 
 export interface ReconcileDeliveryOnReturnInput {
   invoiceId: number;
@@ -151,6 +153,17 @@ export async function reconcileDeliveryOnReturnTx(
         targetSettledAt = now;
       } else {
         // طرد قيد التوصيل (OUT_FOR_DELIVERY / PICKED_UP / ACCEPTED / ASSIGNED / FAILED)
+        await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+          consignmentId: Number(cn.id),
+          actor: {
+            userId: input.actor.userId,
+            branchId: Number(cn.branchId ?? input.actor.branchId ?? 0),
+            role: (input.actor as { role?: string }).role ?? "admin",
+          },
+          operationKey: `delivery.returnReconciliation:${input.clientRequestId ?? input.invoiceId}`,
+          reason: `مرتجع كامل للفاتورة #${input.invoiceId}`,
+        });
+        await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
         targetParcelStatus = "RETURNED";
         targetStatus = "RETURNED";
         const hasCollected = money(cn.collectedAmount ?? "0").gt(0);
@@ -161,7 +174,11 @@ export async function reconcileDeliveryOnReturnTx(
         if (cn.workOrderId != null) {
           await tx
             .update(workOrders)
-            .set({ status: "CANCELLED" })
+            .set({
+              status: "CANCELLED",
+              kanbanState: "NORMAL",
+              blockedReason: null,
+            })
             .where(eq(workOrders.id, Number(cn.workOrderId)));
         }
         if (cn.sourceType === "ONLINE_ORDER") {

@@ -168,10 +168,14 @@ export async function declareConsignmentReturn(
       const legacyCustody = cn.custodyRecognizedAt == null
         ? money(0)
         : round2(outstanding.lt(cachedCustody) ? outstanding : cachedCustody);
+      const claimSuffix =
+        Number(cn.codClaimVersion ?? 1) > 1
+          ? `:V${Number(cn.codClaimVersion)}`
+          : "";
       if (legacyCustody.gt(0)) {
         await adjustDeliveryBalance(tx, Number(cn.partyId), legacyCustody.neg());
         await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_DECLARED_RETURN`,
+          eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_DECLARED_RETURN${claimSuffix}`,
           partyId: Number(cn.partyId),
           consignmentId,
           branchId: Number(cn.branchId),
@@ -184,7 +188,7 @@ export async function declareConsignmentReturn(
       const exposureToRelease = round2(outstanding.minus(legacyCustody));
       if (exposureToRelease.gt(0)) {
         await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${consignmentId}:COD_RELEASED:DECLARED_RETURN`,
+          eventKey: `CN:${consignmentId}:COD_RELEASED:DECLARED_RETURN${claimSuffix}`,
           partyId: Number(cn.partyId),
           consignmentId,
           branchId: Number(cn.branchId),

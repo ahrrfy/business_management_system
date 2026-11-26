@@ -30,7 +30,11 @@ import {
 import { money, round2, toDbMoney } from "../../money";
 import { loadAssignedChargeClaimsTx } from "../../fulfillment/chargeDelivery";
 import { withTx, type Actor } from "../../tx";
-import { confirmConsignmentDelivery } from "../courier";
+import {
+  confirmConsignmentDelivery,
+  recognizeDeliveredShipmentFeeTx,
+  syncConsignmentSourceDeliveredTx,
+} from "../courier";
 import { appendDeliveryEvent } from "../lifecycle";
 import { effectiveDeliveryLedgerEntrySql } from "../legacyLedger";
 import {
@@ -564,10 +568,27 @@ export function settlePartialDeliveryOutcome(
             "المبلغ لا يطابق إيصال التوريد السابق؛ لا يمكن تغيير النقد بإجراء ربط العهدة",
             "CONFLICT",
           );
+        const deliveredAt = plan.cn.courierDeliveredAt ?? new Date();
         await tx
           .update(deliveryConsignments)
-          .set({ parcelStatus: "DELIVERED" })
+          .set({
+            status: "DELIVERED",
+            parcelStatus: "DELIVERED",
+            courierDeliveredAt: deliveredAt,
+          })
           .where(eq(deliveryConsignments.id, identity.id));
+        await recognizeDeliveredShipmentFeeTx(
+          tx,
+          identity.id,
+          auth.actor,
+          deliveredAt,
+        );
+        await syncConsignmentSourceDeliveredTx(
+          tx,
+          plan.cn,
+          auth.actor,
+          deliveredAt,
+        );
         result = {
           remittanceId: plan.priorRemittance!.id,
           remittanceNumber: plan.priorRemittance!.remittanceNumber,

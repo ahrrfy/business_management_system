@@ -506,9 +506,12 @@ export async function dispatchInvoiceInTx(
     if (
       already &&
       !heldReturnReissue &&
-      (already.status !== "CANCELLED" ||
-        already.parcelStatus !== "CANCELLED" ||
-        already.moneyStatus !== "CANCELLED")
+      !(
+        (already.status === "CANCELLED" || already.status === "RETURNED") &&
+        (already.parcelStatus === "CANCELLED" ||
+          already.parcelStatus === "RETURNED") &&
+        already.moneyStatus === "CANCELLED"
+      )
     ) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -583,6 +586,9 @@ export async function dispatchInvoiceInTx(
     )[0];
     const siblingRows = await assertSiblingsReady(tx, {
       draftId: draftRow ? Number(draftRow.id) : null,
+      branchId: Number(inv.branchId),
+      orderNumber: inv.invoiceNumber,
+      checkBaseCodeFamily: true,
       confirmed: input.partialDispatchConfirmed === true,
       action: "dispatch",
     });
@@ -620,6 +626,8 @@ export async function dispatchInvoiceInTx(
         request.branchId !== inv.branchId ||
         (request.customerId ?? null) !== (inv.customerId ?? null) ||
         (already?.fulfillmentRequestId != null &&
+          already.status !== "CANCELLED" &&
+          already.status !== "RETURNED" &&
           already.fulfillmentRequestId !== request.id)
       )
         throw new TRPCError({
@@ -693,13 +701,9 @@ export async function dispatchInvoiceInTx(
           cancellationReason: null,
           cancelledBy: null,
           returnedAt: null,
-          ...(heldReturnReissue
-            ? {
-                returnDeclaredAt: null,
-                returnDeclaredBy: null,
-                returnDeclaredReason: null,
-              }
-            : {}),
+          returnDeclaredAt: null,
+          returnDeclaredBy: null,
+          returnDeclaredReason: null,
         })
         .where(eq(deliveryConsignments.id, consignmentId));
     } else {

@@ -12,12 +12,18 @@ export function verifiedConsignmentLedgerRows(
 ): Array<typeof deliveryLedgerEntries.$inferSelect> {
   const invalidIdentity = rows.some((row) => Number(row.partyId) !== Number(cn.partyId) ||
     row.branchId == null || Number(row.branchId) !== Number(cn.branchId));
+  const matchesEntryType = (
+    nativeType: typeof deliveryLedgerEntries.$inferSelect.entryType,
+    backfillType: typeof deliveryLedgerEntries.$inferSelect.entryType,
+  ) =>
+    nativeType === backfillType ||
+    (backfillType === "FEE_PAID" && nativeType === "FEE_OFFSET");
   const effective = rows.filter((row) => row.eventKey !== `BACKFILL:CN:${cn.id}:${row.entryType}` ||
-    !rows.some((native) => !native.eventKey.startsWith("BACKFILL:") && native.entryType === row.entryType &&
+    !rows.some((native) => !native.eventKey.startsWith("BACKFILL:") && matchesEntryType(native.entryType, row.entryType) &&
       Number(native.partyId) === Number(row.partyId) && Number(native.branchId) === Number(row.branchId) &&
       money(native.amount).eq(money(row.amount)) && native.createdAt <= row.createdAt));
   const ambiguous = effective.some((row) => row.eventKey.startsWith("BACKFILL:") &&
-    effective.some((native) => !native.eventKey.startsWith("BACKFILL:") && native.entryType === row.entryType));
+    effective.some((native) => !native.eventKey.startsWith("BACKFILL:") && matchesEntryType(native.entryType, row.entryType)));
   if (invalidIdentity || ambiguous || rows.some((row) => money(row.amount).lt(0))) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
       what, why: "قيود الجهة أو الفرع أو القيود التاريخية غير متسقة أو ملتبسة",
@@ -58,7 +64,10 @@ export function effectiveDeliveryLedgerEntrySql(
       WHERE legacyNative.consignmentId = ${entry}.consignmentId
         AND legacyNative.partyId = ${entry}.partyId
         AND legacyNative.branchId <=> ${entry}.branchId
-        AND legacyNative.entryType = ${entry}.entryType
+        AND (
+          legacyNative.entryType = ${entry}.entryType
+          OR (${entry}.entryType = 'FEE_PAID' AND legacyNative.entryType = 'FEE_OFFSET')
+        )
         AND legacyNative.amount = ${entry}.amount
         AND legacyNative.createdAt <= ${entry}.createdAt
         AND legacyNative.eventKey NOT LIKE 'BACKFILL:%'

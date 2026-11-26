@@ -65,19 +65,16 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
       readClient("../../pages/WorkOrderDetail.tsx") +
       "\n" +
       readClient("../workOrders/WorkOrderDeliveryPaymentCard.tsx");
-    const workOrders =
-      readClient("../../pages/WorkOrders.tsx") +
-      "\n" +
-      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
+    const handover = readClient("../../pages/reception/ReceptionHandoverPage.tsx");
     const reservations = readClient("../../pages/ReservationsHub.tsx");
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
     expect(workOrderNew).toContain('<Redirect to="/pos?mode=RECEPTION" />');
     expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}",
     );
-    expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}',
-    );
-    expect(workOrders).not.toContain('<option value="CARD" disabled>');
+    expect(handover).toContain("const enabled = isPosPaymentMethodEnabled(p.v);");
+    expect(handover).toContain("disabled={!enabled}");
+    expect(handover).not.toContain('<option value="CARD" disabled>');
     expect(reservations).toContain("!isPosPaymentMethodEnabled(value)");
     expect(isPosPaymentMethodEnabled("CHECK")).toBe(false);
   });
@@ -114,16 +111,13 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
   });
 
   it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {
-    const workOrders =
-      readClient("../../pages/WorkOrders.tsx") +
-      "\n" +
-      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
+    const handover = readClient("../../pages/reception/ReceptionHandoverPage.tsx");
     const invoiceDetail = readClient("../../pages/InvoiceDetail.tsx");
     const receptionQueue = readComponent("ReceptionInvoiceQueue.tsx");
 
-    expect(workOrders).toContain('reference: methodV === "CASH" ? undefined : reference.trim()',
+    expect(handover).toContain('reference: method !== "CASH" ? reference.trim() : undefined',
     );
-    expect(workOrders).not.toContain("reference: undefined } : undefined)");
+    expect(handover).not.toContain("reference: undefined } : undefined)");
     expect(invoiceDetail).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()',
     );
     expect(invoiceDetail).toContain('inputId="invoice-pay-reference"');

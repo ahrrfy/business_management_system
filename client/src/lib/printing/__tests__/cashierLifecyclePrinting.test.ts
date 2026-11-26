@@ -167,7 +167,7 @@ describe("Cashier Lifecycle Thermal 80mm & Shipping Label Suite", () => {
       }),
     );
     expect(cancelHtml).toContain("إيصال إلغاء واسترداد مستحقات");
-    expect(cancelHtml).toContain("أمر عمل — WO-2026-0044");
+    expect(cancelHtml).toContain("أمر شغل — WO-2026-0044");
     expect(cancelHtml).toContain("50,000");
 
     const paymentHtml = await docToHtml(

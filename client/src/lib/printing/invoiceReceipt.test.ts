@@ -41,6 +41,14 @@ describe("credit invoice delivery collection", () => {
       if (feeCollection === "COURIER") expect(html).toContain("أجرة التوصيل فقط");
       else expect(html).toContain("0 د.ع");
     }
+    if (feeCollection === "SHOP") {
+      const invoiceHtml = buildSalesInvoiceV2Html({
+        ...input,
+        courierDelivery: { partyName: "ناقل", fee: "5000.00", feeCollection: "SHOP" },
+      });
+      expect(invoiceHtml).toContain("مجاناً (تتحمّلها المكتبة)");
+      expect(invoiceHtml).not.toContain("+ 5,000");
+    }
   });
 });
 

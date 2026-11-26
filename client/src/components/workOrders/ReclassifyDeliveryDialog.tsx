@@ -68,6 +68,7 @@ export function ReclassifyDeliveryDialog({
     { enabled: !!order, staleTime: 0 },
   );
   const heldNet = Number(feeHeldQ.data?.net ?? "0");
+  const heldCashNet = Number(feeHeldQ.data?.cashNet ?? feeHeldQ.data?.net ?? "0");
   const branchId = feeHeldQ.data?.branchId ?? null;
 
   useEffect(() => {
@@ -82,12 +83,8 @@ export function ReclassifyDeliveryDialog({
   }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mustRefundFee = !hasDelivery && heldNet > 0;
-  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
-    { branchId: branchId ?? 0 },
-    { enabled: mustRefundFee && branchId != null },
-  );
-  const drawerShifts = openShiftsQ.data ?? [];
-  const needShiftPick = mustRefundFee && drawerShifts.length > 1;
+  const drawerShifts = feeHeldQ.data?.openShifts ?? [];
+  const needShiftPick = mustRefundFee && heldCashNet > 0 && drawerShifts.length > 1;
 
   if (!order) return null;
   const originalHasDelivery = !!order.hasDelivery;
@@ -114,7 +111,10 @@ export function ReclassifyDeliveryDialog({
       deliveryPhone: phone.trim() || null,
       deliveryCost: hasDelivery ? cost || "0" : "0",
       confirmFeeRefund: mustRefundFee ? true : undefined,
-      refundShiftId: mustRefundFee ? refundShiftId ?? undefined : undefined,
+      refundShiftId:
+        mustRefundFee && heldCashNet > 0
+          ? (refundShiftId ?? (drawerShifts.length === 1 ? drawerShifts[0]!.shiftId : undefined))
+          : undefined,
     });
   };
 

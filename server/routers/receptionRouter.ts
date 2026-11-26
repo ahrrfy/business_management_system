@@ -142,20 +142,20 @@ export const receptionRouter = router({
     return listCheckoutChargeOptions({...input,branchId},{userId:ctx.user.id,branchId,role:ctx.user.role,isOwner:ctx.user.isOwner},"workOrders.receptionCheckout");
   }),
   initiateExternalPayment: workordersCashierProcedure.input(z.object({
-    branchId:z.number().int().positive(),method:z.enum(["CARD","TRANSFER","WALLET"]),
+    branchId:z.number().int().positive(),method:z.enum(["CARD","TRANSFER","WALLET"]),channel:z.enum(["PRINT_POS","SALES_COLLECTION"]).optional(),
     amount:positiveMoneyString,reference:z.string().trim().min(1).max(100),
     requestId:z.string().trim().min(1).max(80),deviceId:z.string().trim().min(1).max(64),
   })).mutation(({ctx,input})=>{
     const branchId=effectiveBranch(ctx,input.branchId);
     if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذّر تأكيد قبض الاستقبال",why:"لا فرع فعلي مسند للمستخدم",doThis:"اختر الفرع المخول أو اطلب إسناد حسابك إلى فرع قبل القبض"})});
-    return initiateExternalPaymentAttempt({...input,branchId,channel:"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
+    return initiateExternalPaymentAttempt({...input,branchId,channel:input.channel??"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
   }),
   confirmExternalPayment: workordersCashierProcedure.input(z.object({
-    branchId:z.number().int().positive(),attemptId:z.number().int().positive(),deviceId:z.string().trim().min(1).max(64),
+    branchId:z.number().int().positive(),attemptId:z.number().int().positive(),deviceId:z.string().trim().min(1).max(64),channel:z.enum(["PRINT_POS","SALES_COLLECTION"]).optional(),
   })).mutation(({ctx,input})=>{
     const branchId=effectiveBranch(ctx,input.branchId);
     if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذّر تأكيد قبض الاستقبال",why:"لا فرع فعلي مسند للمستخدم",doThis:"اختر الفرع المخول أو اطلب إسناد حسابك إلى فرع قبل القبض"})});
-    return confirmExternalPaymentAttempt({...input,branchId,channel:"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
+    return confirmExternalPaymentAttempt({...input,branchId,channel:input.channel??"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
   }),
 
   duplicateOrders: receptionDuplicateReadProcedure

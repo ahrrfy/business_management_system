@@ -12,7 +12,13 @@ import {
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { type Actor, withTx } from "../tx";
-import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder, workOrderOperationScopeTx } from "./helpers";
+import {
+  assertNoLiveConsignment,
+  assertOperatorOwns,
+  assertWorkOrderBranch,
+  loadWorkOrder,
+  workOrderOperationScopeTx,
+} from "./helpers";
 
 export async function setWorkOrderKanbanState(
   input: {
@@ -53,6 +59,7 @@ export async function setWorkOrderKanbanState(
         message: "لا تُوضَع إشارةُ كانبان على أمرٍ خارج دورة العمل",
       });
     }
+    await assertNoLiveConsignment(tx, workOrderId, "kanban", wo.invoiceId);
     // Idempotency: لم تتغيّر الإشارة ولا السبب ⇒ لا سجلَّ جديدٌ.
     const currentReason = (wo.blockedReason as string | null) ?? null;
     const noChange =

@@ -153,7 +153,10 @@ export function useSplitTender(input: {
           requestId,
           deviceId,
         };
-        const result = await start.mutateAsync({
+        const startMutate = start.mutateAsync as (
+          payload: typeof args & { channel?: "POS" },
+        ) => Promise<{ attemptId: number }>;
+        const result = await startMutate({
           ...args,
           ...(input.channel === "POS" ? { channel: "POS" as const } : {}),
         });
@@ -171,7 +174,13 @@ export function useSplitTender(input: {
       if (attemptId == null)
         throw new Error("تعذر استعادة محاولة الدفع؛ أعد التحقق بنفس العملية.");
       if (!proof.confirmed) {
-        await finish.mutateAsync({
+        const finishMutate = finish.mutateAsync as (payload: {
+          branchId: number;
+          attemptId: number;
+          deviceId: string;
+          channel?: "POS";
+        }) => Promise<unknown>;
+        await finishMutate({
           branchId: input.branchId,
           attemptId,
           deviceId,

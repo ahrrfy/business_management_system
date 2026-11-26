@@ -26,8 +26,7 @@ import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterInputs } from "@/lib/trpc";
-import { printWorkOrder } from "@/lib/printing/printTemplates";
-import { printWorkOrderReceipt } from "@/lib/printing/print";
+import { printWoFromCard, printWoThermalFromCard } from "@/components/workOrders/workOrderTypes";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck, CheckCircle2, Clock } from "lucide-react";
@@ -169,23 +168,7 @@ export default function WorkOrderDetail() {
     const wantPrint = new URLSearchParams(qs || "").get("print") === "1";
     if (!wantPrint || !wo.data) return;
     autoPrintedRef.current = true;
-    void printWorkOrderReceipt({
-      orderNumber: wo.data.orderNumber,
-      orderDate: wo.data.createdAt ? String(wo.data.createdAt).slice(0, 10) : undefined,
-      dueDate: wo.data.dueDate ? String(wo.data.dueDate).slice(0, 10) : undefined,
-      status: wo.data.status,
-      customerName: wo.data.customerName ?? undefined,
-      customerPhone: wo.data.customerPhone ?? undefined,
-      jobTitle: wo.data.title,
-      quantity: wo.data.quantity ? `${formatQuantity(wo.data.quantity)} نسخة` : undefined,
-      specs: wo.data.customizationText ?? undefined,
-      total: wo.data.salePrice,
-      // ش٤: التذكرة تُثبت العربون والمتبقّي (كانت تطبع الإجمالي وحده — أكثر ما يُتنازَع عليه).
-      paidUpfront: Number(wo.data.deposit ?? 0) > 0 ? wo.data.deposit : null,
-      balanceDue: Number(wo.data.deposit ?? 0) > 0
-        ? String(Math.max(0, Number(wo.data.salePrice) - Number(wo.data.deposit ?? 0)))
-        : null,
-    });
+    printWoThermalFromCard(wo.data);
   }, [qs, wo.data]);
 
   // تعبئة المتبقّي تلقائياً عند الجهوزية = سعر البيع − العربون المقبوض (لا طرح يدويّ، decimal.js
@@ -581,45 +564,8 @@ export default function WorkOrderDetail() {
             <MessageCircle className="h-3.5 w-3.5" />
             تحديث للعميل
           </Button>
-          <Button variant="outline" size="sm" onClick={() => printWorkOrder({
-            woNumber: data.orderNumber,
-            woDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,
-            dueDate: data.dueDate ? String(data.dueDate).slice(0, 10) : undefined,
-            status: data.status,
-            customerName: data.customerName,
-            jobType: data.title,
-            specs: data.customizationText,
-            items: [{
-              name: `${data.title} (${formatQuantity(data.quantity)} نسخة)`,
-              unit: 'مهمة',
-              quantity: 1,
-              unitPrice: data.salePrice,
-              total: data.salePrice,
-            }],
-            subtotal: data.salePrice,
-            total: data.salePrice,
-          })}>طباعة A4</Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1"
-            onClick={() => printWorkOrderReceipt({
-              orderNumber: data.orderNumber,
-              orderDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,
-              dueDate: data.dueDate ? String(data.dueDate).slice(0, 10) : undefined,
-              status: data.status,
-              customerName: data.customerName ?? undefined,
-              customerPhone: data.customerPhone ?? undefined,
-              jobTitle: data.title,
-              quantity: data.quantity ? `${formatQuantity(data.quantity)} نسخة` : undefined,
-              specs: data.customizationText ?? undefined,
-              total: data.salePrice,
-              paidUpfront: Number(data.deposit ?? 0) > 0 ? data.deposit : null,
-              balanceDue: Number(data.deposit ?? 0) > 0
-                ? String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0)))
-                : null,
-            })}
-          >
+          <Button variant="outline" size="sm" onClick={() => printWoFromCard(data)}>طباعة A4</Button>
+          <Button variant="outline" size="sm" className="gap-1" onClick={() => printWoThermalFromCard(data)}>
             <Printer className="h-3.5 w-3.5" />
             طباعة حرارية
           </Button>
@@ -1128,7 +1074,7 @@ export default function WorkOrderDetail() {
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {(cancelDirectAllowed || canRequestCancel) && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {(cancelDirectAllowed || canRequestCancel) && data.invoiceId == null && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
@@ -1140,11 +1086,12 @@ export default function WorkOrderDetail() {
               : cancelDirectAllowed ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
           </Button>
         )}
-        {canRequestCommercialControl && data.status === "DELIVERED" && data.invoiceId && (
+        {canRequestCommercialControl && (data.status === "DELIVERED" || (data.status === "READY" && !data.consignmentId)) && data.invoiceId != null && (
           <ReverseDeliveryRequestDialog
             workOrderId={workOrderId}
             orderNumber={data.orderNumber}
             title={data.title}
+            buttonLabel={data.status === "READY" ? "عكس الفاتورة وإعادة فتح / إلغاء الأمر" : "مرتجع / عكس تسليم"}
             onRequested={(message) => {
               setDone(message);
               setError("");
@@ -1152,7 +1099,7 @@ export default function WorkOrderDetail() {
           />
         )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
-        {data.status === "DELIVERED" && data.invoiceId && (
+        {data.invoiceId != null && (
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>

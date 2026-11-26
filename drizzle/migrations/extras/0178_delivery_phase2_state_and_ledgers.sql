@@ -413,7 +413,7 @@ WHERE CAST(dc.deliveryFee AS DECIMAL(15,2)) > 0
     SELECT 1 FROM deliveryLedgerEntries nativeLedger
     WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
       AND nativeLedger.branchId <=> dc.branchId
-      AND nativeLedger.entryType = 'FEE_PAID' AND nativeLedger.amount = dc.deliveryFee
+      AND nativeLedger.entryType IN ('FEE_PAID', 'FEE_OFFSET') AND nativeLedger.amount = dc.deliveryFee
       AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
       AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
   );
@@ -537,7 +537,10 @@ INSERT IGNORE INTO `deliveryEvents`
   (`eventKey`,`consignmentId`,`eventType`,`toParcelStatus`,`toMoneyStatus`,`payload`,`occurredAt`)
 SELECT CONCAT('BACKFILL:CN:',dc.id,':MIGRATED'), dc.id, 'MIGRATED', dc.parcelStatus, dc.moneyStatus,
        JSON_OBJECT('legacyStatus',dc.consignmentStatus,'legacyRemittanceId',dc.remittanceId), dc.updatedAt
-FROM `deliveryConsignments` dc;
+FROM `deliveryConsignments` dc
+WHERE NOT EXISTS (
+  SELECT 1 FROM `deliveryEvents` de WHERE de.consignmentId = dc.id
+);
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `deliveryOutbox` (

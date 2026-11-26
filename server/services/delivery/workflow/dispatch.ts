@@ -55,6 +55,7 @@ import {
   bootstrapHistoricalShipmentDocumentSnapshotsTx,
   createShipmentDispatchDocumentSnapshotsTx,
 } from "../documentSnapshots";
+import { loadShipmentMembersTx } from "../shipments";
 
 function validateSources(sources: WorkflowDispatchSource[]) {
   if (
@@ -226,25 +227,18 @@ async function resultTx(
       "تعذر استعادة الإرسالية الملتزمة؛ راجع مسؤول النظام",
       "CONFLICT",
     );
-  const members = await tx
-    .select({
-      id: deliveryConsignments.id,
-      consignmentNumber: deliveryConsignments.consignmentNumber,
-      invoiceId: deliveryConsignments.invoiceId,
-      sourceType: deliveryConsignments.sourceType,
-      sourceId: deliveryConsignments.sourceId,
-      codAmount: deliveryConsignments.codAmount,
-      deliveryFee: deliveryConsignments.deliveryFee,
-    })
-    .from(deliveryConsignments)
-    .where(
-      row.fulfillmentRequestId == null
-        ? eq(deliveryConsignments.id, row.id)
-        : eq(
-            deliveryConsignments.fulfillmentRequestId,
-            row.fulfillmentRequestId,
-          ),
-    );
+  const shipmentRows = await loadShipmentMembersTx(tx, row.id, {
+    currentRead: true,
+  });
+  const members = (shipmentRows.length ? shipmentRows : [row]).map((m) => ({
+    id: m.id,
+    consignmentNumber: m.consignmentNumber,
+    invoiceId: m.invoiceId,
+    sourceType: m.sourceType,
+    sourceId: m.sourceId,
+    codAmount: m.codAmount,
+    deliveryFee: m.deliveryFee,
+  }));
   const invoiceIds = Array.from(
     new Set(
       members.flatMap((member) =>
