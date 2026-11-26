@@ -1165,8 +1165,10 @@ export async function recordAttendance(input: RecordAttendanceInput) {
           ...preserved,
           attendanceDate: toDateStr(preserved.attendanceDate),
           dayName: arabicDayName(input.attendanceDate),
-          lateMinutes: null,
-          preservedManual: true as const,
+          lateMinutes: null as number | null,
+          lateDeductionMinutes: null as number | null,
+          effectiveHours: money(preserved.hours ?? 0).toNumber(),
+          preservedManual: true,
         };
       }
       if (
@@ -1191,6 +1193,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       lateMinutes: lateMins,
       lateDeductionMinutes: lateDedMins,
       effectiveHours: effectiveHours.toNumber(),
+      preservedManual: false,
     };
   });
 }
