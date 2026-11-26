@@ -191,8 +191,12 @@ export async function refundWorkOrderDeliveryFeeHeld(
     Number(collShift.userId) === opts.actor.userId;
   const approvedByManagerId =
     opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
-  if (!sameOpenShift && !opts.actor.isOwner) {
-    if (!Number.isInteger(approvedByManagerId) || approvedByManagerId! <= 0 || approvedByManagerId === opts.actor.userId) {
+  if (!sameOpenShift) {
+    if (
+      !Number.isInteger(approvedByManagerId) ||
+      approvedByManagerId! <= 0 ||
+      (!opts.actor.isOwner && approvedByManagerId === opts.actor.userId)
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: `ردّ أمانة أجرة توصيلٍ نقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير ثانٍ مختلف — المال عاد إلى الخزينة عند الإغلاق.`,
@@ -217,7 +221,7 @@ export async function refundWorkOrderDeliveryFeeHeld(
     direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: targetBucket,
     status: "COMPLETED", partyType: "OTHER",
     approvalStatus: "APPROVED",
-    approvedBy: sameOpenShift ? null : (approvedByManagerId ?? opts.actor.userId),
+    approvedBy: sameOpenShift ? null : approvedByManagerId,
     approvedAt: sameOpenShift ? null : new Date(),
     referenceNumber: `DLV-FEE-WO-${opts.workOrderId}`,
     description: `${opts.reason} — طلب #${opts.workOrderId}`,

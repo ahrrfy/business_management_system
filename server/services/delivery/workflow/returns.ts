@@ -439,12 +439,14 @@ export function receiveWorkflowReturn(
           );
         const receivedAt = new Date();
         if (wholeParcel) {
-          await reverseAutoOffsetShopDeliveryFeeTx(tx, {
-            consignmentId: Number(row.id),
-            actor: auth.actor,
-            operationKey: `workflow.physicalReturn:${input.clientRequestId}:${row.id}`,
-            reason: input.evidence.trim(),
-          });
+          if (row.status !== "DELIVERED" && row.parcelStatus !== "DELIVERED") {
+            await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+              consignmentId: Number(row.id),
+              actor: auth.actor,
+              operationKey: `workflow.physicalReturn:${input.clientRequestId}:${row.id}`,
+              reason: input.evidence.trim(),
+            });
+          }
           await tx
             .update(deliveryConsignments)
             .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })

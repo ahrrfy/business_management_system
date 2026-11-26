@@ -837,6 +837,7 @@ async function reconcileCommercialReturnCustodyTx(
     const fromCandidates: DeliveryCustodyState[] =
       workOrderDisposition === "PREPARED_HELD"
         ? [
+            "CUSTOMER_DELIVERED",
             "RETURNED_PENDING_INSPECTION",
             "CUSTOMER_OWNED_HELD",
             "CARRIER_CUSTODY",
@@ -1290,6 +1291,7 @@ export async function applyDeliveryCustodyEventTx(
   ) {
     return applyCustodyLifecycleRuleTx(tx, input, {
       fromStates: [
+        "CUSTOMER_DELIVERED",
         "CARRIER_CUSTODY",
         "RETURNED_PENDING_INSPECTION",
         "CUSTOMER_OWNED_HELD",

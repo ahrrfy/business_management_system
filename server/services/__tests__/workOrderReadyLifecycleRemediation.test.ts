@@ -378,6 +378,7 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       consignmentNumber: "CN-1907",
       branchId: 1,
       partyId: 1,
+      invoiceId: 58,
       sourceType: "INVOICE",
       sourceId: 58,
       codAmount: "0.00",
@@ -507,7 +508,7 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       .where(eq(deliveryCustodyItems.consignmentId, cnId));
     expect(custodyAfterRelease).toHaveLength(1);
     expect(custodyAfterRelease[0]!.itemKind).toBe("WORK_ORDER_OUTPUT");
-    expect(custodyAfterRelease[0]!.reviewStatus).toBe("NOT_REQUIRED");
+    expect(custodyAfterRelease[0]!.reviewStatus).toBe("VERIFIED");
 
     // Reassigning fulfillment request to another party must keep item active and succeed
     const currentFr = (
@@ -668,7 +669,7 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
       customerId: 1,
       branchId: 1,
       amount: "15000.00",
-      accountAmount: "15000.00",
+      accountAmount: "0.00",
       unallocatedAmount: "0.00",
       initialUnallocatedAmount: "0.00",
       refundedAmount: "0.00",
@@ -735,7 +736,7 @@ describe("Work Order READY Lifecycle & Fulfillment Surgical Remediation", () => 
         and(
           eq(s.receipts.workOrderId, woId),
           eq(s.receipts.direction, "OUT"),
-          eq(s.receipts.referenceNumber, `DLV-FEE-WO-REFUND-${woId}`),
+          eq(s.receipts.referenceNumber, `DLV-FEE-WO-${woId}`),
         ),
       );
     expect(feeRefundReceipts).toHaveLength(1);

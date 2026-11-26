@@ -831,7 +831,14 @@ export async function reverseWorkOrderDeliveryInTx(
       fromParcelStatus: consignment.parcelStatus, toParcelStatus: "RETURNED",
       fromMoneyStatus: consignment.moneyStatus, toMoneyStatus: "CANCELLED",
       actorUserId: actor.userId,
-      payload: { invoiceId, workOrderId, reason, approvedControlRequestId: control.approvedControlRequestId },
+      payload: {
+        invoiceId,
+        workOrderId,
+        workOrderDisposition:
+          input.reopen === true ? "RETURN_TO_READY" : "CANCEL_FINAL",
+        reason,
+        approvedControlRequestId: control.approvedControlRequestId,
+      },
     });
   }
   await detachWorkOrderFromOpenFulfillmentRequestsTx(tx, {
