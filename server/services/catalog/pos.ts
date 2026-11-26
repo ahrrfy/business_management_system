@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { branchStock, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
-import { getDb, type Tx } from "../../db";
+import { getDb } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
 import { money, toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
@@ -16,7 +16,6 @@ import {
   snapshotToEngineRules,
 } from "../salesPromotionService";
 import type { PromotionRule } from "../../../shared/promotionEngine";
-import { withTx } from "../tx";
 import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility, warehouseVisibility } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
@@ -207,59 +206,60 @@ async function applyPromotions(
   );
   if (!eligible.length) return rows;
 
+  const db = getDb();
+  if (!db) return rows;
+
   const todayYmd = todayYmdBaghdad();
   const resolvedMap = new Map<number, { id: number; name: string; discountForUnit: string; effective: string }>();
 
-  await withTx(async (tx: Tx) => {
-    const missingCatIds = Array.from(
-      new Set(eligible.filter((r) => r.categoryId === undefined).map((r) => r.productId)),
-    );
-    const categoryByProduct = missingCatIds.length
-      ? await getProductCategoryIds(tx, missingCatIds)
-      : new Map<number, number | null>();
+  const missingCatIds = Array.from(
+    new Set(eligible.filter((r) => r.categoryId === undefined).map((r) => r.productId)),
+  );
+  const categoryByProduct = missingCatIds.length
+    ? await getProductCategoryIds(db, missingCatIds)
+    : new Map<number, number | null>();
 
-    const snapshot = eligible.length > 1
-      ? await loadPromotionRuleSnapshot(tx, {
-          branchId,
-          customerTier,
-          todayYmd,
-          includeStoreManaged: false,
-          evaluationChannel: "POS",
-          requiredApplicationMode: "AUTO",
-        })
-      : null;
-
-    for (const r of eligible) {
-      const price = money(r.price!);
-      const lineInput = {
+  const snapshot = eligible.length > 1
+    ? await loadPromotionRuleSnapshot(db, {
         branchId,
         customerTier,
-        productId: r.productId,
-        variantId: r.variantId,
-        productUnitId: r.productUnitId,
-        isBaseUnit: r.isBaseUnit,
-        isBundle: r.isBundle,
-        categoryId: r.categoryId !== undefined ? r.categoryId : (categoryByProduct.get(r.productId) ?? null),
-        unitPrice: price.toFixed(2),
-        lineAmount: price.toFixed(2),
-        quantity: 1,
-        hasContractPrice: false,
         todayYmd,
-      };
-      const res = snapshot
-        ? resolvePromotionFromSnapshot(snapshot, lineInput)
-        : await resolvePromotionForLine(tx, lineInput);
-      if (res) {
-        const effective = price.minus(money(res.discountForUnit));
-        resolvedMap.set(r.productUnitId, {
-          id: res.promotionId,
-          name: res.promotionName,
-          discountForUnit: res.discountForUnit,
-          effective: toDbMoney(effective.lt(0) ? new (money("0").constructor as any)(0) : effective),
-        });
-      }
+        includeStoreManaged: false,
+        evaluationChannel: "POS",
+        requiredApplicationMode: "AUTO",
+      })
+    : null;
+
+  for (const r of eligible) {
+    const price = money(r.price!);
+    const lineInput = {
+      branchId,
+      customerTier,
+      productId: r.productId,
+      variantId: r.variantId,
+      productUnitId: r.productUnitId,
+      isBaseUnit: r.isBaseUnit,
+      isBundle: r.isBundle,
+      categoryId: r.categoryId !== undefined ? r.categoryId : (categoryByProduct.get(r.productId) ?? null),
+      unitPrice: price.toFixed(2),
+      lineAmount: price.toFixed(2),
+      quantity: 1,
+      hasContractPrice: false,
+      todayYmd,
+    };
+    const res = snapshot
+      ? resolvePromotionFromSnapshot(snapshot, lineInput)
+      : await resolvePromotionForLine(db, lineInput);
+    if (res) {
+      const effective = price.minus(money(res.discountForUnit));
+      resolvedMap.set(r.productUnitId, {
+        id: res.promotionId,
+        name: res.promotionName,
+        discountForUnit: res.discountForUnit,
+        effective: toDbMoney(effective.lt(0) ? new (money("0").constructor as any)(0) : effective),
+      });
     }
-  });
+  }
 
   return rows.map((r) => {
     const res = resolvedMap.get(r.productUnitId);
@@ -279,17 +279,17 @@ export async function listActivePosPromotions(
   branchId: number,
   customerTier: PriceTier,
 ): Promise<PromotionRule[]> {
-  return withTx(async (tx: Tx) => {
-    const snapshot = await loadPromotionRuleSnapshot(tx, {
-      branchId,
-      customerTier,
-      todayYmd: todayYmdBaghdad(),
-      includeStoreManaged: false,
-      evaluationChannel: "POS",
-      requiredApplicationMode: "AUTO",
-    });
-    return snapshotToEngineRules(snapshot);
+  const db = getDb();
+  if (!db) return [];
+  const snapshot = await loadPromotionRuleSnapshot(db, {
+    branchId,
+    customerTier,
+    todayYmd: todayYmdBaghdad(),
+    includeStoreManaged: false,
+    evaluationChannel: "POS",
+    requiredApplicationMode: "AUTO",
   });
+  return snapshotToEngineRules(snapshot);
 }
 
 /**

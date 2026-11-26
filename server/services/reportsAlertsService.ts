@@ -99,9 +99,31 @@ export async function getManagementAlerts(opts: {
   return managementAlertsCache.get(key, () => computeManagementAlerts(opts));
 }
 
+type AwaitedTaskTuple<T extends readonly (() => Promise<unknown>)[]> = {
+  -readonly [K in keyof T]: Awaited<ReturnType<T[K]>>;
+};
+
+async function runTasksWithConcurrencyLimit<T extends readonly (() => Promise<unknown>)[]>(
+  tasks: T,
+  limit: number,
+): Promise<AwaitedTaskTuple<T>> {
+  const results: unknown[] = new Array(tasks.length);
+  let nextIdx = 0;
+  const workerCount = Math.max(1, Math.min(limit, tasks.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIdx < tasks.length) {
+        const currentIdx = nextIdx++;
+        results[currentIdx] = await tasks[currentIdx]();
+      }
+    }),
+  );
+  return results as AwaitedTaskTuple<T>;
+}
+
 /**
  * يبني قائمة تنبيهات الإدارة المعزولة بالفرع. `isAdmin` يُفعّل تنبيه انحراف reconcile (admin فقط).
- * كل مصدر مستقلّ ⇒ يُشغَّل بالتوازي. أي مصدر يفشل لا يُسقط الكوكبِت (يُتجاوز بصمت).
+ * كل مصدر مستقلّ ⇒ يُشغَّل بالتوازي المحكوم (سقف ٤ استعلامات متزامنة) لحماية بركة الاتصالات. أي مصدر يفشل لا يُسقط الكوكبِت.
  */
 async function computeManagementAlerts(opts: {
   branchId?: number;
@@ -118,9 +140,9 @@ async function computeManagementAlerts(opts: {
   const alerts: AlertItem[] = [];
   const sourceErrors: string[] = [];
   let sourceFailureCount = 0;
-  const safe = async <T>(source: string, p: Promise<T>, fallback: T): Promise<T> => {
+  const safe = <T>(source: string, run: () => Promise<T>, fallback: T): (() => Promise<T>) => async () => {
     try {
-      return await p;
+      return await run();
     } catch {
       sourceErrors.push(source);
       sourceFailureCount += 1;
@@ -140,7 +162,7 @@ async function computeManagementAlerts(opts: {
   // ── (أ) أعمار الذمم المدينة: شرائح 31-60 / 61-90 / +90 (عدد عملاء + مبلغ لكل شريحة) ──
   const arP = safe(
     "receivablesAging",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN bucket = 'd31_60' THEN amt ELSE 0 END), 0) AS CHAR) AS a31,
         SUM(CASE WHEN bucket = 'd31_60' THEN 1 ELSE 0 END) AS c31,
@@ -171,15 +193,15 @@ async function computeManagementAlerts(opts: {
   );
 
   // ── (ب) المخزون: نفد / منخفض ──
-  const stockP = safe("stockStatus", getStockStatus({ branchId, onlyAlerts: true, limit: 1 }), { rows: [], totals: { outCount: 0, lowCount: 0 } });
+  const stockP = safe("stockStatus", () => getStockStatus({ branchId, onlyAlerts: true, limit: 1 }), { rows: [], totals: { outCount: 0, lowCount: 0 } });
 
   // ── (ج) التعرّض الائتماني: المتجاوزون للحدّ ──
-  const creditP = safe("creditExposure", getCreditExposure({ branchId }), null);
+  const creditP = safe("creditExposure", () => getCreditExposure({ branchId }), null);
 
   // ── (د) فروقات الصندوق: ورديات مُغلقة (آخر ٣٠ يوماً) بفرق غير صفري ──
   const shiftP = safe(
     "shiftVariance",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(ABS(s.variance)), 0) AS CHAR) AS total
       FROM shifts s
       WHERE s.shiftStatus = 'CLOSED'
@@ -210,7 +232,7 @@ async function computeManagementAlerts(opts: {
             )`;
   const woP = safe(
     "workOrders",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT
         SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS','READY')
                   AND wo.dueDate IS NOT NULL AND wo.dueDate < UTC_DATE()
@@ -237,7 +259,7 @@ async function computeManagementAlerts(opts: {
   // (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند صفر — سداد الكاونتر ليس بيد الجهة).
   const deliveryStuckP = safe(
     "deliveryStuck",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT COUNT(*) AS cnt,
         CAST(COALESCE(SUM(GREATEST(
           CAST(dc.codAmount AS DECIMAL(15,2))
@@ -255,7 +277,7 @@ async function computeManagementAlerts(opts: {
   // نفسها ما زالت خارج المخزون — نسيانُها خسارةُ بضاعةٍ صامتة لا خسارةَ نقد.
   const deliveryReturnPendingP = safe(
     "deliveryReturnPending",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT COUNT(*) AS cnt
       FROM deliveryConsignments dc
       WHERE dc.consignmentStatus = 'DISPATCHED'
@@ -272,7 +294,7 @@ async function computeManagementAlerts(opts: {
   const branchLed = branchId ? sql`AND l.branchId = ${branchId}` : sql``;
   const deliveryFeesDueP = safe(
     "deliveryFeesDue",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(t.due), 0) AS CHAR) AS total
       FROM (
         SELECT l.partyId,
@@ -294,7 +316,7 @@ async function computeManagementAlerts(opts: {
   // ── (و) ذمم الموردين الدائنة (لنا عليهم نقد مستحقّ) — رصيد موجب ──
   const apP = safe(
     "supplierPayables",
-    getAPAging({ branchId, limit: 10_000 }).then((rows) => {
+    () => getAPAging({ branchId, limit: 10_000 }).then((rows) => {
       // Preserve the company-wide decision's canonical supplier balance while
       // using branch-attributable PO ledger balances for a scoped manager.
       // Supplier.currentBalance has no branch dimension and must never be
@@ -313,7 +335,7 @@ async function computeManagementAlerts(opts: {
   const branchSale = branchId ? sql`AND i.branchId = ${branchId}` : sql``;
   const deadP = safe(
     "deadStock",
-    db.execute(sql`
+    () => db.execute(sql`
       SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(t.val), 0) AS CHAR) AS total
       FROM (
         SELECT v.id, COALESCE(stk.qty, 0) * v.costPrice AS val
@@ -341,27 +363,30 @@ async function computeManagementAlerts(opts: {
     // نافذة آخر ٧ أيام بحدود UTC حتميّة (تدقيق ١٧/٧، #٧) — كان البناء بمكوّناتٍ محلية يَنزاح على غير TZ=UTC.
     const todayYmd = todayUtcDate();
     const weekAgoYmd = new Date(utcTodayStart().getTime() - 6 * 86_400_000).toISOString().slice(0, 10);
-    return safe("anomalyWatch", getAnomalyWatch({ from: weekAgoYmd, to: todayYmd, branchId }), null);
+    return safe("anomalyWatch", () => getAnomalyWatch({ from: weekAgoYmd, to: todayYmd, branchId }), null);
   })();
 
   // ── (ح) انحراف أرصدة (reconcile) — admin فقط ──
   const reconP = opts.isAdmin
     ? safe(
         "reconciliation",
-        Promise.all([
-          reconcileCustomerBalances(),
-          reconcileSupplierBalances(),
-          reconcileInventory(),
-          reconcileLedgerProfit(),
-          reconcileUnbilledGoodsReceipts(),
-        ]),
+        async () => {
+          const c = await reconcileCustomerBalances();
+          const s = await reconcileSupplierBalances();
+          const i = await reconcileInventory();
+          const l = await reconcileLedgerProfit();
+          const g = await reconcileUnbilledGoodsReceipts();
+          return [c, s, i, l, g] as const;
+        },
         null,
       )
-    : Promise.resolve(null);
+    : async () => null;
 
-  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes, anomalyRes, stuckRes, returnPendingRes, feesDueRes] = await Promise.all([
-    arP, stockP, creditP, shiftP, woP, apP, deadP, reconP, anomalyP, deliveryStuckP, deliveryReturnPendingP, deliveryFeesDueP,
-  ]);
+  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes, anomalyRes, stuckRes, returnPendingRes, feesDueRes] =
+    await runTasksWithConcurrencyLimit(
+      [arP, stockP, creditP, shiftP, woP, apP, deadP, reconP, anomalyP, deliveryStuckP, deliveryReturnPendingP, deliveryFeesDueP] as const,
+      4,
+    );
 
   // (أ) أعمار الذمم — ثلاث شرائح، الأقدم أخطر.
   const ar = arRes ? rowsOf(arRes)[0] : null;

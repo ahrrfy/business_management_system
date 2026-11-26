@@ -1405,6 +1405,59 @@ export async function isPreflightIntentCleared(clientRequestId: string): Promise
   }
 }
 
+async function purgeExpiredPreflightTombstoneFromStores(clientRequestId: string): Promise<void> {
+  if (!clientRequestId) return;
+  try {
+    await withCrossTabPreflightLock(clientRequestId, async () => {
+      const [lsRec, idbRec] = await Promise.all([
+        readSinglePreflightFromLocalStorage(clientRequestId),
+        readSinglePreflightFromIdb(clientRequestId),
+      ]);
+      const merged = mergePreflightRecords(idbRec, lsRec);
+      if (!merged || merged.status !== "CLEARED") return;
+
+      const lsKey = `${PREFLIGHT_INTENT_LS_KEY_PREFIX}${clientRequestId}`;
+      const idbKey = `${PREFLIGHT_INTENT_IDB_KEY_PREFIX}${clientRequestId}`;
+
+      const removeLs = (): boolean => {
+        if (typeof localStorage === "undefined") return true;
+        try {
+          localStorage.removeItem(lsKey);
+          return localStorage.getItem(lsKey) === null;
+        } catch {
+          return false;
+        }
+      };
+
+      const removeIdb = async (): Promise<boolean> => {
+        if (!offlineDb.meta || typeof offlineDb.meta.delete !== "function") return false;
+        try {
+          await offlineDb.meta.delete(idbKey);
+          if (typeof offlineDb.meta.get === "function") {
+            const check = await offlineDb.meta.get(idbKey);
+            return check === undefined;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      // Always purge any stale non-CLEARED replica first and retain the surviving CLEARED
+      // tombstone whenever cleanup of the counterpart store fails (prevents stale resurrection).
+      if (lsRec && lsRec.status !== "CLEARED" && idbRec?.status === "CLEARED") {
+        if (!removeLs()) return;
+        await removeIdb();
+      } else {
+        if (!(await removeIdb())) return;
+        removeLs();
+      }
+    });
+  } catch {
+    /* retain surviving tombstone if cross-tab lock or store check fails */
+  }
+}
+
 export async function listRecoverablePreflightSaleIntents(opts?: {
   branchId?: number | null;
   viewerUserId?: number | null;
@@ -1420,6 +1473,12 @@ export async function listRecoverablePreflightSaleIntents(opts?: {
   for (const id of ids) {
     const rec = await readMergedSinglePreflightIntent(id);
     if (!rec || rec.status === "CLEARED") {
+      if (rec?.status === "CLEARED") {
+        const clearedTs = Number(rec.clearedAtMs ?? rec.updatedAtMs ?? 0);
+        if (clearedTs > 0 && nowMs - clearedTs > PREFLIGHT_TOMBSTONE_RETENTION_MS) {
+          await purgeExpiredPreflightTombstoneFromStores(id);
+        }
+      }
       continue;
     }
     try {

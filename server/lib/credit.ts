@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { eq } from "drizzle-orm";
 import { customers } from "../../drizzle/schema";
 import { money, type DecimalInput } from "../services/money";
@@ -43,6 +44,8 @@ export async function assertCreditLimit(
     .select({
       creditLimit: customers.creditLimit,
       currentBalance: customers.currentBalance,
+      isActive: customers.isActive,
+      deletedAt: customers.deletedAt,
     })
     .from(customers)
     .where(eq(customers.id, customerId))
@@ -51,6 +54,17 @@ export async function assertCreditLimit(
 
   if (!rows[0]) {
     throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+  }
+
+  if (rows[0].deletedAt != null || rows[0].isActive === false) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر البيع الآجل للعميل",
+        why: "حساب العميل معطّل أو محذوف ولا يُسمح بفتح ذمة ائتمانية جديدة عليه",
+        doThis: "فعّل حساب العميل أولاً من ملف العملاء أو أتمم العملية نقداً لعميل فعّال",
+      }),
+    });
   }
 
   const rawLimit = rows[0].creditLimit;

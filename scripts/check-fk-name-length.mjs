@@ -22,16 +22,25 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
-const SCHEMA_PATH = path.join(REPO_ROOT, "drizzle", "schema.ts");
+const SCHEMA_REL_PATHS = [
+  "drizzle/schema.ts",
+  "drizzle/fulfillmentSchema.ts",
+  "drizzle/digitalSettlementSchema.ts",
+  "drizzle/fulfillmentRightsSchema.ts",
+];
 const MYSQL_ID_LIMIT = 64;
 
-const src = readFileSync(SCHEMA_PATH, "utf8");
+const schemaSources = SCHEMA_REL_PATHS.map((relPath) => ({
+  relPath,
+  src: readFileSync(path.join(REPO_ROOT, relPath), "utf8"),
+}));
 
-// خريطة: اسم متغيّر JS للجدول → اسم الجدول النصيّ.
-// نلتقط: `export const VAR = mysqlTable("NAME", ...` — النمط الأشيع في هذا المستودع.
+// خريطة: اسم متغيّر JS للجدول → اسم الجدول النصيّ عبر ملفات المخطط الأربعة.
 const varToTable = new Map();
-for (const m of src.matchAll(/export\s+const\s+(\w+)\s*=\s*mysqlTable\s*\(\s*["']([^"']+)["']/g)) {
-  varToTable.set(m[1], m[2]);
+for (const { src } of schemaSources) {
+  for (const m of src.matchAll(/export\s+const\s+(\w+)\s*=\s*mysqlTable\s*\(\s*["']([^"']+)["']/g)) {
+    varToTable.set(m[1], m[2]);
+  }
 }
 
 // المسح: لكلّ تعريف جدول، نلتقط كتلته وننقسم إلى «شرائحِ أعمدة» — بداية كلّ شريحة
@@ -73,61 +82,64 @@ const REF_RE = /\.references\s*\(\s*\(\s*\)\s*=>\s*(\w+)\s*\.\s*(\w+)/;
 
 // نلتقط اسم الجدول + اسم المتغيّر بمطابقةٍ واحدة تنتهي **قبل** قوس mysqlTable المفتوح،
 // فيجد `extractTableBlock` القوسَ الصحيحَ ذاتَه (لا قوس عمودٍ داخليّ).
-for (const match of src.matchAll(/export\s+const\s+(\w+)\s*=\s*mysqlTable(?=\s*\()/g)) {
-  const tableVar = match[1];
-  // نتحقّق من الاسم النصيّ للجدول داخل الاستدعاء
-  const afterMysqlTable = src.substring(match.index + match[0].length);
-  const nameMatch = afterMysqlTable.match(/^\s*\(\s*["']([^"']+)["']/);
-  if (!nameMatch) continue;
-  const tableName = nameMatch[1];
-  const blockInfo = extractTableBlock(src, match.index + match[0].length);
-  if (!blockInfo) continue;
+for (const { relPath, src } of schemaSources) {
+  for (const match of src.matchAll(/export\s+const\s+(\w+)\s*=\s*mysqlTable(?=\s*\()/g)) {
+    const tableVar = match[1];
+    // نتحقّق من الاسم النصيّ للجدول داخل الاستدعاء
+    const afterMysqlTable = src.substring(match.index + match[0].length);
+    const nameMatch = afterMysqlTable.match(/^\s*\(\s*["']([^"']+)["']/);
+    if (!nameMatch) continue;
+    const tableName = nameMatch[1];
+    const blockInfo = extractTableBlock(src, match.index + match[0].length);
+    if (!blockInfo) continue;
 
-  // نجزّئ الكتلة إلى «شرائح أعمدة»: كلٌّ يبدأ بـ`\n  identifier:` (اسم عمود JS في المستوى الأوّل).
-  // نستعمل regex بسيطاً — دقيقٌ بما يكفي لهذا المستودع (تنسيقٌ موحَّد ٢-مسافات).
-  const colStarts = [];
-  const colRe = /\n\s{2,4}(\w+)\s*:/g;
-  let m;
-  while ((m = colRe.exec(blockInfo.block)) !== null) {
-    colStarts.push({ index: m.index, colVar: m[1] });
-  }
+    // نجزّئ الكتلة إلى «شرائح أعمدة»: كلٌّ يبدأ بـ`\n  identifier:` (اسم عمود JS في المستوى الأوّل).
+    // نستعمل regex بسيطاً — دقيقٌ بما يكفي لهذا المستودع (تنسيقٌ موحَّد ٢-مسافات).
+    const colStarts = [];
+    const colRe = /\n\s{2,4}(\w+)\s*:/g;
+    let m;
+    while ((m = colRe.exec(blockInfo.block)) !== null) {
+      colStarts.push({ index: m.index, colVar: m[1] });
+    }
 
-  for (let i = 0; i < colStarts.length; i++) {
-    const start = colStarts[i].index;
-    const end = i + 1 < colStarts.length ? colStarts[i + 1].index : blockInfo.block.length;
-    const chunk = blockInfo.block.substring(start, end);
+    for (let i = 0; i < colStarts.length; i++) {
+      const start = colStarts[i].index;
+      const end = i + 1 < colStarts.length ? colStarts[i + 1].index : blockInfo.block.length;
+      const chunk = blockInfo.block.substring(start, end);
 
-    const refM = chunk.match(REF_RE);
-    if (!refM) continue;
+      const refM = chunk.match(REF_RE);
+      if (!refM) continue;
 
-    const typeM = chunk.match(TYPE_RE);
-    if (!typeM) continue;
+      const typeM = chunk.match(TYPE_RE);
+      if (!typeM) continue;
 
-    const colName = typeM[1];
-    const refVar = refM[1];
-    const refJsCol = refM[2];
-    const refTableName = varToTable.get(refVar);
-    if (!refTableName) continue;
-    // اسم العمود المرجَّع = اسم النصّ داخل `type("colName")` في الجدول الآخر. عادةً = JS col name.
-    const refColName = refJsCol;
+      const colName = typeM[1];
+      const refVar = refM[1];
+      const refJsCol = refM[2];
+      const refTableName = varToTable.get(refVar);
+      if (!refTableName) continue;
+      // اسم العمود المرجَّع = اسم النصّ داخل `type("colName")` في الجدول الآخر. عادةً = JS col name.
+      const refColName = refJsCol;
 
-    const fkName = `${tableName}_${colName}_${refTableName}_${refColName}_fk`;
-    if (fkName.length > MYSQL_ID_LIMIT) {
-      // احسب رقم السطر بحساب `\n` قبل موضع الشريحة داخل الملفّ.
-      const absoluteOffset = blockInfo.block.indexOf(chunk) >= 0
-        ? (match.index + match[0].length + start)
-        : match.index;
-      const lineNo = src.substring(0, absoluteOffset).split("\n").length;
-      violations.push({
-        table: tableName,
-        column: colName,
-        refTable: refTableName,
-        refCol: refColName,
-        fkName,
-        length: fkName.length,
-        line: lineNo,
-        tableVar,
-      });
+      const fkName = `${tableName}_${colName}_${refTableName}_${refColName}_fk`;
+      if (fkName.length > MYSQL_ID_LIMIT) {
+        // احسب رقم السطر بحساب `\n` قبل موضع الشريحة داخل الملفّ.
+        const absoluteOffset = blockInfo.block.indexOf(chunk) >= 0
+          ? (match.index + match[0].length + start)
+          : match.index;
+        const lineNo = src.substring(0, absoluteOffset).split("\n").length;
+        violations.push({
+          relPath,
+          table: tableName,
+          column: colName,
+          refTable: refTableName,
+          refCol: refColName,
+          fkName,
+          length: fkName.length,
+          line: lineNo,
+          tableVar,
+        });
+      }
     }
   }
 }
@@ -139,7 +151,7 @@ if (violations.length === 0) {
 
 console.error("⛔ حارس check:fk-name — أسماء FK تتجاوز ٦٤ حرفاً (MySQL 8.4 يرفضها):\n");
 for (const v of violations) {
-  console.error(`  drizzle/schema.ts:${v.line}`);
+  console.error(`  ${v.relPath}:${v.line}`);
   console.error(`    الجدول: ${v.table}`);
   console.error(`    العمود: ${v.column} → ${v.refTable}.${v.refCol}`);
   console.error(`    اسم FK المُتولَّد: ${v.fkName}`);

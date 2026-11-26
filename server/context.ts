@@ -66,6 +66,59 @@ export type TrpcContext = {
   nativeClientId: NativeClientId | null;
 };
 
+const cachedBasePermissionsByRole = new Map<RoleKey, PermissionMap>();
+const cachedBuiltInInheritedPolicyByRole = new Map<RoleKey, OperationPolicy>();
+const cachedDefaultBuiltInResolvedPolicyByRole = new Map<RoleKey, OperationPolicy>();
+let cachedAdminOwnerLegacyPolicy: OperationPolicy | null = null;
+
+function getCachedBasePermissions(role: RoleKey): PermissionMap {
+  let cached = cachedBasePermissionsByRole.get(role);
+  if (!cached) {
+    cached = resolvePermissions(role, null);
+    cachedBasePermissionsByRole.set(role, cached);
+  }
+  return cached;
+}
+
+function getCachedBuiltInInheritedPolicy(role: RoleKey): OperationPolicy {
+  let cached = cachedBuiltInInheritedPolicyByRole.get(role);
+  if (!cached) {
+    const baseModules = getCachedBasePermissions(role);
+    cached = hasRoleOperationPreset(role)
+      ? buildDefaultRoleOperationPolicy(role, role, baseModules)
+      : buildOperationPolicyFromLegacy(role, baseModules);
+    cachedBuiltInInheritedPolicyByRole.set(role, cached);
+  }
+  return cached;
+}
+
+function getCachedDefaultBuiltInResolvedPolicy(role: RoleKey): OperationPolicy {
+  let cached = cachedDefaultBuiltInResolvedPolicyByRole.get(role);
+  if (!cached) {
+    const baseModules = getCachedBasePermissions(role);
+    const inherited = getCachedBuiltInInheritedPolicy(role);
+    cached = hasRoleOperationPreset(role)
+      ? resolveOperationPolicy(role, baseModules, inherited, null, null, {
+          permissionsOverride: null,
+          atomicPermissions: null,
+          inheritedModules: baseModules,
+        })
+      : inherited;
+    cachedDefaultBuiltInResolvedPolicyByRole.set(role, cached);
+  }
+  return cached;
+}
+
+function getCachedAdminOwnerPolicy(): OperationPolicy {
+  if (!cachedAdminOwnerLegacyPolicy) {
+    cachedAdminOwnerLegacyPolicy = buildOperationPolicyFromLegacy(
+      "admin",
+      getCachedBasePermissions("admin"),
+    );
+  }
+  return cachedAdminOwnerLegacyPolicy;
+}
+
 /** Normalize the one persisted company owner to the effective admin contract. */
 export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   if (!user.isOwner) return user;
@@ -89,10 +142,7 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   user.operationPolicyEnabled = false;
   user.roleOperationPolicy = null;
   user.courierShellOnly = false;
-  user.resolvedOperationPolicy = buildOperationPolicyFromLegacy(
-    "admin",
-    resolvePermissions("admin", null),
-  );
+  user.resolvedOperationPolicy = getCachedAdminOwnerPolicy();
   user.inheritedOperationPolicy = user.resolvedOperationPolicy;
   user.inheritedOperationPolicyRevision = 0;
   return user;
@@ -154,42 +204,36 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         ? null
         : storedOperationPolicySchema.parse(user.operationPolicy);
     user.courierShellOnly = baseRole === "courier" && individualPolicy == null;
-    const inherited = hasRoleOperationPreset(baseRole)
-      ? buildDefaultRoleOperationPolicy(
-          baseRole,
-          baseRole,
-          resolvePermissions(baseRole, null),
-        )
-      : buildOperationPolicyFromLegacy(
-          baseRole,
-          resolvePermissions(baseRole, null),
-        );
-    const legacyEffective = buildOperationPolicyFromLegacy(
-      baseRole,
-      modules,
-      user.atomicPermissions as AtomicPermissionsMap | null,
-      user.permissionsOverride as PermissionMap | null,
-    );
-    user.operationPolicyEnabled =
-      individualPolicy != null || hasRoleOperationPreset(baseRole);
-    user.roleOperationPolicy = hasRoleOperationPreset(baseRole)
-      ? inherited
-      : null;
+    const hasPreset = hasRoleOperationPreset(baseRole);
+    const inherited = getCachedBuiltInInheritedPolicy(baseRole);
+    user.operationPolicyEnabled = individualPolicy != null || hasPreset;
+    user.roleOperationPolicy = hasPreset ? inherited : null;
     user.inheritedOperationPolicy = inherited;
     user.inheritedOperationPolicyRevision = 0;
-    user.resolvedOperationPolicy = user.operationPolicyEnabled
-      ? resolveOperationPolicy(
-          baseRole,
-          modules,
-          inherited,
-          individualPolicy,
-          user.permissionsOverride as PermissionMap | null,
-          {
-            ...legacyIndividual,
-            inheritedModules: resolvePermissions(baseRole, null),
-          },
-        )
-      : legacyEffective;
+    const hasNoIndividualPermissionDiffs =
+      individualPolicy == null &&
+      user.permissionsOverride == null &&
+      user.atomicPermissions == null;
+    user.resolvedOperationPolicy = hasNoIndividualPermissionDiffs
+      ? getCachedDefaultBuiltInResolvedPolicy(baseRole)
+      : user.operationPolicyEnabled
+        ? resolveOperationPolicy(
+            baseRole,
+            modules,
+            inherited,
+            individualPolicy,
+            user.permissionsOverride as PermissionMap | null,
+            {
+              ...legacyIndividual,
+              inheritedModules: getCachedBasePermissions(baseRole),
+            },
+          )
+        : buildOperationPolicyFromLegacy(
+            baseRole,
+            modules,
+            user.atomicPermissions as AtomicPermissionsMap | null,
+            user.permissionsOverride as PermissionMap | null,
+          );
     // القالب التشغيلي الافتراضي يفعّل التفويض الدقيق، لكنه لا يعيد كتابة
     // إعدادات الوحدات المحفوظة لحساب قديم. لا نشتقّ خريطة توافق جديدة إلا
     // عندما حفظت الإدارة سياسة فردية صريحة للمستخدم نفسه.

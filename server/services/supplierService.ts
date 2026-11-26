@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import { isDupEntry } from "@shared/errorMap.ar";
 import {
   accountingEntries,
@@ -10,10 +11,14 @@ import {
   conversations,
   exchangeTransactions,
   fixedAssets,
+  goodsReceipts,
   productVariants,
   products,
   purchaseOrderItems,
   purchaseOrders,
+  purchaseReturns,
+  supplierInvoices,
+  supplierPayments,
   suppliers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -330,6 +335,54 @@ export async function deleteSupplier(supplierId: number, _actor: Actor) {
     // حارس النشاط: أيّ صفٍّ في هذه الجداول = حركةٌ حقيقية ⇒ لا حذف (عطِّل بدلاً منه).
     const [po] = await tx.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.supplierId, supplierId)).limit(1);
     if (po) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له أوامر شراء — عطِّله بدلاً من الحذف" });
+
+    const [si] = await tx.select({ id: supplierInvoices.id }).from(supplierInvoices).where(eq(supplierInvoices.supplierId, supplierId)).limit(1);
+    if (si) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حذف المورّد",
+          why: "للمورّد فواتير شراء مسجّلة في النظام",
+          doThis: "عطّل حساب المورّد بدلاً من حذفه للحفاظ على السجل المحاسبي",
+        }),
+      });
+    }
+
+    const [gr] = await tx.select({ id: goodsReceipts.id }).from(goodsReceipts).where(eq(goodsReceipts.supplierId, supplierId)).limit(1);
+    if (gr) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حذف المورّد",
+          why: "للمورّد سندات استلام بضاعة مسجّلة في النظام",
+          doThis: "عطّل حساب المورّد بدلاً من حذفه للحفاظ على سجل الاستلام",
+        }),
+      });
+    }
+
+    const [pr] = await tx.select({ id: purchaseReturns.id }).from(purchaseReturns).where(eq(purchaseReturns.supplierId, supplierId)).limit(1);
+    if (pr) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حذف المورّد",
+          why: "للمورّد مرتجعات شراء مسجّلة في النظام",
+          doThis: "عطّل حساب المورّد بدلاً من حذفه للحفاظ على سجل المرتجعات",
+        }),
+      });
+    }
+
+    const [sp] = await tx.select({ id: supplierPayments.id }).from(supplierPayments).where(eq(supplierPayments.supplierId, supplierId)).limit(1);
+    if (sp) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حذف المورّد",
+          why: "للمورّد سندات سداد مسجّلة في النظام",
+          doThis: "عطّل حساب المورّد بدلاً من حذفه للحفاظ على سجل المدفوعات",
+        }),
+      });
+    }
 
     const [ae] = await tx
       .select({ id: accountingEntries.id })
