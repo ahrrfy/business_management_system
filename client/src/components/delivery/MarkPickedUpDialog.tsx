@@ -10,6 +10,10 @@ import { cn } from "@/lib/utils";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import { notify } from "@/lib/notify";
+import { trpc } from "@/lib/trpc";
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -21,6 +25,7 @@ type Method = (typeof METHODS)[number]["v"];
 
 export interface PickupOrder {
   id: number;
+  branchId?: number | null;
   orderNumber: string;
   title: string;
   salePrice: string;
@@ -31,6 +36,8 @@ export interface PickupPayment {
   amount: string;
   method: Method;
   reference?: string;
+  externalPaymentAttemptId?: number;
+  externalPaymentDeviceId?: string;
 }
 
 export interface PickupDeliveryExtra {
@@ -57,6 +64,15 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
   const [showManagerApproval, setShowManagerApproval] = useState(false);
   const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
   const [addToCustomerDebt, setAddToCustomerDebt] = useState(false);
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
   useEffect(() => {
     if (order) {
@@ -69,6 +85,7 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
       setShowManagerApproval(false);
       setManagerApproval(null);
       setAddToCustomerDebt(false);
+      setExternalAttempt(null);
     }
   }, [order?.id]);
 
@@ -79,6 +96,51 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
   const confirmed = confirmText.trim() === "تسليم";
   const unpaidRemainder = positiveDiff(remainingDue.toFixed(2), payAmountD.toFixed(2));
   const hasUnpaidRemainder = unpaidRemainder.gt(0);
+  const normalizedAmount = payNow ? payAmountD.toFixed(2) : "0.00";
+  const effectiveBranchId = order.branchId ? Number(order.branchId) : null;
+  const externalFingerprint = effectiveBranchId
+    ? `SALES_COLLECTION|${effectiveBranchId}|${payMethod}|${normalizedAmount}|${payReference.trim()}`
+    : "";
+  const externalConfirmed =
+    payMethod === "CASH" ||
+    !effectiveBranchId ||
+    (externalAttempt?.confirmed === true &&
+      Boolean(externalFingerprint) &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  const confirmExternalPayment = async () => {
+    const normalizedRef = payReference.trim();
+    if (!normalizedRef || !payNow || payMethod === "CASH" || payMethod === "CHECK" || !effectiveBranchId) return;
+    try {
+      const prior = externalAttempt?.fingerprint === externalFingerprint ? externalAttempt : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: effectiveBranchId,
+          channel: "SALES_COLLECTION",
+          method: payMethod,
+          amount: normalizedAmount,
+          reference: normalizedRef,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false });
+      }
+      await confirmExternal.mutateAsync({
+        branchId: effectiveBranchId,
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${normalizedRef} وأصبح جاهزاً للاستهلاك.`);
+    } catch (err) {
+      notify.err(err, "تعذّر تأكيد الدفع الخارجي");
+    }
+  };
 
   const submit = () => {
     if (!confirmed) return;
@@ -90,13 +152,29 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
       setError("مرجع العملية مطلوب لدفعة غير نقدية.");
       return;
     }
+    if (payNow && payMethod !== "CASH" && !externalConfirmed) {
+      setError("أكّد الدفع الخارجي أولاً قبل التسليم.");
+      return;
+    }
     if (hasUnpaidRemainder && (!addToCustomerDebt || !managerApproval)) {
       setError(`لا يمكن تسليم الطلب بمتبقٍ غير مستحصل (${fmt(unpaidRemainder.toFixed(2))} د.ع) دون اعتماد المسؤول لإضافته إلى ذمة العميل.`);
       return;
     }
     setError("");
     onConfirm(
-      payNow ? { amount: payAmountD.toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } : undefined,
+      payNow
+        ? {
+            amount: payAmountD.toFixed(2),
+            method: payMethod,
+            reference: payMethod !== "CASH" ? payReference.trim() : undefined,
+            ...(payMethod !== "CASH" && externalAttempt?.attemptId
+              ? {
+                  externalPaymentAttemptId: externalAttempt.attemptId,
+                  externalPaymentDeviceId: externalAttempt.deviceId,
+                }
+              : {}),
+          }
+        : undefined,
       { addToCustomerDebt, managerApproval: managerApproval ?? undefined },
     );
   };
@@ -114,16 +192,36 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
         <div className="mb-3 grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label>مبلغ الدفعة الآن</Label>
-            <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="المبلغ المقبوض" ariaLabel="مبلغ الدفعة" className="h-11" />
+            <MoneyInput value={payAmount} onChange={(v) => { setPayAmount(v); setExternalAttempt(null); }} placeholder="المبلغ المقبوض" ariaLabel="مبلغ الدفعة" className="h-11" />
           </div>
           <div className="space-y-1">
             <Label>طريقة الدفع</Label>
-            <AppSelect value={payMethod} onValueChange={(v) => setPayMethod(v as Method)} className="h-11">
+            <AppSelect value={payMethod} onValueChange={(v) => { setPayMethod(v as Method); setPayReference(""); setExternalAttempt(null); }} className="h-11">
               {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
             </AppSelect>
           </div>
         </div>
-        {payMethod !== "CASH" && (
+        {payMethod !== "CASH" && payMethod !== "CHECK" && effectiveBranchId ? (
+          <div className="mb-3">
+            <PaymentReferenceField
+              value={payReference}
+              onChange={(v) => { setPayReference(v); setExternalAttempt(null); }}
+              method={payMethod}
+              confirmed={externalConfirmed}
+              confirming={initiateExternal.isPending || confirmExternal.isPending}
+              onConfirm={() => void confirmExternalPayment()}
+              inputId="pickup-pay-ref"
+              colors={{
+                border: "var(--border)",
+                muted: "var(--muted)",
+                mutedFg: "var(--muted-foreground)",
+                fg: "var(--foreground)",
+                amber: "var(--sem-warn)",
+                success: "var(--sem-pos)",
+              }}
+            />
+          </div>
+        ) : payMethod !== "CASH" ? (
           <div className="mb-3 space-y-1">
             <Label htmlFor="pickup-pay-ref">مرجع العملية {payNow && <span className="text-destructive">*</span>}</Label>
             <Input
@@ -135,7 +233,7 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
               className={cn(payReference.trim() === "" && payNow && "border-[var(--sem-warn)]")}
             />
           </div>
-        )}
+        ) : null}
 
         {hasUnpaidRemainder && (
           <div className="mb-3 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-xs space-y-2">

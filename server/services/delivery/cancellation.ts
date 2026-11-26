@@ -66,7 +66,11 @@ export async function cancelDeliveryAssignmentInTx(
   tx: Tx,
   input: CancelDeliveryAssignmentInput,
   actor: DeliveryTxActor,
-  options: { assertAuthority?: boolean; shipmentMember?: boolean } = {},
+  options: {
+    assertAuthority?: boolean;
+    shipmentMember?: boolean;
+    preserveFulfillmentItems?: boolean;
+  } = {},
 ) {
   const reason = input.reason.trim();
     if (!reason || reason.length > 500)
@@ -268,6 +272,12 @@ export async function cancelDeliveryAssignmentInTx(
         settledAt: cancelledAt,
       })
       .where(eq(deliveryConsignments.id, Number(cn.id)));
+    if (!options.preserveFulfillmentItems) {
+      const { deactivateReleasedFulfillmentItemForConsignmentTx } = await import(
+        "../fulfillment/itemLifecycle"
+      );
+      await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
+    }
 
       if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
         // حارس القاعدة trg_online_orders_expired_activation_bu يمنع الانتقال إلى PROCESSING

@@ -56,6 +56,7 @@ import { heldCustomerParcelReissueTx } from "../delivery/workflow/returnReceipt"
 import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { DELIVERY_CASH_CUSTODY_SIGN } from "../../../shared/deliveryLedgerEntryType";
 import { initializeConsignmentCustodyTx } from "../delivery/custody";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "./itemLifecycle";
 
 export async function assertRequestOperationTx(
   tx: Tx,
@@ -440,8 +441,8 @@ export async function loadRequestSourcesTx(
             : c.workOrderId === order!.id) &&
           !heldIds.has(c.id) &&
           !(
-            c.status === "CANCELLED" &&
-            c.parcelStatus === "CANCELLED" &&
+            (c.status === "CANCELLED" || c.status === "RETURNED") &&
+            (c.parcelStatus === "CANCELLED" || c.parcelStatus === "RETURNED") &&
             c.moneyStatus === "CANCELLED" &&
             c.remittanceId == null &&
             money(c.collectedAmount).isZero()
@@ -808,6 +809,7 @@ export async function returnFulfillmentRequestConsignmentTx(
       settledAt: new Date(),
     })
     .where(eq(deliveryConsignments.id, cn.id));
+  await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
   await appendDeliveryEvent(tx, {
     eventKey: `CN:${cn.id}:FULFILLMENT_RETURNED:${input.clientRequestId}`,
     consignmentId: cn.id,

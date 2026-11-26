@@ -110,12 +110,18 @@ export function salesInvoiceTotals(
                   value: `مجاناً (قيمته ${money(courier.fee)})`,
                   color: B.green,
                 }
-              : {
-                  label: `أجرة التوصيل${facts.dead ? "" : ` (${courier.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : courier.feeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${courier.partyName} من الزبون`})`}`,
-                  value: money(courier.fee),
-                  sign: "+" as const,
-                  color: B.orange,
-                },
+              : courier.feeCollection === "SHOP"
+                ? {
+                    label: `أجرة التوصيل${facts.dead ? "" : " (على المكتبة)"}`,
+                    value: "مجاناً (تتحمّلها المكتبة)",
+                    color: B.green,
+                  }
+                : {
+                    label: `أجرة التوصيل${facts.dead ? "" : ` (${courier.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : `يقبضها ${courier.partyName} من الزبون`})`}`,
+                    value: money(courier.fee),
+                    sign: "+" as const,
+                    color: B.orange,
+                  },
             ...(facts.dead
               ? []
               : courier.feeCollection === "COURIER"

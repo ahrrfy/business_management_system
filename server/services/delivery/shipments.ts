@@ -1037,8 +1037,9 @@ export async function listShipmentInvoiceCandidates(
       ) &&
       surviving.every(
         (row) =>
-          row.cn.status === "CANCELLED" &&
-          row.cn.parcelStatus === "CANCELLED" &&
+          (row.cn.status === "CANCELLED" || row.cn.status === "RETURNED") &&
+          (row.cn.parcelStatus === "CANCELLED" ||
+            row.cn.parcelStatus === "RETURNED") &&
           row.cn.moneyStatus === "CANCELLED",
       );
     const originalLeader = cancelled
@@ -1104,8 +1105,11 @@ export async function listShipmentInvoiceCandidates(
         or(
           isNull(deliveryConsignments.id),
           and(
-            eq(deliveryConsignments.status, "CANCELLED"),
-            eq(deliveryConsignments.parcelStatus, "CANCELLED"),
+            inArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+            inArray(deliveryConsignments.parcelStatus, [
+              "CANCELLED",
+              "RETURNED",
+            ]),
             eq(deliveryConsignments.moneyStatus, "CANCELLED"),
             isNull(deliveryConsignments.remittanceId),
             sql`${deliveryConsignments.collectedAmount} = 0`,

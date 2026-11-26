@@ -34,6 +34,7 @@ import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
 import {
   assertNoBlockingTask,
+  assertNoLiveConsignment,
   assertOperatorOwns,
   assertWorkOrderBranch,
   loadWorkOrder,
@@ -516,6 +517,9 @@ export async function reassignWorkOrder(
         code: "BAD_REQUEST",
         message: "لا يمكن تغيير فني أمر منتهٍ",
       });
+    }
+    if (wo.status === "READY" || wo.invoiceId != null) {
+      await assertNoLiveConsignment(tx, input.workOrderId, "reassign", wo.invoiceId);
     }
 
     const reason = input.reason?.trim() || null;

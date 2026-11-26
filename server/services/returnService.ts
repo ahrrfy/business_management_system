@@ -1,5 +1,7 @@
 import { lockEconomicInventoryScope, readEconomicVariant } from "./inventory/economicOwnership";
 import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "./delivery/shopFeeAutoOffset";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "./fulfillment/itemLifecycle";
 import { reverseOnlineOrderLoyaltyPoints } from "./storeAdmin/loyaltyService";
 import { TRPCError } from "@trpc/server";
 import { assertNoActiveAftercareForInvoiceTx } from "./fulfillment/aftercareSources";
@@ -408,6 +410,21 @@ export async function reverseUnremittedDeliveryConsignment(
     : remainingCustody.lte(0)
       ? "SETTLED"
       : cn.moneyStatus;
+  if (isFullReturn) {
+    if (cn.parcelStatus !== "DELIVERED") {
+      await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+        consignmentId: Number(cn.id),
+        actor: {
+          userId: actorUserId ?? 0,
+          branchId: Number(cn.branchId),
+          role: "admin",
+        },
+        operationKey: `sale.return:${eventKeySuffix}`,
+        reason: reason ?? `مرتجع فاتورة ${invoiceNumber}`,
+      });
+    }
+    await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
+  }
   await tx
     .update(deliveryConsignments)
     .set(isFullReturn

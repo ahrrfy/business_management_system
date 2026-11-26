@@ -243,6 +243,7 @@ export async function sweepStaleConsignments(
     .from(deliveryConsignments)
     .where(and(
       eq(deliveryConsignments.status, "DISPATCHED"),
+      sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED', 'RETURNED', 'CANCELLED')`,
       sql`${deliveryConsignments.dispatchedAt} <= ${cutoff}`,
       sql`NOT EXISTS (
         SELECT 1 FROM deliveryEvents de

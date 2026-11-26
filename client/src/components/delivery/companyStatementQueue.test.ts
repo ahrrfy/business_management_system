@@ -199,6 +199,18 @@ describe("طابور كشف شركة التوصيل بالباركود", () => {
     expect(statementQueueRemaining(candidate(1, "0441446")).toFixed(2)).toBe("84250.00");
   });
 
+  it("يفكّ مظروف QR وصيغ ORD- وINV| للوصول إلى الإرسالية الصحيحة", () => {
+    const rows: CompanyStatementQueueCandidate[] = [
+      { ...candidate(5, ""), orderNumber: "ORD-100009", sourceType: "ONLINE_ORDER" },
+    ];
+    expect(
+      resolveCompanyStatementBarcode(rows, "https://alroya.iq/verify?ref=ORD-100009", new Set()),
+    ).toMatchObject({ kind: "ADDED", candidate: { id: 5 } });
+    expect(
+      resolveCompanyStatementBarcode(rows, "INV|INV-5|2026", new Set()),
+    ).toMatchObject({ kind: "ADDED", candidate: { id: 5 } });
+  });
+
   it("يدعم مسح ملصقات النظام ذوات البادئة (CN-/INV- وحتى بتخطيط لوحة مفاتيح عربي) دون مطابقة الأرقام العارية", () => {
     const rows = [
       { ...candidate(99, "TRK-7788"), consignmentNumber: "CN-99", invoiceNumber: "990" },

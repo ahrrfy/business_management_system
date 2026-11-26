@@ -31,6 +31,9 @@ export interface WorkOrderReceiptData {
   paidUpfront?: string | number | null;
   /** «المتبقّي عند الاستلام» = total − paidUpfront (يُمرَّر محسوباً لا يُشتقّ هنا). */
   balanceDue?: string | number | null;
+  hasDelivery?: boolean | null;
+  deliveryFee?: string | number | null;
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   notes?: string | null;
 }
 
@@ -144,10 +147,10 @@ export async function workOrderToCanvas(
     }
   } catch { /* بلا باركود */ }
 
-  // ──── ٣) عنوان «طلب خدمة» ────
+  // ──── ٣) عنوان «أمر شغل — المطبعة» ────
   y += 20; solidLine(ctx, y, 2); y += 4;
   ctx.font = "900 32px Cairo, sans-serif"; ctx.textAlign = "center"; y += 40;
-  ctx.fillText("طلب خدمة / المطبعة", W / 2, y);
+  ctx.fillText("أمر شغل — المطبعة", W / 2, y);
   y += 4; solidLine(ctx, y, 2); y += 28;
 
   // ──── ٤) صفوف المعلومات ────
@@ -166,6 +169,18 @@ export async function workOrderToCanvas(
   if (d.customerPhone) infoRow("الهاتف:", d.customerPhone);
   if (d.employeeName) infoRow("الموظف:", d.employeeName);
   if (d.status) infoRow("الحالة:", workOrderStatusLabel(d.status));
+  if (d.hasDelivery != null) {
+    infoRow("طريقة الاستلام:", d.hasDelivery ? "توصيل" : "استلام من الفرع");
+    if (d.hasDelivery && d.deliveryFee != null && Number(d.deliveryFee) > 0) {
+      const feeNote =
+        d.deliveryFeeCollection === "SHOP"
+          ? "مجاناً (على المكتبة)"
+          : d.deliveryFeeCollection === "COUNTER"
+            ? `${fmt(d.deliveryFee)} د.ع (مقبوضة بالفرع)`
+            : `${fmt(d.deliveryFee)} د.ع (عند التوصيل)`;
+      infoRow("أجرة التوصيل:", feeNote);
+    }
+  }
 
   y += 4; dashedLine(ctx, y); y += 28;
 
@@ -203,17 +218,29 @@ export async function workOrderToCanvas(
   ctx.textAlign = "left";
   ctx.fillText(`${fmt(d.total)} د.ع`, PAD, y);
   // ش٤: إثبات العربون على الورقة نفسها — «مدفوع مقدماً» ثم «المتبقّي عند الاستلام» بخطٍّ أضخم.
-  if (d.paidUpfront != null && Number(d.paidUpfront) > 0) {
+  const paidNum = Number(d.paidUpfront ?? 0);
+  const totalNum = Number(d.total ?? 0);
+  const dueNum =
+    d.balanceDue != null
+      ? Math.max(0, Number(d.balanceDue))
+      : Math.max(0, totalNum - paidNum);
+  if (paidNum > 0) {
     y += 36;
     ctx.font = "700 24px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("مدفوع مقدماً:", W - PAD, y);
     ctx.textAlign = "left";
-    ctx.fillText(`${fmt(d.paidUpfront)} د.ع`, PAD, y);
+    ctx.fillText(`${fmt(d.paidUpfront!)} د.ع`, PAD, y);
+  }
+  if (dueNum <= 0 && totalNum > 0) {
+    y += 34;
+    ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("مسدّد بالكامل مسبقاً", W / 2, y);
+  } else if (totalNum > 0) {
     y += 34;
     ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("المتبقّي عند الاستلام:", W - PAD, y);
     ctx.textAlign = "left";
-    ctx.fillText(`${fmt(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))} د.ع`, PAD, y);
+    ctx.fillText(`${fmt(dueNum)} د.ع`, PAD, y);
   }
   y += 14; solidLine(ctx, y, 2); y += 28;
 

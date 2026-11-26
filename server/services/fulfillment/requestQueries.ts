@@ -277,8 +277,8 @@ export async function listFulfillmentRequestCandidates(
       .where(eq(ownership.activeWorkOrderId, workOrders.id)),
   );
   const cancelledWithoutCustody = and(
-    eq(delivery.status, "CANCELLED"),
-    eq(delivery.parcelStatus, "CANCELLED"),
+    inArray(delivery.status, ["CANCELLED", "RETURNED"]),
+    inArray(delivery.parcelStatus, ["CANCELLED", "RETURNED"]),
     eq(delivery.moneyStatus, "CANCELLED"),
     isNull(delivery.remittanceId),
     eq(delivery.collectedAmount, "0.00"),

@@ -1,5 +1,5 @@
 import { creditCollectionChoiceTx } from "../creditCollectionTerms";
-import { and, desc, eq, inArray, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -21,6 +21,7 @@ import {
 } from "../../../../drizzle/fulfillmentSchema";
 import { normalizeKnownSystemBarcode } from "../../../../shared/barcodeScanner";
 import { docBarcode } from "../../../../shared/documentNumber";
+import { extractUnifiedReceiptBaseCode } from "../../../../shared/unifiedReceiptCode";
 import type {
   WorkflowAction,
   WorkflowScanPreview,
@@ -226,6 +227,39 @@ export async function resolveWorkflowSourceTx(
         .slice(0, 3)
         .map((row) => ({ kind: "consignment" as const, id: row.id })),
     );
+  }
+  if (!candidates.length && namespaceAllowsTarget(lookup.namespace, "WORK_ORDER")) {
+    const baseCode = extractUnifiedReceiptBaseCode(code);
+    if (baseCode) {
+      const siblingRows = (
+        await tx
+          .select({
+            id: workOrders.id,
+            orderNumber: workOrders.orderNumber,
+            status: workOrders.status,
+          })
+          .from(workOrders)
+          .where(
+            and(
+              ne(workOrders.status, "CANCELLED"),
+              or(
+                like(workOrders.orderNumber, `${baseCode}-%`),
+                like(workOrders.orderNumber, `WO-${baseCode}-%`),
+              ),
+              branchId == null ? undefined : eq(workOrders.branchId, branchId),
+            ),
+          )
+          .orderBy(asc(workOrders.id))
+          .limit(10)
+      ).filter((r) => extractUnifiedReceiptBaseCode(r.orderNumber) === baseCode);
+      if (siblingRows.length > 0) {
+        const preferred =
+          siblingRows.find((r) => r.status === "READY") ??
+          siblingRows.find((r) => r.status === "IN_PROGRESS" || r.status === "RECEIVED") ??
+          siblingRows[0]!;
+        return { kind: "workOrder", id: Number(preferred.id) };
+      }
+    }
   }
   if (!candidates.length)
     throw fulfillmentError(

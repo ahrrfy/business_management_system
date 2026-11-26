@@ -155,11 +155,21 @@ export function physicalReturnReceiptExistsSql() {
 export async function returnCarrierRightsTx(tx: Tx, consignmentIds: number[]) {
   if (!consignmentIds.length)
     return { cash: money(0), feeDue: money(0), feeHistory: money(0) };
+  const reversedShopAutoOffsetSql = sql`(
+    (${deliveryLedgerEntries.eventKey} LIKE 'CN:%:FEE_EARNED:SHOP:%'
+      OR ${deliveryLedgerEntries.eventKey} LIKE 'CN:%:FEE_OFFSET:SHOP:%')
+    AND EXISTS (
+      SELECT 1 FROM deliveryEvents rev_ev
+      WHERE rev_ev.consignmentId = ${deliveryLedgerEntries.consignmentId}
+        AND rev_ev.eventType = 'SHOP_FEE_AUTO_OFFSET_REVERSED'
+        AND JSON_UNQUOTE(JSON_EXTRACT(rev_ev.payload, '$.reversedCycleKey')) = SUBSTRING_INDEX(${deliveryLedgerEntries.eventKey}, ':', -1)
+    )
+  )`;
   const [row] = await tx
     .select({
       cash: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType}='COD_COLLECTED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
       feeDue: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType}='FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET','FEE_REFUNDED') THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
-      feeHistory: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_EARNED','FEE_PAID','FEE_OFFSET') THEN ABS(${deliveryLedgerEntries.amount}) ELSE 0 END),0)`,
+      feeHistory: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_EARNED','FEE_PAID','FEE_OFFSET') AND NOT (${reversedShopAutoOffsetSql}) THEN ABS(${deliveryLedgerEntries.amount}) ELSE 0 END),0)`,
     })
     .from(deliveryLedgerEntries)
     .where(

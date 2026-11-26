@@ -443,7 +443,7 @@ async function runWorkOrderDispatchTx(
   // السابقة المُختبَرة في `dispatchInvoice.ts`: **إعادة تنشيط الصفّ الملغى في مكانه** بدل
   // إدراج ثانٍ — تحفظ سلسلة المسؤولية (deliveryEvents append-only) وتُبقي القيدَين حارسَين
   // بنيويَّين، بلا هجرة. والفاتورة تُعاد استعمالها فلا SALE ثانٍ ولا ذمّةٌ مضاعفة.
-  const priorCn = (
+  const priorCnByWo = (
     await tx
       .select()
       .from(deliveryConsignments)
@@ -452,6 +452,19 @@ async function runWorkOrderDispatchTx(
       .for("update")
       .limit(1)
   )[0];
+  const priorCn =
+    priorCnByWo ??
+    (wo.invoiceId != null
+      ? (
+          await tx
+            .select()
+            .from(deliveryConsignments)
+            .where(eq(deliveryConsignments.invoiceId, Number(wo.invoiceId)))
+            .orderBy(desc(deliveryConsignments.id))
+            .for("update")
+            .limit(1)
+        )[0]
+      : undefined);
   const cancelledConsignment =
     priorCn != null &&
     priorCn.status === "CANCELLED" &&
@@ -483,9 +496,11 @@ async function runWorkOrderDispatchTx(
   // صفٌّ له تخصيص توريد immutable لا يُعاد استعماله؛ وإلا تغيّر invoice/party في كشفٍ
   // تاريخي. ينشأ صف revision جديد، بينما الإلغاء غير المحصّل يبقى قابلاً لإعادة التنشيط.
   const reusableCn =
-    returnedConsignment &&
-    (!round2(money(priorCn!.collectedAmount ?? "0")).isZero() ||
-      priorCn!.remittanceId != null)
+    priorCn &&
+    (priorCn.status === "DELIVERED" ||
+      (returnedConsignment &&
+        (!round2(money(priorCn.collectedAmount ?? "0")).isZero() ||
+          priorCn.remittanceId != null)))
       ? undefined
       : priorCn;
   if (!prepareOnly)
@@ -519,6 +534,8 @@ async function runWorkOrderDispatchTx(
   // إخوةُ السلّة الواحدة — نفس حارس التسليم المباشر وإرسال الفاتورة.
   await assertSiblingsReady(tx, {
     draftId: wo.draftId,
+    branchId: Number(wo.branchId),
+    orderNumber: wo.orderNumber,
     excludeWorkOrderId: Number(input.workOrderId),
     confirmed: input.partialDispatchConfirmed === true,
     action: "dispatch",

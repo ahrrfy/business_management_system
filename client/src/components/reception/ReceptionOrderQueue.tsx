@@ -1,7 +1,11 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
+import {
+  extractUnifiedReceiptBaseCode,
+  hasUnifiedReceiptSiblingSuffix,
+} from "@shared/unifiedReceiptCode";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ClipboardCheck, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { Check, ChevronDown, ClipboardCheck, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -148,6 +152,10 @@ export default function ReceptionOrderQueue({
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [shelfAuditDialogOpen, setShelfAuditDialogOpen] = useState(false);
   const [confirmationPhrase, setConfirmationPhrase] = useState("");
+
+  useEffect(() => {
+    setShelfAuditMode(initialShelfAuditMode);
+  }, [initialShelfAuditMode]);
 
   useRealtimeEvent<ReceptionQueueUpdatedPayload>(
     REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
@@ -368,11 +376,20 @@ export default function ReceptionOrderQueue({
   });
 
   const rows = active.data ?? [];
+  const familyStatsByKey = useMemo(() => buildQueueFamilyStats(rows), [rows]);
   const readyRows = useMemo(() => rows.filter((r) => r.status === "READY"), [rows]);
+  const counterReadyRows = useMemo(
+    () => readyRows.filter((r) => deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus) === "NONE"),
+    [readyRows],
+  );
+  const inTransitReadyRows = useMemo(
+    () => readyRows.filter((r) => deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus) !== "NONE"),
+    [readyRows],
+  );
   const inProgressRows = useMemo(() => rows.filter((r) => r.status !== "READY"), [rows]);
   const deliveredRows = deliveredToday.data ?? [];
 
-  const eligibleShelfRows = useMemo(() => readyRows.filter(isShelfAuditEligible), [readyRows]);
+  const eligibleShelfRows = useMemo(() => counterReadyRows.filter(isShelfAuditEligible), [counterReadyRows]);
   const eligibleIdSet = useMemo(() => new Set(eligibleShelfRows.map((r) => Number(r.id))), [eligibleShelfRows]);
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedShelfRows = useMemo(
@@ -491,10 +508,11 @@ export default function ReceptionOrderQueue({
       ) : (
         <>
           <QueueSection
-            title="جاهزة للتسليم/الإرسال"
-            icon={Truck}
-            rows={readyRows}
-            emptyLabel="لا طلبات جاهزة حالياً."
+            title="جاهزة للاستلام أو الإسناد بالمحل"
+            icon={Store}
+            rows={counterReadyRows}
+            familyStatsByKey={familyStatsByKey}
+            emptyLabel="لا طلبات جاهزة بالمحل بانتظار الاستلام أو الإسناد."
             canFulfill={canFulfill}
             canReclassify={canReclassify}
             canDispatch={canDispatch}
@@ -504,16 +522,41 @@ export default function ReceptionOrderQueue({
             onReclassify={setReclassifyTarget}
             canCancelWo={canCancelWo}
             onCancel={(r) => setCancelWorkOrderId(r.id)}
+            canReverseWo={canReverseWo}
+            onReverse={setReverseTarget}
             shelfAudit={
               shelfAuditActive
                 ? { selectedIds: selectedIdSet, onToggle: toggleShelfAuditId }
                 : undefined
             }
           />
+          {inTransitReadyRows.length > 0 && (
+            <details className="group rounded-xl border bg-card">
+              <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 select-none">
+                <Truck aria-hidden className="size-3.5 text-[var(--sem-info)]" />
+                <span className="text-xs font-bold">قيد التوصيل مع المندوب</span>
+                <Badge variant="secondary" className="ms-1">{inTransitReadyRows.length}</Badge>
+                <span className="text-xs text-muted-foreground">طرود خرجت للتوصيل وتُتابَع من إدارة التوصيل</span>
+                <ChevronDown aria-hidden className="ms-auto size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="border-t">
+                <QueueSection
+                  title="قيد التوصيل مع المندوب"
+                  hideHeader
+                  icon={Truck}
+                  rows={inTransitReadyRows}
+                  familyStatsByKey={familyStatsByKey}
+                  emptyLabel="لا طرود قيد التوصيل حالياً."
+                  canFulfill={false}
+                />
+              </div>
+            </details>
+          )}
           <QueueSection
             title="قيد الاستلام/التنفيذ"
             icon={Package}
             rows={inProgressRows}
+            familyStatsByKey={familyStatsByKey}
             emptyLabel="لا طلبات قيد التنفيذ حالياً."
             canFulfill={canFulfill}
             canReclassify={canReclassify}
@@ -742,10 +785,64 @@ export default function ReceptionOrderQueue({
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, canCancelWo = false, canReverseWo = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify, onCancel, onReverse, shelfAudit }: {
+type QueueFamilyStat = {
+  key: string;
+  label: string;
+  totalCount: number;
+  readyCount: number;
+};
+
+function rowFamilyKey(row: QueueRow, baseCodeCounts: ReadonlyMap<string, number>): string | null {
+  if (row.draftId != null) return `draft-${Number(row.draftId)}`;
+  const baseCode = extractUnifiedReceiptBaseCode(row.orderNumber);
+  if (!baseCode) return null;
+  if ((baseCodeCounts.get(baseCode) ?? 0) > 1 || hasUnifiedReceiptSiblingSuffix(row.orderNumber)) {
+    return `base-${baseCode}`;
+  }
+  return null;
+}
+
+function buildQueueFamilyStats(allActiveRows: QueueRow[]): Map<string, QueueFamilyStat> {
+  const baseCodeCounts = new Map<string, number>();
+  for (const r of allActiveRows) {
+    if (r.draftId != null) continue;
+    const base = extractUnifiedReceiptBaseCode(r.orderNumber);
+    if (base) baseCodeCounts.set(base, (baseCodeCounts.get(base) ?? 0) + 1);
+  }
+  const map = new Map<string, QueueFamilyStat>();
+  for (const r of allActiveRows) {
+    const key = rowFamilyKey(r, baseCodeCounts);
+    if (!key) continue;
+    const existing = map.get(key);
+    const isReadyOrDone = r.status === "READY" || r.status === "DELIVERED";
+    if (r.draftId != null) {
+      const serverTotal = Math.max(1, Number(r.draftTotalCount ?? 1));
+      const serverReady = Number(r.draftReadyCount ?? 0);
+      map.set(key, {
+        key,
+        label: `طلب ${r.draftNumber ?? `#${r.draftId}`}`,
+        totalCount: Math.max(existing?.totalCount ?? 0, serverTotal),
+        readyCount: Math.max(existing?.readyCount ?? 0, serverReady),
+      });
+    } else {
+      const base = extractUnifiedReceiptBaseCode(r.orderNumber)!;
+      map.set(key, {
+        key,
+        label: `وصل #${base}`,
+        totalCount: (existing?.totalCount ?? 0) + 1,
+        readyCount: (existing?.readyCount ?? 0) + (isReadyOrDone ? 1 : 0),
+      });
+    }
+  }
+  return map;
+}
+
+function QueueSection({ title, hideHeader = false, icon: Icon, rows, familyStatsByKey, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, canCancelWo = false, canReverseWo = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify, onCancel, onReverse, shelfAudit }: {
   title: string;
+  hideHeader?: boolean;
   icon: LucideIcon;
   rows: QueueRow[];
+  familyStatsByKey?: ReadonlyMap<string, QueueFamilyStat>;
   emptyLabel: string;
   canFulfill: boolean;
   canReclassify?: boolean;
@@ -763,14 +860,16 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
   onReverse?: (r: QueueRow) => void;
   shelfAudit?: ShelfAuditSelectionProps;
 }) {
-  const groups = groupQueueRows(rows);
+  const groups = groupQueueRows(rows, familyStatsByKey);
   return (
-    <section className="rounded-xl border bg-card">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <Icon aria-hidden className="size-3.5 text-muted-foreground" />
-        <h2 className="text-xs font-bold">{title}</h2>
-        <Badge variant="secondary" className="ms-1">{loading || error ? "—" : rows.length}</Badge>
-      </div>
+    <section className={hideHeader ? "" : "rounded-xl border bg-card"}>
+      {!hideHeader && (
+        <div className="flex items-center gap-2 border-b px-3 py-1.5">
+          <Icon aria-hidden className="size-3.5 text-muted-foreground" />
+          <h2 className="text-xs font-bold">{title}</h2>
+          <Badge variant="secondary" className="ms-1">{loading || error ? "—" : rows.length}</Badge>
+        </div>
+      )}
       {loading ? (
         <LoadingState message={`جارٍ تحميل ${title}…`} className="p-4" />
       ) : error ? (
@@ -779,12 +878,12 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
         <EmptyState icon={Icon} title="لا شيء هنا" description={emptyLabel} />
       ) : (
         <ul className="divide-y">
-          {groups.map((group) => group.draftId == null ? (
+          {groups.map((group) => !group.isMultiFamily ? (
             <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} canCancelWo={canCancelWo} canReverseWo={canReverseWo} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} onCancel={onCancel} onReverse={onReverse} shelfAudit={shelfAudit} />
           ) : (
-            <li key={`draft-${group.draftId}`}>
+            <li key={group.key}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-3 py-1.5 text-xs">
-                <span className="font-bold">طلب {group.draftNumber ?? `#${group.draftId}`}</span>
+                <span className="font-bold">{group.label}</span>
                 <span className={cn("rounded px-1.5 py-0.5 font-bold", group.readyCount === group.totalCount ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]")}>
                   {group.readyCount}/{group.totalCount} جاهزة
                 </span>
@@ -801,19 +900,49 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
   );
 }
 
-function groupQueueRows(rows: QueueRow[]) {
-  const groups = new Map<string, { draftId: number | null; draftNumber: string | null; totalCount: number; readyCount: number; rows: QueueRow[] }>();
+function groupQueueRows(rows: QueueRow[], familyStatsByKey?: ReadonlyMap<string, QueueFamilyStat>) {
+  const localBaseCounts = new Map<string, number>();
+  for (const r of rows) {
+    if (r.draftId != null) continue;
+    const base = extractUnifiedReceiptBaseCode(r.orderNumber);
+    if (base) localBaseCounts.set(base, (localBaseCounts.get(base) ?? 0) + 1);
+  }
+  const groups = new Map<string, { key: string; isMultiFamily: boolean; label: string; totalCount: number; readyCount: number; rows: QueueRow[] }>();
   for (const row of rows) {
-    const draftId = row.draftId == null ? null : Number(row.draftId);
-    const key = draftId == null ? `single-${row.id}` : `draft-${draftId}`;
+    const famKey = rowFamilyKey(row, localBaseCounts) ?? (familyStatsByKey ? Array.from(familyStatsByKey.keys()).find((k) => {
+      if (row.draftId != null) return k === `draft-${Number(row.draftId)}`;
+      const base = extractUnifiedReceiptBaseCode(row.orderNumber);
+      return base != null && k === `base-${base}`;
+    }) ?? null : null);
+    const stat = famKey ? familyStatsByKey?.get(famKey) : undefined;
+    const key = famKey ?? `single-${row.id}`;
+    const totalCount = stat
+      ? stat.totalCount
+      : row.draftId != null
+        ? Math.max(1, Number(row.draftTotalCount ?? 1))
+        : 1;
+    const readyCount = stat
+      ? stat.readyCount
+      : row.draftId != null
+        ? Number(row.draftReadyCount ?? 0)
+        : row.status === "READY" || row.status === "DELIVERED"
+          ? 1
+          : 0;
+    const label = stat
+      ? stat.label
+      : row.draftId != null
+        ? `طلب ${row.draftNumber ?? `#${row.draftId}`}`
+        : `وصل #${extractUnifiedReceiptBaseCode(row.orderNumber) ?? row.orderNumber}`;
     const group = groups.get(key) ?? {
-      draftId,
-      draftNumber: row.draftNumber ?? null,
-      totalCount: draftId == null ? 1 : Math.max(1, Number(row.draftTotalCount ?? 1)),
-      readyCount: draftId == null ? (row.status === "READY" || row.status === "DELIVERED" ? 1 : 0) : Number(row.draftReadyCount ?? 0),
+      key,
+      isMultiFamily: famKey != null && (totalCount > 1 || row.draftId != null || hasUnifiedReceiptSiblingSuffix(row.orderNumber)),
+      label,
+      totalCount,
+      readyCount,
       rows: [],
     };
     group.rows.push(row);
+    if (group.rows.length > 1) group.isMultiFamily = true;
     groups.set(key, group);
   }
   return Array.from(groups.values());
@@ -858,14 +987,22 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, canCance
   if (isReady && !r.hasDelivery && onPickup) {
     actions.push({ key: "pickup", kind: "approve", label: "تسليم مباشر", icon: Store, hidden: !canFulfill, onSelect: () => onPickup(r), gate: FULFILL_GATE });
   }
-  if (!isFinal && onReclassify) {
+  if (!isFinal && !hasLiveConsignment && onReclassify) {
     actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canReclassify, onSelect: () => onReclassify(r), gate: RECLASSIFY_GATE });
   }
-  if (!isFinal && !hasLiveConsignment && onCancel) {
+  if (!isFinal && !hasLiveConsignment && r.invoiceId == null && onCancel) {
     actions.push({ key: "cancel-wo", kind: "cancel", variant: "destructive", label: "إلغاء الطلب", hidden: !canCancelWo, onSelect: () => onCancel(r), gate: CANCEL_WO_GATE });
   }
-  if (r.status === "DELIVERED" && !hasLiveConsignment && onReverse) {
-    actions.push({ key: "reverse-wo", kind: "reverse", variant: "destructive", label: "مرتجع / عكس تسليم", hidden: !canReverseWo, onSelect: () => onReverse(r), gate: REVERSE_WO_GATE });
+  if ((r.status === "DELIVERED" || r.invoiceId != null) && !hasLiveConsignment && onReverse) {
+    actions.push({
+      key: "reverse-wo",
+      kind: "reverse",
+      variant: "destructive",
+      label: r.status === "READY" ? "عكس الفاتورة وإعادة فتح / إلغاء" : "مرتجع / عكس تسليم",
+      hidden: !canReverseWo,
+      onSelect: () => onReverse(r),
+      gate: REVERSE_WO_GATE,
+    });
   }
   actions.push({ key: "open", kind: "view", label: "فتح", onSelect: () => window.open(`/work-orders/${r.id}`, "_blank", "noopener") });
 
@@ -882,8 +1019,18 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, canCance
       )}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
-          {ageLevel !== "UNKNOWN" && ageMin != null && (
+          <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>
+            {isReady
+              ? hasLiveConsignment
+                ? "قيد التوصيل مع المندوب"
+                : r.invoiceId != null
+                  ? "معاد من التوصيل — بانتظار الإجراء"
+                  : r.hasDelivery
+                    ? "جاهز للإسناد للتوصيل"
+                    : "جاهز للاستلام من الفرع"
+              : workOrderStatusLabel(r.status)}
+          </span>
+          {!hasLiveConsignment && ageLevel !== "UNKNOWN" && ageMin != null && (
             <span
               className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold", slaLevelChipClass(ageLevel))}
               title={ageLevel === "BREACHED" ? "تجاوز عتبة الـSLA — يحتاج تحرّكاً فورياً" : ageLevel === "WARNING" ? "اقترب من عتبة الـSLA" : "ضمن الوقت المتوقّع"}

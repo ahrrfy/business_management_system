@@ -5,6 +5,7 @@ import {
   auditLogs,
   customers,
   deliveryConsignments,
+  deliveryLedgerEntries,
   deliveryParties,
   deliveryPartyMembers,
   deliveryRemittanceLines,
@@ -22,6 +23,8 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idemp
 import { adjustCustomerBalance } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./delivery/lifecycle";
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
+import { syncConsignmentSourceDeliveredTx } from "./delivery/courier";
 import { nextConsignmentNumber } from "./delivery/numbering";
 import { assertFloatLimitTx } from "./delivery/parties";
 import {
@@ -126,6 +129,10 @@ export async function getDeliveryLegacyFindings(input: { branchId?: number | nul
     isNull(deliveryConsignments.courierDeliveredAt),
     or(
       eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+      and(
+        eq(deliveryConsignments.status, "DELIVERED"),
+        notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+      ),
       and(inArray(deliveryConsignments.parcelStatus, ["ASSIGNED", "OUT_FOR_DELIVERY"]), exists(createdByLegacyRepair)),
     )!,
   ];
@@ -746,10 +753,18 @@ async function recordPrepaidProof(
       sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.consignmentId')) AS UNSIGNED) = ${row.id}`,
     ))
     .limit(1))[0];
+  const hybridClosedPrepaid =
+    row.status === "DELIVERED" &&
+    row.parcelStatus !== "CANCELLED" &&
+    row.parcelStatus !== "RETURNED";
   if (
     !money(row.codAmount).isZero()
     || row.courierDeliveredAt != null
-    || (row.parcelStatus !== "DELIVERED" && (!["ASSIGNED", "OUT_FOR_DELIVERY"].includes(row.parcelStatus) || !createdByRepair))
+    || (
+      row.parcelStatus !== "DELIVERED"
+      && !hybridClosedPrepaid
+      && (!["ASSIGNED", "OUT_FOR_DELIVERY"].includes(row.parcelStatus) || !createdByRepair)
+    )
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -792,17 +807,43 @@ async function recordPrepaidProof(
         message: "لا يمكن إثبات قبض مباشر للمندوب إلا عندما تكون طريقة قبض الأجرة COURIER",
       });
     }
-    await appendDeliveryLedgerEntry(tx, {
-      eventKey: `CN:${row.id}:FEE_EARNED`,
-      partyId: Number(row.partyId),
-      consignmentId: Number(row.id),
-      branchId: Number(row.branchId),
-      entryType: "FEE_EARNED",
-      amount: toDbMoney(fee),
-      notes: "Legacy delivery proof",
-      actorUserId: ctx.user?.id ?? null,
-      occurredAt: deliveredAt,
-    });
+    const existingFeeEntries = await tx
+      .select({ entryType: deliveryLedgerEntries.entryType })
+      .from(deliveryLedgerEntries)
+      .where(
+        and(
+          eq(deliveryLedgerEntries.consignmentId, Number(row.id)),
+          effectiveDeliveryLedgerEntrySql(),
+          inArray(deliveryLedgerEntries.entryType, ["FEE_EARNED", "FEE_PAID", "FEE_OFFSET"]),
+        ),
+      );
+    const hasFeeEarned = existingFeeEntries.some((e) => e.entryType === "FEE_EARNED");
+    const hasFeeSettled =
+      row.feeSettledAt != null ||
+      existingFeeEntries.some((e) => e.entryType === "FEE_PAID" || e.entryType === "FEE_OFFSET");
+    if (input.feeSettlementAction === "EARN_AND_DIRECT_PAID" && hasFeeSettled) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل قبض مباشر ثانٍ للأجرة",
+          why: "أجرة التوصيل على هذه الإرسالية مسدّدة أو مسوّاة مسبقاً في الدفتر ولا يجوز مضاعفتها",
+          doThis: "اختر خيار إثبات استحقاق الأجرة فقط (EARN_ONLY) لموازنة الدفتر دون تكرار السداد",
+        }),
+      });
+    }
+    if (!hasFeeEarned) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${row.id}:FEE_EARNED`,
+        partyId: Number(row.partyId),
+        consignmentId: Number(row.id),
+        branchId: Number(row.branchId),
+        entryType: "FEE_EARNED",
+        amount: toDbMoney(fee),
+        notes: "Legacy delivery proof",
+        actorUserId: ctx.user?.id ?? null,
+        occurredAt: deliveredAt,
+      });
+    }
     if (input.feeSettlementAction === "EARN_AND_DIRECT_PAID") {
       await appendDeliveryLedgerEntry(tx, {
         eventKey: `CN:${row.id}:FEE_PAID_DIRECT`,
@@ -818,6 +859,20 @@ async function recordPrepaidProof(
       await tx.update(deliveryConsignments).set({ feeSettledAt: deliveredAt }).where(eq(deliveryConsignments.id, row.id));
     }
   }
+  await syncConsignmentSourceDeliveredTx(
+    tx,
+    {
+      id: Number(row.id),
+      branchId: Number(row.branchId),
+      workOrderId: row.workOrderId,
+      invoiceId: row.invoiceId,
+      fulfillmentRequestId: row.fulfillmentRequestId,
+      sourceType: row.sourceType,
+      sourceId: Number(row.sourceId),
+    },
+    { userId: ctx.user?.id ?? 0 },
+    deliveredAt,
+  );
   await logAuditTx(tx, ctx, {
     action: "delivery.legacy.prepaidProof",
     entityType: "deliveryConsignment",
@@ -888,7 +943,13 @@ async function reopenPrepaidConsignment(
     });
   }
   requireConfirmation(row.consignmentNumber, input.confirmation);
-  if (!money(row.codAmount).isZero() || row.parcelStatus !== "DELIVERED" || row.courierDeliveredAt != null) {
+  if (
+    !money(row.codAmount).isZero()
+    || (row.parcelStatus !== "DELIVERED" && row.status !== "DELIVERED")
+    || row.parcelStatus === "CANCELLED"
+    || row.parcelStatus === "RETURNED"
+    || row.courierDeliveredAt != null
+  ) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({

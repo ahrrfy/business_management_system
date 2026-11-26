@@ -148,7 +148,14 @@ export async function shelfAuditDeliverWorkOrders(
           }
         }
 
-        const activeConsignments = await tx
+        const invoiceIds = Array.from(
+          new Set(
+            rows
+              .map((r) => (r.invoiceId != null ? Number(r.invoiceId) : null))
+              .filter((id): id is number => id != null),
+          ),
+        );
+        const activeConsignmentsByWo = await tx
           .select({
             workOrderId: deliveryConsignments.workOrderId,
             consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -160,10 +167,30 @@ export async function shelfAuditDeliverWorkOrders(
               notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
             ),
           );
+        const activeConsignmentsByInv = invoiceIds.length
+          ? await tx
+              .select({
+                invoiceId: deliveryConsignments.invoiceId,
+                consignmentNumber: deliveryConsignments.consignmentNumber,
+              })
+              .from(deliveryConsignments)
+              .where(
+                and(
+                  inArray(deliveryConsignments.invoiceId, invoiceIds),
+                  notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+                ),
+              )
+          : [];
         const activeCnByWoId = new Map<number, string>();
-        for (const cn of activeConsignments) {
+        for (const cn of activeConsignmentsByWo) {
           if (cn.workOrderId != null) {
             activeCnByWoId.set(Number(cn.workOrderId), cn.consignmentNumber);
+          }
+        }
+        const activeCnByInvId = new Map<number, string>();
+        for (const cn of activeConsignmentsByInv) {
+          if (cn.invoiceId != null) {
+            activeCnByInvId.set(Number(cn.invoiceId), cn.consignmentNumber);
           }
         }
 
@@ -226,7 +253,9 @@ export async function shelfAuditDeliverWorkOrders(
               }),
             });
           }
-          const activeCnNumber = activeCnByWoId.get(id);
+          const activeCnNumber =
+            activeCnByWoId.get(id) ??
+            (wo.invoiceId != null ? activeCnByInvId.get(Number(wo.invoiceId)) : undefined);
           if (activeCnNumber) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -253,6 +282,7 @@ export async function shelfAuditDeliverWorkOrders(
               clientRequestId: requestIdByWoId.get(id)!,
               // المدير تحقّق فعلياً من كل بند على الرفّ فردياً؛ لا نكسر الدفعة بسبب شقيق غير جاهز.
               partialDispatchConfirmed: true,
+              skipShiftAttribution: true,
             },
             {
               userId: actor.userId,

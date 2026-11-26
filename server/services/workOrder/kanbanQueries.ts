@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { stripDocPrefix } from "@shared/documentNumber";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { extractUnifiedReceiptBaseCode } from "@shared/unifiedReceiptCode";
 import { customers, deliveryConsignments, invoices, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -153,10 +153,20 @@ export async function loadWorkOrderListEffectiveFinancials(
  * لجميع الأدوار فور إسناده للتوصيل ويعود تلقائياً إن أُلغي الإسناد أو أُرجع لـ READY.
  */
 export function excludeDispatchedReadySql(): SQL {
-  return sql`NOT (${workOrders.status} = 'READY' AND EXISTS (
-    SELECT 1 FROM deliveryConsignments dc
-    WHERE dc.workOrderId = ${workOrders.id}
-      AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+  return sql`NOT (${workOrders.status} = 'READY' AND (
+    EXISTS (
+      SELECT 1 FROM deliveryConsignments dc_wo
+      WHERE dc_wo.workOrderId = ${workOrders.id}
+        AND dc_wo.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )
+    OR (
+      ${workOrders.invoiceId} IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM deliveryConsignments dc_inv
+        WHERE dc_inv.invoiceId = ${workOrders.invoiceId}
+          AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      )
+    )
   ))`;
 }
 
@@ -177,40 +187,7 @@ export function activeWorkOrderConsignmentJoinCondition(): SQL {
   )!;
 }
 
-const HISTORICAL_DOC_NUMBER_RE =
-  /^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+(?:-\d+)*$/i;
-const HISTORICAL_DOC_BASE_RE =
-  /^((?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+)(?:-\d+)+$/i;
-
-/**
- * يستخرج الرقم الأساسي للوصل الموحّد (مثل "103757" من "103757" أو "WO-103757" أو "103757-1")
- * بشرط ألا يقل طوله عن 3 محارف وأن يخلو من محارف البدل في LIKE (% و _).
- */
-export function extractUnifiedReceiptBaseCode(rawCode: string): string | null {
-  const trimmed = String(rawCode ?? "").trim();
-  if (!trimmed) return null;
-
-  const lookup = prepareDeliveryBarcodeLookup(trimmed);
-  const candidate = (lookup.documentCode || lookup.code || trimmed).trim();
-  if (!candidate) return null;
-
-  let baseCode: string;
-  const stripped = stripDocPrefix(candidate);
-  if (HISTORICAL_DOC_NUMBER_RE.test(stripped)) {
-    const histMatch = HISTORICAL_DOC_BASE_RE.exec(stripped);
-    baseCode = histMatch ? histMatch[1]! : stripped;
-  } else {
-    const withoutPrefix = stripped.replace(/^(?:WO|INV|ORD|DRF|RCP)-/i, "");
-    const siblingMatch = /^(.{3,}?)-\d+$/.exec(withoutPrefix);
-    baseCode = siblingMatch ? siblingMatch[1]! : withoutPrefix;
-  }
-
-  baseCode = baseCode.trim();
-  if (baseCode.length < 3 || baseCode.includes("%") || baseCode.includes("_")) {
-    return null;
-  }
-  return baseCode;
-}
+export { extractUnifiedReceiptBaseCode };
 
 /**
  * يجلب جميع أوامر الشغل الشقيقة التابعة لنفس الوصل الموحّد ضمن الفرع المسموح،
@@ -259,10 +236,15 @@ export async function findSiblingWorkOrdersByBaseCode(
         branchFilter != null ? eq(workOrders.branchId, branchFilter) : sql`1=1`,
         ne(workOrders.status, "CANCELLED"),
         sql`NOT EXISTS (
-          SELECT 1 FROM deliveryConsignments dc
-          WHERE dc.workOrderId = ${workOrders.id}
-            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+          SELECT 1 FROM deliveryConsignments dc_wo
+          WHERE dc_wo.workOrderId = ${workOrders.id}
+            AND dc_wo.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
         )`,
+        sql`(${workOrders.invoiceId} IS NULL OR NOT EXISTS (
+          SELECT 1 FROM deliveryConsignments dc_inv
+          WHERE dc_inv.invoiceId = ${workOrders.invoiceId}
+            AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+        ))`,
       ),
     )
     .orderBy(asc(workOrders.id));

@@ -84,7 +84,6 @@ export async function returnByBarcode(
     strippedTrackingCode,
     documentCode,
     namespace,
-    numericId,
   } = lookup;
   const scopedBranch =
     actor.role === "admin"
@@ -98,7 +97,7 @@ export async function returnByBarcode(
         .select({
           id: invoices.id,
           correctedByInvoiceId: invoices.correctedByInvoiceId,
-          matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          matchRank: sql<number>`100`,
         })
         .from(invoices)
         .where(
@@ -112,7 +111,6 @@ export async function returnByBarcode(
                 ? or(
                     eq(invoices.invoiceNumber, cleanCode),
                     eq(invoices.invoiceNumber, `INV-${cleanCode}`),
-                    numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
                   )
                 : eq(invoices.invoiceNumber, cleanCode),
             scopedBranch != null
@@ -179,10 +177,8 @@ export async function returnByBarcode(
               )
             : namespace === "NUMERIC"
               ? or(
-                  numericId != null
-                    ? eq(deliveryConsignments.id, numericId)
-                    : sql`0=1`,
                   eq(deliveryConsignments.consignmentNumber, cleanCode),
+                  eq(deliveryConsignments.consignmentNumber, `CN-${cleanCode}`),
                   trackingCode
                     ? or(
                         eq(
@@ -194,7 +190,6 @@ export async function returnByBarcode(
                           : sql`0=1`,
                       )
                     : sql`0=1`,
-                  numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
                   eq(invoices.invoiceNumber, cleanCode),
                   eq(invoices.invoiceNumber, `INV-${cleanCode}`),
                   allMatchedInvoiceIds.length
@@ -203,10 +198,8 @@ export async function returnByBarcode(
                         allMatchedInvoiceIds,
                       )
                     : sql`0=1`,
-                  numericId != null ? eq(workOrders.id, numericId) : sql`0=1`,
                   eq(workOrders.orderNumber, cleanCode),
                   eq(workOrders.orderNumber, `WO-${cleanCode}`),
-                  numericId != null ? eq(onlineOrders.id, numericId) : sql`0=1`,
                   eq(onlineOrders.orderNumber, cleanCode),
                   eq(onlineOrders.orderNumber, `ORD-${cleanCode}`),
                 )

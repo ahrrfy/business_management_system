@@ -9,7 +9,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AlertTriangle, Calendar, FileText, LayoutGrid, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X } from "lucide-react";
+import { AlertTriangle, Calendar, ClipboardCheck, FileText, LayoutGrid, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -91,6 +91,9 @@ export default function WorkOrders() {
   const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", legacyExec);
   const canReadOrders = canLifecycleOperation(me.data, "workOrders.list", true);
   const canReadCounts = canLifecycleOperation(me.data, "workOrders.counts", true);
+  const canShelfAudit =
+    (me.data?.role === "admin" || me.data?.role === "manager") &&
+    me.data?.operationPolicy?.grants?.["operation.workOrders.autoClearReady"] !== false;
   const canReadCustomerContext = !!me.data?.role &&
     hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
@@ -741,6 +744,24 @@ export default function WorkOrders() {
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
 
         <div className="ms-auto flex items-center gap-1.5">
+          {canShelfAudit && (
+            <button
+              type="button"
+              className="wob-btn wob-btn-ghost"
+              title="فتح أداة جرد الرفّ في طابور الاستقبال لتصفية الطلبات المدفوعة مسبقاً"
+              onClick={() => {
+                const targetBranch =
+                  canCrossBranches && f.branch !== "all"
+                    ? f.branch
+                    : me.data?.branchId != null
+                      ? String(me.data.branchId)
+                      : branchesQ.data?.[0]?.id != null
+                        ? String(Number(branchesQ.data[0].id))
+                        : "";
+                navigate(`/reception/orders?shelfAudit=1${targetBranch ? `&branchId=${targetBranch}` : ""}`);
+              }}
+            ><ClipboardCheck aria-hidden className="size-3.5 inline-block align-text-bottom me-1" /> جرد الرفّ</button>
+          )}
           <div role="group" aria-label="طريقة العرض" className="wob-view-toggle">
             <button
               type="button"

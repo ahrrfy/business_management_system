@@ -1,9 +1,10 @@
 import type { DeliverySourceReference } from "@shared/deliverySource";
-import { docBarcode } from "@shared/documentNumber";
+import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 import {
   normalizeBarcodeScannerInput,
   normalizeKnownSystemBarcode,
   trackingRefsEquivalent,
+  unwrapBarcodeScanEnvelope,
 } from "@/lib/barcodeScannerInput";
 import { D, fmt, round2 } from "@/lib/money";
 import { digitsArabicToLatin } from "@shared/numberNormalize";
@@ -232,29 +233,36 @@ export function resolveCompanyStatementBarcode(
   raw: string,
   queuedIds: ReadonlySet<number>,
 ): StatementBarcodeResolution {
-  const trackingRef = normalizeBarcodeScannerInput(raw);
+  const unwrapped = unwrapBarcodeScanEnvelope(String(raw ?? "").trim());
+  const normalizedPipe = normalizeKnownSystemBarcode(unwrapped);
+  const pipeMatch = /^(INV|WO|ORD|CNS?|SHP)\|([^|]+)/i.exec(normalizedPipe);
+  const effectiveInput = pipeMatch
+    ? docBarcode(
+        pipeMatch[1]!.toUpperCase() === "CNS" ? "CN" : pipeMatch[1]!.toUpperCase(),
+        stripDocPrefix(pipeMatch[2]!.trim()).replace(/^CNS-/i, "CN-"),
+      )
+    : unwrapped;
+  const trackingRef = normalizeBarcodeScannerInput(effectiveInput);
   if (!trackingRef) return { kind: "EMPTY" };
 
   const references = (candidate: CompanyStatementQueueCandidate) =>
     [candidate.externalTrackingRef, candidate.shipmentTrackingRef].filter(
       (reference): reference is string => !!reference,
     );
-  const documentReferences = (candidate: CompanyStatementQueueCandidate) =>
-    [
+  const documentReferences = (candidate: CompanyStatementQueueCandidate) => {
+    const cleanOrder = candidate.orderNumber ? stripDocPrefix(candidate.orderNumber) : null;
+    return [
       candidate.consignmentNumber,
-      candidate.consignmentNumber ? docBarcode("CN", candidate.consignmentNumber) : null,
+      candidate.consignmentNumber ? docBarcode("CN", stripDocPrefix(candidate.consignmentNumber)) : null,
       candidate.shipmentNumber,
-      candidate.shipmentNumber ? docBarcode("SHP", candidate.shipmentNumber) : null,
+      candidate.shipmentNumber ? docBarcode("SHP", stripDocPrefix(candidate.shipmentNumber)) : null,
       candidate.invoiceNumber,
-      candidate.invoiceNumber ? docBarcode("INV", candidate.invoiceNumber) : null,
+      candidate.invoiceNumber ? docBarcode("INV", stripDocPrefix(candidate.invoiceNumber)) : null,
       candidate.orderNumber,
-      candidate.orderNumber
-        ? docBarcode(
-            candidate.sourceType === "WORK_ORDER" || candidate.workOrderId != null ? "WO" : "ORD",
-            candidate.orderNumber,
-          )
-        : null,
+      cleanOrder ? docBarcode("WO", cleanOrder) : null,
+      cleanOrder ? docBarcode("ORD", cleanOrder) : null,
     ].filter((reference): reference is string => !!reference);
+  };
 
   // Exact matches retain priority over the leading-zero fallback.
   const exactMatches = candidates.filter((candidate) =>

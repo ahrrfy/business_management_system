@@ -82,11 +82,7 @@ export function ReclassifyDeliveryDialog({
   }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mustRefundFee = !hasDelivery && heldNet > 0;
-  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
-    { branchId: branchId ?? 0 },
-    { enabled: mustRefundFee && branchId != null },
-  );
-  const drawerShifts = openShiftsQ.data ?? [];
+  const drawerShifts = feeHeldQ.data?.openShifts ?? [];
   const needShiftPick = mustRefundFee && drawerShifts.length > 1;
 
   if (!order) return null;

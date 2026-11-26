@@ -1128,7 +1128,7 @@ export default function WorkOrderDetail() {
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {(cancelDirectAllowed || canRequestCancel) && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {(cancelDirectAllowed || canRequestCancel) && data.invoiceId == null && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
@@ -1140,11 +1140,12 @@ export default function WorkOrderDetail() {
               : cancelDirectAllowed ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
           </Button>
         )}
-        {canRequestCommercialControl && data.status === "DELIVERED" && data.invoiceId && (
+        {canRequestCommercialControl && (data.status === "DELIVERED" || (data.status === "READY" && !data.consignmentId)) && data.invoiceId != null && (
           <ReverseDeliveryRequestDialog
             workOrderId={workOrderId}
             orderNumber={data.orderNumber}
             title={data.title}
+            buttonLabel={data.status === "READY" ? "عكس الفاتورة وإعادة فتح / إلغاء الأمر" : "مرتجع / عكس تسليم"}
             onRequested={(message) => {
               setDone(message);
               setError("");
@@ -1152,7 +1153,7 @@ export default function WorkOrderDetail() {
           />
         )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
-        {data.status === "DELIVERED" && data.invoiceId && (
+        {data.invoiceId != null && (
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>

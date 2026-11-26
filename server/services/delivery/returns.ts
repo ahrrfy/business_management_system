@@ -33,6 +33,7 @@ import { reverseAutoOffsetShopDeliveryFeeTx } from "./shopFeeAutoOffset";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
 import { requestNoncashWorkOrderFeeRefundTx } from "../workOrder/deliveryFeeRefund";
+import { deactivateReleasedFulfillmentItemForConsignmentTx } from "../fulfillment/itemLifecycle";
 
 /** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
 export async function refundHeldDeliveryFeeForReturnTx(
@@ -576,6 +577,7 @@ export async function returnConsignment(
           settledAt: returnedAt,
         })
         .where(eq(deliveryConsignments.id, consignmentId));
+      await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
 
       await tx
         .update(workOrders)
@@ -1039,10 +1041,14 @@ export async function returnConsignment(
       const legacyCustody = cn.custodyRecognizedAt == null
         ? money(0)
         : round2(outstanding.lt(cachedCustody) ? outstanding : cachedCustody);
+      const claimSuffix =
+        Number(cn.codClaimVersion ?? 1) > 1
+          ? `:V${Number(cn.codClaimVersion)}`
+          : "";
       if (legacyCustody.gt(0)) {
         await adjustDeliveryBalance(tx, Number(cn.partyId), legacyCustody.neg());
         await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_RETURN`,
+          eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_RETURN${claimSuffix}`,
           partyId: Number(cn.partyId),
           consignmentId,
           branchId: Number(cn.branchId),
@@ -1056,7 +1062,7 @@ export async function returnConsignment(
       const exposureToRelease = round2(outstanding.minus(legacyCustody));
       if (exposureToRelease.gt(0)) {
         await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${consignmentId}:COD_RELEASED:RETURN`,
+          eventKey: `CN:${consignmentId}:COD_RELEASED:RETURN${claimSuffix}`,
           partyId: Number(cn.partyId),
           consignmentId,
           branchId: Number(cn.branchId),
@@ -1134,8 +1140,13 @@ export async function returnConsignment(
       returnedAt,
       settledAt: returnedAt,
     }).where(eq(deliveryConsignments.id, consignmentId));
+    await deactivateReleasedFulfillmentItemForConsignmentTx(tx, cn);
     if (cn.workOrderId != null) {
-      await tx.update(workOrders).set({ status: "CANCELLED" }).where(eq(workOrders.id, Number(cn.workOrderId)));
+      await tx.update(workOrders).set({
+        status: "CANCELLED",
+        kanbanState: "NORMAL",
+        blockedReason: null,
+      }).where(eq(workOrders.id, Number(cn.workOrderId)));
     }
     if (cn.sourceType === "ONLINE_ORDER") {
       await tx.update(onlineOrders).set({ status: "CANCELLED" }).where(eq(onlineOrders.id, Number(cn.sourceId)));

@@ -11,6 +11,7 @@ import { planDetachedShipmentFees } from "./detachedShipmentFees";
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { DEAD_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, deliveryShipmentMembers, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import Decimal from "decimal.js";
@@ -132,6 +133,19 @@ const partyHasPortalSql = sql<number>`(
   )
 )`;
 
+const woByInv = alias(workOrders, "wo_by_inv");
+const woByInvJoinCondition = and(
+  isNull(deliveryConsignments.workOrderId),
+  isNotNull(deliveryConsignments.invoiceId),
+  eq(woByInv.invoiceId, deliveryConsignments.invoiceId),
+  sql`${woByInv.id} = (
+    SELECT MIN(wo_inv_u.id)
+    FROM workOrders wo_inv_u
+    WHERE wo_inv_u.invoiceId = ${deliveryConsignments.invoiceId}
+      AND wo_inv_u.workOrderStatus <> 'CANCELLED'
+  )`,
+)!;
+
 /**
  * عدّ الأوامر الجاهزة للإرسال (لشارة القائمة الجانبية) — استعلامٌ خفيف بلا صفوف كاملة.
  * Codex P2 على Slice J (٢٩/٨): `readyForDispatch.length` كان يجرّ العنوان والهاتف واسم العميل
@@ -147,6 +161,14 @@ export async function countReadyForDispatch(branchId: number | null): Promise<nu
       SELECT 1 FROM deliveryConsignments dc
       WHERE dc.workOrderId = ${workOrders.id}
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+    sql`(
+      ${workOrders.invoiceId} IS NULL
+      OR NOT EXISTS (
+        SELECT 1 FROM deliveryConsignments dc_inv
+        WHERE dc_inv.invoiceId = ${workOrders.invoiceId}
+          AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      )
     )`,
   ];
   if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
@@ -191,6 +213,14 @@ export async function listReadyForDispatch(branchId: number | null) {
       SELECT 1 FROM deliveryConsignments dc
       WHERE dc.workOrderId = ${workOrders.id}
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+    sql`(
+      ${workOrders.invoiceId} IS NULL
+      OR NOT EXISTS (
+        SELECT 1 FROM deliveryConsignments dc_inv
+        WHERE dc_inv.invoiceId = ${workOrders.invoiceId}
+          AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      )
     )`,
   ];
   if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
@@ -301,7 +331,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       invoiceNumber: invoices.invoiceNumber,
       orderTotal: sql<string>`GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)`,
-      orderNumber: workOrders.orderNumber,
+      orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${woByInv.orderNumber}, ${onlineOrders.orderNumber})`,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
@@ -329,8 +359,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       customerName: customers.name,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${woByInv.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${woByInv.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''), NULLIF(${customers.address}, ''))`,
       deliveryAddress: deliveryConsignments.deliveryAddress,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       /** للجهة بوّابة؟ — القاموس المشترك يميّز به «مُسنَد» عن «بانتظار كشف الشركة». */
@@ -339,6 +369,20 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(woByInv, woByInvJoinCondition)
+    .leftJoin(
+      onlineOrders,
+      or(
+        and(
+          eq(deliveryConsignments.sourceId, onlineOrders.id),
+          eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+        ),
+        and(
+          isNotNull(deliveryConsignments.invoiceId),
+          eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId),
+        ),
+      ),
+    )
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
@@ -404,8 +448,8 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
       aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       invoiceNumber: invoices.invoiceNumber,
-      workOrderId: deliveryConsignments.workOrderId,
-      orderNumber: workOrders.orderNumber,
+      workOrderId: sql<number | null>`COALESCE(${deliveryConsignments.workOrderId}, ${woByInv.id})`,
+      orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${woByInv.orderNumber})`,
       /**
        * مصدر الطرد (١٩/٨، طلب المالك) — الاستعلام محايدُ المصدر أصلاً (كل إرسالية
        * `DISPATCHED`)، فطلبُ المتجر المُسنَد لشركةٍ يظهر هنا كما يظهر أمرُ الشغل. لكنّ الصفّ
@@ -451,11 +495,11 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       codDue: consignmentOpenCodDueSql,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''))`,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${woByInv.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''))`,
       // العنوان على الإرسالية أوّلاً (يُلقَط لحظة الإرسال وقد يُعدَّل عليها)، وأمرُ الشغل
       // احتياطٌ للصفوف القديمة التي أُنشئت قبل نسخه — لا العكس: التعليق السابق («لا عمود له
       // على الإرسالية») كان كاذباً منذ أُضيف العمود، فبقيت طرودُ المتجر والفواتير بلا عنوان.
-      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${woByInv.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
       deliveryAddress: deliveryConsignments.deliveryAddress,
       /** للجهة بوّابة؟ — يقرّر عرضَ الصفّ «مُسنَد» أم «بانتظار كشف الشركة» (فعلُ موظّف). */
       partyHasPortal: partyHasPortalSql,
@@ -474,6 +518,7 @@ export async function listInTransitConsignments(branchId: number | null, partyId
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(woByInv, woByInvJoinCondition)
     .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
     .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
@@ -980,8 +1025,8 @@ export async function getConsignmentTimeline(consignmentId: number) {
         fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
         aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
         invoiceNumber: invoices.invoiceNumber,
-        workOrderId: deliveryConsignments.workOrderId,
-        orderNumber: workOrders.orderNumber,
+        workOrderId: sql<number | null>`COALESCE(${deliveryConsignments.workOrderId}, ${woByInv.id})`,
+        orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${woByInv.orderNumber})`,
         failureReason: deliveryConsignments.failureReason,
         returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
         returnDeclaredBy: deliveryConsignments.returnDeclaredBy,
@@ -995,6 +1040,7 @@ export async function getConsignmentTimeline(consignmentId: number) {
       .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
       .leftJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
       .leftJoin(workOrders, eq(workOrders.id, deliveryConsignments.workOrderId))
+      .leftJoin(woByInv, woByInvJoinCondition)
       .leftJoin(customers, eq(customers.id, deliveryConsignments.endCustomerId))
       .leftJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryConsignments.remittanceId))
       .where(eq(deliveryConsignments.id, consignmentId))
@@ -1394,11 +1440,14 @@ export async function predictiveSearchConsignments(
       deliveryConsignments.recipientName,
       customers.name,
       workOrders.contactName,
+      woByInv.contactName,
     ],
     phones: [
       deliveryConsignments.recipientPhone,
       workOrders.deliveryPhone,
       workOrders.contactPhone,
+      woByInv.deliveryPhone,
+      woByInv.contactPhone,
       customers.phone,
       customers.phone2,
       customers.phone3,
@@ -1407,6 +1456,7 @@ export async function predictiveSearchConsignments(
     addresses: [
       deliveryConsignments.deliveryAddress,
       workOrders.deliveryAddress,
+      woByInv.deliveryAddress,
       onlineOrders.shippingAddress,
       customers.address,
     ],
@@ -1419,6 +1469,8 @@ export async function predictiveSearchConsignments(
       invoices.invoiceNumber,
       workOrders.id,
       workOrders.orderNumber,
+      woByInv.id,
+      woByInv.orderNumber,
       onlineOrders.id,
       onlineOrders.orderNumber,
     ],
@@ -1447,8 +1499,8 @@ export async function predictiveSearchConsignments(
       remainingAmount: consignmentOpenCodDueSql,
       cashInCourierCustody: sql<string>`GREATEST((SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id AND ${effectiveDeliveryLedgerEntrySql("dle")}), 0)`,
       searchRecipientPhone: deliveryConsignments.recipientPhone,
-      searchDeliveryPhone: workOrders.deliveryPhone,
-      searchContactPhone: workOrders.contactPhone,
+      searchDeliveryPhone: sql<string | null>`COALESCE(${workOrders.deliveryPhone}, ${woByInv.deliveryPhone})`,
+      searchContactPhone: sql<string | null>`COALESCE(${workOrders.contactPhone}, ${woByInv.contactPhone})`,
       searchCustomerPhone: customers.phone,
       searchCustomerPhone2: customers.phone2,
       searchCustomerPhone3: customers.phone3,
@@ -1462,9 +1514,9 @@ export async function predictiveSearchConsignments(
       sourceType: deliveryConsignments.sourceType,
       sourceId: deliveryConsignments.sourceId,
       invoiceNumber: invoices.invoiceNumber,
-      workOrderId: deliveryConsignments.workOrderId,
+      workOrderId: sql<number | null>`COALESCE(${deliveryConsignments.workOrderId}, ${woByInv.id})`,
       onlineOrderId: onlineOrders.id,
-      orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${onlineOrders.orderNumber})`,
+      orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${woByInv.orderNumber}, ${onlineOrders.orderNumber})`,
       partyId: deliveryConsignments.partyId,
       partyName: deliveryParties.name,
       partyType: deliveryParties.partyType,
@@ -1475,13 +1527,14 @@ export async function predictiveSearchConsignments(
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       shortfallAssigned: consignmentShortfallAssignedSql,
-      customerName: sql<string>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''), 'عميل نقدي')`,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-      deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''), NULLIF(${customers.address}, ''))`,
+      customerName: sql<string>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''), NULLIF(${woByInv.contactName}, ''), 'عميل نقدي')`,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${woByInv.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''), NULLIF(${woByInv.contactPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${woByInv.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''), NULLIF(${customers.address}, ''))`,
     })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(woByInv, woByInvJoinCondition)
     .leftJoin(
       onlineOrders,
       or(

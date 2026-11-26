@@ -117,7 +117,11 @@ export async function setWorkOrderMaterialsInTx(
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة ثم أعد المحاولة" });
     }
     if (wo.invoiceId != null) {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "صدرت فاتورة لهذا الأمر — لا تعدّل المواد بعد الفوترة" });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "صدرت فاتورة لهذا الأمر — لا تعدّل المواد بعد الفوترة؛ استعمل «عكس الفاتورة مع إعادة فتح الأمر» أولاً لتعديل الخامات نظامياً",
+      });
     }
     if (wo.status === "DELIVERED") {
       throw new TRPCError({

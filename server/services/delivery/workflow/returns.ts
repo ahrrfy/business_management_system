@@ -43,6 +43,7 @@ import {
   listDeliveryDocumentSnapshotsTx,
   type WorkflowDocumentBody,
 } from "../documentSnapshots";
+import { reverseAutoOffsetShopDeliveryFeeTx } from "../shopFeeAutoOffset";
 
 export interface ReceiveWorkflowReturnInput {
   source: WorkflowDispatchSource;
@@ -437,11 +438,18 @@ export function receiveWorkflowReturn(
             "لا توجد عهدة مرسلة حالية تقبل إثبات الاستلام؛ لا يمثل الإلغاء الإداري رجوعاً فعلياً",
           );
         const receivedAt = new Date();
-        if (wholeParcel)
+        if (wholeParcel) {
+          await reverseAutoOffsetShopDeliveryFeeTx(tx, {
+            consignmentId: Number(row.id),
+            actor: auth.actor,
+            operationKey: `workflow.physicalReturn:${input.clientRequestId}:${row.id}`,
+            reason: input.evidence.trim(),
+          });
           await tx
             .update(deliveryConsignments)
             .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })
             .where(eq(deliveryConsignments.id, row.id));
+        }
         const receiptEventId = await appendDeliveryEvent(tx, {
           eventKey: documentEventKey,
           consignmentId: row.id,

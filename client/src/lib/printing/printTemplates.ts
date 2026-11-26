@@ -1168,7 +1168,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData, options?: 
   ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
 
   <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2mm 0;text-align:center;margin:2mm 0;">
-    <span style="font-size:13px;font-weight:900;">طلب خدمة / المطبعة</span>
+    <span style="font-size:13px;font-weight:900;">أمر شغل — المطبعة</span>
   </div>
 
   <table class="receipt-grid" style="width:100%;font-size:10.5px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
@@ -1187,7 +1187,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData, options?: 
     <tbody>
       <tr>
         <td style="padding:1.5mm 1mm;font-weight:800;border:1px solid #000;text-align:right;vertical-align:top;">
-          <div style="font-weight:900;font-size:11.5px;">${esc(d.jobTitle || 'طلب خدمة')}</div>
+          <div style="font-weight:900;font-size:11.5px;">${esc(d.jobTitle || 'أمر شغل')}</div>
           ${specsHtml ? `<div style="font-size:9.5px;color:#333;margin-top:1mm;white-space:pre-wrap;word-break:break-all;">${esc(d.specs)}</div>` : ''}
         </td>
         <td style="padding:1.5mm 1mm;font-weight:800;border:1px solid #000;text-align:center;vertical-align:top;font-variant-numeric:tabular-nums;">
@@ -1211,11 +1211,15 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData, options?: 
       <tr>
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">مدفوع مقدماً</td>
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.paidUpfront)}</td>
-      </tr>
+      </tr>` : ''}
+      ${moneyInput(d.total).gt(0) ? (moneyInput(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront ?? 0).toFixed(2)).lte(0) ? `
+      <tr style="border:2px solid #000;">
+        <td colspan="2" style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;text-align:center;">مسدّد بالكامل مسبقاً</td>
+      </tr>` : `
       <tr style="border:2px solid #000;">
         <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">المتبقّي عند الاستلام</td>
-        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront).toFixed(2))}</td>
-      </tr>` : ''}
+        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront ?? 0).toFixed(2))}</td>
+      </tr>`) : ''}
     </tbody>
   </table>
 

@@ -6,7 +6,7 @@ import { appErrorMessage } from "@shared/errors";
 import { isQuantity } from "@shared/quantity";
 import { hasOperationPolicy, operationDecision, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -100,6 +100,19 @@ import {
 import { currentOnlineOrderStatus } from "../services/storeAdmin/onlineOrderTracking";
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
 const materialsEditorUser = alias(users, "materialsEditorUser"); // محرّر البنود الأخير (0199)
+const consignmentByInv = alias(deliveryConsignments, "dc_by_inv");
+const partyByInv = alias(deliveryParties, "dp_by_inv");
+const activeInvoiceConsignmentJoinCondition = and(
+  isNotNull(workOrders.invoiceId),
+  eq(consignmentByInv.invoiceId, workOrders.invoiceId),
+  notInArray(consignmentByInv.status, ["CANCELLED", "RETURNED"]),
+  sql`${consignmentByInv.id} = (
+    SELECT MAX(dc_inv_latest.id)
+    FROM deliveryConsignments dc_inv_latest
+    WHERE dc_inv_latest.invoiceId = ${workOrders.invoiceId}
+      AND dc_inv_latest.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+  )`,
+)!;
 const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   NULLIF(TRIM(${workOrderCreatorUser.name}), ''),
   NULLIF(TRIM(${workOrderCreatorUser.username}), ''),
@@ -472,6 +485,7 @@ export function buildWoFilterConds(input: { customerId?: number; q?: string; fro
     // «حديثة» كذبٌ آخر — إخراجُها من الفلتر هو الصادق، وتبقى مرئيّةً في القائمة بلا فلتر.
     conds.push(
       sql`${workOrders.status} = 'READY' AND ${workOrders.workStartedAt} IS NOT NULL AND ${workOrders.workSeconds} IS NOT NULL
+          AND ${excludeDispatchedReadySql()}
           AND DATE_ADD(${workOrders.workStartedAt}, INTERVAL ${workOrders.workSeconds} SECOND)
               < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${input.awaitingPickupDays} DAY)`,
     );
@@ -770,15 +784,15 @@ export const workOrderRouter = router({
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — لطابور الاستقبال («جاهز» ⇐ تحت التسليم/الإرسال
           // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
-          consignmentId: deliveryConsignments.id,
-          consignmentStatus: deliveryConsignments.status,
+          consignmentId: sql<number | null>`COALESCE(${deliveryConsignments.id}, ${consignmentByInv.id})`,
+          consignmentStatus: sql<typeof deliveryConsignments.$inferSelect["status"] | null>`COALESCE(${deliveryConsignments.status}, ${consignmentByInv.status})`,
           // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
           // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
-          parcelStatus: deliveryConsignments.parcelStatus,
-          consignmentNumber: deliveryConsignments.consignmentNumber,
-          courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
-          deliveryPartyId: deliveryConsignments.partyId,
-          deliveryPartyName: deliveryParties.name,
+          parcelStatus: sql<typeof deliveryConsignments.$inferSelect["parcelStatus"] | null>`COALESCE(${deliveryConsignments.parcelStatus}, ${consignmentByInv.parcelStatus})`,
+          consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, ${consignmentByInv.consignmentNumber})`,
+          courierDeliveredAt: sql<Date | null>`COALESCE(${deliveryConsignments.courierDeliveredAt}, ${consignmentByInv.courierDeliveredAt})`,
+          deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${consignmentByInv.partyId})`,
+          deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${partyByInv.name})`,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -789,6 +803,8 @@ export const workOrderRouter = router({
           activeWorkOrderConsignmentJoinCondition(),
         )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+        .leftJoin(consignmentByInv, activeInvoiceConsignmentJoinCondition)
+        .leftJoin(partyByInv, eq(consignmentByInv.partyId, partyByInv.id))
         .where(whereCond)
         .orderBy(desc(workOrders.id))
         .limit(input?.limit ?? 100);
@@ -879,10 +895,20 @@ export const workOrderRouter = router({
       // «اليوم» بحدود UTC (إطار businessDay) — dueDate عمود DATE فتصلح مقارنته نصّياً بحتمية.
       const todayUtc = new Date().toISOString().slice(0, 10);
       // أمر الشغل في READY يُعدّ جاهزاً للتسليم/بانتظار العميل ما لم يكن مُسنداً لإرسالية توصيل نشطة
-      const isDispatchedReady = sql<boolean>`(${workOrders.status} = 'READY' AND EXISTS (
-        SELECT 1 FROM deliveryConsignments dc
-        WHERE dc.workOrderId = ${workOrders.id}
-          AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      const isDispatchedReady = sql<boolean>`(${workOrders.status} = 'READY' AND (
+        EXISTS (
+          SELECT 1 FROM deliveryConsignments dc
+          WHERE dc.workOrderId = ${workOrders.id}
+            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+        )
+        OR (
+          ${workOrders.invoiceId} IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM deliveryConsignments dc_inv
+            WHERE dc_inv.invoiceId = ${workOrders.invoiceId}
+              AND dc_inv.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+          )
+        )
       ))`;
       const rows = await db
         .select({
@@ -999,15 +1025,15 @@ export const workOrderRouter = router({
           version: workOrders.version,
           materialsEditedByName: materialsEditorUser.name,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
-          consignmentId: deliveryConsignments.id,
-          consignmentStatus: deliveryConsignments.status,
+          consignmentId: sql<number | null>`COALESCE(${deliveryConsignments.id}, ${consignmentByInv.id})`,
+          consignmentStatus: sql<typeof deliveryConsignments.$inferSelect["status"] | null>`COALESCE(${deliveryConsignments.status}, ${consignmentByInv.status})`,
           // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
           // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
-          parcelStatus: deliveryConsignments.parcelStatus,
-          consignmentNumber: deliveryConsignments.consignmentNumber,
-          courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
-          deliveryPartyId: deliveryConsignments.partyId,
-          deliveryPartyName: deliveryParties.name,
+          parcelStatus: sql<typeof deliveryConsignments.$inferSelect["parcelStatus"] | null>`COALESCE(${deliveryConsignments.parcelStatus}, ${consignmentByInv.parcelStatus})`,
+          consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, ${consignmentByInv.consignmentNumber})`,
+          courierDeliveredAt: sql<Date | null>`COALESCE(${deliveryConsignments.courierDeliveredAt}, ${consignmentByInv.courierDeliveredAt})`,
+          deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${consignmentByInv.partyId})`,
+          deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${partyByInv.name})`,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -1021,6 +1047,8 @@ export const workOrderRouter = router({
           activeWorkOrderConsignmentJoinCondition(),
         )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+        .leftJoin(consignmentByInv, activeInvoiceConsignmentJoinCondition)
+        .leftJoin(partyByInv, eq(consignmentByInv.partyId, partyByInv.id))
         .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
         .leftJoin(invoices, eq(workOrders.invoiceId, invoices.id))
         .where(eq(workOrders.id, input.workOrderId))
@@ -1035,12 +1063,13 @@ export const workOrderRouter = router({
       ? {
           consignmentId: wo.consignmentId,
           consignmentStatus: wo.consignmentStatus,
+          parcelStatus: wo.parcelStatus,
           consignmentNumber: wo.consignmentNumber,
           courierDeliveredAt: wo.courierDeliveredAt,
           deliveryPartyId: wo.deliveryPartyId,
           deliveryPartyName: wo.deliveryPartyName,
         }
-      : { consignmentId: null, consignmentStatus: null, consignmentNumber: null, courierDeliveredAt: null, deliveryPartyId: null, deliveryPartyName: null };
+      : { consignmentId: null, consignmentStatus: null, parcelStatus: null, consignmentNumber: null, courierDeliveredAt: null, deliveryPartyId: null, deliveryPartyName: null };
     const materials = await db
       .select({
         id: workOrderMaterials.id,
@@ -1325,13 +1354,34 @@ export const workOrderRouter = router({
       );
 
       const siblingWorkOrders = await findSiblingWorkOrdersByBaseCode(input.orderNumber, branchFilter);
-      const selectedTarget = resolveHandoverBarcodeTarget(code, namespace, collapseLinkedDeliveryBarcodeCandidates({
+      let selectedTarget = resolveHandoverBarcodeTarget(code, namespace, collapseLinkedDeliveryBarcodeCandidates({
         namespace,
         workOrders: workOrderCandidates,
         invoices: invoiceCandidates,
         onlineOrders: onlineOrderCandidates,
         consignments: consignmentSources, mapConsignmentToSource: true,
       }), siblingWorkOrders);
+
+      if (selectedTarget?.kind === "INVOICE") {
+        const owningWorkOrders = await db
+          .select({ id: workOrders.id })
+          .from(workOrders)
+          .where(
+            and(
+              eq(workOrders.invoiceId, selectedTarget.id),
+              ne(workOrders.status, "CANCELLED"),
+              branchFilter != null ? eq(workOrders.branchId, branchFilter) : sql`1=1`,
+            ),
+          )
+          .limit(2);
+        if (owningWorkOrders.length === 1) {
+          selectedTarget = {
+            kind: "WORK_ORDER",
+            id: Number(owningWorkOrders[0]!.id),
+            matchRank: selectedTarget.matchRank,
+          };
+        }
+      }
 
       const [row] = await db
         .select({
@@ -1364,29 +1414,51 @@ export const workOrderRouter = router({
         ))
         .limit(1);
       if (row) {
-        const [activeCn] = await db
-          .select({
-            id: deliveryConsignments.id,
-            consignmentNumber: deliveryConsignments.consignmentNumber,
-            partyId: deliveryConsignments.partyId,
-            partyName: deliveryParties.name,
-            partyType: deliveryParties.partyType,
-            parcelStatus: deliveryConsignments.parcelStatus,
-            moneyStatus: deliveryConsignments.moneyStatus,
-            codAmount: deliveryConsignments.codAmount,
-            collectedAmount: deliveryConsignments.collectedAmount,
-          })
+        const cnSelect = {
+          id: deliveryConsignments.id,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          partyId: deliveryConsignments.partyId,
+          partyName: deliveryParties.name,
+          partyType: deliveryParties.partyType,
+          parcelStatus: deliveryConsignments.parcelStatus,
+          moneyStatus: deliveryConsignments.moneyStatus,
+          codAmount: deliveryConsignments.codAmount,
+          collectedAmount: deliveryConsignments.collectedAmount,
+        };
+        const [activeCnByWo] = await db
+          .select(cnSelect)
           .from(deliveryConsignments)
           .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
           .where(
             and(
               eq(deliveryConsignments.workOrderId, row.id),
+              notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
               notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
               branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
             )
           )
           .orderBy(desc(deliveryConsignments.id))
           .limit(1);
+        const activeCn =
+          activeCnByWo ??
+          (row.invoiceId != null
+            ? (
+                await db
+                  .select(cnSelect)
+                  .from(deliveryConsignments)
+                  .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+                  .where(
+                    and(
+                      eq(deliveryConsignments.invoiceId, Number(row.invoiceId)),
+                      notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+                      notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+                      branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
+                    ),
+                  )
+                  .orderBy(desc(deliveryConsignments.id))
+                  .limit(1)
+              )[0]
+            : undefined);
 
         let linkedInvoice: {
           id: number;
@@ -1454,6 +1526,7 @@ export const workOrderRouter = router({
       const [inv] = await db
         .select({
           id: invoices.id,
+          sourceType: invoices.sourceType,
           orderNumber: invoices.invoiceNumber,
           title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
           status: invoices.status,
@@ -2108,7 +2181,25 @@ export const workOrderRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
         }
         const net = await workOrderFeeHeldNet(tx, input.workOrderId);
-        return { net: net.toFixed(2), branchId: Number(wo.branchId) };
+        const openShifts = net.gt(0)
+          ? (
+              await tx
+                .select({ shiftId: shifts.id, userName: users.name })
+                .from(shifts)
+                .innerJoin(users, eq(users.id, shifts.userId))
+                .where(
+                  and(
+                    eq(shifts.branchId, Number(wo.branchId)),
+                    eq(shifts.status, "OPEN"),
+                    eq(shifts.shiftType, "RECEPTION"),
+                  ),
+                )
+            ).map((s) => ({
+              shiftId: Number(s.shiftId),
+              userName: s.userName ?? `وردية #${s.shiftId}`,
+            }))
+          : [];
+        return { net: net.toFixed(2), branchId: Number(wo.branchId), openShifts };
       });
     }),
 
@@ -2317,6 +2408,8 @@ export const workOrderRouter = router({
           amount: positiveMoneyString,
           method: receptionPaymentMethod,
           reference: z.string().trim().max(100).nullish(),
+          externalPaymentAttemptId: z.number().int().positive().nullish(),
+          externalPaymentDeviceId: z.string().trim().min(1).max(120).nullish(),
         }).optional(),
         clientRequestId: z.string().optional().nullable(),
         /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */

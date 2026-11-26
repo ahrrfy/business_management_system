@@ -23,7 +23,7 @@ describe("واجهة عكس التسليم من تفاصيل أمر الشغل",
     // **عكسُ التسليم يبقى تجارياً** (كاشير/مدير). الحارسُ يتبع الاسم الجديد كي لا يُثبّت
     // البوّابةَ القديمة على الزرّ الخطأ.
     expect(page).toContain(
-      'canRequestCommercialControl && data.status === "DELIVERED"',
+      'canRequestCommercialControl && (data.status === "DELIVERED" || (data.status === "READY" && !data.consignmentId)) && data.invoiceId != null',
     );
     expect(page).toContain("workOrderDetailOperationAccess(me.data)");
     expect(operationAccess).toContain(

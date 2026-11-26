@@ -187,8 +187,9 @@ export function printWoThermalFromCard(o: WO) {
     quantity: o.quantity ? `${formatQuantity(o.quantity)} نسخة` : undefined,
     total: o.salePrice,
     paidUpfront: Number(o.deposit ?? 0) > 0 ? o.deposit : null,
-    balanceDue: Number(o.deposit ?? 0) > 0
-      ? String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0)))
-      : null,
+    balanceDue: String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0))),
+    hasDelivery: Boolean(o.hasDelivery),
+    deliveryFee: o.deliveryCost ?? null,
+    deliveryFeeCollection: o.deliveryFeeCollection ?? null,
   });
 }

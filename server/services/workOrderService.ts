@@ -26,4 +26,3 @@ export { updateWorkOrder } from "./workOrder/update";
 // تحرير بنود الأمر (١٧/٨/٢٦) — عقدٌ تصريحيّ: تُرسَل القائمة كاملةً وتُشتقّ الفروق.
 export type { SetWorkOrderMaterialsInput, SetWorkOrderMaterialsResult, WorkOrderMaterialCandidateRow } from "./workOrder/materials";
 export { setWorkOrderMaterials, searchWorkOrderMaterials, lookupWorkOrderMaterialByBarcode } from "./workOrder/materials";
-export { reverseServiceInvoice } from "./workOrder/reverseServiceInvoice";

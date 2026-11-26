@@ -2,7 +2,6 @@
   "client/src/components/account/__tests__/MyPerformanceCard.test.tsx": 1,
   "client/src/components/contacts/__tests__/Contact360Panel.test.tsx": 2,
   "client/src/components/crm/__tests__/wave32Dossier.test.tsx": 1,
-  "client/src/components/delivery/CancelAssignmentOrderCard.test.tsx": 2,
   "client/src/components/delivery/CollectConsignmentDialog.test.tsx": 1,
   "client/src/components/delivery/CompanyConsignmentFinancials.test.tsx": 1,
   "client/src/components/delivery/DeliveryOperationalIntelligenceBar.test.tsx": 2,

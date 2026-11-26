@@ -237,8 +237,8 @@ export async function requestWorkOrderControl(
       }
     }
     if (input.requestType === "REVERSE_DELIVERY") {
-      if (wo.status !== "DELIVERED" || wo.invoiceId == null) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "طلب عكس التسليم لأمرٍ مُسلَّم ذي فاتورة فقط" });
+      if ((wo.status !== "DELIVERED" && wo.status !== "READY") || wo.invoiceId == null) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "طلب عكس التسليم لأمرٍ مفوتر (مُسلَّم أو جاهز للتسليم) فقط" });
       }
       const payload = input.payload as ReverseDeliveryControlPayload;
       if (Number(payload.expectedVersion) !== input.baseVersion) {
@@ -763,7 +763,7 @@ export async function getWorkOrderControlPreflight(
       actor.role ?? "",
       (actor.permissionsOverride ?? null) as never,
     );
-    const reverseDelivery = mayReverse && wo.status === "DELIVERED" && wo.invoiceId != null
+    const reverseDelivery = mayReverse && (wo.status === "DELIVERED" || wo.status === "READY") && wo.invoiceId != null
       ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
       : null;
     /**

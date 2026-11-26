@@ -2774,10 +2774,6 @@ async function deploy(expectedHead, { forwardRecovery = null } = {}) {
           "scripts/ci-apply-extra-migrations.mjs",
           "--only=drizzle/migrations/0178_repair_reception_schema_drift.sql",
         ]);
-        run("node", [
-          "scripts/ci-apply-extra-migrations.mjs",
-          "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
-        ]);
       });
       step("6/12 التحقق من مخطط قاعدة البيانات", () =>
         run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
