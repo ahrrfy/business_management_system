@@ -1,5 +1,6 @@
 import { docBarcode } from "@shared/documentNumber";
 import { fmtInt } from "@/lib/money";
+import { isPublicHost, isPublicPath } from "@/lib/siteHosts";
 import { code128Svg } from "./barcode";
 import { CAIRO_FONT, esc, openPrintWindow } from "./brand";
 import { EscPos, imageDataToRaster, type Raster } from "./escpos";
@@ -372,6 +373,44 @@ export async function printStoreOrderAlertSilent(
 export const STORE_ORDER_AUTOPRINT_STATION_KEY = "erp.storeOrders.autoPrintStation";
 export const STORE_ORDER_AUTOPRINT_STATION_EVENT = "erp:store-order-autoprint-station";
 
+const NON_AUTOPRINT_INTERNAL_PATHS = [
+  "/login",
+  "/mobile-design-preview",
+  "/price-checker",
+  "/shelf-lookup",
+  "/price-check",
+  "/kiosk",
+  "/cfd",
+  "/count",
+  "/apply",
+  "/verify",
+  "/my-deliveries",
+] as const;
+
+/**
+ * يحدد ما إذا كان المسار الحالي شاشة عمل داخلية للموظفين يحق لها تشغيل منسق الطباعة التلقائية
+ * لطلبات المتجر الواردة (بما فيها نقطة البيع /pos بأوضاعها الثلاثة، الاستقبال، استوديو الطباعة،
+ * ولوحة التحكم وكافة الشاشات الإدارية)، مع استثناء شاشات الزبائن والكشك وشاشة العميل المقابلة CFD.
+ */
+export function shouldRunStoreOrderAutoPrintOnRoute(
+  pathname: string,
+  hostname: string,
+): boolean {
+  if (isPublicHost(hostname)) return false;
+  const rawPath = (pathname || "/").split(/[?#]/, 1)[0] || "/";
+  const cleanPath =
+    rawPath.length > 1 ? rawPath.replace(/\/+$/, "") || "/" : rawPath;
+  if (isPublicPath(cleanPath)) return false;
+  if (
+    NON_AUTOPRINT_INTERNAL_PATHS.some(
+      (prefix) => cleanPath === prefix || cleanPath.startsWith(`${prefix}/`),
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function readStoreOrderAutoPrintStationSetting(): boolean | null {
   if (typeof window === "undefined") return null;
   try {
@@ -532,7 +571,8 @@ export interface StoreOrderAlertIncomingPayload {
 export function createStoreOrderAlertCoordinator(deps: {
   hasPrinter: () => Promise<boolean>;
   canBrowserFallback?: () => boolean;
-  browserFallbackHeadStartMs?: number;
+  claimHeadStartMs?: number | (() => number);
+  browserFallbackHeadStartMs?: number | (() => number);
   claim: (orderId: number) => Promise<StoreOrderAlertClaimResult | null>;
   renew?: (
     orderId: number,
@@ -577,6 +617,17 @@ export function createStoreOrderAlertCoordinator(deps: {
   const failedStationCooldownMs = deps.failedStationCooldownMs ?? 8_000;
   const unconfirmedDialogHoldMs = deps.unconfirmedDialogHoldMs ?? 90_000;
 
+  const resolveDelayMs = (
+    val: number | (() => number) | undefined,
+    fallback: number,
+  ): number => {
+    const resolved = typeof val === "function" ? val() : val;
+    return typeof resolved === "number" && Number.isFinite(resolved) && resolved >= 0
+      ? resolved
+      : fallback;
+  };
+
+  let disposed = false;
   const notifiedOrderIds = new Set<number>();
   const printedOrderIds = new Set<number>();
   const awaitingDialogConfirmIds = new Set<number>();
@@ -586,6 +637,7 @@ export function createStoreOrderAlertCoordinator(deps: {
   const pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
   const auxTimers = new Set<ReturnType<typeof setTimeout>>();
   const activePrintAborts = new Set<AbortController>();
+  const activeLeaseReleases = new Map<number, () => void>();
 
   const boundSet = (set: Set<number>, keep: number) => {
     if (set.size > 200) {
@@ -646,13 +698,15 @@ export function createStoreOrderAlertCoordinator(deps: {
 
     inFlightOrderIds.add(orderId);
     try {
+      if (disposed) return;
       const hardwarePrinterReady = await deps.hasPrinter().catch(() => false);
+      if (disposed) return;
       let useBrowserFallback = false;
       if (!hardwarePrinterReady) {
         const fallbackAllowed = deps.canBrowserFallback ? deps.canBrowserFallback() : false;
         if (!fallbackAllowed) return;
         useBrowserFallback = true;
-        const headStartMs = deps.browserFallbackHeadStartMs ?? 700;
+        const headStartMs = resolveDelayMs(deps.browserFallbackHeadStartMs, 700);
         if (headStartMs > 0) {
           await new Promise<void>((resolve) => {
             const waitHandle = schedule(() => {
@@ -661,7 +715,19 @@ export function createStoreOrderAlertCoordinator(deps: {
             }, headStartMs);
             auxTimers.add(waitHandle);
           });
-          if (printedOrderIds.has(orderId)) return;
+          if (disposed || printedOrderIds.has(orderId)) return;
+        }
+      } else {
+        const claimHeadStartMs = resolveDelayMs(deps.claimHeadStartMs, 0);
+        if (claimHeadStartMs > 0) {
+          await new Promise<void>((resolve) => {
+            const waitHandle = schedule(() => {
+              auxTimers.delete(waitHandle);
+              resolve();
+            }, claimHeadStartMs);
+            auxTimers.add(waitHandle);
+          });
+          if (disposed || printedOrderIds.has(orderId)) return;
         }
       }
 
@@ -670,7 +736,7 @@ export function createStoreOrderAlertCoordinator(deps: {
         claimRes = await deps.claim(orderId);
       } catch (err) {
         console.warn("[store-order-alert] claimNotificationPrint failed:", err);
-        scheduleNextRecovery(payload);
+        if (!disposed) scheduleNextRecovery(payload);
         return;
       }
 
@@ -684,7 +750,12 @@ export function createStoreOrderAlertCoordinator(deps: {
       }
 
       if (!claimRes?.claimed) {
-        scheduleNextRecovery(payload);
+        if (!disposed) scheduleNextRecovery(payload);
+        return;
+      }
+
+      if (disposed) {
+        void deps.release(orderId, claimRes.leaseToken ?? null).catch(() => {});
         return;
       }
 
@@ -779,6 +850,7 @@ export function createStoreOrderAlertCoordinator(deps: {
       }
 
       if (outcome === "printed") {
+        activeLeaseReleases.delete(orderId);
         printedOrderIds.add(orderId);
         boundSet(printedOrderIds, orderId);
         recoveryStepByOrder.delete(orderId);
@@ -788,23 +860,26 @@ export function createStoreOrderAlertCoordinator(deps: {
           try {
             await deps.confirm(orderId, tokenToConfirm);
           } catch {
-            const retryHandle = schedule(() => {
-              auxTimers.delete(retryHandle);
-              void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
-            }, 2_000);
-            auxTimers.add(retryHandle);
+            if (!disposed) {
+              const retryHandle = schedule(() => {
+                auxTimers.delete(retryHandle);
+                void deps.confirm?.(orderId, tokenToConfirm).catch(() => {});
+              }, 2_000);
+              auxTimers.add(retryHandle);
+            }
           }
         }
         return;
       }
 
       if (outcome === "dialog_opened") {
-        if (!deps.onBrowserDialogOpened) {
+        if (disposed || !deps.onBrowserDialogOpened) {
+          activeLeaseReleases.delete(orderId);
           failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
           try {
             await deps.release(orderId, activeLeaseToken);
           } catch {
-            scheduleNextRecovery(payload);
+            if (!disposed) scheduleNextRecovery(payload);
           }
           return;
         }
@@ -844,10 +919,11 @@ export function createStoreOrderAlertCoordinator(deps: {
               }
               if (renewed && renewed.renewed === false) {
                 dialogSettled = true;
+                activeLeaseReleases.delete(orderId);
                 clearDialogTimers();
                 awaitingDialogConfirmIds.delete(orderId);
                 failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
-                scheduleNextRecovery(payload);
+                if (!disposed) scheduleNextRecovery(payload);
                 return;
               }
             } catch {
@@ -863,6 +939,7 @@ export function createStoreOrderAlertCoordinator(deps: {
         const confirmPrinted = async () => {
           if (dialogSettled) return;
           dialogSettled = true;
+          activeLeaseReleases.delete(orderId);
           clearDialogTimers();
           awaitingDialogConfirmIds.delete(orderId);
           printedOrderIds.add(orderId);
@@ -886,15 +963,24 @@ export function createStoreOrderAlertCoordinator(deps: {
         const retryOrRelease = async () => {
           if (dialogSettled) return;
           dialogSettled = true;
+          activeLeaseReleases.delete(orderId);
           clearDialogTimers();
           awaitingDialogConfirmIds.delete(orderId);
           failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
           try {
             await deps.release(orderId, activeLeaseToken);
           } catch {
-            scheduleNextRecovery(payload);
+            if (!disposed) scheduleNextRecovery(payload);
           }
         };
+
+        activeLeaseReleases.set(orderId, () => {
+          if (dialogSettled) return;
+          dialogSettled = true;
+          clearDialogTimers();
+          awaitingDialogConfirmIds.delete(orderId);
+          void deps.release(orderId, activeLeaseToken).catch(() => {});
+        });
 
         scheduleHoldRenew();
         holdExpireTimer = schedule(() => {
@@ -913,7 +999,12 @@ export function createStoreOrderAlertCoordinator(deps: {
         return;
       }
 
+      activeLeaseReleases.delete(orderId);
       if (outcome === "lease_lost" || abortController.signal.aborted) {
+        if (disposed) {
+          void deps.release(orderId, activeLeaseToken).catch(() => {});
+          return;
+        }
         failedCooldownUntil.set(orderId, getNow() + failedStationCooldownMs);
         scheduleNextRecovery(payload);
         return;
@@ -923,7 +1014,7 @@ export function createStoreOrderAlertCoordinator(deps: {
       try {
         await deps.release(orderId, activeLeaseToken);
       } catch {
-        scheduleNextRecovery(payload);
+        if (!disposed) scheduleNextRecovery(payload);
       }
     } finally {
       inFlightOrderIds.delete(orderId);
@@ -933,6 +1024,7 @@ export function createStoreOrderAlertCoordinator(deps: {
   return {
     handleEvent(payload: StoreOrderAlertIncomingPayload): Promise<void> {
       if (
+        disposed ||
         !payload ||
         !Number.isSafeInteger(payload.orderId) ||
         payload.orderId <= 0
@@ -947,10 +1039,15 @@ export function createStoreOrderAlertCoordinator(deps: {
       return attemptPrint(payload);
     },
     dispose(): void {
+      disposed = true;
       activePrintAborts.forEach((ctrl) => {
         ctrl.abort();
       });
       activePrintAborts.clear();
+      activeLeaseReleases.forEach((releaseFn) => {
+        releaseFn();
+      });
+      activeLeaseReleases.clear();
       pendingTimers.forEach((timer) => {
         cancel(timer);
       });

@@ -68,6 +68,7 @@ export class RealtimeManager {
   private pendingBatchScope?: RealtimeEvent["scope"];
   private pwaSuspendedUntil = 0;
   private pwaResumeTimer: ReturnType<typeof setTimeout> | null = null;
+  private preventIdleDisconnectCount = 0;
 
   constructor(tabId?: string) {
     this.tabId =
@@ -682,9 +683,14 @@ export class RealtimeManager {
 
   private armIdleTimer(): void {
     this.disarmIdleTimer();
+    if (this.preventIdleDisconnectCount > 0) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      if (
+        this.preventIdleDisconnectCount === 0 &&
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
         this.setStatus("idle_disconnected");
         if (this.isLeader) {
           this.stepDownFromLeader("idle_timeout");
@@ -693,6 +699,34 @@ export class RealtimeManager {
         }
       }
     }, REALTIME_IDLE_TIMEOUT_MS);
+  }
+
+  /**
+   * يمنع فصل مقبس اللحظية بسبب خمول الخلفية (15 دقيقة) لمحطات العمل الثابتة
+   * المفعّل عليها الطباعة التلقائية الفورية لطلبات المتجر حتى لو صُغّرت نافذة المتصفح.
+   */
+  retainPreventIdleDisconnect(): () => void {
+    this.preventIdleDisconnectCount += 1;
+    this.disarmIdleTimer();
+    if (this.status === "idle_disconnected" && this.appState !== "background") {
+      this.setStatus("disconnected");
+      this.reconnectAttempts = 0;
+      this.reconcileRouteEligibility();
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.preventIdleDisconnectCount = Math.max(0, this.preventIdleDisconnectCount - 1);
+      if (
+        this.preventIdleDisconnectCount === 0 &&
+        this.isStarted &&
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        this.armIdleTimer();
+      }
+    };
   }
 
   private disarmIdleTimer(): void {
@@ -832,6 +866,7 @@ export class RealtimeManager {
    */
   stop(): void {
     this.isStarted = false;
+    this.preventIdleDisconnectCount = 0;
     this.pwaSuspendedUntil = 0;
     if (this.pwaResumeTimer) {
       clearTimeout(this.pwaResumeTimer);

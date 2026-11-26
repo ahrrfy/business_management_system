@@ -23,6 +23,7 @@ import { canSeeGate } from "@/lib/navVisibility";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
+import { StoreOrderAutoPrintQuickToggle } from "@/components/store-admin/GlobalStoreOrderAutoPrint";
 
 /**
  * نقطة البيع المُوحَّدة — Shell واحد لـ٣ أوضاع: تجزئة / خدمات طباعة / استقبال.
@@ -294,6 +295,7 @@ export default function PointOfSale() {
           {/* كل محطة تملأ هذا المقبس بإجراءات ورديتها. إبقاؤه في الرأس الموحد يمنع تكرار
               الحساب/الوردية داخل رأس المحطة ويحرّر صف البحث للباركود والاسم. */}
           <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
+          <StoreOrderAutoPrintQuickToggle user={me.data} />
           <QuranHeaderButton />
           {activeMode !== "RECEPTION" && visibleModes.some((mode) => mode.v === "RETAIL") && (
             <Link
