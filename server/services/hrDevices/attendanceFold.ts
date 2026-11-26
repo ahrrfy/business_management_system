@@ -377,6 +377,16 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         needsReview: day.needsReview,
         reviewReason: day.reviewReason,
       });
+      if ("preservedManual" in savedAttendance && savedAttendance.preservedManual) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        parked++;
+        continue;
+      }
 
       // لا نوسم البصمات الخام معالَجة قبل أن يُحفظ إشعار الموظف وصندوق FCM. إذا تعذّر
       // الحفظ يبقى الصف معلّقاً؛ وإعادة الطيّ آمنة لأن recordAttendance وeventKey كلاهما
@@ -762,7 +772,7 @@ export async function refoldMonthFingerprintAttendance(
     }
 
     try {
-      await recordAttendance({
+      const savedRefold = await recordAttendance({
         employeeId: g.employeeId,
         attendanceDate: g.date,
         hours: day.hours,
@@ -775,6 +785,15 @@ export async function refoldMonthFingerprintAttendance(
         needsReview: day.needsReview,
         reviewReason: day.reviewReason,
       });
+      if ("preservedManual" in savedRefold && savedRefold.preservedManual) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        continue;
+      }
       if (g.ids.length > 0) {
         await db
           .update(hrAttendancePunches)

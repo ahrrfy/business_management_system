@@ -1151,13 +1151,24 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     } as const;
 
     const [existing] = await tx
-      .select({ id: attendance.id, branchId: attendance.branchId })
+      .select({ id: attendance.id, branchId: attendance.branchId, source: attendance.source })
       .from(attendance)
       .where(and(eq(attendance.employeeId, input.employeeId), eq(attendance.attendanceDate, input.attendanceDate)))
+      .for("update")
       .limit(1);
 
     let savedId: number;
     if (existing) {
+      if ((input.source ?? "manual") === "fingerprint" && existing.source !== "fingerprint") {
+        const [preserved] = await tx.select().from(attendance).where(eq(attendance.id, existing.id)).limit(1);
+        return {
+          ...preserved,
+          attendanceDate: toDateStr(preserved.attendanceDate),
+          dayName: arabicDayName(input.attendanceDate),
+          lateMinutes: null,
+          preservedManual: true as const,
+        };
+      }
       if (
         input.scopedBranchId != null &&
         existing.branchId != null &&
