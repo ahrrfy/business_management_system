@@ -100,12 +100,25 @@ export function progressOf(status: string) {
   return { idx: i, pct: Math.round((i / 3) * 100) };
 }
 
-function effectiveWoTotal(o: { salePrice?: string | number | null; effectiveSalePrice?: string | null }): string {
-  return String(o.effectiveSalePrice ?? o.salePrice ?? "0");
+function effectiveWoTotal(o: {
+  salePrice?: string | number | null;
+  effectiveSalePrice?: string | null;
+  invoiceTotal?: string | null;
+}): string {
+  return String(o.invoiceTotal ?? o.effectiveSalePrice ?? o.salePrice ?? "0");
 }
 
-function effectiveWoDeposit(o: { deposit?: string | number | null; effectiveDeposit?: string | null }): string | null {
-  const val = o.effectiveDeposit !== undefined ? o.effectiveDeposit : o.deposit;
+function effectiveWoDeposit(o: {
+  deposit?: string | number | null;
+  effectiveDeposit?: string | null;
+  invoicePaidAmount?: string | null;
+}): string | null {
+  const val =
+    o.invoicePaidAmount !== null && o.invoicePaidAmount !== undefined
+      ? o.invoicePaidAmount
+      : o.effectiveDeposit !== undefined
+        ? o.effectiveDeposit
+        : o.deposit;
   return val == null ? null : String(val);
 }
 
@@ -140,8 +153,9 @@ export function workOrderContactMessage(o: {
   });
 }
 
-export function printWoFromCard(o: WO) {
+export function printWoFromCard(o: WO | Detail) {
   const effectiveTotal = effectiveWoTotal(o);
+  const specs = (o as { customizationText?: string | null }).customizationText ?? undefined;
   printWorkOrder({
     woNumber: o.orderNumber,
     woDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
@@ -151,6 +165,7 @@ export function printWoFromCard(o: WO) {
     customerName: o.customerName,
     customerPhone: o.customerPhone,
     jobType: o.title,
+    specs,
     items: [{ name: `${o.title} (${formatQuantity(o.quantity)} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: effectiveTotal, total: effectiveTotal }],
     subtotal: effectiveTotal,
     total: effectiveTotal,
@@ -166,6 +181,8 @@ export function printWoShippingLabel(o: {
   deposit: string | null;
   effectiveSalePrice?: string | null;
   effectiveDeposit?: string | null;
+  invoiceTotal?: string | null;
+  invoicePaidAmount?: string | null;
   quantity: number;
   title: string;
   createdAt: Date | string | null;
@@ -192,10 +209,11 @@ export function printWoShippingLabel(o: {
   });
 }
 
-export function printWoThermalFromCard(o: WO) {
+export function printWoThermalFromCard(o: WO | Detail) {
   const effectiveTotal = effectiveWoTotal(o);
   const effectivePaid = effectiveWoDeposit(o);
   const effectiveBalance = positiveDiff(effectiveTotal, effectivePaid).toFixed(2);
+  const specs = (o as { customizationText?: string | null }).customizationText ?? undefined;
   void printWorkOrderReceipt({
     orderNumber: o.orderNumber,
     orderDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
@@ -206,6 +224,7 @@ export function printWoThermalFromCard(o: WO) {
     customerPhone: o.customerPhone ?? undefined,
     jobTitle: o.title,
     quantity: o.quantity ? `${formatQuantity(o.quantity)} نسخة` : undefined,
+    specs,
     total: effectiveTotal,
     paidUpfront: D(effectivePaid ?? 0).gt(0) ? effectivePaid : null,
     balanceDue: effectiveBalance,

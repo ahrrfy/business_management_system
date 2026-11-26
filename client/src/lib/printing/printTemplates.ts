@@ -1212,7 +1212,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData, options?: 
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">مدفوع مقدماً</td>
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.paidUpfront)}</td>
       </tr>` : ''}
-      ${moneyInput(d.total).gt(0) ? (moneyInput(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront ?? 0).toFixed(2)).lte(0) ? `
+      ${(d.balanceDue != null || d.paidUpfront != null) && moneyInput(d.total).gt(0) ? (moneyInput(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront ?? 0).toFixed(2)).lte(0) ? `
       <tr style="border:2px solid #000;">
         <td colspan="2" style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;text-align:center;">مسدّد بالكامل مسبقاً</td>
       </tr>` : `

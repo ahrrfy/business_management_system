@@ -218,6 +218,7 @@ export async function workOrderToCanvas(
   ctx.textAlign = "left";
   ctx.fillText(`${fmt(d.total)} د.ع`, PAD, y);
   // ش٤: إثبات العربون على الورقة نفسها — «مدفوع مقدماً» ثم «المتبقّي عند الاستلام» بخطٍّ أضخم.
+  const hasPaymentFinancials = d.balanceDue != null || d.paidUpfront != null;
   const paidNum = Number(d.paidUpfront ?? 0);
   const totalNum = Number(d.total ?? 0);
   const dueNum =
@@ -231,11 +232,11 @@ export async function workOrderToCanvas(
     ctx.textAlign = "left";
     ctx.fillText(`${fmt(d.paidUpfront!)} د.ع`, PAD, y);
   }
-  if (dueNum <= 0 && totalNum > 0) {
+  if (hasPaymentFinancials && dueNum <= 0 && totalNum > 0) {
     y += 34;
     ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "center";
     ctx.fillText("مسدّد بالكامل مسبقاً", W / 2, y);
-  } else if (totalNum > 0) {
+  } else if (hasPaymentFinancials && totalNum > 0) {
     y += 34;
     ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("المتبقّي عند الاستلام:", W - PAD, y);

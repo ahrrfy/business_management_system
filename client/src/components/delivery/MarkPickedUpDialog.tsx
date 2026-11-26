@@ -71,8 +71,8 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
     fingerprint: string;
     confirmed: boolean;
   } | null>(null);
-  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
-  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+  const initiateExternal = trpc.reception.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.reception.confirmExternalPayment.useMutation();
 
   useEffect(() => {
     if (order) {

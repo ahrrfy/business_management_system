@@ -164,8 +164,8 @@ export default function ReceptionHandoverPage() {
   );
   const shift = shiftQ.data ?? null;
 
-  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
-  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+  const initiateExternal = trpc.reception.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.reception.confirmExternalPayment.useMutation();
 
   const resetPaymentFields = useCallback(() => {
     setMethod("CASH");

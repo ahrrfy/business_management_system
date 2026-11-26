@@ -189,7 +189,9 @@ export async function detachWorkOrderFromOpenFulfillmentRequestsTx(
     const hasReleased = remaining.some((r) => r.status === "RELEASED");
     if (!hasPending) {
       if (
-        (req.status === "DRAFT" || req.status === "PREPARING") &&
+        (req.status === "DRAFT" ||
+          req.status === "PREPARING" ||
+          req.status === "READY") &&
         !hasReleased
       ) {
         await tx
