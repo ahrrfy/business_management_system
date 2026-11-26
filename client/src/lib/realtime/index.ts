@@ -23,6 +23,21 @@ export function initRealtime(): void {
 }
 
 /**
+ * يعيد تقييم أهلية المسار الحالي لاتصال SSE بعد تنقلات SPA (pushState/replaceState)
+ * التي لا تطلق حدث popstate في المتصفح (مثل الانتقال من /login إلى /pos).
+ */
+export function reconcileRealtimeRoute(): void {
+  realtimeManager.reconcileRouteEligibility();
+}
+
+/**
+ * يعفي محطة الطباعة التلقائية النشطة من فصل الخمول في الخلفية ليبقى البث اللحظي متصلاً.
+ */
+export function retainRealtimeIdleExemption(): () => void {
+  return realtimeManager.retainPreventIdleDisconnect();
+}
+
+/**
  * خطاف (Hook) للاشتراك في حدث لحظي محدد، أو قائمة أحداث، أو كافة الأحداث.
  */
 export function useRealtimeEvent<T = unknown>(

@@ -16,6 +16,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
 import { OfflineBanner } from "@/components/offline/OfflineBanner";
+import { GlobalStoreOrderAutoPrint } from "@/components/store-admin/GlobalStoreOrderAutoPrint";
 import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
@@ -377,6 +378,7 @@ export default function App() {
       <ErrorBoundary>
       <HostPolicy />
       <GlobalPrinterAutoConnect />
+      <GlobalStoreOrderAutoPrint />
       {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
       <OfflineBanner />
       <Suspense fallback={<RouteFallback />}>

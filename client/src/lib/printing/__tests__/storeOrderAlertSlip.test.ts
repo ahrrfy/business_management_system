@@ -4,7 +4,10 @@ import { legacyOperationPolicy, resolveOperationPolicy } from "@shared/operation
 import {
   buildStoreOrderAlertHtml,
   createStoreOrderAlertCoordinator,
+  shouldRunStoreOrderAutoPrintOnRoute,
 } from "../storeOrderAlertSlip";
+import { RealtimeManager } from "@/lib/realtime/realtimeManager";
+import { REALTIME_IDLE_TIMEOUT_MS } from "@shared/realtimeEvents";
 
 describe("isStoreOrderAlertRecipientUser", () => {
   it("matches reception and customer-service roles only", () => {
@@ -340,6 +343,7 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
       (handle as unknown as { cancelled: boolean }).cancelled = true;
     };
     const advanceTo = async (targetMs: number) => {
+      await new Promise((r) => setTimeout(r, 0));
       while (true) {
         const next = scheduled
           .filter((t) => !t.cancelled && t.runAt <= targetMs)
@@ -554,5 +558,215 @@ describe("createStoreOrderAlertCoordinator — multi-station failover", () => {
     expect(usbPrint).toHaveBeenCalledTimes(1);
     expect(usbPrint.mock.calls[0]?.[1]?.allowBrowserFallback).toBe(false);
     expect(fallbackPrint).not.toHaveBeenCalled();
+  });
+
+  it("prioritizes visible foreground tabs (e.g. /pos) over hidden background tabs via dynamic head-starts, and releases active dialog leases on dispose()", async () => {
+    let nowMs = 5_000;
+    const scheduled: Array<{ runAt: number; fn: () => void; cancelled: boolean }> = [];
+    const scheduleFn = (fn: () => void, delayMs: number) => {
+      const item = { runAt: nowMs + delayMs, fn, cancelled: false };
+      scheduled.push(item);
+      return item as unknown as ReturnType<typeof setTimeout>;
+    };
+    const cancelFn = (handle: ReturnType<typeof setTimeout>) => {
+      (handle as unknown as { cancelled: boolean }).cancelled = true;
+    };
+    const advanceTo = async (targetMs: number) => {
+      await new Promise((r) => setTimeout(r, 0));
+      while (true) {
+        const next = scheduled
+          .filter((t) => !t.cancelled && t.runAt <= targetMs)
+          .sort((a, b) => a.runAt - b.runAt)[0];
+        if (!next) break;
+        nowMs = next.runAt;
+        next.cancelled = true;
+        next.fn();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      nowMs = targetMs;
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    let claimedBy: string | null = null;
+    const releaseTokens: Array<string | null | undefined> = [];
+
+    const hiddenTabPrint = vi.fn().mockResolvedValue("dialog_opened" as const);
+    const visiblePosPrint = vi.fn().mockResolvedValue("dialog_opened" as const);
+
+    const hiddenDashboardTab = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => false,
+      canBrowserFallback: () => true,
+      browserFallbackHeadStartMs: () => 2_200,
+      claim: async () => {
+        if (claimedBy) return { claimed: false };
+        claimedBy = "hidden";
+        return { claimed: true, leaseToken: "lease-hidden", orderNumber: "ORD-POS-201", total: "18000", itemCount: 1 };
+      },
+      release: async (_id, token) => {
+        claimedBy = null;
+        releaseTokens.push(token);
+      },
+      print: hiddenTabPrint,
+      onBrowserDialogOpened: () => {},
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const visiblePosTab = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => false,
+      canBrowserFallback: () => true,
+      browserFallbackHeadStartMs: () => 700,
+      claim: async () => {
+        if (claimedBy) return { claimed: false };
+        claimedBy = "pos";
+        return { claimed: true, leaseToken: "lease-pos", orderNumber: "ORD-POS-201", total: "18000", itemCount: 1 };
+      },
+      release: async (_id, token) => {
+        claimedBy = null;
+        releaseTokens.push(token);
+      },
+      print: visiblePosPrint,
+      onBrowserDialogOpened: () => {},
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const pHidden = hiddenDashboardTab.handleEvent({ orderId: 201, orderNumber: "ORD-POS-201", totalAmount: "18000" });
+    const pPos = visiblePosTab.handleEvent({ orderId: 201, orderNumber: "ORD-POS-201", totalAmount: "18000" });
+
+    // At +800ms, visible POS tab (700ms) claims and opens print while hidden tab (2200ms) waits
+    await advanceTo(5_800);
+    await pPos;
+    expect(claimedBy).toBe("pos");
+    expect(visiblePosPrint).toHaveBeenCalledTimes(1);
+    expect(hiddenTabPrint).not.toHaveBeenCalled();
+
+    // Disposing visiblePosTab while awaiting OS dialog confirmation immediately releases lease-pos
+    visiblePosTab.dispose();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(releaseTokens).toContain("lease-pos");
+    expect(claimedBy).toBeNull();
+
+    // Hidden tab then takes over at +2200ms and prints so order is never lost
+    await advanceTo(7_500);
+    await pHidden;
+    expect(hiddenTabPrint).toHaveBeenCalledTimes(1);
+    hiddenDashboardTab.dispose();
+  });
+});
+
+describe("Global Store Order Auto-Print — route coverage & root architecture", () => {
+  it("enables auto-print on POS (all modes), reception, print-studio, dashboard, and internal hubs while blocking public/CFD/kiosk routes", () => {
+    const internalHost = "srv1548487.hstgr.cloud";
+    const devHost = "localhost";
+    const publicHost = "alarabiya.online";
+
+    // Active employee workstations (including full-screen POS outside AppLayout)
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/", devHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos?mode=RETAIL", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos?mode=PRINT_SERVICES", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos?mode=RECEPTION", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos?workspace=reservations", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/print-pos", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/reception", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/print-studio", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/store-admin", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/invoices", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/delivery", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/work-orders", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/reception/orders", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/inventory", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/crm", internalHost)).toBe(true);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/my-stocktake", internalHost)).toBe(true);
+
+    // Blocked public, customer-facing, kiosk, login, and courier routes
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/", publicHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/pos", publicHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/login", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/cfd", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/kiosk", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/price-checker", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/shelf-lookup", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/price-check", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/store", devHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/store/product/42", devHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/legal/privacy", devHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/apply", devHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/count/XYZ", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/verify/INV-1", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/mobile-design-preview", internalHost)).toBe(false);
+    expect(shouldRunStoreOrderAutoPrintOnRoute("/my-deliveries", internalHost)).toBe(false);
+  });
+
+  it("enforces root-level GlobalStoreOrderAutoPrint outside Switch/AppLayout, POS quick toggle, and SPA realtime route reconciliation", async () => {
+    const fs = await import("node:fs");
+    const appSource = fs.readFileSync("client/src/App.tsx", "utf8");
+    const layoutSource = fs.readFileSync("client/src/components/AppLayout.tsx", "utf8");
+    const posSource = fs.readFileSync("client/src/pages/PointOfSale.tsx", "utf8");
+    const mainSource = fs.readFileSync("client/src/main.tsx", "utf8");
+    const globalAutoPrintSource = fs.readFileSync(
+      "client/src/components/store-admin/GlobalStoreOrderAutoPrint.tsx",
+      "utf8",
+    );
+
+    // 1. App.tsx mounts GlobalStoreOrderAutoPrint once BEFORE <Switch> so navigating across routes or into /pos never unmounts it
+    const globalMountIdx = appSource.indexOf("<GlobalStoreOrderAutoPrint />");
+    const switchIdx = appSource.indexOf("<Switch>");
+    expect(globalMountIdx).toBeGreaterThan(-1);
+    expect(switchIdx).toBeGreaterThan(globalMountIdx);
+
+    // 2. AppLayout no longer duplicates or tears down createStoreOrderAlertCoordinator on route changes
+    expect(layoutSource).not.toContain("createStoreOrderAlertCoordinator");
+
+    // 3. PointOfSale header includes StoreOrderAutoPrintQuickToggle so POS/Reception staff can see & toggle station auto-print
+    expect(posSource).toContain("<StoreOrderAutoPrintQuickToggle");
+
+    // 4. main.tsx reconciles realtime route eligibility on SPA transitions (e.g. /login -> /pos)
+    expect(mainSource).toContain("reconcileRealtimeRouteFn?.()");
+
+    // 5. GlobalStoreOrderAutoPrint keeps background polling & SSE exemption active on dedicated print stations
+    expect(globalAutoPrintSource).toContain("refetchIntervalInBackground: true");
+    expect(globalAutoPrintSource).toContain("retainRealtimeIdleExemption()");
+  });
+
+  it("keeps RealtimeManager connected past 15-minute hidden idle timeout while an active print station holds retainPreventIdleDisconnect()", () => {
+    vi.useFakeTimers();
+    const prevDoc = (globalThis as { document?: unknown }).document;
+    try {
+      const listeners = new Map<string, Set<() => void>>();
+      const mockDoc = {
+        visibilityState: "hidden",
+        addEventListener: (ev: string, fn: () => void) => {
+          if (!listeners.has(ev)) listeners.set(ev, new Set());
+          listeners.get(ev)!.add(fn);
+        },
+        removeEventListener: (ev: string, fn: () => void) => {
+          listeners.get(ev)?.delete(fn);
+        },
+      };
+      (globalThis as { document?: unknown }).document = mockDoc;
+
+      const mgr = new RealtimeManager("tab_autoprint_station");
+      const releaseExemption = mgr.retainPreventIdleDisconnect();
+      mgr.start();
+
+      vi.advanceTimersByTime(REALTIME_IDLE_TIMEOUT_MS + 5_000);
+      expect(mgr.getStatus()).not.toBe("idle_disconnected");
+
+      // Releasing exemption while still hidden arms the standard 15-minute battery saver
+      releaseExemption();
+      vi.advanceTimersByTime(REALTIME_IDLE_TIMEOUT_MS + 1_000);
+      expect(mgr.getStatus()).toBe("idle_disconnected");
+
+      mgr.stop();
+    } finally {
+      (globalThis as { document?: unknown }).document = prevDoc;
+      vi.useRealTimers();
+    }
   });
 });

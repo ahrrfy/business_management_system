@@ -136,6 +136,7 @@ let erpRealtimeBootPromise: Promise<void> | null = null;
 let erpRealtimeBooted = false;
 let erpRealtimeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let stopFinancialRefresh: (() => void) | null = null;
+let reconcileRealtimeRouteFn: (() => void) | null = null;
 
 const MAX_REALTIME_BOOT_RETRIES = 3;
 const REALTIME_BOOT_RETRY_BASE_MS = 1500;
@@ -156,7 +157,11 @@ function isCurrentlyOnErpRoute(): boolean {
 }
 
 function ensureErpRealtimeBooted(attempt = 0) {
-  if (erpRealtimeBooted || erpRealtimeBootPromise) return;
+  if (erpRealtimeBooted) {
+    reconcileRealtimeRouteFn?.();
+    return;
+  }
+  if (erpRealtimeBootPromise) return;
   clearErpRealtimeRetryTimer();
   erpRealtimeBootPromise = Promise.all([
     import("@/lib/realtime"),
@@ -164,8 +169,10 @@ function ensureErpRealtimeBooted(attempt = 0) {
   ])
     .then(([rt, fin]) => {
       erpRealtimeBooted = true;
+      reconcileRealtimeRouteFn = rt.reconcileRealtimeRoute;
       stopFinancialRefresh = fin.installFinancialQueryRefresh(queryClient);
       rt.initRealtime();
+      reconcileRealtimeRouteFn();
     })
     .catch((err) => {
       erpRealtimeBootPromise = null;
@@ -200,6 +207,7 @@ if (import.meta.hot) {
     clearErpRealtimeRetryTimer();
     stopFinancialRefresh?.();
     stopFinancialRefresh = null;
+    reconcileRealtimeRouteFn = null;
     erpRealtimeBooted = false;
     erpRealtimeBootPromise = null;
   });
