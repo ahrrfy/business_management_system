@@ -9,7 +9,7 @@ import {
   ChevronDown,
   UserCheck,
 } from "lucide-react";
-import { PrintCustomerCombo } from "@/components/printPos/PrintCustomerCombo";
+import { PrintCustomerCombo } from "@/components/print-pos/PrintCustomerCombo";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 
 export type OrderChannel = "WALK_IN" | "WHATSAPP" | "TELEGRAM" | "PHONE";

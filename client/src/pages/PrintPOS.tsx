@@ -58,8 +58,8 @@ import {
   patchPrintSplitLeg,
 } from "@/components/print-pos/printPosSplitPayment";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
-import { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
-import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
+import { PrintCartLine as CartLine } from "@/components/print-pos/PrintCartList";
+import { PrintServiceGrid } from "@/components/print-pos/PrintServiceGrid";
 import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBar";
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";

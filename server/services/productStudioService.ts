@@ -54,43 +54,39 @@ import {
   runGuardedImageStudioCall,
 } from "./imageStudioUsageGuard";
 import { callRemovebg, RemovebgError, removebgErrorMessageAr } from "./removebgService";
-
-const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
-const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
-const MAX_PREVIEW_BYTES = 1_000_000;
-const UPLOAD_LEASE_MS = 2 * 60_000;
-const PROCESSING_AUTHORIZATION_MS = 2 * 60_000;
-const PROCESSING_PROOF_MS = 15 * 60_000;
-const STAGING_AUDIT_INTERVAL_MS = 24 * 60 * 60_000;
-/** سقف مهام الحملة المولَّدة في المعاملة الواحدة؛ الباقي يُولَّد باستدعاءٍ تالٍ. */
-const BACKLOG_BATCH_LIMIT = 500;
-/** أقصى صورٍ مطلوبة لكل منتج في حملة، وأقصى منتجاتٍ تُختار صراحةً لحملةٍ واحدة. */
-const MAX_REQUIRED_IMAGES = 10;
-const MAX_CAMPAIGN_PRODUCTS = 5000;
-/** سقف مسح تذكيرات المواعيد في النبضة الواحدة. */
-const DUE_REMINDER_SCAN_LIMIT = 500;
-/** نافذة وسيط زمن الدورة وسقف عيّنته — تمنعان تحميل تاريخ الاعتماد كلّه لحساب رقمٍ واحد. */
-const CYCLE_WINDOW_DAYS = 90;
-const CYCLE_SAMPLE_LIMIT = 500;
-
-import type { ServiceOperationAuthority } from "./authorization/operationAuthority";
 import { canonicalOperationAllowed, loadOperationUserTx } from "./authorization/operationAuthority";
-
-export interface ProductStudioActor {
-  userId: number;
-  branchId: number | null;
-  role: string;
-  isOwner?: boolean;
-  name?: string;
-  email?: string;
-  operationAuthority?: ServiceOperationAuthority;
-  managementAuthority?: ServiceOperationAuthority;
-  scopedOwnerId?: number | null;
-}
-
-type StudioStatus = typeof productImageJobs.$inferSelect.status;
-export type StudioPriority = typeof productImageJobs.$inferSelect.priority;
-export type StudioCampaignStatus = typeof productStudioCampaigns.$inferSelect.status;
+import {
+  BACKLOG_BATCH_LIMIT,
+  CYCLE_SAMPLE_LIMIT,
+  CYCLE_WINDOW_DAYS,
+  DUE_REMINDER_SCAN_LIMIT,
+  MAX_CAMPAIGN_PRODUCTS,
+  MAX_PREVIEW_BYTES,
+  MAX_REQUIRED_IMAGES,
+  MAX_STUDIO_THUMBNAIL_BYTES,
+  MAX_STUDIO_THUMBNAIL_DIMENSION,
+  PROCESSING_AUTHORIZATION_MS,
+  PROCESSING_PROOF_MS,
+  STAGING_AUDIT_INTERVAL_MS,
+  UPLOAD_LEASE_MS,
+  type ProductStudioActor,
+  type StudioCampaignStatus,
+  type StudioPriority,
+  type StudioStatus,
+} from "./productStudio/types";
+import {
+  decodeStudioThumbnail,
+  isCompleteStillWebp,
+  locateStillWebpFrame,
+} from "./productStudio/webpCodec";
+export {
+  decodeStudioThumbnail,
+  isCompleteStillWebp,
+  locateStillWebpFrame,
+  type ProductStudioActor,
+  type StudioCampaignStatus,
+  type StudioPriority,
+};
 
 function isManager(actor: ProductStudioActor): boolean {
   if (
@@ -356,186 +352,6 @@ function decodeStudioImage(dataUrl: string): {
     height: dims.height,
     hash: contentHash(bytes),
   };
-}
-
-function fittedThumbnailDimensions(width: number, height: number): { width: number; height: number } {
-  const scale = Math.min(1, MAX_STUDIO_THUMBNAIL_DIMENSION / Math.max(width, height));
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-  };
-}
-
-/**
- * يفك base64 فعلياً ويتحقق من WebP/RIFF والأبعاد والحجم، ثم يربط أبعاد المصغرة بالمرشح.
- * لا نثق ببادئة MIME وحدها ولا نقبل SVG/GIF/PNG في شبكة العرض الاحتياطية.
- */
-/**
- * هل هذه بايتات WebP **كاملةٌ لصورةٍ ساكنةٍ واحدة**؟ يمشي على مقاطع RIFF بدل افتراض شكلٍ بعينه.
- *
- * **العطب الذي أغلقه (٢٠/٨، جولةٌ حيّة):** الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة
- * `VP8 ` أو `VP8L`. لكنّ Chromium الحديث يُخرج من `canvas.toDataURL("image/webp")` حاوية
- * **`VP8X`** يتبعها **`ICCP`** (ملفّ ألوان sRGB يُضمّنه المتصفّح) ثمّ `VP8 ` — ثلاثةُ مقاطع.
- * فكان الخادم يرفض **كل** مصغّرةٍ يُنتجها Chrome/Edge برسالة «بنية/إطار مصغّرة WebP غير
- * مكتمل»، والمصوّر يُمنع من الإرسال. أثبتَته جولةٌ حيّة: `chunks = [VP8X 10, ICCP 456, VP8  50]`.
- * (ولاحظ أنّ `parseImageDimensions` كان يفكّ `VP8X` أصلاً — فالرافض والقارئ كانا مختلفَين
- * في فهم الصيغة نفسها داخل الملفّ الواحد.)
- *
- * والمشي على المقاطع **أدقّ** من الفحص القديم لا أرخى: يرفض الملفّ المبتور وذيلَ البايتات
- * الزائد ويرفض المتحرّك (`ANIM`/`ANMF`) — والمصغّرة إطارٌ ساكنٌ واحدٌ بحكم التعريف — ويشترط
- * مقطعَ صورةٍ واحداً بالضبط.
- */
-export function isCompleteStillWebp(bytes: Buffer): boolean {
-  return locateStillWebpFrame(bytes) !== null;
-}
-
-/**
- * يحدّد **إطار الصورة الوحيد** داخل ملفّ WebP كامل، ويعيد أبعاده المقروءة **من الإطار نفسه**.
- * يعيد `null` لأيّ ملفٍّ ناقصٍ أو مُتلاعَبٍ به أو متحرّك.
- *
- * لماذا المشي على المقاطع: الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة `VP8 `/`VP8L`،
- * وChromium يُخرج `[VP8X, ICCP, VP8 ]` (يُضمّن ملفّ ألوان sRGB) ⇒ **كل مصغّرةٍ ينتجها
- * Chrome/Edge مرفوضة** والمصوّر ممنوعٌ من التسليم (جولةٌ حيّة ٢٠/٨).
- *
- * ⚠️ ولماذا يُفحص **حِمل** الإطار لا اسمُ مقطعه فقط (أمسكه Codex على أوّل نسخةٍ من هذا
- * الإصلاح): المشي وحده يقبل مقطعاً اسمه `VP8 ` وحمولتُه أصفارٌ — ملفٌّ لا يُفكّ ترميزه —
- * بينما `parseImageDimensions` يصدّق أبعاد ترويسة `VP8X` **غير المَمسوسة**، فيُخزَّن
- * ويُنشَر «مرشّحٌ» لا يعرضه أيّ متصفّح. الفحص القديم كان يحرس هذا بترويسة الإطار، وإسقاطُه
- * انحدارٌ لا تبسيط.
- *
- * **والأبعاد تُقرأ من الإطار لا من ترويسة `VP8X`:** الترويسة تصريحٌ يكتبه المُنتِج والإطار
- * هو الصورة فعلاً، فحين يختلفان تُصدَّق الصورة. وبها تبقى مطابقةُ أبعاد المرشّح صادقة.
- */
-export function locateStillWebpFrame(bytes: Buffer): { width: number; height: number } | null {
-  if (bytes.length < 20) return null;
-  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") return null;
-  // حجم RIFF يجب أن يصف الملفّ كلّه: يمنع البتر والذيل الزائد معاً.
-  if (bytes.readUInt32LE(4) + 8 !== bytes.length) return null;
-  let offset = 12;
-  let frame: { fourcc: string; at: number; size: number } | null = null;
-  let frames = 0;
-  let animated = false;
-  while (offset + 8 <= bytes.length) {
-    const id = bytes.toString("ascii", offset, offset + 4);
-    const size = bytes.readUInt32LE(offset + 4);
-    // حجمٌ يتجاوز ما تبقّى = ملفٌّ مبتورٌ أو مُتلاعَبٌ به.
-    if (size < 0 || offset + 8 + size > bytes.length) return null;
-    if (id === "VP8 " || id === "VP8L") {
-      frames++;
-      frame = { fourcc: id, at: offset + 8, size };
-    }
-    if (id === "ANIM" || id === "ANMF") animated = true;
-    offset += 8 + size + (size % 2); // حشوٌ إلى حدّ زوجيّ
-  }
-  // الوقوف عند النهاية بالضبط: أيّ بايتٍ زائدٍ أو ناقصٍ يُسقِط الملفّ.
-  if (offset !== bytes.length || frames !== 1 || animated || !frame) return null;
-
-  if (frame.fourcc === "VP8 ") {
-    // VP8 المضغوط: وسمُ إطارٍ ٣ بايتات، ثمّ رمز البدء 9D 01 2A، ثمّ العرض والارتفاع ١٤ بتّاً لكلٍّ.
-    if (frame.size < 10) return null;
-    const p = frame.at;
-    if (bytes[p + 3] !== 0x9d || bytes[p + 4] !== 0x01 || bytes[p + 5] !== 0x2a) return null;
-    return { width: bytes.readUInt16LE(p + 6) & 0x3fff, height: bytes.readUInt16LE(p + 8) & 0x3fff };
-  }
-  // VP8L (بلا فقد): توقيعٌ 0x2F ثمّ ١٤ بتّاً للعرض و١٤ للارتفاع (ناقصاً واحداً).
-  if (frame.size < 5) return null;
-  const p = frame.at;
-  if (bytes[p] !== 0x2f) return null;
-  const b1 = bytes[p + 1];
-  const b2 = bytes[p + 2];
-  const b3 = bytes[p + 3];
-  const b4 = bytes[p + 4];
-  return {
-    width: 1 + (b1 | ((b2 & 0x3f) << 8)),
-    height: 1 + (((b2 & 0xc0) >> 6) | (b3 << 2) | ((b4 & 0x0f) << 10)),
-  };
-}
-
-export function decodeStudioThumbnail(
-  dataUrl: string,
-  processed: { width: number | null; height: number | null },
-): {
-  dataUrl: string;
-  bytes: Buffer;
-  width: number;
-  height: number;
-  hash: string;
-} {
-  // ٢٠/٨ (بلاغ إنتاج): كان WebP إلزامياً — و`canvas.toDataURL("image/webp")` غير مدعوم على
-  // Safari/iOS قبل ١٧، فكان المصوّر على iPhone يُمنع من الإرسال نهائياً بسبب **مشتقّ عرضٍ**
-  // لا علاقة له بجودة عمله ولا بسلامة المال. الاحتياطيّ JPEG لأنّ كل متصفّحٍ يرمّزه من
-  // canvas ويبقى تحت السقف. ⛔ التساهل في **الصيغة** لا في **التحقّق**: لكلٍّ فحصُ بنيةٍ
-  // كامل، ومطابقةُ الأبعاد للمرشّح تبقى الحارس المشترك أياً كانت الصيغة.
-  const isWebp = dataUrl.startsWith("data:image/webp;base64,");
-  const isJpeg = dataUrl.startsWith("data:image/jpeg;base64,");
-  if (!isWebp && !isJpeg) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "تعذّر إرسال المرشّح للمراجعة",
-        why: "مصغّرة العرض التي أنتجها متصفّحك ليست WebP ولا JPEG، وهما الصيغتان المقبولتان",
-        doThis: "حدّث الصفحة وأعد الإرسال، وإن تكرّر فجرّب متصفّحاً آخر أو أبلغ الدعم الفنّي",
-      }),
-    });
-  }
-  assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
-  const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
-  // للـWebP تُقرأ الأبعاد **من إطار الصورة** لا من ترويسة `VP8X`: الترويسة تصريحٌ يكتبه
-  // المُنتِج، والإطار هو الصورة فعلاً — وعند اختلافهما تُصدَّق الصورة لا التصريح.
-  const frame = isWebp ? locateStillWebpFrame(bytes) : null;
-  const dimensions = isWebp ? frame : parseImageDimensions(bytes, "image/jpeg");
-  let structureOk: boolean;
-  if (isWebp) {
-    structureOk = frame !== null;
-  } else {
-    // JPEG: SOI في المقدّمة وEOI في الخاتمة ⇒ ملفٌّ كاملٌ غير مبتور، ومقطعُ SOF مقروءٌ
-    // (وإلّا رجع `dimensions` فارغاً فسقط الفحص أدناه).
-    structureOk =
-      bytes.length >= 4 &&
-      bytes[0] === 0xff &&
-      bytes[1] === 0xd8 &&
-      bytes[bytes.length - 2] === 0xff &&
-      bytes[bytes.length - 1] === 0xd9;
-  }
-  if (!structureOk || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      // السبب وحده يتبدّل بالصيغة؛ المخرج واحدٌ لأنّ المصغّرة يُنتجها المتصفّح لا المصوّر.
-      message: isWebp
-        ? appErrorMessage({
-            what: "تعذّر إرسال المرشّح للمراجعة",
-            why: "مصغّرة WebP التي أنتجها متصفّحك مبتورةٌ أو بلا إطار صورةٍ ثابت، أو تجاوز ضلعُها 320 بكسل",
-            doThis: "حدّث الصفحة وأعد الإرسال ليُنتج المتصفّح مصغّرةً جديدة، وإن تكرّر فأبلغ الدعم الفنّي",
-          })
-        : appErrorMessage({
-            what: "تعذّر إرسال المرشّح للمراجعة",
-            why: "مصغّرة JPEG التي أنتجها متصفّحك مبتورةٌ (بلا خاتمة ملفّ) أو تجاوز ضلعُها 320 بكسل",
-            doThis: "حدّث الصفحة وأعد الإرسال ليُنتج المتصفّح مصغّرةً جديدة، وإن تكرّر فأبلغ الدعم الفنّي",
-          }),
-    });
-  }
-  if (!processed.width || !processed.height) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "تعذّر إرسال المرشّح للمراجعة",
-        why: "أبعاد الصورة النهائية غير مقروءة، فلا سبيل للتحقّق أنّ المصغّرة مشتقّةٌ منها",
-        doThis: "أعِد إنتاج الصورة النهائية من محرّر الاستوديو ثمّ أعد الإرسال",
-      }),
-    });
-  }
-  const expected = fittedThumbnailDimensions(processed.width, processed.height);
-  if (dimensions.width !== expected.width || dimensions.height !== expected.height) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        what: "تعذّر إرسال المرشّح للمراجعة",
-        why: "أبعاد المصغّرة لا تطابق المشتقّ من الصورة النهائية (أطول ضلعٍ يُصغَّر إلى 320 بكسل)",
-        doThis: "حدّث الصفحة وأعد إنتاج الصورة ومصغّرتها معاً ثمّ أعد الإرسال",
-      }),
-    });
-  }
-  return { dataUrl, bytes, ...dimensions, hash: contentHash(bytes) };
 }
 
 function assertStoragePolicy(): void {

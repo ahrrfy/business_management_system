@@ -29,7 +29,7 @@ import { useLocation, useSearch } from "wouter";
 import { CheckCircle2, FilePenLine, ShoppingCart, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
-import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
+import { useCustomerByPhone } from "@/components/customers/useCustomerByPhone";
 import { CustomizationDialog, emptyCustomization } from "@/components/CustomizationDialog";
 import { RecipeVariantPickerDialog } from "@/components/recipe/RecipeVariantPickerDialog";
 import type { CustomizableLineOption } from "@/components/recipe/RecipeVariantSelectorList";

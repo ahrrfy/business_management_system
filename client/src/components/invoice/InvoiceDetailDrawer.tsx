@@ -24,7 +24,7 @@ import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
 import { SalesReturnDrawer } from "./SalesReturnDrawer";
 import { QuickCancelInvoiceDialog } from "./QuickCancelInvoiceDialog";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
 import { financialIntentScopeKey, loadFinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 

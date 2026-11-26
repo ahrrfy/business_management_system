@@ -63,7 +63,7 @@ import {
   BannerSubjectPicker,
   inferSubjectStateFromBanner,
   type BannerSubjectState,
-} from "@/components/store/BannerSubjectPicker";
+} from "@/components/store-admin/BannerSubjectPicker";
 
 export type BannerPlacementOption = "HERO" | "INLINE" | "SIDE";
 

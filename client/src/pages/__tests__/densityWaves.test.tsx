@@ -156,7 +156,7 @@ import StoreCatalog from "../store/StoreCatalog";
 import DigitalDashboard from "../digitalCards/DigitalDashboard";
 import StorePushCampaignManager from "../store/StorePushCampaignManager";
 import ReceptionDraftsPage from "../reception/ReceptionDraftsPage";
-import { OrderDispatchDialog } from "@/components/store/OrderDispatchDialog";
+import { OrderDispatchDialog } from "@/components/store-admin/OrderDispatchDialog";
 import {
   canPrintFixedCoupon,
   couponDiscountLabel,

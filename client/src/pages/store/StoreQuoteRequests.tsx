@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 
 import { PageHeader } from "@/components/PageHeader";
-import { OrderCustomizationAssets } from "@/components/store/OrderCustomizationAssets";
+import { OrderCustomizationAssets } from "@/components/store-admin/OrderCustomizationAssets";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

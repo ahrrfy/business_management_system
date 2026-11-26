@@ -77,9 +77,14 @@ export interface DecideInput {
 }
 
 /** نطاقُ السرد: الفروع التي يراها الفاعل (`null` = كلّ الفروع) ولحظة «الآن». */
+export interface ScanPosition {
+  id: number;
+  at?: string;
+}
+
 export interface DecisionScope {
-  scanPositions?: Record<string, import("./scan").ScanPosition | null>;
-  reportScan?: (partition: string, next: import("./scan").ScanPosition | null) => void;
+  scanPositions?: Record<string, ScanPosition | null>;
+  reportScan?: (partition: string, next: ScanPosition | null) => void;
   branchIds: number[] | null;
   now: Date;
   /** Report candidate clipping before any maker-checker or action filtering. */

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DispatchDialog, type DispatchParty } from "./DispatchDialog";
-import { OrderDispatchDialog } from "../store/OrderDispatchDialog";
+import { OrderDispatchDialog } from "../store-admin/OrderDispatchDialog";
 import { DeliveryReadyForDispatchTab } from "@/pages/DeliveryReadyForDispatchTab";
 import { InvoiceDispatchDialog } from "./InvoiceDispatchDialog";
 import { CreditCollectionTermsEditor } from "./CreditCollectionTermsEditor";
@@ -238,7 +238,7 @@ it("preserves the explicit driver across the online-order caller, validated rout
   const caller = read("client/src/pages/OrderFulfillment.tsx");
   expect(caller).toMatch(/onConfirm=\{\(\{ partyId, assignedUserId, externalTrackingRef \}\) => dispatchM\.mutate\(\{\s*id: dispatchTarget\.id,\s*partyId,\s*assignedUserId,/);
   expect(caller).toContain("branchId: o.branchId");
-  expect(read("client/src/components/store/OrderQuickViewDrawer.tsx")).toContain("branchId: order.branchId");
+  expect(read("client/src/components/store-admin/OrderQuickViewDrawer.tsx")).toContain("branchId: order.branchId");
   expect(read("server/services/storeAdmin/orderFulfillmentService.ts")).toContain("branchId: onlineOrders.branchId");
   expect(read("server/services/storeAdmin/dispatchOnlineOrder.ts")).toContain("assignedUserId: input.assignedUserId");
 });

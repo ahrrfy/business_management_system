@@ -67,7 +67,7 @@ export interface ReceptionCheckoutPayloadInput {
   isReserve: boolean;
   hasDirectShortfall: boolean;
   deferred: boolean;
-  customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
+  customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer;
   shift: NonNullable<RouterOutputs["shifts"]["current"]>;
   customerId: number | null;
   customerName: string | null;

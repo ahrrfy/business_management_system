@@ -7,7 +7,7 @@ const detail = readFileSync(
   "utf8",
 );
 const reverseDialog = readFileSync(
-  new URL("../../../client/src/components/workorder/ReverseDeliveryRequestDialog.tsx", import.meta.url),
+  new URL("../../../client/src/components/workOrders/ReverseDeliveryRequestDialog.tsx", import.meta.url),
   "utf8",
 );
 const orphanBaseline = readFileSync(

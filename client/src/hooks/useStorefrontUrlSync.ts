@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef } from "react";
 import { useRoute } from "wouter";
-import { STOREFRONT_BANNER_NAVIGATE_EVENT } from "@/components/store/BannerFrame";
+import { STOREFRONT_BANNER_NAVIGATE_EVENT } from "@/components/store-admin/BannerFrame";
 
 interface StorefrontUrlSyncOptions {
   selectedId: number | null;

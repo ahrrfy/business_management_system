@@ -33,167 +33,45 @@ import {
   computeSaleSemanticPayloadSha256,
   type OfflineShiftCaptureGrant,
 } from "@shared/offlineCaptureProof";
-import type { RecipeLineSelection } from "@shared/recipeVariantSelection";
-
-export const OFFLINE_QUEUE_CAP_IQD = 5_000_000;
-export const OFFLINE_CACHE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
-export const OFFLINE_SHIFT_GRANT_TTL_MS = OFFLINE_CACHE_MAX_AGE_MS;
-export const ENCRYPTED_SHIFT_GRANT_META_KEY = "encryptedShiftCaptureGrant";
-export const LEGACY_DEVICE_CODE_META_KEY = "legacyDeviceCode";
-export const PREFLIGHT_INTENTS_META_KEY = "preflightSaleIntentsV4";
-export const PREFLIGHT_INTENT_IDB_KEY_PREFIX = "preflightIntentV4:";
-export const PREFLIGHT_INTENT_LS_KEY_PREFIX = "alroya.preflightIntent.v4:";
-export const PREFLIGHT_LOCK_IDB_KEY_PREFIX = "preflightLockV4:";
-export const PREFLIGHT_LOCK_LS_KEY_PREFIX = "alroya.preflightLock.v4:";
-export const PREFLIGHT_LIVE_LEASE_TTL_MS = 15_000;
-export const PREFLIGHT_TOMBSTONE_RETENTION_MS = 72 * 60 * 60 * 1000;
-export const OFFLINE_LOCAL_ONLY_STATUS_LABEL =
-  "محفوظ على هذا الجهاز وبانتظار المزامنة";
-
-export class OfflineCounterCorruptError extends Error {
-  readonly code = "OFFLINE_COUNTER_CORRUPT";
-  constructor(message: string) {
-    super(message);
-    this.name = "OfflineCounterCorruptError";
-  }
-}
-
-export class OfflineIdentityTamperError extends Error {
-  readonly code = "OFFLINE_OUTBOX_IDENTITY_TAMPERED";
-  constructor(message: string) {
-    super(message);
-    this.name = "OfflineIdentityTamperError";
-  }
-}
-
-export class PreflightCrossTabLockContentionError extends Error {
-  readonly code = "PREFLIGHT_CROSS_TAB_LOCK_CONTENTION";
-  constructor(message: string) {
-    super(message);
-    this.name = "PreflightCrossTabLockContentionError";
-  }
-}
-
-export interface CaptureGrantCheckContext {
-  branchId?: number | null;
-  shiftId?: number | null;
-  capturedByUserId?: number | null;
-  enforceOfflinePermPolicy?: boolean;
-}
-
-export interface PreflightSaleIntentV4 {
-  clientRequestId: string;
-  tabId: number;
-  branchId: number;
-  shiftId: number;
-  capturedByUserId: number;
-  total: string;
-  hadManagerApprovalAtSubmit: boolean;
-  semanticPayloadSha256: string;
-  saleInput: Record<string, unknown>;
-  receiptContext?: Record<string, unknown> | null;
-  ownerTabInstanceId?: string;
-  liveLeaseUntilMs?: number | null;
-  commercialPayloadUnavailable?: boolean;
-  createdAtIso: string;
-  updatedAtMs: number;
-  revision: number;
-  status: "IN_FLIGHT" | "UNCONFIRMED_SERVER_OUTCOME" | "CLEARED";
-  clearedAtMs?: number | null;
-  failureReason?: string | null;
-}
-
-export interface RecoverablePreflightIntentsResult {
-  intents: PreflightSaleIntentV4[];
-  foreignOwnerPendingCount: number;
-  activeInOtherTabCount: number;
-  earliestOtherTabLeaseExpiryMs?: number | null;
-}
-
-export interface PreUpgradeOutboxAuditReport {
-  totalRows: number;
-  unsentLegacyWithoutProofCount: number;
-  unsentLegacyClientRequestIds: string[];
-  unsentVerifiedV4Count: number;
-  parkedCount: number;
-  sentCount: number;
-  safeForCleanUpgradeWithoutQuarantine: boolean;
-}
-
-interface PersistedShiftGrantPlaintextV4 {
-  __shiftGrantV4: 1;
-  grant: OfflineShiftCaptureGrant;
-  savedAtClientMs: number;
-  expiresAtClientMs: number;
-}
-
-interface SerializedMetaCipherV4 {
-  __metaCipherV4: 1;
-  userId: number;
-  branchId: number;
-  shiftId: number;
-  ivHex: string;
-  dataHex: string;
-}
-
-function buildShiftGrantAad(userId: number, branchId: number, shiftId: number): Uint8Array {
-  return new TextEncoder().encode(
-    `alroya.shift_grant.v4|${Number(userId)}|${Number(branchId)}|${Number(shiftId)}`,
-  );
-}
-
-function buildPreflightIntentAad(
-  clientRequestId: string,
-  capturedByUserId: number,
-  branchId: number,
-): Uint8Array {
-  return new TextEncoder().encode(
-    `alroya.preflight_intent.v4|${clientRequestId}|${Number(capturedByUserId)}|${Number(branchId)}`,
-  );
-}
-
-function buildOutboxItemAad(params: {
-  clientRequestId: string;
-  kind: string;
-  capturedByUserId: number;
-  branchId: number;
-  capturedShiftId: number | null;
-}): Uint8Array {
-  return new TextEncoder().encode(
-    `alroya.outbox_item.v4|${params.clientRequestId}|${params.kind}|${Number(params.capturedByUserId)}|${Number(params.branchId)}|${params.capturedShiftId ?? 0}`,
-  );
-}
-
-function bytesToHexLocal(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function hexToBytesLocal(hex: string): Uint8Array | null {
-  if (typeof hex !== "string" || hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) {
-    return null;
-  }
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function isValidShiftCaptureGrant(
-  grant: OfflineShiftCaptureGrant | null | undefined,
-): grant is OfflineShiftCaptureGrant {
-  if (!grant || grant.version !== 4) return false;
-  if (!Number.isSafeInteger(grant.userId) || grant.userId <= 0) return false;
-  if (!Number.isSafeInteger(grant.branchId) || grant.branchId <= 0) return false;
-  if (!Number.isSafeInteger(grant.shiftId) || grant.shiftId <= 0) return false;
-  if (typeof grant.keyId !== "string" || !/^[a-zA-Z0-9_-]{1,24}$/.test(grant.keyId)) return false;
-  if (typeof grant.grantId !== "string" || !/^[0-9a-f]{16,64}$/i.test(grant.grantId)) return false;
-  if (!Number.isSafeInteger(grant.issuedAtServerMs) || !Number.isSafeInteger(grant.expiresAtServerMs)) return false;
-  if (grant.expiresAtServerMs <= grant.issuedAtServerMs) return false;
-  if (typeof grant.captureKeyHex !== "string" || !/^[0-9a-f]{64}$/i.test(grant.captureKeyHex)) return false;
-  if (typeof grant.grantToken !== "string" || !/^[0-9a-f]{64}$/i.test(grant.grantToken)) return false;
-  return true;
-}
+import {
+  buildOutboxItemAad,
+  buildPreflightIntentAad,
+  buildShiftGrantAad,
+  bytesToHexLocal,
+  hexToBytesLocal,
+  isValidShiftCaptureGrant,
+  type PersistedShiftGrantPlaintextV4,
+  type SerializedMetaCipherV4,
+} from "./outboxAad";
+import {
+  ENCRYPTED_SHIFT_GRANT_META_KEY,
+  LEGACY_DEVICE_CODE_META_KEY,
+  OFFLINE_CACHE_MAX_AGE_MS,
+  OFFLINE_LOCAL_ONLY_STATUS_LABEL,
+  OFFLINE_QUEUE_CAP_IQD,
+  OFFLINE_SHIFT_GRANT_TTL_MS,
+  OfflineCounterCorruptError,
+  OfflineIdentityTamperError,
+  PREFLIGHT_INTENTS_META_KEY,
+  PREFLIGHT_INTENT_IDB_KEY_PREFIX,
+  PREFLIGHT_INTENT_LS_KEY_PREFIX,
+  PREFLIGHT_LIVE_LEASE_TTL_MS,
+  PREFLIGHT_LOCK_IDB_KEY_PREFIX,
+  PREFLIGHT_LOCK_LS_KEY_PREFIX,
+  PREFLIGHT_TOMBSTONE_RETENTION_MS,
+  PreflightCrossTabLockContentionError,
+  type CaptureGrantCheckContext,
+  type OfflinePayload,
+  type OfflinePrintSalePayload,
+  type OfflineReceptionPayload,
+  type OfflineReturnPayload,
+  type OfflineSaleLine,
+  type OfflineSalePayload,
+  type PreUpgradeOutboxAuditReport,
+  type PreflightSaleIntentV4,
+  type RecoverablePreflightIntentsResult,
+} from "./outboxTypes";
+export * from "./outboxTypes";
 
 let activeShiftCaptureGrant: OfflineShiftCaptureGrant | null = null;
 let activeShiftGrantSavedAtMs = 0;
@@ -1584,106 +1462,6 @@ const BACKOFF_MAX_MS = 60_000;
 const SERVER_ERROR_MAX_ATTEMPTS = 5;
 const SENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const SENDING_LEASE_MS = 5 * 60 * 1000;
-
-export interface OfflineSaleLine {
-  variantId: number;
-  productUnitId: number;
-  quantity: string;
-  unitPriceOverride: string;
-  discountPercent?: string;
-  discountAmount?: string;
-  promotionId?: number;
-  promotionDiscount?: string;
-  cashierDiscountAmount?: string;
-  recipeSelections?: RecipeLineSelection[];
-}
-
-export interface OfflineSalePayload {
-  branchId: number;
-  shiftId: number;
-  customerId?: number;
-  priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-  lines: OfflineSaleLine[];
-  /** خصم على رأس الفاتورة (مبلغ، عملة الفرع). الخادم يُطبّقه بعد مجموع الأسطر وقبل الضريبة. */
-  invoiceDiscount?: string;
-  payment: { amount: string; method: "CASH" };
-  clientRequestId: string;
-  cashRoundIQD?: boolean;
-  notes?: string;
-  salesRepId?: number;
-  attribution?: { repId?: number | null; mode?: "DIRECT" | "SPLIT" | "POOL" };
-}
-
-/** خدمات الطباعة: سعرٌ يدويّ لكل سطر (طبيعة الشاشة)، بلا خصم سطر. */
-export interface OfflinePrintSalePayload {
-  branchId: number;
-  shiftId: number;
-  customerId?: number;
-  contactName?: string;
-  contactPhone?: string;
-  priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-  lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string; recipeSelections?: RecipeLineSelection[] }>;
-  invoiceDiscount?: string;
-  payment: { amount: string; method: "CASH" };
-  clientRequestId: string;
-  cashRoundIQD?: boolean;
-  notes?: string;
-}
-
-/** سلّة الاستقبال: بضاعةٌ جاهزة و/أو خدمات طباعة في معاملةٍ واحدة. **بلا أوامر شغل** —
- *  ترقيمها وإسنادها وصورها خادميّة، فلا تُلتقَط أصلاً (الشاشة ترفض قبل الوصول إلى هنا). */
-export interface OfflineReceptionPayload {
-  branchId: number;
-  shiftId: number;
-  customerId?: number;
-  contactName?: string;
-  contactPhone?: string;
-  priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-  paymentMethod: "CASH";
-  paidAmount: string;
-  regularSale?: { lines: OfflineSaleLine[]; amount: string; invoiceDiscount?: string } | null;
-  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string; recipeSelections?: RecipeLineSelection[] }>; amount: string; invoiceDiscount?: string } | null;
-  clientRequestId: string;
-}
-
-/**
- * مرتجعُ بيعٍ نقديّ التُقط دون اتصال (١/٩/٢٦). **الحمولةُ الوحيدة التي تُخرج نقداً** من
- * الطابور، ولذلك تحمل سبباً إلزامياً ومصيرَ البضاعة صريحاً — لا يقع ديناران بلا مستند.
- * ⚠️ سقفُ الاسترداد لا يُقيَّم على الجهاز (يحتاج تاريخ قبضِ الفاتورة كاملاً)؛ يُقيَّمه الخادم
- * عند الترحيل، والرفضُ يُعلَّق في طابور الاسترداد بقناة RETURN لمراجعة المدير.
- */
-export interface OfflineReturnPayload {
-  branchId: number;
-  shiftId: number | null;
-  invoiceId: number;
-  lines: Array<{ invoiceItemId: number; baseQuantity: number }>;
-  refund: { amount: string; method: "CASH"; shiftId?: number | null };
-  restock: boolean;
-  reason: string;
-  clientRequestId: string;
-}
-
-export type OfflinePayload =
-  | OfflineSalePayload
-  | OfflinePrintSalePayload
-  | OfflineReceptionPayload
-  | OfflineReturnPayload;
-
-// ── البيع الأوفلايني: **مفعَّل تلقائياً** على كل جهاز (قرار مالك ١٦/٨/٢٦) ──
-//
-// كان افتراضه معطَّلاً ويلزمه تفعيلٌ يدويّ لكل جهاز (بوّابة تجربة ش٥). النتيجة العملية:
-// كاشيرٌ ينقطع عنه الإنترنت فلا يستطيع البيع أصلاً — لأنّ أحداً لم يفتح إعدادات جهازه سلفاً.
-// وهذا يناقض غرض المنظومة: الالتقاط يجب أن يشتغل **لحظة الانقطاع بلا تدخّل بشريّ**.
-//
-// الآن: مفعَّلٌ ما لم يُعطَّل صراحةً ("0") — أي المفتاح صار **استثناءً** لا شرطاً، ويبقى
-// متاحاً لاستبعاد جهازٍ بعينه (حاسوب إداريّ مثلاً).
-//
-// ⚠️ ما لم يتغيّر — وهي حرّاس السلامة الحقيقية، تبقى نافذةً كلّها:
-//   • الأسعار المحلية أحدث من ٤٨ ساعة (assertCanCapture) وإلّا لا التقاط.
-//   • سقف قيمة الطابور.
-//   • نقديّ كامل فقط: لا آجل ولا بطاقة ولا بيع رقميّ.
-//   • الالتقاط لا يحدث إلّا عند فشل النقل فعلياً — لا «وضع أوفلاين» اختياريّ.
-// ويبوّب هذا العَلَم **الكتابة** وحدها؛ القراءة (تصفّح/مسح/سعر) كانت وتبقى دائمة.
 
 const OFFLINE_SALE_FLAG_KEY = "offlineSaleEnabled";
 

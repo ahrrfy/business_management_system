@@ -141,7 +141,7 @@ describe("Reception Return & Cancel — Authorization Parity & Frictionless UX",
     const settlementPanel = readClientFile("components/returns/SalesReturnSettlementPanel.tsx");
     const lookupHook = readClientFile("components/returns/useSalesReturnInvoiceLookup.ts");
     const refundPanel = readClientFile("components/returns/ReturnComposerRefundPanel.tsx");
-    const reverseDialog = readClientFile("components/workorder/ReverseDeliveryRequestDialog.tsx");
+    const reverseDialog = readClientFile("components/workOrders/ReverseDeliveryRequestDialog.tsx");
 
     expect(moduleReg).not.toContain("وتحرٍّ جنائي");
     expect(opsHub).not.toContain("فواتير التحصيل");

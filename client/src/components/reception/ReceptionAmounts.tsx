@@ -23,8 +23,8 @@ export interface ReceptionAmountsInput {
   method: import("@/components/reception/cartMath").PayMethod;
   splitPayment?: { hasCash: boolean; hasNonCash: boolean };
   payInput: string;
-  customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
-  phoneResolution: import("@/components/customer/customerByPhoneMachine").PhoneResolution;
+  customer: import("@/components/customers/customerByPhoneMachine").PhoneCustomer;
+  phoneResolution: import("@/components/customers/customerByPhoneMachine").PhoneResolution;
   deferred: boolean;
   setDeferred: React.Dispatch<React.SetStateAction<boolean>>;
 }

@@ -8,7 +8,7 @@ const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.met
 const readReceptionQueue = () =>
   readFileSync(new URL("../../components/reception/ReceptionOrderQueue.tsx", import.meta.url), "utf8");
 const readCancelDialog = () =>
-  readFileSync(new URL("../../components/workorder/CancelWorkOrderDialog.tsx", import.meta.url), "utf8");
+  readFileSync(new URL("../../components/workOrders/CancelWorkOrderDialog.tsx", import.meta.url), "utf8");
 
 describe("عقد صلاحيات وفشل واجهات أوامر الشغل التشغيلية", () => {
   it("يظهر التفويض لمندوب مستقل لكل مرحلة ولا يحول القراءة أو بدء التنفيذ إلى إذن تسليم", () => {

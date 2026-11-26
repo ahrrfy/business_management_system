@@ -1,7 +1,7 @@
 import {
   BannerFrame,
   type StoreBannerCreative,
-} from "@/components/store/BannerFrame";
+} from "@/components/store-admin/BannerFrame";
 
 export type BannerItem = StoreBannerCreative;
 

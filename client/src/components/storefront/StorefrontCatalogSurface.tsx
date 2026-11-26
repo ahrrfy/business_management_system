@@ -1,4 +1,4 @@
-import { BannerCarousel } from "@/components/store/BannerCarousel";
+import { BannerCarousel } from "@/components/store-admin/BannerCarousel";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import {
   CuratedRow,

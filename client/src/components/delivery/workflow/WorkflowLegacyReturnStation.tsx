@@ -14,7 +14,7 @@ import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import CancelWorkOrderDialog, {
   CancelWorkOrderDialogById,
   type CancelDecision,
-} from "@/components/workorder/CancelWorkOrderDialog";
+} from "@/components/workOrders/CancelWorkOrderDialog";
 import {
   ManagerApprovalDialog,
   type ManagerApprovalInput,

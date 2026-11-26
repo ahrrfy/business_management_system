@@ -23,7 +23,7 @@ import { preopenDocumentWindow } from "@/lib/printing/brand";
 import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { trpc } from "@/lib/trpc";
-import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
+import ReverseDeliveryRequestDialog from "@/components/workOrders/ReverseDeliveryRequestDialog";
 
 const CANCEL_REASON_PRESETS = [
   "تراجع الزبون",

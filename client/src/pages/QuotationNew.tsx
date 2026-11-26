@@ -18,7 +18,7 @@ import { confirm } from "@/lib/confirm";
 import { D, formatQuantity, moneyInput } from "@/lib/money";
 import { salesOperationAllowed } from "@/lib/salesOperationAccess";
 import { PageHeader } from "@/components/PageHeader";
-import { OrderCustomizationAssets } from "@/components/store/OrderCustomizationAssets";
+import { OrderCustomizationAssets } from "@/components/store-admin/OrderCustomizationAssets";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";

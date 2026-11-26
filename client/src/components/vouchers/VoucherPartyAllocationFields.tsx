@@ -1,6 +1,6 @@
 import CustomerPicker from "@/components/CustomerPicker";
-import SupplierPicker from "@/components/voucher/SupplierPicker";
-import DeliveryPartyPicker from "@/components/voucher/DeliveryPartyPicker";
+import SupplierPicker from "@/components/vouchers/SupplierPicker";
+import DeliveryPartyPicker from "@/components/vouchers/DeliveryPartyPicker";
 import { PaymentMethodChip } from "@/components/common/MovementBadges";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";

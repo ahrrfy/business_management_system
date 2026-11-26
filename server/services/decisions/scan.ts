@@ -1,9 +1,9 @@
 import { and, eq, gt, or, sql, type AnyColumn } from "drizzle-orm";
 import { z } from "zod";
-import type { DecisionScope } from "./types";
+import type { DecisionScope, ScanPosition } from "./types";
 
 export const scanPositionSchema = z.object({ id: z.number().int().positive().safe(), at: z.string().datetime().optional() }).strict();
-export type ScanPosition = z.infer<typeof scanPositionSchema>;
+export type { ScanPosition };
 export const sourceCursorSchema = z.object({
   source: z.string().min(1).max(80), userId: z.number().int().positive(),
   actorBranchId: z.number().int().positive().nullable(), crossBranch: z.boolean(),

@@ -7,9 +7,9 @@
  * من مسوّدة التبويب عند العودة إليه.
  */
 import { useEffect, useRef } from "react";
-import { CustomerByPhone } from "@/components/customer/CustomerByPhone";
-import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
-import type { PhoneCustomerTier } from "@/components/customer/customerByPhoneMachine";
+import { CustomerByPhone } from "@/components/customers/CustomerByPhone";
+import { useCustomerByPhone } from "@/components/customers/useCustomerByPhone";
+import type { PhoneCustomerTier } from "@/components/customers/customerByPhoneMachine";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 

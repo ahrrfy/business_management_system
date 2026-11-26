@@ -1,4 +1,4 @@
-import { OrderDispatchDialog, type DispatchOrder } from "@/components/store/OrderDispatchDialog";
+import { OrderDispatchDialog, type DispatchOrder } from "@/components/store-admin/OrderDispatchDialog";
 /**
  * OrderFulfillment — الجهة الإدارية لطلبات المتجر الإلكترونية (لوحة تنفيذ بنمط Kanban خفيف).
  *
@@ -14,20 +14,20 @@ import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAl
 import { ReceptionDuplicateAlertView } from "@/components/reception/ReceptionDuplicateAlert";
 import { canCheckReceptionDuplicates, type ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
 import { resolveOnlineDuplicateReference } from "@/lib/receptionDuplicatePreflight";
-import { StrictCancelOrderDialog } from "@/components/store/StrictCancelOrderDialog";
+import { StrictCancelOrderDialog } from "@/components/store-admin/StrictCancelOrderDialog";
 const EditOnlineOrderDialog = lazy(() =>
-  import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
+  import("@/components/store-admin/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
 );
-import { OrderSlaBadge } from "@/components/store/OrderSlaBadge";
-import { OrderContactCell, type ContactStatus } from "@/components/store/OrderContactCell";
-import { OrderQuickViewDrawer } from "@/components/store/OrderQuickViewDrawer";
-import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
-import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
+import { OrderSlaBadge } from "@/components/store-admin/OrderSlaBadge";
+import { OrderContactCell, type ContactStatus } from "@/components/store-admin/OrderContactCell";
+import { OrderQuickViewDrawer } from "@/components/store-admin/OrderQuickViewDrawer";
+import { OrderLifecycleStatus } from "@/components/store-admin/OrderLifecycleStatus";
+import { OrderLeaderboardModal } from "@/components/store-admin/OrderLeaderboardModal";
 import {
   OrderCustomizationAssets,
   formatOrderGovernorate,
   resolveOrderShippingAddressAndNotes,
-} from "@/components/store/OrderCustomizationAssets";
+} from "@/components/store-admin/OrderCustomizationAssets";
 import {
   AUDIO_FEEDBACK_CHANGE_EVENT,
   isAudioFeedbackEnabled,
@@ -42,7 +42,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { hasModuleAccess, isStoreOrderAlertRecipientUser, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { StoreOrderAutoPrintBar } from "@/components/store/StoreOrderAutoPrintBar";
+import { StoreOrderAutoPrintBar } from "@/components/store-admin/StoreOrderAutoPrintBar";
 import { printStoreOrderAlertAuto } from "@/lib/printing/storeOrderAlertSlip";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { ACTION_LABELS } from "@shared/actionLabels";
