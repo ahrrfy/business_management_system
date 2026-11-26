@@ -363,7 +363,7 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
  * المقايضة المقبولة: تغييرُ مخزونٍ أو نشرٍ قد يظهر متأخّراً بمقدار TTL على **ترتيب/عدّ** العرض
  * فقط. لا أثر ماليّ: الطلب يُعاد تسعيره وتُتحقَّق كمّياته تحت قفلٍ في مسار الإنشاء.
  */
-const STOREFRONT_CANDIDATES_TTL_MS = 30_000;
+const STOREFRONT_CANDIDATES_TTL_MS = 60_000;
 const STOREFRONT_CATEGORIES_TTL_MS = 60_000;
 const STOREFRONT_SOLD_COUNTS_TTL_MS = 5 * 60_000;
 // كاشان منفصلان للترشيح: فضاء مفاتيح **التصفّح** مغلقٌ ومحدود (فرع × فئة × مرشّح توفّر)،
@@ -392,6 +392,12 @@ const soldCountsCache = createTtlCache<string, Map<number, number>>({
   maxEntries: 120,
   maxInFlight: pendingCatalogLimit,
 });
+type HydratedCandidateRow = Awaited<ReturnType<typeof attachAvailability<Awaited<ReturnType<typeof availabilityCandidateSelect>>[number]>>>[number];
+const hydratedCandidatesCache = createTtlCache<string, HydratedCandidateRow[]>({
+  ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
+  maxEntries: 32,
+  maxInFlight: pendingCatalogLimit,
+});
 export function storefrontCacheResourceMetrics() {
   return { candidates: candidateOrderCache.snapshot(), search: candidateSearchCache.snapshot(), categories: categoriesCache.snapshot(), sold: soldCountsCache.snapshot() };
 }
@@ -413,6 +419,11 @@ export function storefrontDerivedRankingMetrics() {
 /** اختبار فقط: يمنع تسرّب ترتيب مشتق بين حالات الاختبار التي تغيّر المخزون مباشرةً. */
 export function resetStorefrontDerivedRankingCacheForTests(): void {
   storefrontRankingCache.clear();
+  hydratedCandidatesCache.clear();
+  candidateOrderCache.clear();
+  candidateSearchCache.clear();
+  categoriesCache.clear();
+  soldCountsCache.clear();
 }
 
 /**
@@ -428,18 +439,25 @@ async function loadRankedStorefrontProductIds(
     categoryIds?: readonly number[] | null;
     search?: string | null;
     seed?: string | null;
+    hydrationCacheKey?: string | null;
   },
   cacheResult = true,
   onBrands?: (brands: string[]) => void,
 ): Promise<readonly number[]> {
   const load = async () => {
-    const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
-    const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
+    const loadHydrated = async () => {
+      const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+      return attachAvailability(db, branchId, candidateRows);
+    };
+    const hydratedCandidates =
+      input.hydrationCacheKey && !storefrontCacheDisabled()
+        ? await hydratedCandidatesCache.get(input.hydrationCacheKey, loadHydrated)
+        : await loadHydrated();
     onBrands?.(Array.from(new Set(hydratedCandidates
       .filter((row) => input.availability === "ALL" || row.availableQty >= Number(row.conversionFactor))
       .map((row) => row.brand?.trim()).filter((brand): brand is string => Boolean(brand))))
       .sort((a, b) => a.localeCompare(b, "ar")));
-    const ids = await chooseCandidateProductIdsAsync(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
+    const ids = await chooseCandidateProductIdsAsync(hydratedCandidates, hydratedCandidates.length, input.availability, input.search, input.seed);
     if (!input.brand?.trim() && (!input.priceFilter || input.priceFilter === "ALL") && (!input.sort || input.sort === "RECOMMENDED")) return ids;
     return refineStorefrontProductIds(hydratedCandidates, ids, input,
       (previews) => applyStorefrontPromotions(previews, branchId),
@@ -1102,6 +1120,18 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       : opts.categoryId == null
         ? null
         : [opts.categoryId];
+  // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
+  const searchKey = resolvedBarcodeUnitId == null
+    ? `${useRelaxedFallback ? "relaxed:" : ""}${normalizeArabicSearch(s)}`
+    : `barcode-unit:${resolvedBarcodeUnitId}`;
+  const categoryScopeKey = effectiveCategoryIds?.length ? effectiveCategoryIds.join(",") : "";
+  const productIdsKey = effectiveProdIdsInput?.length ? [...effectiveProdIdsInput].sort((a, b) => a - b).join(",") : "";
+  const promoKey = opts.promotionId ? `promo:${opts.promotionId}` : "";
+  const isUnboundedSearchLike = Boolean(searchKey || productIdsKey || promoKey || opts.brand?.trim());
+  const hydrationCacheKey =
+    !isUnboundedSearchLike && (!effectivePriceFilter || effectivePriceFilter === "ALL") && (!opts.sort || opts.sort === "RECOMMENDED")
+      ? JSON.stringify([companyScope(), branchId, categoryScopeKey])
+      : null;
   const loadOrderedIds = async (): Promise<CatalogRanking> => {
     let brands: string[] = [];
     const baseIds = await loadRankedStorefrontProductIds(
@@ -1116,6 +1146,7 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
         brand: opts.brand,
         priceFilter: effectivePriceFilter,
         sort: opts.sort,
+        hydrationCacheKey,
       },
       false,
       (value) => {
@@ -1131,19 +1162,12 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
       : baseIds;
     return { ids, brands };
   };
-  // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
-  const searchKey = resolvedBarcodeUnitId == null
-    ? `${useRelaxedFallback ? "relaxed:" : ""}${normalizeArabicSearch(s)}`
-    : `barcode-unit:${resolvedBarcodeUnitId}`;
-  const categoryScopeKey = effectiveCategoryIds?.length ? effectiveCategoryIds.join(",") : "";
-  const productIdsKey = effectiveProdIdsInput?.length ? [...effectiveProdIdsInput].sort((a, b) => a - b).join(",") : "";
-  const promoKey = opts.promotionId ? `promo:${opts.promotionId}` : "";
   const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
     : await storefrontCacheGet(
-      searchKey || productIdsKey || promoKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache,
-      searchKey || productIdsKey || promoKey || seedKey || opts.brand?.trim() ? "search" : "candidates",
-      JSON.stringify([companyScope(), branchId, categoryScopeKey, promoKey, availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", effectivePriceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
+        isUnboundedSearchLike ? candidateSearchCache : candidateOrderCache,
+        isUnboundedSearchLike ? "search" : "candidates",
+        JSON.stringify([companyScope(), branchId, categoryScopeKey, promoKey, availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", effectivePriceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
         loadOrderedIds,
       );
   const orderedIds = ranking.ids;
@@ -1186,11 +1210,13 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
     items.push(card);
     if (items.length >= cap) break;
   }
-  await applyStorefrontPromotions(items, branchId);
-  await attachSoldCounts(db, items);
-  await attachReviewAggregates(db, items);
-  await attachVariantColors(db, items, branchId);
-  await attachStorefrontListMedia(db, items);
+  await Promise.all([
+    applyStorefrontPromotions(items, branchId),
+    attachSoldCounts(db, items),
+    attachReviewAggregates(db, items),
+    attachVariantColors(db, items, branchId),
+    attachStorefrontListMedia(db, items),
+  ]);
   // المؤشّر يتقدّم بآخر **معرّفٍ مختار** لا بآخر بطاقةٍ مرسومة (مراجعة عدائية ٣١/٨): كل صنفٍ
   // نفد بين اختيار القائمة وجلب صفوفها يسقط بالتصفية الحيّة أعلاه — وهو **صحيح** (نعرض الحقيقة
   // لا لقطةً قديمة)، لكن لو سقطت الصفحة كلّها كان `last` يصير `undefined` فيعود المؤشّر `null`
@@ -1217,6 +1243,23 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
   return storefrontCacheGet(categoriesCache, "categories", `${companyScope()}:${branchId}`, () =>
     computeStorefrontCategories(db, branchId),
   );
+}
+
+/**
+ * تسخين غير حاجب لكاشات سطح المتجر العلني على كل عامل ويب عند الإقلاع.
+ * يمنع دفع أول زائر بعد النشر أو إعادة تشغيل العامل لكلفة مسح الكتالوج والفئات البارد.
+ */
+export async function warmStorefrontPublicCaches(): Promise<void> {
+  if (storefrontCacheDisabled()) return;
+  try {
+    const bucketSeed = `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`;
+    await Promise.allSettled([
+      storefrontCategories(),
+      storefrontCatalog({ limit: 24, availability: "IN_STOCK", seed: bucketSeed }),
+    ]);
+  } catch {
+    // التسخين تحسيني بحت؛ لا يسقط العامل إن لم يكتمل إعداد فرع المتجر بعد.
+  }
 }
 
 async function computeStorefrontCategories(
@@ -1451,11 +1494,13 @@ export async function storefrontCartRecommendations(
     ? []
     : await storefrontCategoryRecommendations(db, branchId, autoCategoryIds, excludedIds, cap - manualItems.length);
   const items = [...manualItems, ...autoItems].slice(0, cap);
-  await applyStorefrontPromotions(items, branchId);
-  await attachSoldCounts(db, items);
-  await attachReviewAggregates(db, items);
-  await attachVariantColors(db, items, branchId);
-  await attachStorefrontListMedia(db, items);
+  await Promise.all([
+    applyStorefrontPromotions(items, branchId),
+    attachSoldCounts(db, items),
+    attachReviewAggregates(db, items),
+    attachVariantColors(db, items, branchId),
+    attachStorefrontListMedia(db, items),
+  ]);
   return items;
 }
 
@@ -1554,11 +1599,13 @@ export async function storefrontRelated(
   await appendCandidates(categoryConds, categoryIds, cap);
   if (items.length < cap) await appendCandidates(baseConds, null, cap + seen.size);
 
-  await applyStorefrontPromotions(items, branchId);
-  await attachSoldCounts(db, items);
-  await attachReviewAggregates(db, items);
-  await attachVariantColors(db, items, branchId);
-  await attachStorefrontListMedia(db, items);
+  await Promise.all([
+    applyStorefrontPromotions(items, branchId),
+    attachSoldCounts(db, items),
+    attachReviewAggregates(db, items),
+    attachVariantColors(db, items, branchId),
+    attachStorefrontListMedia(db, items),
+  ]);
   return items;
 }
 

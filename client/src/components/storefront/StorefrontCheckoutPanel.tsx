@@ -124,32 +124,6 @@ export function StorefrontCheckoutPanel({
         }}
         className="flex flex-col gap-3"
       >
-        <div className="rounded-2xl border border-slate-200/80 bg-[#f5f5f7] p-3.5 dark:border-slate-800 dark:bg-slate-900/70">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-bold tracking-wide text-slate-500 dark:text-slate-400">
-                الخطوة الأخيرة
-              </p>
-              <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">
-                أكمل بياناتك وسنؤكد الطلب قبل التوصيل
-              </p>
-            </div>
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[#1d1d1f] text-sm font-black text-white dark:bg-white dark:text-[#1d1d1f]">
-              {cartCount}
-            </span>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center text-[10px] font-bold">
-            <span className="rounded-lg bg-[#1d1d1f] px-2 py-1.5 text-white dark:bg-white dark:text-[#1d1d1f]">
-              بياناتك
-            </span>
-            <span className="rounded-lg bg-white px-2 py-1.5 text-slate-600 ring-1 ring-slate-200/70 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
-              التوصيل
-            </span>
-            <span className="rounded-lg bg-white px-2 py-1.5 text-slate-600 ring-1 ring-slate-200/70 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
-              التأكيد
-            </span>
-          </div>
-        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field
             icon={<User aria-hidden className="size-4" />}

@@ -132,7 +132,7 @@ export function BannerFrame({
             onLoad={(e) => reportDimensions(e.currentTarget)}
             loading={shouldEagerLoad ? "eager" : "lazy"}
             fetchPriority={isPrimaryHeroLcp ? "high" : "auto"}
-            decoding={active ? "sync" : "async"}
+            decoding="async"
             draggable={false}
             className="size-full select-none object-contain"
             style={{ objectPosition: focus }}
@@ -153,7 +153,7 @@ export function BannerFrame({
           onLoad={(e) => reportDimensions(e.currentTarget)}
           loading={shouldEagerLoad ? "eager" : "lazy"}
           fetchPriority={isPrimaryHeroLcp ? "high" : "auto"}
-          decoding={active ? "sync" : "async"}
+          decoding="async"
           draggable={false}
           className={`size-full select-none ${
             mode === "PRESERVE_FULL" ? "object-contain" : "object-cover"

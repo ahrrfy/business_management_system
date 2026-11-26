@@ -54,7 +54,6 @@ import {
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   storefrontProductCanBeOrdered,
-  CategoryChipStrip,
   validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
@@ -734,52 +733,8 @@ describe("storefront wholesale guidance", () => {
   });
 });
 
-describe("storefront category strip and categories navigation", () => {
-  it("renders category chip strip with accessible navigation and proper chips", () => {
-    const cats = [
-      { id: 1, name: "دفاتر وقرطاسية" },
-      { id: 2, name: "أقلام حبر وجاف" },
-      { id: 3, name: "إطارات وبوسترات" },
-    ];
-    const onPick = vi.fn();
-    const html = renderToStaticMarkup(
-      createElement(CategoryChipStrip, {
-        cats,
-        selectedId: 2,
-        onPick,
-      }),
-    );
-
-    expect(html).toContain("كل الأقسام");
-    expect(html).toContain("دفاتر وقرطاسية");
-    expect(html).toContain("أقلام حبر وجاف");
-    expect(html).toContain("إطارات وبوسترات");
-    expect(html).toContain('aria-label="مرر الأقسام إلى اليمين"');
-    expect(html).toContain('aria-label="مرر الأقسام إلى اليسار"');
-    expect(html).toContain('aria-label="شريط أقسام المنتجات"');
-    expect(html).toContain('data-selected="true"');
-  });
-
-  it("renders infinite looping marquee track for category chips with seamless repeated sets", () => {
-    const cats = [
-      { id: 1, name: "قسم 1" },
-      { id: 2, name: "قسم 2" },
-    ];
-    const html = renderToStaticMarkup(
-      createElement(CategoryChipStrip, {
-        cats,
-        selectedId: null,
-        onPick: vi.fn(),
-      }),
-    );
-
-    expect(html).toContain("will-change-transform");
-    expect(html).toContain("translate3d(0, 0, 0)");
-    const matchCount = (html.match(/قسم 1/g) || []).length;
-    expect(matchCount).toBeGreaterThanOrEqual(3);
-  });
-
-  it("renders StorefrontCategories section with id store-categories and themed cards", () => {
+describe("storefront categories single-rail navigation", () => {
+  it("renders StorefrontCategories section with id store-categories and clean category pills", () => {
     const cats = [
       { id: 1, name: "قرطاسية عامة", productCount: 25, availableCount: 20 },
       { id: 2, name: "أدوات هندسية", productCount: 10, availableCount: 8 },
@@ -796,12 +751,12 @@ describe("storefront category strip and categories navigation", () => {
     );
 
     expect(html).toContain('id="store-categories"');
-    expect(html).toContain("الأقسام الرئيسية");
-    expect(html).toContain("تصفح حسب اهتمامك");
+    expect(html).toContain('aria-label="أقسام المتجر"');
+    expect(html).toContain("كل الأقسام");
     expect(html).toContain("قرطاسية عامة");
     expect(html).toContain("أدوات هندسية");
-    expect(html).toContain("20 منتج");
-    expect(html).toContain("8 منتج");
+    expect(html).toContain('aria-label="مرر الأقسام إلى اليمين"');
+    expect(html).toContain('aria-label="مرر الأقسام إلى اليسار"');
   });
 
   it("shows clear filter button when a category is selected in StorefrontCategories", () => {
@@ -819,14 +774,13 @@ describe("storefront category strip and categories navigation", () => {
     expect(html).toContain("عرض كل الأقسام");
   });
 
-  it("verifies navbar contains anchor link to #store-categories", () => {
+  it("verifies navbar contains anchor link to #store-categories without duplicate header strip", () => {
     const source = ["../components/storefront/StorefrontHeader.tsx", "../components/storefront/StorefrontCatalogSurface.tsx"]
       .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
     expect(source).toContain('href="#store-categories"');
     expect(source).toContain('id="store-categories"');
-    expect(source).toContain('id="store-categories-strip"');
     expect(source).toContain("<StorefrontCategories");
-    expect(source).toContain("<CategoryChipStrip");
+    expect(source).not.toContain("<CategoryChipStrip");
   });
 });
 

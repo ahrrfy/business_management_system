@@ -15,7 +15,10 @@ if (process.env.NODE_ENV === "production") delete process.env.ERP_INVENTORY_CONT
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { createPublicImageAdmission, createStorefrontAdmission, storefrontResourceAdmission, withStorefrontContextWork } from "./middleware/storefrontAdmission";
-import { storefrontCacheResourceMetrics } from "./services/storefrontService";
+import {
+  storefrontCacheResourceMetrics,
+  warmStorefrontPublicCaches,
+} from "./services/storefrontService";
 import { sql } from "drizzle-orm";
 import express, {
   type NextFunction,
@@ -1023,6 +1026,12 @@ async function startServer() {
     logger.info(
       `عامل ويب ${process.env.NODE_APP_INSTANCE} — تخطّى الوظائف الخلفيّة (تعمل على العامل 0).`,
     );
+  }
+
+  if (process.env.NODE_ENV !== "test" && webRuntimeRole() !== "admin") {
+    setTimeout(() => {
+      void warmStorefrontPublicCaches();
+    }, 1200).unref();
   }
 
   // إيقاف رشيق: SIGTERM (من PM2/خدمة Windows عند إعادة التشغيل) وSIGINT (Ctrl+C) ⇒ أغلق
