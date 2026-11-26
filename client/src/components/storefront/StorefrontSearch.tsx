@@ -188,7 +188,7 @@ export function StorefrontSearch({
           }
         }}
         aria-label="البحث في منتجات مكتبة العربية"
-        placeholder="ابحث بالاسم أو العامية أو جزء من الكلمة: ملزمة، جنطة، فسفوري، اكرلك…"
+        placeholder="ابحث في المتجر..."
         inputProps={{
           role: "combobox",
           maxLength: 64,
@@ -201,7 +201,7 @@ export function StorefrontSearch({
               : undefined,
         }}
         className="min-w-0 w-full"
-        inputClassName="h-11 border-slate-200 bg-white pr-10 pl-11 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:border-[var(--store-brand)] focus:ring-[var(--store-brand)]/10"
+        inputClassName="h-10 rounded-xl border-slate-200/90 bg-[#f5f5f7] pr-10 pl-10 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:border-[var(--store-brand)] focus:bg-white focus:ring-[var(--store-brand)]/10"
       />
       {open && (
         <div

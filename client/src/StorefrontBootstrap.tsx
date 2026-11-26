@@ -11,7 +11,19 @@ import {
 import { Suspense, useEffect } from "react";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 
-const Storefront = lazy(() => import("@/pages/Storefront"));
+const loadStorefrontPage = () => import("@/pages/Storefront");
+if (typeof window !== "undefined") {
+  const bootPath = (window.location.pathname || "/").split("?", 1)[0];
+  if (
+    bootPath === "/" ||
+    bootPath === "/store" ||
+    bootPath.startsWith("/store/product/") ||
+    bootPath.startsWith("/store/category/")
+  ) {
+    void loadStorefrontPage();
+  }
+}
+const Storefront = lazy(loadStorefrontPage);
 const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const JobApply = lazy(() => import("@/pages/JobApply"));

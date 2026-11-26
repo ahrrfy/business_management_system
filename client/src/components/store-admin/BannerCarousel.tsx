@@ -15,7 +15,8 @@ export interface BannerCarouselProps {
  * - شريط نقاط مضغوط بحد أقصى 7 مؤشرات مرئية حتى لا يفيض على الهواتف مع الشرائح الكثيرة.
  * - ارتفاع متوازن على الشاشات العريضة يبقي الفئات والعروض ظاهرة فوق الطيّ (Above the Fold).
  */
-export function BannerCarousel({ banners, slot = "HERO", className = "" }: BannerCarouselProps) {
+export function BannerCarousel({ banners: rawBanners, slot = "HERO", className = "" }: BannerCarouselProps) {
+  const banners = slot === "HERO" ? rawBanners.slice(0, 6) : rawBanners;
   const [cur, setCur] = useState(0);
   const [interactionPaused, setInteractionPaused] = useState(false);
   const [autoPlayPaused, setAutoPlayPaused] = useState(false);

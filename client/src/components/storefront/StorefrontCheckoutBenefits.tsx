@@ -69,19 +69,27 @@ export function StorefrontCheckoutBenefits({
         </div>
         <p
           id="storefront-coupon-feedback"
-          className="mt-2 text-xs font-bold text-slate-600"
+          className={
+            (quoteFetching && appliedCouponCode) ||
+            (quoteError && appliedCouponCode) ||
+            couponSuperseded ||
+            (appliedCouponCode && quoteData) ||
+            couponFeedback
+              ? "mt-2 text-xs font-bold text-slate-600"
+              : "sr-only"
+          }
           role="status"
           aria-live="polite"
         >
           {quoteFetching && appliedCouponCode
-            ? "جارٍ التحقق من الكوبون…"
+            ? "جار التحقق من الكوبون..."
             : quoteError && appliedCouponCode
-              ? (quoteErrorMessage ?? "تعذّر التحقق من الكوبون")
+              ? (quoteErrorMessage ?? "تعذر التحقق من الكوبون")
               : couponSuperseded
-                ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteData?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.`
+                ? `لم يستخدم الكوبون؛ طبقت منفعة ${quoteData?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلا منه.`
                 : appliedCouponCode && quoteData
                   ? `تم تطبيق ${quoteData.couponProgramName ?? "الكوبون"} — التوفير ${money(Number(quotedCouponDiscount) + Number(quoteData.couponDeliveryWaivedAmount ?? 0))} د.ع`
-                  : (couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب")}
+                  : (couponFeedback ?? "")}
         </p>
       </div>
       {quoteData?.wholesaleProgress.length ? (

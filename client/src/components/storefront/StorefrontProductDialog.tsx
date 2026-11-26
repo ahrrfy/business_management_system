@@ -5,13 +5,11 @@ import {
   type CustomizationStudioUploadState,
 } from "@/components/storefront/storefrontCustomizationUpload";
 import { ProductGallery } from "@/components/storefront/StorefrontMedia";
-import { StorefrontPersonalAdvisorCard } from "@/components/storefront/StorefrontPersonalAdvisorCard";
 import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
 import {
   RelatedProductStrip,
   type StorefrontProductForCartAction,
 } from "@/components/storefront/StorefrontRecommendations";
-import { StorefrontSocialProofTicker } from "@/components/storefront/StorefrontSocialProofTicker";
 import { formatQuantity } from "@/lib/money";
 import { type RouterOutputs } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -375,23 +373,16 @@ export function StorefrontProductDialog({
                             : "";
                           openWhatsApp(
                             settings!.whatsappNumber!,
-                            `السلام عليكم، أود الاستفسار حول منتج «${product?.productName ?? ""}»${variantText}${unitText} عبر متجر الرؤية العربية.`,
+                            `السلام عليكم، أود الاستفسار حول منتج «${product?.productName ?? ""}»${variantText}${unitText} عبر متجر المكتبة العربية.`,
                           );
                         }}
-                        className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-800 transition hover:border-emerald-600/60 hover:bg-emerald-50/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                        className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-800 transition hover:border-slate-400 hover:bg-[#f5f5f7] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                       >
-                        <MessageCircle aria-hidden className="size-3.5 text-emerald-500" />
-                        <span>استفسار حول المنتج عبر واتساب</span>
+                        <MessageCircle aria-hidden className="size-3.5 text-[var(--store-brand)]" />
+                        <span>استفسار عبر واتساب</span>
                       </button>
                     )}
                   </div>
-
-                  {/* شريط الإقبال والدليل الاجتماعي اللحظي */}
-                  <StorefrontSocialProofTicker
-                    soldCount={product.soldCount}
-                    productName={product.productName}
-                    className="mt-3"
-                  />
 
                   {/* محتويات البكج */}
                   {product.isBundle &&
@@ -426,13 +417,6 @@ export function StorefrontProductDialog({
                       onRecommendationClick={trackRecommendationClick}
                     />
                   )}
-
-                  {/* بطاقة المستشار الشخصي المباشر للزبائن والشركات */}
-                  <StorefrontPersonalAdvisorCard
-                    productTitle={product.productName}
-                    whatsappNumber={settings?.whatsappNumber}
-                    className="mt-4"
-                  />
 
                   {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
                   {product && (

@@ -27,12 +27,10 @@ export { loadCart,loadCheckoutAttempt,saveCart,saveCheckoutAttempt,saveForm,save
  * نظام عرض تجاري مستقل للمتجر: تنقل واضح، اكتشاف بالفئات، عروض مختارة، كتالوج قابل للتصفية، وسلة ودفع عند الاستلام.
  * الأولوية للوضوح والمقارنة وسرعة الوصول إلى قرار الشراء، مع الحفاظ على منطق البيانات الحقيقي في النظام.
  */
-import { CategoryChipStrip } from "@/components/storefront/CategoryChipStrip";
 import { ConsentChoice,ConsentProvider } from "@/components/storefront/ConsentChoice";
 import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
 import { type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontFloatingCart } from "@/components/storefront/StorefrontFloatingCart";
-import { type ThematicCollectionCard } from "@/components/storefront/StorefrontThematicStrip";
 import { useOrderTrackingRefresh } from "@/hooks/useOrderTrackingRefresh";
 import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
@@ -100,8 +98,6 @@ import { type GuestTrackingOrder,loadGuestTrackingOrders,rememberGuestTrackingOr
  * bundleImageUrls عند وجودها.
  */
 
-export { CategoryChipStrip };
-
 /** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
  *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
 
@@ -128,7 +124,6 @@ function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [selectedThematicCollection, setSelectedThematicCollection] = useState<ThematicCollectionCard | null>(null);
   const [activePromoId, setActivePromoId] = useState<number | null>(null);
   const [bannerProductIds, setBannerProductIds] = useState<number[] | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
@@ -136,7 +131,7 @@ function StorefrontContent() {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
-  const [catalogSeed, setCatalogSeed] = useState(() => `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`);
+  const [catalogSeed] = useState(() => `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
@@ -344,10 +339,6 @@ function StorefrontContent() {
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
-  const dealsPreviewQ = trpc.storefront.catalog.useQuery(
-    { priceFilter: "ON_SALE", limit: 24, availability: "IN_STOCK" },
-    { staleTime: 5 * 60 * 1000, enabled: !search && categoryId == null && !showWishlist },
-  );
   const activeOffer = useMemo(
     () => (activePromoId == null ? null : (offersQ.data ?? []).find((o) => o.id === activePromoId) ?? null),
     [activePromoId, offersQ.data],
@@ -366,7 +357,7 @@ function StorefrontContent() {
     bannerProductIds ??
     (activeOffer?.scope === "PRODUCTS"
       ? (activeOffer.targetProductIds ?? [])
-      : selectedThematicCollection?.productIds);
+      : undefined);
   const searchProductIds = useMemo(
     () => storefrontCatalogProductScope(showWishlist, wishlistIds, scopedIds),
     [showWishlist, wishlistIds, scopedIds],
@@ -380,7 +371,7 @@ function StorefrontContent() {
     priceFilter: effectivePriceFilter,
     sort,
     search: search || undefined,
-    limit: 48,
+    limit: 24,
     availability,
     seed: sort === "RECOMMENDED" && !search ? catalogSeed : undefined,
   } as const;
@@ -398,11 +389,9 @@ function StorefrontContent() {
     categoryId,
     setCategoryId,
     onSelectPromoId: (pid) => {
-      setSelectedThematicCollection(null);
       setActivePromoId(pid);
     },
     onActivateDeals: () => {
-      setSelectedThematicCollection(null);
       setActivePromoId(null);
       setPriceFilter("ON_SALE");
     },
@@ -410,7 +399,6 @@ function StorefrontContent() {
       setPriceFilter((prev) => (prev === "ON_SALE" ? "ALL" : prev));
     },
     onSelectProductGroup: (ids) => {
-      setSelectedThematicCollection(null);
       setBannerProductIds(ids);
     },
     onApplySearch: (q) => {
@@ -854,10 +842,9 @@ function StorefrontContent() {
     if (nextRaw.trim()) {
       setBannerProductIds(null);
       setActivePromoId(null);
-      setSelectedThematicCollection(null);
     }
   };
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null || activePromoId != null || bannerProductIds != null;
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || activePromoId != null || bannerProductIds != null;
   const searchScope = { categoryId: effectiveCategoryId, categoryIds: effectiveCategoryIds, promotionId: activePromoId, availability, brand, priceFilter: effectivePriceFilter, productIds: searchProductIds };
   function submitStoreSearch(query: string, selectedCategory?: number) {
     setRawSearch(query);
@@ -865,7 +852,6 @@ function StorefrontContent() {
     // تحرير البحث من أي قيد باقة بنر أو عرض سابق حتى لا ينحبس البحث في 4 أصناف فقط
     setBannerProductIds(null);
     setActivePromoId(null);
-    setSelectedThematicCollection(null);
     if (selectedCategory !== undefined) {
       setCategoryId(selectedCategory || null);
     }
@@ -880,27 +866,12 @@ function StorefrontContent() {
     }, 0);
   }
   function selectCategory(id: number | null) {
-    setSelectedThematicCollection(null);
     setActivePromoId(null);
     setBannerProductIds(null);
     setCategoryId(id);
     scrollToResults();
   }
-  function handleSelectThematicCollection(card: ThematicCollectionCard) {
-    setSelectedThematicCollection(card);
-    setActivePromoId(null);
-    setBannerProductIds(null);
-    setCategoryId(null);
-    setSearch("");
-    setRawSearch("");
-    scrollToResults();
-  }
-  function handleClearThematicCollection() {
-    setSelectedThematicCollection(null);
-    clearCatalogFilters();
-  }
   function handleSelectOffer(offer: (typeof offers)[number]) {
-    setSelectedThematicCollection(null);
     setBannerProductIds(null);
     setCategoryId(null);
     setActivePromoId(offer.id);
@@ -916,7 +887,6 @@ function StorefrontContent() {
     setPriceFilter("ALL");
     setBrand("");
     setSort("RECOMMENDED");
-    setSelectedThematicCollection(null);
     setActivePromoId(null);
     setBannerProductIds(null);
     setShowWishlist(false);
@@ -925,7 +895,6 @@ function StorefrontContent() {
     setRawSearch("");
     setSearch("");
     setCategoryId(null);
-    setSelectedThematicCollection(null);
     setActivePromoId(null);
     setBannerProductIds(null);
     if (window.location.search) window.history.pushState(null, "", "/store");
@@ -957,12 +926,6 @@ function StorefrontContent() {
   }, [heroBanners, inlineBanners, offers]);
   const topBanners = heroBanners.length ? heroBanners : feedStrips;
   const topBannerSlot = heroBanners.length || !inlineBanners.length ? "HERO" : "INLINE";
-
-  const dealProducts = useMemo(() => {
-    const serverDeals = (dealsPreviewQ.data?.items ?? []).filter((p) => p.inStock !== false);
-    if (serverDeals.length > 0) return serverDeals.slice(0, 24);
-    return items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 24);
-  }, [dealsPreviewQ.data?.items, items]);
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
   const { pulseHeart, toggleWishlist, shareProduct, shareCart } = storefrontSharingActions({setHeartPulseTarget, setHeartPulseNonce, setSharePulseTarget, setSharePulseNonce, setWishlistIds, setShareFeedback, cartLines, createCartShareM});
@@ -1235,11 +1198,11 @@ function StorefrontContent() {
       <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_75%_45%_at_50%_-5%,rgba(30,58,138,0.045),transparent)] dark:hidden" />
       <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-[var(--store-brand)] px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{cartStatus}</div>
-      <StorefrontHeader categoryId={categoryId} search={search} setCategoryId={setCategoryId} setSearch={setSearch} setRawSearch={handleRawSearchChange} rawSearch={rawSearch} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} pulseHeart={pulseHeart} setShowWishlist={setShowWishlist} showWishlist={showWishlist} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} wishlistIds={wishlistIds} setPanel={setPanel} cartCount={cartCount} cats={cats} selectCategory={selectCategory} />
+      <StorefrontHeader categoryId={categoryId} search={search} setCategoryId={setCategoryId} setSearch={setSearch} setRawSearch={handleRawSearchChange} rawSearch={rawSearch} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} pulseHeart={pulseHeart} setShowWishlist={setShowWishlist} showWishlist={showWishlist} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} wishlistIds={wishlistIds} setPanel={setPanel} cartCount={cartCount} onSelectDeals={() => { setActivePromoId(null); setBannerProductIds(null); setPriceFilter("ON_SALE"); scrollToResults(); }} />
 
-      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} cartSubtotal={cartSubtotal} settings={settings} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} selectedThematicCollection={selectedThematicCollection} handleSelectThematicCollection={handleSelectThematicCollection} handleClearThematicCollection={handleClearThematicCollection} activeCatName={activeCatName} filteredItems={filteredItems} setAvailability={setAvailability} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} setCatalogSeed={setCatalogSeed} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} dealProducts={dealProducts} addFeaturedToCart={addFeaturedToCart} offers={offers} activeOfferId={activePromoId} onSelectOffer={handleSelectOffer} onClearOffer={handleClearOffer} />
+      <StorefrontCatalogSurface announcement={announcement} shareFeedback={shareFeedback} settingsQ={settingsQ} storeOpen={storeOpen} search={search} categoryId={categoryId} showWishlist={showWishlist} topBanners={topBanners} topBannerSlot={topBannerSlot} cats={cats} selectCategory={selectCategory} availability={availability} activeCatName={activeCatName} filteredItems={filteredItems} scrollToResults={scrollToResults} priceFilter={priceFilter} setPriceFilter={setPriceFilter} brands={brands} brand={brand} setBrand={setBrand} sort={sort} setSort={setSort} hasRefinements={hasRefinements} clearCatalogFilters={clearCatalogFilters} catalogQ={catalogQ} catalogInitialError={catalogInitialError} isEmptyCatalog={isEmptyCatalog} submitStoreSearch={submitStoreSearch} openProduct={openProduct} searchScope={searchScope} wishlistIds={wishlistIds} recentlyAddedProductId={recentlyAddedProductId} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} addCatalogProduct={addCatalogProduct} toggleWishlist={toggleWishlist} shareProduct={shareProduct} getProductCartQty={getProductCartQty} handleProductQuantityDelta={handleProductQuantityDelta} feedStrips={feedStrips} inlineBanners={inlineBanners} catalogLoadMoreRef={catalogLoadMoreRef} offers={offers} activeOfferId={activePromoId} onSelectOffer={handleSelectOffer} onClearOffer={handleClearOffer} />
 
-      <div className="mx-auto max-w-6xl px-4">
+      <div className="mx-auto max-w-[1360px] px-2.5 sm:px-4 lg:px-6">
         <StoreTrustAndHelp
           whatsappNumber={settings?.whatsappNumber}
           freeShippingThreshold={freeThreshold}
@@ -1265,11 +1228,12 @@ function StorefrontContent() {
           href={`https://wa.me/${settings.whatsappNumber.replace(/[^\d]/g, "")}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="fixed left-4 z-20 flex min-h-11 items-center gap-2 rounded-full bg-[#1d1d1f] px-4 py-3 text-xs font-bold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
+          className="fixed left-4 z-20 flex size-11 items-center justify-center rounded-full bg-[#1d1d1f] text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-white dark:text-[#1d1d1f]"
           style={{ bottom: "calc(1rem + env(safe-area-inset-bottom))" }}
           aria-label="تواصل مع فريق المتجر عبر واتساب"
+          title="تواصل عبر واتساب"
         >
-          <MessageCircle aria-hidden className="size-4 text-emerald-400 dark:text-emerald-600" /> اسألنا عبر واتساب
+          <MessageCircle aria-hidden className="size-5" />
         </a>
       )}
 
