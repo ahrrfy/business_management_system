@@ -707,13 +707,35 @@ async function attachProductGalleryImages(
   }
 }
 
-/** يرفق وسائط بطاقات القوائم بالترتيب الحاكم: معرض المنتج أولاً ثم fallback مكوّنات البكج. */
-async function attachStorefrontListMedia(
+async function awaitSettledPair(
+  first: Promise<unknown>,
+  second: Promise<unknown>,
+): Promise<void> {
+  const results = await Promise.allSettled([first, second]);
+  if (results[0].status === "rejected") throw results[0].reason;
+  if (results[1].status === "rejected") throw results[1].reason;
+}
+
+/**
+ * يُثري بطاقات القوائم بتوازي محكوم لا يتجاوز وحدتَي اتصال SQL متزامنتين (متوافقاً مع ميزانية
+ * `HEAVY_PATHS = 2` في `storefrontAdmission`) مع تصريف كلا الشقيقين عبر `Promise.allSettled` قبل رمي الخطأ.
+ */
+async function enrichStorefrontListItems(
   db: NonNullable<ReturnType<typeof getDb>>,
   items: StorefrontProduct[],
+  branchId: number,
 ): Promise<void> {
-  await attachProductGalleryImages(db, items);
+  if (!items.length) return;
+  await awaitSettledPair(
+    applyStorefrontPromotions(items, branchId),
+    attachReviewAggregates(db, items),
+  );
+  await awaitSettledPair(
+    attachSoldCounts(db, items),
+    attachProductGalleryImages(db, items),
+  );
   await attachBundleComponentImages(db, items);
+  await attachVariantColors(db, items, branchId);
 }
 
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
@@ -1210,13 +1232,7 @@ export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
     items.push(card);
     if (items.length >= cap) break;
   }
-  await Promise.all([
-    applyStorefrontPromotions(items, branchId),
-    attachSoldCounts(db, items),
-    attachReviewAggregates(db, items),
-    attachVariantColors(db, items, branchId),
-    attachStorefrontListMedia(db, items),
-  ]);
+  await enrichStorefrontListItems(db, items, branchId);
   // المؤشّر يتقدّم بآخر **معرّفٍ مختار** لا بآخر بطاقةٍ مرسومة (مراجعة عدائية ٣١/٨): كل صنفٍ
   // نفد بين اختيار القائمة وجلب صفوفها يسقط بالتصفية الحيّة أعلاه — وهو **صحيح** (نعرض الحقيقة
   // لا لقطةً قديمة)، لكن لو سقطت الصفحة كلّها كان `last` يصير `undefined` فيعود المؤشّر `null`
@@ -1253,10 +1269,8 @@ export async function warmStorefrontPublicCaches(): Promise<void> {
   if (storefrontCacheDisabled()) return;
   try {
     const bucketSeed = `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`;
-    await Promise.allSettled([
-      storefrontCategories(),
-      storefrontCatalog({ limit: 24, availability: "IN_STOCK", seed: bucketSeed }),
-    ]);
+    await storefrontCategories();
+    await storefrontCatalog({ limit: 24, availability: "IN_STOCK", seed: bucketSeed });
   } catch {
     // التسخين تحسيني بحت؛ لا يسقط العامل إن لم يكتمل إعداد فرع المتجر بعد.
   }
@@ -1494,13 +1508,7 @@ export async function storefrontCartRecommendations(
     ? []
     : await storefrontCategoryRecommendations(db, branchId, autoCategoryIds, excludedIds, cap - manualItems.length);
   const items = [...manualItems, ...autoItems].slice(0, cap);
-  await Promise.all([
-    applyStorefrontPromotions(items, branchId),
-    attachSoldCounts(db, items),
-    attachReviewAggregates(db, items),
-    attachVariantColors(db, items, branchId),
-    attachStorefrontListMedia(db, items),
-  ]);
+  await enrichStorefrontListItems(db, items, branchId);
   return items;
 }
 
@@ -1599,13 +1607,7 @@ export async function storefrontRelated(
   await appendCandidates(categoryConds, categoryIds, cap);
   if (items.length < cap) await appendCandidates(baseConds, null, cap + seen.size);
 
-  await Promise.all([
-    applyStorefrontPromotions(items, branchId),
-    attachSoldCounts(db, items),
-    attachReviewAggregates(db, items),
-    attachVariantColors(db, items, branchId),
-    attachStorefrontListMedia(db, items),
-  ]);
+  await enrichStorefrontListItems(db, items, branchId);
   return items;
 }
 

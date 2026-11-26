@@ -1030,7 +1030,8 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== "test" && webRuntimeRole() !== "admin") {
     setTimeout(() => {
-      void warmStorefrontPublicCaches();
+      if (!runtimeWorkDrain.isAccepting) return;
+      void runtimeWorkDrain.run(() => warmStorefrontPublicCaches());
     }, 1200).unref();
   }
 
