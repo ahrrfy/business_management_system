@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, like, notInArray, or } from "drizzle-orm";
 import { deliveryConsignments, invoices, workOrders } from "../../../drizzle/schema";
-import { nextCounterValue, nextTransactionTrackingNumber } from "../numbering";
+import { nextTransactionTrackingNumber } from "../numbering";
+import { resolveInvoiceNumberTx } from "../sale/invoiceNumbering";
 import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import { nextConsignmentNumber } from "../delivery/numbering";
 import type { Actor } from "../tx";
@@ -189,7 +190,7 @@ async function assertNoBlockingTask(
  *   وإن وجد، يبحث عن أول لاحقة غير مستخدمة T-k (k >= 1) باستخدام formatDocumentNumber(T, k)
  *   بحيث لا يحدث ER_DUP_ENTRY على invoices.invoiceNumber.
  * إذا كان T تاريخياً (< 100000) أو غير مطابق، يحجز رقماً موحّداً جديداً عبر
- * nextTransactionTrackingNumber ليبقى عدّاد unified_transaction متزامناً مع الفواتير دائماً.
+ * resolveInvoiceNumberTx ليبقى عدّاد unified_transaction متزامناً مع الفواتير بفحص فهرسي O(1).
  */
 async function resolveDeliveryInvoiceNumber(
   tx: Tx,
@@ -233,7 +234,7 @@ async function resolveDeliveryInvoiceNumber(
     }
     return formatDocumentNumber(base, k);
   }
-  return await nextTransactionTrackingNumber(tx);
+  return await resolveInvoiceNumberTx(tx, {});
 }
 
 /**

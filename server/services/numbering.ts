@@ -100,7 +100,7 @@ function resolvePrefixFloorSpec(counterKey: string): PrefixFloorSpec | null {
  */
 async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<number> {
   if (typeof (tx as any).select !== "function") return 0;
-  if (counterKey === "invoice" || counterKey === "unified_transaction") {
+  if (counterKey === "invoice") {
     const rows: Array<{ maxSeq: unknown }> = await (tx as any)
       .select({
         maxSeq: sql<number>`COALESCE(MAX(CAST(SUBSTRING_INDEX(${invoices.invoiceNumber}, '-', 1) AS UNSIGNED)), 0)`,

@@ -143,9 +143,10 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     expect(String(deliv.executed[0].params[0])).toMatch(/:local$/);
   });
 
-  it("self-heals unified_transaction:cloud above invoice:cloud and existing invoices (WO-771 116465 regression)", async () => {
+  it("self-heals unified_transaction:cloud above invoice:cloud in O(1) without scanning invoices (WO-771 116465 regression)", async () => {
     process.env.ALROYA_NODE_ID = "cloud";
     const executed: Array<{ sql: string; params: unknown[] }> = [];
+    let fullTableRegExpScans = 0;
     const tx: any = {
       execute: async (query: any) => {
         const rendered = dialect.sqlToQuery(query);
@@ -167,16 +168,21 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
       },
       select: () => ({
         from: () => ({
-          where: Object.assign(
-            async () => [{ maxSeq: 116465 }],
-            { limit: async () => [] },
-          ),
+          where: (cond: any) => {
+            const rendered = dialect.sqlToQuery(cond);
+            if (rendered.sql.includes("REGEXP")) {
+              fullTableRegExpScans += 1;
+              return Promise.resolve([{ maxSeq: 116465 }]);
+            }
+            return { limit: async () => [] };
+          },
         }),
       }),
     };
 
     const nextNum = await nextTransactionTrackingNumber(tx);
     expect(nextNum).toBe("116467");
+    expect(fullTableRegExpScans).toBe(0);
 
     const counterUpsert = executed.find(
       (q) =>
@@ -186,9 +192,10 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     // firstValid must jump past 116465 straight to odd 116467 (never 116465)
     expect(counterUpsert.params[1]).toBe(116467);
 
-    // Legacy work order (< 100000) delivery uses unified_transaction instead of separate invoice counter
+    // Legacy work order (< 100000) delivery uses resolveInvoiceNumberTx (O(1) point lookup, zero REGEXP scan)
     const legacyDeliveryInv = await resolveDeliveryInvoiceNumber(tx, "5679", 1);
     expect(legacyDeliveryInv).toBe("116467");
+    expect(fullTableRegExpScans).toBe(0);
     expect(
       executed.some(
         (q) =>
@@ -224,9 +231,6 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
         from: () => ({
           where: (cond: any) => {
             const rendered = dialect.sqlToQuery(cond);
-            if (rendered.sql.includes("REGEXP")) {
-              return Promise.resolve([{ maxSeq: 116464 }]);
-            }
             const candidate = String(rendered.params[0] ?? "");
             return {
               limit: async () =>
