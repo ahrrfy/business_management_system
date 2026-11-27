@@ -3,6 +3,7 @@ import { MySqlDialect } from "drizzle-orm/mysql-core";
 import {
   getDocumentCounterNode,
   nextCounterValue,
+  nextInvoiceNumber,
   nextTransactionTrackingNumber,
 } from "../numbering";
 import { resolveInvoiceNumberTx } from "../sale/invoiceNumbering";
@@ -205,10 +206,12 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     ).toBe(false);
   });
 
-  it("resolveInvoiceNumberTx advances past an already-occupied candidate in invoices without ER_DUP_ENTRY", async () => {
+  it("resolveInvoiceNumberTx self-heals counter floor in 1 shot across arbitrary historical gaps without ER_DUP_ENTRY, and nextInvoiceNumber shares unified_transaction", async () => {
     delete process.env.ALROYA_NODE_ID;
     let seq = 116464;
+    let floorReconciled = false;
     const occupied = new Set(["116465"]);
+    const executedKeys: unknown[] = [];
     const tx: any = {
       execute: async (query: any) => {
         const rendered = dialect.sqlToQuery(query);
@@ -218,7 +221,16 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
             { counterKey: "unified_transaction", lastValue: seq },
           ]];
         }
+        if (rendered.sql.includes("FROM onlineOrders")) {
+          if (rendered.params.includes("unified_transaction")) {
+            // 1-shot reconciliation jumps across even a 500-invoice gap in one query
+            floorReconciled = true;
+            seq = 117000;
+          }
+          return [[]];
+        }
         if (rendered.sql.includes("INSERT INTO documentCounters")) {
+          executedKeys.push(rendered.params[0]);
           seq += 1;
           return [[]];
         }
@@ -242,7 +254,12 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     };
 
     const resolved = await resolveInvoiceNumberTx(tx, {});
-    expect(resolved).toBe("116466");
+    expect(floorReconciled).toBe(true);
+    expect(resolved).toBe("117001");
+
+    const directNextInv = await nextInvoiceNumber(tx, 1);
+    expect(directNextInv).toBe("117002");
+    expect(executedKeys.every((k) => k === "unified_transaction")).toBe(true);
   });
 
   it("ensureBranchStockRowsForAllBranches & ForBranch chunk cleanly and short-circuit on empty inputs", async () => {

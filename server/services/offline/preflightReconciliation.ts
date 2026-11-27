@@ -1162,7 +1162,7 @@ export async function reissueOutboxSaleService(
     }
   }
   throw new TRPCError({
-    code: "CONFLICT",
+    code: "INTERNAL_SERVER_ERROR",
     message: appErrorMessage({
       what: "تعذّر توليد رقم فاتورة فريد",
       why: "تكرّر تصادم الترقيم عبر ٣ محاولات متتالية",

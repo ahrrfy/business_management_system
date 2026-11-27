@@ -2,7 +2,10 @@ import { eq, like, or } from "drizzle-orm";
 import { invoices } from "../../../drizzle/schema";
 import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import type { Tx } from "../../db";
-import { nextTransactionTrackingNumber } from "../numbering";
+import {
+  nextTransactionTrackingNumber,
+  reconcileUnifiedCounterFloorFromHistoryTx,
+} from "../numbering";
 
 /**
  * يحلّ رقم الفاتورة الموحّد داخل المعاملة (مشترك بين البيع العادي `sale/create` وبيع
@@ -54,7 +57,8 @@ export async function resolveInvoiceNumberTx(
     }
     return formatDocumentNumber(baseTrackingNumber, k);
   }
-  for (let attempt = 0; attempt < 10; attempt++) {
+  let reconciledFromHistory = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
     const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
     const candidate = formatDocumentNumber(
       baseTrackingNumber,
@@ -70,6 +74,10 @@ export async function resolveInvoiceNumberTx(
       .limit(1);
     if (existing.length === 0) {
       return candidate;
+    }
+    if (!reconciledFromHistory) {
+      reconciledFromHistory = true;
+      await reconcileUnifiedCounterFloorFromHistoryTx(tx);
     }
   }
   const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
