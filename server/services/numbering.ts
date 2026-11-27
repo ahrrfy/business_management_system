@@ -165,10 +165,21 @@ async function resolveDocumentCountersFloor(
   tx: Tx,
   counterKey: string,
 ): Promise<number> {
+  const relatedKeys =
+    counterKey === "invoice" || counterKey === "unified_transaction"
+      ? [
+          "invoice",
+          "invoice:cloud",
+          "invoice:local",
+          "unified_transaction",
+          "unified_transaction:cloud",
+          "unified_transaction:local",
+        ]
+      : [counterKey, `${counterKey}:cloud`, `${counterKey}:local`];
   const res: any = await tx.execute(sql`
     SELECT COALESCE(MAX(lastValue), 0) AS maxExisting
     FROM documentCounters
-    WHERE counterKey IN (${counterKey}, ${`${counterKey}:cloud`}, ${`${counterKey}:local`})
+    WHERE counterKey IN (${sql.join(relatedKeys.map((k) => sql`${k}`), sql`, `)})
   `);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
   const maxExisting = Number(row?.maxExisting ?? 0);
@@ -258,7 +269,60 @@ export async function nextCounterValue(
  * بلا قفل أصلاً فلا زوجَ {وردية،عميل} فيه).
  */
 export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<string> {
-  return String(await nextCounterValue(tx, "invoice"));
+  return nextTransactionTrackingNumber(tx);
+}
+
+/**
+ * ترميم ذرّيّ لسقف عدّاد `unified_transaction` فوق أعلى رقم موجود فعلياً عبر جميع جداول
+ * المعاملات الموحّدة (`invoices`, `workOrders`, `receptionDrafts`, `onlineOrders`) وعدّادات
+ * `invoice*` السابقة. يُستدعى عند التهيئة الأولى أو عند رصد تصادم فعليّ في الفهرس الفريد،
+ * فلا يُحمّل المسار السليم السريع (`O(1)`) أيّ مسحٍ لتاريخ الجداول.
+ */
+export async function reconcileUnifiedCounterFloorFromHistoryTx(
+  tx: Tx,
+  minimumFloor = 100000,
+): Promise<void> {
+  const { nodeId: unifiedNodeId } = getDocumentCounterNode();
+  const scopedUnifiedKey =
+    unifiedNodeId !== null
+      ? `unified_transaction:${unifiedNodeId}`
+      : "unified_transaction";
+  const existingCountersCeiling = await resolveDocumentCountersFloor(
+    tx,
+    "unified_transaction",
+  );
+  const safeFloor = Math.max(
+    100000,
+    Number.isSafeInteger(minimumFloor) && minimumFloor > 100000
+      ? minimumFloor
+      : 100000,
+    existingCountersCeiling,
+  );
+  await tx.execute(sql`
+    INSERT INTO documentCounters (counterKey, lastValue)
+    SELECT 'unified_transaction_floor', GREATEST(
+      100000 + COALESCE(MAX(id), 0),
+      COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]+(-[0-9]+)?$'), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
+    )
+    FROM onlineOrders
+    ON DUPLICATE KEY UPDATE lastValue = lastValue
+  `);
+  await tx.execute(sql`
+    INSERT INTO documentCounters (counterKey, lastValue)
+    SELECT ${scopedUnifiedKey}, GREATEST(
+      ${safeFloor},
+      100000 + COALESCE(MAX(id), 0),
+      COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]+(-[0-9]+)?$'), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+      COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
+    )
+    FROM onlineOrders
+    ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
+  `);
 }
 
 /**
@@ -275,7 +339,14 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const floorCheck: any = await tx.execute(sql`
     SELECT counterKey, lastValue
     FROM documentCounters
-    WHERE counterKey IN ('unified_transaction_floor', 'unified_transaction', ${scopedUnifiedKey})
+    WHERE counterKey IN (
+      'unified_transaction_floor',
+      'unified_transaction',
+      ${scopedUnifiedKey},
+      'invoice',
+      'invoice:cloud',
+      'invoice:local'
+    )
   `);
   const rows: Array<{ counterKey?: string; lastValue?: number | string }> = Array.isArray(floorCheck)
     ? (Array.isArray(floorCheck[0]) ? floorCheck[0] : floorCheck)
@@ -285,39 +356,27 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const hasCounterRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === scopedUnifiedKey);
   const floorRow = rows.find((r) => r?.counterKey === "unified_transaction_floor") ?? rows[0];
   const unsuffixedRow = rows.find((r) => r?.counterKey === "unified_transaction");
+  const maxInvoiceCounter = rows.reduce((max, r) => {
+    if (
+      r?.counterKey === "invoice" ||
+      r?.counterKey === "invoice:cloud" ||
+      r?.counterKey === "invoice:local"
+    ) {
+      const v = Number(r.lastValue ?? 0);
+      return Number.isSafeInteger(v) && v > max ? v : max;
+    }
+    return max;
+  }, 0);
   const rawFloor = Number(floorRow?.lastValue ?? 100000);
   const rawUnsuffixed = Number(unsuffixedRow?.lastValue ?? 0);
   const seededFloor = Math.max(
     100000,
     Number.isSafeInteger(rawFloor) ? rawFloor : 100000,
     Number.isSafeInteger(rawUnsuffixed) ? rawUnsuffixed : 0,
+    maxInvoiceCounter,
   );
   if (!hasFloorRow || !hasCounterRow) {
-    await tx.execute(sql`
-      INSERT INTO documentCounters (counterKey, lastValue)
-      SELECT 'unified_transaction_floor', GREATEST(
-        100000 + COALESCE(MAX(id), 0),
-        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
-      )
-      FROM onlineOrders
-      ON DUPLICATE KEY UPDATE lastValue = lastValue
-    `);
-    await tx.execute(sql`
-      INSERT INTO documentCounters (counterKey, lastValue)
-      SELECT ${scopedUnifiedKey}, GREATEST(
-        ${seededFloor},
-        100000 + COALESCE(MAX(id), 0),
-        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
-        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
-      )
-      FROM onlineOrders
-      ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
-    `);
+    await reconcileUnifiedCounterFloorFromHistoryTx(tx, seededFloor);
   }
   return String(
     await nextCounterValue(
