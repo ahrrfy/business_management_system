@@ -9,6 +9,7 @@ import {
   isPaired,
   isWebUsbSupported,
   sendBytes,
+  THERMAL_PRINTER_CHANGE_EVENT,
   tryReconnectPrinter,
 } from "./thermal";
 
@@ -1099,6 +1100,100 @@ export function createStoreOrderAlertCoordinator(deps: {
         cancel(timer);
       });
       auxTimers.clear();
+    },
+  };
+}
+
+export interface ServerBridgeAvailabilityController {
+  refresh: (force?: boolean) => void;
+  dispose: () => void;
+}
+
+/**
+ * يراقب جاهزية جسر الطباعة على الخادم مع التعافي التلقائي بعد أي فشل عابر:
+ * يعيد الفحص عند تغير طابعة USB، عودة الشبكة (online)، عودة التركيز/الرؤية،
+ * ودورياً كل 30 ثانية حتى لا تبقى المحطة غير الاستقبالية معطلة طوال الجلسة.
+ */
+export function subscribeServerBridgeAvailability(opts: {
+  probe: (force?: boolean) => Promise<boolean>;
+  onChange: (enabled: boolean) => void;
+  intervalMs?: number;
+  eventTarget?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null;
+  visibilityTarget?: {
+    visibilityState?: string;
+    addEventListener: EventTarget["addEventListener"];
+    removeEventListener: EventTarget["removeEventListener"];
+  } | null;
+  setIntervalFn?: (cb: () => void, ms: number) => ReturnType<typeof setInterval>;
+  clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void;
+}): ServerBridgeAvailabilityController {
+  const intervalMs = opts.intervalMs ?? 30_000;
+  const eventTarget =
+    opts.eventTarget === undefined
+      ? typeof window !== "undefined"
+        ? window
+        : null
+      : opts.eventTarget;
+  const visibilityTarget =
+    opts.visibilityTarget === undefined
+      ? typeof document !== "undefined"
+        ? document
+        : null
+      : opts.visibilityTarget;
+  const setIntervalFn =
+    opts.setIntervalFn ?? ((cb: () => void, ms: number) => globalThis.setInterval(cb, ms));
+  const clearIntervalFn =
+    opts.clearIntervalFn ?? ((id: ReturnType<typeof setInterval>) => globalThis.clearInterval(id));
+
+  let disposed = false;
+  let seq = 0;
+
+  const refresh = (force = false) => {
+    if (disposed) return;
+    const callSeq = ++seq;
+    void opts
+      .probe(force)
+      .then((ok) => {
+        if (!disposed && callSeq === seq) {
+          opts.onChange(Boolean(ok));
+        }
+      })
+      .catch(() => {
+        if (!disposed && callSeq === seq) {
+          opts.onChange(false);
+        }
+      });
+  };
+
+  const onUsbOrOnline = () => refresh(true);
+  const onFocus = () => refresh(false);
+  const onVisibility = () => {
+    if (visibilityTarget?.visibilityState === "visible") {
+      refresh(false);
+    }
+  };
+
+  refresh(false);
+  eventTarget?.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, onUsbOrOnline);
+  eventTarget?.addEventListener("online", onUsbOrOnline);
+  eventTarget?.addEventListener("focus", onFocus);
+  visibilityTarget?.addEventListener("visibilitychange", onVisibility);
+
+  const timerId =
+    intervalMs > 0 ? setIntervalFn(() => refresh(true), intervalMs) : null;
+
+  return {
+    refresh,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      eventTarget?.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, onUsbOrOnline);
+      eventTarget?.removeEventListener("online", onUsbOrOnline);
+      eventTarget?.removeEventListener("focus", onFocus);
+      visibilityTarget?.removeEventListener("visibilitychange", onVisibility);
+      if (timerId !== null) {
+        clearIntervalFn(timerId);
+      }
     },
   };
 }

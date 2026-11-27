@@ -1,14 +1,13 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Printer, Usb } from "lucide-react";
+import { useServerBridgeAvailable } from "@/components/store-admin/GlobalStoreOrderAutoPrint";
 import { Button } from "@/components/ui/button";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { notify } from "@/lib/notify";
-import { isServerBridgeEnabled } from "@/lib/printing/serverBridge";
 import {
   hasConnectedAlertThermalPrinter,
   printStoreOrderAlertAuto,
 } from "@/lib/printing/storeOrderAlertSlip";
-import { THERMAL_PRINTER_CHANGE_EVENT } from "@/lib/printing/thermal";
 
 export function StoreOrderAutoPrintBar({
   defaultRecipient,
@@ -18,31 +17,8 @@ export function StoreOrderAutoPrintBar({
   canAutoPrint?: boolean;
 }) {
   const printer = usePrinterConnection("receipt");
-  const [bridgeEnabled, setBridgeEnabled] = useState(false);
+  const bridgeEnabled = useServerBridgeAvailable(canAutoPrint);
   const [testingPrint, setTestingPrint] = useState(false);
-
-  useEffect(() => {
-    if (!canAutoPrint) {
-      setBridgeEnabled(false);
-      return;
-    }
-    let active = true;
-    const syncBridge = () => {
-      void isServerBridgeEnabled()
-        .then((ok) => {
-          if (active) setBridgeEnabled(ok);
-        })
-        .catch(() => {
-          if (active) setBridgeEnabled(false);
-        });
-    };
-    syncBridge();
-    window.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
-    return () => {
-      active = false;
-      window.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
-    };
-  }, [canAutoPrint]);
 
   if (!canAutoPrint) return null;
 

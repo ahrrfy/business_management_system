@@ -9,7 +9,9 @@ import {
   setStoreOrderAutoPrintStationSetting,
   shouldRunStoreOrderAutoPrintOnRoute,
   STORE_ORDER_AUTOPRINT_STATION_KEY,
+  subscribeServerBridgeAvailability,
 } from "../storeOrderAlertSlip";
+import { THERMAL_PRINTER_CHANGE_EVENT } from "../thermal";
 import { RealtimeManager } from "@/lib/realtime/realtimeManager";
 import { REALTIME_IDLE_TIMEOUT_MS } from "@shared/realtimeEvents";
 
@@ -1167,5 +1169,73 @@ describe("Always-On Store Order Auto-Print — tiered priority, anti-hijack & su
     // 6. WebUSB slot changes notify all mounted usePrinterConnection listeners
     expect(thermalSource).toContain("THERMAL_PRINTER_CHANGE_EVENT");
     expect(hookSource).toContain("THERMAL_PRINTER_CHANGE_EVENT");
+
+    // 7. Server bridge availability recovers after transient initial failure via reconnect + periodic probe
+    expect(globalSource).toContain("subscribeServerBridgeAvailability");
+    expect(globalSource).toContain("REALTIME_EVENT_TYPES.CONNECTED");
+    expect(barSource).toContain("useServerBridgeAvailable");
+  });
+
+  it("recovers server bridge availability after a failed initial probe via reconnect, visibility, and periodic checks", async () => {
+    const windowTarget = new EventTarget();
+    const docTarget = new EventTarget() as EventTarget & { visibilityState: string };
+    docTarget.visibilityState = "visible";
+
+    const intervalCallbacks: Array<() => void> = [];
+    const clearIntervalFn = vi.fn();
+    const setIntervalFn = vi.fn((cb: () => void) => {
+      intervalCallbacks.push(cb);
+      return 42 as unknown as ReturnType<typeof setInterval>;
+    });
+
+    const probeResults = [false, true, false, true, true];
+    const probe = vi.fn(async (_force?: boolean) => probeResults.shift() ?? true);
+    const states: boolean[] = [];
+
+    const controller = subscribeServerBridgeAvailability({
+      probe,
+      onChange: (enabled) => states.push(enabled),
+      intervalMs: 30_000,
+      eventTarget: windowTarget,
+      visibilityTarget: docTarget,
+      setIntervalFn,
+      clearIntervalFn,
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenNthCalledWith(1, false);
+    expect(states).toEqual([false]);
+
+    // Network online reconnect forces fresh probe -> recovers to true
+    windowTarget.dispatchEvent(new Event("online"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenNthCalledWith(2, true);
+    expect(states).toEqual([false, true]);
+
+    // Periodic timer tick forces fresh probe even when no browser/USB events occur
+    expect(intervalCallbacks).toHaveLength(1);
+    intervalCallbacks[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenNthCalledWith(3, true);
+    expect(states).toEqual([false, true, false]);
+
+    // Explicit refresh(true) (e.g. SSE CONNECTED) recovers immediately
+    controller.refresh(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenNthCalledWith(4, true);
+    expect(states).toEqual([false, true, false, true]);
+
+    // THERMAL_PRINTER_CHANGE_EVENT + visibility/focus events work while active and stop after dispose()
+    windowTarget.dispatchEvent(new Event(THERMAL_PRINTER_CHANGE_EVENT));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenCalledTimes(5);
+
+    controller.dispose();
+    expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+    windowTarget.dispatchEvent(new Event("online"));
+    docTarget.dispatchEvent(new Event("visibilitychange"));
+    controller.refresh(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe).toHaveBeenCalledTimes(5);
   });
 });

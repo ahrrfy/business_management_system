@@ -22,6 +22,7 @@ import {
   printStoreOrderAlertAuto,
   shouldRunStoreOrderAutoPrintOnRoute,
   STORE_ORDER_AUTOPRINT_STATION_KEY,
+  subscribeServerBridgeAvailability,
 } from "@/lib/printing/storeOrderAlertSlip";
 import { THERMAL_PRINTER_CHANGE_EVENT } from "@/lib/printing/thermal";
 import { shouldSkipColdStudioAuth } from "@/lib/productStudio/coldOfflinePolicy";
@@ -51,31 +52,34 @@ export function canUserAutoPrintStoreOrders(user: AuthMeUser | null | undefined)
   return canSeeGate(STORE_AUTOPRINT_GATE, roleForGate, overrideForGate, policyForGate);
 }
 
-function useServerBridgeAvailable(enabled: boolean): boolean {
+export function useServerBridgeAvailable(enabled: boolean): boolean {
   const [bridgeEnabled, setBridgeEnabled] = useState(false);
+  const controllerRef = useRef<ReturnType<typeof subscribeServerBridgeAvailability> | null>(null);
 
   useEffect(() => {
     if (!enabled) {
+      controllerRef.current = null;
       setBridgeEnabled(false);
       return;
     }
-    let active = true;
-    const syncBridge = () => {
-      void isServerBridgeEnabled()
-        .then((ok) => {
-          if (active) setBridgeEnabled(ok);
-        })
-        .catch(() => {
-          if (active) setBridgeEnabled(false);
-        });
-    };
-    syncBridge();
-    window.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
+    const controller = subscribeServerBridgeAvailability({
+      probe: isServerBridgeEnabled,
+      onChange: setBridgeEnabled,
+    });
+    controllerRef.current = controller;
     return () => {
-      active = false;
-      window.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
+      controller.dispose();
     };
   }, [enabled]);
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.CONNECTED, () => {
+    if (enabled) {
+      controllerRef.current?.refresh(true);
+    }
+  });
 
   return bridgeEnabled;
 }
@@ -201,10 +205,11 @@ function StoreOrderAutoPrintSessionRuntime({
 
   useEffect(() => () => alertCoordinator.dispose(), [alertCoordinator]);
 
+  const canPollPending = canExecuteAutoPrint && !offline;
   const pendingAlertPrintsQ = trpc.storeAdmin.orders.pendingNotificationPrint.useQuery(
     undefined,
     {
-      enabled: canExecuteAutoPrint && !offline,
+      enabled: canPollPending,
       refetchOnWindowFocus: true,
       refetchInterval: 30_000,
       refetchIntervalInBackground: true,
@@ -213,14 +218,14 @@ function StoreOrderAutoPrintSessionRuntime({
 
   const refetchPendingRef = useRef(pendingAlertPrintsQ.refetch);
   refetchPendingRef.current = pendingAlertPrintsQ.refetch;
-  const prevHasThermalRef = useRef(hasThermalPrinter);
+  const prevCanPollPendingRef = useRef(canPollPending);
   useEffect(() => {
-    const prev = prevHasThermalRef.current;
-    prevHasThermalRef.current = hasThermalPrinter;
-    if (!prev && hasThermalPrinter && canExecuteAutoPrint && !offline) {
+    const prev = prevCanPollPendingRef.current;
+    prevCanPollPendingRef.current = canPollPending;
+    if (!prev && canPollPending) {
       void refetchPendingRef.current();
     }
-  }, [hasThermalPrinter, canExecuteAutoPrint, offline]);
+  }, [canPollPending]);
 
   useEffect(() => {
     if (!canExecuteAutoPrint || !pendingAlertPrintsQ.data?.length) return;
