@@ -2145,6 +2145,40 @@ async function updateClaimed(
   });
 }
 
+function isTransientCounterCollisionError(lastError: string | null | undefined): boolean {
+  return (
+    typeof lastError === "string" &&
+    lastError.includes("تعذّر توليد رقم فاتورة فريد") &&
+    !isFencedParkedError(lastError)
+  );
+}
+
+/**
+ * شفاء ذاتي للإيصالات الأوفلاينية التي عُلّقت مؤقتاً (`PARKED`) بسبب تصادم عابر في عدّاد
+ * الفواتير الخادمي قبل تحويل الكود إلى 500 قابل لإعادة المحاولة — لا يضيع أيّ إيصال نقديّ بصمت.
+ */
+async function rescueTransientCounterCollisionParkedItems(
+  currentUserId: number,
+): Promise<void> {
+  const parked = await offlineDb.outbox.where("status").equals("PARKED").toArray();
+  const recoverable = parked.filter(
+    (item) =>
+      item.capturedByUserId != null &&
+      Number(item.capturedByUserId) === currentUserId &&
+      item.attempts < SERVER_ERROR_MAX_ATTEMPTS &&
+      isTransientCounterCollisionError(item.lastError),
+  );
+  if (recoverable.length === 0) return;
+  await Promise.all(
+    recoverable.map((item) =>
+      offlineDb.outbox.update(item.clientRequestId, {
+        status: "QUEUED",
+      }),
+    ),
+  );
+  notifyOutboxChanged();
+}
+
 /** تفريغ الطابور: FIFO، طلب واحد بالطيران. يُستدعى من محفّزات useOutbox أو زرّ «مزامنة الآن». */
 export async function flushOutbox(
   api: ReplaySaleApi | ReplayApiMap,
@@ -2158,6 +2192,7 @@ export async function flushOutbox(
   notifyOutboxChanged();
   try {
     await cleanupSent();
+    await rescueTransientCounterCollisionParkedItems(opts.currentUserId);
     const deviceId = await getDeviceCode();
     // عناصرٌ تخطّيناها لغياب مسار نوعها — تُستثنى من الاختيار كي لا تدور الحلقة عليها أبداً.
     let skippedKinds = 0;

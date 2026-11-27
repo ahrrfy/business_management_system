@@ -180,8 +180,13 @@ async function runReplay<
     }
   }
   throw new TRPCError({
-    code: "CONFLICT",
-    message: "تعذّر توليد رقم فاتورة فريد",
+    code: "INTERNAL_SERVER_ERROR",
+    message: appErrorMessage({
+      what: "تعذّر توليد رقم فاتورة فريد",
+      why: "استُنفدت محاولات حجز رقم الفاتورة على الخادم بسبب تزامن عالٍ",
+      doThis:
+        "سيعيد النظام محاولة المزامنة تلقائياً؛ وإن بقيت معلّقة اضغط إعادة المحاولة من شارة الأوفلاين",
+    }),
   });
 }
 
@@ -432,8 +437,13 @@ export const offlineRouter = router({
         }
       }
       throw new TRPCError({
-        code: "CONFLICT",
-        message: "تعذّر توليد رقم فاتورة فريد",
+        code: "INTERNAL_SERVER_ERROR",
+        message: appErrorMessage({
+          what: "تعذّر توليد رقم فاتورة فريد",
+          why: "استُنفدت محاولات حجز رقم الفاتورة على الخادم بسبب تزامن عالٍ",
+          doThis:
+            "سيعيد النظام محاولة المزامنة تلقائياً؛ وإن بقيت معلّقة اضغط إعادة المحاولة من شارة الأوفلاين",
+        }),
       });
     }),
 

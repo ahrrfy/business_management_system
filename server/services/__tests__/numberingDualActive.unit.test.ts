@@ -3,8 +3,11 @@ import { MySqlDialect } from "drizzle-orm/mysql-core";
 import {
   getDocumentCounterNode,
   nextCounterValue,
+  nextInvoiceNumber,
   nextTransactionTrackingNumber,
 } from "../numbering";
+import { resolveInvoiceNumberTx } from "../sale/invoiceNumbering";
+import { resolveDeliveryInvoiceNumber } from "../workOrder/helpers";
 import { nextConsignmentNumber } from "../delivery/numbering";
 import {
   ensureBranchStockRowsForAllBranches,
@@ -139,6 +142,124 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     const cn = await nextConsignmentNumber(deliv.tx, 1);
     expect(cn).toMatch(/^CN-1-\d{8}-00002$/);
     expect(String(deliv.executed[0].params[0])).toMatch(/:local$/);
+  });
+
+  it("self-heals unified_transaction:cloud above invoice:cloud in O(1) without scanning invoices (WO-771 116465 regression)", async () => {
+    process.env.ALROYA_NODE_ID = "cloud";
+    const executed: Array<{ sql: string; params: unknown[] }> = [];
+    let fullTableRegExpScans = 0;
+    const tx: any = {
+      execute: async (query: any) => {
+        const rendered = dialect.sqlToQuery(query);
+        executed.push(rendered);
+        if (rendered.sql.includes("SELECT counterKey, lastValue")) {
+          return [[
+            { counterKey: "unified_transaction_floor", lastValue: 100034 },
+            { counterKey: "unified_transaction:cloud", lastValue: 116463 },
+            { counterKey: "invoice:cloud", lastValue: 116465 },
+          ]];
+        }
+        if (rendered.sql.includes("AS maxExisting")) {
+          return [[{ maxExisting: 116465 }]];
+        }
+        if (rendered.sql.includes("SELECT LAST_INSERT_ID()")) {
+          return [[{ v: 116467 }]];
+        }
+        return [[]];
+      },
+      select: () => ({
+        from: () => ({
+          where: (cond: any) => {
+            const rendered = dialect.sqlToQuery(cond);
+            if (rendered.sql.includes("REGEXP")) {
+              fullTableRegExpScans += 1;
+              return Promise.resolve([{ maxSeq: 116465 }]);
+            }
+            return { limit: async () => [] };
+          },
+        }),
+      }),
+    };
+
+    const nextNum = await nextTransactionTrackingNumber(tx);
+    expect(nextNum).toBe("116467");
+    expect(fullTableRegExpScans).toBe(0);
+
+    const counterUpsert = executed.find(
+      (q) =>
+        q.sql.includes("INSERT INTO documentCounters") &&
+        q.params[0] === "unified_transaction:cloud",
+    )!;
+    // firstValid must jump past 116465 straight to odd 116467 (never 116465)
+    expect(counterUpsert.params[1]).toBe(116467);
+
+    // Legacy work order (< 100000) delivery uses resolveInvoiceNumberTx (O(1) point lookup, zero REGEXP scan)
+    const legacyDeliveryInv = await resolveDeliveryInvoiceNumber(tx, "5679", 1);
+    expect(legacyDeliveryInv).toBe("116467");
+    expect(fullTableRegExpScans).toBe(0);
+    expect(
+      executed.some(
+        (q) =>
+          q.sql.includes("INSERT INTO documentCounters") &&
+          String(q.params[0]).startsWith("invoice"),
+      ),
+    ).toBe(false);
+  });
+
+  it("resolveInvoiceNumberTx self-heals counter floor in 1 shot across arbitrary historical gaps without ER_DUP_ENTRY, and nextInvoiceNumber shares unified_transaction", async () => {
+    delete process.env.ALROYA_NODE_ID;
+    let seq = 116464;
+    let floorReconciled = false;
+    const occupied = new Set(["116465"]);
+    const executedKeys: unknown[] = [];
+    const tx: any = {
+      execute: async (query: any) => {
+        const rendered = dialect.sqlToQuery(query);
+        if (rendered.sql.includes("SELECT counterKey, lastValue")) {
+          return [[
+            { counterKey: "unified_transaction_floor", lastValue: 100000 },
+            { counterKey: "unified_transaction", lastValue: seq },
+          ]];
+        }
+        if (rendered.sql.includes("FROM onlineOrders")) {
+          if (rendered.params.includes("unified_transaction")) {
+            // 1-shot reconciliation jumps across even a 500-invoice gap in one query
+            floorReconciled = true;
+            seq = 117000;
+          }
+          return [[]];
+        }
+        if (rendered.sql.includes("INSERT INTO documentCounters")) {
+          executedKeys.push(rendered.params[0]);
+          seq += 1;
+          return [[]];
+        }
+        if (rendered.sql.includes("SELECT LAST_INSERT_ID()")) {
+          return [[{ v: seq }]];
+        }
+        return [[]];
+      },
+      select: () => ({
+        from: () => ({
+          where: (cond: any) => {
+            const rendered = dialect.sqlToQuery(cond);
+            const candidate = String(rendered.params[0] ?? "");
+            return {
+              limit: async () =>
+                occupied.has(candidate) ? [{ invoiceNumber: candidate }] : [],
+            };
+          },
+        }),
+      }),
+    };
+
+    const resolved = await resolveInvoiceNumberTx(tx, {});
+    expect(floorReconciled).toBe(true);
+    expect(resolved).toBe("117001");
+
+    const directNextInv = await nextInvoiceNumber(tx, 1);
+    expect(directNextInv).toBe("117002");
+    expect(executedKeys.every((k) => k === "unified_transaction")).toBe(true);
   });
 
   it("ensureBranchStockRowsForAllBranches & ForBranch chunk cleanly and short-circuit on empty inputs", async () => {

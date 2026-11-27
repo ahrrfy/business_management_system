@@ -568,4 +568,35 @@ describe("offline interrupted sending recovery", () => {
     expect(dismissClean).toMatchObject({ ok: true, outcome: "DISMISSED" });
     expect(storage.rows.has("fenced-4")).toBe(false);
   });
+
+  it("auto-rescues PARKED items caused by transient server invoice-counter collision during flushOutbox without touching real business rejections", async () => {
+    storage.rows.set("parked-counter-1", {
+      ...pending("parked-counter-1", 11),
+      status: "PARKED",
+      attempts: 1,
+      lastError: "تعذّر توليد رقم فاتورة فريد",
+    });
+    storage.rows.set("parked-business-2", {
+      ...pending("parked-business-2", 11),
+      status: "PARKED",
+      attempts: 1,
+      lastError: "لا يمكن الترحيل: الوردية مغلقة",
+    });
+
+    const { flushOutbox } = await import("./outbox");
+    const replayedIds: string[] = [];
+    await flushOutbox(
+      async ({ payload }) => {
+        replayedIds.push(payload.clientRequestId);
+        return { invoiceId: 901, invoiceNumber: "116551" };
+      },
+      { currentUserId: 11, force: true },
+    );
+
+    expect(replayedIds).toEqual(["parked-counter-1"]);
+    expect(storage.rows.get("parked-counter-1")?.status).toBe("SENT");
+    expect(storage.rows.get("parked-counter-1")?.resultInvoiceNumber).toBe("116551");
+    // Genuine business rejection remains untouched in PARKED
+    expect(storage.rows.get("parked-business-2")?.status).toBe("PARKED");
+  });
 });
