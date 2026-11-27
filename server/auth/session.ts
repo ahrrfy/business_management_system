@@ -432,6 +432,8 @@ export function validateUserForSession(
     status?: string | null;
     accessExpiresAt?: Date | null;
     tokenVersion?: number | null;
+    mustChangePassword?: boolean | null;
+    tempPasswordExpiresAt?: Date | string | null;
   } | null | undefined,
   tokenVersion?: number | null,
   nowMs: number = Date.now(),
@@ -439,6 +441,13 @@ export function validateUserForSession(
   if (!user || !user.isActive) return false;
   if (user.status != null && user.status !== "ACTIVE") return false;
   if (user.accessExpiresAt && user.accessExpiresAt.getTime() <= nowMs) return false;
+  if (user.mustChangePassword && user.tempPasswordExpiresAt) {
+    const expMs =
+      user.tempPasswordExpiresAt instanceof Date
+        ? user.tempPasswordExpiresAt.getTime()
+        : new Date(user.tempPasswordExpiresAt).getTime();
+    if (!Number.isFinite(expMs) || expMs <= nowMs) return false;
+  }
   if (
     user.tokenVersion != null &&
     tokenVersion != null &&

@@ -22,6 +22,7 @@ import ts from "typescript";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import { ROLLOUT_FLAGS } from "../../../shared/rolloutFlags";
 
 const ecosystem = readFileSync(
   path.resolve(process.cwd(), "ecosystem.config.cjs"),
@@ -283,5 +284,20 @@ describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
     // وبلا `--update-env` لا تُحدَّث حتى المفاتيح المُصرَّحة.
     expect(deploy).toContain('"ecosystem.config.cjs"');
     expect(deploy).toContain('"--update-env"');
+  });
+
+  it("كل أعلام الطرح (ROLLOUT_FLAGS) ومفاتيح الأمان الحرجة مُصرَّحة في webTunableKeys لمنع تجمّدها عند pm2 reload", () => {
+    for (const flag of Object.values(ROLLOUT_FLAGS)) {
+      expect(ecosystem, `${flag.env} من ROLLOUT_FLAGS غير مُدرَج في ecosystem.config.cjs`).toContain(`"${flag.env}"`);
+    }
+    for (const secKey of [
+      "TWO_FACTOR_ENFORCEMENT",
+      "ALLOW_LEGACY_SESSIONS",
+      "DISABLE_LEGACY_SESSIONS",
+      "BARCODE_SECRET",
+      "ALLOWED_ORIGINS",
+    ]) {
+      expect(ecosystem, `${secKey} غير مُدرَج في ecosystem.config.cjs`).toContain(`"${secKey}"`);
+    }
   });
 });

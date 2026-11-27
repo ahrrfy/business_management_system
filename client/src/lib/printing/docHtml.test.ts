@@ -29,7 +29,7 @@ describe("wrapA4Doc", () => {
   it("يزود المعاينة بأزرار تفاعلية حقيقية متوافقة مع CSP: معرفات فريدة، ربط برمجي عبر نص برمجي خارجي، وغياب تام للسمات المضمنة", () => {
     const html = wrapA4Doc("كشف حساب رسمي", "<div>المحتوى</div>");
 
-    expect(html).toContain("html2pdf.bundle.min.js");
+    expect(html).not.toContain("html2pdf.bundle.min.js");
     expect(html).toContain('id="doc-btn-print"');
     expect(html).toContain('id="doc-btn-save-pdf"');
     expect(html).toContain('id="doc-btn-close"');
@@ -172,6 +172,17 @@ describe("payslip PDF export", () => {
     await h.fakeWindow.saveDocAsPdf!();
     expect(h.imageWarning.textContent).toContain("سيصدر المستند دون شعار");
     expect(h.write).toHaveBeenCalledWith(h.pdfBlob);
+    expect(h.saveButton.disabled).toBe(false);
+  });
+
+  it("skips showSaveFilePicker and falls back directly to window.print when html2pdf is absent", async () => {
+    const h = toolbarHarness(600);
+    (h.fakeWindow as { html2pdf?: unknown }).html2pdf = undefined;
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.fakeWindow.showSaveFilePicker).not.toHaveBeenCalled();
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.fakeWindow.focus).toHaveBeenCalledOnce();
+    expect(h.fakeWindow.print).toHaveBeenCalledOnce();
     expect(h.saveButton.disabled).toBe(false);
   });
 });

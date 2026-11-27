@@ -11,6 +11,7 @@ import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
+import { sanitizeAttachmentHref } from "@shared/attachmentUrl";
 
 export type InvoiceDetailData = NonNullable<RouterOutputs["sales"]["get"]>;
 export type InvoiceReturnRow = NonNullable<InvoiceDetailData["returns"]>[number];
@@ -271,12 +272,15 @@ export function invoicePaymentColumns(canOpenVouchers: boolean): ColumnDef<Invoi
               ) : (
                 <span className="text-muted-foreground">{p.voucherNumber}</span>
               ))}
-            {p.attachmentUrl && (
-              <a href={p.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق" className="ms-1 inline-block">
-                <Paperclip aria-hidden className="size-3.5 text-[var(--sem-pos)] inline" />
-              </a>
-            )}
-            {!p.voucherNumber && !p.attachmentUrl && "—"}
+            {(() => {
+              const safeHref = sanitizeAttachmentHref(p.attachmentUrl);
+              return safeHref ? (
+                <a href={safeHref} target="_blank" rel="noopener noreferrer" title="فتح المُرفق" className="ms-1 inline-block">
+                  <Paperclip aria-hidden className="size-3.5 text-[var(--sem-pos)] inline" />
+                </a>
+              ) : null;
+            })()}
+            {!p.voucherNumber && !sanitizeAttachmentHref(p.attachmentUrl) && "—"}
           </span>
         );
       },

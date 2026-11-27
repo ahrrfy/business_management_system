@@ -3,7 +3,7 @@ import { hasServiceOperationAuthority } from "./authorization/operationAuthority
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
-import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productPhotographyLocks, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productStudioSubmitQuota, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productPhotographyLocks, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productStudioSubmitQuota, productUnitBarcodes, productUnits, productVariants, products, userSessions, users } from "../../drizzle/schema";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { appErrorMessage } from "@shared/errors";
 import type { PermissionMap } from "@shared/permissions";
@@ -36,6 +36,7 @@ import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMode } from "../lib/imageStore/r2RetentionPolicy";
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { evictUserRealtimeStreams } from "../realtime";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
 import { createAppNotification } from "./appNotificationService";
 import {
@@ -2611,15 +2612,31 @@ export async function cleanupExpiredTemporaryStudioPhotographers(now = new Date(
   for (const row of expired) {
     const uid = Number(row.id);
     try {
-      await db.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, uid));
-      await db.delete(users).where(eq(users.id, uid));
+      await withTx(
+        async (tx) => {
+          await tx.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, uid));
+          await tx.delete(users).where(eq(users.id, uid));
+        },
+        { gate: "NONE" },
+      );
+      evictUserRealtimeStreams(uid);
       cleaned += 1;
     } catch {
       // عند وجود سجل صور أو تدقيق منسوب لهذا المستخدم المؤقت، نُغلق وصوله نهائياً دون كسر FK
-      await db
-        .update(users)
-        .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
-        .where(eq(users.id, uid));
+      await withTx(
+        async (tx) => {
+          await tx
+            .update(users)
+            .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
+            .where(eq(users.id, uid));
+          await tx
+            .update(userSessions)
+            .set({ revokedAt: now })
+            .where(and(eq(userSessions.userId, uid), isNull(userSessions.revokedAt)));
+        },
+        { gate: "NONE" },
+      );
+      evictUserRealtimeStreams(uid);
       cleaned += 1;
     }
   }
@@ -2759,18 +2776,33 @@ export async function listTemporaryStudioPhotographers(actor: ProductStudioActor
 
 export async function revokeTemporaryStudioPhotographer(actor: ProductStudioActor, userId: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  const db = requireDb();
   const now = new Date();
   const past = new Date(now.getTime() - 1000);
   try {
-    await db.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, userId));
-    await db.delete(users).where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+    await withTx(
+      async (tx) => {
+        await tx.delete(productPhotographyLocks).where(eq(productPhotographyLocks.userId, userId));
+        await tx.delete(users).where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+      },
+      { gate: "NONE" },
+    );
+    evictUserRealtimeStreams(userId);
     return { revoked: true, deleted: true };
   } catch {
-    await db
-      .update(users)
-      .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
-      .where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+    await withTx(
+      async (tx) => {
+        await tx
+          .update(users)
+          .set({ isActive: false, accessExpiresAt: past, sessionsValidFrom: now })
+          .where(and(eq(users.id, userId), like(users.openId, "studio-temp:studio-%")));
+        await tx
+          .update(userSessions)
+          .set({ revokedAt: now })
+          .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
+      },
+      { gate: "NONE" },
+    );
+    evictUserRealtimeStreams(userId);
     return { revoked: true, deleted: false };
   }
 }
@@ -7745,77 +7777,6 @@ export async function quickSaveBarcodeProductImage(
       };
     });
   }
-}
-
-/**
- * تطهير ذري لمعاملات وحملات استوديو المنتجات القديمة مع الحفاظ التام على كافة صور المنتجات المعتمدة.
- * لا يمس بأي شكل حملات CRM أو المتجر أو الهدايا (خط أحمر).
- */
-export async function purgeProductStudioLegacyData(actor: ProductStudioActor) {
-  assertStudioOperationBinding(actor, "productStudio.purge");
-  if (!isStudioManager(actor) && !actor.isOwner && actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "التطهير الذري محصور بالإدارة العليا فقط",
-        why: "لا تملك صلاحية تنفيذ التطهير الذري لبيانات استوديو المنتجات",
-        doThis: "تأكد من تسجيل الدخول بحساب مدير أو مسؤول",
-      }),
-    });
-  }
-
-  return await withTx(
-    async (tx) => {
-      // 1. فك ارتباط publishedStudioJobId في جدول productImages لمنع المؤشرات المعلقة
-      await tx
-        .update(productImages)
-        .set({ publishedStudioJobId: null });
-
-      // 2. حذف كافة مهام ومعاملات الاستوديو القديمة من productImageJobs
-      await tx.delete(productImageJobs);
-
-      // 3. حذف كافة حملات الاستوديو السابقة وجداول الربط التابعة لها فقط
-      await tx.delete(productStudioCampaignProducts);
-      await tx.delete(productStudioCampaignCategories);
-      await tx.delete(productStudioCampaignAssignees);
-      await tx.delete(productStudioCampaigns);
-
-      // 4. تصفير حصص الإرسال اليومية القديمة
-      await tx.delete(productStudioSubmitQuota);
-
-      // 5. مسح أقفال التصوير المؤقتة الحالية
-      await tx.delete(productPhotographyLocks);
-
-      // 6. الحفاظ الصارم على كافة صفوف الصور المعتمدة وعدّها بدقة
-      const [approvedRow] = await tx
-        .select({ count: sql<number>`count(*)` })
-        .from(productImages)
-        .where(eq(productImages.reviewStatus, "APPROVED"));
-      const preservedApprovedImages = Number(approvedRow?.count ?? 0);
-
-      // 7. توثيق عملية التطهير في سجل التدقيق auditLogs
-      await tx.insert(auditLogs).values({
-        userId: actor.userId,
-        branchId: actor.branchId ?? null,
-        action: "productStudio.atomicPurge",
-        entityType: "productStudio",
-        entityId: "all",
-        newValue: {
-          purgedJobs: true,
-          purgedCampaigns: true,
-          preservedApprovedImages,
-          purgedAt: new Date().toISOString(),
-        },
-      });
-
-      return {
-        success: true,
-        preservedApprovedImages,
-        purgedAt: new Date(),
-      };
-    },
-    { gate: "NONE" },
-  );
 }
 
 /**

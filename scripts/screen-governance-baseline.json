@@ -1,9 +1,5 @@
 {
-  "orphans": [
-    "PurchaseReturnNew.tsx",
-    "SalesReturnNew.tsx",
-    "WorkOrderNew.tsx"
-  ],
+  "orphans": [],
   "deadAppImports": [],
   "misplacedComponents": []
 }

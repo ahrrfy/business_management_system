@@ -16,6 +16,7 @@ import { appRouter } from "../../routers";
 import {
   verifyPayload,
   invoiceBarcodeSet,
+  onlineOrderBarcodeSet,
   workOrderBarcodeSet,
   purchaseOrderBarcodeSet,
   customerBarcodeSet,
@@ -352,9 +353,18 @@ describe("Document Verification Suite (Tiers 1-4)", () => {
   // --------------------------------------------------------------------------
   describe("Tier 4: Real-World Scenarios", () => {
     it("4.1 end-to-end customer scan simulation of shipping label QR code", async () => {
-      // Step 1: Customer receives physical parcel labeled with ORD-100009
+      // Step 1: Customer receives physical parcel labeled with signed ORD-100009 QR
+      const signedOrd = onlineOrderBarcodeSet({
+        orderNumber: "ORD-100009",
+        orderDate: "2026-09-29",
+        total: "15000.00",
+        branchId: 1,
+      }).qrPayload;
       const parcelQrUrl = resolveShippingLabelQrTarget(
-        { orderNumber: "ORD-100009" },
+        {
+          orderNumber: "ORD-100009",
+          qrUrl: `https://srv1548487.hstgr.cloud/verify?payload=${encodeURIComponent(signedOrd)}`,
+        },
         "https://srv1548487.hstgr.cloud"
       );
       expect(parcelQrUrl).toBeTruthy();
@@ -375,8 +385,14 @@ describe("Document Verification Suite (Tiers 1-4)", () => {
     });
 
     it("4.3 end-to-end customer scan simulation of sales invoice receipt", async () => {
-      // Customer receives receipt with scannable URL
-      const receiptVerifyUrl = "http://localhost:5173/verify?ref=INV-1-20260806-00068";
+      // Customer receives receipt with HMAC-signed scannable URL
+      const signedInv = invoiceBarcodeSet({
+        invoiceNumber: "INV-1-20260806-00068",
+        invoiceDate: "2026-08-06",
+        total: "50000.00",
+        branchId: 1,
+      }).qrPayload;
+      const receiptVerifyUrl = `http://localhost:5173/verify?payload=${encodeURIComponent(signedInv)}`;
       const result = await caller.barcode.verify({ payload: receiptVerifyUrl });
 
       expect(result.valid).toBe(true);

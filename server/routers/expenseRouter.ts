@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertSafeAttachmentUrl } from "@shared/attachmentUrl";
 import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { isQuantity } from "@shared/quantity";
@@ -259,14 +260,15 @@ export const expenseRouter = router({
         clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      requestAccrualCorrection(input, {
+    .mutation(({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
+      return requestAccrualCorrection(input, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
         isOwner: ctx.user.isOwner === true,
-      }),
-    ),
+      });
+    }),
 
   approveAccrualCorrection: ownerProcedure
     .input(z.object({ correctionRequestId: z.number().int().positive() }))

@@ -2,12 +2,12 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { StaffConfirmDialog as StandaloneStaffConfirm, type InTransitRow } from "./StaffConfirmDialog";
 import { StaffConfirmDialog as TransitStaffConfirm, ManualProofDialog } from "./TransitActionDialogs";
 import { DeliveryConsignmentsTable } from "./DeliveryConsignmentsTable";
 import type { RouterOutputs } from "@/lib/trpc";
 
 type OpenRow = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
+type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 const carrier = {
   id: 1, consignmentNumber: "10001", invoiceNumber: "10001", sourceType: "INVOICE", sourceId: 2,
   partyName: "ناقل", codAmount: "10000.00", collectedAmount: "1000.00", counterSettledAmount: "2000.00",
@@ -27,7 +27,6 @@ describe("carrier collection amounts", () => {
   const button = (label: string) => Array.from(host.querySelectorAll("button")).find((node) => node.textContent?.includes(label))!;
 
   it.each([
-    { Component: StandaloneStaffConfirm, note: "اتصال المندوب", name: "standalone" },
     { Component: TransitStaffConfirm, note: "تأكيد هاتفي مباشر مع العميل", name: "in-transit" },
   ])("confirms the server amount in the $name dialog without recollecting counter payments or shortfall", async ({ Component, note }) => {
     const onConfirm = vi.fn();

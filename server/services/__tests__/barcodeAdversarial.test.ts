@@ -405,26 +405,44 @@ describe("Adversarial QR Code Verification Suite", () => {
   // ==========================================================================
   // Category 8: tRPC Router Union Input Handling & Graceful Degradation
   // ==========================================================================
-  it("8. Validates tRPC barcode.verify procedure across all schema input variations", async () => {
-    // 8.1 Via payload
-    const resPayload = await caller.barcode.verify({ payload: "ORD-100009" });
-    expect(resPayload.valid).toBe(true);
-    expect(resPayload.number).toBe("ORD-100009");
+  it("8. Validates tRPC barcode.verify procedure across all schema input variations and blocks unauthenticated enumeration", async () => {
+    const signedInv = invoiceBarcodeSet({
+      invoiceNumber: "INV-1-20260806-00068",
+      invoiceDate: "2026-08-06",
+      total: "25000.00",
+      branchId: 1,
+    }).qrPayload;
 
-    // 8.2 Via ref
-    const resRef = await caller.barcode.verify({ ref: "ORD-100009" });
-    expect(resRef.valid).toBe(true);
-    expect(resRef.number).toBe("ORD-100009");
+    // 8.1..8.4 Unauthenticated callers succeed ONLY on HMAC-signed QR payloads
+    expect((await caller.barcode.verify({ payload: signedInv })).valid).toBe(true);
+    expect((await caller.barcode.verify({ ref: signedInv })).valid).toBe(true);
+    expect((await caller.barcode.verify({ id: signedInv })).valid).toBe(true);
+    expect((await caller.barcode.verify({ number: signedInv })).valid).toBe(true);
 
-    // 8.3 Via id
-    const resId = await caller.barcode.verify({ id: "ORD-100009" });
-    expect(resId.valid).toBe(true);
-    expect(resId.number).toBe("ORD-100009");
+    // Unauthenticated sequential enumeration of unsigned codes MUST be blocked
+    expect((await caller.barcode.verify({ payload: "ORD-100009" })).valid).toBe(false);
+    expect((await caller.barcode.verify({ payload: "PO-2026-001" })).valid).toBe(false);
 
-    // 8.4 Via number
-    const resNumber = await caller.barcode.verify({ number: "ORD-100009" });
-    expect(resNumber.valid).toBe(true);
-    expect(resNumber.number).toBe("ORD-100009");
+    // Authenticated staff caller resolves unsigned codes within authorized branch & cost policy
+    const adminCaller = appRouter.createCaller({
+      req: { headers: {} } as unknown as TrpcContext["req"],
+      res: {} as unknown as TrpcContext["res"],
+      sessionId: null,
+      nativeClientId: null,
+      user: {
+        id: 1,
+        name: "Admin",
+        email: "admin@test.local",
+        role: "admin",
+        branchId: 1,
+        isOwner: true,
+        isActive: true,
+        totpEnabledAt: new Date(),
+      } as NonNullable<TrpcContext["user"]>,
+    });
+    const resStaffOrd = await adminCaller.barcode.verify({ payload: "ORD-100009" });
+    expect(resStaffOrd.valid).toBe(true);
+    expect(resStaffOrd.number).toBe("ORD-100009");
 
     // 8.5 Empty string payload returns valid: false
     const resEmptyPayload = await caller.barcode.verify({ payload: "" });
@@ -435,11 +453,11 @@ describe("Adversarial QR Code Verification Suite", () => {
     expect(resEmpty.valid).toBe(false);
 
     // 8.7 Non-existent ref returns valid: false
-    const resNonExistent = await caller.barcode.verify({ ref: "ORD-999999" });
+    const resNonExistent = await adminCaller.barcode.verify({ ref: "ORD-999999" });
     expect(resNonExistent.valid).toBe(false);
 
     // 8.8 When payload is whitespace, fallback selects 'ref' and successfully verifies:
-    const resBoth = await caller.barcode.verify({ payload: "   ", ref: "ORD-100009" });
+    const resBoth = await caller.barcode.verify({ payload: "   ", ref: signedInv });
     expect(resBoth.valid).toBe(true);
   });
 });

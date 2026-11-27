@@ -12,6 +12,7 @@
  * الأجرة = deliveryFeeFor(المحافظة) تقديرياً (يثبّتها الموظف عند الإسناد — شريحة ٤).
  */
 import { TRPCError } from "@trpc/server";
+import { withTxNamedLock } from "../lib/mysqlNamedLock";
 import {
   createHash,
   createHmac,
@@ -688,48 +689,44 @@ export async function lockOrCreateOnlineCustomer(
     return Number(existing.id);
   }
 
-  const custLock = `online-customer:${phone}`;
-  const lockRes = (await tx.execute(
-    sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
-  )) as unknown;
-  const lockedRow = Array.isArray(lockRes)
-    ? (lockRes[0] as { locked?: number }[])?.[0]
-    : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: appErrorMessage({
-        what: "تعذّر إتمام الطلب الآن",
-        why: "ضغطٌ مؤقّت على النظام منع تثبيت بيانات حسابك، ولم يُسجَّل أيّ طلب ولم يُخصم شيء",
-        doThis:
-          "انتظر لحظاتٍ ثمّ اضغط «تأكيد الطلب» مجدداً، وإن تكرّر فتواصل معنا",
-      }),
-    });
-  }
-  try {
-    const existing = (
-      await tx
-        .select({ id: customers.id })
-        .from(customers)
-        .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
-        .limit(1)
-        .for("update")
-    )[0];
-    if (existing) return Number(existing.id);
-    const inserted = await tx.insert(customers).values({
-      name,
-      phone,
-      customerType: "فرد",
-      defaultPriceTier: RETAIL,
-      creditLimit: "0",
-      currentBalance: "0",
-      isActive: true,
-    });
-    return extractInsertId(inserted);
-  } finally {
-    // named lock للتسلسل المبكر فقط؛ قفل صف/فجوة العميل يبقى حتى COMMIT.
-    await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`);
-  }
+  // named lock للتسلسل المبكر فقط؛ قفل صف/فجوة العميل يبقى حتى COMMIT.
+  return withTxNamedLock(
+    tx,
+    `online-customer:${phone}`,
+    5,
+    () => {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب الآن",
+          why: "ضغطٌ مؤقّت على النظام منع تثبيت بيانات حسابك، ولم يُسجَّل أيّ طلب ولم يُخصم شيء",
+          doThis:
+            "انتظر لحظاتٍ ثمّ اضغط «تأكيد الطلب» مجدداً، وإن تكرّر فتواصل معنا",
+        }),
+      });
+    },
+    async () => {
+      const existing = (
+        await tx
+          .select({ id: customers.id })
+          .from(customers)
+          .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
+          .limit(1)
+          .for("update")
+      )[0];
+      if (existing) return Number(existing.id);
+      const inserted = await tx.insert(customers).values({
+        name,
+        phone,
+        customerType: "فرد",
+        defaultPriceTier: RETAIL,
+        creditLimit: "0",
+        currentBalance: "0",
+        isActive: true,
+      });
+      return extractInsertId(inserted);
+    },
+  );
 }
 
 export interface PricedOnlineOrderLine {

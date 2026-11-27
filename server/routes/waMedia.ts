@@ -9,6 +9,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { authenticateExpressRequest } from "../auth/expressAuth";
 import { logger } from "../logger";
 import { getMediaForServing } from "../services/whatsapp/mediaService";
@@ -56,7 +57,11 @@ export function waMediaRouter(): Router {
     // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران وسائط الفروع. هذا المسار REST لا
     // يُطبِّع المالك (لا normalizeOwnerAuthority) ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 Codex).
     const elevated = canCrossBranches(authUser);
-    if (role !== "admin") {
+    if (hasOperationPolicy(authUser)) {
+      if (!operationDecision(authUser, "conversations.messages").allowed) {
+        return res.status(403).json({ error: "لا صلاحية لعرض وسائط المحادثات." });
+      }
+    } else if (role !== "admin") {
       const map: PermissionMap = resolvePermissions(
         role as RoleKey,
         (authUser.permissionsOverride as PermissionMap | null) ?? null

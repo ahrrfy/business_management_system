@@ -244,8 +244,10 @@ for (const scenario of [
         pm2Home,
         path.join(projectRoot, ".runtime"),
         path.join(projectRoot, "deploy/systemd"),
-      ])
-        fs.mkdirSync(d, { recursive: true });
+      ]) {
+        fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+        fs.chmodSync(d, 0o700);
+      }
       fs.writeFileSync(helper, "trusted-helper");
       fs.chmodSync(helper, 0o444);
       fs.writeFileSync(

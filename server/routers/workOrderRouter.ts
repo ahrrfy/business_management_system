@@ -1918,8 +1918,8 @@ export const workOrderRouter = router({
     .input(receptionCheckoutSchema)
     .mutation(async ({ input, ctx }) => {
       for (const order of input.workOrders) {
-        for (const img of order.designImages ?? []) assertValidImageDataUrl(img.url);
-        if (order.paymentReceiptUrl) assertValidImageDataUrl(order.paymentReceiptUrl);
+        for (const img of order.designImages ?? []) assertValidImageDataUrl(img.url, undefined, true);
+        if (order.paymentReceiptUrl) assertValidImageDataUrl(order.paymentReceiptUrl, undefined, true);
       }
 
       // عزل مدير الفرع (قرار المالك ١٢/٨): عبور الفروع للمالك/الأدمن فقط. **فصلٌ عن السلطة**: سلطة تكلفة
@@ -2074,8 +2074,8 @@ export const workOrderRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      for (const img of input.designImages ?? []) assertValidImageDataUrl(img.url);
-      if (input.paymentReceiptUrl) assertValidImageDataUrl(input.paymentReceiptUrl);
+      for (const img of input.designImages ?? []) assertValidImageDataUrl(img.url, undefined, true);
+      if (input.paymentReceiptUrl) assertValidImageDataUrl(input.paymentReceiptUrl, undefined, true);
 
       // عزل الفرع (تدقيق ٢٣/٦/٢٦): قبل الإصلاح كان input.branchId يُمرَّر خاماً للخدمة ⇒ كاشير
       // يُنشئ أمر شغل + يَقبض عربون نقدي في فرع آخر (نقدُه يَدخل وردية لا يَملكها، وفاتورة

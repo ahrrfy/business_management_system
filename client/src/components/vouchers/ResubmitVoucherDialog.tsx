@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { sanitizeAttachmentHref } from "@shared/attachmentUrl";
 import {
   Dialog,
   DialogContent,
@@ -121,16 +122,19 @@ export function ResubmitVoucherDialog({
             singlePrimary={false}
             hint="اختر مستند المحاولة الجديدة. مرفق السند المرفوض لا يُنقل تلقائياً."
           />
-          {resubmitTarget?.attachmentUrl && (
-            <a
-              href={resubmitTarget.attachmentUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs underline text-muted-foreground"
-            >
-              فتح مرفق المحاولة المرفوضة للمراجعة فقط
-            </a>
-          )}
+          {(() => {
+            const safeHref = sanitizeAttachmentHref(resubmitTarget?.attachmentUrl);
+            return safeHref ? (
+              <a
+                href={safeHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs underline text-muted-foreground"
+              >
+                فتح مرفق المحاولة المرفوضة للمراجعة فقط
+              </a>
+            ) : null;
+          })()}
         </div>
         <div className="space-y-1">
           <Label htmlFor="voucher-reissue-note">

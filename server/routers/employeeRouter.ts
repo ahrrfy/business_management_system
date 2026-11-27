@@ -13,6 +13,7 @@ import {
   USERNAME_MAX_LEN,
 } from "@shared/const";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
+import { operationPolicySchema } from "@shared/operationPermissions";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/employeeService";
 import { getEmployeeClearance } from "../services/hr/offboarding";
@@ -40,6 +41,7 @@ const newAccountShape = {
   customRoleId: z.number().int().positive().nullish(),
   branchId: z.number().int().positive().nullish(),
   permissionsOverride: PERM_OVERRIDE,
+  operationPolicy: operationPolicySchema.nullish(),
   mustChangePassword: z.boolean().default(true),
 } as const;
 

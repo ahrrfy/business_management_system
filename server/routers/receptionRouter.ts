@@ -115,7 +115,7 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
       });
     }
     for (const img of parsed as Array<{ url?: string }>) {
-      if (img?.url) assertValidImageDataUrl(img.url);
+      if (img?.url) assertValidImageDataUrl(img.url, undefined, true);
     }
   }
 }

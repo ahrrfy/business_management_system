@@ -57,7 +57,6 @@ const BASELINE = new Set([
   "ProductionRecipes.tsx|const branchId = me.data?.branchId ?? 1;",
   "QuotationNew.tsx|const defaultBranchId = me.data?.branchId ?? 1;",
   "Reception.tsx|() => Number(me.data?.branchId ?? pickedBranch ?? 1),",
-  "PurchaseReturnNew.tsx|const defaultBranchId = me.data?.branchId ?? 1;",
 ]);
 
 function normSig(base, trimmedLine) {

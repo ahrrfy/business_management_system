@@ -669,6 +669,7 @@ export interface PosDeliveryLabelReceiptLike {
     externalTrackingRef?: string | null;
   } | null;
   consignmentNumber?: string | null;
+  qrPayload?: string | null;
   promoSummary?: import("./promoPrintSummary").PromoPrintSummary | null;
 }
 
@@ -682,6 +683,7 @@ export function buildPosDeliveryShippingLabelData(
   const codTotal = goodsDue.plus(courierFee);
   const orderNum = rec.consignmentNumber || rec.invoiceNumber;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const signedPayload = rec.qrPayload?.trim();
   const isFreeShipping = Boolean(rec.promoSummary?.freeShipping || rec.delivery?.feeCollection === "SHOP");
   const waivedShipping = rec.promoSummary?.waivedDeliveryAmount ?? (rec.delivery?.feeCollection === "SHOP" && D(rec.delivery.fee ?? 0).gt(0) ? rec.delivery.fee : null);
   return {
@@ -701,7 +703,9 @@ export function buildPosDeliveryShippingLabelData(
     paymentState: resolveShippingLabelPaymentState(codTotal.toNumber()),
     deliveryPartyName: rec.delivery?.partyName ?? null,
     externalTrackingRef: rec.delivery?.externalTrackingRef ?? null,
-    qrUrl: orderNum && origin ? `${origin}/verify?ref=${encodeURIComponent(orderNum)}` : null,
+    qrUrl: signedPayload
+      ? (origin ? `${origin}/verify?payload=${encodeURIComponent(signedPayload)}` : signedPayload)
+      : (orderNum && origin ? `${origin}/verify?ref=${encodeURIComponent(orderNum)}` : null),
     isReprint,
     items: rec.lines.map((l) => ({
       productName: l.name,

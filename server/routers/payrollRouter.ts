@@ -5,7 +5,7 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { employeePenalties, employees, payrollItems, payrollRuns } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { createAppNotification } from "../services/appNotificationService";
@@ -152,7 +152,17 @@ export const payrollRouter = router({
           });
         }
 
-        const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, input.runId)).for("share").limit(1);
+        const [run] = await tx
+          .select()
+          .from(payrollRuns)
+          .where(
+            and(
+              eq(payrollRuns.id, input.runId),
+              inArray(payrollRuns.status, ["approved", "paid"]),
+            ),
+          )
+          .for("share")
+          .limit(1);
         if (!run) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
           what: "تعذّر عرض قسيمة الراتب", why: "لم يعد مسيّر الفترة المطلوب متاحاً",
           doThis: "تحقّق من الفترة أو راجع الموارد البشرية لتحديد المسيّر الصحيح",
@@ -478,10 +488,8 @@ export const payrollRouter = router({
     }),
 
   statutoryObligationSummary: hrRead.query(({ ctx }) => {
-    const scoped = ctx.user.isOwner || ctx.user.role === "admin" || ctx.user.branchId == null
-      ? undefined
-      : { branchId: Number(ctx.user.branchId) };
-    return svc.listStatutoryObligationSummary(scoped);
+    const branchId = scopedPayrollBranch(ctx.user);
+    return svc.listStatutoryObligationSummary(branchId === undefined ? undefined : { branchId });
   }),
 
   remittances: hrRead
@@ -491,9 +499,8 @@ export const payrollRouter = router({
       branchId: z.number().int().positive().optional(),
     }).optional())
     .query(({ input, ctx }) => {
-      const scoped = ctx.user.isOwner || ctx.user.role === "admin" || ctx.user.branchId == null
-        ? input
-        : { ...(input ?? {}), branchId: Number(ctx.user.branchId) };
+      const branchId = scopedPayrollBranch(ctx.user);
+      const scoped = branchId === undefined ? input : { ...(input ?? {}), branchId };
       return svc.listRemittanceRequests(scoped);
     }),
 

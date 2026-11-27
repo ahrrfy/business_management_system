@@ -335,13 +335,25 @@ export const userRouter = router({
    *  عرض/إبطال جهازٍ واحدٍ بعينه، مكمِّلاً لـrevokeSessions أعلاه (الإبطال الجماعي). */
   sessions: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
-    .query(({ input }) => listUserSessions(input.userId)),
+    .query(({ input, ctx }) =>
+      listUserSessions(input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
 
   /** يُبطل جهازاً واحداً بعينه من جلسات مستخدمٍ آخر (بدل إبطال كل أجهزته). */
   revokeSession: adminProcedure
     .input(z.object({ userId: z.number().int().positive(), sessionId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      await revokeUserSessionRow(input.sessionId, input.userId);
+      await revokeUserSessionRow(input.sessionId, input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
       await logAudit(ctx, {
         action: "user.revokeSession",
         entityType: "userSession",

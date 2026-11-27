@@ -12,7 +12,7 @@ import {
   getBridgeStatus,
   setBridgeReleaseHandler,
 } from "./bridge";
-import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
+import { PWA_SSE_QUIESCE_EVENT, SSE_USER_EVICT_EVENT, sseManager } from "./sseManager";
 import { realtimeRouter } from "./streamRouter";
 
 setBridgeReleaseHandler((event) => {
@@ -38,8 +38,23 @@ onBridgeEvent((event: RealtimeEvent) => {
     sseManager.quiesceForPwa(event);
     return;
   }
+  if (event.type === SSE_USER_EVICT_EVENT) {
+    if (typeof event.scope?.userId === "number") {
+      sseManager.evictUser(event.scope.userId);
+    }
+    return;
+  }
   sseManager.broadcast(event);
 });
+
+export function evictUserRealtimeStreams(userId: number): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return;
+  try {
+    publishToBridge(createRealtimeEvent(SSE_USER_EVICT_EVENT, {}, { userId }));
+  } catch {
+    sseManager.evictUser(userId);
+  }
+}
 
 /**
  * دالة النشر الموحدة للأحداث اللحظية من كافة خدمات وخوادم النظام:

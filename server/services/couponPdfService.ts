@@ -33,6 +33,7 @@ async function getCairoBytes(): Promise<Uint8Array> {
   if (cachedCairoBytes) return cachedCairoBytes;
   const filename = "Cairo-Variable.ttf";
   const candidates = [
+    path.resolve(process.cwd(), "server", "assets", "fonts", filename),
     path.resolve(process.cwd(), "client", "public", "fonts", filename),
     path.resolve(process.cwd(), "dist", "public", "fonts", filename),
   ];

@@ -686,49 +686,6 @@ describe("Tier 2: Boundary & Corner Cases (F1 to F28 — 140 Boundary Tests)", (
   });
 
   // =========================================================================
-  // F13: Atomic Studio DB Purge Boundaries
-  // =========================================================================
-  describe("F13: Atomic Studio DB Purge Boundaries", () => {
-    it("T2-F13-01: non-manager triggering purge is rejected with FORBIDDEN", async () => {
-      const cashierCtx = createTestContext(CASHIER_AHMED);
-      await expect(
-        harness.call("purgeProductStudioLegacyData", undefined, cashierCtx)
-      ).rejects.toThrow();
-    });
-
-    it("T2-F13-02: purge when 0 studio campaigns exist succeeds safely", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const res = await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      expect(res.success).toBe(true);
-    });
-
-    it("T2-F13-03: purge maintains 100% of approved catalog images", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const beforeApproved = (await harness.getApprovedImages()).length;
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const afterApproved = (await harness.getApprovedImages()).length;
-      expect(afterApproved).toBe(beforeApproved);
-    });
-
-    it("T2-F13-04: CRM and push campaigns count unchanged after purge", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const { crmCampaignIds, pushCampaignIds } = await harness.seedMixedCampaignData();
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const crmRemaining = await harness.getCrmCampaigns(crmCampaignIds);
-      const pushRemaining = await harness.getPushCampaigns(pushCampaignIds);
-      expect(crmRemaining).toHaveLength(crmCampaignIds.length);
-      expect(pushRemaining).toHaveLength(pushCampaignIds.length);
-    });
-
-    it("T2-F13-05: purge records audit log with timestamp", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const logs = await harness.getAuditLogs("productStudio.purge");
-      expect(logs).toHaveLength(1);
-    });
-  });
-
-  // =========================================================================
   // F14: Studio-Quality AI Fidelity Guard Boundaries
   // =========================================================================
   describe("F14: Studio-Quality AI Fidelity Guard Boundaries", () => {

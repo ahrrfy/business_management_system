@@ -701,6 +701,7 @@ export default function POS() {
         paymentLegs: ctx.paymentLegs,
         delivery: effDelivery,
         consignmentNumber: r.consignmentNumber ?? null,
+        qrPayload: r.qrPayload ?? null,
         promoSummary: buildPosReceiptPromoSummary({ cart: ctx.cartSnapshot, invoiceDiscount: ctx.invoiceDiscount, delivery: effDelivery, freeShippingPromoName: ctx.freeShippingPromoName, couponLabel: ctx.couponLabel, serverSummary: srvPromo }),
         bounceBackCoupon: (r as { bounceBackCoupon?: Receipt["bounceBackCoupon"] }).bounceBackCoupon ?? null,
       };

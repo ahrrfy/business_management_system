@@ -34,10 +34,17 @@ describe("تحويل واجهات المشتريات القديمة إلى ال�
     expect(app).not.toContain('import("@/pages/PurchaseGoodsReceipts")');
   });
 
-  it("يحوّل شاشة المرتجع القديم إلى بوابة المرتجعات المركزية", () => {
-    const source = page("PurchaseReturnNew.tsx");
-    expect(source).toContain("/returns?tab=purchases");
-    expect(source).not.toContain("trpc.purchaseReturns.create");
+  it("يحوّل مسار المرتجع القديم في App.tsx إلى بوابة المرتجعات المركزية مع حذف الشاشة الميتة", () => {
+    const app = fs.readFileSync(
+      path.resolve(process.cwd(), "client/src/App.tsx"),
+      "utf8",
+    );
+    expect(
+      fs.existsSync(
+        path.resolve(process.cwd(), "client/src/pages/PurchaseReturnNew.tsx"),
+      ),
+    ).toBe(false);
+    expect(app).toContain('<Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>');
   });
 
   it("يجعل التفاصيل وجهة العرض الوحيدة بلا رابط GRN أو استلام", () => {

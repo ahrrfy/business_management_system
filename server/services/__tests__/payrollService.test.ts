@@ -346,7 +346,7 @@ describe("payrollService — فصل المهام (SOD-01/02)", () => {
 });
 
 describe("payrollRouter: GAP-24 myPayslip self-service", () => {
-  it("allows logged in user to fetch their own payslip", async () => {
+  it("rejects DRAFT payslips and allows logged in user to fetch their own APPROVED payslip", async () => {
     const emp = await createEmployee({
       firstName: "أحمد",
       lastName: "الزبيدي",
@@ -363,7 +363,12 @@ describe("payrollRouter: GAP-24 myPayslip self-service", () => {
       res: {} as any,
     });
 
-    const res = await caller.payroll.myPayslip({ runId: run!.id });
+    await expect(caller.payroll.myPayslip({ runId: Number(run!.id) })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    await approveRun(Number(run!.id), APPROVER);
+    const res = await caller.payroll.myPayslip({ runId: Number(run!.id) });
     expect(res.employee.firstName).toBe("أحمد");
     expect(res.item.runId).toBe(run!.id);
     expect(Number(res.item.net)).toBe(900000);

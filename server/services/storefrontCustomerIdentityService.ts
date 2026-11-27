@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { withTxNamedLock } from "../lib/mysqlNamedLock";
 import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
@@ -241,54 +242,52 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
     }
 
     // ٢) مسار الإدراج المتسلسل: يُنسّق حصراً عبر قفل استشاري موحّد يمنع تعارض أقفال الفجوات العليا في InnoDB
-    const upsertLockName = "online-customer:upsert";
-    const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${upsertLockName}, 10) AS locked`)) as unknown;
-    const row = Array.isArray(lockResult)
-      ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
-      : (lockResult as { rows?: Array<{ locked?: number }> }).rows?.[0];
-    if (Number(row?.locked) !== 1) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
-    }
-    try {
-      const [currentByPhone] = await tx
-        .select({
-          id: customers.id,
-          name: customers.name,
-          isActive: customers.isActive,
-          deletedAt: customers.deletedAt,
-          sessionVersion: customers.sessionVersion,
-        })
-        .from(customers)
-        .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
-        .orderBy(desc(customers.isActive), desc(customers.id))
-        .limit(1)
-        .for("update");
+    return withTxNamedLock(
+      tx,
+      "online-customer:upsert",
+      10,
+      () => {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
+      },
+      async () => {
+        const [currentByPhone] = await tx
+          .select({
+            id: customers.id,
+            name: customers.name,
+            isActive: customers.isActive,
+            deletedAt: customers.deletedAt,
+            sessionVersion: customers.sessionVersion,
+          })
+          .from(customers)
+          .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
+          .orderBy(desc(customers.isActive), desc(customers.id))
+          .limit(1)
+          .for("update");
 
-      if (currentByPhone) {
-        assertActiveCustomer(currentByPhone.isActive);
-        return {
-          id: Number(currentByPhone.id),
-          name: currentByPhone.name,
+        if (currentByPhone) {
+          assertActiveCustomer(currentByPhone.isActive);
+          return {
+            id: Number(currentByPhone.id),
+            name: currentByPhone.name,
+            phone,
+            sessionVersion: Number(currentByPhone.sessionVersion ?? 0),
+          };
+        }
+
+        const inserted = await tx.insert(customers).values({
+          name,
           phone,
-          sessionVersion: Number(currentByPhone.sessionVersion ?? 0),
-        };
-      }
-
-      const inserted = await tx.insert(customers).values({
-        name,
-        phone,
-        customerType: "فرد",
-        defaultPriceTier: "RETAIL",
-        creditLimit: "0",
-        currentBalance: "0",
-        isActive: true,
-        sessionVersion: 0,
-        clientRequestId: `firebase-phone:${firebaseUid}`,
-      });
-      return { id: extractInsertId(inserted), name, phone, sessionVersion: 0 };
-    } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${upsertLockName})`).catch(() => {});
-    }
+          customerType: "فرد",
+          defaultPriceTier: "RETAIL",
+          creditLimit: "0",
+          currentBalance: "0",
+          isActive: true,
+          sessionVersion: 0,
+          clientRequestId: `firebase-phone:${firebaseUid}`,
+        });
+        return { id: extractInsertId(inserted), name, phone, sessionVersion: 0 };
+      },
+    );
   });
 }
 

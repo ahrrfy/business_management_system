@@ -13,8 +13,6 @@ import {
   resolveViteEnvDir,
 } from "./scripts/vite-build-contract.mjs";
 import {
-  STOREFRONT_SHELL_CHUNK_GLOB,
-  STOREFRONT_SHELL_CSS_GLOB,
   storefrontApiNetworkMatcher,
   storefrontPrivateImageNetworkMatcher,
   storefrontPublicImageCacheMatcher,
@@ -247,6 +245,12 @@ function enforceBuildContracts(): Plugin {
     name: "enforce-build-contracts",
     apply: "build",
     generateBundle(_options, bundle) {
+      for (const fileName of Object.keys(bundle)) {
+        // استبعاد حزم ONNX WebGPU / JSEP (~24.71MB) غير المستخدمة كلياً؛ الاستوديو يعمل بوضع CPU فقط من /imgly-assets.
+        if (/^assets\/ort[-.](?:wasm.*jsep|.*webgpu)/i.test(fileName)) {
+          delete bundle[fileName];
+        }
+      }
       for (const output of Object.values(bundle)) {
         const violation =
           chunkBudgetViolation(output) ?? cssAssetBudgetViolation(output);
@@ -355,15 +359,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
           // حزمة القشرة المشتركة أكبر من 2MiB؛ الرفع يمنع إسقاط ملف واجهة لازم لفتح /store.
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           cacheId: storefront ? "alarabiya-storefront" : "alarabiya-erp",
-          // precache مقصور على دخول التطبيق + Storefront واعتماداته المشتركة. أسماء الصفحات
-          // الإدارية الأخرى لا تطابق هذه القائمة، فلا يتحول SW إلى نسخة أوفلاين كاملة للـERP.
-          globPatterns: storefront
-            ? ["index.html", "assets/*.{js,css}", "fonts/*.woff2"]
-            : [
-                "index.html",
-                "assets/*.{js,css}",
-                "fonts/*.woff2",
-              ],
+          // precache يشمل حزمة الإقلاع الفعليّة (assets/app-*.js) واعتمادات مسارات الأوفلاين
+          // المعتمدة (/pos, /print-pos, /reception, /returns, /login, /store)، مع استبعاد أصول ML وExcelJS أدناه.
+          globPatterns: ["index.html", "assets/*.{js,css}", "fonts/*.woff2"],
           // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
           // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
           // الطلب (مسار CUT) لا من الـSW. بدونه يفشل بناء الإنتاج (vite-plugin-pwa). راجع
@@ -623,11 +621,6 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
               id.includes("/shared/operationPermissionCatalog.part2.generated")
             )
               return "operation-catalog-2";
-            if (
-              id.includes("/node_modules/@casl/") ||
-              id.includes("/node_modules/sift/")
-            )
-              return "authorization-vendor";
             if (id.includes("/node_modules/zod/")) return "validation-vendor";
             // كل أيقونات lucide في حُزمة واحدة بدل ~٨٠ ملفاً صغيراً. كان كل أيقونة حُزمةً
             // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
@@ -664,12 +657,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
             if (
               id.includes("/node_modules/@radix-ui/") ||
               id.includes("/node_modules/@floating-ui/") ||
-              id.includes("/node_modules/cmdk/") ||
               id.includes("/node_modules/tailwind-merge/") ||
               id.includes("/node_modules/clsx/") ||
-              id.includes("/node_modules/sonner/") ||
-              id.includes("/node_modules/input-otp/") ||
-              id.includes("/node_modules/qrcode/")
+              id.includes("/node_modules/sonner/")
             )
               return "ui-vendor";
             if (id.includes("/node_modules/@sentry/")) return "observability";
@@ -680,16 +670,18 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
     },
     server: {
       host: true,
-      // Allow the temporary Manus preview proxy without accepting arbitrary Host headers.
-      allowedHosts: [".manus.computer", "localhost"],
-      // The preview consumes the current public storefront API; no database copy or mock catalog.
-      proxy: {
-        "/api": {
-          target: "https://alarabiya.online",
-          changeOrigin: true,
-          secure: true,
-        },
-      },
+      allowedHosts: ["localhost", "127.0.0.1"],
+      ...(environment.VITE_API_PROXY_TARGET?.trim()
+        ? {
+            proxy: {
+              "/api": {
+                target: environment.VITE_API_PROXY_TARGET.trim(),
+                changeOrigin: true,
+                secure: true,
+              },
+            },
+          }
+        : {}),
       fs: {
         strict: true,
         deny: ["**/.*"],

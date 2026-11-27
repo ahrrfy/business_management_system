@@ -175,22 +175,24 @@ describe("csrfGuard — متصفحات تحجب Origin/Referer (علّة الل�
     expect(nextCalled).toBe(true);
   });
 
-  it("يقبل عميل Android الأصلي الحالي عند غياب ترويسات المتصفح", () => {
-    const { nextCalled } = run(mockReq({ headers: {
+  it("يرفض ترويسات عميل Android الأصلي المتقاعد عند غياب ترويسات المتصفح أو x-erp-csrf", () => {
+    const { res, nextCalled } = run(mockReq({ headers: {
       "x-alrueya-client": "android-native",
       "x-alrueya-client-version": "2",
       "x-alrueya-device-proof-version": "1",
     } }));
-    expect(nextCalled).toBe(true);
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(403);
   });
 
-  it("يقبل تطبيق Super Arabia Expo الحالي عند غياب ترويسات المتصفح", () => {
-    const { nextCalled } = run(mockReq({ headers: {
+  it("يرفض ترويسات تطبيق Super Arabia Expo المتقاعد عند غياب ترويسات المتصفح أو x-erp-csrf", () => {
+    const { res, nextCalled } = run(mockReq({ headers: {
       "x-alrueya-client": "superapp-expo",
       "x-alrueya-client-version": "1",
       "x-alrueya-device-proof-version": "1",
     } }));
-    expect(nextCalled).toBe(true);
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(403);
   });
 
   it("يرفض اسماً أصلياً معروفاً بلا نسخ العقد الحالية", () => {

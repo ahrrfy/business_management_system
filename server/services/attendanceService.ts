@@ -88,7 +88,14 @@ export function rateForDayDetailed(
     return { rate: 0, basis: "none" };
   }
   const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
-  const salary = Number(emp.salary ?? 0);
+  let salaryDec = money(0);
+  if (typeof emp.salary === "number" || typeof emp.salary === "string") {
+    try {
+      salaryDec = money(emp.salary);
+    } catch {
+      salaryDec = money(0);
+    }
+  }
   const monthStart = `${dateStr.slice(0, 7)}-01`;
   if (sched) {
     const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
@@ -97,10 +104,10 @@ export function rateForDayDetailed(
     }
     // مُشتقّ: الراتب ÷ ساعات ٣٠ يوماً وفق جدوله (نفس مقام المسيّر ⇒ لا انحراف).
     const std = standardMonthlyHours(sched, monthStart);
-    if (salary > 0 && std.gt(0)) return { rate: salary / std.toNumber(), basis: "derived" };
-  } else if (salary > 0) {
+    if (salaryDec.gt(0) && std.gt(0)) return { rate: salaryDec.div(std).toNumber(), basis: "derived" };
+  } else if (salaryDec.gt(0)) {
     const std = standardMonthlyHours(DEFAULT_WORK_SCHEDULE, monthStart);
-    if (std.gt(0)) return { rate: salary / std.toNumber(), basis: "fallbackSchedule" };
+    if (std.gt(0)) return { rate: salaryDec.div(std).toNumber(), basis: "fallbackSchedule" };
   }
   if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
     return { rate: fromDayRates, basis: "dayRates" };

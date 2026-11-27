@@ -292,9 +292,9 @@ export default function StudioCampaignsManager() {
         backHref="/catalog/image-studio"
         backLabel="استوديو المنتجات"
         actions={
-          <Button asChild className="min-h-11">
-            <Link href="/catalog/image-studio#new-campaign">
-              <Plus aria-hidden className="size-4" /> إنشاء حملة جديدة
+          <Button asChild variant="outline" className="min-h-11">
+            <Link href="/catalog/image-studio?tab=review">
+              <ExternalLink aria-hidden className="size-4" /> مراجعة مهام التصوير
             </Link>
           </Button>
         }
@@ -387,8 +387,7 @@ export default function StudioCampaignsManager() {
           {campaigns.isError && <p role="alert" className="text-sm text-destructive">تعذّر جلب الحملات — أعد المحاولة.</p>}
           {!campaigns.isLoading && filtered.length === 0 && (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              لا حملاتٍ بهذه الفلاتر —{" "}
-              <Link href="/catalog/image-studio#new-campaign" className="underline underline-offset-2">أنشئ حملةً جديدة</Link>.
+              لا حملاتٍ مطابقة للفلاتر الحالية.
             </p>
           )}
 
@@ -481,9 +480,9 @@ export default function StudioCampaignsManager() {
                             <XCircle aria-hidden className="size-4" /> {reasonOpen ? "إخفاء الإلغاء" : "إلغاء"}
                           </Button>
                         )}
-                        <Button asChild size="sm" variant="ghost" className="min-h-9" title="فتح الحملة في الاستوديو (تحرير الفريق والطابور والمؤشّرات)">
-                          <Link href={`/catalog/image-studio?campaign=${Number(c.id)}`}>
-                            <ExternalLink aria-hidden className="size-4" /> تفاصيل
+                        <Button asChild size="sm" variant="ghost" className="min-h-9" title="فتح تبويب مراجعة مهام الاستوديو">
+                          <Link href="/catalog/image-studio?tab=review">
+                            <ExternalLink aria-hidden className="size-4" /> مراجعة المهام
                           </Link>
                         </Button>
                         {isMutating && <Loader2 aria-hidden className="size-4 animate-spin self-center" />}

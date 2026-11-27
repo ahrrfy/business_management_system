@@ -60,7 +60,7 @@ describe("financial hardening source contracts", () => {
     const workspace = read("pnpm-workspace.yaml");
     const packageJson = read("package.json");
     expect(packageJson).toContain('"uuid@<11.1.1": ">=11.1.1"');
-    expect(packageJson).toContain('"@opentelemetry/core@<2.8.0": ">=2.8.0"');
+    expect(packageJson).toContain('"esbuild@>=0.26.0 <0.28.2": "0.28.2"');
     expect(workspace).not.toContain("overrides:");
   });
 

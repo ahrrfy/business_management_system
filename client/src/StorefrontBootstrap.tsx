@@ -12,7 +12,7 @@ import { Suspense, useEffect } from "react";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 
 const loadStorefrontPage = () => import("@/pages/Storefront");
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && import.meta.env.MODE !== "test") {
   const bootPath = (window.location.pathname || "/").split("?", 1)[0];
   if (
     bootPath === "/" ||

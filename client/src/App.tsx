@@ -217,6 +217,9 @@ function Protected({ children }: { children: React.ReactNode }) {
         </Suspense>
       );
     }
+    if ((me.data as { mustChangePassword?: boolean }).mustChangePassword && !loc.startsWith("/account")) {
+      return <Redirect to="/account?mustChange=1" />;
+    }
     return <>{children}</>;
   }
   if (me.isLoading) {
@@ -384,10 +387,18 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
-      {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
-      <Route path="/mobile-design-preview" component={MobileDesignPreview} />
-      {/* استوديو المطبوعات والهوية البصرية: معاينة ومراجعة المطبوعات الحرارية وبوالص الشحن محلياً */}
-      <Route path="/print-studio" component={PrintStudio} />
+      {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية محصورة ببيئة التطوير فقط. */}
+      {import.meta.env.DEV ? (
+        <Route path="/mobile-design-preview" component={MobileDesignPreview} />
+      ) : null}
+      {/* استوديو المطبوعات والهوية البصرية: محمي بالجلسة ودور المدير/الأدمن */}
+      <Route path="/print-studio">
+        <Shell>
+          <RequireRole roles={["admin", "manager"]}>
+            <PrintStudio />
+          </RequireRole>
+        </Shell>
+      </Route>
       {/* نقطة البيع الموحَّدة — Shell واحد لـ٣ أوضاع (تجزئة/خدمات طباعة/استقبال أوامر شغل) */}
       <Route path="/pos">
         <Protected>

@@ -389,6 +389,7 @@ export default function EmployeeNew() {
       customRoleId: account.customRoleId ?? undefined,
       branchId: account.branchId === "" ? undefined : Number(account.branchId),
       permissionsOverride: accountPermsPayload(account),
+      operationPolicy: account.operationPolicy ?? null,
       mustChangePassword: account.mustChangePassword,
     };
   }
@@ -632,7 +633,7 @@ export default function EmployeeNew() {
               ))}
             </div>
             {accountMode === "new" && (
-              <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} />
+              <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} operationEditor />
             )}
             {accountMode === "link" && (
               <div className="space-y-1 max-w-md">
@@ -686,7 +687,7 @@ export default function EmployeeNew() {
                 </div>
                 {editAccountMode === "new" ? (
                   <>
-                    <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} />
+                    <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} operationEditor />
                     <Button onClick={createAccountForEdit} disabled={!can("employees.createAccountFor") || (createAccountForM.isPending)}>{createAccountForM.isPending ? "جارٍ…" : "إنشاء الحساب وربطه"}</Button>
                   </>
                 ) : (

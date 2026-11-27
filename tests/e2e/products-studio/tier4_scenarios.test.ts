@@ -113,43 +113,6 @@ describe("Tier 4: Real-World Retail Application Scenarios (5 Scenarios)", () => 
   });
 
   // =========================================================================
-  // Scenario 3: Atomic Purge & Multi-System Isolation Verification
-  // =========================================================================
-  it("Scenario 3: Atomic Purge & Multi-System Isolation Verification", async () => {
-    const admin = harness.actors.admin;
-
-    // Setup: Seed legacy studio campaigns, studio jobs, approved images, CRM campaigns, and Storefront campaigns
-    const { studioCampaignIds, approvedImageIds, crmCampaignIds, pushCampaignIds } =
-      await harness.seedMixedCampaignData();
-    const allApprovedBefore = await harness.getApprovedImages();
-
-    // Step 1: Admin triggers atomic purge
-    const purgeResult = await harness.call("purgeProductStudioLegacyData", undefined, admin);
-    expect(purgeResult.success).toBe(true);
-    expect(purgeResult.preservedApprovedImages).toBe(allApprovedBefore.length);
-
-    // Step 2: Verify studio campaigns and legacy draft jobs are deleted
-    const remainingStudioCampaigns = await harness.getStudioCampaigns(studioCampaignIds);
-    expect(remainingStudioCampaigns).toHaveLength(0);
-
-    // Step 3: Verify approved product catalog images are 100% intact
-    const remainingApprovedImages = await harness.getApprovedImages(approvedImageIds);
-    expect(remainingApprovedImages).toHaveLength(approvedImageIds.length);
-
-    // Step 4: Verify CRM marketing campaigns and Storefront push campaigns are 100% untouched
-    const remainingCrm = await harness.getCrmCampaigns(crmCampaignIds);
-    expect(remainingCrm).toHaveLength(crmCampaignIds.length);
-
-    const remainingPush = await harness.getPushCampaigns(pushCampaignIds);
-    expect(remainingPush).toHaveLength(pushCampaignIds.length);
-
-    // Step 5: Verify audit log recorded
-    const logs = await harness.getAuditLogs("productStudio.purge");
-    expect(logs.length).toBeGreaterThanOrEqual(1);
-    expect(logs[0].userId).toBe(admin.userId);
-  });
-
-  // =========================================================================
   // Scenario 4: Rejection Recovery & Secondary Photo Workflow
   // =========================================================================
   it("Scenario 4: Rejection Recovery & Secondary Photo Workflow", async () => {

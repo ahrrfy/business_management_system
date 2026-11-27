@@ -8,6 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { withTxNamedLock } from "../../lib/mysqlNamedLock";
 import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
@@ -1159,61 +1160,57 @@ export async function updateOnlineOrder(
 
         if (!resolvedExistingCustomer) {
           // ٢) تسلسل مسار الإدراج عبر قفل استشاري موحّد يمنع تعارض أقفال الفجوات المتزامنة في InnoDB
-          const upsertLockName = "online-customer:upsert";
-          const lockResult = (await tx.execute(
-            sql`SELECT GET_LOCK(${upsertLockName}, 10) AS locked`,
-          )) as unknown;
-          const lockRow = Array.isArray(lockResult)
-            ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
-            : (lockResult as { rows?: Array<{ locked?: number }> })?.rows?.[0];
-          if (Number(lockRow?.locked) !== 1) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: appErrorMessage({
-                what: "تعذّر تأمين سجل الزبون",
-                why: "تزامن تعديل آخر على سجلات الزبائن حالياً",
-                doThis: "أعد المحاولة بعد لحظات",
-              }),
-            });
-          }
-          try {
-            const [currentByPhone] = await tx
-              .select({
-                id: customers.id,
-                isActive: customers.isActive,
-              })
-              .from(customers)
-              .where(and(eq(customers.phone, normalizedPhone), isNull(customers.deletedAt)))
-              .orderBy(desc(customers.isActive), desc(customers.id))
-              .limit(1)
-              .for("update");
-            if (currentByPhone) {
-              if (currentByPhone.isActive === false) {
-                throw new TRPCError({
-                  code: "FORBIDDEN",
-                  message: appErrorMessage({
-                    what: "هذا الرقم مرتبط بعميل معطّل",
-                    why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
-                    doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
-                  }),
-                });
-              }
-              targetCustomerId = Number(currentByPhone.id);
-            } else {
-              const [inserted] = await tx.insert(customers).values({
-                name: trimmedNewName || existingCustomer?.name || "عميل متجر",
-                phone: normalizedPhone,
-                customerType: "فرد",
-                defaultPriceTier: "RETAIL",
-                creditLimit: "0",
-                currentBalance: "0",
-                isActive: true,
+          await withTxNamedLock(
+            tx,
+            "online-customer:upsert",
+            10,
+            () => {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذّر تأمين سجل الزبون",
+                  why: "تزامن تعديل آخر على سجلات الزبائن حالياً",
+                  doThis: "أعد المحاولة بعد لحظات",
+                }),
               });
-              targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
-            }
-          } finally {
-            await tx.execute(sql`SELECT RELEASE_LOCK(${upsertLockName})`).catch(() => {});
-          }
+            },
+            async () => {
+              const [currentByPhone] = await tx
+                .select({
+                  id: customers.id,
+                  isActive: customers.isActive,
+                })
+                .from(customers)
+                .where(and(eq(customers.phone, normalizedPhone), isNull(customers.deletedAt)))
+                .orderBy(desc(customers.isActive), desc(customers.id))
+                .limit(1)
+                .for("update");
+              if (currentByPhone) {
+                if (currentByPhone.isActive === false) {
+                  throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: appErrorMessage({
+                      what: "هذا الرقم مرتبط بعميل معطّل",
+                      why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                      doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+                    }),
+                  });
+                }
+                targetCustomerId = Number(currentByPhone.id);
+              } else {
+                const [inserted] = await tx.insert(customers).values({
+                  name: trimmedNewName || existingCustomer?.name || "عميل متجر",
+                  phone: normalizedPhone,
+                  customerType: "فرد",
+                  defaultPriceTier: "RETAIL",
+                  creditLimit: "0",
+                  currentBalance: "0",
+                  isActive: true,
+                });
+                targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
+              }
+            },
+          );
         }
       } else if (existingCustomer && trimmedNewName && trimmedNewName !== existingCustomer.name) {
         const isVerifiedStorefrontAccount = Boolean(

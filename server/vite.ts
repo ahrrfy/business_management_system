@@ -68,13 +68,16 @@ async function resolveViteConfig(): Promise<UserConfig> {
 export async function buildDevServerConfig(
   server?: Server,
 ): Promise<InlineConfig> {
+  const base = await resolveViteConfig();
   return {
-    ...(await resolveViteConfig()),
+    ...base,
     configFile: false,
     server: {
+      ...base.server,
+      proxy: undefined,
       middlewareMode: true,
       ...(server ? { hmr: { server } } : {}),
-      allowedHosts: true as const,
+      allowedHosts: ["localhost", "127.0.0.1"],
     },
     appType: "custom",
   };

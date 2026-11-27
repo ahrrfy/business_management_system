@@ -39,5 +39,6 @@
   "operation.superApp.payslipDetail",
   "operation.superApp.requestLeave",
   "operation.superApp.updateNotificationPreferences",
-  "operation.superApp.withdrawLeave"
+  "operation.superApp.withdrawLeave",
+  "operation.productStudio.purgeProductStudioLegacyData"
 ]

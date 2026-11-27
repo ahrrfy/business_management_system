@@ -32,7 +32,7 @@ const log = pino({ name: "channel-webhooks" });
 
 /** HMAC verify عام لِـwebhooks مِن Meta (WhatsApp/Instagram). */
 function verifyMetaSignature(rawBody: Buffer, signatureHeader: string | undefined, secret: string): boolean {
-  if (!signatureHeader) return false;
+  if (!Buffer.isBuffer(rawBody) || rawBody.length === 0 || !signatureHeader) return false;
   const sig = signatureHeader.startsWith("sha256=") ? signatureHeader.slice(7) : signatureHeader;
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   if (sig.length !== expected.length) return false;
@@ -76,7 +76,7 @@ async function findBranchByHmac(
   signatureHeader: string | undefined,
   verifierFn: (rawBody: Buffer, sig: string, secret: string) => boolean,
 ): Promise<{ branchId: number } | null> {
-  if (!signatureHeader) return null;
+  if (!Buffer.isBuffer(rawBody) || rawBody.length === 0 || !signatureHeader) return null;
   const secrets = await decryptedAppSecretsFor(channel);
   for (const s of secrets) {
     if (verifierFn(rawBody, signatureHeader, s.appSecret)) {
@@ -88,6 +88,7 @@ async function findBranchByHmac(
 
 /** HMAC verifier لِـStore (hex خام بَلا sha256= prefix). */
 function verifyStoreSignature(rawBody: Buffer, sig: string, secret: string): boolean {
+  if (!Buffer.isBuffer(rawBody) || rawBody.length === 0 || !sig) return false;
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   if (sig.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
@@ -143,7 +144,7 @@ export function channelWebhooksRouter(): Router {
       return res.status(403).send("forbidden");
     }
     log.info({ branchId: match.branchId }, "WhatsApp webhook: verified");
-    return res.status(200).send(String(challenge ?? ""));
+    return res.status(200).type("text/plain").send(String(challenge ?? "").slice(0, 256));
   });
 
   /**
@@ -159,12 +160,21 @@ export function channelWebhooksRouter(): Router {
    * سريعاً وحتمياً؛ لا setImmediate هنا (بخلاف outboxService.enqueueAndDispatch).
    */
   r.post("/whatsapp", rawJson, async (req: Request, res: Response) => {
-    const raw = req.body as Buffer;
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).type("text/plain").send("invalid body");
+    }
+    const raw = req.body;
     const sig = req.headers["x-hub-signature-256"] as string | undefined;
-    const match = await findBranchByHmac("WHATSAPP", raw, sig, verifyMetaSignature);
+    let match: { branchId: number } | null = null;
+    try {
+      match = await findBranchByHmac("WHATSAPP", raw, sig, verifyMetaSignature);
+    } catch (e: any) {
+      log.error({ err: e?.message }, "WhatsApp webhook POST: تعذر التحقق من التوقيع");
+      return res.status(503).type("text/plain").send("temporary failure");
+    }
     if (!match) {
       log.warn({ ip: req.ip }, "WhatsApp webhook POST: HMAC غَير صَحيح أو لا تَكامل");
-      return res.status(401).send("invalid signature");
+      return res.status(401).type("text/plain").send("invalid signature");
     }
     try {
       const integrationId = await resolveHmacIntegrationId(match.branchId);
@@ -222,15 +232,24 @@ export function channelWebhooksRouter(): Router {
     const token = String(req.query["hub.verify_token"] ?? "");
     if (req.query["hub.mode"] !== "subscribe" || !token) return res.status(403).send("forbidden");
     const match = await findIntegrationByVerifyToken("INSTAGRAM", token);
-    if (!match) return res.status(403).send("forbidden");
-    return res.status(200).send(String(req.query["hub.challenge"] ?? ""));
+    if (!match) return res.status(403).type("text/plain").send("forbidden");
+    return res.status(200).type("text/plain").send(String(req.query["hub.challenge"] ?? "").slice(0, 256));
   });
 
   r.post("/instagram", rawJson, async (req: Request, res: Response) => {
-    const raw = req.body as Buffer;
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).type("text/plain").send("invalid body");
+    }
+    const raw = req.body;
     const sig = req.headers["x-hub-signature-256"] as string | undefined;
-    const match = await findBranchByHmac("INSTAGRAM", raw, sig, verifyMetaSignature);
-    if (!match) return res.status(401).send("invalid signature");
+    let match: { branchId: number } | null = null;
+    try {
+      match = await findBranchByHmac("INSTAGRAM", raw, sig, verifyMetaSignature);
+    } catch (e: any) {
+      log.error({ err: e?.message }, "Instagram webhook POST: تعذر التحقق من التوقيع");
+      return res.status(503).type("text/plain").send("temporary failure");
+    }
+    if (!match) return res.status(401).type("text/plain").send("invalid signature");
     try {
       const payload = JSON.parse(raw.toString("utf8"));
       for (const entry of payload?.entry ?? []) {
@@ -279,10 +298,19 @@ export function channelWebhooksRouter(): Router {
    * يَجَرّب كل الفُروع لِيَجد الـsecret المُطابِق (مَشابِه لِـMeta).
    */
   r.post("/store", rawJson, async (req: Request, res: Response) => {
-    const raw = req.body as Buffer;
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).type("text/plain").send("invalid body");
+    }
+    const raw = req.body;
     const sig = (req.headers["x-webhook-signature"] ?? req.headers["x-store-signature"]) as string | undefined;
-    const match = await findBranchByHmac("STORE", raw, sig, verifyStoreSignature);
-    if (!match) return res.status(401).send("invalid signature");
+    let match: { branchId: number } | null = null;
+    try {
+      match = await findBranchByHmac("STORE", raw, sig, verifyStoreSignature);
+    } catch (e: any) {
+      log.error({ err: e?.message }, "Store webhook POST: تعذر التحقق من التوقيع");
+      return res.status(503).type("text/plain").send("temporary failure");
+    }
+    if (!match) return res.status(401).type("text/plain").send("invalid signature");
     const matchedBranchId = match.branchId;
     try {
       const payload = JSON.parse(raw.toString("utf8"));

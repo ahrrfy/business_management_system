@@ -188,7 +188,6 @@ ${CAIRO_FONT}
   body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
   ${payslip ? PAYSLIP_PAGE_STYLES : ""}
 </style>
-<script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body${payslip ? ' class="payslip-print-pending"' : ""}>
 <div class="doc-toolbar" dir="rtl"
@@ -364,7 +363,6 @@ ${CAIRO_FONT}
   body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
   ${payslip ? PAYSLIP_PAGE_STYLES : ""}
 </style>
-<script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body${payslip ? ' class="payslip-print-pending"' : ""}>
 <div class="doc-toolbar" dir="rtl"

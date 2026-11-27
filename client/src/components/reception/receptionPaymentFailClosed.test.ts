@@ -60,7 +60,7 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
 
   it("شاشات أوامر الشغل والحجوزات والتسليم بلا إقفالٍ مكتوبٍ يدوياً", () => {
     const pickup = readClient("../delivery/MarkPickedUpDialog.tsx");
-    const workOrderNew = readClient("../../pages/WorkOrderNew.tsx");
+    const appRoutes = readClient("../../App.tsx");
     const workOrderDetail =
       readClient("../../pages/WorkOrderDetail.tsx") +
       "\n" +
@@ -69,7 +69,7 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     const reservations = readClient("../../pages/ReservationsHub.tsx");
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
-    expect(workOrderNew).toContain('<Redirect to="/pos?mode=RECEPTION" />');
+    expect(appRoutes).toContain('<Redirect to="/pos?mode=RECEPTION" />');
     expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}",
     );
     expect(handover).toContain("const enabled = isPosPaymentMethodEnabled(p.v);");

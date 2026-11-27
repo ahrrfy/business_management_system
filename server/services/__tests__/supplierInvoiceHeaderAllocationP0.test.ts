@@ -194,17 +194,9 @@ describe("P1 — supplier invoice reversal dependency guards", () => {
       "server/services/purchase/supplierInvoices.ts",
       "utf8",
     );
-    const revisionSource = readFileSync(
-      "server/services/purchase/supplierInvoiceRevisions.ts",
-      "utf8",
-    );
     expect(invoiceSource).not.toContain("accountingEntries");
     expect(invoiceSource).toContain(".from(supplierPaymentAllocations)");
     expect(invoiceSource).toContain(".from(purchaseReturns)");
     expect(invoiceSource).toContain(".from(purchaseReturnReversals)");
-    expect(revisionSource).toContain("taxAmount: toDbMoney(line.taxAmount)");
-    expect(revisionSource).toContain(
-      "totalAmount: toDbMoney(line.totalAmount)",
-    );
   });
 });

@@ -110,11 +110,25 @@ export async function globalSearch(
     );
   if (requested.has("QUOTATION"))
     tasks.push(
-      searchQuotations(db, kind, query, perEntityLimit, scopedBranchId),
+      searchQuotations(
+        db,
+        kind,
+        query,
+        perEntityLimit,
+        scopedBranchId,
+        ownerForType("QUOTATION"),
+      ),
     );
   if (requested.has("WORK_ORDER"))
     tasks.push(
-      searchWorkOrders(db, kind, query, perEntityLimit, scopedBranchId),
+      searchWorkOrders(
+        db,
+        kind,
+        query,
+        perEntityLimit,
+        scopedBranchId,
+        ownerForType("WORK_ORDER"),
+      ),
     );
   if (requested.has("PURCHASE_ORDER"))
     tasks.push(

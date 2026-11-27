@@ -145,6 +145,7 @@ realtimeRouter.get("/stream", async (req: Request, res: Response) => {
       userId: user.id,
       role: user.role,
       scopedBranchId,
+      canCrossBranches: userCanCross,
       companyId: null,
       req,
       res,

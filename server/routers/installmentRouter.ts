@@ -7,6 +7,7 @@
 // treasuryManagerReadProcedure. عزل الفروع بنمط voucherRouter حرفياً: غير الأدمن المُسنَد
 // لفرع يُقيَّد بفرعه قراءةً وكتابةً؛ admin (أو مدير بلا فرع) يعبُر.
 import { TRPCError } from "@trpc/server";
+import { assertSafeAttachmentUrl } from "@shared/attachmentUrl";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -235,6 +236,7 @@ export const installmentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن السداد" });
       }

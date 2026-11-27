@@ -30,14 +30,13 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["brace-expansion@<5.0.12"]).toBe("5.0.12");
     expect(rootOverrides["fast-uri@<3.1.9"]).toBe("3.1.9");
     expect(rootOverrides["ip-address@<10.7.4"]).toBe("10.7.4");
-    expect(rootOverrides["dompurify@<3.4.17"]).toBe("3.4.17");
     expect(rootOverrides["serialize-javascript@<7.1.3"]).toBe("7.1.3");
-    expect(rootOverrides["compression@<1.8.2"]).toBe("1.8.2");
     expect(rootOverrides["fast-copy@<4.1.0"]).toBe("4.1.0");
-    expect(rootOverrides["postcss-selector-parser@<7.1.6"]).toBe("7.1.6");
     expect(rootOverrides["proxy-addr@<2.0.8"]).toBe("2.0.8");
     expect(rootOverrides["source-map-js@<1.2.2"]).toBe("1.2.2");
     expect(rootOverrides["qs@<6.16.1"]).toBe("6.16.1");
+    expect(rootOverrides["esbuild@>=0.26.0 <0.28.2"]).toBe("0.28.2");
+    expect(rootOverrides["@imgly/background-removal>zod"]).toBe("$zod");
     expect(rootOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
     expect(rootOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
     expect(rootOverrides.deepmerge).toBe("npm:@stackline/deepmerge@1.1.0");

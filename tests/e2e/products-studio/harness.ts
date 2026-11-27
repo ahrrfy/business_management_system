@@ -1165,52 +1165,6 @@ export async function callStudioRouter(endpoint: string, input: any, ctx: TestCo
     }
 
     // -----------------------------------------------------------------------
-    // Endpoint: purgeProductStudioLegacyData
-    // -----------------------------------------------------------------------
-    case "purgeProductStudioLegacyData": {
-      if (!isManager) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "تطهير بيانات الاستوديو يتطلب صلاحية مدير" });
-      }
-
-      // Count preserved catalog images
-      const preservedCount = Array.from(productImagesDb.values()).filter(
-        (img) => img.companyId === companyId && img.reviewStatus === "APPROVED"
-      ).length;
-
-      // Purge studio campaigns
-      for (const [id, c] of Array.from(studioCampaignsDb.entries())) {
-        if (c.companyId === companyId) studioCampaignsDb.delete(id);
-      }
-
-      // Purge studio jobs
-      for (const [id, j] of Array.from(productImageJobsDb.entries())) {
-        if (j.companyId === companyId) productImageJobsDb.delete(id);
-      }
-
-      // Purge photography locks
-      for (const [key, lock] of Array.from(photographyLocksDb.entries())) {
-        if (lock.companyId === companyId) photographyLocksDb.delete(key);
-      }
-
-      // Record audit log
-      auditLogsDb.push({
-        id: nextLogId++,
-        companyId,
-        userId: user.userId,
-        action: "productStudio.purge",
-        entityType: "studio_legacy",
-        details: { preservedApprovedImages: preservedCount },
-        timestamp: simulatedNow,
-      });
-
-      return {
-        success: true,
-        preservedApprovedImages: preservedCount,
-        purgedAt: simulatedNow.toISOString(),
-      };
-    }
-
-    // -----------------------------------------------------------------------
     // Endpoint: tasks (query for admin review queue)
     // -----------------------------------------------------------------------
     case "tasks": {

@@ -63,6 +63,7 @@ import { extractInsertId } from "../lib/insertId";
 import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { logAuditTx } from "./auditService";
 import { assertCanAdministerUser } from "./userAdminPolicy";
+import { evictUserRealtimeStreams } from "../realtime";
 import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
 import {
   resolveCustomRole,
@@ -346,6 +347,16 @@ export async function createUserTx(
       roleValue = r.baseRole as Role;
       customRoleId = Number(r.id);
     }
+    if (roleValue === "admin" && actor.isOwner !== true) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا يحق إلا لمالك النظام إنشاء حساب بصلاحية مدير عام",
+          why: "صلاحية المدير العام تمنح وصولاً شاملاً للنظام ومحصورة حصراً بمالك المنشأة",
+          doThis: "اختر دوراً إشرافياً أو تشغيلياً مناسباً، أو اطلب من مالك النظام إنشاء الحساب",
+        }),
+      });
+    }
     // عند غياب branchId صراحةً، يرث الحساب فرع الفاعل الموثق؛ الفاعل العالمي لا يمنح فرعاً ضمنياً.
     const assignedBranchId = input.branchId ?? actor.branchId ?? null;
     await assertUserBranchAssignmentTx(tx, assignedBranchId, roleValue);
@@ -411,6 +422,7 @@ export async function updateUser(
     const actor = locked.actor;
     const existing = locked.users.get(input.userId);
     if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    assertCanAdministerUser(actor as Actor, existing);
 
     const patch: Record<string, unknown> = {};
     if (input.name !== undefined) {
@@ -475,6 +487,16 @@ export async function updateUser(
         if (input.userId === actor.userId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك تغيير دور حسابك بنفسك." });
         }
+        if (nextRole === "admin" && existing.role !== "admin" && actor.isOwner !== true) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا يحق إلا لمالك النظام ترقية حساب إلى مدير عام",
+              why: "ترقية الحساب إلى مدير عام تمنح صلاحية شاملة ومحصورة حصراً بمالك المنشأة",
+              doThis: "اختر دوراً إشرافياً أو مخصّصاً أقل، أو اطلب من مالك النظام تنفيذ الترقية",
+            }),
+          });
+        }
         if (existing.role === "admin" && nextRole !== "admin" &&
           !Array.from(locked.users.values()).some((user) => user.id !== input.userId && user.role === "admin" && user.isActive)) {
           throw new TRPCError({
@@ -502,6 +524,58 @@ export async function updateUser(
     const requestedOverride = input.permissionsOverride === undefined
       ? undefined
       : normalizePermissionOverride(input.permissionsOverride);
+    const requestedPolicyNormalized = input.operationPolicy === undefined
+      ? undefined
+      : normalizeOperationPolicy(input.operationPolicy);
+    if (input.userId === actor.userId && actor.isOwner !== true) {
+      const selfOverrideChanged =
+        requestedOverride !== undefined &&
+        !samePermissionOverride(
+          existing.permissionsOverride as PermissionMap | null,
+          requestedOverride,
+        );
+      const selfAtomicChanged =
+        input.atomicPermissions !== undefined &&
+        !sameAtomicPermissions(
+          existing.atomicPermissions as AtomicPermissionsMap | null,
+          input.atomicPermissions,
+        );
+      const selfCapsChanged =
+        input.operationalCaps !== undefined &&
+        !sameOperationalCaps(
+          existing.operationalCaps as OperationalCaps | null,
+          input.operationalCaps,
+        );
+      const selfPolicyChanged =
+        requestedPolicyNormalized !== undefined &&
+        !sameOperationPolicy(
+          existing.operationPolicy,
+          requestedPolicyNormalized,
+        );
+      const isPureLegacySelfDenial =
+        existing.operationPolicy == null &&
+        requestedPolicyNormalized != null &&
+        Object.values(requestedPolicyNormalized.grants).every(
+          (grant) => grant === false,
+        );
+      const selfPolicyEscalated =
+        selfPolicyChanged && !isPureLegacySelfDenial;
+      if (
+        selfOverrideChanged ||
+        selfAtomicChanged ||
+        selfCapsChanged ||
+        selfPolicyEscalated
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا يمكنك تعديل صلاحيات أو حدود حسابك بنفسك",
+            why: "فصل المهام يمنع أي مستخدم غير المالك من رفع سقف صلاحياته أو تفويضاته ذاتياً",
+            doThis: "اطلب من مالك النظام مراجعة صلاحيات حسابك واعتماد التعديل المطلوب",
+          }),
+        });
+      }
+    }
     // الاستثناء الفردي يُطبّق فوق الدور المخصّص. إذا تبدّل الدور المخصّص من دون خريطة صريحة
     // نمسح فروق الدور السابق كي لا تنتقل بصمت إلى دور جديد مختلف.
     {
@@ -621,6 +695,9 @@ export async function updateUser(
         operationPolicyRevision,
         clearedLegacyChanges,
       );
+    if (patch.sessionsValidFrom instanceof Date) {
+      evictUserRealtimeStreams(input.userId);
+    }
     return { userId: input.userId, changed: true, operationPolicyRevision };
   });
 }
@@ -706,6 +783,9 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
     await tx.update(users).set({ isActive: true }).where(eq(users.id, userId));
     return { userId, isActive: true };
   });
+  if (!result.isActive) {
+    evictUserRealtimeStreams(userId);
+  }
   return result;
 }
 
@@ -751,6 +831,7 @@ export async function resetUserPassword(
       );
     return { userId, success: true };
   });
+  evictUserRealtimeStreams(userId);
   return result;
 }
 
@@ -817,6 +898,7 @@ export async function revokeUserSessions(userId: number, _actor: Actor) {
     await tx.update(userSessions).set({ revokedAt }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
     return { userId, revokedAt, subject: u };
   });
+  evictUserRealtimeStreams(userId);
   // ن-٢-د (٢٤/٨) — إشعارٌ إداريّ: مديرٌ أنهى جلسة موظّف ⇒ يُخطَر بقيّة الإداريّين. يقع بعد
   // نجاح المعاملة كي لا يُنشأ إشعارٌ لعملٍ لم يحدث. fail-open داخل الخدمة.
   void notifyAdminsOfSessionEvent({
@@ -836,7 +918,7 @@ export async function resetUserTwoFactor(
   actor: Actor,
   auditCtx: Parameters<typeof logAuditTx>[1],
 ) {
-  return withTx(async (tx) => {
+  const out = await withTx(async (tx) => {
     const target = (await tx
       .select({ id: users.id, role: users.role, isOwner: users.isOwner })
       .from(users)
@@ -862,6 +944,8 @@ export async function resetUserTwoFactor(
     });
     return { success: true as const, revokedAt: now };
   });
+  evictUserRealtimeStreams(userId);
+  return out;
 }
 
 /* ============================ الجلسات الفردية (userSessions) ============================ */
@@ -905,12 +989,34 @@ export async function createUserSessionRecord(input: CreateUserSessionInput): Pr
  * أيّ جلسة سبقت تسجيل خروج/تغيير كلمة مرور/إبطالاً جماعياً بلا حاجة لكتابة إضافية على تلك
  * المسارات القائمة (logout/changePassword/revokeUserSessions لا تُعدَّل). الأحدث نشاطاً أولاً.
  */
-export async function listUserSessions(userId: number): Promise<UserSession[]> {
+export async function listUserSessions(userId: number, actor?: Actor): Promise<UserSession[]> {
   const db = getDb();
   if (!db) return [];
   const u = (
-    await db.select({ sessionsValidFrom: users.sessionsValidFrom }).from(users).where(eq(users.id, userId)).limit(1)
+    await db
+      .select({
+        id: users.id,
+        role: users.role,
+        isOwner: users.isOwner,
+        sessionsValidFrom: users.sessionsValidFrom,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
   )[0];
+  if (actor && actor.userId !== userId) {
+    if (!u) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر عرض جلسات المستخدم المطلوب",
+          why: "سجل المستخدم غير موجود أو حُذف من النظام",
+          doThis: "حدّث قائمة المستخدمين وتحقّق من اختيار حساب قائم",
+        }),
+      });
+    }
+    assertCanAdministerUser(actor, u);
+  }
   const validFrom = u?.sessionsValidFrom ?? new Date(0);
   return db
     .select()
@@ -926,13 +1032,33 @@ export async function listUserSessions(userId: number): Promise<UserSession[]> {
     .orderBy(desc(userSessions.lastSeenAt));
 }
 
-/**
- * يُبطل جلسةً واحدة بعينها — يفحص أنّها تخصّ `expectedUserId` (يمنع IDOR: مستخدم يُبطل
- * جلسة مستخدمٍ آخر عبر تخمين معرّف). يخدم كلا المسارين: الذات (`ctx.user.id`) والمدير
- * (`input.userId` من شاشة تعديل المستخدم) بفحص ملكية واحد مشترك.
- */
-export async function revokeUserSessionRow(sessionId: number, expectedUserId: number): Promise<UserSession> {
-  return withTx(async (tx) => {
+export async function revokeUserSessionRow(
+  sessionId: number,
+  expectedUserId: number,
+  actor?: Actor,
+): Promise<UserSession> {
+  const out = await withTx(async (tx) => {
+    if (actor && actor.userId !== expectedUserId) {
+      const target = (
+        await tx
+          .select({ id: users.id, role: users.role, isOwner: users.isOwner })
+          .from(users)
+          .where(eq(users.id, expectedUserId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (!target) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر إبطال الجلسة المطلوبة",
+            why: "سجل المستخدم المرتبط بهذه الجلسة غير موجود في النظام",
+            doThis: "حدّث شاشة المستخدمين وتحقّق من حالة الحساب قبل المحاولة مجدداً",
+          }),
+        });
+      }
+      assertCanAdministerUser(actor, target);
+    }
     const row = (
       await tx.select().from(userSessions).where(eq(userSessions.id, sessionId)).for("update").limit(1)
     )[0];
@@ -945,6 +1071,8 @@ export async function revokeUserSessionRow(sessionId: number, expectedUserId: nu
     }
     return { ...row, revokedAt };
   });
+  evictUserRealtimeStreams(expectedUserId);
+  return out;
 }
 
 /** فحص توفّر البريد الإلكتروني (لحظياً عند الكتابة). */

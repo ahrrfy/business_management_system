@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertSafeAttachmentUrl } from "@shared/attachmentUrl";
 import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -194,6 +195,7 @@ export const consignmentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
       // عزل الفرع: غير admin مقصور بفرعه المُسنَد (البوّابة تفرض requireOwnBranch، ونثبّت branchId هنا أيضاً).
       const branchId = canCrossBranches(ctx.user) ? input.branchId : (ctx.user.branchId ?? input.branchId);
       // إعادة محاولة على تصادم رقم السند (uq_consign_note_number) — نمط idempotency البيع.
