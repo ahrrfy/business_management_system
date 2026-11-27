@@ -16,6 +16,8 @@ import {
   nextInvoiceNumber,
   nextTransactionTrackingNumber,
 } from "../numbering";
+import { resolveInvoiceNumberTx } from "../sale/invoiceNumbering";
+import { resolveDeliveryInvoiceNumber } from "../workOrder/helpers";
 
 describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
   beforeEach(async () => {
@@ -250,6 +252,44 @@ describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
       expect(Number(afterCounterOnlyDelete)).toBeGreaterThanOrEqual(109877);
 
       await tx.delete(invoices).where(eq(invoices.invoiceNumber, highInvoiceNum));
+    });
+  });
+
+  it("يمنع انقسام العدّاد بين تسليم أوامر الشغل التاريخية (< 100000) والفواتير الموحّدة حتى بوجود صفوف العدّادات مسبقاً", async () => {
+    const seededCollisionNum = "116465";
+    await withTx(async (tx) => {
+      await tx.execute(sql`
+        INSERT IGNORE INTO branches (id, name, code, isActive)
+        VALUES (1, 'فرع الاختبار', 'BR-1', 1)
+      `);
+      await tx.delete(invoices).where(eq(invoices.invoiceNumber, seededCollisionNum));
+      // محاكاة الحالة الحية: كلا صفي unified_transaction_floor و unified_transaction موجودان ومتأخران عند 116463
+      await tx.execute(sql`
+        INSERT INTO documentCounters (counterKey, lastValue)
+        VALUES ('unified_transaction_floor', 100034), ('unified_transaction', 116463)
+        ON DUPLICATE KEY UPDATE lastValue = VALUES(lastValue)
+      `);
+      await tx.insert(invoices).values({
+        invoiceNumber: seededCollisionNum,
+        sourceType: "POS",
+        branchId: 1,
+        priceTier: "RETAIL",
+        subtotal: "1000.00",
+        taxAmount: "0.00",
+        discountAmount: "0.00",
+        total: "1000.00",
+        costTotal: "500.00",
+        paidAmount: "1000.00",
+        status: "PAID",
+      });
+
+      const resolvedSaleInv = await resolveInvoiceNumberTx(tx, {});
+      expect(Number(resolvedSaleInv)).toBeGreaterThan(116465);
+
+      const legacyWoDeliveryInv = await resolveDeliveryInvoiceNumber(tx, "5679", 1);
+      expect(Number(legacyWoDeliveryInv)).toBeGreaterThan(Number(resolvedSaleInv));
+
+      await tx.delete(invoices).where(eq(invoices.invoiceNumber, seededCollisionNum));
     });
   });
 });

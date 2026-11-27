@@ -54,6 +54,24 @@ export async function resolveInvoiceNumberTx(
     }
     return formatDocumentNumber(baseTrackingNumber, k);
   }
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
+    const candidate = formatDocumentNumber(
+      baseTrackingNumber,
+      input.siblingIndex ?? undefined,
+    );
+    if (typeof (tx as any).select !== "function") {
+      return candidate;
+    }
+    const existing = await tx
+      .select({ invoiceNumber: invoices.invoiceNumber })
+      .from(invoices)
+      .where(eq(invoices.invoiceNumber, candidate))
+      .limit(1);
+    if (existing.length === 0) {
+      return candidate;
+    }
+  }
   const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
   return formatDocumentNumber(
     baseTrackingNumber,

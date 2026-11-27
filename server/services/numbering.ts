@@ -100,7 +100,7 @@ function resolvePrefixFloorSpec(counterKey: string): PrefixFloorSpec | null {
  */
 async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<number> {
   if (typeof (tx as any).select !== "function") return 0;
-  if (counterKey === "invoice") {
+  if (counterKey === "invoice" || counterKey === "unified_transaction") {
     const rows: Array<{ maxSeq: unknown }> = await (tx as any)
       .select({
         maxSeq: sql<number>`COALESCE(MAX(CAST(SUBSTRING_INDEX(${invoices.invoiceNumber}, '-', 1) AS UNSIGNED)), 0)`,
@@ -165,10 +165,21 @@ async function resolveDocumentCountersFloor(
   tx: Tx,
   counterKey: string,
 ): Promise<number> {
+  const relatedKeys =
+    counterKey === "invoice" || counterKey === "unified_transaction"
+      ? [
+          "invoice",
+          "invoice:cloud",
+          "invoice:local",
+          "unified_transaction",
+          "unified_transaction:cloud",
+          "unified_transaction:local",
+        ]
+      : [counterKey, `${counterKey}:cloud`, `${counterKey}:local`];
   const res: any = await tx.execute(sql`
     SELECT COALESCE(MAX(lastValue), 0) AS maxExisting
     FROM documentCounters
-    WHERE counterKey IN (${counterKey}, ${`${counterKey}:cloud`}, ${`${counterKey}:local`})
+    WHERE counterKey IN (${sql.join(relatedKeys.map((k) => sql`${k}`), sql`, `)})
   `);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
   const maxExisting = Number(row?.maxExisting ?? 0);
@@ -275,7 +286,14 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const floorCheck: any = await tx.execute(sql`
     SELECT counterKey, lastValue
     FROM documentCounters
-    WHERE counterKey IN ('unified_transaction_floor', 'unified_transaction', ${scopedUnifiedKey})
+    WHERE counterKey IN (
+      'unified_transaction_floor',
+      'unified_transaction',
+      ${scopedUnifiedKey},
+      'invoice',
+      'invoice:cloud',
+      'invoice:local'
+    )
   `);
   const rows: Array<{ counterKey?: string; lastValue?: number | string }> = Array.isArray(floorCheck)
     ? (Array.isArray(floorCheck[0]) ? floorCheck[0] : floorCheck)
@@ -285,12 +303,24 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const hasCounterRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === scopedUnifiedKey);
   const floorRow = rows.find((r) => r?.counterKey === "unified_transaction_floor") ?? rows[0];
   const unsuffixedRow = rows.find((r) => r?.counterKey === "unified_transaction");
+  const maxInvoiceCounter = rows.reduce((max, r) => {
+    if (
+      r?.counterKey === "invoice" ||
+      r?.counterKey === "invoice:cloud" ||
+      r?.counterKey === "invoice:local"
+    ) {
+      const v = Number(r.lastValue ?? 0);
+      return Number.isSafeInteger(v) && v > max ? v : max;
+    }
+    return max;
+  }, 0);
   const rawFloor = Number(floorRow?.lastValue ?? 100000);
   const rawUnsuffixed = Number(unsuffixedRow?.lastValue ?? 0);
   const seededFloor = Math.max(
     100000,
     Number.isSafeInteger(rawFloor) ? rawFloor : 100000,
     Number.isSafeInteger(rawUnsuffixed) ? rawUnsuffixed : 0,
+    maxInvoiceCounter,
   );
   if (!hasFloorRow || !hasCounterRow) {
     await tx.execute(sql`

@@ -5,6 +5,8 @@ import {
   nextCounterValue,
   nextTransactionTrackingNumber,
 } from "../numbering";
+import { resolveInvoiceNumberTx } from "../sale/invoiceNumbering";
+import { resolveDeliveryInvoiceNumber } from "../workOrder/helpers";
 import { nextConsignmentNumber } from "../delivery/numbering";
 import {
   ensureBranchStockRowsForAllBranches,
@@ -139,6 +141,104 @@ describe("Dual-Active Document Counter Parity & Inventory Pre-Seed (Unit)", () =
     const cn = await nextConsignmentNumber(deliv.tx, 1);
     expect(cn).toMatch(/^CN-1-\d{8}-00002$/);
     expect(String(deliv.executed[0].params[0])).toMatch(/:local$/);
+  });
+
+  it("self-heals unified_transaction:cloud above invoice:cloud and existing invoices (WO-771 116465 regression)", async () => {
+    process.env.ALROYA_NODE_ID = "cloud";
+    const executed: Array<{ sql: string; params: unknown[] }> = [];
+    const tx: any = {
+      execute: async (query: any) => {
+        const rendered = dialect.sqlToQuery(query);
+        executed.push(rendered);
+        if (rendered.sql.includes("SELECT counterKey, lastValue")) {
+          return [[
+            { counterKey: "unified_transaction_floor", lastValue: 100034 },
+            { counterKey: "unified_transaction:cloud", lastValue: 116463 },
+            { counterKey: "invoice:cloud", lastValue: 116465 },
+          ]];
+        }
+        if (rendered.sql.includes("AS maxExisting")) {
+          return [[{ maxExisting: 116465 }]];
+        }
+        if (rendered.sql.includes("SELECT LAST_INSERT_ID()")) {
+          return [[{ v: 116467 }]];
+        }
+        return [[]];
+      },
+      select: () => ({
+        from: () => ({
+          where: Object.assign(
+            async () => [{ maxSeq: 116465 }],
+            { limit: async () => [] },
+          ),
+        }),
+      }),
+    };
+
+    const nextNum = await nextTransactionTrackingNumber(tx);
+    expect(nextNum).toBe("116467");
+
+    const counterUpsert = executed.find(
+      (q) =>
+        q.sql.includes("INSERT INTO documentCounters") &&
+        q.params[0] === "unified_transaction:cloud",
+    )!;
+    // firstValid must jump past 116465 straight to odd 116467 (never 116465)
+    expect(counterUpsert.params[1]).toBe(116467);
+
+    // Legacy work order (< 100000) delivery uses unified_transaction instead of separate invoice counter
+    const legacyDeliveryInv = await resolveDeliveryInvoiceNumber(tx, "5679", 1);
+    expect(legacyDeliveryInv).toBe("116467");
+    expect(
+      executed.some(
+        (q) =>
+          q.sql.includes("INSERT INTO documentCounters") &&
+          String(q.params[0]).startsWith("invoice"),
+      ),
+    ).toBe(false);
+  });
+
+  it("resolveInvoiceNumberTx advances past an already-occupied candidate in invoices without ER_DUP_ENTRY", async () => {
+    delete process.env.ALROYA_NODE_ID;
+    let seq = 116464;
+    const occupied = new Set(["116465"]);
+    const tx: any = {
+      execute: async (query: any) => {
+        const rendered = dialect.sqlToQuery(query);
+        if (rendered.sql.includes("SELECT counterKey, lastValue")) {
+          return [[
+            { counterKey: "unified_transaction_floor", lastValue: 100000 },
+            { counterKey: "unified_transaction", lastValue: seq },
+          ]];
+        }
+        if (rendered.sql.includes("INSERT INTO documentCounters")) {
+          seq += 1;
+          return [[]];
+        }
+        if (rendered.sql.includes("SELECT LAST_INSERT_ID()")) {
+          return [[{ v: seq }]];
+        }
+        return [[]];
+      },
+      select: () => ({
+        from: () => ({
+          where: (cond: any) => {
+            const rendered = dialect.sqlToQuery(cond);
+            if (rendered.sql.includes("REGEXP")) {
+              return Promise.resolve([{ maxSeq: 116464 }]);
+            }
+            const candidate = String(rendered.params[0] ?? "");
+            return {
+              limit: async () =>
+                occupied.has(candidate) ? [{ invoiceNumber: candidate }] : [],
+            };
+          },
+        }),
+      }),
+    };
+
+    const resolved = await resolveInvoiceNumberTx(tx, {});
+    expect(resolved).toBe("116466");
   });
 
   it("ensureBranchStockRowsForAllBranches & ForBranch chunk cleanly and short-circuit on empty inputs", async () => {
