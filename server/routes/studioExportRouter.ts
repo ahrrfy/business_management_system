@@ -65,6 +65,13 @@ export function studioExportRouter(): Router {
     const user = ctx?.user;
     if (!user) return res.status(401).json({ error: "مصادقةٌ مطلوبة" });
 
+    if (user.roleLockedByInactiveCustomRole) {
+      return res.status(403).json({ error: "تم تعطيل الدور المخصص المرتبط بهذا الحساب؛ راجع مسؤول النظام." });
+    }
+    if (user.mustChangePassword) {
+      return res.status(403).json({ error: "يجب تغيير كلمة المرور المؤقتة قبل المتابعة." });
+    }
+
     // إلزامُ 2FA حين تكون السياسة سارية — مسارُ REST كان يفلت منها لأنّه خارج tRPC
     // (الجذر: مراجعة Codex P1 على PR #811). tRPC procedures تفحصه في كل نداء.
     if (twoFactorEnrollmentRequired(user)) {

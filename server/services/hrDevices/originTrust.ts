@@ -526,11 +526,17 @@ export async function tryAutoAdoptOrigin(input: {
 /** خنقٌ في الذاكرة: الجهاز المصدود يقرع كلّ ~٢٠٠م.ث، فلا نكتب صفاً لكل محاولة. */
 const blockedSeenAt = new Map<string, number>();
 const BLOCKED_RECORD_THROTTLE_MS = 60_000;
+const MAX_BLOCKED_SEEN_ENTRIES = 1_000;
+const MAX_BLOCKED_RECORDS_PER_WINDOW = 60;
+let blockedWindowStartedAt = 0;
+let blockedWindowWrites = 0;
 /** الوسم المحجوز للمصدر المجهول الرقم التسلسليّ (البوّابة الأولى ترفض قبل رسالة reg). */
 export const UNKNOWN_ORIGIN_SERIAL = "";
 
 export function resetBlockedOriginThrottleForTest(): void {
   blockedSeenAt.clear();
+  blockedWindowStartedAt = 0;
+  blockedWindowWrites = 0;
 }
 
 /**
@@ -547,12 +553,24 @@ export async function recordBlockedOrigin(ip: string | undefined): Promise<void>
   const now = Date.now();
   const last = blockedSeenAt.get(clean) ?? 0;
   if (now - last < BLOCKED_RECORD_THROTTLE_MS) return;
+  if (now - blockedWindowStartedAt >= BLOCKED_RECORD_THROTTLE_MS) {
+    blockedWindowStartedAt = now;
+    blockedWindowWrites = 0;
+  }
+  if (blockedWindowWrites >= MAX_BLOCKED_RECORDS_PER_WINDOW) return;
+  blockedSeenAt.delete(clean);
   blockedSeenAt.set(clean, now);
-  if (blockedSeenAt.size > 1000) {
+  if (blockedSeenAt.size > MAX_BLOCKED_SEEN_ENTRIES) {
     for (const [key, at] of Array.from(blockedSeenAt)) {
       if (now - at > BLOCKED_RECORD_THROTTLE_MS) blockedSeenAt.delete(key);
     }
+    while (blockedSeenAt.size > MAX_BLOCKED_SEEN_ENTRIES) {
+      const oldest = blockedSeenAt.keys().next().value;
+      if (oldest === undefined) break;
+      blockedSeenAt.delete(oldest);
+    }
   }
+  blockedWindowWrites += 1;
   await recordOriginAttempt({
     deviceId: null,
     serialNumber: UNKNOWN_ORIGIN_SERIAL,

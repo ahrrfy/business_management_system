@@ -282,8 +282,39 @@ function assertTwoFactorEnrolled(user: { role: string; totpEnabledAt?: Date | st
   }
 }
 
+const PASSWORD_CHANGE_EXEMPT_PATHS = new Set<string>([
+  "auth.me",
+  "auth.logout",
+  "auth.changePassword",
+  "users.changePassword",
+  "auth.mySessions",
+  "auth.revokeSession",
+  "auth.revokeMySessions",
+  "auth.twoFactorStatus",
+  "auth.twoFactorSetupStart",
+  "auth.twoFactorSetupConfirm",
+  "auth.twoFactorRegenerateCodes",
+]);
+
+function assertPasswordChanged(
+  user: { mustChangePassword?: boolean | null },
+  path: string,
+): void {
+  if (!user.mustChangePassword) return;
+  if (PASSWORD_CHANGE_EXEMPT_PATHS.has(path)) return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: appErrorMessage({
+      what: "يلزم تغيير كلمة المرور المؤقتة قبل المتابعة",
+      why: "حسابك مسجّل حالياً بكلمة مرور مؤقتة لا تتيح تشغيل شاشات النظام قبل استبدالها",
+      doThis: "انتقل إلى صفحة حسابي وعيّن كلمة مرور دائمة جديدة ثم تابع عملك",
+    }),
+  });
+}
+
 const requireUser = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  assertPasswordChanged(ctx.user, path);
   assertTwoFactorEnrolled(ctx.user, path);
   return next({ ctx: { ...ctx, user: ctx.user } });
 });

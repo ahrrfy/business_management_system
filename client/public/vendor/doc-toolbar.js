@@ -236,11 +236,15 @@
       };
 
       try {
+        var preparedPages = null;
+        if (isPayslip) {
+          preparedPages = await preparePayslips();
+          if (!preparedPages) { resetBtn(); return; }
+        }
         if (typeof window.html2pdf === 'function') {
           var pdfBlob;
           if (isPayslip) {
-            var pages = await preparePayslips();
-            if (!pages) { resetBtn(); return; }
+            var pages = preparedPages;
             var pdf = null;
             var payslipOpt = Object.assign({}, opt, {
               html2canvas: Object.assign({}, opt.html2canvas, { letterRendering: false }),
@@ -277,7 +281,8 @@
           resetBtn();
         } else {
           resetBtn();
-          await printDoc();
+          window.focus();
+          window.print();
         }
       } catch (err) {
         console.error('[PDF Export] failed:', err);

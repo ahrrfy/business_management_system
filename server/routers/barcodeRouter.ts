@@ -8,7 +8,8 @@
  */
 
 import { z } from "zod";
-import { publicProcedure, router } from "../trpc";
+import { canSeeCostForUser, publicProcedure, router } from "../trpc";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { verifyPayload } from "../services/barcodeService";
 
 const verifyInputSchema = z.object({
@@ -28,7 +29,7 @@ export const barcodeRouter = router({
     // §٧ Input bounds: payload QR عمليّاً <١٠٠ خانة (TYPE|number|date|amount|branchId|hmac).
     // الحدّ الأقصى ١٠٠٠ يحمي من DoS بحمولة عملاقة على إجراء عام بلا مصادقة.
     .input(verifyInputSchema)
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       try {
         const code =
           ("payload" in input && input.payload?.trim()) ||
@@ -41,7 +42,13 @@ export const barcodeRouter = router({
           return { valid: false };
         }
 
-        return await verifyPayload(code);
+        const user = ctx.user;
+        return await verifyPayload(code, {
+          allowUnsignedDbFallback: Boolean(user),
+          branchScopeId:
+            user && !canCrossBranches(user) ? (user.branchId ?? -1) : null,
+          allowPurchaseOrders: Boolean(user && canSeeCostForUser(user)),
+        });
       } catch {
         return { valid: false };
       }

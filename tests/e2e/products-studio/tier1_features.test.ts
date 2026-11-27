@@ -790,56 +790,6 @@ describe("Tier 1: Feature Coverage (F1 to F28 — 140 Positive Tests)", () => {
   });
 
   // =========================================================================
-  // F13: Atomic DB Purge for Studio Data Preserving Approved Images
-  // =========================================================================
-  describe("F13: Atomic DB Purge for Studio Data Preserving Approved Images", () => {
-    it("T1-F13-01: purges studio campaigns cleanly in atomic operation", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const { studioCampaignIds } = await harness.seedMixedCampaignData();
-      const res = await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      expect(res.success).toBe(true);
-      const remainingStudio = await harness.getStudioCampaigns(studioCampaignIds);
-      expect(remainingStudio).toHaveLength(0);
-    });
-
-    it("T1-F13-02: preserves 100% of approved catalog product images", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const { approvedImageIds } = await harness.seedMixedCampaignData();
-      const allApprovedBefore = await harness.getApprovedImages();
-      const res = await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      expect(res.preservedApprovedImages).toBe(allApprovedBefore.length);
-      const remainingApproved = await harness.getApprovedImages(approvedImageIds);
-      expect(remainingApproved).toHaveLength(approvedImageIds.length);
-    });
-
-    it("T1-F13-03: preserves 100% of CRM marketing campaigns", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const { crmCampaignIds } = await harness.seedMixedCampaignData();
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const remainingCrm = await harness.getCrmCampaigns(crmCampaignIds);
-      expect(remainingCrm).toHaveLength(crmCampaignIds.length);
-    });
-
-    it("T1-F13-04: preserves 100% of storefront push campaigns", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      const { pushCampaignIds } = await harness.seedMixedCampaignData();
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const remainingPush = await harness.getPushCampaigns(pushCampaignIds);
-      expect(remainingPush).toHaveLength(pushCampaignIds.length);
-    });
-
-    it("T1-F13-05: writes audit log recording execution time and preserved image count", async () => {
-      const adminCtx = createTestContext(ADMIN_ALI);
-      await harness.seedMixedCampaignData();
-      await harness.call("purgeProductStudioLegacyData", undefined, adminCtx);
-      const logs = await harness.getAuditLogs("productStudio.purge");
-      expect(logs).toHaveLength(1);
-      expect(logs[0].userId).toBe(ADMIN_ALI.userId);
-      expect(logs[0].details?.preservedApprovedImages).toBeGreaterThan(0);
-    });
-  });
-
-  // =========================================================================
   // F14: Studio-Quality AI Fidelity Guard (Text & Geometry Protection)
   // =========================================================================
   describe("F14: Studio-Quality AI Fidelity Guard", () => {

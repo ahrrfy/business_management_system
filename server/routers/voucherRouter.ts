@@ -1,5 +1,6 @@
 // راوتر سندات القبض/الصرف المستقلّة. managerProcedure (تأثير مالي مباشر على الذمم + الصندوق).
 import { TRPCError } from "@trpc/server";
+import { assertSafeAttachmentUrl } from "@shared/attachmentUrl";
 import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { logAudit, logAuditTx } from "../services/auditService";
@@ -129,6 +130,7 @@ export const voucherRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
       const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       // #3 (تدقيق التثبيت): كان input.branchId من العميل يمرّ كما هو لـcreateVoucher ⇒ محاسب/مدير
       // فرع A يُصدر سنداً على خزينة فرع B (تلويث تسوية/Z-report فرع لا ينتمي إليه، ويُخفى عنه في
@@ -258,6 +260,7 @@ export const voucherRouter = router({
       note: z.string().trim().max(500).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
       if (ctx.user.branchId == null && !canCrossBranches(ctx.user)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }

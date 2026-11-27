@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.umask(0o022);
+const isolatedPm2Home = fs.mkdtempSync(path.join(os.tmpdir(), "alroya-deploy-test-pm2-"));
+fs.chmodSync(isolatedPm2Home, 0o700);
+process.env.PM2_HOME = isolatedPm2Home;
+process.on("exit", () => {
+  fs.rmSync(isolatedPm2Home, { recursive: true, force: true });
+});
 
 {
   const source = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");

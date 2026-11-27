@@ -54,7 +54,6 @@ export const STUDIO_MANAGER_OPERATIONS = new Set([
   "productStudio.revert",
   "productStudio.cancel",
   "productStudio.cancelCampaignBacklog",
-  "productStudio.purge",
   "productStudio.bulkApproveStudioTasks",
   "productStudio.bulkRejectStudioTasks",
   "productStudio.listTemporaryStudioPhotographers",

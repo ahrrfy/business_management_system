@@ -42,6 +42,7 @@ import {
   workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logger } from "../logger";
 import { utcDayRange } from "./businessDay";
 import { MATERIALIZED_RECEIPT_STATUSES, materializedDrawerCashConditions } from "./cash/cashAvailability";
 import { cashEventAtSql } from "./cash/cashEventAt";
@@ -974,7 +975,10 @@ export async function getDayCloseReconciliation(opts: {
         WHERE d.draftStatus = 'OPEN' AND d.moneyLocked = 1 ${branchDraftCond}
       ) h
       WHERE h.heldNet > 0
-    `).catch(() => null),
+    `).catch((err) => {
+      logger.error({ err, subquery: "fundedOpenDrafts" }, "reports.day_close.subquery_failed");
+      return null;
+    }),
     db.execute(sql`
       SELECT i.createdBy AS userId, u.name AS userName,
         COUNT(*) AS invoiceCount,
@@ -988,7 +992,10 @@ export async function getDayCloseReconciliation(opts: {
       GROUP BY i.createdBy, u.name
       HAVING SUM(i.discountAmount) > 0
       ORDER BY SUM(i.discountAmount) DESC
-    `).catch(() => null),
+    `).catch((err) => {
+      logger.error({ err, subquery: "manualDiscountsByUser" }, "reports.day_close.subquery_failed");
+      return null;
+    }),
   ]);
   const fundedRow = rowsOf(fundedRes)[0];
   const discountByUser = rowsOf(discRes).map((r) => {

@@ -56,6 +56,13 @@ export async function resolveAuthorizedPrintUser(
 
   const user = rawUser;
   const hadCustomRoleId = Boolean(user.customRoleId);
+  if (user.mustChangePassword) {
+    res.status(403).json({
+      ok: false,
+      error: "يجب تغيير كلمة المرور المؤقتة قبل استخدام النظام.",
+    });
+    return null;
+  }
   if (twoFactorEnrollmentRequired(user)) {
     await logAudit(
       { user, req },

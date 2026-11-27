@@ -201,6 +201,7 @@ function safeFileNumber(value: string): string {
 async function readCairoFont(): Promise<Uint8Array> {
   const filename = "Cairo-Variable.ttf";
   const candidates = [
+    path.resolve(process.cwd(), "server", "assets", "fonts", filename),
     path.resolve(process.cwd(), "dist", "public", "fonts", filename),
     path.resolve(process.cwd(), "client", "public", "fonts", filename),
   ];

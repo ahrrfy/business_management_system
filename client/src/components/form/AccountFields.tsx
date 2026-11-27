@@ -4,7 +4,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { PermissionMatrix } from "@/components/form/PermissionMatrix";
 import { OperationPermissionMatrix } from "@/components/form/OperationPermissionMatrix";
 import {
   buildOperationPolicyFromLegacy,
@@ -14,7 +13,6 @@ import {
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import {
   ROLES,
-  PERMISSION_MODULES,
   ROLE_TEMPLATES,
   diffFromTemplate,
   applyPermissionOverrides,
@@ -26,7 +24,6 @@ import {
 import { trpc } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ROLE_OPTIONS } from "@/lib/roles";
-import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { AlertTriangle, Check, Zap } from "lucide-react";
 
 /**
@@ -104,34 +101,6 @@ export function accountPermsPayload(v: AccountFieldsValue): Record<string, Acces
   return diffFromTemplate(v.role, resolvePermissions(v.role, Object.keys(v.permsOverride).length ? v.permsOverride : null));
 }
 
-/** فروق الصلاحيات عن القالب — يُعرض في رأس المصفوفة. */
-function PermDiffSummary({
-  role,
-  override,
-}: {
-  role: RoleKey;
-  override: PermissionMap;
-}) {
-  const entries = Object.entries(override);
-  if (!entries.length) return null;
-  const base = ROLE_TEMPLATES[role];
-  return (
-    <div className="flex flex-wrap gap-1 mb-2">
-      {entries.map(([k, v]) => {
-        const mod = PERMISSION_MODULES.find((m) => m.key === k);
-        const prev = base[k] ?? "NONE";
-        const label = v === "FULL" ? "كامل" : v === "READ" ? "قراءة" : "لا وصول";
-        const prevLabel = prev === "FULL" ? "كامل" : prev === "READ" ? "قراءة" : "لا وصول";
-        return (
-          <span key={k} className="text-[10px] rounded bg-primary/10 text-primary px-1.5 py-0.5">
-            {mod?.label ?? k}: {prevLabel} ← {label}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
 export interface AccountFieldsProps {
   value: AccountFieldsValue;
   onChange: (patch: Partial<AccountFieldsValue>) => void;
@@ -157,8 +126,9 @@ export function AccountFields({
   nameForSuggest,
   autoSuggestSignal,
   excludeUserId,
-  operationEditor,
+  operationEditor: _operationEditor = true,
 }: AccountFieldsProps) {
+  void _operationEditor;
   const utils = trpc.useUtils();
   const [emailError, setEmailError] = useState("");
   const [emailChecked, setEmailChecked] = useState(false);
@@ -169,10 +139,6 @@ export function AccountFields({
   const rolesQ = trpc.roles.list.useQuery();
   const customRoles = rolesQ.data?.custom ?? [];
 
-  const resolvedPerms = useMemo(
-    () => resolvePermissions(value.role, Object.keys(value.permsOverride).length ? value.permsOverride : null),
-    [value.role, value.permsOverride],
-  );
   const roleInfo = ROLES.find((r) => r.key === value.role);
   const selectedCustomRole = value.customRoleId
     ? customRoles.find((row) => row.id === value.customRoleId)
@@ -282,11 +248,6 @@ export function AccountFields({
         operationPolicy: null,
       });
     }
-  }
-
-  function handlePermChange(moduleKey: string, level: AccessLevel) {
-    const newResolved = { ...resolvedPerms, [moduleKey]: level };
-    onChange({ permsOverride: diffFromTemplate(value.role, newResolved) ?? {} });
   }
 
   async function handleGeneratePassword() {
@@ -435,20 +396,6 @@ export function AccountFields({
             ) : roleInfo ? (
               <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>
             ) : null}
-            {!operationEditor && (
-              <>
-                {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — قبل إنشاء الحساب. */}
-                <div className="pt-1">
-              <EffectiveAccessForAssignment
-                role={value.role}
-                permsOverride={value.permsOverride}
-                customRoleId={value.customRoleId}
-                customRoles={customRoles}
-                title="سيرى هذا الحساب:"
-              />
-            </div>
-              </>
-            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="acc-branch">الفرع</Label>
@@ -482,26 +429,12 @@ export function AccountFields({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {operationEditor ? (
-            <OperationPermissionMatrix
-              mode="user"
-              value={value.operationPolicy ?? null}
-              inherited={inheritedOperationPolicy}
-              onChange={(operationPolicy) => onChange({ operationPolicy })}
-            />
-          ) : value.customRoleId ? (
-            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
-          ) : (
-            <>
-              <PermDiffSummary role={value.role} override={value.permsOverride} />
-              <PermissionMatrix
-                role={value.role}
-                permissions={resolvedPerms}
-                onChange={handlePermChange}
-                onReset={() => onChange({ permsOverride: {} })}
-              />
-            </>
-          )}
+          <OperationPermissionMatrix
+            mode="user"
+            value={value.operationPolicy ?? null}
+            inherited={inheritedOperationPolicy}
+            onChange={(operationPolicy) => onChange({ operationPolicy })}
+          />
         </CardContent>
       </Card>
     </div>

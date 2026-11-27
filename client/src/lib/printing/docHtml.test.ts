@@ -29,7 +29,7 @@ describe("wrapA4Doc", () => {
   it("يزود المعاينة بأزرار تفاعلية حقيقية متوافقة مع CSP: معرفات فريدة، ربط برمجي عبر نص برمجي خارجي، وغياب تام للسمات المضمنة", () => {
     const html = wrapA4Doc("كشف حساب رسمي", "<div>المحتوى</div>");
 
-    expect(html).toContain("html2pdf.bundle.min.js");
+    expect(html).not.toContain("html2pdf.bundle.min.js");
     expect(html).toContain('id="doc-btn-print"');
     expect(html).toContain('id="doc-btn-save-pdf"');
     expect(html).toContain('id="doc-btn-close"');

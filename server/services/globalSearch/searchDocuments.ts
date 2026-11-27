@@ -138,10 +138,13 @@ async function searchQuotations(
   query: string,
   limit: number,
   scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
 ): Promise<SearchResult[]> {
   const conds: any[] = [];
   if (scopedBranchId !== null)
     conds.push(eq(quotations.branchId, scopedBranchId));
+  if (scopedOwnerId !== null)
+    conds.push(eq(quotations.createdBy, scopedOwnerId));
 
   const stripped = stripDocPrefix(query.trim());
   const sfx = phoneSuffix10(query);
@@ -234,10 +237,13 @@ async function searchWorkOrders(
   query: string,
   limit: number,
   scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
 ): Promise<SearchResult[]> {
   const conds: any[] = [];
   if (scopedBranchId !== null)
     conds.push(eq(workOrders.branchId, scopedBranchId));
+  if (scopedOwnerId !== null)
+    conds.push(eq(workOrders.createdBy, scopedOwnerId));
 
   const stripped = stripDocPrefix(query.trim());
   const sfx = phoneSuffix10(query);

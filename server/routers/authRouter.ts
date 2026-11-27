@@ -40,6 +40,7 @@ import { recordAccountAuthenticationFailure } from "../services/accountAuthentic
 import { getDb } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
+import { evictUserRealtimeStreams } from "../realtime";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import {
   changePassword as changePasswordSvc,
@@ -344,9 +345,6 @@ export const authRouter = router({
           });
         }
 
-        // نجاح جزئي للتحقق من الكلمة ⇒ صفّر عدّاد IP لئلا يُعاقَب المستخدم الشرعي.
-        clearIpFailures(rateKey);
-
         // إذا انتهت صلاحية كلمة المرور المؤقتة → ارفض الدخول برسالة صريحة
         if (user.mustChangePassword && user.tempPasswordExpiresAt) {
           const expired =
@@ -391,6 +389,9 @@ export const authRouter = router({
           );
           return { requiresTwoFactor: true as const, ticket };
         }
+
+        // يُصفَّر عدّاد فشل IP فقط بعد اجتياز صلاحية الكلمة المؤقتة وبغياب تحدّي 2FA المعلّق.
+        clearIpFailures(rateKey);
 
         const expiry = input.remember
           ? SESSION_REMEMBER_MAX_MS
@@ -844,6 +845,7 @@ export const authRouter = router({
         entityType: "user",
         entityId: ctx.user.id,
       });
+      evictUserRealtimeStreams(ctx.user.id);
     }
     ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
@@ -969,6 +971,7 @@ export const authRouter = router({
       entityType: "user",
       entityId: ctx.user.id,
     });
+    evictUserRealtimeStreams(ctx.user.id);
     ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true };
   }),
@@ -1030,6 +1033,8 @@ export const authRouter = router({
       const r = await createUser(input, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
       });
       await logAudit(ctx, {
         action: "user.create",

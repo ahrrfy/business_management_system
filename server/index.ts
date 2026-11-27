@@ -92,7 +92,6 @@ import { jobApplicantCvRouter } from "./routes/jobApplicantCv";
 import { studioExportRouter } from "./routes/studioExportRouter";
 import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
-import { selfHealDivergedProductChannelLabels } from "./services/catalog/productChannelSyncSelfHeal";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
 import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
@@ -467,12 +466,47 @@ async function startServer() {
   // يحتاج Buffer خاماً كاملاً لتوقيع HMAC — json العام هنا كان يستهلك التدفّق أولاً فيُفسده).
   applyBodyParsers(app);
 
-  // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب.
-  app.get("/healthz", async (_req, res) => {
+  // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب مع تخزين مؤقت قصير (١٫٥ث)
+  // وإخفاء تفاصيل العنقود والذاكرة عن العامّة خارج الفاحص الحلقي أو حساب المالك/الأدمن.
+  let lastDbPingOkAt = 0;
+  let inFlightDbPing: Promise<void> | null = null;
+  app.get("/healthz", async (req, res) => {
     try {
       const db = getDb();
       if (!db) return res.status(503).json({ ok: false, db: "unconfigured" });
-      await db.execute(sql`SELECT 1`);
+      const nowMs = Date.now();
+      if (nowMs - lastDbPingOkAt > 1500) {
+        if (!inFlightDbPing) {
+          inFlightDbPing = db
+            .execute(sql`SELECT 1`)
+            .then(() => {
+              lastDbPingOkAt = Date.now();
+            })
+            .finally(() => {
+              inFlightDbPing = null;
+            });
+        }
+        await inFlightDbPing;
+      }
+      const isLoopbackWorkerProbe =
+        req.get("x-alroya-worker-probe") === "1" &&
+        ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+          req.socket.remoteAddress ?? "",
+        );
+      let isPrivilegedCaller =
+        isLoopbackWorkerProbe || process.env.NODE_ENV === "test";
+      if (!isPrivilegedCaller && req.headers.cookie) {
+        const ctx = await createContext({ req, res }).catch(() => null);
+        isPrivilegedCaller = Boolean(
+          ctx?.user && (ctx.user.isOwner || ctx.user.role === "admin"),
+        );
+      }
+      if (!isPrivilegedCaller) {
+        return res.json({
+          ok: true,
+          time: new Date().toISOString(),
+        });
+      }
       const mem = process.memoryUsage();
       const sseStats = sseManager.getStats();
       res.json({
@@ -902,9 +936,6 @@ async function startServer() {
     void runtimeWorkDrain.run(() => sweepStaleRestoreArtifacts())
       .then((removed) => removed > 0 && logger.warn({ removed }, "restore.stale_artifacts.removed"))
       .catch((err) => logger.warn({ err }, "restore.stale_artifacts.sweep_failed"));
-    void runtimeWorkDrain.run(() => selfHealDivergedProductChannelLabels()).catch((err) =>
-      logger.warn({ err }, "catalog.channel_labels.self_heal_failed"),
-    );
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
     const { startMorningPushCron } =
@@ -972,19 +1003,6 @@ async function startServer() {
       });
     }
 
-    // قرار المالك ١/٩/٢٦: إغلاق الوردية يرحّل النقد مباشرةً إلى الخزينة. نطوي مرةً واحدة
-    // عقود CH القديمة المعلّقة كي تختفي خطوة «عدّ واستلام» من الواقع لا من الواجهة فقط.
-    if (process.env.NODE_ENV !== "test") {
-      const { settlePendingShiftCloseHandovers } = await import("./services/cashHandoverService");
-      const { runBackgroundJob } = await import("./lib/backgroundJobRunner");
-      void runBackgroundJob(
-        "shift_close_auto_settlement",
-        settlePendingShiftCloseHandovers,
-      ).catch((err) => {
-        logger.error({ err }, "shift.close_auto_settlement.failed");
-      });
-    }
-
     // كنّاس الحجوزات المنتهية (١٢/٨) — كلّ ٥ دقائق UTC. الفحص الكسول في list/get لا يكفي:
     // لو لم يفتح أحدٌ شاشة الحجوزات لأيّام، تبقى المنتهية ACTIVE وتحبس مخزوناً بلا داعٍ.
     // شكوى المالك «الحجز يبقى نشطاً بعد الانقضاء» تُغلَق فقط بالكنس المستقلّ عن المستخدم.
@@ -1047,6 +1065,7 @@ async function startServer() {
     const deadline = Date.now() + 10_000;
     runtimeWorkDrain.stopAccepting();
     storefrontResourceAdmission().stopAccepting();
+    lagMonitor.stop();
     sseManager.closeAll();
     const listenerClosed = new Promise<void>((resolve) => server.close(() => resolve()));
     const force = setTimeout(() => {
@@ -1081,6 +1100,9 @@ async function startServer() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ err: reason }, "unhandled promise rejection captured");
+  });
 
   // Digital Asset Links لـTWA — يُسجَّل **قبل** catch-all الـSPA (setupVite/serveStatic) كي يعيد
   // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).

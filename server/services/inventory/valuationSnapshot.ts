@@ -68,9 +68,7 @@ export async function captureCompanyValuationSnapshot(
   }
   const valuation: InventoryValuation = await readInventoryValuation(tx);
   // stockValue = totalValue − inTransitValue (يحفظ الثابت المحاسبيّ صراحةً).
-  const totalNum = Number(valuation.total);
-  const inTransitNum = Number(valuation.inTransitTotal);
-  const stockNum = (totalNum - inTransitNum).toFixed(2);
+  const stockNum = toDbMoney(money(valuation.total).minus(money(valuation.inTransitTotal)));
   const res = await tx.insert(inventoryValuationSnapshots).values({
     periodLockId: args.periodLockId,
     cutoffDate: args.cutoffDate,
@@ -161,7 +159,7 @@ export async function readValuationAt(
     source: "LIVE",
     cutoffDate,
     totalValue: live.total,
-    stockValue: (Number(live.total) - Number(live.inTransitTotal)).toFixed(2),
+    stockValue: toDbMoney(money(live.total).minus(money(live.inTransitTotal))),
     inTransitValue: live.inTransitTotal,
     branches: live.branches,
   }, branchId);

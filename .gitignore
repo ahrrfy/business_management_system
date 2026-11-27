@@ -45,29 +45,20 @@ _legacy/
 # Design assets bundle — reference only, not part of the app build
 _design-bundle/
 
-# Local Claude settings (workflows + launch.json are shared/committed)
+# Local Claude settings & scratch artifacts
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scratch/
 boot-diag.log
 
 # Database backups (local dumps — keep off git)
 backups/
 
-# Expo & Mobile Apps
-expo/**/.expo/
-expo/**/android/
-expo/**/ios/
-expo/**/web-build/
-expo/**/*.jks
-expo/**/*.keystore
-expo/**/*.apk
-expo/**/*.aab
-expo/**/*.ipa
-expo/**/google-services.json
-expo/**/GoogleService-Info.plist
-
-# Local emulator/screenshots/test evidence generated during native QA.
+# Local emulator/screenshots/test evidence & agent audit scratch directories
 /artifacts/
+/.product-design-audit/
+/memory/
+/presentations/
 
 # Image studio — أصول @imgly ML (استضافة ذاتية، تُهيَّأ مرّة، ~40MB، لا تُلتزم)
 client/public/imgly-assets/

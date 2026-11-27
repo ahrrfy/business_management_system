@@ -22,9 +22,7 @@
     "node_modules",
     "build",
     "dist",
-    "_legacy",
-    "expo",
-    "android-native"
+    "_legacy"
   ],
   "compilerOptions": {
     "incremental": true,

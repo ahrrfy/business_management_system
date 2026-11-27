@@ -185,6 +185,9 @@ export async function notifyApprovalPendingByReceipt(
           amount: projection.amount,
           voucherNumber: projection.voucherNumber,
         },
+        {
+          userIds: recipients,
+        },
       );
     } catch {
       // fail-safe
@@ -248,6 +251,8 @@ export async function notifyApprovalDecisionByReceipt(
       lockScreenSafe: false,
     });
     try {
+      const owners = await listApprovers(null).catch(() => [] as number[]);
+      const targetUserIds = Array.from(new Set([...owners, projection.createdBy]));
       publishRealtimeEvent<ApprovalResolvedPayload>(
         REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
         {
@@ -263,6 +268,9 @@ export async function notifyApprovalDecisionByReceipt(
           managerId: actorUserId,
           managerName: actorName ?? undefined,
           reason: reason ?? null,
+        },
+        {
+          userIds: targetUserIds,
         },
       );
     } catch {

@@ -1,5 +1,4 @@
 import type { NextFunction, Request, Response } from "express";
-import { isCurrentNativeClient } from "../auth/deviceProof";
 import { isPublicStorefrontHostname } from "./publicStorefrontHost";
 import { sendTrpcError } from "./trpcError";
 
@@ -75,11 +74,7 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     // Fail closed when every browser-provided source signal is absent. The web
     // client adds a non-simple header; cross-site forms cannot forge it and a
     // malicious script would need a CORS preflight, which this server rejects.
-    // Native clients use non-simple, exact-version headers. A cross-site page
-    // cannot send them without a CORS preflight, and the server accepts only
-    // reviewed client identities/versions rather than any free-form label.
-    const explicitClientProof =
-      req.get("x-erp-csrf") === "1" || isCurrentNativeClient(req);
+    const explicitClientProof = req.get("x-erp-csrf") === "1";
     if (!explicitClientProof) {
       deny(req, res, "CSRF: تعذّر التحقق من مصدر الطلب");
       return;

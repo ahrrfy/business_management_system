@@ -129,9 +129,6 @@ const RAW_H1_BASELINE = {
   "client/src/pages/ReservationsHub.tsx": 1,
   "client/src/pages/StocktakeNew.tsx": 1,
   "client/src/pages/Storefront.tsx": 1,
-  // WorkOrderNew.tsx يحوي <h1>طلب خدمة — معاينة</h1> داخل template string لـ`window.open()`
-  // (نافذة طباعة منبثقة، ليس JSX). الحارس يمسكه بـregex بدائيّ. مقصود، ثابت.
-  "client/src/pages/WorkOrderNew.tsx": 1,
 };
 
 function* walkTsx(dir) {

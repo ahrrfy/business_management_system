@@ -1,4 +1,5 @@
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { sanitizeAttachmentHref } from "@shared/attachmentUrl";
 import { BalanceSnapshotStrip, MovementTypeBadge, PaymentMethodChip } from "@/components/common/MovementBadges";
 import { CopyButton } from "@/components/CopyButton";
 import type { ImageItem } from "@/components/form/ImageUploader";
@@ -298,14 +299,17 @@ export function VoucherDetailDrawer({ voucherId, open, onOpenChange, onActionSuc
                 </CardContent></Card>
               ) : null}
 
-              {v.attachmentUrl ? (
-                <Card><CardContent className="p-3.5 space-y-2 text-xs">
-                  <a href={v.attachmentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary underline font-medium">
-                    <Paperclip aria-hidden className="size-3.5" />فتح المرفق في تبويب مستقل
-                  </a>
-                  {/^data:image\//.test(v.attachmentUrl) ? <img src={v.attachmentUrl} alt="مرفق السند" className="max-h-48 rounded border object-contain" /> : null}
-                </CardContent></Card>
-              ) : null}
+              {(() => {
+                const safeHref = sanitizeAttachmentHref(v.attachmentUrl);
+                return safeHref ? (
+                  <Card><CardContent className="p-3.5 space-y-2 text-xs">
+                    <a href={safeHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary underline font-medium">
+                      <Paperclip aria-hidden className="size-3.5" />فتح المرفق في تبويب مستقل
+                    </a>
+                    {/^data:image\//i.test(safeHref) ? <img src={safeHref} alt="مرفق السند" className="max-h-48 rounded border object-contain" /> : null}
+                  </CardContent></Card>
+                ) : null;
+              })()}
 
               <SupplierVoucherSettlementSummary settlement={v.supplierSettlement} bookSettlement={v.bookSettlement} advanceRefund={v.advanceRefund} />
 

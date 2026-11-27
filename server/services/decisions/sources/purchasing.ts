@@ -12,7 +12,7 @@
  */
 import { reportScan, scanPosition } from "../scan";
 import { eq, inArray } from "drizzle-orm";
-import { money, round2 } from "../../money";
+import { money, round2, toDbMoney } from "../../money";
 import { assessUnitCostAnomaly, assessUsdRateSanity } from "@shared/balanceTrail";
 import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { purchaseTenderLabel, type PurchaseTenderInput } from "@shared/purchaseTender";
@@ -527,7 +527,13 @@ export const purchaseRequisitionControlSource: DecisionSource = {
             lineTotal,
           };
         });
-        const estimated = mine.reduce((sum, i) => (i.estimatedUnitPrice ? sum + Number(i.estimatedUnitPrice) * Number(i.requestedBaseQuantity) : sum), 0);
+        const estimated = mine.reduce(
+          (sum, i) =>
+            i.estimatedUnitPrice != null
+              ? sum.plus(money(i.estimatedUnitPrice).times(money(i.requestedBaseQuantity)))
+              : sum,
+          money(0),
+        );
         const preferred = mine.map((i) => look.supplier(i.preferredSupplierId)).find((s) => !!s) ?? null;
         return buildRow(
           {
@@ -537,7 +543,7 @@ export const purchaseRequisitionControlSource: DecisionSource = {
             title: `${decisionSubkindLabel(r.kind)} · طلب شراء ${r.requisitionNumber}`,
             subkind: decisionSubkindLabel(r.kind),
             party: preferred,
-            amount: estimated > 0 ? estimated.toFixed(2) : null,
+            amount: estimated.gt(0) ? toDbMoney(round2(estimated)) : null,
             branchId: Number(r.branchId),
             branchName: look.branch(r.branchId),
             requestedBy: Number(r.requestedBy),
@@ -796,8 +802,8 @@ export const purchaseReturnReversalSource: DecisionSource = {
         const mine = reqItems.filter((i) => Number(i.requestId) === Number(r.id));
         const amount = mine.reduce((sum, i) => {
           const src = returnItemById.get(Number(i.purchaseReturnItemId));
-          return src ? sum + Number(src.unitPrice) * Number(i.baseQuantity) : sum;
-        }, 0);
+          return src ? sum.plus(money(src.unitPrice).times(money(i.baseQuantity))) : sum;
+        }, money(0));
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -805,7 +811,7 @@ export const purchaseReturnReversalSource: DecisionSource = {
             id: Number(r.id),
             title: `عكس مرتجع شراء ${ret?.returnNumber ?? `#${r.purchaseReturnId}`}`,
             party: look.supplier(ret?.supplierId),
-            amount: amount > 0 ? amount.toFixed(2) : (ret?.totalAmount ?? null),
+            amount: amount.gt(0) ? toDbMoney(round2(amount)) : (ret?.totalAmount ?? null),
             branchId: Number(r.branchId),
             branchName: look.branch(r.branchId),
             requestedBy: Number(r.requestedBy),
@@ -1046,8 +1052,8 @@ export const goodsReceiptReversalSource: DecisionSource = {
         const mine = reqItems.filter((i) => Number(i.requestId) === Number(r.id));
         const amount = mine.reduce((sum, i) => {
           const src = receiptItemById.get(Number(i.goodsReceiptItemId));
-          return src ? sum + Number(src.unitCostIqd) * Number(i.baseQuantity) : sum;
-        }, 0);
+          return src ? sum.plus(money(src.unitCostIqd).times(money(i.baseQuantity))) : sum;
+        }, money(0));
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -1055,7 +1061,7 @@ export const goodsReceiptReversalSource: DecisionSource = {
             id: Number(r.id),
             title: `عكس استلام بضاعة ${receipt?.receiptNumber ?? `#${r.goodsReceiptId}`}`,
             party: look.supplier(receipt?.supplierId),
-            amount: amount > 0 ? amount.toFixed(2) : (receipt?.totalAmount ?? null),
+            amount: amount.gt(0) ? toDbMoney(round2(amount)) : (receipt?.totalAmount ?? null),
             branchId: Number(r.branchId),
             branchName: look.branch(r.branchId),
             requestedBy: Number(r.requestedBy),

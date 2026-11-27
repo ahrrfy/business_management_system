@@ -55,43 +55,10 @@ describe("catalog media UI gate", () => {
     expect(text).not.toMatch(/setM\.mutate\([\s\S]{0,120}url\s*\)/);
   });
 
-  it("campaign batches keep a distinct task, processing mode, and receipt for every image", () => {
-    const text = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
-    expect(text).toMatch(/slots\.map\(\(slot,[\s\S]*studioTaskId=\{slot\.taskId\}/);
-    expect(text).toContain("onStudioModeChange={(mode) => patch(slot.taskId, { mode })}");
-    expect(text).toContain("onProcessingReceiptChange={(receipt) => patch(slot.taskId, { receipt })}");
-    expect(text).toContain('mode: slot.mode === "AI" ? "FLATTEN" : slot.mode, processingReceipt: slot.receipt');
-  });
-
   it("a workflow task can process one image only; batches use separate task IDs", () => {
     const section = source("client/src/components/product/ProductMediaContentSection.tsx");
     expect(section).toContain("maxItems={studioTaskId != null ? 1 : maxImages}");
     const uploader = source("client/src/components/product/ImageStudioUploader.tsx");
     expect(uploader.match(/workflowTaskId == null && value\.length > 1/g)).toHaveLength(2);
-  });
-
-  it("does not turn an unknown server refresh into a destructive draft conflict", () => {
-    const page = source("client/src/components/product-studio/StudioPhotographerWorkspace.tsx");
-    // Reconciliation must fetch the exact task, not infer absence from a list page.
-    const selection = source("client/src/components/product-studio/useStudioSelectedTask.ts");
-    expect(page).toContain("useStudioSelectedTask(\"MINE\", selectedId, offline, [], null)");
-    expect(selection).toMatch(/const selectedTaskQuery = trpc\.productStudio\.tasks\.useQuery\([\s\S]{0,100}taskId: selectedId/);
-    const refresh = page.slice(page.indexOf("const refreshed = await selectedTaskQuery.refetch();"), page.indexOf("const result = await reconcileStudioDraftAfterReconnect("));
-    expect(refresh).toMatch(/if \(refreshed\.isError\)\s*\{[\s\S]{0,250}setResumeRetry[\s\S]{0,100}return;/);
-    expect(refresh).toContain("refreshed.data?.items.find((item) => Number(item.id) === taskId)");
-    expect(refresh).not.toContain(".pages");
-  });
-
-  it("additional image slots claim local drafts and cannot replace an unknown server original", () => {
-    const batch = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
-    expect(batch).toContain("reconcileStudioDraftAfterReconnect");
-    expect(batch).toMatch(/disabled=\{[^}]*slot\.hasOriginal && !slot\.image[^}]*slot\.hasCandidate/);
-  });
-
-  it("revalidates each additional draft ownership immediately before its own submit", () => {
-    const batch = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
-    expect(batch).toMatch(/for \(const slot of pending\)[\s\S]{0,700}await persistSlotDraft\(props\.owner, slot\)[\s\S]{0,900}await submit\.mutateAsync/);
-    expect(batch).toContain("patch(slot.taskId, { ownershipLost: true })");
-    expect(batch).toMatch(/pending\.some\(\(slot\) => slot\.conflict \|\| slot\.ownershipLost/);
   });
 });

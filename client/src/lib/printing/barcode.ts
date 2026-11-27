@@ -7,95 +7,18 @@
  * عدا رمز الإيقاف (13 وحدة: 7 أعمدة). القيم أدناه هي عروض العناصر بالوحدات.
  */
 
-// عروض العناصر لكل رمز (نمط القضبان: أسود، أبيض، أسود، ... بدءاً بالأسود).
-const PATTERNS: string[] = [
-  "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312", "132212", "221213",
-  "221312", "231212", "112232", "122132", "122231", "113222", "123122", "123221", "223211", "221132",
-  "221231", "213212", "223112", "312131", "311222", "321122", "321221", "312212", "322112", "322211",
-  "212123", "212321", "232121", "111323", "131123", "131321", "112313", "132113", "132311", "211313",
-  "231113", "231311", "112133", "112331", "132131", "113123", "113321", "133121", "313121", "211331",
-  "231131", "213113", "213311", "213131", "311123", "311321", "331121", "312113", "312311", "332111",
-  "314111", "221411", "431111", "111224", "111422", "121124", "121421", "141122", "141221", "112214",
-  "112412", "122114", "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111",
-  "111242", "121142", "121241", "114212", "124112", "124211", "411212", "421112", "421211", "212141",
-  "214121", "412121", "111143", "111341", "131141", "114113", "114311", "411113", "411311", "113141",
-  "114131", "311141", "411131", "211412", "211214", "211232", "2331112",
-];
+import {
+  CODE128_PATTERNS,
+  code128Checksum as computeCode128Checksum,
+  eanCheckDigit,
+  eanModules,
+  encodeCode128Values,
+  isValidEan,
+} from "@shared/barcodeEncoding";
 
-const START_B = 104;
-const START_C = 105;
+export { eanCheckDigit, eanModules, isValidEan };
+
 const STOP = 106;
-const CODE_B = 100;
-const CODE_C = 99;
-
-function isDigit(ch: string): boolean {
-  return ch >= "0" && ch <= "9";
-}
-
-/** عدد الأرقام المتتالية بدءاً من i. */
-function digitRunLength(s: string, i: number): number {
-  let n = 0;
-  while (i + n < s.length && isDigit(s[i + n])) n++;
-  return n;
-}
-
-/**
- * يبني قائمة قيم الرموز (بلا checksum/stop) باختيار B/C تلقائياً.
- * قاعدة مبسّطة قياسية: استخدم C عند توفّر زوج أرقام أو أكثر (خصوصاً في البداية/النهاية).
- */
-function encodeValues(data: string): number[] {
-  const out: number[] = [];
-  let mode: "B" | "C" | null = null;
-  let i = 0;
-  const n = data.length;
-
-  // تحديد البداية.
-  const startRun = digitRunLength(data, 0);
-  if (startRun >= 2 && (startRun === n || startRun >= 4 || (n === startRun))) {
-    out.push(START_C);
-    mode = "C";
-  } else {
-    out.push(START_B);
-    mode = "B";
-  }
-
-  while (i < n) {
-    if (mode === "C") {
-      const run = digitRunLength(data, i);
-      if (run >= 2) {
-        out.push(parseInt(data.substr(i, 2), 10));
-        i += 2;
-        continue;
-      }
-      // رقم فردي متبقٍّ أو حرف — انتقل إلى B.
-      out.push(CODE_B);
-      mode = "B";
-      continue;
-    } else {
-      // mode B: إن جاء صفّ أرقام طويل (>=4 أو حتى النهاية) فحوّل إلى C.
-      const run = digitRunLength(data, i);
-      const toEnd = i + run === n;
-      if (run >= 4 || (run >= 2 && toEnd && run % 2 === 0)) {
-        out.push(CODE_C);
-        mode = "C";
-        continue;
-      }
-      const code = data.charCodeAt(i);
-      // Code128B يغطّي ASCII 32..126 ⇒ القيمة = code - 32.
-      if (code < 32 || code > 126) throw new Error(`حرف غير مدعوم في الباركود: ${data[i]}`);
-      out.push(code - 32);
-      i++;
-    }
-  }
-  return out;
-}
-
-/** يحسب checksum مرجَّحاً (القيمة الابتدائية = رمز البداية، الأوزان 1,2,3,…). */
-function checksum(values: number[]): number {
-  let sum = values[0];
-  for (let k = 1; k < values.length; k++) sum += values[k] * k;
-  return sum % 103;
-}
 
 export interface Code128Options {
   /** عرض الوحدة (module) بالبكسل. */
@@ -129,16 +52,14 @@ export function code128Svg(data: string, opts: Code128Options = {}): Code128Resu
   const showText = opts.showText ?? true;
   const textH = showText ? 16 : 0;
 
-  const values = encodeValues(data);
-  const cs = checksum(values);
+  const values = encodeCode128Values(data);
+  const cs = computeCode128Checksum(values);
   const full = [...values, cs, STOP];
 
-  // ابنِ سلسلة العناصر (عرض كل عنصر بالوحدات)؛ كل نمط يبدأ بقضيب أسود ويتناوب.
-  // منطقة الهدوء تتضاعف مع moduleWidth (كانت ثابتةً بالبكسل ⇒ نصف المواصفة عند mw=2 — سبب مسحٍ متقطّع).
   let x = quiet * moduleWidth;
   const bars: { x: number; w: number }[] = [];
   for (const v of full) {
-    const pat = PATTERNS[v];
+    const pat = CODE128_PATTERNS[v];
     let black = true;
     for (const chWidth of pat) {
       const w = parseInt(chWidth, 10);
@@ -176,54 +97,7 @@ function finishSvg(
 
 /** قيمة الـchecksum لنصّ — تُكشف للاختبار. */
 export function code128Checksum(data: string): number {
-  return checksum(encodeValues(data));
-}
-
-// ───────────────────────── EAN-13 / EAN-8 ─────────────────────────
-// ترميز EAN أصليّ لباركودات المصنّعين الرقمية: 95 وحدة لـEAN-13 (مقابل ~123 بـCode128) و67 لـEAN-8
-// ⇒ على نفس عرض الملصق تخرج **قضبان أثخن بمرّة ونصف** — الفرق بين ملصقٍ صغيرٍ يُمسح وآخر لا يُمسح.
-
-/** أنماط L (الفئة الفردية) لأرقام الجهة اليسرى؛ R = المتمّم، G = معكوس R. */
-const EAN_L: string[] = [
-  "0001101", "0011001", "0010011", "0111101", "0100011",
-  "0110001", "0101111", "0111011", "0110111", "0001011",
-];
-/** نمط التكافؤ (L/G) للأرقام الستة اليسرى في EAN-13 بدلالة الرقم الأول. */
-const EAN_PARITY: string[] = [
-  "LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG",
-  "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL",
-];
-const eanR = (d: number): string => EAN_L[d].replace(/[01]/g, (c) => (c === "0" ? "1" : "0"));
-const eanG = (d: number): string => eanR(d).split("").reverse().join("");
-
-/** رقم التحقّق EAN لسلسلة البيانات (بلا رقم التحقّق): الوزن ٣ للرقم الأيمن ثم بالتناوب. */
-export function eanCheckDigit(dataDigits: string): number {
-  let sum = 0;
-  for (let i = 0; i < dataDigits.length; i++) {
-    const d = dataDigits.charCodeAt(dataDigits.length - 1 - i) - 48;
-    sum += d * (i % 2 === 0 ? 3 : 1);
-  }
-  return (10 - (sum % 10)) % 10;
-}
-
-/** هل السلسلة EAN-13/EAN-8 صالحة (طول + أرقام فقط + رقم تحقّق سليم)؟ */
-export function isValidEan(data: string): boolean {
-  if (!/^\d{8}$|^\d{13}$/.test(data)) return false;
-  return eanCheckDigit(data.slice(0, -1)) === data.charCodeAt(data.length - 1) - 48;
-}
-
-/** سلسلة وحدات EAN كاملة («0/1») — تُكشف للاختبار البنيويّ. يفترض مدخلاً صالحاً. */
-export function eanModules(data: string): string {
-  const d = data.split("").map((c) => c.charCodeAt(0) - 48);
-  if (data.length === 13) {
-    const parity = EAN_PARITY[d[0]];
-    const left = d.slice(1, 7).map((v, i) => (parity[i] === "L" ? EAN_L[v] : eanG(v))).join("");
-    const right = d.slice(7, 13).map((v) => eanR(v)).join("");
-    return `101${left}01010${right}101`;
-  }
-  const left = d.slice(0, 4).map((v) => EAN_L[v]).join("");
-  const right = d.slice(4, 8).map((v) => eanR(v)).join("");
-  return `101${left}01010${right}101`;
+  return computeCode128Checksum(encodeCode128Values(data));
 }
 
 /** يولّد SVG لباركود EAN-13/EAN-8 من سلسلة أرقام صالحة (تحقّق مسبقاً بـisValidEan). */

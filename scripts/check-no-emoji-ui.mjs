@@ -30,7 +30,6 @@ const SCAN_ROOT = path.join(REPO_ROOT, "client", "src");
 const ALLOW = [
   // CHANNELS في WorkOrders — قَنوات الاستِلام، مَتروكة بِقَرار صَريح
   { file: "client/src/pages/WorkOrders.tsx", reason: "CHANNELS قَنوات الاستِلام (٧/٢٢/٢٦)" },
-  { file: "client/src/pages/WorkOrderNew.tsx", reason: "CHANNELS قَنوات الاستِلام" },
   { file: "client/src/pages/WorkOrderStation.tsx", reason: "CHANNELS قَنوات الاستِلام" },
   { file: "client/src/pages/WorkOrderDetail.tsx", reason: "CHANNELS قَنوات الاستِلام" },
 ];

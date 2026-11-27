@@ -48,13 +48,26 @@ function getSecret(): string {
   return s;
 }
 
-/** يوقّع قائمة حقول بـ HMAC-SHA256 ويُعيد أول 12 حرفاً hex */
-function sign(fields: string[]): string {
+/** يوقّع قائمة حقول بـ HMAC-SHA256 ويُعيد أول 12 حرفاً hex (للتوافق مع QR المطبوعة سابقاً) أو 32 حرفاً */
+function signHex(fields: string[], hexLength: 12 | 32): string {
   const message = fields.join("|");
   return createHmac("sha256", getSecret())
     .update(message)
     .digest("hex")
-    .slice(0, 12);
+    .slice(0, hexLength);
+}
+
+function sign(fields: string[]): string {
+  return signHex(fields, 12);
+}
+
+function verifySignedPayloadFields(fields: string[], receivedSig: string): boolean {
+  const clean = receivedSig.trim().toLowerCase();
+  if (!/^(?:[a-f0-9]{12}|[a-f0-9]{32})$/.test(clean)) return false;
+  const expected = signHex(fields, clean.length === 32 ? 32 : 12);
+  const a = Buffer.from(clean, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
@@ -356,84 +369,129 @@ async function lookupConsignmentByCode(db: AppDatabase, cleanCode: string): Prom
  * 1. المسار السريع: التحقق بالـ HMAC التشفيري (بدون استعلام DB — فوري وصالح دون اتصال).
  * 2. المسار الرديف: البحث في قاعدة البيانات لمطابقة أرقام المستندات (ORD-*, INV-*, WO-*, PO-*، ومعرّفات النظام).
  */
-export async function verifyPayload(qrPayload: string): Promise<VerifyResult> {
+export interface VerifyPayloadOptions {
+  /** السماح بالبحث في القاعدة عند غياب توقيع HMAC (للموظف المصادَق فقط؛ يُحظر على الزائر العام لمنع التعداد). */
+  allowUnsignedDbFallback?: boolean;
+  /** قيد الفرع للموظف غير المخوّل بعبور الفروع؛ null يعني كافة الفروع. */
+  branchScopeId?: number | null;
+  /** السماح بكشف أوامر الشراء وتكاليف الموردين. */
+  allowPurchaseOrders?: boolean;
+}
+
+function enforceVerifyScope(
+  res: VerifyResult | null,
+  options?: VerifyPayloadOptions,
+): VerifyResult | null {
+  if (!res || !res.valid) return null;
+  if (res.docType === "PO" && options?.allowPurchaseOrders === false) {
+    return null;
+  }
+  if (
+    options?.branchScopeId != null &&
+    res.branchId != null &&
+    res.branchId !== options.branchScopeId
+  ) {
+    return null;
+  }
+  return res;
+}
+
+export async function verifyPayload(
+  qrPayload: string,
+  options?: VerifyPayloadOptions,
+): Promise<VerifyResult> {
   try {
     if (!qrPayload || qrPayload.length > 1000) return { valid: false };
 
     const cleanCode = extractVerificationCode(qrPayload);
     if (!cleanCode || cleanCode.length > 1000) return { valid: false };
 
-    // 1. المسار التشفيري: فحص صيغة الـ HMAC الموقَّعة (6 أجزاء مفصولة بـ |)
+    // 1. المسار التشفيري: فحص صيغة الـ HMAC الموقَّعة (6 أجزاء مفصولة بـ |) بمقارنة ثابتة الزمن
     const parts = cleanCode.split("|");
     if (parts.length >= 6) {
       const [docType, number, date, amount, branchIdStr, receivedSig] = parts;
       const dataFields = [docType, number, date, amount, branchIdStr];
-      const expectedSig = sign(dataFields);
 
-      if (receivedSig === expectedSig) {
-        return {
+      if (verifySignedPayloadFields(dataFields, receivedSig)) {
+        const parsedBranch = parseInt(branchIdStr, 10);
+        const signedRes: VerifyResult = {
           valid: true,
           docType: docType as DocType,
           number,
           date,
           amount,
-          branchId: parseInt(branchIdStr, 10),
+          branchId: Number.isNaN(parsedBranch) ? undefined : parsedBranch,
         };
+        if (docType === "PO" && options?.allowPurchaseOrders === false) {
+          return { valid: false };
+        }
+        return signedRes;
       }
+      // حمولة موقّعة فاسدة/مزوّرة لا تسقط أبداً إلى قاعدة البيانات
+      return { valid: false };
     }
 
-    // 2. المسار الرديف: استعلام قاعدة البيانات عند غياب التوقيع التشفيري أو عدم اكتمال الحقول
+    // 2. المسار الرديف: محصور بالجلسات المصادَقة أو الاستدعاءات الداخلية الصريحة لمنع التعداد العلني
+    if (options?.allowUnsignedDbFallback === false) {
+      return { valid: false };
+    }
+
     const db = getDb();
     if (!db) {
       // توافق كامل مع اختبارات الوحدة بدون اتصال DB
       return { valid: false };
     }
 
+    const allowPo = options?.allowPurchaseOrders !== false;
+
     try {
       // أ) طلبات المتجر الإلكتروني (مثل ORD-100009)
       if (/^ORD-/i.test(cleanCode)) {
-        const res = await lookupOnlineOrderByCode(db, cleanCode);
+        const res = enforceVerifyScope(await lookupOnlineOrderByCode(db, cleanCode), options);
         if (res) return res;
       }
 
       // ب) فواتير المبيعات (مثل INV-10023 أو INV-1-20260806-00068)
       if (/^INV-/i.test(cleanCode)) {
-        const res = await lookupInvoiceByCode(db, cleanCode);
+        const res = enforceVerifyScope(await lookupInvoiceByCode(db, cleanCode), options);
         if (res) return res;
       }
 
       // ج) أوامر الشغل وطلبات الخدمة (مثل WO-10001 أو WO-10023)
       if (/^WO-/i.test(cleanCode)) {
-        const res = await lookupWorkOrderByCode(db, cleanCode);
+        const res = enforceVerifyScope(await lookupWorkOrderByCode(db, cleanCode), options);
         if (res) return res;
       }
 
       // د) أوامر الشراء (مثل PO-2026-001 أو PO-10001)
       if (/^PO-/i.test(cleanCode)) {
-        const res = await lookupPurchaseOrderByCode(db, cleanCode);
+        if (!allowPo) return { valid: false };
+        const res = enforceVerifyScope(await lookupPurchaseOrderByCode(db, cleanCode), options);
         if (res) return res;
       }
 
       // د-2) إرساليات التوصيل (مثل CN-1-20260806-00012)
       if (/^CN-/i.test(cleanCode)) {
-        const res = await lookupConsignmentByCode(db, cleanCode);
+        const res = enforceVerifyScope(await lookupConsignmentByCode(db, cleanCode), options);
         if (res) return res;
       }
 
       // هـ) معرّفات عددية أو نصوص بلا بادئة معروفة: فحص حسب الأولوية
-      const invRes = await lookupInvoiceByCode(db, cleanCode);
+      const invRes = enforceVerifyScope(await lookupInvoiceByCode(db, cleanCode), options);
       if (invRes) return invRes;
 
-      const woRes = await lookupWorkOrderByCode(db, cleanCode);
+      const woRes = enforceVerifyScope(await lookupWorkOrderByCode(db, cleanCode), options);
       if (woRes) return woRes;
 
-      const onlineRes = await lookupOnlineOrderByCode(db, cleanCode);
+      const onlineRes = enforceVerifyScope(await lookupOnlineOrderByCode(db, cleanCode), options);
       if (onlineRes) return onlineRes;
 
-      const poRes = await lookupPurchaseOrderByCode(db, cleanCode);
-      if (poRes) return poRes;
+      if (allowPo) {
+        const poRes = enforceVerifyScope(await lookupPurchaseOrderByCode(db, cleanCode), options);
+        if (poRes) return poRes;
+      }
 
-      const cnRes = await lookupConsignmentByCode(db, cleanCode);
+      const cnRes = enforceVerifyScope(await lookupConsignmentByCode(db, cleanCode), options);
       if (cnRes) return cnRes;
     } catch {
       // أي خطأ استعلام في DB يُعيد valid: false بأمان

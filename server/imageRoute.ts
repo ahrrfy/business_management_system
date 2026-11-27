@@ -33,6 +33,7 @@ import {
 } from "../drizzle/schema";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
+import { authenticateExpressRequest } from "./auth/expressAuth";
 import { getSessionContext } from "./auth/session";
 import {
   normalizeOwnerAuthority,
@@ -579,12 +580,8 @@ async function sendStoredProductImage(
  * الكوكي تُرسَل تلقائياً مع طلب `<img>` لأنه **نفس الأصل** ⇒ لا يلزم تعديل الواجهة.
  */
 async function kioskViewerAllowed(req: Request): Promise<boolean> {
-  try {
-    const { user } = await getSessionContext(req);
-    if (user) return true;
-  } catch {
-    // جلسة تالفة/منتهية ⇒ جرّب مسار الجهاز
-  }
+  const auth = await authenticateExpressRequest(req);
+  if (auth.ok) return true;
   if ((await resolveKioskDevice(req)) != null) return true;
 
   return false;
@@ -733,8 +730,8 @@ export function imageRouter(): Router {
     if (!db) return res.status(503).end();
 
     try {
-      const { user } = await getSessionContext(req);
-      if (!user) return res.status(401).end();
+      const auth = await authenticateExpressRequest(req);
+      if (!auth.ok) return res.status(auth.status).end();
       const row = (
         await db
           .select({
@@ -1007,8 +1004,8 @@ export function imageRouter(): Router {
     const db = getDb();
     if (!db) return res.status(503).end();
     try {
-      const { user } = await getSessionContext(req);
-      if (!user) return res.status(401).end();
+      const auth = await authenticateExpressRequest(req);
+      if (!auth.ok) return res.status(auth.status).end();
       const row = (
         await db
           .select({ logoUrl: digitalProviders.logoUrl })
@@ -1032,8 +1029,8 @@ export function imageRouter(): Router {
     const db = getDb();
     if (!db) return res.status(503).end();
     try {
-      const { user } = await getSessionContext(req);
-      if (!user) return res.status(401).end();
+      const auth = await authenticateExpressRequest(req);
+      if (!auth.ok) return res.status(auth.status).end();
       const row = (
         await db
           .select({

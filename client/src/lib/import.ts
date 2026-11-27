@@ -5,9 +5,7 @@
 // استُبدل xlsx@0.18.5 المهجور (CVE-2023-30533: Prototype Pollution + ReDoS) بـexceljs المُصان +
 // papaparse للـCSV (مسار CSV يحفظ النصّ كما هو بلا تحويلات تاريخية أمريكية تكسر الـISO).
 import Decimal from "decimal.js";
-// exceljs (~936KB) تُحمَّل ديناميكياً داخل parseXlsxBuffer (عند استيراد ملف xlsx فقط) — لا eager
-// على صفحات الاستيراد (المنتجات/العملاء/الموردون) التي تستورد هذا الملف عبر importFields.
-import Papa from "papaparse";
+// exceljs (~936KB) و papaparse تُحمَّلان ديناميكياً عند استيراد ملف فقط — لا eager على صفحات الاستيراد.
 
 export type ImportFieldType =
   | "string"
@@ -408,9 +406,10 @@ async function parseXlsxBuffer(buf: ArrayBuffer): Promise<ImportParseResult> {
   return { headers, rows, rowNumbers, totalRows: rows.length };
 }
 
-function parseCsvBuffer(buf: ArrayBuffer): ImportParseResult {
+async function parseCsvBuffer(buf: ArrayBuffer): Promise<ImportParseResult> {
   // فكّ ترميز UTF-8 وحذف BOM إن وُجد (Excel «CSV UTF-8» يضع BOM في أول الترويسة الأولى —
   // بدون حذفه تصبح الترويسة الأولى «﻿الاسم» فتفشل المطابقة الذكية).
+  const { default: Papa } = await import("papaparse");
   const decoder = new TextDecoder("utf-8");
   const text = decoder.decode(buf).replace(/^﻿/, "");
   const result = Papa.parse<string[]>(text, {

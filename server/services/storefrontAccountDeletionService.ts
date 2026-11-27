@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { withTxNamedLock } from "../lib/mysqlNamedLock";
 import { appErrorMessage } from "@shared/errors";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
@@ -133,51 +134,38 @@ export async function deleteMyStorefrontAccount(input: {
   const retentionUntil = addRetentionPeriod(now);
 
   return withTx(async (tx) => {
-    const custLock = `online-customer:${firebase.phone}`;
-    const lockRes = (await tx.execute(
-      sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
-    )) as unknown;
-    const lockedRow = Array.isArray(lockRes)
-      ? (lockRes[0] as { locked?: number }[])?.[0]
-      : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
-    if (!lockedRow || Number(lockedRow.locked) !== 1) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "تعذّر إتمام حذف الحساب الآن",
-          why: "تزامن إجراء آخر على نفس رقم الهاتف في هذه اللحظة",
-          doThis: "انتظر لحظات ثم أعد المحاولة",
-        }),
-      });
-    }
+    const lockedCustomers = await withTxNamedLock(
+      tx,
+      `online-customer:${firebase.phone}`,
+      5,
+      () => {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إتمام حذف الحساب الآن",
+            why: "تزامن إجراء آخر على نفس رقم الهاتف في هذه اللحظة",
+            doThis: "انتظر لحظات ثم أعد المحاولة",
+          }),
+        });
+      },
+      async () => {
+        const initialMatches = await findMatchingActiveCustomers(tx, firebase.phone);
+        const currentPhoneRows = await tx
+          .select({ id: customers.id })
+          .from(customers)
+          .where(and(eq(customers.phone, firebase.phone), isNull(customers.deletedAt)))
+          .orderBy(asc(customers.id))
+          .for("update");
 
-    let lockedCustomers: Array<{
-      id: number;
-      currentBalance: string;
-      deletedAt: Date | null;
-      phone: string | null;
-      phone2: string | null;
-      phone3: string | null;
-      whatsapp: string | null;
-    }> = [];
-    try {
-      const initialMatches = await findMatchingActiveCustomers(tx, firebase.phone);
-      const currentPhoneRows = await tx
-        .select({ id: customers.id })
-        .from(customers)
-        .where(and(eq(customers.phone, firebase.phone), isNull(customers.deletedAt)))
-        .orderBy(asc(customers.id))
-        .for("update");
+        const candidateIds = Array.from(
+          new Set([
+            ...initialMatches.map((c) => Number(c.id)),
+            ...currentPhoneRows.map((c) => Number(c.id)),
+          ]),
+        ).sort((a, b) => a - b);
 
-      const candidateIds = Array.from(
-        new Set([
-          ...initialMatches.map((c) => Number(c.id)),
-          ...currentPhoneRows.map((c) => Number(c.id)),
-        ]),
-      ).sort((a, b) => a - b);
-
-      if (candidateIds.length > 0) {
-        lockedCustomers = await tx
+        if (candidateIds.length === 0) return [];
+        return tx
           .select({
             id: customers.id,
             currentBalance: customers.currentBalance,
@@ -191,10 +179,8 @@ export async function deleteMyStorefrontAccount(input: {
           .where(inArray(customers.id, candidateIds))
           .orderBy(asc(customers.id))
           .for("update");
-      }
-    } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`).catch(() => {});
-    }
+      },
+    );
 
     const activeMatches = lockedCustomers.filter(
       (c) => c.deletedAt == null && rowMatchesCanonicalPhone(c, firebase.phone),

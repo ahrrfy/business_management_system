@@ -7,12 +7,14 @@ import { logger } from "../logger";
 
 /** حدث تحكم داخلي بين العمال؛ لا يُبث إلى المتصفحات. */
 export const PWA_SSE_QUIESCE_EVENT = "PWA_SSE_QUIESCE";
+export const SSE_USER_EVICT_EVENT = "SSE_USER_EVICT";
 
 export interface SseClient {
   id: string;
   userId: number;
   role: string;
   scopedBranchId: number | null;
+  canCrossBranches: boolean;
   companyId?: number | null;
   res: Response;
   pingTimer: NodeJS.Timeout;
@@ -25,6 +27,7 @@ export interface RegisterClientOptions {
   userId: number;
   role: string;
   scopedBranchId: number | null;
+  canCrossBranches?: boolean;
   companyId?: number | null;
   req: Request;
   res: Response;
@@ -69,6 +72,7 @@ export class SseManager {
       userId,
       role,
       scopedBranchId,
+      canCrossBranches: opts.canCrossBranches ?? role === "admin",
       companyId,
       res,
       pingTimer,
@@ -149,6 +153,19 @@ export class SseManager {
     return closed;
   }
 
+  /** يقطع فوراً كافة اتصالات SSE النشطة لمستخدم عند تسجيل الخروج أو إبطال الجلسات/الحساب. */
+  evictUser(userId: number): number {
+    if (!Number.isSafeInteger(userId) || userId <= 0) return 0;
+    let closed = 0;
+    for (const [id, client] of Array.from(this.clients)) {
+      if (client.userId === userId) {
+        this.removeClient(id);
+        closed += 1;
+      }
+    }
+    return closed;
+  }
+
   /**
    * مطابقة العميل مع نطاق الحدث للتحقق من الأهلية والعزل الأمني للفروع.
    */
@@ -158,6 +175,10 @@ export class SseManager {
     }
 
     if (event.scope?.userId != null && client.userId !== event.scope.userId) {
+      return false;
+    }
+
+    if (Array.isArray(event.scope?.userIds) && !event.scope.userIds.includes(client.userId)) {
       return false;
     }
 
@@ -173,10 +194,13 @@ export class SseManager {
       }
     }
 
-    // عزل الفرع الصارم (Branch Isolation):
-    // إذا كان الحدث موجهاً لفرع محدد، وكان العميل مقيداً بفرع محدد، فيجب تطابقهما حتماً.
+    // عزل الفرع الصارم (Branch Isolation — Fail-closed):
+    // إذا كان الحدث موجهاً لفرع محدد، فالعميل المقيد بلا فرع (scopedBranchId == null && !canCrossBranches)
+    // يُرفض ولا يُعامل كصلاحية رؤية شاملة لكافة الفروع.
     if (event.scope?.branchId != null) {
-      if (client.scopedBranchId != null && client.scopedBranchId !== event.scope.branchId) {
+      if (client.scopedBranchId == null) {
+        if (!client.canCrossBranches) return false;
+      } else if (client.scopedBranchId !== event.scope.branchId) {
         return false;
       }
     }

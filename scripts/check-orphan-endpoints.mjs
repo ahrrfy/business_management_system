@@ -17,8 +17,6 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const BASELINE_PATH = path.join(__dirname, "orphan-endpoints-baseline.json");
-const STOREFRONT_CONSUMERS_PATH = path.join(REPO, "docs", "storefront", "mobile-trpc-consumers.json");
-const SUPERAPP_CONSUMERS_PATH = path.join(REPO, "docs", "superapp", "mobile-trpc-consumers.json");
 
 // (١) خريطة مفتاح appRouter → ملف الراوتر واسم المتغيّر، من server/routers.ts.
 const routersSrc = readFileSync(path.join(REPO, "server", "routers.ts"), "utf8");
@@ -92,7 +90,7 @@ function walkClient(dir) {
     if (st.isDirectory()) walkClient(fp);
     else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !name.endsWith(".test.tsx")) {
       const src = readFileSync(fp, "utf8");
-      for (const m of src.matchAll(/\b(?:trpc|utils)\.((?:\w+\.)*\w+)/g)) {
+      for (const m of src.matchAll(/\b(?:trpc|utils(?:\.client)?)\.((?:\w+\.)*\w+)/g)) {
         addUsedProcedure(m[1]);
       }
     }
@@ -100,52 +98,7 @@ function walkClient(dir) {
 }
 walkClient(path.join(REPO, "client", "src"));
 
-// Native Android clients are first-class tRPC consumers too. Keep this scan
-// deliberately narrow: production Kotlin sources and the two transport forms
-// used by the closed transports (typed helpers and an explicit /api/trpc
-// route). Tests never count as a consumer.
-function walkNativeAndroidClient(dir) {
-  if (!existsSync(dir)) return;
-  for (const name of readdirSync(dir)) {
-    const fp = path.join(dir, name);
-    const st = statSync(fp);
-    if (st.isDirectory()) walkNativeAndroidClient(fp);
-    else if (name.endsWith(".kt")) {
-      const src = readFileSync(fp, "utf8");
-      for (const m of src.matchAll(/(?:\.|\b)(?:query|mutation|mutate|queryArray|mutateArray|queryObject|mutateObject|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
-        addUsedProcedure(m[1]);
-      }
-      for (const m of src.matchAll(/\/api\/trpc\/([\w.]+)/g)) {
-        addUsedProcedure(m[1]);
-      }
-    }
-  }
-}
-// مسح عميل Expo للاتصال الآمن
-walkNativeAndroidClient(path.join(
-  REPO,
-  "expo",
-  "superapp-mobile",
-  "modules",
-  "alrueya-secure-transport",
-  "android",
-  "src",
-  "main",
-  "java",
-));
-
-// تطبيقات Expo (المتجر وسوبر العربية) عملاء مستقلون، نحفظ عقود إجراءاتهم في بيانات JSON مُراجعة:
-for (const consumersPath of [STOREFRONT_CONSUMERS_PATH, SUPERAPP_CONSUMERS_PATH]) {
-  if (existsSync(consumersPath)) {
-    const consumers = JSON.parse(readFileSync(consumersPath, "utf8"));
-    if (!Array.isArray(consumers.procedures) || !consumers.procedures.every((procedure) => typeof procedure === "string" && /^[\w.]+$/.test(procedure))) {
-      throw new Error(`بيان مستهلك الجوال غير صالح: ${consumersPath}`);
-    }
-    for (const procedure of consumers.procedures) addUsedProcedure(procedure);
-  }
-}
-
-// (٤) احسب اليتامى: إجراء خادميّ لا يظهر استدعاؤه تحت نطاق راوتره في أي واجهة أو عميل جوال.
+// (٤) احسب اليتامى: إجراء خادميّ لا يظهر استدعاؤه تحت نطاق راوتره في الواجهة الحيّة.
 const orphans = [];
 for (const [key, file] of Object.entries(keyToFile)) {
   const routerSet = usedByRouter.get(key) || new Set();

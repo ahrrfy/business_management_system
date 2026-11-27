@@ -3,6 +3,7 @@
  * القراءة بصلاحية assets/READ، والكتابة بـ assets/FULL (requireModule). كل كتابة تُدقَّق (audit).
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
+import { assertSafeAttachmentUrl } from "@shared/attachmentUrl";
 import { z } from "zod";
 import {
   ASSET_ACQUISITION_TYPE_KEYS,
@@ -107,12 +108,13 @@ export const assetsRouter = router({
         clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      requestAccrualCorrection(
+    .mutation(({ input, ctx }) => {
+      assertSafeAttachmentUrl(input.attachmentUrl);
+      return requestAccrualCorrection(
         { ...input, expectedAssetId: input.assetId },
         actorOf(ctx.user),
-      ),
-    ),
+      );
+    }),
 
   approveAcquisitionCorrection: assetWrite
     .input(z.object({ assetId: z.number().int().positive(), correctionRequestId: z.number().int().positive() }))

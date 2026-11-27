@@ -1,4 +1,5 @@
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { sanitizeAttachmentHref } from "@shared/attachmentUrl";
 import { MovementTypeBadge, PaymentMethodChip } from "@/components/common/MovementBadges";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
@@ -786,14 +787,16 @@ export default function Vouchers() {
                 accessorFn: (r) => (r.attachmentUrl ? "مرفق" : "—"),
                 enableSorting: false,
                 meta: { align: "center" },
-                cell: ({ row }) =>
-                  row.original.attachmentUrl ? (
-                    <a href={row.original.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المرفق" onClick={(e) => e.stopPropagation()}>
+                cell: ({ row }) => {
+                  const safeHref = sanitizeAttachmentHref(row.original.attachmentUrl);
+                  return safeHref ? (
+                    <a href={safeHref} target="_blank" rel="noopener noreferrer" title="فتح المرفق" onClick={(e) => e.stopPropagation()}>
                       <Paperclip aria-hidden className="size-4 text-[var(--sem-pos)] inline" />
                     </a>
                   ) : (
                     <span className="text-muted-foreground text-xs">—</span>
-                  ),
+                  );
+                },
               },
               {
                 id: "actions",

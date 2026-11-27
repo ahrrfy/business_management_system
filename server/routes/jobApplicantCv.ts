@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { TRPCError } from "@trpc/server";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { authenticateExpressRequest } from "../auth/expressAuth";
 import { logger } from "../logger";
 import { companyBranchScope } from "../services/companyBranchScope";
@@ -24,12 +25,21 @@ export function jobApplicantCvRouter(): Router {
       }
       const user = auth.user;
 
-      const permissions = resolvePermissions(
-        user.role as RoleKey,
-        (user.permissionsOverride as PermissionMap | null) ?? null,
-      );
-      if ((permissions.hr ?? "NONE") === "NONE") {
-        return res.status(403).json({ error: "لا توجد صلاحية لقراءة ملفات التوظيف" });
+      if (hasOperationPolicy(user)) {
+        if (
+          !operationDecision(user, "recruitment.list").allowed &&
+          !operationDecision(user, "recruitment.get").allowed
+        ) {
+          return res.status(403).json({ error: "لا توجد صلاحية لقراءة ملفات التوظيف" });
+        }
+      } else if (user.role !== "admin") {
+        const permissions = resolvePermissions(
+          user.role as RoleKey,
+          (user.permissionsOverride as PermissionMap | null) ?? null,
+        );
+        if ((permissions.hr ?? "NONE") === "NONE") {
+          return res.status(403).json({ error: "لا توجد صلاحية لقراءة ملفات التوظيف" });
+        }
       }
 
       const publicKey = typeof req.params.publicKey === "string" ? req.params.publicKey : "";

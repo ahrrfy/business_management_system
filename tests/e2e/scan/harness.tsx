@@ -7,16 +7,10 @@ import { QRCodeWriter, BarcodeFormat } from "@zxing/library";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { observable } from "@trpc/server/observable";
 import { trpc } from "@/lib/trpc";
-import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 
-let claimCount = 0;
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-const client = trpc.createClient({ links: [() => ({ op }) => observable(observer => {
-  if (op.path === "productStudio.claimByBarcode") {
-    claimCount++;
-    const barcode = (op.input as { barcode: string }).barcode;
-    observer.next({ result: { data: { taskId: 901, productName: `Product ${barcode}`, revision: 1, approvedImages: 0, requiredImages: 3, claimed: true } } });
-  } else observer.next({ result: { data: { id: 1, role: "photographer" } } });
+const client = trpc.createClient({ links: [() => () => observable(observer => {
+  observer.next({ result: { data: { id: 1, role: "photographer" } } });
   observer.complete();
 })] });
 
@@ -71,8 +65,6 @@ function Harness() {
   const [open, setOpen] = useState(false);
   const [results, setResults] = useState<string[]>([]);
   const [current, setCurrent] = useState(0);
-  const [station, setStation] = useState(false);
-  const [active, setActive] = useState<ClaimedStudioProduct | null>(null);
   const start = (index: number, failingNative = false) => {
     fixture = cases[index]; rejectNative = failingNative;
     delayedNative = false; delayedStream = false;
@@ -93,11 +85,6 @@ function Harness() {
       setOpen(true);
     }}>Cancel pending {mode}</button>)}
     <button onClick={() => setOpen(false)}>Close scanner</button>
-    <button onClick={() => { start(0); setOpen(false); setStation(true); }}>Show capture station</button>
-    {station && <StudioCaptureStation active={active} offline={false} onClear={() => setActive(null)} onClaimed={claimed => {
-      setActive(claimed);
-      setResults(previous => [...previous, `${claimed.productName === "Product ALR00001234" && claimCount === 1 ? "PASS" : "FAIL"}: station claim=${claimCount} task=${claimed.taskId}`]);
-    }} />}
     <CameraScanner open={open} onClose={() => setOpen(false)} onDetect={(code) => {
       setOpen(false);
       const ended = streams.every(stream => stream.getTracks().every(track => track.readyState === "ended"));

@@ -57,15 +57,15 @@ describe("audited public UX contracts", () => {
   });
 
   it("does not advertise an unsupported purchase-return draft", () => {
-    const legacyEntry = readPage("PurchaseReturnNew.tsx");
+    const app = readFileSync(
+      new URL("../../App.tsx", import.meta.url),
+      "utf8",
+    );
     const governance = readPage("PurchaseReturnsGovernance.tsx");
 
-    expect(legacyEntry).toContain(
-      '<Redirect to="/returns?tab=purchases" />',
+    expect(app).toContain(
+      '<Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>',
     );
-    expect(legacyEntry).not.toContain("PURCHASE_RETURN_ACTIONS");
-    expect(legacyEntry).not.toContain("trpc.purchaseReturns.create");
-    expect(legacyEntry).not.toContain("handleSaveDraft");
     expect(governance).toContain(
       "trpc.purchaseReturnGovernance.requestReturn.useMutation",
     );

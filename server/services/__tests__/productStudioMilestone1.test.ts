@@ -339,7 +339,6 @@ vi.mock("../../lib/imageStore", () => ({
 import {
   acquireOrCheckLock,
   heartbeatLock,
-  purgeProductStudioLegacyData,
   quickBarcodeLookup,
   quickSaveBarcodeProductImage,
   releaseLock,
@@ -392,84 +391,6 @@ describe("Milestone 1 — Backend Core: Schema, Ephemeral Lock, Atomic Purge & L
       expect(cols.lockedAt).toBeDefined();
       expect(cols.heartbeatAt).toBeDefined();
       expect(cols.expiresAt).toBeDefined();
-    });
-  });
-
-  describe("2. Atomic DB Purge (purgeProductStudioLegacyData)", () => {
-    beforeEach(() => {
-      // Seed legacy studio data
-      dbState.productImages.push(
-        { id: 10, productId: 100, url: "http://img1", reviewStatus: "APPROVED", publishedStudioJobId: 99 },
-        { id: 11, productId: 101, url: "http://img2", reviewStatus: "APPROVED", publishedStudioJobId: 98 },
-      );
-      dbState.productImageJobs.push(
-        { id: 98, productId: 101, status: "APPROVED" },
-        { id: 99, productId: 100, status: "IN_PROGRESS" },
-        { id: 100, productId: 102, status: "ASSIGNED" },
-      );
-      dbState.productStudioCampaigns.push({ id: 1, name: "حملة تجريبية" });
-      dbState.productStudioCampaignProducts.push({ campaignId: 1, productId: 100 });
-      dbState.productStudioCampaignCategories.push({ campaignId: 1, categoryId: 5 });
-      dbState.productStudioCampaignAssignees.push({ campaignId: 1, userId: 2 });
-      dbState.productStudioSubmitQuota.push({ id: 1, userId: 2, submitCount: 15 });
-      dbState.productPhotographyLocks.push({
-        productId: 100,
-        userId: 2,
-        userName: "مصور",
-        expiresAt: new Date(Date.now() + 60000),
-      });
-
-      // Seed unrelated campaigns that must be strictly untouched
-      dbState.crmCampaigns.push({ id: 50, name: "حملة تسويقية CRM" });
-      dbState.storefrontPushCampaigns.push({ id: 60, name: "إشعار متجر" });
-      dbState.giftCampaigns.push({ id: 70, name: "حملة هدايا" });
-    });
-
-    it("rejects unauthorized non-manager actors with FORBIDDEN", async () => {
-      await expect(purgeProductStudioLegacyData(employeeActor)).rejects.toThrow(TRPCError);
-      try {
-        await purgeProductStudioLegacyData(employeeActor);
-      } catch (err: any) {
-        expect(err.code).toBe("FORBIDDEN");
-      }
-    });
-
-    it("executes atomic purge, preserving approved images and keeping external campaigns untouched", async () => {
-      const result = await purgeProductStudioLegacyData(managerActor);
-
-      expect(result.success).toBe(true);
-      expect(result.preservedApprovedImages).toBe(2);
-      expect(result.purgedAt).toBeInstanceOf(Date);
-
-      // Verify studio campaigns & jobs are deleted
-      expect(dbState.productImageJobs).toHaveLength(0);
-      expect(dbState.productStudioCampaigns).toHaveLength(0);
-      expect(dbState.productStudioCampaignProducts).toHaveLength(0);
-      expect(dbState.productStudioCampaignCategories).toHaveLength(0);
-      expect(dbState.productStudioCampaignAssignees).toHaveLength(0);
-      expect(dbState.productStudioSubmitQuota).toHaveLength(0);
-      expect(dbState.productPhotographyLocks).toHaveLength(0);
-
-      // Verify approved productImages are strictly preserved and publishedStudioJobId is unlinked
-      expect(dbState.productImages).toHaveLength(2);
-      expect(dbState.productImages[0].publishedStudioJobId).toBeNull();
-      expect(dbState.productImages[1].publishedStudioJobId).toBeNull();
-      expect(dbState.productImages[0].reviewStatus).toBe("APPROVED");
-      expect(dbState.productImages[1].reviewStatus).toBe("APPROVED");
-
-      // Verify external marketing campaigns are 100% untouched (RED LINE)
-      expect(dbState.crmCampaigns).toHaveLength(1);
-      expect(dbState.crmCampaigns[0].name).toBe("حملة تسويقية CRM");
-      expect(dbState.storefrontPushCampaigns).toHaveLength(1);
-      expect(dbState.storefrontPushCampaigns[0].name).toBe("إشعار متجر");
-      expect(dbState.giftCampaigns).toHaveLength(1);
-      expect(dbState.giftCampaigns[0].name).toBe("حملة هدايا");
-
-      // Verify audit log entry
-      expect(dbState.auditLogs).toHaveLength(1);
-      expect(dbState.auditLogs[0].action).toBe("productStudio.atomicPurge");
-      expect(dbState.auditLogs[0].entityType).toBe("productStudio");
-      expect(dbState.auditLogs[0].newValue.preservedApprovedImages).toBe(2);
     });
   });
 
@@ -756,23 +677,6 @@ describe("Milestone 1 — Backend Core: Schema, Ephemeral Lock, Atomic Purge & L
     });
   });
 
-  describe("6. Atomic Legacy Data Purge", () => {
-    it("purges unapproved jobs while preserving APPROVED product images", async () => {
-      dbState.productImages.push(
-        { id: 101, productId: 801, url: "http://img-approved", reviewStatus: "APPROVED", publishedStudioJobId: 44 },
-      );
-      dbState.productImageJobs.push(
-        { id: 44, productId: 801, status: "IN_PROGRESS" },
-      );
-
-      const purgeRes = await purgeProductStudioLegacyData(managerActor);
-      expect(purgeRes.success).toBe(true);
-      expect(purgeRes.preservedApprovedImages).toBe(1);
-      expect(dbState.productImageJobs).toHaveLength(0);
-      expect(dbState.productImages).toHaveLength(1);
-    });
-  });
-
   describe("7. Router Endpoints Integration", () => {
     function createCaller(user: any) {
       return productStudioRouter.createCaller({
@@ -782,7 +686,7 @@ describe("Milestone 1 — Backend Core: Schema, Ephemeral Lock, Atomic Purge & L
       } as any);
     }
 
-    it("exposes acquireOrCheckLock, heartbeatLock, releaseLock, and purgeProductStudioLegacyData", async () => {
+    it("exposes acquireOrCheckLock, heartbeatLock, and releaseLock", async () => {
       const caller = createCaller({
         id: 1,
         name: "مدير النظام",
@@ -801,9 +705,6 @@ describe("Milestone 1 — Backend Core: Schema, Ephemeral Lock, Atomic Purge & L
 
       const relRes = await caller.releaseLock({ productId: 999 });
       expect(relRes.released).toBe(true);
-
-      const purgeRes = await caller.purgeProductStudioLegacyData();
-      expect(purgeRes.success).toBe(true);
     });
   });
 });

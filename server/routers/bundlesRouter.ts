@@ -279,21 +279,17 @@ export const bundlesRouter = router({
     .input(z.object({ bundleVariantId: z.number().int().positive() }))
     .query(async ({ input }) => {
       const db = getDb();
-      if (!db) return { affectedInvoiceLineCount: 0 };
-      const rows = await db
-        .select({ id: invoiceItems.id })
-        .from(invoiceItems)
-        .where(eq(invoiceItems.variantId, input.bundleVariantId));
-      // «الحيّة القابلة للإرجاع» = التي `returnedBaseQuantity < baseQuantity`. القراءة كاملةً ثم فلترة
-      // على الذاكرة (عدد بكجات مباعة غير مرتجعة عادة صغير).
-      const all = await db
+      if (!db) return { affectedInvoiceLineCount: 0, totalInvoiceLineCount: 0 };
+      const [agg] = await db
         .select({
-          baseQuantity: invoiceItems.baseQuantity,
-          returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+          totalCount: sql<number>`COUNT(*)`,
+          affectedCount: sql<number>`COALESCE(SUM(CASE WHEN COALESCE(${invoiceItems.returnedBaseQuantity}, 0) < ${invoiceItems.baseQuantity} THEN 1 ELSE 0 END), 0)`,
         })
         .from(invoiceItems)
         .where(eq(invoiceItems.variantId, input.bundleVariantId));
-      const affected = all.filter((r) => (r.returnedBaseQuantity ?? 0) < r.baseQuantity).length;
-      return { affectedInvoiceLineCount: affected, totalInvoiceLineCount: rows.length };
+      return {
+        affectedInvoiceLineCount: Number(agg?.affectedCount ?? 0),
+        totalInvoiceLineCount: Number(agg?.totalCount ?? 0),
+      };
     }),
 });

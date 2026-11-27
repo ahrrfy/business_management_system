@@ -2,9 +2,6 @@ import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 
-import { motion, AnimatePresence } from "framer-motion";
-import { Loader2 } from "lucide-react";
-
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
@@ -77,42 +74,4 @@ function Button({
   );
 }
 
-function LoadingButton({
-  children,
-  loading = false,
-  disabled,
-  ...props
-}: React.ComponentProps<typeof Button> & { loading?: boolean }) {
-  return (
-    <Button disabled={disabled || loading} {...props}>
-      <AnimatePresence mode="wait" initial={false}>
-        {loading ? (
-          <motion.span
-            key="loader"
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }}
-            transition={{ duration: 0.15 }}
-            className="flex items-center gap-2"
-          >
-            <Loader2 className="animate-spin size-4" />
-            <span>جارٍ التنفيذ…</span>
-          </motion.span>
-        ) : (
-          <motion.span
-            key="content"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            className="flex items-center gap-2"
-          >
-            {children}
-          </motion.span>
-        )}
-      </AnimatePresence>
-    </Button>
-  );
-}
-
-export { Button, LoadingButton, buttonVariants };
+export { Button, buttonVariants };
