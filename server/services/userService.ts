@@ -521,26 +521,61 @@ export async function updateUser(
       await assertUserBranchAssignmentTx(tx, assignedBranchId, (nextRole ?? existing.role) as Role);
       if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
     }
-    if (
-      input.userId === actor.userId &&
-      actor.isOwner !== true &&
-      (input.permissionsOverride !== undefined ||
-        input.atomicPermissions !== undefined ||
-        input.operationalCaps !== undefined ||
-        input.operationPolicy !== undefined)
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "لا يمكنك تعديل صلاحيات أو حدود حسابك بنفسك",
-          why: "فصل المهام يمنع أي مستخدم غير المالك من رفع سقف صلاحياته أو تفويضاته ذاتياً",
-          doThis: "اطلب من مالك النظام مراجعة صلاحيات حسابك واعتماد التعديل المطلوب",
-        }),
-      });
-    }
     const requestedOverride = input.permissionsOverride === undefined
       ? undefined
       : normalizePermissionOverride(input.permissionsOverride);
+    const requestedPolicyNormalized = input.operationPolicy === undefined
+      ? undefined
+      : normalizeOperationPolicy(input.operationPolicy);
+    if (input.userId === actor.userId && actor.isOwner !== true) {
+      const selfOverrideChanged =
+        requestedOverride !== undefined &&
+        !samePermissionOverride(
+          existing.permissionsOverride as PermissionMap | null,
+          requestedOverride,
+        );
+      const selfAtomicChanged =
+        input.atomicPermissions !== undefined &&
+        !sameAtomicPermissions(
+          existing.atomicPermissions as AtomicPermissionsMap | null,
+          input.atomicPermissions,
+        );
+      const selfCapsChanged =
+        input.operationalCaps !== undefined &&
+        !sameOperationalCaps(
+          existing.operationalCaps as OperationalCaps | null,
+          input.operationalCaps,
+        );
+      const selfPolicyChanged =
+        requestedPolicyNormalized !== undefined &&
+        !sameOperationPolicy(
+          existing.operationPolicy,
+          requestedPolicyNormalized,
+        );
+      const isPureLegacySelfDenial =
+        existing.operationPolicy == null &&
+        requestedPolicyNormalized != null &&
+        Object.values(requestedPolicyNormalized.grants).every(
+          (grant) => grant === false,
+        );
+      const selfPolicyEscalated =
+        selfPolicyChanged && !isPureLegacySelfDenial;
+      if (
+        selfOverrideChanged ||
+        selfAtomicChanged ||
+        selfCapsChanged ||
+        selfPolicyEscalated
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا يمكنك تعديل صلاحيات أو حدود حسابك بنفسك",
+            why: "فصل المهام يمنع أي مستخدم غير المالك من رفع سقف صلاحياته أو تفويضاته ذاتياً",
+            doThis: "اطلب من مالك النظام مراجعة صلاحيات حسابك واعتماد التعديل المطلوب",
+          }),
+        });
+      }
+    }
     // الاستثناء الفردي يُطبّق فوق الدور المخصّص. إذا تبدّل الدور المخصّص من دون خريطة صريحة
     // نمسح فروق الدور السابق كي لا تنتقل بصمت إلى دور جديد مختلف.
     {

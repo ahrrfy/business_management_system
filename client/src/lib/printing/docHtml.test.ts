@@ -174,6 +174,17 @@ describe("payslip PDF export", () => {
     expect(h.write).toHaveBeenCalledWith(h.pdfBlob);
     expect(h.saveButton.disabled).toBe(false);
   });
+
+  it("skips showSaveFilePicker and falls back directly to window.print when html2pdf is absent", async () => {
+    const h = toolbarHarness(600);
+    (h.fakeWindow as { html2pdf?: unknown }).html2pdf = undefined;
+    await h.fakeWindow.saveDocAsPdf!();
+    expect(h.fakeWindow.showSaveFilePicker).not.toHaveBeenCalled();
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.fakeWindow.focus).toHaveBeenCalledOnce();
+    expect(h.fakeWindow.print).toHaveBeenCalledOnce();
+    expect(h.saveButton.disabled).toBe(false);
+  });
 });
 
 describe("pageHeader - باركود رقم المستند", () => {

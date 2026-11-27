@@ -311,6 +311,8 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** حمولة QR الموقّعة خادمياً (HMAC) للتحقق العام على ملصقات الشحن والإيصالات دون كشف تعداد القاعدة. */
+  qrPayload?: string;
   /** طريقة تحصيل أجرة التوصيل الفعّالة بعد تقييم عروض/كوبونات التوصيل المجاني خادمياً. */
   effectiveDeliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
   /** معرّف أول إيصال قبض أُنشئ في هذه المعاملة (للتوافق مع المستهلكين الأحاديين). */

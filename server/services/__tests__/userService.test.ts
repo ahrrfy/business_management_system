@@ -55,6 +55,7 @@ async function seedBase() {
     email: "admin@test.local",
     passwordHash: await hashPassword("Admin@12345"),
     role: "admin",
+    isOwner: true,
     loginMethod: "local",
     branchId: 1,
   });

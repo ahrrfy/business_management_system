@@ -133,6 +133,7 @@ export type Receipt = {
   invoiceNumber: string;
   num?: string;
   invoiceId: number;
+  qrPayload?: string | null;
   date: string;
   /** تاريخ/وقت/كاشير للإيصال المطبوع المُعلَّم (date يبقى للعرض على الشاشة) */
   printDate?: string;

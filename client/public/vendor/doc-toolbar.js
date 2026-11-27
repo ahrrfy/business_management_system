@@ -173,7 +173,7 @@
 
     async function saveDocAsPdf() {
       var fileHandle = null;
-      if (typeof window.showSaveFilePicker === 'function') {
+      if (typeof window.html2pdf === 'function' && typeof window.showSaveFilePicker === 'function') {
         try {
           fileHandle = await window.showSaveFilePicker({
             suggestedName: filename,

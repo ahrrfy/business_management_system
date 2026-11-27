@@ -30,9 +30,9 @@ export type StorefrontPushKind = "MARKETING" | "TRANSACTIONAL";
 export class StorefrontPushValidationError extends Error {}
 export class StorefrontPushConflictError extends Error {}
 
-/** Explicit retirement switch; disabled by default after retiring customer-store-mobile. */
+/** Explicit retirement switch; set STOREFRONT_MOBILE_PUSH_ENABLED=0 in production to disable polling & new dispatches. */
 function storefrontMobilePushEnabled(): boolean {
-  return (process.env.STOREFRONT_MOBILE_PUSH_ENABLED ?? "0") === "1";
+  return (process.env.STOREFRONT_MOBILE_PUSH_ENABLED ?? "1") !== "0";
 }
 
 function assertStorefrontMobilePushEnabled(): void {

@@ -63,6 +63,7 @@ async function seedUsers() {
       email: "admin@test.local",
       passwordHash: await hashPassword("Pass1234!Aaa"),
       role: "admin",
+      isOwner: true,
       loginMethod: "local",
       branchId: 1,
       sessionsValidFrom: new Date(Date.now() - 2000),

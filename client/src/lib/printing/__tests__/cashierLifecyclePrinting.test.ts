@@ -262,11 +262,13 @@ describe("Cashier Lifecycle Thermal 80mm & Shipping Label Suite", () => {
         address: "الكرادة الشرقية",
       },
       consignmentNumber: "CN-2026-500",
+      qrPayload: "INV|INV-2026-500|2026-11-27|45000|1|aabbccddeeff00112233445566778899",
     });
 
     expect(codLabel.orderNumber).toBe("CN-2026-500");
     expect(codLabel.total).toBe("35000.00");
     expect(codLabel.paymentState).toBe("COD");
+    expect(codLabel.qrUrl).toContain("INV-2026-500|2026-11-27|45000|1|aabbccddeeff00112233445566778899");
     const codHtml = await shippingLabelHtml(codLabel);
     expect(codHtml).toContain("CN-2026-500");
     expect(codHtml).toContain("35,000");

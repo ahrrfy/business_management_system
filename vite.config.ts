@@ -13,8 +13,6 @@ import {
   resolveViteEnvDir,
 } from "./scripts/vite-build-contract.mjs";
 import {
-  STOREFRONT_SHELL_CHUNK_GLOB,
-  STOREFRONT_SHELL_CSS_GLOB,
   storefrontApiNetworkMatcher,
   storefrontPrivateImageNetworkMatcher,
   storefrontPublicImageCacheMatcher,
@@ -361,17 +359,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
           // حزمة القشرة المشتركة أكبر من 2MiB؛ الرفع يمنع إسقاط ملف واجهة لازم لفتح /store.
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           cacheId: storefront ? "alarabiya-storefront" : "alarabiya-erp",
-          // precache مقصور على دخول التطبيق + Storefront واعتماداته المشتركة. أسماء الصفحات
-          // الإدارية الأخرى لا تطابق هذه القائمة، فلا يتحول SW إلى نسخة أوفلاين كاملة للـERP.
-          globPatterns: storefront
-            ? ["index.html", "assets/*.{js,css}", "fonts/*.woff2"]
-            : [
-                "index.html",
-                "assets/index-*.{js,css}",
-                STOREFRONT_SHELL_CHUNK_GLOB,
-                STOREFRONT_SHELL_CSS_GLOB,
-                "fonts/*.woff2",
-              ],
+          // precache يشمل حزمة الإقلاع الفعليّة (assets/app-*.js) واعتمادات مسارات الأوفلاين
+          // المعتمدة (/pos, /print-pos, /reception, /returns, /login, /store)، مع استبعاد أصول ML وExcelJS أدناه.
+          globPatterns: ["index.html", "assets/*.{js,css}", "fonts/*.woff2"],
           // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
           // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
           // الطلب (مسار CUT) لا من الـSW. بدونه يفشل بناء الإنتاج (vite-plugin-pwa). راجع

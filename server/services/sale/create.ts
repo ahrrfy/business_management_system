@@ -46,6 +46,7 @@ import {
   type VariantKind,
 } from "../bundleService";
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
+import { invoiceBarcodeSet } from "../barcodeService";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { addQuantities } from "@shared/quantity";
 import { lockInventoryVariants } from "../inventory/stockLock";
@@ -655,6 +656,16 @@ async function createSaleInTxInner(
         createdReceiptId: replayReceipts[0] ?? null,
         createdReceiptIds: replayReceipts,
         idempotentReplay: true,
+        qrPayload: invoiceBarcodeSet({
+          invoiceNumber: ex.invoiceNumber,
+          invoiceDate: (
+            ex.invoiceDate instanceof Date
+              ? ex.invoiceDate.toISOString()
+              : String(ex.invoiceDate ?? new Date().toISOString())
+          ).slice(0, 10),
+          total: ex.total,
+          branchId: Number(ex.branchId),
+        }).qrPayload,
         ...(replayConsignment
           ? {
               consignmentId: Number(replayConsignment.id),
@@ -3281,6 +3292,12 @@ async function createSaleInTxInner(
     createdReceiptId: createdReceiptIds[0] ?? null,
     createdReceiptIds,
     priceOverride: belowCost || manualDiscountGateTriggered,
+    qrPayload: invoiceBarcodeSet({
+      invoiceNumber,
+      invoiceDate: new Date().toISOString().slice(0, 10),
+      total: toDbMoney(effectiveTotalD),
+      branchId: input.branchId,
+    }).qrPayload,
     // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
     ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
     ...(negativeDips.length ? { negativeDips } : {}),
