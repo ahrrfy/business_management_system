@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Check, Printer } from "lucide-react";
+import { Check, Printer, Usb } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { isStoreOrderAlertRecipientUser, type PermissionMap } from "@shared/permissions";
@@ -14,15 +14,16 @@ import {
   isOfflineUnlocked,
   subscribeOfflineUnlock,
 } from "@/lib/offline/pinLock";
+import { isServerBridgeEnabled } from "@/lib/printing/serverBridge";
 import {
+  computeStoreOrderAlertTimingPolicy,
   createStoreOrderAlertCoordinator,
   hasConnectedAlertThermalPrinter,
   printStoreOrderAlertAuto,
-  readStoreOrderAutoPrintStationSetting,
-  setStoreOrderAutoPrintStationSetting,
   shouldRunStoreOrderAutoPrintOnRoute,
-  STORE_ORDER_AUTOPRINT_STATION_EVENT,
+  STORE_ORDER_AUTOPRINT_STATION_KEY,
 } from "@/lib/printing/storeOrderAlertSlip";
+import { THERMAL_PRINTER_CHANGE_EVENT } from "@/lib/printing/thermal";
 import { shouldSkipColdStudioAuth } from "@/lib/productStudio/coldOfflinePolicy";
 import { retainRealtimeIdleExemption, useRealtimeEvent } from "@/lib/realtime";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -50,44 +51,60 @@ export function canUserAutoPrintStoreOrders(user: AuthMeUser | null | undefined)
   return canSeeGate(STORE_AUTOPRINT_GATE, roleForGate, overrideForGate, policyForGate);
 }
 
-function useStationAutoPrintSetting(): [boolean | null, (next: boolean | null) => void] {
-  const [explicitSetting, setExplicitSetting] = useState<boolean | null>(() =>
-    readStoreOrderAutoPrintStationSetting(),
-  );
+function useServerBridgeAvailable(enabled: boolean): boolean {
+  const [bridgeEnabled, setBridgeEnabled] = useState(false);
 
   useEffect(() => {
-    const sync = () => setExplicitSetting(readStoreOrderAutoPrintStationSetting());
-    window.addEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, sync);
-      window.removeEventListener("storage", sync);
+    if (!enabled) {
+      setBridgeEnabled(false);
+      return;
+    }
+    let active = true;
+    const syncBridge = () => {
+      void isServerBridgeEnabled()
+        .then((ok) => {
+          if (active) setBridgeEnabled(ok);
+        })
+        .catch(() => {
+          if (active) setBridgeEnabled(false);
+        });
     };
-  }, []);
+    syncBridge();
+    window.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
+    return () => {
+      active = false;
+      window.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, syncBridge);
+    };
+  }, [enabled]);
 
-  const update = (next: boolean | null) => {
-    setStoreOrderAutoPrintStationSetting(next);
-    setExplicitSetting(next);
-  };
-
-  return [explicitSetting, update];
+  return bridgeEnabled;
 }
 
 function StoreOrderAutoPrintSessionRuntime({
   isAutoPrintStationActive,
   isStoreAlertRecipient,
-  stationOptIn,
+  isOwner,
   offline,
 }: {
   isAutoPrintStationActive: boolean;
   isStoreAlertRecipient: boolean;
-  stationOptIn: boolean;
+  isOwner: boolean;
   offline: boolean;
 }) {
+  const printer = usePrinterConnection("receipt");
+  const bridgeEnabled = useServerBridgeAvailable(isAutoPrintStationActive);
+  const hasThermalPrinter = printer.printerReady || bridgeEnabled;
+  const canExecuteAutoPrint =
+    isAutoPrintStationActive && (isStoreAlertRecipient || hasThermalPrinter);
+
   const isAutoPrintStationActiveRef = useRef(isAutoPrintStationActive);
   isAutoPrintStationActiveRef.current = isAutoPrintStationActive;
-  const stationOptInRef = useRef(stationOptIn);
-  stationOptInRef.current = stationOptIn;
+  const isStoreAlertRecipientRef = useRef(isStoreAlertRecipient);
+  isStoreAlertRecipientRef.current = isStoreAlertRecipient;
+  const isOwnerRef = useRef(isOwner);
+  isOwnerRef.current = isOwner;
+  const hasThermalPrinterRef = useRef(hasThermalPrinter);
+  hasThermalPrinterRef.current = hasThermalPrinter;
 
   const claimAlertPrintM = trpc.storeAdmin.orders.claimNotificationPrint.useMutation();
   const releaseAlertPrintM = trpc.storeAdmin.orders.releaseNotificationPrint.useMutation();
@@ -97,9 +114,9 @@ function StoreOrderAutoPrintSessionRuntime({
   releaseAlertMutateRef.current = releaseAlertPrintM.mutateAsync;
 
   useEffect(() => {
-    if (!isAutoPrintStationActive) return;
+    if (!canExecuteAutoPrint) return;
     return retainRealtimeIdleExemption();
-  }, [isAutoPrintStationActive]);
+  }, [canExecuteAutoPrint]);
 
   const alertCoordinator = useMemo(
     () =>
@@ -107,33 +124,53 @@ function StoreOrderAutoPrintSessionRuntime({
         hasPrinter: async () =>
           isAutoPrintStationActiveRef.current && (await hasConnectedAlertThermalPrinter()),
         canBrowserFallback: () =>
-          isAutoPrintStationActiveRef.current && typeof document !== "undefined",
+          computeStoreOrderAlertTimingPolicy({
+            isAutoPrintActive: isAutoPrintStationActiveRef.current,
+            isStoreAlertRecipient: isStoreAlertRecipientRef.current,
+            isOwner: isOwnerRef.current,
+            hasThermalPrinter: hasThermalPrinterRef.current,
+            isHiddenTab:
+              typeof document !== "undefined" && document.visibilityState === "hidden",
+            hasDocument: typeof document !== "undefined",
+          }).canBrowserFallback,
         claimHeadStartMs: () =>
-          typeof document !== "undefined" && document.visibilityState === "hidden" ? 180 : 0,
+          computeStoreOrderAlertTimingPolicy({
+            isAutoPrintActive: isAutoPrintStationActiveRef.current,
+            isStoreAlertRecipient: isStoreAlertRecipientRef.current,
+            isOwner: isOwnerRef.current,
+            hasThermalPrinter: true,
+            isHiddenTab:
+              typeof document !== "undefined" && document.visibilityState === "hidden",
+            hasDocument: typeof document !== "undefined",
+          }).claimHeadStartMs,
         browserFallbackHeadStartMs: () =>
-          typeof document !== "undefined" && document.visibilityState === "hidden" ? 2_200 : 700,
-        claim: (orderId) =>
-          claimAlertMutateRef.current({ id: orderId, stationOptIn: stationOptInRef.current }),
+          computeStoreOrderAlertTimingPolicy({
+            isAutoPrintActive: isAutoPrintStationActiveRef.current,
+            isStoreAlertRecipient: isStoreAlertRecipientRef.current,
+            isOwner: isOwnerRef.current,
+            hasThermalPrinter: false,
+            isHiddenTab:
+              typeof document !== "undefined" && document.visibilityState === "hidden",
+            hasDocument: typeof document !== "undefined",
+          }).browserFallbackHeadStartMs,
+        claim: (orderId) => claimAlertMutateRef.current({ id: orderId }),
         renew: (orderId, leaseToken) =>
           releaseAlertMutateRef.current({
             id: orderId,
             leaseToken,
             renew: true,
-            stationOptIn: stationOptInRef.current,
           }),
         confirm: (orderId, leaseToken) =>
           releaseAlertMutateRef.current({
             id: orderId,
             leaseToken,
             completed: true,
-            stationOptIn: stationOptInRef.current,
           }),
         release: (orderId, leaseToken) =>
           releaseAlertMutateRef.current({
             id: orderId,
             leaseToken,
             completed: false,
-            stationOptIn: stationOptInRef.current,
           }),
         print: printStoreOrderAlertAuto,
         onBrowserDialogOpened: ({ orderNumber, confirmPrinted, retryOrRelease }) => {
@@ -165,29 +202,40 @@ function StoreOrderAutoPrintSessionRuntime({
   useEffect(() => () => alertCoordinator.dispose(), [alertCoordinator]);
 
   const pendingAlertPrintsQ = trpc.storeAdmin.orders.pendingNotificationPrint.useQuery(
-    { stationOptIn },
+    undefined,
     {
-      enabled: isAutoPrintStationActive && !offline,
+      enabled: canExecuteAutoPrint && !offline,
       refetchOnWindowFocus: true,
       refetchInterval: 30_000,
       refetchIntervalInBackground: true,
     },
   );
 
+  const refetchPendingRef = useRef(pendingAlertPrintsQ.refetch);
+  refetchPendingRef.current = pendingAlertPrintsQ.refetch;
+  const prevHasThermalRef = useRef(hasThermalPrinter);
   useEffect(() => {
-    if (!isAutoPrintStationActive || !pendingAlertPrintsQ.data?.length) return;
+    const prev = prevHasThermalRef.current;
+    prevHasThermalRef.current = hasThermalPrinter;
+    if (!prev && hasThermalPrinter && canExecuteAutoPrint && !offline) {
+      void refetchPendingRef.current();
+    }
+  }, [hasThermalPrinter, canExecuteAutoPrint, offline]);
+
+  useEffect(() => {
+    if (!canExecuteAutoPrint || !pendingAlertPrintsQ.data?.length) return;
     for (const pending of pendingAlertPrintsQ.data) {
       void alertCoordinator.handleEvent(pending);
     }
   }, [
     alertCoordinator,
-    isAutoPrintStationActive,
+    canExecuteAutoPrint,
     pendingAlertPrintsQ.data,
     pendingAlertPrintsQ.dataUpdatedAt,
   ]);
 
   useRealtimeEvent(REALTIME_EVENT_TYPES.CONNECTED, () => {
-    if (isAutoPrintStationActive) {
+    if (canExecuteAutoPrint) {
       void pendingAlertPrintsQ.refetch();
     }
   });
@@ -228,17 +276,24 @@ export function GlobalStoreOrderAutoPrint() {
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   const routeEligible = !coldStudio && shouldRunStoreOrderAutoPrintOnRoute(loc, hostname);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY) === "0") {
+        window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
+      }
+    } catch {
+      /* ignore storage error */
+    }
+  }, []);
+
   const me = trpc.auth.me.useQuery(undefined, {
     enabled: routeEligible && !(offline && unlocked),
   });
 
-  const [stationExplicitSetting] = useStationAutoPrintSetting();
   const canAutoPrint = routeEligible && canUserAutoPrintStoreOrders(me.data);
   const isStoreAlertRecipient = routeEligible && isStoreOrderAlertRecipientUser(me.data);
-  const isAutoPrintStationActive =
-    canAutoPrint &&
-    (stationExplicitSetting !== null ? stationExplicitSetting : isStoreAlertRecipient);
-  const stationOptIn = stationExplicitSetting === true && !isStoreAlertRecipient;
+  const isAutoPrintStationActive = canAutoPrint;
 
   if (!routeEligible || !me.data?.id || (!canAutoPrint && !isStoreAlertRecipient)) {
     return null;
@@ -249,15 +304,15 @@ export function GlobalStoreOrderAutoPrint() {
       key={String(me.data.id)}
       isAutoPrintStationActive={isAutoPrintStationActive}
       isStoreAlertRecipient={isStoreAlertRecipient}
-      stationOptIn={stationOptIn}
+      isOwner={Boolean(me.data.isOwner)}
       offline={offline}
     />
   );
 }
 
 /**
- * زرّ تحكم سريع ومؤشر حالة مدمج لشريط نقطة البيع الموحد (/pos بكافة أوضاعه)
- * يتيح للكاشير أو موظف الاستقبال معرفة حالة الطباعة التلقائية لطلبات المتجر وتفعيلها/إيقافها فوراً.
+ * شارة حالة رقابية غير قابلة للإيقاف لشريط نقطة البيع الموحد (/pos بكافة أوضاعه)
+ * تعرض حالة الطباعة التلقائية الإلزامية لطلبات المتجر، مع زر صامت لربط طابعة USB عند انفصالها.
  */
 export function StoreOrderAutoPrintQuickToggle({
   user,
@@ -265,48 +320,53 @@ export function StoreOrderAutoPrintQuickToggle({
   user: AuthMeUser | null | undefined;
 }) {
   const printer = usePrinterConnection("receipt");
-  const [explicitSetting, setExplicitSetting] = useStationAutoPrintSetting();
   const canAutoPrint = canUserAutoPrintStoreOrders(user);
+  const bridgeEnabled = useServerBridgeAvailable(canAutoPrint);
   if (!canAutoPrint) return null;
 
   const defaultRecipient = isStoreOrderAlertRecipientUser(user);
-  const stationActive = explicitSetting !== null ? explicitSetting : defaultRecipient;
+  const printerReady = printer.printerReady || bridgeEnabled;
+  const activeReady = printerReady || defaultRecipient;
+
+  const statusTitle = printerReady
+    ? defaultRecipient
+      ? "الطباعة التلقائية الإلزامية لطلبات المتجر: نشطة (طابعة حرارية صامتة — أولوية الاستقبال)"
+      : "الطباعة التلقائية الإلزامية لطلبات المتجر: نشطة (احتياط حراري صامت)"
+    : defaultRecipient
+      ? "الطباعة التلقائية الإلزامية لطلبات المتجر: نشطة (طابعة النظام 80مم)"
+      : "الطباعة التلقائية الإلزامية لطلبات المتجر مفعلة — اربط طابعة USB لتعمل هذه المحطة كاحتياط صامت";
 
   return (
-    <button
-      type="button"
-      onClick={() => {
-        const next = !stationActive;
-        setExplicitSetting(next);
-        notify.ok(
-          next
-            ? "فعلت الطباعة التلقائية لطلبات المتجر على هذا الجهاز"
-            : "أوقفت الطباعة التلقائية لطلبات المتجر على هذا الجهاز",
-        );
-      }}
-      aria-pressed={stationActive}
-      aria-label={
-        stationActive
-          ? "الطباعة التلقائية لطلبات المتجر نشطة — اضغط للإيقاف"
-          : "تفعيل الطباعة التلقائية لطلبات المتجر على هذا الجهاز"
-      }
-      title={
-        stationActive
-          ? printer.printerReady
-            ? "تلقائي طلبات المتجر: نشط (طباعة حرارية صامتة عبر كافة الشاشات) — اضغط للإيقاف"
-            : "تلقائي طلبات المتجر: نشط (طابعة النظام 80مم عبر كافة الشاشات) — اضغط للإيقاف"
-          : "الطباعة التلقائية لطلبات المتجر متوقفة على هذا الجهاز — اضغط للتفعيل"
-      }
-      className={cn(
-        "inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold transition-colors",
-        stationActive
-          ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
-          : "border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+    <div className="inline-flex shrink-0 items-center gap-1">
+      <span
+        role="status"
+        aria-label={statusTitle}
+        title={statusTitle}
+        className={cn(
+          "inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold select-none",
+          activeReady
+            ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+            : "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+        )}
+      >
+        <Printer aria-hidden className="size-3.5" />
+        <span className="hidden xl:inline">
+          {activeReady ? "تلقائي المتجر" : "تلقائي (اربط USB)"}
+        </span>
+        {activeReady && <Check aria-hidden className="size-3" strokeWidth={3} />}
+      </span>
+
+      {printer.supported && !printer.printerReady && (
+        <button
+          type="button"
+          onClick={() => void printer.connect()}
+          title="ربط طابعة الإيصالات عبر WebUSB للطباعة التلقائية الصامتة"
+          className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/40 px-2 text-xs font-bold text-foreground transition-colors hover:bg-muted"
+        >
+          <Usb aria-hidden className="size-3.5" />
+          <span className="hidden sm:inline">ربط USB</span>
+        </button>
       )}
-    >
-      <Printer aria-hidden className="size-3.5" />
-      <span className="hidden xl:inline">تلقائي المتجر</span>
-      {stationActive && <Check aria-hidden className="size-3" strokeWidth={3} />}
-    </button>
+    </div>
   );
 }

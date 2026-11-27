@@ -411,27 +411,70 @@ export function shouldRunStoreOrderAutoPrintOnRoute(
   return true;
 }
 
-export function readStoreOrderAutoPrintStationSetting(): boolean | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
-    if (raw === "1") return true;
-    if (raw === "0") return false;
-    return null;
-  } catch {
-    return null;
-  }
+export function readStoreOrderAutoPrintStationSetting(): boolean {
+  return true;
 }
 
-export function setStoreOrderAutoPrintStationSetting(enabled: boolean | null): void {
+export function setStoreOrderAutoPrintStationSetting(_enabled: boolean | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (enabled === null) window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
-    else window.localStorage.setItem(STORE_ORDER_AUTOPRINT_STATION_KEY, enabled ? "1" : "0");
-    window.dispatchEvent(new CustomEvent(STORE_ORDER_AUTOPRINT_STATION_EVENT, { detail: { enabled } }));
+    if (window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY) === "0") {
+      window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
+    }
+    window.dispatchEvent(
+      new CustomEvent(STORE_ORDER_AUTOPRINT_STATION_EVENT, { detail: { enabled: true } }),
+    );
   } catch {
     /* ignore storage error */
   }
+}
+
+export interface StoreOrderAlertTimingPolicyInput {
+  isAutoPrintActive: boolean;
+  isStoreAlertRecipient: boolean;
+  isOwner: boolean;
+  hasThermalPrinter: boolean;
+  isHiddenTab: boolean;
+  hasDocument: boolean;
+}
+
+export interface StoreOrderAlertTimingPolicy {
+  canBrowserFallback: boolean;
+  claimHeadStartMs: number;
+  browserFallbackHeadStartMs: number;
+}
+
+/**
+ * سياسة أولوية السحب والتراجع لطلبات المتجر:
+ *  - الفئة 1 (استقبال/خدمة زبائن + طابعة حرارية): سحب فوري (0ms ظاهر / 150ms مخفي).
+ *  - الفئة 2 (كاشير/مبيعات/مدير أو مالك مع طابعة حرارية مربوطة): احتياط حراري (1200ms ظاهر / 1600ms مخفي).
+ *  - الفئة 3 (استقبال غير مالك دون WebUSB/جسر): تراجع لطباعة النظام (2500ms ظاهر / 3500ms مخفي).
+ *  - الفئة 4 (أي جلسة غير استقبالية دون طابعة حرارية، بما فيها جهاز المالك الشخصي): لا تسحب الحجز ولا تفتح نافذة طباعة.
+ */
+export function computeStoreOrderAlertTimingPolicy(
+  input: StoreOrderAlertTimingPolicyInput,
+): StoreOrderAlertTimingPolicy {
+  const claimHeadStartMs = input.isStoreAlertRecipient
+    ? input.isHiddenTab
+      ? 150
+      : 0
+    : input.isHiddenTab
+      ? 1_600
+      : 1_200;
+
+  const canBrowserFallback =
+    input.isAutoPrintActive &&
+    input.hasDocument &&
+    input.isStoreAlertRecipient &&
+    !input.isOwner;
+
+  const browserFallbackHeadStartMs = input.isHiddenTab ? 3_500 : 2_500;
+
+  return {
+    canBrowserFallback,
+    claimHeadStartMs,
+    browserFallbackHeadStartMs,
+  };
 }
 
 /**

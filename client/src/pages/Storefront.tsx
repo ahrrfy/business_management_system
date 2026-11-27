@@ -5,7 +5,7 @@ import { type BannerItem } from "@/components/storefront/StorefrontInlineStrip";
 import { storefrontVariantMedia } from "@/components/storefront/StorefrontMedia";
 import { type StorefrontProductForCartAction,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
 import { type CartLine,type StorefrontCartSelection,addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,money,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities } from "@/components/storefront/storefrontCartMath";
-import { type AvailabilityFilter,type CatalogSort,type Panel,type PriceFilter,type ShareFeedbackTone,collectStorefrontFailures,hasStorefrontAnalyticsConsent,shouldAutoLoadStorefrontNextPage } from "@/components/storefront/storefrontCatalogModel";
+import { type AvailabilityFilter,type CatalogSort,type Panel,type PriceFilter,type ShareFeedbackTone,STOREFRONT_FIVE_COL_MEDIA_QUERY,collectStorefrontFailures,hasStorefrontAnalyticsConsent,shouldAutoLoadStorefrontNextPage,storefrontCatalogPageLimit } from "@/components/storefront/storefrontCatalogModel";
 import { type StorefrontCustomization,type StorefrontCustomizationField,buildStorefrontCustomizationPayload,customizationCartKey,getStorefrontCustomizationConfig } from "@/components/storefront/storefrontCustomizationModel";
 import { type CustomizationStudioUploadState,isCustomizationUploadBlockingAddToCart } from "@/components/storefront/storefrontCustomizationUpload";
 import { type CheckoutFieldErrors,type CheckoutForm,DEFAULT_FORM,STOREFRONT_PERSIST_REQUEST_EVENT,type StorefrontCheckoutAttempt,loadCart,loadCheckoutAttempt,loadForm,loadStorefrontWishlist,saveCart,saveCheckoutAttempt,saveStorefrontSnapshot,storefrontCheckoutFingerprint,validateStorefrontCheckout } from "@/components/storefront/storefrontPersistence";
@@ -131,6 +131,13 @@ function StorefrontContent() {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
+  const [catalogPageLimit] = useState(() =>
+    storefrontCatalogPageLimit(
+      typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia(STOREFRONT_FIVE_COL_MEDIA_QUERY).matches,
+    ),
+  );
   const [catalogSeed] = useState(() => `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
@@ -371,7 +378,7 @@ function StorefrontContent() {
     priceFilter: effectivePriceFilter,
     sort,
     search: search || undefined,
-    limit: 24,
+    limit: catalogPageLimit,
     availability,
     seed: sort === "RECOMMENDED" && !search ? catalogSeed : undefined,
   } as const;

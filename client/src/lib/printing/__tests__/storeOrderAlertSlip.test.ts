@@ -3,8 +3,12 @@ import { isStoreOrderAlertRecipientUser, resolvePermissions } from "@shared/perm
 import { legacyOperationPolicy, resolveOperationPolicy } from "@shared/operationPermissions";
 import {
   buildStoreOrderAlertHtml,
+  computeStoreOrderAlertTimingPolicy,
   createStoreOrderAlertCoordinator,
+  readStoreOrderAutoPrintStationSetting,
+  setStoreOrderAutoPrintStationSetting,
   shouldRunStoreOrderAutoPrintOnRoute,
+  STORE_ORDER_AUTOPRINT_STATION_KEY,
 } from "../storeOrderAlertSlip";
 import { RealtimeManager } from "@/lib/realtime/realtimeManager";
 import { REALTIME_IDLE_TIMEOUT_MS } from "@shared/realtimeEvents";
@@ -765,7 +769,7 @@ describe("Global Store Order Auto-Print — route coverage & root architecture",
     // 2. AppLayout no longer duplicates or tears down createStoreOrderAlertCoordinator on route changes
     expect(layoutSource).not.toContain("createStoreOrderAlertCoordinator");
 
-    // 3. PointOfSale header includes StoreOrderAutoPrintQuickToggle so POS/Reception staff can see & toggle station auto-print
+    // 3. PointOfSale header includes StoreOrderAutoPrintQuickToggle supervisory badge + silent USB connect
     expect(posSource).toContain("<StoreOrderAutoPrintQuickToggle");
 
     // 4. main.tsx reconciles realtime route eligibility on SPA transitions (e.g. /login -> /pos)
@@ -810,5 +814,358 @@ describe("Global Store Order Auto-Print — route coverage & root architecture",
       (globalThis as { document?: unknown }).document = prevDoc;
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Always-On Store Order Auto-Print — tiered priority, anti-hijack & supervisory UI contracts", () => {
+  it("computes deterministic 4-tier timing policy for reception, backup thermal, OS fallback, and printer-less/owner sessions", () => {
+    // Tier 1: Reception/CS + thermal printer gets immediate priority (0ms visible / 150ms hidden)
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: true,
+        isOwner: false,
+        hasThermalPrinter: true,
+        isHiddenTab: false,
+        hasDocument: true,
+      }),
+    ).toEqual({
+      canBrowserFallback: true,
+      claimHeadStartMs: 0,
+      browserFallbackHeadStartMs: 2_500,
+    });
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: true,
+        isOwner: false,
+        hasThermalPrinter: true,
+        isHiddenTab: true,
+        hasDocument: true,
+      }).claimHeadStartMs,
+    ).toBe(150);
+
+    // Tier 2: Non-reception authorized staff (or owner WITH thermal printer) waits behind Reception (1200ms / 1600ms)
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: false,
+        isOwner: false,
+        hasThermalPrinter: true,
+        isHiddenTab: false,
+        hasDocument: true,
+      }),
+    ).toEqual({
+      canBrowserFallback: false,
+      claimHeadStartMs: 1_200,
+      browserFallbackHeadStartMs: 2_500,
+    });
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: false,
+        isOwner: true,
+        hasThermalPrinter: true,
+        isHiddenTab: true,
+        hasDocument: true,
+      }),
+    ).toEqual({
+      canBrowserFallback: false,
+      claimHeadStartMs: 1_600,
+      browserFallbackHeadStartMs: 3_500,
+    });
+
+    // Tier 3: Reception/CS (!isOwner) without thermal printer falls back to OS print after thermal tiers (2500ms / 3500ms)
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: true,
+        isOwner: false,
+        hasThermalPrinter: false,
+        isHiddenTab: false,
+        hasDocument: true,
+      }),
+    ).toEqual({
+      canBrowserFallback: true,
+      claimHeadStartMs: 0,
+      browserFallbackHeadStartMs: 2_500,
+    });
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: true,
+        isOwner: false,
+        hasThermalPrinter: false,
+        isHiddenTab: true,
+        hasDocument: true,
+      }).browserFallbackHeadStartMs,
+    ).toBe(3_500);
+
+    // Tier 4: Owner personal device or unlinked non-reception browser NEVER uses browser fallback
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: true,
+        isStoreAlertRecipient: false,
+        isOwner: true,
+        hasThermalPrinter: false,
+        isHiddenTab: false,
+        hasDocument: true,
+      }).canBrowserFallback,
+    ).toBe(false);
+    expect(
+      computeStoreOrderAlertTimingPolicy({
+        isAutoPrintActive: false,
+        isStoreAlertRecipient: true,
+        isOwner: false,
+        hasThermalPrinter: false,
+        isHiddenTab: false,
+        hasDocument: true,
+      }).canBrowserFallback,
+    ).toBe(false);
+  });
+
+  it("ignores legacy localStorage '0' disable setting and purges it on write", () => {
+    const store = new Map<string, string>([[STORE_ORDER_AUTOPRINT_STATION_KEY, "0"]]);
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => store.set(k, v),
+        removeItem: (k: string) => store.delete(k),
+      },
+      dispatchEvent: vi.fn(),
+    });
+    try {
+      expect(readStoreOrderAutoPrintStationSetting()).toBe(true);
+      setStoreOrderAutoPrintStationSetting(false);
+      expect(store.has(STORE_ORDER_AUTOPRINT_STATION_KEY)).toBe(false);
+      expect(readStoreOrderAutoPrintStationSetting()).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("gives Reception+thermal immediate priority over Cashier+thermal, fails over on error, and prevents printer-less/owner sessions from claiming", async () => {
+    let nowMs = 1_000;
+    const scheduled: Array<{ runAt: number; fn: () => void; cancelled: boolean }> = [];
+    const scheduleFn = (fn: () => void, delayMs: number) => {
+      const item = { runAt: nowMs + delayMs, fn, cancelled: false };
+      scheduled.push(item);
+      return item as unknown as ReturnType<typeof setTimeout>;
+    };
+    const cancelFn = (handle: ReturnType<typeof setTimeout>) => {
+      (handle as unknown as { cancelled: boolean }).cancelled = true;
+    };
+    const advanceTo = async (targetMs: number) => {
+      await new Promise((r) => setTimeout(r, 0));
+      while (true) {
+        const next = scheduled
+          .filter((t) => !t.cancelled && t.runAt <= targetMs)
+          .sort((a, b) => a.runAt - b.runAt)[0];
+        if (!next) break;
+        nowMs = next.runAt;
+        next.cancelled = true;
+        next.fn();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      nowMs = targetMs;
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    const orderPayload = { orderId: 404, orderNumber: "ORD-PRIO-404", totalAmount: "45000" };
+
+    // Part A: Reception+thermal beats Cashier+thermal even if Cashier event arrives slightly earlier
+    let orderClaimed = false;
+    let orderConfirmed = false;
+    const claimOrder = async () => {
+      if (orderConfirmed) return { claimed: false, alreadyPrinted: true };
+      if (orderClaimed) return { claimed: false, alreadyPrinted: false };
+      orderClaimed = true;
+      return { claimed: true, leaseToken: "lease-404", orderNumber: "ORD-PRIO-404", total: "45000", itemCount: 2 };
+    };
+    const receptionPrint = vi.fn().mockResolvedValue("printed" as const);
+    const cashierPrint = vi.fn().mockResolvedValue("printed" as const);
+    const ownerNoPrinterClaim = vi.fn(async () => ({ claimed: true }));
+    const ownerNoPrinterPrint = vi.fn().mockResolvedValue("printed" as const);
+
+    const receptionPolicy = computeStoreOrderAlertTimingPolicy({
+      isAutoPrintActive: true,
+      isStoreAlertRecipient: true,
+      isOwner: false,
+      hasThermalPrinter: true,
+      isHiddenTab: false,
+      hasDocument: true,
+    });
+    const cashierPolicy = computeStoreOrderAlertTimingPolicy({
+      isAutoPrintActive: true,
+      isStoreAlertRecipient: false,
+      isOwner: false,
+      hasThermalPrinter: true,
+      isHiddenTab: false,
+      hasDocument: true,
+    });
+    const ownerNoPrinterPolicy = computeStoreOrderAlertTimingPolicy({
+      isAutoPrintActive: true,
+      isStoreAlertRecipient: false,
+      isOwner: true,
+      hasThermalPrinter: false,
+      isHiddenTab: false,
+      hasDocument: true,
+    });
+
+    const receptionStation = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      canBrowserFallback: () => receptionPolicy.canBrowserFallback,
+      claimHeadStartMs: receptionPolicy.claimHeadStartMs,
+      browserFallbackHeadStartMs: receptionPolicy.browserFallbackHeadStartMs,
+      claim: claimOrder,
+      confirm: async () => { orderConfirmed = true; },
+      release: async () => { orderClaimed = false; },
+      print: receptionPrint,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const cashierStation = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      canBrowserFallback: () => cashierPolicy.canBrowserFallback,
+      claimHeadStartMs: cashierPolicy.claimHeadStartMs,
+      browserFallbackHeadStartMs: cashierPolicy.browserFallbackHeadStartMs,
+      claim: claimOrder,
+      confirm: async () => { orderConfirmed = true; },
+      release: async () => { orderClaimed = false; },
+      print: cashierPrint,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const ownerPersonalDevice = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => false,
+      canBrowserFallback: () => ownerNoPrinterPolicy.canBrowserFallback,
+      claimHeadStartMs: ownerNoPrinterPolicy.claimHeadStartMs,
+      browserFallbackHeadStartMs: ownerNoPrinterPolicy.browserFallbackHeadStartMs,
+      claim: ownerNoPrinterClaim,
+      release: async () => {},
+      print: ownerNoPrinterPrint,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const pOwner = ownerPersonalDevice.handleEvent(orderPayload);
+    const pCashier = cashierStation.handleEvent(orderPayload);
+    const pReception = receptionStation.handleEvent(orderPayload);
+
+    await advanceTo(5_000);
+    await Promise.all([pOwner, pCashier, pReception]);
+
+    expect(receptionPrint).toHaveBeenCalledTimes(1);
+    expect(cashierPrint).not.toHaveBeenCalled();
+    expect(ownerNoPrinterClaim).not.toHaveBeenCalled();
+    expect(ownerNoPrinterPrint).not.toHaveBeenCalled();
+
+    // Part B: Reception hardware fails and releases -> Cashier backup claims and prints; Owner personal device still NEVER claims
+    let order2Claimed = false;
+    let order2Confirmed = false;
+    const order2Payload = { orderId: 405, orderNumber: "ORD-PRIO-405", totalAmount: "18000" };
+    let cashierStation2!: ReturnType<typeof createStoreOrderAlertCoordinator>;
+    const receptionPrintFail = vi.fn().mockResolvedValue("hardware_error" as const);
+    const cashierPrintOk = vi.fn().mockResolvedValue("printed" as const);
+
+    const claimOrder2 = async () => {
+      if (order2Confirmed) return { claimed: false, alreadyPrinted: true };
+      if (order2Claimed) return { claimed: false, alreadyPrinted: false };
+      order2Claimed = true;
+      return { claimed: true, leaseToken: "lease-405", orderNumber: "ORD-PRIO-405", total: "18000", itemCount: 1 };
+    };
+    const releaseOrder2 = async (orderId: number) => {
+      order2Claimed = false;
+      void cashierStation2.handleEvent({ ...order2Payload, orderId, alertPrintHandoff: true });
+    };
+
+    const receptionStation2 = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      canBrowserFallback: () => receptionPolicy.canBrowserFallback,
+      claimHeadStartMs: receptionPolicy.claimHeadStartMs,
+      claim: claimOrder2,
+      release: releaseOrder2,
+      print: receptionPrintFail,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+    cashierStation2 = createStoreOrderAlertCoordinator({
+      hasPrinter: async () => true,
+      canBrowserFallback: () => cashierPolicy.canBrowserFallback,
+      claimHeadStartMs: cashierPolicy.claimHeadStartMs,
+      claim: claimOrder2,
+      confirm: async () => { order2Confirmed = true; },
+      release: async () => { order2Claimed = false; },
+      print: cashierPrintOk,
+      now: () => nowMs,
+      scheduleRetry: scheduleFn,
+      cancelRetry: cancelFn,
+    });
+
+    const pOwner2 = ownerPersonalDevice.handleEvent(order2Payload);
+    const pRec2 = receptionStation2.handleEvent(order2Payload);
+    const pCash2 = cashierStation2.handleEvent(order2Payload);
+    await advanceTo(10_000);
+    await Promise.all([pOwner2, pRec2, pCash2]);
+
+    expect(receptionPrintFail).toHaveBeenCalledTimes(1);
+    expect(cashierPrintOk).toHaveBeenCalledTimes(1);
+    expect(ownerNoPrinterClaim).not.toHaveBeenCalled();
+
+    receptionStation.dispose();
+    cashierStation.dispose();
+    receptionStation2.dispose();
+    cashierStation2.dispose();
+    ownerPersonalDevice.dispose();
+  });
+
+  it("enforces Always-On server/client contracts, no disable toggle in UI, and reactive USB change notifications", async () => {
+    const fs = await import("node:fs");
+    const globalSource = fs.readFileSync("client/src/components/store-admin/GlobalStoreOrderAutoPrint.tsx", "utf8");
+    const barSource = fs.readFileSync("client/src/components/store-admin/StoreOrderAutoPrintBar.tsx", "utf8");
+    const fulfillmentSource = fs.readFileSync("client/src/pages/OrderFulfillment.tsx", "utf8");
+    const routerSource = fs.readFileSync("server/routers/storeAdminRouter.ts", "utf8");
+    const thermalSource = fs.readFileSync("client/src/lib/printing/thermal.ts", "utf8");
+    const hookSource = fs.readFileSync("client/src/hooks/usePrinterConnection.ts", "utf8");
+
+    // 1. UI components have NO off-toggle and use non-disableable supervisory status badges
+    for (const ui of [globalSource, barSource]) {
+      expect(ui).not.toContain("إيقاف التلقائي");
+      expect(ui).not.toContain("تفعيل الطباعة التلقائية هنا");
+      expect(ui).not.toContain("setStoreOrderAutoPrintStationSetting");
+      expect(ui).not.toContain("aria-pressed");
+      expect(ui).toContain('role="status"');
+    }
+
+    // 2. StoreOrderAutoPrintBar retains silent USB connect & test slip buttons
+    expect(barSource).toContain("ربط USB صامت");
+    expect(barSource).toContain("اختبار القصاصة");
+    expect(globalSource).toContain("ربط USB");
+
+    // 3. GlobalStoreOrderAutoPrint clears legacy '0', gates polling/SSE idle exemption on canExecuteAutoPrint, and uses computeStoreOrderAlertTimingPolicy
+    expect(globalSource).toContain("STORE_ORDER_AUTOPRINT_STATION_KEY");
+    expect(globalSource).toContain("computeStoreOrderAlertTimingPolicy");
+    expect(globalSource).toContain("canExecuteAutoPrint");
+    expect(globalSource).toContain("const isAutoPrintStationActive = canAutoPrint");
+
+    // 4. OrderFulfillment aligns its gate with canUserAutoPrintStoreOrders
+    expect(fulfillmentSource).toContain("canUserAutoPrintStoreOrders(me.data)");
+
+    // 5. Server router allows all storeFulfillProcedure users without requiring stationOptIn === true
+    expect(routerSource).not.toContain("!isStoreOrderAlertRecipientUser(ctx.user)");
+    expect(routerSource).toContain("pendingNotificationPrint: storeFulfillProcedure");
+    expect(routerSource).toContain("claimNotificationPrint: storeFulfillProcedure");
+    expect(routerSource).toContain("releaseNotificationPrint: storeFulfillProcedure");
+
+    // 6. WebUSB slot changes notify all mounted usePrinterConnection listeners
+    expect(thermalSource).toContain("THERMAL_PRINTER_CHANGE_EVENT");
+    expect(hookSource).toContain("THERMAL_PRINTER_CHANGE_EVENT");
   });
 });

@@ -7,6 +7,7 @@ import { notify } from "@/lib/notify";
 import {
   isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, type PrinterRole,
 } from "@/lib/printing/print";
+import { THERMAL_PRINTER_CHANGE_EVENT } from "@/lib/printing/thermal";
 
 export function usePrinterConnection(role: PrinterRole = "receipt") {
   const [printerReady, setPrinterReady] = useState(() => isPaired(role));
@@ -15,18 +16,19 @@ export function usePrinterConnection(role: PrinterRole = "receipt") {
   useEffect(() => {
     if (!supported) return;
     const refresh = () => setPrinterReady(isPaired(role));
+    window.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, refresh);
     tryReconnectPrinter(role).then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
     const usb = (navigator as unknown as { usb?: EventTarget }).usb;
-    if (!usb) return;
     const onConnect = () => {
       tryReconnectPrinter(role).then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
     };
     const onDisconnect = () => refresh();
-    usb.addEventListener("connect", onConnect);
-    usb.addEventListener("disconnect", onDisconnect);
+    usb?.addEventListener("connect", onConnect);
+    usb?.addEventListener("disconnect", onDisconnect);
     return () => {
-      usb.removeEventListener("connect", onConnect);
-      usb.removeEventListener("disconnect", onDisconnect);
+      window.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, refresh);
+      usb?.removeEventListener("connect", onConnect);
+      usb?.removeEventListener("disconnect", onDisconnect);
     };
   }, [role, supported]);
 
