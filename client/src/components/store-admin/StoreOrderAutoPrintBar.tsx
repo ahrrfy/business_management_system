@@ -1,14 +1,12 @@
-import { useEffect, useState } from "react";
-import { Check, Printer, Usb } from "lucide-react";
+import { useState } from "react";
+import { Printer, Usb } from "lucide-react";
+import { useServerBridgeAvailable } from "@/components/store-admin/GlobalStoreOrderAutoPrint";
 import { Button } from "@/components/ui/button";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { notify } from "@/lib/notify";
 import {
   hasConnectedAlertThermalPrinter,
   printStoreOrderAlertAuto,
-  readStoreOrderAutoPrintStationSetting,
-  setStoreOrderAutoPrintStationSetting,
-  STORE_ORDER_AUTOPRINT_STATION_EVENT,
 } from "@/lib/printing/storeOrderAlertSlip";
 
 export function StoreOrderAutoPrintBar({
@@ -19,22 +17,21 @@ export function StoreOrderAutoPrintBar({
   canAutoPrint?: boolean;
 }) {
   const printer = usePrinterConnection("receipt");
-  const [explicitSetting, setExplicitSetting] = useState<boolean | null>(() =>
-    readStoreOrderAutoPrintStationSetting(),
-  );
+  const bridgeEnabled = useServerBridgeAvailable(canAutoPrint);
   const [testingPrint, setTestingPrint] = useState(false);
 
-  useEffect(() => {
-    const onSync = () => setExplicitSetting(readStoreOrderAutoPrintStationSetting());
-    window.addEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, onSync);
-    window.addEventListener("storage", onSync);
-    return () => {
-      window.removeEventListener(STORE_ORDER_AUTOPRINT_STATION_EVENT, onSync);
-      window.removeEventListener("storage", onSync);
-    };
-  }, []);
+  if (!canAutoPrint) return null;
 
-  const stationActive = canAutoPrint && (explicitSetting !== null ? explicitSetting : defaultRecipient);
+  const printerReady = printer.printerReady || bridgeEnabled;
+  const activeReady = printerReady || defaultRecipient;
+
+  const statusLabel = printerReady
+    ? defaultRecipient
+      ? "الطباعة التلقائية الإلزامية: نشطة (حراري مباشر — أولوية الاستقبال)"
+      : "الطباعة التلقائية الإلزامية: نشطة (حراري مباشر — احتياط تلقائي)"
+    : defaultRecipient
+      ? "الطباعة التلقائية الإلزامية: نشطة (طابعة النظام 80مم — احتياط تلقائي)"
+      : "الطباعة التلقائية الإلزامية: مفعلة (بانتظار ربط طابعة USB على هذا الجهاز)";
 
   async function handleTestSlip() {
     setTestingPrint(true);
@@ -67,18 +64,15 @@ export function StoreOrderAutoPrintBar({
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-bold ${
-            stationActive
+          role="status"
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-bold select-none ${
+            activeReady
               ? "border border-[var(--sem-pos)]/35 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
-              : "border border-border bg-muted text-muted-foreground"
+              : "border border-[var(--sem-warn)]/35 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
           }`}
         >
           <Printer aria-hidden className="size-3.5" />
-          {stationActive
-            ? printer.printerReady
-              ? "الطباعة التلقائية للطلبات الواردة: نشطة (حراري مباشر)"
-              : "الطباعة التلقائية للطلبات الواردة: نشطة (طابعة النظام 80مم)"
-            : "الطباعة التلقائية للطلبات الواردة متوقفة على هذا الجهاز"}
+          {statusLabel}
         </span>
       </div>
 
@@ -94,28 +88,6 @@ export function StoreOrderAutoPrintBar({
           >
             <Usb aria-hidden className="size-3.5" />
             ربط USB صامت
-          </Button>
-        )}
-
-        {canAutoPrint && (
-          <Button
-            type="button"
-            variant={stationActive ? "outline" : "default"}
-            size="sm"
-            onClick={() => {
-              const next = !stationActive;
-              setStoreOrderAutoPrintStationSetting(next);
-              setExplicitSetting(next);
-              notify.ok(
-                next
-                  ? "فعلت الطباعة التلقائية لطلبات المتجر على هذا الجهاز"
-                  : "أوقفت الطباعة التلقائية لطلبات المتجر على هذا الجهاز",
-              );
-            }}
-            className="h-7 gap-1 px-2.5 text-[11px] font-bold"
-          >
-            {stationActive && <Check aria-hidden className="size-3.5 text-[var(--sem-pos)]" />}
-            {stationActive ? "إيقاف التلقائي هنا" : "تفعيل الطباعة التلقائية هنا"}
           </Button>
         )}
 

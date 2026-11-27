@@ -42,6 +42,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { hasModuleAccess, isStoreOrderAlertRecipientUser, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canUserAutoPrintStoreOrders } from "@/components/store-admin/GlobalStoreOrderAutoPrint";
 import { StoreOrderAutoPrintBar } from "@/components/store-admin/StoreOrderAutoPrintBar";
 import { printStoreOrderAlertAuto } from "@/lib/printing/storeOrderAlertSlip";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
@@ -187,8 +188,7 @@ export default function OrderFulfillment() {
     "storeAdmin.orders.dispatch",
     !!me.data?.role && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]),
   );
-  const canAutoPrintAlerts = lifecycleActionAllowed(me.data, "storeAdmin.orders.claimNotificationPrint", !!me.data?.role
-    && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL"));
+  const canAutoPrintAlerts = canUserAutoPrintStoreOrders(me.data);
   const canReadDeliveryTimeline = lifecycleActionAllowed(me.data, "delivery.consignmentTimeline", !!me.data?.role
     && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "READ"));
   const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(

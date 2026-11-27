@@ -7,7 +7,6 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { isStoreOrderAlertRecipientUser } from "@shared/permissions";
 import { appErrorMessage } from "@shared/errors";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { managerApprovalSchema } from "@shared/managerApproval";
@@ -473,32 +472,19 @@ const ordersRouter = router({
       return res;
     }),
 
-  /** استرجاع طلبات المتجر الحديثة غير المطبوعة (آخر 30 دقيقة) عند اتصال محطة الاستقبال أو استعادة الشبكة */
+  /** استرجاع طلبات المتجر الحديثة غير المطبوعة (آخر 30 دقيقة) عند اتصال أي محطة مخوّلة أو استعادة الشبكة */
   pendingNotificationPrint: storeFulfillProcedure
     .input(z.object({ stationOptIn: z.boolean().optional() }).optional())
-    .query(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user) && input?.stationOptIn !== true) {
-        return [];
-      }
+    .query(async ({ ctx }) => {
       return listPendingOnlineOrderAlertPrints({
         scopedBranchId: actorScopedBranch(ctx.user),
       });
     }),
 
-  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لأول محطة استقبال/خدمة زبائن أو محطة مفعّلة صراحةً */
+  /** قفل ذرّي لطباعة قصاصة الإشعار التلقائية (10 سم) لمحطات العمل المخوّلة (أولوية الاستقبال ثم الاحتياط الحراري) */
   claimNotificationPrint: storeFulfillProcedure
     .input(z.object({ id: z.number().int().positive(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
-        return {
-          claimed: false, alreadyPrinted: false, leaseToken: null,
-          eligible: false,
-          orderNumber: null,
-          total: null,
-          itemCount: 0,
-          createdAt: null,
-        };
-      }
       const res = await claimOnlineOrderAlertPrint({
         id: input.id,
         scopedBranchId: actorScopedBranch(ctx.user),
@@ -513,9 +499,6 @@ const ordersRouter = router({
   releaseNotificationPrint: storeFulfillProcedure
     .input(z.object({ id: z.number().int().positive(), leaseToken: z.string().max(64).nullish(), completed: z.boolean().optional(), renew: z.boolean().optional(), stationOptIn: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      if (!isStoreOrderAlertRecipientUser(ctx.user) && input.stationOptIn !== true) {
-        return { released: false, completed: false, renewed: false, leaseToken: null };
-      }
       return releaseOnlineOrderAlertPrint({
         id: input.id, renew: input.renew === true,
         scopedBranchId: actorScopedBranch(ctx.user),

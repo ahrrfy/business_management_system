@@ -127,3 +127,13 @@ export function storefrontCatalogProductScope(
   }
   return thematicIds?.slice(0, 500);
 }
+
+export const STOREFRONT_FIVE_COL_MEDIA_QUERY = "(min-width: 1280px)";
+
+export function storefrontInlineBannerGroupSize(isFiveColumn: boolean): number {
+  return isFiveColumn ? 10 : 12;
+}
+
+export function storefrontCatalogPageLimit(isFiveColumn: boolean): number {
+  return isFiveColumn ? 20 : 24;
+}

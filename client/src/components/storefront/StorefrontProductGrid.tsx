@@ -5,6 +5,11 @@ import {
   recommendationActionLabel,
   storefrontProductCanBeOrdered,
 } from "@/components/storefront/StorefrontRecommendations";
+import {
+  STOREFRONT_FIVE_COL_MEDIA_QUERY,
+  storefrontInlineBannerGroupSize,
+} from "@/components/storefront/storefrontCatalogModel";
+import { useMediaQuery } from "@/hooks/useMobile";
 import React, { type ReactNode } from "react";
 import type { StorefrontCatalogSurfaceProps } from "./StorefrontCatalogSurface";
 type Props = Pick<
@@ -25,7 +30,9 @@ type Props = Pick<
   | "search"
   | "feedStrips"
   | "inlineBanners"
->;
+> & {
+  inlineGroupSize?: number;
+};
 export const StorefrontProductGrid = React.memo(function StorefrontProductGrid({
   filteredItems,
   wishlistIds,
@@ -43,7 +50,11 @@ export const StorefrontProductGrid = React.memo(function StorefrontProductGrid({
   search,
   feedStrips,
   inlineBanners,
+  inlineGroupSize,
 }: Props) {
+  const isFiveColumn = useMediaQuery(STOREFRONT_FIVE_COL_MEDIA_QUERY);
+  const groupSize = inlineGroupSize ?? storefrontInlineBannerGroupSize(isFiveColumn);
+
   return (
     <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
       {filteredItems.flatMap((p, idx) => {
@@ -80,10 +91,10 @@ export const StorefrontProductGrid = React.memo(function StorefrontProductGrid({
         if (
           !search &&
           feedStrips.length > 0 &&
-          (idx + 1) % 12 === 0 &&
+          (idx + 1) % groupSize === 0 &&
           idx + 1 < filteredItems.length
         ) {
-          const k = ((idx + 1) / 12 - 1) % feedStrips.length;
+          const k = ((idx + 1) / groupSize - 1) % feedStrips.length;
           nodes.push(
             <InlineStrip
               key={`strip-${idx}`}

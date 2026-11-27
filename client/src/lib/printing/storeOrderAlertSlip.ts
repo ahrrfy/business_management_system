@@ -9,6 +9,7 @@ import {
   isPaired,
   isWebUsbSupported,
   sendBytes,
+  THERMAL_PRINTER_CHANGE_EVENT,
   tryReconnectPrinter,
 } from "./thermal";
 
@@ -411,27 +412,70 @@ export function shouldRunStoreOrderAutoPrintOnRoute(
   return true;
 }
 
-export function readStoreOrderAutoPrintStationSetting(): boolean | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
-    if (raw === "1") return true;
-    if (raw === "0") return false;
-    return null;
-  } catch {
-    return null;
-  }
+export function readStoreOrderAutoPrintStationSetting(): boolean {
+  return true;
 }
 
-export function setStoreOrderAutoPrintStationSetting(enabled: boolean | null): void {
+export function setStoreOrderAutoPrintStationSetting(_enabled: boolean | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (enabled === null) window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
-    else window.localStorage.setItem(STORE_ORDER_AUTOPRINT_STATION_KEY, enabled ? "1" : "0");
-    window.dispatchEvent(new CustomEvent(STORE_ORDER_AUTOPRINT_STATION_EVENT, { detail: { enabled } }));
+    if (window.localStorage.getItem(STORE_ORDER_AUTOPRINT_STATION_KEY) === "0") {
+      window.localStorage.removeItem(STORE_ORDER_AUTOPRINT_STATION_KEY);
+    }
+    window.dispatchEvent(
+      new CustomEvent(STORE_ORDER_AUTOPRINT_STATION_EVENT, { detail: { enabled: true } }),
+    );
   } catch {
     /* ignore storage error */
   }
+}
+
+export interface StoreOrderAlertTimingPolicyInput {
+  isAutoPrintActive: boolean;
+  isStoreAlertRecipient: boolean;
+  isOwner: boolean;
+  hasThermalPrinter: boolean;
+  isHiddenTab: boolean;
+  hasDocument: boolean;
+}
+
+export interface StoreOrderAlertTimingPolicy {
+  canBrowserFallback: boolean;
+  claimHeadStartMs: number;
+  browserFallbackHeadStartMs: number;
+}
+
+/**
+ * سياسة أولوية السحب والتراجع لطلبات المتجر:
+ *  - الفئة 1 (استقبال/خدمة زبائن + طابعة حرارية): سحب فوري (0ms ظاهر / 150ms مخفي).
+ *  - الفئة 2 (كاشير/مبيعات/مدير أو مالك مع طابعة حرارية مربوطة): احتياط حراري (1200ms ظاهر / 1600ms مخفي).
+ *  - الفئة 3 (استقبال غير مالك دون WebUSB/جسر): تراجع لطباعة النظام (2500ms ظاهر / 3500ms مخفي).
+ *  - الفئة 4 (أي جلسة غير استقبالية دون طابعة حرارية، بما فيها جهاز المالك الشخصي): لا تسحب الحجز ولا تفتح نافذة طباعة.
+ */
+export function computeStoreOrderAlertTimingPolicy(
+  input: StoreOrderAlertTimingPolicyInput,
+): StoreOrderAlertTimingPolicy {
+  const claimHeadStartMs = input.isStoreAlertRecipient
+    ? input.isHiddenTab
+      ? 150
+      : 0
+    : input.isHiddenTab
+      ? 1_600
+      : 1_200;
+
+  const canBrowserFallback =
+    input.isAutoPrintActive &&
+    input.hasDocument &&
+    input.isStoreAlertRecipient &&
+    !input.isOwner;
+
+  const browserFallbackHeadStartMs = input.isHiddenTab ? 3_500 : 2_500;
+
+  return {
+    canBrowserFallback,
+    claimHeadStartMs,
+    browserFallbackHeadStartMs,
+  };
 }
 
 /**
@@ -1056,6 +1100,100 @@ export function createStoreOrderAlertCoordinator(deps: {
         cancel(timer);
       });
       auxTimers.clear();
+    },
+  };
+}
+
+export interface ServerBridgeAvailabilityController {
+  refresh: (force?: boolean) => void;
+  dispose: () => void;
+}
+
+/**
+ * يراقب جاهزية جسر الطباعة على الخادم مع التعافي التلقائي بعد أي فشل عابر:
+ * يعيد الفحص عند تغير طابعة USB، عودة الشبكة (online)، عودة التركيز/الرؤية،
+ * ودورياً كل 30 ثانية حتى لا تبقى المحطة غير الاستقبالية معطلة طوال الجلسة.
+ */
+export function subscribeServerBridgeAvailability(opts: {
+  probe: (force?: boolean) => Promise<boolean>;
+  onChange: (enabled: boolean) => void;
+  intervalMs?: number;
+  eventTarget?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null;
+  visibilityTarget?: {
+    visibilityState?: string;
+    addEventListener: EventTarget["addEventListener"];
+    removeEventListener: EventTarget["removeEventListener"];
+  } | null;
+  setIntervalFn?: (cb: () => void, ms: number) => ReturnType<typeof setInterval>;
+  clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void;
+}): ServerBridgeAvailabilityController {
+  const intervalMs = opts.intervalMs ?? 30_000;
+  const eventTarget =
+    opts.eventTarget === undefined
+      ? typeof window !== "undefined"
+        ? window
+        : null
+      : opts.eventTarget;
+  const visibilityTarget =
+    opts.visibilityTarget === undefined
+      ? typeof document !== "undefined"
+        ? document
+        : null
+      : opts.visibilityTarget;
+  const setIntervalFn =
+    opts.setIntervalFn ?? ((cb: () => void, ms: number) => globalThis.setInterval(cb, ms));
+  const clearIntervalFn =
+    opts.clearIntervalFn ?? ((id: ReturnType<typeof setInterval>) => globalThis.clearInterval(id));
+
+  let disposed = false;
+  let seq = 0;
+
+  const refresh = (force = false) => {
+    if (disposed) return;
+    const callSeq = ++seq;
+    void opts
+      .probe(force)
+      .then((ok) => {
+        if (!disposed && callSeq === seq) {
+          opts.onChange(Boolean(ok));
+        }
+      })
+      .catch(() => {
+        if (!disposed && callSeq === seq) {
+          opts.onChange(false);
+        }
+      });
+  };
+
+  const onUsbOrOnline = () => refresh(true);
+  const onFocus = () => refresh(false);
+  const onVisibility = () => {
+    if (visibilityTarget?.visibilityState === "visible") {
+      refresh(false);
+    }
+  };
+
+  refresh(false);
+  eventTarget?.addEventListener(THERMAL_PRINTER_CHANGE_EVENT, onUsbOrOnline);
+  eventTarget?.addEventListener("online", onUsbOrOnline);
+  eventTarget?.addEventListener("focus", onFocus);
+  visibilityTarget?.addEventListener("visibilitychange", onVisibility);
+
+  const timerId =
+    intervalMs > 0 ? setIntervalFn(() => refresh(true), intervalMs) : null;
+
+  return {
+    refresh,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      eventTarget?.removeEventListener(THERMAL_PRINTER_CHANGE_EVENT, onUsbOrOnline);
+      eventTarget?.removeEventListener("online", onUsbOrOnline);
+      eventTarget?.removeEventListener("focus", onFocus);
+      visibilityTarget?.removeEventListener("visibilitychange", onVisibility);
+      if (timerId !== null) {
+        clearIntervalFn(timerId);
+      }
     },
   };
 }

@@ -15,6 +15,7 @@ vi.mock("@/lib/trpc", () => ({
       banners: { useQuery: () => ({}) },
       settings: { useQuery: () => ({}) },
       trackRecommendationClick: { useMutation: () => ({}) },
+      trackBanner: { useMutation: () => ({ mutate: vi.fn() }) },
       createCartShare: { useMutation: () => ({}) },
       trackOrderByToken: { useMutation: () => ({}) },
     },
@@ -22,7 +23,7 @@ vi.mock("@/lib/trpc", () => ({
 }));
 
 import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
-import { createElement } from "react";
+import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import {
@@ -61,6 +62,12 @@ import {
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
+import { StorefrontProductGrid } from "@/components/storefront/StorefrontProductGrid";
+import {
+  STOREFRONT_FIVE_COL_MEDIA_QUERY,
+  storefrontCatalogPageLimit,
+  storefrontInlineBannerGroupSize,
+} from "@/components/storefront/storefrontCatalogModel";
 import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
@@ -995,6 +1002,88 @@ describe("storefront product cart quantity stepper (single vs multi-variant)", (
       }),
     );
     expect(singleHtml).toMatch(/disabled=""[^>]*aria-label="زيادة كمية ممحاة مدرسية"/);
+  });
+});
+
+describe("storefront responsive inline banner grouping and batch size", () => {
+  it("aligns inline banner group size and catalog batch limit to 5-column (10/20) vs 2/3/4-column (12/24) grids", () => {
+    expect(STOREFRONT_FIVE_COL_MEDIA_QUERY).toBe("(min-width: 1280px)");
+    expect(storefrontInlineBannerGroupSize(true)).toBe(10);
+    expect(storefrontInlineBannerGroupSize(false)).toBe(12);
+    expect(storefrontCatalogPageLimit(true)).toBe(20);
+    expect(storefrontCatalogPageLimit(true) % 5).toBe(0);
+    expect(storefrontCatalogPageLimit(true) % 10).toBe(0);
+    expect(storefrontCatalogPageLimit(false)).toBe(24);
+    expect(storefrontCatalogPageLimit(false) % 12).toBe(0);
+  });
+
+  it("places inline banners after every 10 cards on 5-column grids and every 12 cards on narrower grids", () => {
+    const items = Array.from({ length: 25 }, (_, i) => ({
+      productId: i + 1,
+      productUnitId: 1000 + i + 1,
+      productName: `منتج_شبكة_${String(i + 1).padStart(2, "0")}`,
+      brand: null,
+      price: "1000",
+      salePrice: null,
+      stockLeft: 10,
+      unitName: "قطعة",
+      soldCount: 0,
+      inStock: true,
+    })) as unknown as React.ComponentProps<typeof StorefrontProductGrid>["filteredItems"];
+    const feedStrips = [
+      { id: 1, title: "شريط_ترويجي_أول", imageUrl: "/banner-1.webp" },
+      { id: 2, title: "شريط_ترويجي_ثان", imageUrl: "/banner-2.webp" },
+    ];
+    const baseGridProps = {
+      filteredItems: items,
+      wishlistIds: new Set<number>(),
+      recentlyAddedProductId: null,
+      heartPulseTarget: null,
+      heartPulseNonce: 0,
+      sharePulseTarget: null,
+      sharePulseNonce: 0,
+      openProduct: vi.fn(),
+      addCatalogProduct: () => true,
+      toggleWishlist: vi.fn(),
+      shareProduct: vi.fn(),
+      getProductCartQty: () => 0,
+      handleProductQuantityDelta: vi.fn(),
+      search: "",
+      feedStrips,
+      inlineBanners: feedStrips,
+    };
+
+    vi.stubGlobal("React", React);
+    try {
+      const fiveColHtml = renderToStaticMarkup(
+        createElement(StorefrontProductGrid, { ...baseGridProps, inlineGroupSize: 10 }),
+      );
+      expect(fiveColHtml.match(/col-span-full/g)).toHaveLength(2);
+      expect(fiveColHtml.indexOf("منتج_شبكة_10")).toBeLessThan(fiveColHtml.indexOf("شريط_ترويجي_أول"));
+      expect(fiveColHtml.indexOf("شريط_ترويجي_أول")).toBeLessThan(fiveColHtml.indexOf("منتج_شبكة_11"));
+      expect(fiveColHtml.indexOf("منتج_شبكة_20")).toBeLessThan(fiveColHtml.indexOf("شريط_ترويجي_ثان"));
+      expect(fiveColHtml.indexOf("شريط_ترويجي_ثان")).toBeLessThan(fiveColHtml.indexOf("منتج_شبكة_21"));
+
+      const fourColHtml = renderToStaticMarkup(
+        createElement(StorefrontProductGrid, { ...baseGridProps, inlineGroupSize: 12 }),
+      );
+      expect(fourColHtml.match(/col-span-full/g)).toHaveLength(2);
+      expect(fourColHtml.indexOf("منتج_شبكة_12")).toBeLessThan(fourColHtml.indexOf("شريط_ترويجي_أول"));
+      expect(fourColHtml.indexOf("شريط_ترويجي_أول")).toBeLessThan(fourColHtml.indexOf("منتج_شبكة_13"));
+      expect(fourColHtml.indexOf("منتج_شبكة_24")).toBeLessThan(fourColHtml.indexOf("شريط_ترويجي_ثان"));
+      expect(fourColHtml.indexOf("شريط_ترويجي_ثان")).toBeLessThan(fourColHtml.indexOf("منتج_شبكة_25"));
+
+      const searchHtml = renderToStaticMarkup(
+        createElement(StorefrontProductGrid, { ...baseGridProps, search: "منتج", inlineGroupSize: 10 }),
+      );
+      expect(searchHtml).not.toContain("col-span-full");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const storefrontSource = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(storefrontSource).toContain("storefrontCatalogPageLimit(");
+    expect(storefrontSource).toContain("limit: catalogPageLimit");
   });
 });
 

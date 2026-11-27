@@ -18,6 +18,15 @@
 
 export type PrinterRole = "receipt" | "label";
 
+export const THERMAL_PRINTER_CHANGE_EVENT = "erp:thermal-printer-changed";
+
+function notifyPrinterStateChanged(role?: PrinterRole): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(THERMAL_PRINTER_CHANGE_EVENT, { detail: { role } }),
+  );
+}
+
 interface Slot {
   device: any;
   endpointOut: number | null;
@@ -92,7 +101,10 @@ function claimedByOtherRole(role: PrinterRole, dev: any): boolean {
 /** يصفّر أيّ دور يحمل هذا الجهاز (عند فشل النقل أو فصل الجهاز) ليُعاد ربطه. */
 function resetSlotsForDevice(dev: any): void {
   (Object.keys(slots) as PrinterRole[]).forEach((r) => {
-    if (sameDevice(slots[r].device, dev)) slots[r] = { device: null, endpointOut: null };
+    if (sameDevice(slots[r].device, dev)) {
+      slots[r] = { device: null, endpointOut: null };
+      notifyPrinterStateChanged(r);
+    }
   });
 }
 
@@ -131,6 +143,7 @@ async function claimDevice(role: PrinterRole, dev: any): Promise<boolean> {
   }
   slots[role].device = dev;
   slots[role].endpointOut = out;
+  notifyPrinterStateChanged(role);
   return true;
 }
 
